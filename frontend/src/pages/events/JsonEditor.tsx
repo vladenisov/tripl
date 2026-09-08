@@ -1,94 +1,10 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { getErrorMessage } from '@/lib/utils'
+import { relaxedToJson } from './jsonRelaxed'
+import { formatJsonTemplate, templateJsonError, validateJsonWithVars } from './jsonTemplate'
 import { SuggestionRow, type VariableSuggestion } from './VariableInput'
 import { suggestionMatches } from './utils'
-
-const TEMPLATE_TOKEN_PATTERN = /\$\{([^}]*)\}/g
-const TEMPLATE_TOKEN_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
-const JSON_TEMPLATE_VALUE_PATTERN = /"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"|\$\{[A-Za-z_][A-Za-z0-9_.-]*\}/g
-const JSON_TEMPLATE_KEY_PATTERN = /"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"\s*:/
-
-const SENTINEL_BASE = '__TRIPL_VAR_'
-
-function templateJsonError(text: string): string | null {
-  const tokens = [...text.matchAll(TEMPLATE_TOKEN_PATTERN)].map(match => match[1])
-  if (tokens.some(token => !TEMPLATE_TOKEN_NAME_PATTERN.test(token))) {
-    return 'Variable tokens may use letters, digits, underscores, dots, or hyphens.'
-  }
-  const templateValues = text.match(JSON_TEMPLATE_VALUE_PATTERN) ?? []
-  if (templateValues.length !== tokens.length) {
-    return 'Variable templates must occupy a complete JSON value.'
-  }
-  if (JSON_TEMPLATE_KEY_PATTERN.test(text)) {
-    return 'Variable templates cannot be JSON object keys.'
-  }
-  return null
-}
-
-function validateJsonWithVars(text: string): string | null {
-  if (!text.trim()) return null
-  const templateError = templateJsonError(text)
-  if (templateError) return templateError
-  if (!text.includes('${')) {
-    try { JSON.parse(text); return null } catch (e) { return getErrorMessage(e) }
-  }
-  // Replace ${var} placeholders with a sentinel string before validating, so
-  // partially-templated JSON parses successfully. Quoted tokens ("${var}")
-  // must be swapped together with their quotes or the sentinel doubles them.
-  const safe = text.replace(JSON_TEMPLATE_VALUE_PATTERN, '"__var__"')
-  try { JSON.parse(safe); return null } catch (e) { return getErrorMessage(e) }
-}
-
-/**
- * Re-indent `text` as JSON, carrying any ${var} placeholders through untouched.
- *
- * Returns null when the text is not valid JSON, so every caller decides for
- * itself whether that is worth reporting. Placeholders are stashed behind
- * sentinels before parsing — a bare ${token} is a syntax error to JSON.parse,
- * and a quoted one would come back escaped from JSON.stringify.
- *
- * Each occurrence gets its own numbered sentinel, because the restore replaces
- * a string needle and that only ever swaps the first match.
- */
-export function formatJsonTemplate(text: string): string | null {
-  if (!text.trim()) return null
-  if (templateJsonError(text)) return null
-  if (!text.includes('${')) {
-    try { return JSON.stringify(JSON.parse(text), null, 2) } catch { return null }
-  }
-
-  // A sentinel has to survive the round trip unambiguously, and the input is
-  // not enough to check against: a \u005f escape only becomes an underscore
-  // after parsing, so a literal can collide with a sentinel that was unique in
-  // the source. Lengthen the prefix until every sentinel appears exactly once
-  // in the formatted output.
-  let prefix = SENTINEL_BASE
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const stashPrefix = prefix
-    const placeholders = new Map<string, string>()
-    const safe = text.replace(JSON_TEMPLATE_VALUE_PATTERN, match => {
-      const sentinel = `${stashPrefix}${placeholders.size}__`
-      placeholders.set(sentinel, match)
-      return `"${sentinel}"`
-    })
-
-    let formatted: string
-    try { formatted = JSON.stringify(JSON.parse(safe), null, 2) } catch { return null }
-
-    const needles = [...placeholders.keys()].map(sentinel => `"${sentinel}"`)
-    if (needles.some(needle => formatted.split(needle).length !== 2)) {
-      prefix = `_${prefix}`
-      continue
-    }
-    placeholders.forEach((placeholder, sentinel) => {
-      formatted = formatted.replace(`"${sentinel}"`, placeholder)
-    })
-    return formatted
-  }
-  return null
-}
 
 export function JsonEditor({
   id,
@@ -113,6 +29,9 @@ export function JsonEditor({
   const [filter, setFilter] = useState('')
   const [highlightIdx, setHighlightIdx] = useState(0)
   const [insertPos, setInsertPos] = useState(0)
+  // What the last Format repaired, and the text it replaced. Repairing is a
+  // guess about intent, so it is always both reported and undoable.
+  const [repair, setRepair] = useState<{ fixes: string[]; previous: string } | null>(null)
   // The server stores JSON as a single canonical line, so a stored value —
   // templated or not — arrives unbroken. Re-indent it on the way in, or every
   // edit session starts with the whole payload on line one.
@@ -137,6 +56,7 @@ export function JsonEditor({
     const dollarIdx = before.lastIndexOf('$')
     const newValue = before.slice(0, dollarIdx) + '${' + varName + '}' + after
     setRaw(newValue)
+    setRepair(null)
     const err = validateJsonWithVars(newValue)
     onChange(newValue)
     setError(err)
@@ -151,6 +71,7 @@ export function JsonEditor({
   const handleChange = (v: string) => {
     const cursor = textareaRef.current?.selectionStart ?? v.length
     setRaw(v)
+    setRepair(null)
     if (!v.trim()) {
       onChange('')
       setError(null)
@@ -196,19 +117,46 @@ export function JsonEditor({
     }
   }
 
+  const apply = (next: string) => {
+    setRaw(next)
+    onChange(next)
+    setError(validateJsonWithVars(next))
+  }
+
   // Format used to fail silently on anything it could not parse, which read as
-  // a dead button. Say what is wrong instead — the same message the field
-  // shows while typing.
+  // a dead button. Try strict first — already-valid JSON is only re-indented,
+  // never reinterpreted — then the tolerant reader, and failing both, say what
+  // is wrong.
   const handleFormat = () => {
     if (!raw.trim()) return
-    const formatted = formatJsonTemplate(raw)
-    if (formatted === null) {
-      setError(validateJsonWithVars(raw))
+
+    const strict = formatJsonTemplate(raw)
+    if (strict !== null) {
+      setRepair(null)
+      apply(strict)
       return
     }
-    setRaw(formatted)
-    onChange(formatted)
-    setError(null)
+
+    // A malformed ${token} is a mistake to report, not to repair.
+    const templateError = templateJsonError(raw)
+    if (!templateError) {
+      const relaxed = relaxedToJson(raw, variables.map(v => v.name))
+      const formatted = relaxed && formatJsonTemplate(relaxed.text)
+      if (relaxed && formatted && validateJsonWithVars(formatted) === null) {
+        setRepair({ fixes: relaxed.fixes, previous: raw })
+        apply(formatted)
+        return
+      }
+    }
+
+    setError(templateError ?? validateJsonWithVars(raw))
+  }
+
+  const handleUndoRepair = () => {
+    if (!repair) return
+    const previous = repair.previous
+    setRepair(null)
+    apply(previous)
   }
 
   return (
@@ -260,6 +208,16 @@ export function JsonEditor({
           Format
         </Button>
       </div>
+      {repair && (
+        <div className="flex items-start justify-between gap-2" aria-live="polite">
+          <p className="min-w-0 text-xs text-muted-foreground">
+            Format {repair.fixes.join(', ')}.
+          </p>
+          <Button type="button" variant="ghost" size="xs" onClick={handleUndoRepair} className="shrink-0">
+            Undo
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

@@ -119,4 +119,36 @@ describe('JsonEditor template authoring', () => {
     expect(formatButton).not.toHaveClass('absolute')
     expect(formatButton.parentElement).not.toContain(screen.getByRole('combobox'))
   })
+  it('repairs loose input, says what it changed and can undo it', () => {
+    const onChange = vi.fn()
+    render(<JsonEditor value="" onChange={onChange} variables={VARIABLES} />)
+
+    const editor = screen.getByRole('combobox')
+    const loose = 'from_profile: property.forecast_profile, mode: property.mode'
+    fireEvent.change(editor, { target: { value: loose } })
+    expect(editor).toHaveAttribute('aria-invalid', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+
+    expect(editor).toHaveValue(
+      '{\n  "from_profile": "${property.forecast_profile}",\n  "mode": "${property.mode}"\n}',
+    )
+    expect(editor).toHaveAttribute('aria-invalid', 'false')
+    expect(screen.getByText(/read 2 values as variables/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(editor).toHaveValue(loose)
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+  })
+
+  it('does not offer to repair a malformed variable token', () => {
+    render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
+
+    const editor = screen.getByRole('combobox')
+    fireEvent.change(editor, { target: { value: 'a: ${bad"token}' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Variable tokens may use/)).toBeInTheDocument()
+  })
 })
