@@ -91,7 +91,10 @@ An event belongs to an event type, so a project with none says so in place of
 the picker and links to creating one.
 
 The event form exposes: **Event type** (required; cannot be changed after
-creation); **Name** (e.g. `checkout:completed`); **Description** — with a
+creation); **Name** (e.g. `checkout:completed`); **Title** — an optional
+free-text label (up to 500 characters) shown beside the name in lists, the
+branch diff and the event page, and searchable, that never takes part in the
+identity; **Description** — with a
 **Suggest with AI** action that appears when editing an existing event and AI is
 enabled; **Status** — one of `draft`, `in_review`, `ready_for_dev`,
 `implemented`, `live`, `deprecated`, `archived` (selecting `deprecated` reveals a
@@ -117,6 +120,14 @@ merge with the traffic it describes. The rows the name is built from are marked
 **names the event** and are required, and the form lists any that are still
 empty.
 
+The rule follows the type onto a plan branch. A branch carries its own copy of
+every event type while the scan names the `main` copy, so a branch copy
+is resolved to its `main` counterpart by name and governed by the same format —
+the form and **Add many events…** behave on a branch exactly as they do on
+`main`. Every event type response (`GET /event-types`,
+`GET /event-types/{id}`) carries the resolved rule as `event_name_format`,
+`null` when no scan names the type.
+
 An identity belongs to one event. If another event already answers to the name
 being composed, the form links to it and refuses to create a second — a second
 event with the same identity would receive no volume, no last-seen time and no
@@ -133,7 +144,8 @@ scan that loses the same race adopts the event that won and carries on.
 Renaming an event afterwards is safe and deliberately does *not* move the
 identity — collection keeps matching the event it already knew. Once the two
 differ, the event's **Properties** card shows the **Scan identity** row, and
-`source_name` carries it in every event response.
+`source_name` carries it in every event response. The human-readable label
+belongs in **Title**, which is free to change and never touches the identity.
 
 #### Adding many at once
 
@@ -174,7 +186,9 @@ from field values, locks the name input, and blocks save until every referenced
 scalar or JSON-path field is present. The backend treats the generated name as the identity and
 returns advisory `warnings` if a client supplied a different name. Values saved
 manually are marked as authored, so later scans add missing values but do not
-overwrite the authored ones.
+overwrite the authored ones. Re-saving an event whose values did not change
+keeps each value's authored flag as it was, and the branch diff does not report
+a flag-only flip as a change.
 
 ### Event field, meta values & tags
 
@@ -273,6 +287,13 @@ wrong here costs a silent collection outage.
 **Where:** Plan › Schema & fields. Project-scoped attributes applied across all
 events (name, type, enum options, optional link template). Create, edit, delete.
 
+A meta field with a **link template** (`https://tracker.example.com/browse/${value}`)
+stores the bare key. Paste a full link that matches the template and the form
+strips the template's fixed text before saving — the server does the same to
+whatever a client sends — so `https://tracker.example.com/browse/TRK-42` is
+stored as `TRK-42` and rendered back as the link. The field's caption shows an
+example of what to paste.
+
 ### Variables
 
 **Where:** Plan › Variables. Typed, reusable `${name}` placeholders referenced
@@ -356,7 +377,16 @@ collection-valued fields (an event's field values and meta values, its tags, a
 variable's documented values and per-event overrides) are broken out member by
 member rather than dumped whole. A row also links to the entity it describes —
 the event, event type, or variable — opened in the branch, or on `main` when the
-branch deleted it.
+branch deleted it. Catalog rows, diff rows and the command palette carry the
+branch in the link (`?branch=`), and an entity page opened that way shows a
+banner naming the branch it belongs to, so a link handed to a developer opens
+the right copy. A diff row also carries **warnings** for an event authored on
+the branch without a scan identity — e.g.
+`No scan identity: the naming rule 'track:{name}' needs name.` — so a reviewer
+sees it before the merge lands an event that would never match its traffic. A branch copy of an event reads its
+metrics and **last seen** through its `main` twin (the event with the same type
+name and identity), so the branch shows what the live plan collected rather than
+blanks.
 Branch comments identify their author using the current project roster.
 
 **Revert** on a diff row (or on a single field-change row) puts that change back
@@ -376,7 +406,10 @@ the same state and parent deletion versus a new child fail with a conflict.
 An owner may configure a separate **Implementation tracker** for the project.
 When enabled, a successful merge best-effort creates one Jira implementation
 ticket for the added/changed events; a scheduled sync promotes covered events to
-`implemented` when Jira reports the ticket done. This is branch workflow
+`implemented` when Jira reports the ticket done. Collection completes the
+lifecycle on its own: the first data an event receives promotes it from
+`ready_for_dev` or `implemented` to `live`, while a `draft` or `in_review` event
+stays where it is. This is branch workflow
 automation, distinct from the Jira **alert destination** that creates incident
 tickets from monitoring signals.
 
@@ -530,6 +563,10 @@ app-version column), **Heatmap** (7×24 seasonality), **Distribution** (drift
 bands), and **Breakdowns**. The page also surfaces top movers and release
 regressions, plus chart annotations on the Volume tab. For an `event` scope it
 additionally renders variable-value drift review and the Photos & specs panel.
+An event that is not yet `live` also gets a **Spec** card ahead of the charts:
+the scan identity with a copy button, the fields with their required and
+**names the event** marks, documented variable values, an example payload, and
+**Copy as JSON** / **Copy as Markdown** for pasting into a ticket.
 For ratios, averages, and other non-count catalog metrics, the version legend
 shows each version's latest observed value rather than a sum of daily values.
 The range picker defaults to 7 days (30 for a catalog metric); when the scope's
@@ -1150,8 +1187,10 @@ Events have a second surface, and the two answer different questions. The audit
 log answers **who, what, when and on which branch**, and it survives the event:
 an `event.delete` row still names what was deleted after the event and its
 history are gone. **Per-event history** on the event's own detail page answers
-the **before/after values** of `status`, `name`, `description` and `sunset_at`,
-and it is removed with the event. Neither is a backup — an `event.delete` row
+the **before/after values** of `status`, `name`, `title`, `description` and
+`sunset_at`, of `tags`, and of each field value (`field:<name>`) and meta value
+(`meta:<name>`), opening with a `created` row that names who created the event
+and when; it is removed with the event. Neither is a backup — an `event.delete` row
 does not let you reconstruct the deleted event's field values, deliberately, as
 a single field value may be 100 000 characters.
 
