@@ -1532,6 +1532,129 @@ class TestEventGeneration:
         ).scalar_one()
         assert action_value == "/^button:/"
 
+    def test_collapsing_rows_keep_the_value_of_the_busiest_row(
+        self, sync_session: Session, project_and_type
+    ):
+        """Regression: an event keeps one value per field, so breakdown rows that
+        collapse onto the same identity overwrite each other and the LAST row
+        processed used to win. Every adapter returns rows ``ORDER BY _cnt DESC``,
+        which made "last" the *rarest* combination the event ever fired on — a
+        windbar tap advertising ``purchase/main`` because three sessions out of
+        twelve thousand happened to reach it from there.
+        """
+        project, et, fds = project_and_type
+        analysis = BreakdownAnalysis(
+            results={
+                "action": CardinalityResult(
+                    column=ColumnInfo("action", "String"),
+                    count=1,
+                    is_low=True,
+                    sample_values=["windbar_tap"],
+                ),
+                "screen": CardinalityResult(
+                    column=ColumnInfo("screen", "String"),
+                    count=3,
+                    is_low=True,
+                    sample_values=["spot", "profile", "purchase/main"],
+                ),
+            },
+            # Shaped the way an adapter hands them over: one row per combination,
+            # the ``_cnt`` appended last, ordered by it descending.
+            rows=[
+                ("windbar_tap", "spot", 12000),
+                ("windbar_tap", "profile", 900),
+                ("windbar_tap", "purchase/main", 3),
+            ],
+            reg_names=["action", "screen"],
+            json_names=[],
+        )
+
+        result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            event_name_format="{action}",
+        )
+        sync_session.commit()
+
+        assert result.events_created == 1
+        screen_value = sync_session.execute(
+            select(EventFieldValue.value).where(
+                EventFieldValue.field_definition_id == fds["screen"].id
+            )
+        ).scalar_one()
+        assert screen_value == "spot"
+        # And it says so, rather than discarding the other two in silence.
+        assert any("windbar_tap.screen (3 values)" in detail for detail in result.details)
+
+    def test_busiest_row_first_does_not_disturb_event_creation_order(
+        self, sync_session: Session, project_and_type
+    ):
+        """Re-ordering happens WITHIN an identity, never across identities.
+
+        ``order`` is handed out as identities are first created, so sorting the
+        whole plan by row count would renumber events that had nothing to do with
+        a collapse — here it would put ``debug_ping``, the rarest row in the scan,
+        at the top of the catalog. Identities keep their first-appearance order;
+        only the rows inside one of them move.
+        """
+        project, et, fds = project_and_type
+        analysis = BreakdownAnalysis(
+            results={
+                "action": CardinalityResult(
+                    column=ColumnInfo("action", "String"),
+                    count=2,
+                    is_low=True,
+                    sample_values=["session_start", "debug_ping"],
+                ),
+                "screen": CardinalityResult(
+                    column=ColumnInfo("screen", "String"),
+                    count=3,
+                    is_low=True,
+                    sample_values=["map", "settings", "devtools"],
+                ),
+            },
+            # Every row of ``session_start`` outruns the single ``debug_ping``
+            # row, so a plan-wide sort by count would create them the other way
+            # round. Within ``session_start`` the busiest row is NOT last.
+            rows=[
+                ("session_start", "map", 900),
+                ("session_start", "settings", 800),
+                ("debug_ping", "devtools", 5),
+            ],
+            reg_names=["action", "screen"],
+            json_names=[],
+        )
+
+        result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            event_name_format="{action}",
+        )
+        sync_session.commit()
+
+        assert result.events_created == 2
+        events = (
+            sync_session.execute(
+                select(Event).where(Event.project_id == project.id).order_by(Event.order)
+            )
+            .scalars()
+            .all()
+        )
+        assert [event.name for event in events] == ["session_start", "debug_ping"]
+        busiest_screen = sync_session.execute(
+            select(EventFieldValue.value).where(
+                EventFieldValue.event_id == events[0].id,
+                EventFieldValue.field_definition_id == fds["screen"].id,
+            )
+        ).scalar_one()
+        assert busiest_screen == "map"
+
     def test_group_collapse_into_existing_event_does_not_duplicate_field_values(
         self, sync_session: Session, project_and_type
     ):
