@@ -10,6 +10,7 @@ import type {
   Variable,
 } from '@/types'
 import { aiApi } from '@/api/ai'
+import { eventCommentsApi } from '@/api/eventComments'
 import { eventsApi } from '@/api/events'
 import { scansApi } from '@/api/scans'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -18,6 +19,7 @@ import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { variablesApi } from '@/api/variables'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { CommentThread } from '@/components/comment-thread'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
@@ -1290,6 +1292,26 @@ export default function EventEditPage() {
         defaultEventTypeId={defaultEventTypeId}
         onClose={goBack}
       />
+      {/* The one home for the discussion, and outside the form on purpose: it
+          is not plan content. Every other box on this page ships to whoever
+          implements the event — Description is an indexed search column and a
+          line in the pasted spec — so "should this fire on cancel too?" typed
+          there reads as part of the specification. Edit only: there is no
+          event to hang a thread on until one exists. */}
+      {eventId ? (
+        <div className="mx-auto max-w-[880px] px-6 pb-10">
+          <CommentThread
+            queryKey={['eventComments', slug, eventId]}
+            list={() => eventCommentsApi.list(slug, eventId)}
+            create={(body, parentId) => eventCommentsApi.create(slug, eventId, body, parentId)}
+            remove={commentId => eventCommentsApi.remove(slug, eventId, commentId)}
+            heading="Discussion"
+            emptyText="Nothing raised yet. Questions and notes here stay out of the spec."
+            composerId="event-discussion-body"
+            className="flex flex-col rounded-md border bg-card p-3"
+          />
+        </div>
+      ) : null}
     </div>
   )
 }

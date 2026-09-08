@@ -117,6 +117,11 @@ describe('EventsPage', () => {
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
+      // Before the event itself: `includes` would otherwise answer the
+      // discussion request with an event object.
+      if (url.endsWith('/api/v1/projects/demo/events/ev-1/comments')) {
+        return mockJsonResponse([])
+      }
       if (url.includes('/api/v1/projects/demo/events/ev-1')) {
         return mockJsonResponse(
           makeEvent({ id: 'ev-1', name: 'checkout_started', branch_id: 'feat-1' }),

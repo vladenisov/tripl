@@ -43,7 +43,10 @@ class EventPhotoFigmaCreate(BaseModel):
 
 class EventPhotoCommentResponse(BaseModel):
     id: uuid.UUID
-    photo_id: uuid.UUID
+    # Exactly one anchor is set, enforced by ck_event_photo_comment_one_anchor:
+    # a comment pinned to one attachment, or the event's own discussion.
+    photo_id: uuid.UUID | None = None
+    event_id: uuid.UUID | None = None
     parent_id: uuid.UUID | None
     user_id: uuid.UUID | None
     body: str

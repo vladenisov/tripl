@@ -220,6 +220,25 @@ metric breakdowns; once collection has data for it, **See every value this field
 takes** opens the event's **Breakdowns** tab on that column, with a series and a
 count per value.
 
+### Event discussion
+
+**Where:** under the form on an event's edit page (Plan › Events → open an
+event → **Edit**). It appears once the event exists — there is nothing to
+discuss before that.
+
+A threaded **Discussion** (top-level comments plus replies) for the questions
+an event raises: "should this fire on cancel too?", "waiting on design". It is
+deliberately **not** part of the plan. Title and Description describe the event
+and travel with it — into search, the catalog, the branch diff, the approval
+hash, and the Markdown spec pasted into the implementation ticket — so a
+question written there arrives as if it were part of the specification. Nothing
+written in the discussion goes to any of those places.
+
+An event has **one** discussion. Open the event on a branch and you see and add
+to the same thread as on main, so a question raised while drafting a change is
+answerable by whoever is reading the live plan, and merging the branch neither
+duplicates nor loses it.
+
 ### Event photos & specs
 
 **Where:** the **Photos & specs** panel on an event's **monitoring detail** page

@@ -1,13 +1,13 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { eventPhotosApi } from '@/api/eventPhotos'
-import type { EventPhoto, EventPhotoComment } from '@/types'
+import type { EventPhoto } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { CommentThread } from '@/components/comment-thread'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Frame, ImagePlus, Loader2, MessageCircle, Trash2, Upload, X } from 'lucide-react'
-import { formatDateTime } from '@/lib/datetime'
+import { Frame, ImagePlus, Loader2, Trash2, Upload, X } from 'lucide-react'
 import { useConfirm } from '@/hooks/useConfirm'
 
 interface Props {
@@ -366,188 +366,14 @@ function PhotoViewer({
           )}
         </div>
       </div>
-      <CommentThread slug={slug} eventId={eventId} photoId={photo.id} />
-    </div>
-  )
-}
-
-function CommentThread({
-  slug,
-  eventId,
-  photoId,
-}: {
-  slug: string
-  eventId: string
-  photoId: string
-}) {
-  const queryClient = useQueryClient()
-  const [body, setBody] = useState('')
-  const [replyTo, setReplyTo] = useState<string | null>(null)
-  const key = ['eventPhotoComments', slug, eventId, photoId]
-
-  const commentsQuery = useQuery({
-    queryKey: key,
-    queryFn: () => eventPhotosApi.listComments(slug, eventId, photoId),
-  })
-
-  const createMut = useMutation({
-    mutationFn: () => eventPhotosApi.createComment(slug, eventId, photoId, body.trim(), replyTo),
-    onSuccess: () => {
-      setBody('')
-      setReplyTo(null)
-      void queryClient.invalidateQueries({ queryKey: key })
-    },
-  })
-
-  const deleteMut = useMutation({
-    mutationFn: (commentId: string) =>
-      eventPhotosApi.deleteComment(slug, eventId, photoId, commentId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: key })
-    },
-  })
-
-  const comments = commentsQuery.data ?? []
-  const topLevel = comments.filter(comment => comment.parent_id === null)
-  const repliesByParent = new Map<string, EventPhotoComment[]>()
-  for (const comment of comments) {
-    if (comment.parent_id) {
-      const list = repliesByParent.get(comment.parent_id) ?? []
-      list.push(comment)
-      repliesByParent.set(comment.parent_id, list)
-    }
-  }
-
-  return (
-    <div className="flex h-full min-h-[400px] flex-col rounded-md border bg-card p-3">
-      <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-        <MessageCircle className="h-4 w-4 text-muted-foreground" />
-        Comments
-        <span className="text-xs font-normal text-muted-foreground">
-          ({comments.length})
-        </span>
-      </div>
-      <div className="flex-1 space-y-3 overflow-y-auto pr-1 text-sm">
-        {commentsQuery.isLoading ? (
-          <div className="text-xs text-muted-foreground">Loading…</div>
-        ) : topLevel.length === 0 ? (
-          <div className="text-xs text-muted-foreground">
-            No comments yet. Start the thread.
-          </div>
-        ) : (
-          topLevel.map(comment => (
-            <CommentItem
-              key={comment.id}
-              comment={comment}
-              replies={repliesByParent.get(comment.id) ?? []}
-              onReply={() => setReplyTo(comment.id)}
-              onDelete={id => deleteMut.mutate(id)}
-              replyingTo={replyTo}
-            />
-          ))
-        )}
-      </div>
-      <form
-        className="mt-3 flex flex-col gap-2 border-t pt-3"
-        onSubmit={event => {
-          event.preventDefault()
-          if (!body.trim()) return
-          createMut.mutate()
-        }}
-      >
-        {replyTo && (
-          <div className="flex items-center justify-between rounded bg-muted px-2 py-1 text-xs">
-            <span>Replying to comment</span>
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground"
-              onClick={() => setReplyTo(null)}
-            >
-              cancel
-            </button>
-          </div>
-        )}
-        <label htmlFor="comment-body" className="sr-only">Write a comment</label>
-        <textarea
-          id="comment-body"
-          value={body}
-          onChange={event => setBody(event.target.value)}
-          placeholder="Write a comment…"
-          className="min-h-[60px] w-full rounded-md border bg-background px-2 py-1 text-sm"
-        />
-        <div className="flex items-center justify-end gap-2">
-          <Button
-            type="submit"
-            size="sm"
-            disabled={!body.trim() || createMut.isPending}
-          >
-            {createMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            {replyTo ? 'Reply' : 'Comment'}
-          </Button>
-        </div>
-      </form>
-    </div>
-  )
-}
-
-function CommentItem({
-  comment,
-  replies,
-  onReply,
-  onDelete,
-  replyingTo,
-}: {
-  comment: EventPhotoComment
-  replies: EventPhotoComment[]
-  onReply: () => void
-  onDelete: (id: string) => void
-  replyingTo: string | null
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="rounded-md border bg-muted/30 px-2 py-1.5">
-        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-          <span>{formatDateTime(comment.created_at)}</span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="hover:text-foreground"
-              onClick={onReply}
-            >
-              {replyingTo === comment.id ? 'replying…' : 'reply'}
-            </button>
-            <button
-              type="button"
-              aria-label="Delete comment"
-              className="hover:text-destructive"
-              onClick={() => onDelete(comment.id)}
-            >
-              <Trash2 className="h-3 w-3" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-        <p className="whitespace-pre-wrap text-sm">{comment.body}</p>
-      </div>
-      {replies.length > 0 && (
-        <div className="ml-4 space-y-2 border-l pl-3">
-          {replies.map(reply => (
-            <div key={reply.id} className="rounded-md border bg-muted/20 px-2 py-1.5">
-              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>{formatDateTime(reply.created_at)}</span>
-                <button
-                  type="button"
-                  aria-label="Delete comment"
-                  className="hover:text-destructive"
-                  onClick={() => onDelete(reply.id)}
-                >
-                  <Trash2 className="h-3 w-3" aria-hidden="true" />
-                </button>
-              </div>
-              <p className="whitespace-pre-wrap text-sm">{reply.body}</p>
-            </div>
-          ))}
-        </div>
-      )}
+      <CommentThread
+        queryKey={['eventPhotoComments', slug, eventId, photo.id]}
+        list={() => eventPhotosApi.listComments(slug, eventId, photo.id)}
+        create={(body, parentId) =>
+          eventPhotosApi.createComment(slug, eventId, photo.id, body, parentId)
+        }
+        remove={commentId => eventPhotosApi.deleteComment(slug, eventId, photo.id, commentId)}
+      />
     </div>
   )
 }

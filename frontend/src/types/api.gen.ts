@@ -1662,6 +1662,41 @@ export interface paths {
         patch: operations["update_event_api_v1_projects__slug__events__event_id__patch"];
         trace?: never;
     };
+    "/api/v1/projects/{slug}/events/{event_id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Event Comments */
+        get: operations["list_event_comments_api_v1_projects__slug__events__event_id__comments_get"];
+        put?: never;
+        /** Create Event Comment */
+        post: operations["create_event_comment_api_v1_projects__slug__events__event_id__comments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/events/{event_id}/comments/{comment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Event Comment */
+        delete: operations["delete_event_comment_api_v1_projects__slug__events__event_id__comments__comment_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/events/{event_id}/history": {
         parameters: {
             query?: never;
@@ -5943,6 +5978,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Event Id */
+            event_id?: string | null;
             /**
              * Id
              * Format: uuid
@@ -5950,11 +5987,8 @@ export interface components {
             id: string;
             /** Parent Id */
             parent_id: string | null;
-            /**
-             * Photo Id
-             * Format: uuid
-             */
-            photo_id: string;
+            /** Photo Id */
+            photo_id?: string | null;
             /**
              * Updated At
              * Format: date-time
@@ -14350,6 +14384,105 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["EventMutationResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_event_comments_api_v1_projects__slug__events__event_id__comments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventPhotoCommentResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_event_comment_api_v1_projects__slug__events__event_id__comments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EventPhotoCommentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventPhotoCommentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_event_comment_api_v1_projects__slug__events__event_id__comments__comment_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+                comment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

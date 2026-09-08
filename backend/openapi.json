@@ -7311,6 +7311,18 @@
             "title": "Created At",
             "type": "string"
           },
+          "event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -7329,9 +7341,16 @@
             "title": "Parent Id"
           },
           "photo_id": {
-            "format": "uuid",
-            "title": "Photo Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Photo Id"
           },
           "updated_at": {
             "format": "date-time",
@@ -7353,7 +7372,6 @@
         },
         "required": [
           "id",
-          "photo_id",
           "parent_id",
           "user_id",
           "body",
@@ -26475,6 +26493,177 @@
         "summary": "Update Event",
         "tags": [
           "events"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/events/{event_id}/comments": {
+      "get": {
+        "operationId": "list_event_comments_api_v1_projects__slug__events__event_id__comments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EventPhotoCommentResponse"
+                  },
+                  "title": "Response List Event Comments Api V1 Projects  Slug  Events  Event Id  Comments Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Event Comments",
+        "tags": [
+          "event-comments"
+        ]
+      },
+      "post": {
+        "operationId": "create_event_comment_api_v1_projects__slug__events__event_id__comments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventPhotoCommentCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPhotoCommentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Event Comment",
+        "tags": [
+          "event-comments"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/events/{event_id}/comments/{comment_id}": {
+      "delete": {
+        "operationId": "delete_event_comment_api_v1_projects__slug__events__event_id__comments__comment_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "comment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Comment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Event Comment",
+        "tags": [
+          "event-comments"
         ]
       }
     },
