@@ -484,6 +484,7 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
                 )
             )
         ).scalar_one()
+        branch_event_id = branch_event.id
         branch_event.description = "edited on branch"
         await session.commit()
 
@@ -512,8 +513,17 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
     assert entry["field_changes"] == [
         {"field": "description", "before": "", "after": "edited on branch", "items": []}
     ]
-    # The row can link to the event it describes.
-    assert entry["entity_id"] is not None
+    # The row links to the event it describes, and WHICH copy it names is the
+    # whole contract: `changed` carries the BRANCH-side row, because the entry
+    # is a deep link to /edit and only the branch copy is editable here. The
+    # inequality is what makes this non-vacuous — the deep copy mints a fresh
+    # uuid, so the two ids genuinely differ (tripl-h2sx.6).
+    main_events = await client.get("/api/v1/projects/branch-diff/events")
+    main_event_id = next(
+        e["id"] for e in main_events.json()["items"] if e["name"] == "purchase:success"
+    )
+    assert entry["entity_id"] == str(branch_event_id)
+    assert entry["entity_id"] != main_event_id
     # Full before/after state carries the raw values, with DB ids / ordering stripped.
     assert entry["before"]["description"] == ""
     assert entry["after"]["description"] == "edited on branch"
@@ -632,11 +642,24 @@ async def test_diff_entries_carry_before_after_state(client: AsyncClient) -> Non
     assert added_entry["field_changes"] == []
     assert "id" not in added_entry["after"]
 
+    # `added` exists only on the branch, so its id is the branch row's.
+    assert added_entry["entity_id"] == added.json()["id"]
+
     removed_entry = entries["purchase:success"]
     assert removed_entry["kind"] == "removed"
     assert removed_entry["after"] is None
     assert removed_entry["before"]["name"] == "purchase:success"
     assert "id" not in removed_entry["before"]
+    # `removed` is the mirror image and the one worth pinning: the entry comes
+    # from the BASE payload, which `create_branch` built from main, so the id
+    # is MAIN's row — never the branch copy that was just deleted, which no
+    # longer exists to link to.
+    main_events = await client.get("/api/v1/projects/branch-diff-state/events")
+    main_event_id = next(
+        e["id"] for e in main_events.json()["items"] if e["name"] == "purchase:success"
+    )
+    assert removed_entry["entity_id"] == main_event_id
+    assert removed_entry["entity_id"] != seed_event["id"]
 
 
 @pytest.mark.asyncio
@@ -4281,6 +4304,77 @@ def test_snapshot_rename_pairs_follows_main_not_the_base() -> None:
     # Same branch, main untouched: now it is a rename the merge will pair.
     paired = snapshot_rename_pairs(base, base, branch)
     assert [pair.removed_name for pair in paired] == ["plan_tier"]
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_event_splits_into_entries_pointing_at_opposite_sides(
+    client: AsyncClient,
+) -> None:
+    """The case where following an entry's own id is a trap.
+
+    A rename shows up as removed + added, and the two entries name DIFFERENT
+    rows: the removed one carries main's id, because it comes from the base
+    payload, and main's row still exists under the old name; the added one
+    carries the branch copy — which is the same physical row the removal is
+    talking about, renamed. A client that deep-links the removed entry lands on
+    main's untouched event, not on the edit the reviewer is looking at, so the
+    pairing has to be resolved rather than either id followed blindly
+    (tripl-h2sx.6).
+    """
+    slug = "branch-diff-rename-ids"
+    await _seed_plan(client, slug)
+    main_events = await client.get(f"/api/v1/projects/{slug}/events")
+    main_event_id = next(
+        e["id"] for e in main_events.json()["items"] if e["name"] == "purchase:success"
+    )
+    # `pair_renames` joins the two sides on their SCAN identity, which the API
+    # never accepts — the same ORM stamp the variable rename test above needs,
+    # and it has to land before the branch is cut so the deep copy carries it.
+    async with TestSessionLocal() as session:
+        main_event = await session.get(Event, uuid.UUID(main_event_id))
+        assert main_event is not None
+        main_event.source_name = "purchase_success_raw"
+        await session.commit()
+    branch_id = await _create_branch(client, slug)
+
+    branch_events = await client.get(f"/api/v1/projects/{slug}/events?branch={branch_id}")
+    branch_event_id = next(
+        e["id"] for e in branch_events.json()["items"] if e["name"] == "purchase:success"
+    )
+    assert branch_event_id != main_event_id
+
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/events/{branch_event_id}?branch={branch_id}",
+        json={"name": "purchase:completed"},
+    )
+    assert renamed.status_code == 200
+
+    diff = await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")
+    assert diff.status_code == 200
+    body = diff.json()
+    # The pairing REPORTS the rename; it does not collapse the two entries.
+    # The pairing joins on scan identity, so it reports the rename here only
+    # because `source_name` was stamped above; a hand-named event has none and
+    # the two entries stand alone. Either way the pairing REPORTS — it never
+    # collapses the entries.
+    assert body["renames"] == [
+        {
+            "entity_type": "event",
+            "parent": "track",
+            "removed_name": "purchase:success",
+            "added_name": "purchase:completed",
+        }
+    ]
+    entries = {e["name"]: e for e in body["entries"]}
+    removed = entries["purchase:success"]
+    added = entries["purchase:completed"]
+    assert removed["kind"] == "removed"
+    assert added["kind"] == "added"
+    assert removed["entity_id"] == main_event_id
+    assert added["entity_id"] == branch_event_id
+    # The inequality IS the hazard: the removed row names a live event on main,
+    # not the branch copy that was renamed.
+    assert removed["entity_id"] != branch_event_id
 
 
 @pytest.mark.asyncio
