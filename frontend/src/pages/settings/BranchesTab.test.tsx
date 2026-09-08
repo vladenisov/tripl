@@ -622,6 +622,66 @@ describe('BranchesTab', () => {
     expect(screen.queryByRole('link', { name: 'New event on this branch' })).not.toBeInTheDocument()
   })
 
+  it('reads a created event as a table, not as middot-joined prose', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 0, changed: 0 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'se_spot_forecast_profile_confirm',
+          parent: 'se',
+          entity_id: 'ev-9',
+          changes: [],
+          // An event created on a branch has no field_changes at all, so the
+          // full state below is its whole detail view.
+          field_changes: [],
+          before: null,
+          after: {
+            name: 'se_spot_forecast_profile_confirm',
+            field_values: [
+              { field_name: 'action', value: 'confirm', is_authored: true },
+              { field_name: 'category', value: 'spot', is_authored: false },
+              {
+                field_name: 'property',
+                value:
+                  '{"from_profile": "${property.forecast_profile}", "mode": "${property.mode}"}',
+                is_authored: true,
+              },
+            ],
+          },
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /se_spot_forecast_profile_confirm/i }))
+
+    const table = await screen.findByRole('table')
+    expect(within(table).getByRole('columnheader', { name: 'Field' })).toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: 'Value' })).toBeInTheDocument()
+    // is_authored is not a column: the backend already rules a flip of it out of
+    // change detection. It shows only where a scan, not a person, wrote the row.
+    expect(within(table).queryByRole('columnheader', { name: /authored/i })).not.toBeInTheDocument()
+    expect(within(table).getByText('from scan')).toBeInTheDocument()
+    expect(screen.queryByText(/field_name: action/)).not.toBeInTheDocument()
+
+    // The JSON payload is the value that blew the line out; it collapses to a
+    // preview with the pretty-printed form one click away.
+    const payload = within(table).getByRole('button', { name: /from_profile/ })
+    expect(payload).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(payload)
+    expect(payload).toHaveAttribute('aria-expanded', 'true')
+    const pretty = payload.parentElement?.querySelector('pre')
+    expect(pretty?.textContent).toContain('"mode": "${property.mode}"')
+    expect(pretty?.textContent).toContain('\n')
+  })
+
   it('offers Edit on the collapsed row, straight to the editor on this branch', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })

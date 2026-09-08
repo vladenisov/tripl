@@ -16,6 +16,7 @@ import {
   Undo2,
 } from 'lucide-react'
 
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { branchSettingsApi } from '@/api/branchSettings'
 import { metaFieldsApi } from '@/api/metaFields'
 import { ApiError } from '@/api/client'
@@ -1755,19 +1756,164 @@ function ValueChangeRow({ item }: { item: PlanValueChange }) {
 
 function StateView({ state }: { state: Record<string, unknown> }) {
   const keys = Object.keys(state)
+  const uid = useId()
   return (
     <dl className="grid grid-cols-[minmax(0,140px)_1fr] gap-x-3 gap-y-1.5">
       {keys.map((key) => (
         <Fragment key={key}>
-          <dt className="mono truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <dt
+            id={`${uid}-${key}`}
+            className="mono truncate text-[11.5px]"
+            style={{ color: 'var(--fg-subtle)' }}
+          >
             {key}
           </dt>
           <dd className="min-w-0">
-            <DiffValue value={state[key]} />
+            {/* Full state is the only thing an event *created* on the branch
+                shows — the backend builds an added entry with no field_changes —
+                so this is where a collection has to be readable. `table` is
+                passed only here: the side-by-side before/after fallback would
+                otherwise put two tables next to each other, in a column already
+                300px narrower than the page. */}
+            <DiffValue value={state[key]} table labelledBy={`${uid}-${key}`} />
           </dd>
         </Fragment>
       ))}
     </dl>
+  )
+}
+
+/** Header text for a collection member's keys. The key repeats identically on
+ * every row, so as a column it carries no information after the first. */
+const COLUMN_LABEL: Record<string, string> = {
+  field_name: 'Field',
+  meta_field_name: 'Meta field',
+  value: 'Value',
+}
+
+/** The subset of arrays a table can honestly render: every member a flat record
+ * carrying the same keys. Anything else keeps the prose form — a photo member
+ * has a nested `comments` list and an override member a nested `values` list,
+ * so neither reaches this branch at all. */
+function uniformRecords(value: unknown): Record<string, unknown>[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null
+  if (!value.every(isFlatRecord)) return null
+  const shape = Object.keys(value[0]).sort().join(' ')
+  return value.every((item) => Object.keys(item).sort().join(' ') === shape)
+    ? (value as Record<string, unknown>[])
+    : null
+}
+
+/** Below this length a value reads fine inline, and growing a disclosure for it
+ * costs more than it saves. */
+const JSON_CELL_MIN_LENGTH = 40
+
+/**
+ * A table cell whose value may itself be a JSON payload.
+ *
+ * `property` is the field that made the prose form unreadable in the first
+ * place: a whole `{"from_profile": "${property.forecast_profile}", …}` object
+ * spliced into the middle of the line. A table alone would just move the same
+ * blow-out into one column, so a parseable object collapses to a one-line
+ * preview with the pretty-printed form a click away. Template tokens survive
+ * `JSON.parse` untouched — they sit inside string values.
+ */
+function ValueCell({ value }: { value: unknown }) {
+  const [open, setOpen] = useState(false)
+  const text = value === null || value === '' ? '∅' : String(value)
+  const parsed = useMemo(() => {
+    const trimmed = text.trim()
+    if (text.length < JSON_CELL_MIN_LENGTH) return null
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null
+    try {
+      return JSON.parse(trimmed) as unknown
+    } catch {
+      return null
+    }
+  }, [text])
+
+  if (parsed === null) {
+    return (
+      <span className="mono wrap-anywhere text-[11.5px]" style={{ color: 'var(--fg)' }}>
+        {text}
+      </span>
+    )
+  }
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex min-w-0 items-center gap-1 text-left"
+      >
+        <ChevronRight
+          className="size-3 shrink-0 transition-transform"
+          style={{ color: 'var(--fg-faint)', transform: open ? 'rotate(90deg)' : 'none' }}
+          aria-hidden="true"
+        />
+        <span className="mono truncate text-[11.5px]" style={{ color: 'var(--fg)' }}>
+          {text}
+        </span>
+      </button>
+      {open ? (
+        <pre
+          className="mono max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 text-[11px]"
+          style={{ color: 'var(--fg)', background: 'color-mix(in oklab, var(--fg) 5%, transparent)' }}
+        >
+          {JSON.stringify(parsed, null, 2)}
+        </pre>
+      ) : null}
+    </div>
+  )
+}
+
+function RecordTable({
+  rows,
+  labelledBy,
+}: {
+  rows: Record<string, unknown>[]
+  labelledBy?: string
+}) {
+  // `is_authored` is not review signal — the backend filters a flip of it out of
+  // change detection (_MEMBER_ATTRS_NOT_A_CHANGE), because it flips whenever a
+  // person re-saves a scan-observed value unchanged. A column of it would take
+  // width from the value, which is the cell that actually needs it, so it rides
+  // along as a chip on the rows that came from a scan.
+  const columns = Object.keys(rows[0]).filter((key) => key !== 'is_authored')
+  const authoredKnown = 'is_authored' in rows[0]
+  const chipColumn = columns.includes('value') ? 'value' : columns[columns.length - 1]
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          {columns.map((key) => (
+            <TableHead key={key} className="h-7 px-2 text-[10px]">
+              {COLUMN_LABEL[key] ?? key.replace(/_/g, ' ')}
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody aria-labelledby={labelledBy}>
+        {rows.map((row, idx) => (
+          <TableRow key={idx}>
+            {columns.map((key) => (
+              <TableCell key={key} className="px-2 py-1 align-top">
+                <div className="flex min-w-0 items-start gap-2">
+                  <ValueCell value={row[key]} />
+                  {authoredKnown && key === chipColumn && row.is_authored === false ? (
+                    <Chip tone="neutral" size="xs" className="shrink-0">
+                      from scan
+                    </Chip>
+                  ) : null}
+                </div>
+              </TableCell>
+            ))}
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   )
 }
 
@@ -1799,7 +1945,19 @@ function isFlatRecord(value: unknown): value is Record<string, unknown> {
  * but it still reports a long unbroken token as the minimum the box needs, so
  * inside an auto-minimum track it grows the column instead of wrapping — which
  * is how one long event description made the whole page scroll sideways. */
-function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
+function DiffValue({
+  value,
+  tone,
+  table,
+  labelledBy,
+}: {
+  value: unknown
+  tone?: ChipTone
+  /** Render a uniform array of records as a real table. Only the full-state
+   * view asks for this; see the comment at its call site. */
+  table?: boolean
+  labelledBy?: string
+}) {
   const color = tone ? `var(--${tone})` : 'var(--fg)'
   const isEmpty =
     value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)
@@ -1817,6 +1975,10 @@ function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
           {value.map((item) => String(item)).join(', ')}
         </span>
       )
+    }
+    if (table) {
+      const rows = uniformRecords(value)
+      if (rows) return <RecordTable rows={rows} labelledBy={labelledBy} />
     }
     if (value.every(isFlatRecord)) {
       return (
