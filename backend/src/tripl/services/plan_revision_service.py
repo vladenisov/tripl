@@ -155,6 +155,7 @@ _EVENT_CHANGE_KEYS = (
     "description",
     "status",
     "sunset_at",
+    "superseded_by",
     "event_type_name",
     "owner_id",
     "reviewed",
@@ -457,6 +458,21 @@ async def build_plan_snapshot(
             key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
         )
 
+    # The successor is serialized by NATURAL KEY, never as a uuid. The merge
+    # applies branch changes onto main BY (event_type_name, name) and matched
+    # main rows keep their own live ids, so a branch-local uuid means nothing
+    # over there. Exactly the reason `event_type_name` rides beside the raw
+    # `event_type_id` below, with only the NAME in the change keys.
+    event_by_id = {ev.id: ev for ev in events_rows}
+
+    def _superseded_key(ev: Event) -> str | None:
+        if ev.superseded_by_event_id is None:
+            return None
+        successor = event_by_id.get(ev.superseded_by_event_id)
+        if successor is None:
+            return None
+        return f"{event_type_name_by_id.get(successor.event_type_id, '')}.{successor.name}"
+
     events = [
         {
             "id": str(ev.id),
@@ -469,6 +485,7 @@ async def build_plan_snapshot(
             "order": ev.order,
             "status": ev.status,
             "sunset_at": str(ev.sunset_at) if ev.sunset_at is not None else None,
+            "superseded_by": _superseded_key(ev),
             "owner_id": str(ev.owner_id) if ev.owner_id is not None else None,
             "reviewed": ev.reviewed,
             "metric_breakdown_columns": list(ev.metric_breakdown_columns or []),
@@ -691,7 +708,7 @@ def _format_change(change: PlanFieldChange) -> str:
 # payload is read as carrying. A bump would make every open branch unmergeable
 # ("recreate it from current main", plan_branch_merge_service) for the sake of
 # one optional text column, so the older shape is upgraded on read instead.
-_V2_EVENT_DEFAULTS: dict[str, Any] = {"title": ""}
+_V2_EVENT_DEFAULTS: dict[str, Any] = {"title": "", "superseded_by": None}
 # Same argument for the meta field's ``allow_multiple`` (tripl-h2sx.31): an
 # older payload predates the key, and ``_field_changes_between`` refuses to
 # treat one absent from a current-version payload as skew (tripl-2d3d), so

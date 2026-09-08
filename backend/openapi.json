@@ -7238,6 +7238,18 @@
             ],
             "title": "Sunset At"
           },
+          "superseded_by_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Event Id"
+          },
           "tags": {
             "default": [],
             "items": {
@@ -7700,6 +7712,18 @@
             ],
             "title": "Sunset At"
           },
+          "superseded_by_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Event Id"
+          },
           "tags": {
             "default": [],
             "items": {
@@ -8150,6 +8174,18 @@
               }
             ],
             "title": "Sunset At"
+          },
+          "superseded_by_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Event Id"
           },
           "tags": {
             "anyOf": [

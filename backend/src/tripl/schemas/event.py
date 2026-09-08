@@ -47,6 +47,10 @@ class EventUpdate(BaseModel):
     description: str | None = None
     status: EventStatus | None = None
     sunset_at: datetime | None = None
+    # The event that replaced this one. Documentation: nothing matches, collects
+    # or counts coverage through it. Not on EventCreate — a brand-new event has
+    # no predecessor to name.
+    superseded_by_event_id: uuid.UUID | None = None
     owner_id: uuid.UUID | None = None
     reviewed: bool | None = None
     metric_breakdown_columns: list[str] | None = None
@@ -198,6 +202,10 @@ class EventResponse(BaseModel):
     order: int
     status: EventStatus
     sunset_at: datetime | None = None
+    # The event that replaced this one, when it was retired in favour of
+    # something. Absent from the LIST response: the row has no space for it and
+    # nothing on that surface asks the question.
+    superseded_by_event_id: uuid.UUID | None = None
     last_seen_at: datetime | None = None
     # The earliest metric bucket with traffic, read off the main twin for a
     # branch copy. ``created_at`` is when the ROW was authored, which the detail

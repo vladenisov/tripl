@@ -98,7 +98,7 @@ identity; **Description** — with a
 **Suggest with AI** action that appears when editing an existing event and AI is
 enabled; **Status** — one of `draft`, `in_review`, `ready_for_dev`,
 `implemented`, `live`, `deprecated`, `archived` (selecting `deprecated` reveals a
-**Sunset date**); **Owner** — a project member, or none, the same value the
+**Sunset date** and, when editing an existing event, **Replaced by**); **Owner** — a project member, or none, the same value the
 list's bulk bar sets; **Tags**; **Metric breakdowns** (the selected type's scalar
 fields and the columns this project's scans collect — `platform`, the app
 version column and any configured breakdown column — plus any other warehouse
@@ -109,6 +109,37 @@ fields that validates and saves canonical JSON while preserving complete
 For a series of similar events, **Save and add another** creates the current
 event, says what it created, and keeps the entered form values in place for the
 next one — change what differs and save again.
+
+#### Retiring an event
+
+Setting the status to `deprecated` reveals two fields that together answer what a
+reader of a retired event needs to know: **Sunset date** — when it stops being
+supported — and **Replaced by** — what to send instead. The replacement is picked
+from a searchable list of the project's other events; the search runs on the
+server, so any event in the catalog is reachable by typing part of its name, and
+the picker prints how many matches it is not showing rather than quietly
+truncating. An event cannot replace itself.
+
+**Replaced by is documentation and nothing else.** No scan matches through it, no
+collection follows it, and no coverage or metric counts the successor's traffic
+towards the retired event. It exists so the catalog answers the question a
+sunset date raises and does not answer.
+
+It is offered only when editing an existing event — a brand-new event has no
+predecessor to name — and it is cleared, along with the sunset date, if the event
+later leaves `deprecated`: a successor left on a live event would document a
+retirement that was called off. The change is recorded in the event's own history
+like any other tracked field.
+
+On a **plan branch** the pointer is branch-local, like every other id in a
+branch copy. Opening a branch copies the successor relationship onto the
+branch's own events, so a branch's retired event points at the branch's copy of
+its replacement, never back at `main`. Merging translates it the other way, onto
+`main`'s rows, by event type and name — so naming a successor *and* creating it
+on the same branch works, and `main` ends up pointing at its own copy. If the
+branch's successor cannot be placed on `main` (it was deleted, or the branch
+change was rejected), the pointer is cleared rather than left dangling. Deleting
+the successor never deletes its predecessor; it only clears the pointer.
 
 #### Names a scan writes for you
 
@@ -1289,7 +1320,7 @@ log answers **who, what, when and on which branch**, and it survives the event:
 an `event.delete` row still names what was deleted after the event and its
 history are gone. **Per-event history** on the event's own detail page answers
 the **before/after values** of `status`, `name`, `title`, `description` and
-`sunset_at`, of `tags`, and of each field value (`field:<name>`) and meta value
+`sunset_at`, `superseded_by_event_id`, of `tags`, and of each field value (`field:<name>`) and meta value
 (`meta:<name>`), opening with a `created` row that names who created the event
 and when; it is removed with the event. Neither is a backup — an `event.delete` row
 does not let you reconstruct the deleted event's field values, deliberately, as

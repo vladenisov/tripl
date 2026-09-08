@@ -80,6 +80,9 @@ export const eventsApi = {
       description?: string
       status?: string
       sunset_at?: string | null
+      /** The event that replaced this one. Update-only: a brand-new event has
+       *  no predecessor to name, so `create` does not accept it. */
+      superseded_by_event_id?: string | null
       owner_id?: string | null
       tags?: string[]
       metric_breakdown_columns?: string[]

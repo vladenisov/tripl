@@ -55,7 +55,14 @@ from tripl.services.search_service import (
 )
 from tripl.services.variable_value_service import attach_event_field_variable_values
 
-_TRACKED_FIELDS = ("status", "name", "title", "description", "sunset_at")
+_TRACKED_FIELDS = (
+    "status",
+    "name",
+    "title",
+    "description",
+    "sunset_at",
+    "superseded_by_event_id",
+)
 # One ``${token}`` grammar for the codebase; this module's spelling is the one
 # it standardised on (``core.name_template``).
 _TEMPLATE_TOKEN_PATTERN = VARIABLE_TOKEN_PATTERN
@@ -1122,6 +1129,10 @@ async def update_event(
         event.status = update_data["status"]
     if "sunset_at" in update_data:
         event.sunset_at = update_data["sunset_at"]
+    if "superseded_by_event_id" in update_data:
+        event.superseded_by_event_id = await _resolve_successor(
+            session, event, update_data["superseded_by_event_id"]
+        )
     if "metric_breakdown_columns" in update_data:
         event.metric_breakdown_columns = update_data["metric_breakdown_columns"]
     if "owner_id" in update_data:
@@ -1718,3 +1729,35 @@ async def get_event_history(
             }
         )
     return history
+
+
+async def _resolve_successor(
+    session: AsyncSession,
+    event: Event,
+    successor_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Validate the "replaced by" target before it is stored.
+
+    A client sends a bare uuid, which is the one real surface here: unchecked,
+    it would let an event point at another project's row and make that row's
+    name readable through this project. So the successor has to live in the
+    same project AND on the same branch — a pointer across branches would
+    dangle the moment either side is deep-copied or merged — and an event
+    cannot replace itself.
+    """
+    if successor_id is None:
+        return None
+    if successor_id == event.id:
+        raise HTTPException(status_code=400, detail="An event cannot replace itself")
+    successor = (
+        await session.execute(
+            select(Event).where(
+                Event.id == successor_id,
+                Event.project_id == event.project_id,
+                Event.branch_id == event.branch_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if successor is None:
+        raise HTTPException(status_code=404, detail="Successor event not found")
+    return successor.id

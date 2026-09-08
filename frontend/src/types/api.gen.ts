@@ -5980,6 +5980,8 @@ export interface components {
             status: components["schemas"]["EventStatus"];
             /** Sunset At */
             sunset_at?: string | null;
+            /** Superseded By Event Id */
+            superseded_by_event_id?: string | null;
             /**
              * Tags
              * @default []
@@ -6172,6 +6174,8 @@ export interface components {
             status: components["schemas"]["EventStatus"];
             /** Sunset At */
             sunset_at?: string | null;
+            /** Superseded By Event Id */
+            superseded_by_event_id?: string | null;
             /**
              * Tags
              * @default []
@@ -6348,6 +6352,8 @@ export interface components {
             status?: components["schemas"]["EventStatus"] | null;
             /** Sunset At */
             sunset_at?: string | null;
+            /** Superseded By Event Id */
+            superseded_by_event_id?: string | null;
             /** Tags */
             tags?: string[] | null;
             /** Title */

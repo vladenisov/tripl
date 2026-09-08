@@ -493,29 +493,40 @@ async def deep_copy_plan_to_branch(
         .scalars()
         .all()
     )
-    event_id_map: dict[uuid.UUID, uuid.UUID] = {}
+    # Built in full BEFORE the loop, not filled in during it. Every other id map
+    # here can be built as it goes because it maps a DIFFERENT entity, already
+    # copied; this one maps events to events, and `superseded_by_event_id` can
+    # point forward — a successor is often authored before the event it
+    # replaces is retired. The photo-comment self-FK gets away with a one-pass
+    # map only because its SELECT is ordered by created_at, and this one is
+    # unordered. Filling as we went would silently NULL every forward pointer.
+    event_id_map: dict[uuid.UUID, uuid.UUID] = {ev.id: uuid.uuid4() for ev in events}
+    new_event_by_old_id: dict[uuid.UUID, Event] = {}
     for ev in events:
-        new_ev_id = uuid.uuid4()
-        event_id_map[ev.id] = new_ev_id
-        new_objs.append(
-            Event(
-                id=new_ev_id,
-                project_id=project_id,
-                branch_id=target_branch_id,
-                event_type_id=et_map[ev.event_type_id],
-                name=ev.name,
-                title=ev.title,
-                source_name=ev.source_name,
-                description=ev.description,
-                order=ev.order,
-                status=ev.status,
-                sunset_at=ev.sunset_at,
-                last_seen_at=ev.last_seen_at,
-                metric_breakdown_columns=list(ev.metric_breakdown_columns or []),
-                owner_id=ev.owner_id,
-                reviewed=ev.reviewed,
-            )
+        new_ev_id = event_id_map[ev.id]
+        new_event = Event(
+            id=new_ev_id,
+            project_id=project_id,
+            branch_id=target_branch_id,
+            event_type_id=et_map[ev.event_type_id],
+            name=ev.name,
+            title=ev.title,
+            source_name=ev.source_name,
+            description=ev.description,
+            order=ev.order,
+            status=ev.status,
+            sunset_at=ev.sunset_at,
+            last_seen_at=ev.last_seen_at,
+            metric_breakdown_columns=list(ev.metric_breakdown_columns or []),
+            owner_id=ev.owner_id,
+            reviewed=ev.reviewed,
+            # superseded_by_event_id is set AFTER the flush below: the FK is
+            # immediate on Postgres and, with no mapped relationship, the
+            # unit of work will not order two rows of the same table by a
+            # raw FK column.
         )
+        new_event_by_old_id[ev.id] = new_event
+        new_objs.append(new_event)
         for fv in ev.field_values:
             new_objs.append(
                 EventFieldValue(
@@ -696,6 +707,17 @@ async def deep_copy_plan_to_branch(
         )
 
     session.add_all(new_objs)
+    # Every copied event exists now, so a pointer between two of them resolves.
+    # A successor outside the copied set leaves the pointer NULL rather than
+    # pointing at another branch's row — the copy is self-contained by design,
+    # and nothing else in this function references anything outside it.
+    await session.flush()
+    for ev in events:
+        if ev.superseded_by_event_id is None:
+            continue
+        successor_id = event_id_map.get(ev.superseded_by_event_id)
+        if successor_id is not None:
+            new_event_by_old_id[ev.id].superseded_by_event_id = successor_id
 
 
 async def create_branch(

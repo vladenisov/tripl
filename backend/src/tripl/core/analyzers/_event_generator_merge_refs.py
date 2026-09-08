@@ -70,6 +70,7 @@ def move_dangling_event_references(session: Session, *, source: Event, target: E
     _move_alert_rule_filter_values(session, source=source, target=target)
     _move_chart_annotations(session, source=source, target=target)
     _move_implementation_ticket_event_ids(session, source=source, target=target)
+    _move_superseded_pointers(session, source=source, target=target)
 
 
 def _move_metric_composition_operands(session: Session, *, source: Event, target: Event) -> None:
@@ -221,6 +222,24 @@ def _move_alert_rule_filter_values(session: Session, *, source: Event, target: E
         if source_ref not in values:
             continue
         row.values = replace_preserving_order(values, source_ref, target_ref)
+
+
+def _move_superseded_pointers(session: Session, *, source: Event, target: Event) -> None:
+    """Re-point every event whose successor was the merged-away source.
+
+    "Send this instead" is an instruction about what to do from now on, which
+    is the test this module applies: the target IS what to send now, so the
+    pointer follows it. Nothing to fold — the column is not unique and any
+    number of retired events may name the same successor.
+
+    The source's OWN pointer needs nothing here: the target keeps whatever
+    successor it already named, and a group merge is not a statement about the
+    target's own retirement.
+    """
+    for row in session.execute(
+        select(Event).where(Event.superseded_by_event_id == source.id)
+    ).scalars():
+        row.superseded_by_event_id = target.id
 
 
 def _move_chart_annotations(session: Session, *, source: Event, target: Event) -> None:

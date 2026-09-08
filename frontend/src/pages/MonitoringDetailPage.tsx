@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type ReactNode } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { chartAnnotationsApi } from '@/api/chartAnnotations'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -49,7 +49,7 @@ import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { EventSpecCard } from '@/components/EventSpecCard'
 import { historyFieldLabel } from '@/lib/eventHistory'
-import { formatSignalSeverity, resolveDetailScope } from '@/lib/monitoring'
+import { formatSignalSeverity, getMonitoringPath, resolveDetailScope } from '@/lib/monitoring'
 import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
@@ -2624,10 +2624,25 @@ function EventSideColumn({
   metaFieldMap: Map<string, MetaFieldDefinition>
 }) {
   const breakdowns = event.metric_breakdown_columns
+  const activeBranchId = useActiveBranchId()
+  const branchLink = useBranchLinkProps()
   const usersQuery = useQuery({
     queryKey: ['users'],
     queryFn: () => usersApi.list(),
     enabled: Boolean(event.owner_id),
+  })
+  // The successor is guaranteed to sit on the same branch as this event (the
+  // server refuses a cross-branch pointer), so it resolves against the row's
+  // OWN branch — the same fallback the edit link uses, since a detail page can
+  // answer for a branch that is not the active one.
+  const successorBranchId = event.branch_id ?? activeBranchId
+  const successorId = event.superseded_by_event_id ?? null
+  const successorQuery = useQuery({
+    // Same key shape as the page's own event query, so a successor already
+    // visited is read from cache instead of refetched.
+    queryKey: ['event', slug, successorBranchId, successorId],
+    queryFn: () => eventsApi.get(slug, successorId!, successorBranchId),
+    enabled: Boolean(successorId),
   })
   const owner = event.owner_id ? usersQuery.data?.find(user => user.id === event.owner_id) : undefined
   // An owner the roster no longer lists (a removed member, or a roster the
@@ -2665,6 +2680,36 @@ function EventSideColumn({
           <PropertyRow label="Updated" value={formatRelativeTime(event.updated_at)} />
           <PropertyRow label="Last seen" value={event.last_seen_at ? formatTimestamp(event.last_seen_at) : '—'} />
           {event.sunset_at && <PropertyRow label="Sunset" value={formatTimestamp(event.sunset_at)} />}
+          {/* What to send instead. Shown whenever the pointer is set, not only
+              on a deprecated event: an analyst can name the successor while the
+              old event is still live, and hiding the row until the status flips
+              would lose the one answer the retirement notice owes its reader
+              (tripl-h2sx.13). Falls back to the raw id if the successor cannot
+              be loaded — a link to a name we do not have is worse than the id. */}
+          {successorId && (
+            <PropertyRow
+              label="Replaced by"
+              mono={!successorQuery.data}
+              value={
+                successorQuery.data ? (
+                  <Link
+                    {...branchLink(
+                      getMonitoringPath(slug, { scope_type: 'event', scope_ref: successorId }),
+                      successorBranchId,
+                    )}
+                    className="underline underline-offset-2"
+                    style={{ color: 'var(--fg)' }}
+                  >
+                    {successorQuery.data.name}
+                  </Link>
+                ) : successorQuery.isPending ? (
+                  '…'
+                ) : (
+                  successorId
+                )
+              }
+            />
+          )}
         </div>
       </div>
 

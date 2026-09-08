@@ -796,6 +796,7 @@ async def _apply_merge(
         (event["event_type_name"], event["name"]): event
         for event in (base_payload or {}).get("events", [])
     }
+    created_event_by_key: dict[tuple[str, str], Event] = {}
     branch_event_snapshot_by_key = {
         (event["event_type_name"], event["name"]): event
         for event in branch_snapshot_payload.get("events", [])
@@ -914,25 +915,28 @@ async def _apply_merge(
             if key in base_event_by_key or et_name not in main_et_name_to_id:
                 continue
             new_ev_id = uuid.uuid4()
-            session.add(
-                Event(
-                    id=new_ev_id,
-                    project_id=project_id,
-                    branch_id=main_branch_id,
-                    event_type_id=main_et_name_to_id[et_name],
-                    name=b_ev.name,
-                    title=b_ev.title,
-                    source_name=b_ev.source_name,
-                    description=b_ev.description,
-                    order=b_ev.order,
-                    status=b_ev.status,
-                    sunset_at=b_ev.sunset_at,
-                    last_seen_at=b_ev.last_seen_at,
-                    metric_breakdown_columns=list(b_ev.metric_breakdown_columns or []),
-                    owner_id=b_ev.owner_id,
-                    reviewed=b_ev.reviewed,
-                )
+            created_event = Event(
+                id=new_ev_id,
+                project_id=project_id,
+                branch_id=main_branch_id,
+                event_type_id=main_et_name_to_id[et_name],
+                name=b_ev.name,
+                title=b_ev.title,
+                source_name=b_ev.source_name,
+                description=b_ev.description,
+                order=b_ev.order,
+                status=b_ev.status,
+                sunset_at=b_ev.sunset_at,
+                last_seen_at=b_ev.last_seen_at,
+                metric_breakdown_columns=list(b_ev.metric_breakdown_columns or []),
+                owner_id=b_ev.owner_id,
+                reviewed=b_ev.reviewed,
+                # superseded_by_event_id is deliberately absent: the value on
+                # the branch row is a BRANCH event id, meaningless on main.
+                # The translating pass after the flush below sets it.
             )
+            session.add(created_event)
+            created_event_by_key[key] = created_event
             for fv in b_ev.field_values:
                 bf_et, bf_name = branch_field_by_id[fv.field_definition_id]
                 session.add(
@@ -972,6 +976,44 @@ async def _apply_merge(
     for m_ev in doomed_main_events:
         await session.delete(m_ev)
     await session.flush()
+
+    # The successor pointer, translated rather than copied. `event_attrs` above
+    # copies raw ORM values, which for this column would write a BRANCH event id
+    # onto a main row; the snapshot carries the successor as a natural key for
+    # exactly that reason, so the branch's own pointer is re-resolved against
+    # main here. It runs after the flush because a successor may be an event
+    # this very merge created, and because the FK is immediate.
+    branch_event_key_by_id = {
+        e.id: (branch_et_id_to_name[e.event_type_id], e.name)
+        for e in branch_events
+        if e.event_type_id in branch_et_id_to_name
+    }
+    for key, b_ev in branch_event_by_key.items():
+        target = main_event_by_key.get(key) or created_event_by_key.get(key)
+        if target is None:
+            continue
+        base_event = base_event_by_key.get(key)
+        snapshot = branch_event_snapshot_by_key.get(key, {})
+        # Untouched on the branch: leave main's own answer alone, the same
+        # three-way rule every attribute above follows.
+        if base_event is not None and snapshot.get("superseded_by") == base_event.get(
+            "superseded_by"
+        ):
+            continue
+        successor_key = (
+            branch_event_key_by_id.get(b_ev.superseded_by_event_id)
+            if b_ev.superseded_by_event_id is not None
+            else None
+        )
+        successor = (
+            (main_event_by_key.get(successor_key) or created_event_by_key.get(successor_key))
+            if successor_key is not None
+            else None
+        )
+        # A successor the merge cannot place on main clears the pointer rather
+        # than leaving a branch id behind: "replaced by something that is not
+        # here" is not a fact worth keeping.
+        target.superseded_by_event_id = successor.id if successor is not None else None
 
     # --- photos + comments: replace only when the branch's design canvas
     # changed from the base. storage_key/external_url is reused — no blob copies.

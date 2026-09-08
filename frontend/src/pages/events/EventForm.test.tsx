@@ -24,6 +24,9 @@ vi.mock('@/api/events', () => ({
     // leaving it off the mock would make the query throw, and the tests would
     // pass for the wrong reason.
     list: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+    // Resolves the current successor when one is set. Only fired for a
+    // deprecated event that names one, so most tests never reach it.
+    get: vi.fn().mockResolvedValue({}),
   },
 }))
 
@@ -1230,5 +1233,97 @@ describe('EventForm JSON validity gate (tripl-h2sx.10)', () => {
     })
 
     expect(screen.queryByText(/Fix the JSON in/)).not.toBeInTheDocument()
+  })
+})
+
+
+describe('EventForm successor', () => {
+  const DEPRECATED = {
+    ...EXISTING_EVENT,
+    status: 'deprecated',
+  } as unknown as TEvent
+
+  it('offers replacements from the catalog and sends the one picked', async () => {
+    vi.mocked(eventsApi.update).mockResolvedValue({} as never)
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: [
+        { id: 'ev-1', name: 'checkout:completed' },
+        { id: 'ev-2', name: 'checkout:done' },
+      ],
+      total: 2,
+    } as never)
+    renderForm(DEPRECATED)
+
+    // Wait for the OPTION, not the field: the select renders the moment the
+    // status is deprecated, and changing it before the roster lands would set a
+    // value no option carries — a silent no-op that passes for the wrong reason.
+    await screen.findByRole('option', { name: 'checkout:done' })
+    const select = screen.getByLabelText('Replaced by')
+    // The event being edited is not offered as its own replacement — the
+    // server answers 400, and offering it invites the trip.
+    expect(within(select).queryByRole('option', { name: 'checkout:completed' })).toBeNull()
+
+    fireEvent.change(select, { target: { value: 'ev-2' } })
+    expect(select).toHaveValue('ev-2')
+    fireEvent.click(screen.getByRole('button', { name: /Save event/i }))
+
+    await waitFor(() =>
+      expect(eventsApi.update).toHaveBeenCalledWith(
+        'demo',
+        'ev-1',
+        expect.objectContaining({ superseded_by_event_id: 'ev-2' }),
+        null,
+      ),
+    )
+  })
+
+  it('says how many events the search did not show', async () => {
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: [{ id: 'ev-2', name: 'checkout:done' }],
+      total: 240,
+    } as never)
+    renderForm(DEPRECATED)
+
+    // A truncated roster and a complete one are otherwise indistinguishable,
+    // which is the defect the variables tab already fixed for its own picker.
+    expect(await screen.findByText('239 more not shown — narrow the search.')).toBeInTheDocument()
+  })
+
+  it('clears the successor when the event stops being deprecated', async () => {
+    vi.mocked(eventsApi.update).mockResolvedValue({} as never)
+    // Set explicitly rather than inherited: clearAllMocks keeps implementations,
+    // so leaning on the previous test's roster would make this one pass or fail
+    // by ordering.
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: [{ id: 'ev-2', name: 'checkout:done' }],
+      total: 1,
+    } as never)
+    vi.mocked(eventsApi.get).mockResolvedValue({ id: 'ev-2', name: 'checkout:done' } as never)
+    renderForm({ ...DEPRECATED, superseded_by_event_id: 'ev-2' } as unknown as TEvent)
+
+    await screen.findByRole('option', { name: 'checkout:done' })
+    expect(screen.getByLabelText('Replaced by')).toHaveValue('ev-2')
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'live' } })
+    // The control is gone with the status, and the pointer must not survive it:
+    // a successor on a live event documents a retirement that was called off.
+    expect(screen.queryByLabelText('Replaced by')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Save event/i }))
+    await waitFor(() =>
+      expect(eventsApi.update).toHaveBeenCalledWith(
+        'demo',
+        'ev-1',
+        expect.objectContaining({ superseded_by_event_id: null }),
+        null,
+      ),
+    )
+  })
+
+  it('is not offered while creating, since create cannot accept it', () => {
+    renderForm(null)
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'deprecated' } })
+
+    expect(screen.getByLabelText('Sunset date')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Replaced by')).toBeNull()
   })
 })

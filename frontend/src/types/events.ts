@@ -65,6 +65,13 @@ export interface Event {
   order: number
   status: EventStatus
   sunset_at: string | null
+  /**
+   * The event that replaced this one — documentation and nothing else: no
+   * matcher, collector or coverage count reads it. Ids are branch-local, so on
+   * a branch copy this names that branch's own row, never main's. Absent from
+   * list items, which do not carry it.
+   */
+  superseded_by_event_id?: string | null
   last_seen_at: string | null
   /** Oldest metric bucket with traffic; null until a collection sees the event,
    * and on list responses, which do not compute it (tripl-kjhi.10). */

@@ -4344,6 +4344,116 @@ def test_snapshot_rename_pairs_follows_main_not_the_base() -> None:
     assert [pair.removed_name for pair in paired] == ["plan_tier"]
 
 
+async def _event_id_by_name(client: AsyncClient, slug: str, name: str, branch: str = "") -> str:
+    query = f"?branch={branch}" if branch else ""
+    listed = await client.get(f"/api/v1/projects/{slug}/events{query}")
+    return next(e["id"] for e in listed.json()["items"] if e["name"] == name)
+
+
+@pytest.mark.asyncio
+async def test_the_branch_copy_points_at_its_own_successor_not_at_mains(
+    client: AsyncClient,
+) -> None:
+    """A self-FK is the one reference a deep copy can get wrong two ways.
+
+    Left alone it would point at a MAIN row from a branch row — the only such
+    reference in the whole copy — and built one-pass it would silently NULL any
+    successor authored before the event it replaces, because the events SELECT
+    is unordered.
+    """
+    slug = "branch-superseded"
+    et_id = await _seed_plan(client, slug)
+    # The successor is created SECOND here and FIRST in the sibling test below,
+    # so between them both orderings are covered.
+    successor = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:completed"},
+    )
+    assert successor.status_code == 201
+    main_old_id = await _event_id_by_name(client, slug, "purchase:success")
+    await client.patch(
+        f"/api/v1/projects/{slug}/events/{main_old_id}",
+        json={"status": "deprecated", "superseded_by_event_id": successor.json()["id"]},
+    )
+
+    branch_id = await _create_branch(client, slug)
+
+    branch_old_id = await _event_id_by_name(client, slug, "purchase:success", branch_id)
+    branch_new_id = await _event_id_by_name(client, slug, "purchase:completed", branch_id)
+    assert branch_old_id != main_old_id
+
+    copied = await client.get(f"/api/v1/projects/{slug}/events/{branch_old_id}?branch={branch_id}")
+    assert copied.status_code == 200
+    # Points INTO the branch, not back at main.
+    assert copied.json()["superseded_by_event_id"] == branch_new_id
+    assert copied.json()["superseded_by_event_id"] != successor.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_successor_authored_before_its_predecessor_survives_the_copy(
+    client: AsyncClient,
+) -> None:
+    """The forward reference. `_seed_plan` creates `purchase:success` first, so
+    naming an event created LATER as the successor of one created EARLIER puts
+    the pointer ahead of its target in an unordered SELECT."""
+    slug = "branch-superseded-forward"
+    et_id = await _seed_plan(client, slug)
+    successor = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:completed"},
+    )
+    main_old_id = await _event_id_by_name(client, slug, "purchase:success")
+    # The EARLIER row names the LATER one.
+    await client.patch(
+        f"/api/v1/projects/{slug}/events/{main_old_id}",
+        json={"superseded_by_event_id": successor.json()["id"]},
+    )
+
+    branch_id = await _create_branch(client, slug)
+    branch_old_id = await _event_id_by_name(client, slug, "purchase:success", branch_id)
+    branch_new_id = await _event_id_by_name(client, slug, "purchase:completed", branch_id)
+
+    copied = await client.get(f"/api/v1/projects/{slug}/events/{branch_old_id}?branch={branch_id}")
+    assert copied.json()["superseded_by_event_id"] == branch_new_id
+
+
+@pytest.mark.asyncio
+async def test_merging_a_successor_translates_the_pointer_onto_mains_own_rows(
+    client: AsyncClient,
+) -> None:
+    """The merge must never copy this column: on a branch row it holds a BRANCH
+    id, and writing that onto main would point one project's catalog at rows
+    that only exist on a branch."""
+    slug = "branch-superseded-merge"
+    await _seed_plan(client, slug)
+    main_old_id = await _event_id_by_name(client, slug, "purchase:success")
+    branch_id = await _create_branch(client, slug)
+
+    branch_et = await client.get(f"/api/v1/projects/{slug}/event-types?branch={branch_id}")
+    branch_et_id = next(et["id"] for et in branch_et.json() if et["name"] == "track")
+    # Both the successor and the pointer are authored on the branch, so main
+    # learns the whole fact at merge time.
+    created = await client.post(
+        f"/api/v1/projects/{slug}/events?branch={branch_id}",
+        json={"event_type_id": branch_et_id, "name": "purchase:completed"},
+    )
+    assert created.status_code == 201
+    branch_old_id = await _event_id_by_name(client, slug, "purchase:success", branch_id)
+    await client.patch(
+        f"/api/v1/projects/{slug}/events/{branch_old_id}?branch={branch_id}",
+        json={"status": "deprecated", "superseded_by_event_id": created.json()["id"]},
+    )
+    merged = await _approve_and_merge(client, slug, branch_id)
+    assert merged.status_code == 200, merged.text
+
+    main_new_id = await _event_id_by_name(client, slug, "purchase:completed")
+    after = await client.get(f"/api/v1/projects/{slug}/events/{main_old_id}")
+    assert after.json()["status"] == "deprecated"
+    # Main's own row for the successor, which the merge created moments earlier.
+    assert after.json()["superseded_by_event_id"] == main_new_id
+    assert after.json()["superseded_by_event_id"] != created.json()["id"]
+
+
 @pytest.mark.asyncio
 async def test_a_renamed_event_splits_into_entries_pointing_at_opposite_sides(
     client: AsyncClient,

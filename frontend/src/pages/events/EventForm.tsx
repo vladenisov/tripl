@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   Event as TEvent,
   EventMutationResponse,
@@ -45,6 +45,12 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
 import { branchTicket } from '@/lib/branchTicket'
 import { eventTypesKey, planBranchesKey, variablesKey } from '@/lib/queryKeys'
+
+// Replacement candidates offered at once. Deliberately small, for the reason
+// the variables tab spells out (tripl-46am): the search below is server-side,
+// so anything outside the page is one keystroke away, and the count of what is
+// missing is printed rather than hidden.
+const SUCCESSOR_PAGE_SIZE = 100
 
 const EMPTY_EVENT_TYPES: EventType[] = []
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
@@ -434,6 +440,8 @@ export function EventForm({
   const [status, setStatus] = useState(event?.status ?? 'draft')
   const [ownerId, setOwnerId] = useState(event?.owner_id ?? '')
   const [sunsetAt, setSunsetAt] = useState(event?.sunset_at ? event.sunset_at.slice(0, 16) : '')
+  const [supersededBy, setSupersededBy] = useState(event?.superseded_by_event_id ?? '')
+  const [successorSearch, setSuccessorSearch] = useState('')
   const [metricBreakdownColumns, setMetricBreakdownColumns] = useState(
     () => normalizeMetricBreakdownColumns(event?.metric_breakdown_columns ?? []),
   )
@@ -674,6 +682,50 @@ export function EventForm({
     )
   }, [probedName, completedName, identityProbe])
 
+  // The successor roster, searched SERVER-side for the reason the variables tab
+  // states at length (tripl-46am): /events returns full list rows, so pulling a
+  // whole catalog into a <select> to spare the user typing is the wrong trade,
+  // and narrowing a page the server already truncated is the defect itself.
+  // Only fetched while the field is on screen — an event that is not being
+  // retired asks nothing of this.
+  const debouncedSuccessorSearch = useDebouncedValue(successorSearch, 350)
+  const { data: successorRoster } = useQuery({
+    queryKey: ['events', slug, branchId, 'successor-picker', debouncedSuccessorSearch],
+    queryFn: () =>
+      eventsApi.list(
+        slug,
+        { search: debouncedSuccessorSearch || undefined, limit: SUCCESSOR_PAGE_SIZE, offset: 0 },
+        branchId,
+      ),
+    enabled: !isNew && status === 'deprecated',
+    placeholderData: keepPreviousData,
+  })
+  // Same key shape as the detail page's own event query, so the successor is
+  // read from cache when it has already been opened.
+  const { data: successorEvent } = useQuery({
+    queryKey: ['event', slug, branchId, supersededBy],
+    queryFn: () => eventsApi.get(slug, supersededBy, branchId),
+    enabled: !isNew && status === 'deprecated' && !!supersededBy,
+  })
+  const successorOptions = useMemo(() => {
+    const roster = (successorRoster?.items ?? [])
+      // An event cannot replace itself; the server answers 400, but offering it
+      // at all invites the trip.
+      .filter(item => item.id !== event?.id)
+      .map(item => ({ id: item.id, name: item.name }))
+    // The current choice is prepended when the search does not hold it, so
+    // opening a retired event shows what replaced it rather than a blank select,
+    // and a selection survives retyping the search.
+    if (!successorEvent || roster.some(option => option.id === successorEvent.id)) return roster
+    return [{ id: successorEvent.id, name: successorEvent.name }, ...roster]
+  }, [successorRoster, successorEvent, event?.id])
+  // What the search did not return, printed rather than hidden — a short list
+  // and a complete one are otherwise indistinguishable.
+  const hiddenSuccessorCount = Math.max(
+    0,
+    (successorRoster?.total ?? 0) - (successorRoster?.items.length ?? 0),
+  )
+
   // Adjust-during-render with an equality guard — this repo's idiom for state
   // that has to follow a computed value (see the comments in
   // ProjectAlertingTab.tsx). The moment the form composes a different name it is
@@ -727,7 +779,19 @@ export function EventForm({
         }),
       }
       return event
-        ? eventsApi.update(slug, event.id, payload, branchId)
+        ? eventsApi.update(
+            slug,
+            event.id,
+            {
+              ...payload,
+              // Cleared alongside the sunset date when the event leaves
+              // `deprecated`: both answer "this is being retired, here is what
+              // to do about it", and a successor left behind on a live event
+              // documents a retirement that was called off.
+              superseded_by_event_id: status === 'deprecated' ? supersededBy || null : null,
+            },
+            branchId,
+          )
         : eventsApi.create(slug, payload, branchId)
     },
     onSuccess: (_data, closeAfterSave: boolean) => {
@@ -979,7 +1043,7 @@ export function EventForm({
               label="Sunset date"
               htmlFor="form-sunset"
               hint="When this event stops being supported."
-              last
+              last={isNew}
             >
               <input
                 id="form-sunset"
@@ -988,6 +1052,45 @@ export function EventForm({
                 value={sunsetAt}
                 onChange={e => setSunsetAt(e.target.value)}
               />
+            </EvField>
+          )}
+
+          {/* Not offered while creating: `EventCreate` does not accept a
+              successor — a brand-new event has no predecessor to name — so the
+              control would quietly discard the choice. */}
+          {status === 'deprecated' && !isNew && (
+            <EvField
+              label="Replaced by"
+              htmlFor="form-superseded"
+              hint="What to send instead. Documentation only: nothing is matched, collected or counted through it."
+              last
+            >
+              <div className="flex flex-col gap-[6px]">
+                <input
+                  type="search"
+                  className={`${TEXT_INPUT_CLASS} max-w-[240px]`}
+                  placeholder="Search events…"
+                  aria-label="Search for the replacement event"
+                  value={successorSearch}
+                  onChange={e => setSuccessorSearch(e.target.value)}
+                />
+                <SelectControl
+                  id="form-superseded"
+                  value={supersededBy}
+                  onChange={setSupersededBy}
+                  maxWidth={240}
+                >
+                  <option value="">Nothing replaces it</option>
+                  {successorOptions.map(option => (
+                    <option key={option.id} value={option.id}>{option.name}</option>
+                  ))}
+                </SelectControl>
+                {hiddenSuccessorCount > 0 && (
+                  <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                    {hiddenSuccessorCount} more not shown — narrow the search.
+                  </p>
+                )}
+              </div>
             </EvField>
           )}
         </SurfCard>

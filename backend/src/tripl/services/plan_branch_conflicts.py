@@ -60,6 +60,8 @@ _EV_CHANGE_KEYS = (
     "description",
     "status",
     "sunset_at",
+    # Serialized as a natural key, not a uuid — see the snapshot builder.
+    "superseded_by",
     "order",
     "owner_id",
     "reviewed",

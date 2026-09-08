@@ -57,6 +57,16 @@ async def _branch_event(client: AsyncClient, slug: str, branch_id: str, name: st
     return next(e for e in events.json()["items"] if e["name"] == name)
 
 
+async def _branch_event_detail(client: AsyncClient, slug: str, branch_id: str, name: str) -> dict:
+    """The DETAIL response, which the list variant is not a substitute for: it
+    deliberately drops ``superseded_by_event_id`` (no room on the row, and
+    nothing on that surface asks the question)."""
+    listed = await _branch_event(client, slug, branch_id, name)
+    resp = await client.get(f"/api/v1/projects/{slug}/events/{listed['id']}?branch={branch_id}")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
 async def _revert(client: AsyncClient, slug: str, branch_id: str, **body):
     return await client.post(f"/api/v1/projects/{slug}/branches/{branch_id}/revert", json=body)
 
@@ -633,3 +643,99 @@ async def test_revert_rebuilds_a_deleted_variable(client: AsyncClient) -> None:
     restored = next(v for v in variables.json()["items"] if v["name"] == "currency")
     assert restored["allowed_values"] == ["USD"]
     assert restored["bindings"] == ["page_data.currency"]
+
+
+@pytest.mark.asyncio
+async def test_revert_restores_a_successor_named_on_main(client: AsyncClient) -> None:
+    """``superseded_by`` is the one event field the snapshot stores as a dotted
+    natural key rather than a value, because an id means nothing across branches.
+    Restoring it has to resolve that key against THIS branch's own rows."""
+    slug = "revert-successor"
+    et_id, _field_id, _event_id = await _seed(client, slug)
+    old = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:legacy"},
+    )
+    successor = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:v2"},
+    )
+    await client.patch(
+        f"/api/v1/projects/{slug}/events/{old.json()['id']}",
+        json={"superseded_by_event_id": successor.json()["id"]},
+    )
+
+    branch_id = await _branch(client, slug)
+    branch_old = await _branch_event_detail(client, slug, branch_id, "purchase:legacy")
+    branch_successor = await _branch_event(client, slug, branch_id, "purchase:v2")
+    assert branch_old["superseded_by_event_id"] == branch_successor["id"]
+
+    # Clear it on the branch, then put it back.
+    cleared = await client.patch(
+        f"/api/v1/projects/{slug}/events/{branch_old['id']}?branch={branch_id}",
+        json={"superseded_by_event_id": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["superseded_by_event_id"] is None
+    diff = await _diff(client, slug, branch_id)
+    entry = next(e for e in diff["entries"] if e["name"] == "purchase:legacy")
+    assert "superseded_by" in {fc["field"] for fc in entry["field_changes"]}
+
+    resp = await _revert(
+        client,
+        slug,
+        branch_id,
+        entity_type="event",
+        name="purchase:legacy",
+        parent="track",
+        field="superseded_by",
+    )
+    assert resp.status_code == 200, resp.text
+    restored = await _branch_event_detail(client, slug, branch_id, "purchase:legacy")
+    # The BRANCH's copy of the successor, resolved from the dotted key — not the
+    # main id the base snapshot was taken from.
+    assert restored["superseded_by_event_id"] == branch_successor["id"]
+    assert restored["superseded_by_event_id"] != successor.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_revert_clears_a_successor_that_no_longer_exists(client: AsyncClient) -> None:
+    """The successor can be deleted on the branch after the pointer was changed.
+    Reverting then has nothing to resolve; it must clear the pointer rather than
+    refuse the revert and strand every other field of the entity."""
+    slug = "revert-successor-gone"
+    et_id, _field_id, _event_id = await _seed(client, slug)
+    old = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:legacy"},
+    )
+    successor = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:v2"},
+    )
+    await client.patch(
+        f"/api/v1/projects/{slug}/events/{old.json()['id']}",
+        json={"superseded_by_event_id": successor.json()["id"]},
+    )
+
+    branch_id = await _branch(client, slug)
+    branch_successor = await _branch_event(client, slug, branch_id, "purchase:v2")
+    # Deleting the successor SET NULLs the pointer, which is itself the change
+    # being reverted.
+    dropped = await client.delete(
+        f"/api/v1/projects/{slug}/events/{branch_successor['id']}?branch={branch_id}"
+    )
+    assert dropped.status_code in (200, 204)
+
+    resp = await _revert(
+        client,
+        slug,
+        branch_id,
+        entity_type="event",
+        name="purchase:legacy",
+        parent="track",
+        field="superseded_by",
+    )
+    assert resp.status_code == 200, resp.text
+    restored = await _branch_event_detail(client, slug, branch_id, "purchase:legacy")
+    assert restored["superseded_by_event_id"] is None

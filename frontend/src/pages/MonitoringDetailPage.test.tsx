@@ -689,6 +689,9 @@ function installEventDetailFetch(
     breakdowns?: Record<string, unknown>
     latestSignal?: Record<string, unknown> | null
     tickets?: Record<string, unknown>[]
+    /** The event `superseded_by_event_id` points at. `null` answers 404, the
+     *  same as a successor the reader cannot see. */
+    successor?: Record<string, unknown> | null
   } = {},
 ) {
   const metricsData = opts.metricsData ?? [metricPoint('2026-01-02T00:00:00Z', 200)]
@@ -729,6 +732,11 @@ function installEventDetailFetch(
       return mockJsonResponse(opts.tickets ?? [])
     }
     if (url.endsWith('/api/v1/projects/demo/events/event-1')) return mockJsonResponse(event)
+    if (url.endsWith('/api/v1/projects/demo/events/event-2')) {
+      return opts.successor
+        ? mockJsonResponse(opts.successor)
+        : new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } })
+    }
     if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
       return mockJsonResponse({ id: 'scan-1', app_version_column: null })
     }
@@ -1179,6 +1187,42 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
       .getByText('First seen')
       .closest('[role="row"]') as HTMLElement
     expect(within(firstSeen).getByText('—')).toBeInTheDocument()
+  })
+
+  it('names the successor, and links to it, once one is set (tripl-h2sx.13)', async () => {
+    installEventDetailFetch({
+      event: { ...eventFixture(), superseded_by_event_id: 'event-2' },
+      successor: { ...eventFixture(), id: 'event-2', name: 'checkout_finished' },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    const link = await within(properties).findByRole('link', { name: 'checkout_finished' })
+    expect(link).toHaveAttribute('href', '/p/demo/monitoring/event/event-2')
+  })
+
+  it('falls back to the successor id when the successor cannot be read', async () => {
+    // A link to a name we do not have is worse than the id: the id is at least
+    // something the reader can look up.
+    installEventDetailFetch({
+      event: { ...eventFixture(), superseded_by_event_id: 'event-2' },
+      successor: null,
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    expect(await within(properties).findByText('event-2')).toBeInTheDocument()
+    expect(within(properties).queryByRole('link')).toBeNull()
+  })
+
+  it('says nothing about a replacement when none is named', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.queryByText('Replaced by')).not.toBeInTheDocument()
   })
 
   it('names an owner the roster cannot resolve as unknown, not as still loading', async () => {
