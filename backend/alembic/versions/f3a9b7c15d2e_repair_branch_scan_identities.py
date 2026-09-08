@@ -108,12 +108,20 @@ _FIELD_VALUES = sa.text(
 _IDENTITY_TAKEN = sa.text(
     "SELECT id FROM events WHERE event_type_id = :event_type_id AND source_name = :identity"
 )
+# The identity is used three times, and every use casts it explicitly. asyncpg
+# prepares the statement server-side and asks Postgres to deduce one type per
+# parameter; the same ``$1`` read as ``character varying`` in the assignments
+# and as ``text`` in the CASE comparison, and the deploy of this revision died
+# on "inconsistent types deduced for parameter $1" before touching a row. The
+# SQLite engine the unit tests run on binds client-side and never deduces, so
+# only Postgres could show it — which is what
+# ``test_repair_branch_scan_identities_stamps_on_postgres`` now does.
 _STAMP = sa.text(
     """
     UPDATE events
-    SET source_name = :identity,
-        title = CASE WHEN name = :identity THEN title ELSE name END,
-        name = :identity
+    SET source_name = CAST(:identity AS VARCHAR(500)),
+        title = CASE WHEN name = CAST(:identity AS VARCHAR(500)) THEN title ELSE name END,
+        name = CAST(:identity AS VARCHAR(500))
     WHERE id = :id
     """
 )

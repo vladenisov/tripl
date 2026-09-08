@@ -74,6 +74,9 @@ markers = [
     # them from a local run entirely. CI runs them with TRIPL_CONFORMANCE_REQUIRED=1,
     # which turns "warehouse unreachable" from a skip into a failure.
     "conformance: executes/analyzes generated SQL against a real warehouse",
+    # Needs a real PostgreSQL (TRIPL_TEST_PG_URL); skips without one, fails when
+    # TRIPL_TEST_PG_REQUIRED=1. CI runs these in the PostgreSQL lane.
+    "postgres: runs against a real PostgreSQL over the production driver",
     # Real BigQuery values need a credentialed, trusted-release job. The ordinary
     # conformance job excludes this marker and keeps using the emulator analyzer.
     "bigquery_value: executes value assertions against real BigQuery",

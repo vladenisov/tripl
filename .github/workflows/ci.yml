@@ -478,7 +478,7 @@ jobs:
         # row lock, and they seed and drop the whole schema per test. Order is not
         # the thing under test and a shuffled run only makes a failure harder to
         # read.
-        run: uv run pytest -q -m pg_concurrency -p no:randomly
+        run: uv run pytest -q -m "pg_concurrency or postgres" -p no:randomly
 
   migration-scope:
     name: Detect alembic changes

@@ -163,8 +163,13 @@ docker run --rm -d --name tripl-digest-pg -p 55432:5432 \
 
 cd backend
 TRIPL_TEST_PG_URL=postgresql+psycopg://tripl:tripl@localhost:55432/tripl_digest \
-  uv run pytest -q -m pg_concurrency
+  uv run pytest -q -m "pg_concurrency or postgres"
 ```
+
+`postgres` marks the other tests that need this database: today the
+scan-identity repair migration run through asyncpg, the driver production
+uses — its stamping UPDATE was valid SQLite and invalid prepared PostgreSQL,
+and only a real server could say so.
 
 Stock `postgres` is enough here, unlike the relevance and migration jobs: the
 gate builds its schema from `Base.metadata.create_all` rather than running the
