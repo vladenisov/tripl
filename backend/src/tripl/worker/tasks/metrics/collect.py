@@ -9,6 +9,9 @@ from sqlalchemy.orm import Session
 from tripl.models.event import Event, EventStatus
 from tripl.models.event_change import create_event_change
 
+# The statuses first data promotes to ``live``. Ordered by lifecycle rank.
+AUTO_LIVE_FROM: tuple[EventStatus, ...] = (EventStatus.ready_for_dev, EventStatus.implemented)
+
 
 def _bump_event_last_seen(
     session: Session,
@@ -20,10 +23,18 @@ def _bump_event_last_seen(
     Monotonic: we only move the column forward, so historical replays of an
     older window cannot rewind a freshly-collected last_seen_at.
 
-    AUTO-LIVE: events with status='implemented' that receive fresh data are
-    promoted to 'live'. An EventChange row (user_id=None) is written for the
-    transition. The status check makes this naturally idempotent — already-live
-    events are never re-transitioned.
+    AUTO-LIVE: events with status 'ready_for_dev' or 'implemented' that receive
+    fresh data are promoted to 'live'. An EventChange row (user_id=None) is
+    written for the transition. The status check makes this naturally
+    idempotent — already-live events are never re-transitioned.
+
+    ``ready_for_dev`` joined ``implemented`` for tripl-kjhi.6: on production the
+    handoff goes analyst → developer → data, and nobody flips the row to
+    "implemented" by hand before the first rows land, so the tracker read
+    "0 implemented" for a feature whose events had been firing for weeks.
+    Drafts and events in review stay put — ``in_review`` is the scan's own
+    review queue, and a draft reaching the warehouse is news to surface, not a
+    status to skip past.
     """
     if not event_agg:
         return
@@ -51,24 +62,20 @@ def _bump_event_last_seen(
             .execution_options(synchronize_session=False)
         )
 
-    # AUTO-LIVE: find the subset of bumped events that are still 'implemented'
-    # and promote them to 'live', writing one EventChange row per transition.
+    # AUTO-LIVE: find the subset of bumped events still waiting for data and
+    # promote them to 'live', writing one EventChange row per transition.
     event_ids = list(latest_by_event.keys())
-    implemented_events = (
-        session.execute(
-            select(Event.id).where(
-                Event.id.in_(event_ids),
-                Event.status == EventStatus.implemented,
-            )
+    waiting_events = session.execute(
+        select(Event.id, Event.status).where(
+            Event.id.in_(event_ids),
+            Event.status.in_(AUTO_LIVE_FROM),
         )
-        .scalars()
-        .all()
-    )
+    ).all()
 
-    for eid in implemented_events:
+    for eid, previous_status in waiting_events:
         session.execute(
             update(Event)
-            .where(Event.id == eid, Event.status == EventStatus.implemented)
+            .where(Event.id == eid, Event.status == previous_status)
             .values(status=EventStatus.live)
             .execution_options(synchronize_session=False)
         )
@@ -77,7 +84,7 @@ def _bump_event_last_seen(
                 event_id=eid,
                 user_id=None,
                 field="status",
-                old_value=EventStatus.implemented,
+                old_value=EventStatus(previous_status),
                 new_value=EventStatus.live,
             )
         )

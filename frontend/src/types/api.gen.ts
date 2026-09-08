@@ -5527,6 +5527,11 @@ export interface components {
              * @default []
              */
             tags: string[];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
         };
         /** EventFieldValueIn */
         EventFieldValueIn: {
@@ -5688,6 +5693,11 @@ export interface components {
              */
             tags: components["schemas"]["EventTagResponse"][];
             /**
+             * Title
+             * @default
+             */
+            title: string;
+            /**
              * Updated At
              * Format: date-time
              */
@@ -5827,6 +5837,8 @@ export interface components {
          * @description Event returned after a create or update, with advisory template warnings.
          */
         EventMutationResponse: {
+            /** Branch Id */
+            branch_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -5893,6 +5905,11 @@ export interface components {
              * @default []
              */
             tags: components["schemas"]["EventTagResponse"][];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
             /**
              * Updated At
              * Format: date-time
@@ -6011,6 +6028,8 @@ export interface components {
         };
         /** EventResponse */
         EventResponse: {
+            /** Branch Id */
+            branch_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -6077,6 +6096,11 @@ export interface components {
              * @default []
              */
             tags: components["schemas"]["EventTagResponse"][];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
             /**
              * Updated At
              * Format: date-time
@@ -6186,6 +6210,8 @@ export interface components {
             description: string;
             /** Display Name */
             display_name: string;
+            /** Event Name Format */
+            event_name_format?: string | null;
             /**
              * Field Definitions
              * @default []
@@ -6243,6 +6269,8 @@ export interface components {
             sunset_at?: string | null;
             /** Tags */
             tags?: string[] | null;
+            /** Title */
+            title?: string | null;
         };
         /** EventWindowMetricsRequest */
         EventWindowMetricsRequest: {
@@ -8111,6 +8139,8 @@ export interface components {
             name: string;
             /** Parent */
             parent?: string | null;
+            /** Warnings */
+            warnings?: string[];
         };
         /**
          * PlanDiffRename

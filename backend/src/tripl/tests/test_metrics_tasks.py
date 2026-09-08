@@ -9852,3 +9852,48 @@ def test_scheduled_run_reindexes_whatever_the_sweep_deferred(
     metrics.collect_metrics.run(config_id)
 
     assert reindexed == [project_id]
+
+
+def test_bump_event_last_seen_promotes_ready_for_dev_to_live_but_not_drafts(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """tripl-kjhi.6: the handoff goes analyst → developer → data, and nobody
+    flips the row to 'implemented' by hand before the first rows land."""
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session)
+        event.status = EventStatus.ready_for_dev
+        draft = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=event.event_type_id,
+            name="event_name=Draft",
+            description="",
+            status=EventStatus.draft,
+        )
+        session.add(draft)
+        session.commit()
+        bucket = datetime(2026, 5, 1, 12, tzinfo=UTC)
+
+        metrics_collect._bump_event_last_seen(
+            session,
+            event_agg={(config.id, event.id, bucket): 7, (config.id, draft.id, bucket): 3},
+        )
+        session.commit()
+
+        session.expire_all()
+        assert session.get(Event, event.id).status == EventStatus.live  # type: ignore[union-attr]
+        assert session.get(Event, draft.id).status == EventStatus.draft  # type: ignore[union-attr]
+        changes = (
+            session.execute(select(EventChange).where(EventChange.event_id == event.id))
+            .scalars()
+            .all()
+        )
+        assert [(c.field, c.old_value, c.new_value) for c in changes] == [
+            ("status", EventStatus.ready_for_dev, EventStatus.live)
+        ]
+        assert (
+            session.execute(select(EventChange).where(EventChange.event_id == draft.id))
+            .scalars()
+            .all()
+            == []
+        )

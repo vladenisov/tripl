@@ -151,6 +151,7 @@ _FIELD_DEFINITION_CHANGE_KEYS = (
 _EVENT_TYPE_CHANGE_KEYS = ("display_name", "description", "color")
 _EVENT_CHANGE_KEYS = (
     "source_name",
+    "title",
     "description",
     "status",
     "sunset_at",
@@ -456,6 +457,7 @@ async def build_plan_snapshot(
             "event_type_id": str(ev.event_type_id),
             "event_type_name": event_type_name_by_id.get(ev.event_type_id, ""),
             "name": ev.name,
+            "title": ev.title,
             "source_name": ev.source_name,
             "description": ev.description,
             "order": ev.order,
@@ -644,6 +646,13 @@ def _collection_item_changes(field: str, old_value: Any, new_value: Any) -> list
     if old_by_key is None or new_by_key is None:
         return []
 
+    ignored = _MEMBER_ATTRS_NOT_A_CHANGE.get(field, ())
+
+    def comparable(member: Any) -> Any:
+        if not isinstance(member, dict):
+            return member
+        return {k: v for k, v in member.items() if k not in ignored}
+
     changes: list[PlanValueChange] = []
     for key in sorted(set(old_by_key) | set(new_by_key)):
         before = old_by_key.get(key)
@@ -652,7 +661,7 @@ def _collection_item_changes(field: str, old_value: Any, new_value: Any) -> list
             changes.append(PlanValueChange(key=key, kind="removed", before=before))
         elif key not in old_by_key:
             changes.append(PlanValueChange(key=key, kind="added", after=after))
-        elif before != after:
+        elif comparable(before) != comparable(after):
             changes.append(PlanValueChange(key=key, kind="changed", before=before, after=after))
     return changes
 
@@ -670,6 +679,52 @@ def _format_change(change: PlanFieldChange) -> str:
         parts = [f"{n} {kind}" for kind, n in counts.items() if n]
         return f"{change.field}: {', '.join(parts)}"
     return f"{change.field}: {change.before!r} → {change.after!r}"
+
+
+# Snapshot keys added to v2 WITHOUT a version bump, with the value an older v2
+# payload is read as carrying. A bump would make every open branch unmergeable
+# ("recreate it from current main", plan_branch_merge_service) for the sake of
+# one optional text column, so the older shape is upgraded on read instead.
+_V2_EVENT_DEFAULTS: dict[str, Any] = {"title": ""}
+
+# Member attributes the diff does not read as a change on their own. A field
+# value's ``is_authored`` flips when a person re-saves a scan-observed value
+# unchanged (every save before tripl-kjhi.4 did that); the reviewer sees the
+# same text on both sides and a row claiming it changed. The flag still rides
+# along in ``before``/``after`` — it is only not a difference by itself.
+_MEMBER_ATTRS_NOT_A_CHANGE: dict[str, tuple[str, ...]] = {"field_values": ("is_authored",)}
+
+
+def with_snapshot_defaults(payload: dict[str, Any]) -> dict[str, Any]:
+    """The payload with the keys later v2 serializers added, filled in.
+
+    Returns a new dict when something was missing and the same object when
+    nothing was, so callers holding a base payload can normalize it once and
+    pass it everywhere — the diff, the conflict scan and the merge all read the
+    same shape.
+    """
+    events = payload.get("events")
+    if not isinstance(events, list):
+        return payload
+    if all(isinstance(ev, dict) and _V2_EVENT_DEFAULTS.keys() <= ev.keys() for ev in events):
+        return payload
+    return {
+        **payload,
+        "events": [{**_V2_EVENT_DEFAULTS, **ev} if isinstance(ev, dict) else ev for ev in events],
+    }
+
+
+def _comparable(field: str, value: Any) -> Any:
+    """``value`` with the attributes that are not a change on their own removed."""
+    ignored = _MEMBER_ATTRS_NOT_A_CHANGE.get(field)
+    if ignored is None or not isinstance(value, list):
+        return value
+    return [
+        {k: v for k, v in member.items() if k not in ignored}
+        if isinstance(member, dict)
+        else member
+        for member in value
+    ]
 
 
 def _snapshot_values_equal(old_value: Any, new_value: Any) -> bool:
@@ -714,7 +769,9 @@ def _field_changes_between(
         key
         for key in keys
         if (old_is_current_version or key in old)
-        and not _snapshot_values_equal(old.get(key), new.get(key))
+        and not _snapshot_values_equal(
+            _comparable(key, old.get(key)), _comparable(key, new.get(key))
+        )
     ]
     field_changes: list[PlanFieldChange] = []
     for key in changed_keys:
@@ -825,6 +882,8 @@ def _diff_set(
 def compute_plan_diff_entries(
     old_payload: dict[str, Any], new_payload: dict[str, Any]
 ) -> list[PlanDiffEntry]:
+    old_payload = with_snapshot_defaults(old_payload)
+    new_payload = with_snapshot_defaults(new_payload)
     entries: list[PlanDiffEntry] = []
 
     # Only the OLD payload's version governs skip-absent-key tolerance: a v1

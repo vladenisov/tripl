@@ -12,6 +12,10 @@ from tripl.schemas.event_type import EventTypeCreate, EventTypeResponse, EventTy
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
+from tripl.services.scan_config_lookup import (
+    governing_name_format,
+    load_governing_scan_configs_by_type,
+)
 from tripl.services.search_service import reindex_project_branch
 
 
@@ -33,6 +37,7 @@ async def list_event_types(
         .limit(1000)  # defensive cap; realistic projects have <100 event types
     )
     rows = list(result.scalars().all())
+    await attach_event_name_formats(session, project_id=project_id, event_types=rows)
     responses = [EventTypeResponse.model_validate(et) for et in rows]
     if use_cache:
         await cache.set_json(
@@ -62,6 +67,44 @@ async def get_event_type(
     if not et:
         raise HTTPException(status_code=404, detail="Event type not found")
     return et
+
+
+async def read_event_type(
+    session: AsyncSession,
+    slug: str,
+    event_type_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+) -> EventType:
+    """``get_event_type`` plus the resolved naming rule, for the GET route.
+
+    Kept apart from ``get_event_type`` because every mutation path loads its
+    type through that one and none of them read the rule; three extra queries
+    per field edit would buy nothing.
+    """
+    et = await get_event_type(session, slug, event_type_id, branch_id)
+    await attach_event_name_formats(session, project_id=et.project_id, event_types=[et])
+    return et
+
+
+async def attach_event_name_formats(
+    session: AsyncSession, *, project_id: uuid.UUID, event_types: list[EventType]
+) -> None:
+    """Set ``event_name_format`` on each ORM row the way ``event.warnings`` is set.
+
+    The rule is resolved server-side — through the type's main counterpart for a
+    branch copy — so every client reads ONE answer instead of re-deriving it
+    from the scan config list, which is how the authoring form silently lost
+    the rule on branches (tripl-kjhi.1).
+    """
+    if not event_types:
+        return
+    configs_by_type = await load_governing_scan_configs_by_type(
+        session, project_id=project_id, event_type_ids=[et.id for et in event_types]
+    )
+    for et in event_types:
+        et.event_name_format = governing_name_format(  # type: ignore[attr-defined]
+            configs_by_type.get(et.id, [])
+        )
 
 
 async def create_event_type(

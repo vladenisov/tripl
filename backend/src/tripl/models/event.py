@@ -83,6 +83,13 @@ class Event(UUIDMixin, TimestampMixin, Base):
         ForeignKey("event_types.id", ondelete="CASCADE")
     )
     name: Mapped[str] = mapped_column(String(500))
+    # A human label beside the identity — "Tap on a model card" beside
+    # "se:models_guide:tap". Empty by default: the identity IS the name for
+    # every scan-created event, and nothing here ever falls back from one to
+    # the other. Before this column analysts put the label into ``name`` on
+    # branches, where the naming rule did not reach, and the event never
+    # merged with its scanned twin (tripl-kjhi.3).
+    title: Mapped[str] = mapped_column(String(500), default="", server_default="")
     # Stable scan identity: the name as derived from the source columns named in the
     # scan's ``event_name_format``. Dedup/metric matching keys on this, NOT on ``name``,
     # so users can freely rename ``name`` without the next scan creating duplicates.

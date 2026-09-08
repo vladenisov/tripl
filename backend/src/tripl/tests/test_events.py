@@ -729,8 +729,8 @@ async def test_update_event_records_change_history_with_timestamps(client: Async
     history_resp = await client.get(f"/api/v1/projects/ev-upd-history/events/{event_id}/history")
     assert history_resp.status_code == 200
     history = history_resp.json()
-    assert len(history) == 1
-    assert history[0]["field"] == "description"
+    # Newest first: the edit, then the row creation writes (tripl-kjhi.9).
+    assert [row["field"] for row in history] == ["description", "created"]
     assert history[0]["old_value"] == "Old description"
     assert history[0]["new_value"] == "New description"
     assert history[0]["created_at"] is not None

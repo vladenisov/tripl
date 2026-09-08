@@ -185,7 +185,9 @@ async def create_event(
     branch_id: BranchIdDep,
     current_user: EditorUserDep,
 ) -> Event:
-    event = await event_service.create_event(session, slug, data, branch_id)
+    event = await event_service.create_event(
+        session, slug, data, branch_id, user_id=current_user.id
+    )
     # ``event.name``, not ``data.name``: a governing scan rule can generate the
     # name, and the audit row has to name the event that exists.
     await audit_service.record(
@@ -302,7 +304,7 @@ async def reorder_events(
 async def get_event(
     session: SessionDep, slug: str, event_id: uuid.UUID, branch_id: BranchIdDep
 ) -> Event:
-    return await event_service.get_event(session, slug, event_id, branch_id)
+    return await event_service.get_event(session, slug, event_id, branch_id, strict_branch=False)
 
 
 @router.get("/{event_id}/history", response_model=list[EventChangeResponse])

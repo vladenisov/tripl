@@ -591,6 +591,7 @@ def _event_document(
         description=_clean(event.description),
         body=_join(
             [
+                event.title,
                 event.description,
                 " ".join(event_type_names),
                 " ".join(field_names),
@@ -613,6 +614,7 @@ def _event_document(
         keywords=_join(
             [
                 event.name,
+                event.title,
                 event.source_name,
                 " ".join(event_type_names),
                 " ".join(tag_names),

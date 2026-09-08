@@ -52,6 +52,7 @@ from tripl.schemas.plan_branch import (
 )
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services._plan_branch_renames import snapshot_rename_pairs
+from tripl.services._plan_diff_warnings import attach_identity_warnings
 from tripl.services.plan_revision_service import (
     build_plan_snapshot,
     compute_plan_diff_entries,
@@ -498,6 +499,7 @@ async def deep_copy_plan_to_branch(
                 branch_id=target_branch_id,
                 event_type_id=et_map[ev.event_type_id],
                 name=ev.name,
+                title=ev.title,
                 source_name=ev.source_name,
                 description=ev.description,
                 order=ev.order,
@@ -989,6 +991,13 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
         # side to read, the pairing has nothing to say either.
         entries = compute_plan_diff_entries(main_snapshot, branch_snapshot)
 
+    await attach_identity_warnings(
+        session,
+        project_id=project_id,
+        branch_id=branch.id,
+        entries=entries,
+        branch_snapshot=branch_snapshot,
+    )
     return PlanBranchDiff(
         entries=entries,
         summary=_summary_counts(entries),

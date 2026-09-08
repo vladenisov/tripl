@@ -100,6 +100,11 @@ class PlanDiffEntry(BaseModel):
     # null for removed entries; both are populated for changed entries.
     before: dict[str, Any] | None = None
     after: dict[str, Any] | None = None
+    # Things a reviewer should know that are not a change between the two
+    # sides — today, an event on a scan-governed type with no scan identity,
+    # which will never merge with its scanned twin (tripl-kjhi.1). Plain
+    # sentences, rendered beside the row.
+    warnings: list[str] = Field(default_factory=list)
 
 
 class PlanDiff(BaseModel):

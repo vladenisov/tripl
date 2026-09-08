@@ -33,6 +33,12 @@ class EventTypeResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     field_definitions: list[FieldDefinitionResponse] = []
+    # The scan naming rule that governs this type, already resolved on the
+    # server — for a branch copy, through its main counterpart (tripl-kjhi.1).
+    # Null when no scan names the type and a free-text name is the identity.
+    # Clients read this instead of re-deriving it from the scan config list,
+    # which is how the form got it wrong on branches in the first place.
+    event_name_format: str | None = None
 
     model_config = {"from_attributes": True}
 

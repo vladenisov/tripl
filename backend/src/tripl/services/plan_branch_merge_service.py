@@ -55,6 +55,7 @@ from tripl.services.plan_revision_service import (
     PLAN_SNAPSHOT_VERSION,
     build_plan_snapshot,
     plan_snapshot_hash,
+    with_snapshot_defaults,
 )
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
 from tripl.services.scan_config_lookup import (
@@ -726,6 +727,7 @@ async def _apply_merge(
             branch_event_snapshot = branch_event_snapshot_by_key[key]
             event_attrs = (
                 "source_name",
+                "title",
                 "description",
                 "sunset_at",
                 "order",
@@ -795,6 +797,7 @@ async def _apply_merge(
                     branch_id=main_branch_id,
                     event_type_id=main_et_name_to_id[et_name],
                     name=b_ev.name,
+                    title=b_ev.title,
                     source_name=b_ev.source_name,
                     description=b_ev.description,
                     order=b_ev.order,
@@ -1430,7 +1433,7 @@ async def merge_branch(
     if branch.base_revision_id is not None:
         base_rev = await session.get(PlanRevision, branch.base_revision_id)
         if base_rev is not None:
-            base_payload = base_rev.payload or {}
+            base_payload = with_snapshot_defaults(base_rev.payload or {})
     if base_payload.get("snapshot_version") != PLAN_SNAPSHOT_VERSION:
         raise HTTPException(
             status_code=409,

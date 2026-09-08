@@ -51,7 +51,7 @@ async def get_event_type(
     event_type_id: uuid.UUID,
     branch_id: BranchIdDep,
 ) -> EventType:
-    return await event_type_service.get_event_type(session, slug, event_type_id, branch_id)
+    return await event_type_service.read_event_type(session, slug, event_type_id, branch_id)
 
 
 @router.patch("/{event_type_id}", response_model=EventTypeResponse)
