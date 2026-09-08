@@ -56,7 +56,18 @@ function normalizeMetricBreakdownColumns(columns: string[]): string[] {
     })
 }
 
-function FieldTemplateHints({ value, variables }: { value: string; variables: Variable[] }) {
+function FieldTemplateHints({
+  value,
+  variables,
+  namesEvent = false,
+  slug,
+}: {
+  value: string
+  variables: Variable[]
+  /** The governing scan rule builds the event's identity out of this field. */
+  namesEvent?: boolean
+  slug?: string
+}) {
   const [copied, setCopied] = useState<string | null>(null)
   const resolved = resolveTemplateTokens(value, variables)
   if (resolved.length === 0) return null
@@ -68,9 +79,29 @@ function FieldTemplateHints({ value, variables }: { value: string; variables: Va
         .map(({ variable }) => [variable!.id, variable!]),
     ).values(),
   ]
-  if (unknown.length === 0 && documented.length === 0) return null
+  if (!namesEvent && unknown.length === 0 && documented.length === 0) return null
   return (
     <div className="mt-1 space-y-1">
+      {/* Validating the token and offering its documented values reads as a
+          promise that the scanner will expand it. It will not:
+          apply_scan_name_format substitutes {key} only, so the event is stamped
+          with a literal ${…} identity that matches nothing. Say so where the
+          mistake is made, and point at the mechanism that does collapse a
+          family of legacy names onto one event. */}
+      {namesEvent && (
+        <p className="text-xs text-warning">
+          This field names the event, so <span className="font-mono">{'${variable}'}</span> is
+          stored literally and will not match a family of names.{' '}
+          {slug ? (
+            <Link to={`/p/${slug}/settings/scans`} className="underline underline-offset-2">
+              Group them with a scan event rule
+            </Link>
+          ) : (
+            <span>Group them with a scan event rule</span>
+          )}{' '}
+          instead.
+        </p>
+      )}
       {unknown.map(({ token }) => (
         <p key={token} className="text-xs text-warning">Unknown variable token: {token}</p>
       ))}
@@ -907,7 +938,12 @@ export function EventForm({
                     />
                   </div>
                 </ScenarioCoachMark>
-                <FieldTemplateHints value={fieldValues[f.id] ?? ''} variables={projectVariables} />
+                <FieldTemplateHints
+                  value={fieldValues[f.id] ?? ''}
+                  variables={projectVariables}
+                  namesEvent={namingColumns.has(f.name)}
+                  slug={slug}
+                />
               </EvField>
             ))}
           </SurfCard>

@@ -834,6 +834,32 @@ its **run summary** reports how many archived identities were seen and how many
 rows they carried, deliberately kept off the data-match percentage rather than
 folded into it. Its volume also still appears in the event type's volume series.
 
+**One event for a family of legacy names.** A legacy event whose name varies in
+its tail — `profile_click_boat`, `profile_click_kite`, `profile_click_fish` — is
+one concept in the plan and many identities in the warehouse. Two things look
+like they should join them up, and neither does:
+
+- **Scan identity is derived, never authored.** The server stamps it from the
+  governing scan rule. There is no box to type a second name into, so leaving one
+  "empty" is not a choice you have.
+- **A `${variable}` in a name-forming field is stored literally.** The event form
+  validates the token and offers its documented values, but the naming rule
+  substitutes `{column}` only — so `profile_click_${forecast_profile}` becomes an
+  identity that matches nothing at all. The form now says so next to the field.
+
+What does join them up is an **event group rule**, under
+Settings › Scans › *Event names and grouping*:
+
+| Field | Pattern | Group name |
+| --- | --- | --- |
+| `__event_name` | `^profile_click_` | `profile_click` |
+
+The rule rewrites the derived name before the plan is matched, so every future
+scan files the whole family under one event. It also works backwards: **Apply
+event groups** on the scan folds catalog events that already exist into the
+survivor, carrying over everything listed below. `__event_name` and
+`event_name` both name the event's identity and behave the same.
+
 **What a group merge carries over.** When a group rule folds several events into
 one, the survivor inherits the settings that pointed at the events it absorbed,
 so a merge does not quietly undo work you did:

@@ -147,10 +147,16 @@ def apply_event_group_rules(
         # surface for one grouped scan. ``reserved_catalog_columns`` refuses the
         # same reduction on its own side: the two key spaces are one rule, and
         # matching a dotted key is not a licence to shorten it.
+        # Both spellings of the identity pseudo-column are excluded, not just
+        # the underscored one: ``_event_values_for_group_matching`` sets
+        # ``event_name`` alongside ``__event_name``, and the rule editor offers
+        # ``event_name`` FIRST — so the obvious choice used to write an override
+        # under a key that names no field. Harmless only because the lookup is
+        # exact and nothing is usually called ``event_name``.
         overrides = {
             field_name: f"/{pattern}/"
             for field_name, pattern, matched in condition_results
-            if matched and field_name != "__event_name"
+            if matched and field_name not in {"__event_name", "event_name"}
         }
         if len(group_name) > 500:
             group_name = group_name[:497] + "..."
