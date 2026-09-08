@@ -1438,6 +1438,8 @@ async def bulk_create_events(
     slug: str,
     events_data: list[EventCreate],
     branch_id: uuid.UUID | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
 ) -> list[Event]:
     if not events_data:
         return []
@@ -1597,6 +1599,20 @@ async def bulk_create_events(
     if children:
         session.add_all(children)
 
+    # The same first history row ``create_event`` writes, one per event, now
+    # that the ids exist (tripl-kjhi.9).
+    session.add_all(
+        [
+            create_event_change(
+                event_id=event.id,
+                user_id=user_id,
+                field="created",
+                old_value=None,
+                new_value=event.name,
+            )
+            for event in events
+        ]
+    )
     await session.flush()
     _, ai_config = await _reindex_branch_documents(
         session, project_id=project_id, branch_id=branch_id, slug=slug

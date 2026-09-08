@@ -110,6 +110,15 @@ async def test_naming_rule_reaches_the_branch_copy_of_the_event_type(client: Asy
     )
     assert bulk.status_code == 201, bulk.text
     assert [(e["name"], e["source_name"]) for e in bulk.json()] == [("track:swipe", "track:swipe")]
+    # Bulk-created rows start their history the way single creates do.
+    history = (
+        await client.get(
+            f"/api/v1/projects/{slug}/events/{bulk.json()[0]['id']}/history?branch={branch_id}"
+        )
+    ).json()
+    assert [(row["field"], row["new_value"], row["user_email"]) for row in history] == [
+        ("created", "track:swipe", "test@example.com")
+    ]
 
 
 @pytest.mark.asyncio
@@ -130,6 +139,17 @@ async def test_diff_warns_about_branch_events_with_no_scan_identity(client: Asyn
         },
     )
     await _forget_identity(filled.json()["id"], name="Tap on a model card")
+    # With ``filled`` stripped of its identity, the same values create again.
+    twin = await client.post(
+        f"/api/v1/projects/{slug}/events?branch={branch_id}",
+        json={
+            "event_type_id": branch_type["id"],
+            "name": "y",
+            "field_values": [{"field_definition_id": field_id, "value": "tap"}],
+        },
+    )
+    assert twin.status_code == 201, twin.text
+    await _forget_identity(twin.json()["id"], name="Tap on a model card (again)")
     # Cannot be created through the API any more (422), so it is written raw.
     async with TestSessionLocal() as session, session.begin():
         unfilled = Event(
@@ -149,6 +169,9 @@ async def test_diff_warns_about_branch_events_with_no_scan_identity(client: Asyn
     assert warnings["Tap on a model card"] == [
         "No scan identity: this event was authored without one; the naming rule "
         "'track:{name}' derives 'track:tap'. Recreate it so the rule stamps the identity."
+    ]
+    assert warnings["Tap on a model card (again)"] == [
+        "No scan identity: 'track:tap' is already held by 'Tap on a model card' on this branch."
     ]
     assert warnings["Swipe without a name value"] == [
         "No scan identity: the naming rule 'track:{name}' needs name. "

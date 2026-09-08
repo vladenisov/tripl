@@ -211,7 +211,9 @@ async def bulk_create_events(
     branch_id: BranchIdDep,
     current_user: EditorUserDep,
 ) -> list[Event]:
-    created = await event_service.bulk_create_events(session, slug, data, branch_id)
+    created = await event_service.bulk_create_events(
+        session, slug, data, branch_id, user_id=current_user.id
+    )
     # Ids only: these rows are alive, so their names are one GET away.
     await audit_service.record(
         session,

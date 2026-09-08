@@ -97,3 +97,8 @@ async def attach_identity_warnings(
                 f"No scan identity: this event was authored without one; the naming rule "
                 f"'{fmt}' derives '{identity}'. Recreate it so the rule stamps the identity."
             )
+            # Claim the derived identity for the rows that follow: two label-named
+            # rows deriving the same identity would otherwise both read as merely
+            # "authored without one", and the reviewer would never learn that the
+            # second can never be stamped while the first exists.
+            held[(type_name, identity)] = entry.name
