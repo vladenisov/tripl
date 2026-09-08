@@ -488,6 +488,17 @@ read-only (tickets are written by the merge and sync workers) and open to any
 authenticated user, and answers `404` for a branch that belongs to another
 project.
 
+An **event** sees the same rows from its own side. One ticket covers one
+branch, and it records which events that branch touched, so an event carried by
+three merged branches is named by three tickets — its detail page lists all of
+them under **Implementation tickets**, newest work included, with the same
+links and status chips. It is history, not the editable field: the panel is
+hidden when nothing has named the event, and it never replaces a ticket key you
+type into a meta field yourself. A branch copy of an event shows its main
+counterpart's history, since the ticket names the event rather than one copy of
+it. The list is at
+`GET /api/v1/projects/{slug}/events/{event_id}/implementation-tickets`.
+
 ### Plan rules
 
 **Where:** Workspace settings › Project › **Plan rules** (in the full-takeover

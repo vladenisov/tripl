@@ -1579,6 +1579,44 @@ async def test_merge_3way_auto_merges_non_overlapping_field_changes(
 
 
 @pytest.mark.asyncio
+async def test_merge_blocks_when_both_sides_retitle_the_same_event(
+    client: AsyncClient,
+) -> None:
+    """`title` is authored text, so two people can write it differently.
+
+    It reached the event and the diff's key list without reaching the merge's,
+    so a title edited on both sides merged silently with one side winning and
+    nothing reported.
+    """
+    slug = "merge-title-conflict"
+    await _seed_plan(client, slug)
+    branch_id = await _create_branch(client, slug)
+
+    main_event_id = (await client.get(f"/api/v1/projects/{slug}/events")).json()["items"][0]["id"]
+    on_main = await client.patch(
+        f"/api/v1/projects/{slug}/events/{main_event_id}",
+        json={"title": "Purchase completed"},
+    )
+    assert on_main.status_code == 200
+
+    branch_events = await client.get(f"/api/v1/projects/{slug}/events?branch={branch_id}")
+    branch_event_id = branch_events.json()["items"][0]["id"]
+    on_branch = await client.patch(
+        f"/api/v1/projects/{slug}/events/{branch_event_id}?branch={branch_id}",
+        json={"title": "Checkout finished"},
+    )
+    assert on_branch.status_code == 200
+
+    resp = await _approve_and_merge(client, slug, branch_id)
+    assert resp.status_code == 409, resp.text
+
+    # Main keeps its own text while the conflict stands — the merge changed
+    # nothing rather than picking a winner.
+    main_after = await client.get(f"/api/v1/projects/{slug}/events/{main_event_id}")
+    assert main_after.json()["title"] == "Purchase completed"
+
+
+@pytest.mark.asyncio
 async def test_merge_blocks_on_same_field_conflict_until_resolved(
     client: AsyncClient,
 ) -> None:

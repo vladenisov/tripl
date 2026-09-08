@@ -1,5 +1,6 @@
 import { api, withBranch } from './client'
 import type { Event, EventChange, EventListResponse, EventMutationResponse } from '../types'
+import type { ImplementationTicket } from '../types/tracker'
 
 type ListParams = {
   event_type_id?: string
@@ -46,6 +47,13 @@ export const eventsApi = {
     api.get<string[]>(withBranch(`/projects/${slug}/events/tags`, branchId)),
   get: (slug: string, id: string, branchId?: string | null) =>
     api.get<Event>(withBranch(`/projects/${slug}/events/${id}`, branchId)),
+  /** Tracker tickets that named this event, oldest first, across every branch
+   * that merged. Read-only: the backend writes them from the merge worker,
+   * never from a client. A branch copy reads through to its main twin. */
+  implementationTickets: (slug: string, id: string, branchId?: string | null) =>
+    api.get<ImplementationTicket[]>(
+      withBranch(`/projects/${slug}/events/${id}/implementation-tickets`, branchId),
+    ),
   create: (
     slug: string,
     data: {

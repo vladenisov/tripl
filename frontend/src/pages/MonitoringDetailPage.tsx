@@ -38,6 +38,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { ImplementationTicketRow } from '@/components/implementation-ticket-row'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { eventNameLabel } from '@/lib/eventName'
@@ -1073,7 +1074,7 @@ export default function MonitoringDetailPage() {
       {isEventDetail && event && (
         <div className="grid items-start gap-[14px] lg:grid-cols-[1.5fr_1fr]">
           <EventFieldsTable eventType={eventType} event={event} fieldDefMap={fieldDefMap} />
-          <EventSideColumn event={event} eventType={eventType} history={eventHistory} metaFieldMap={metaFieldMap} />
+          <EventSideColumn slug={slug ?? ''} event={event} eventType={eventType} history={eventHistory} metaFieldMap={metaFieldMap} />
         </div>
       )}
 
@@ -2579,12 +2580,44 @@ function EventMetaCard({
   )
 }
 
+function EventTicketsCard({ slug, event }: { slug: string; event: TEvent }) {
+  const branchId = useActiveBranchId()
+  const { data: tickets } = useQuery({
+    queryKey: ['eventImplementationTickets', slug, branchId, event.id],
+    queryFn: () => eventsApi.implementationTickets(slug, event.id, branchId),
+  })
+  // Hidden, not empty. Rows exist only where the Jira integration is on and a
+  // branch has merged, so "no tickets" is the normal state for most events and
+  // an empty card would be noise on every one of them — the same rule the
+  // branch panel states for itself. No merged-status gate here: an event has
+  // no branch status to gate on, and these tickets come from branches that
+  // already merged (tripl-h2sx.32).
+  if (!tickets || tickets.length === 0) return null
+  return (
+    <div className={SURFACE_CARD} style={SURFACE_STYLE}>
+      <div
+        className="border-b px-4 py-3 text-[12.5px] font-semibold"
+        style={{ borderColor: 'var(--border-subtle)' }}
+      >
+        Implementation tickets
+      </div>
+      <div>
+        {tickets.map(ticket => (
+          <ImplementationTicketRow key={ticket.id} ticket={ticket} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function EventSideColumn({
+  slug,
   event,
   eventType,
   history,
   metaFieldMap,
 }: {
+  slug: string
   event: TEvent
   eventType: EventType | undefined
   history: EventHistoryItem[]
@@ -2636,6 +2669,8 @@ function EventSideColumn({
       </div>
 
       <EventMetaCard event={event} metaFieldMap={metaFieldMap} />
+
+      <EventTicketsCard slug={slug} event={event} />
 
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
         <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>

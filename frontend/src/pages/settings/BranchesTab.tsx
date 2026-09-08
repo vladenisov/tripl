@@ -26,6 +26,7 @@ import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { DIFF_STALE_MS, rowDiffBranches } from './branchDiffFanout'
 import { DiffValue } from './DiffValue'
 import { CommentThread } from '@/components/comment-thread'
+import { ImplementationTicketRow } from '@/components/implementation-ticket-row'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
 import { useBranchLinkProps } from '@/hooks/useBranch'
@@ -48,7 +49,6 @@ import { branchTicket } from '@/lib/branchTicket'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import type {
-  ImplementationTicket,
   PlanBranchApproval,
   PlanBranchConflictEntity,
   PlanBranchConflictField,
@@ -1260,51 +1260,6 @@ function ImplementationTicketsPanel({
         <ImplementationTicketRow key={ticket.id} ticket={ticket} />
       ))}
     </Panel>
-  )
-}
-
-function ImplementationTicketRow({ ticket }: { ticket: ImplementationTicket }) {
-  // Sync flips the ticket closed once the tracker reports the issue done, which
-  // is also what promotes the covered events to `implemented`.
-  const done = ticket.status === 'closed'
-  // The tracker can answer without an issue key (and then without a URL); show
-  // what we have as plain text rather than a link that goes nowhere.
-  const label = ticket.external_key || 'Ticket'
-
-  return (
-    <div
-      className="flex items-center gap-2 border-t px-4 py-2.5 first:border-t-0"
-      style={{ borderColor: 'var(--border-subtle)' }}
-    >
-      <Ticket
-        className="size-3.5 shrink-0"
-        style={{ color: 'var(--fg-subtle)' }}
-        aria-hidden="true"
-      />
-      {ticket.external_url ? (
-        <a
-          href={ticket.external_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0 text-[12.5px] font-medium underline"
-          style={{ color: 'var(--accent)' }}
-        >
-          {label}
-          <ArrowUpRight className="ml-0.5 inline size-3" aria-hidden="true" />
-        </a>
-      ) : (
-        <span className="shrink-0 text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
-          {label}
-        </span>
-      )}
-      <span className="truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        {ticket.summary}
-      </span>
-      <div className="flex-1" />
-      <Chip tone={done ? 'success' : 'neutral'} size="xs">
-        {done ? 'Done' : 'Open'}
-      </Chip>
-    </div>
   )
 }
 

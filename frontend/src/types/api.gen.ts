@@ -1714,6 +1714,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/events/{event_id}/implementation-tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Event Implementation Tickets
+         * @description The tickets that named this event, across every branch that merged.
+         *
+         *     Shows history; it does not replace the editable meta field. Rows only exist
+         *     where the Jira integration is enabled and a branch has merged.
+         */
+        get: operations["list_event_implementation_tickets_api_v1_projects__slug__events__event_id__implementation_tickets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/events/{event_id}/metrics": {
         parameters: {
             query?: never;
@@ -14547,6 +14570,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EventChangeResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_event_implementation_tickets_api_v1_projects__slug__events__event_id__implementation_tickets_get: {
+        parameters: {
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImplementationTicketResponse"][];
                 };
             };
             /** @description Validation Error */

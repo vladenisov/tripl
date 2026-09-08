@@ -688,6 +688,7 @@ function installEventDetailFetch(
     event?: Record<string, unknown>
     breakdowns?: Record<string, unknown>
     latestSignal?: Record<string, unknown> | null
+    tickets?: Record<string, unknown>[]
   } = {},
 ) {
   const metricsData = opts.metricsData ?? [metricPoint('2026-01-02T00:00:00Z', 200)]
@@ -724,6 +725,9 @@ function installEventDetailFetch(
       })
     }
     if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
+    if (url.includes('/api/v1/projects/demo/events/event-1/implementation-tickets')) {
+      return mockJsonResponse(opts.tickets ?? [])
+    }
     if (url.endsWith('/api/v1/projects/demo/events/event-1')) return mockJsonResponse(event)
     if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
       return mockJsonResponse({ id: 'scan-1', app_version_column: null })
@@ -1906,5 +1910,46 @@ describe('MonitoringDetailPage deep links (tripl-h2sx.20)', () => {
 
     expect(screen.queryByRole('tab', { name: /By version/i })).not.toBeInTheDocument()
     expect(screen.getAllByRole('tab')[0]).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
+describe('Event implementation tickets (tripl-h2sx.32)', () => {
+  const TICKET = {
+    id: 'ticket-1',
+    project_id: 'p-1',
+    branch_id: 'branch-1',
+    tracker_type: 'jira',
+    external_id: '10042',
+    external_key: 'ENG-42',
+    external_url: 'https://example.atlassian.net/browse/ENG-42',
+    status: 'open',
+    summary: 'Implement checkout-v2',
+    event_ids: ['event-1'],
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    closed_at: null,
+  }
+
+  it('links every ticket that named the event', async () => {
+    installEventDetailFetch({ tickets: [TICKET, { ...TICKET, id: 'ticket-2', external_key: 'ENG-9', status: 'closed' }] })
+    renderEventDetail()
+
+    expect(await screen.findByText('Implementation tickets')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /ENG-42/ })).toHaveAttribute(
+      'href',
+      'https://example.atlassian.net/browse/ENG-42',
+    )
+    expect(screen.getByRole('link', { name: /ENG-9/ })).toBeInTheDocument()
+    expect(screen.getByText('Done')).toBeInTheDocument()
+  })
+
+  it('shows no card at all when nothing named the event', async () => {
+    // Hidden, not empty: rows exist only where the tracker is on and a branch
+    // merged, so an empty card would be noise on nearly every event.
+    installEventDetailFetch({ tickets: [] })
+    renderEventDetail()
+
+    await screen.findByText('Metric breakdowns')
+    expect(screen.queryByText('Implementation tickets')).not.toBeInTheDocument()
   })
 })

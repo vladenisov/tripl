@@ -26774,6 +26774,81 @@
         ]
       }
     },
+    "/api/v1/projects/{slug}/events/{event_id}/implementation-tickets": {
+      "get": {
+        "description": "The tickets that named this event, across every branch that merged.\n\nShows history; it does not replace the editable meta field. Rows only exist\nwhere the Jira integration is enabled and a branch has merged.",
+        "operationId": "list_event_implementation_tickets_api_v1_projects__slug__events__event_id__implementation_tickets_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+            "in": "query",
+            "name": "branch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ImplementationTicketResponse"
+                  },
+                  "title": "Response List Event Implementation Tickets Api V1 Projects  Slug  Events  Event Id  Implementation Tickets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Event Implementation Tickets",
+        "tags": [
+          "implementation-tickets"
+        ]
+      }
+    },
     "/api/v1/projects/{slug}/events/{event_id}/metrics": {
       "get": {
         "operationId": "get_event_metrics_api_v1_projects__slug__events__event_id__metrics_get",

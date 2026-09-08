@@ -52,6 +52,11 @@ _FD_CHANGE_KEYS = (
 )
 _EV_CHANGE_KEYS = (
     "source_name",
+    # `title` is here for the same reason `description` is: it is authored text
+    # that two people can write differently. It was added to the event and to
+    # the DIFF's key list without reaching this one, so a title edited on both
+    # sides merged silently, one side winning with nothing reported.
+    "title",
     "description",
     "status",
     "sunset_at",
