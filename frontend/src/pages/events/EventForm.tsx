@@ -282,8 +282,10 @@ export function EventForm({
   const users = usersQuery.data ?? []
 
   // A branch named after a ticket pre-fills the meta field that links to it,
-  // once, on a new event; a value already typed is never overwritten
-  // (tripl-kjhi.14). Off main there is no branch name to read.
+  // once, on a new event; a field the reader has touched — typed into, or
+  // cleared before the branch list arrived — is never overwritten, which is
+  // why the check is for the KEY, not for a value (tripl-kjhi.14). Off main
+  // there is no branch name to read.
   const branchesQuery = useQuery({
     queryKey: planBranchesKey(slug),
     queryFn: () => planBranchesApi.list(slug),
@@ -298,7 +300,7 @@ export function EventForm({
     if (!isNew || !ticket || ticketPrefilled.current) return
     ticketPrefilled.current = true
     setMetaValues(prev =>
-      prev[ticket.field.id] ? prev : { ...prev, [ticket.field.id]: ticket.key },
+      ticket.field.id in prev ? prev : { ...prev, [ticket.field.id]: ticket.key },
     )
   }, [isNew, ticket])
 

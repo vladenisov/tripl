@@ -1464,6 +1464,13 @@ describe('BranchesTab housekeeping rows (tripl-kjhi.12)', () => {
     expect(screen.getByText('property.adana')).toBeInTheDocument()
     expect(screen.getByText('property.city')).toBeInTheDocument()
     expect(screen.getAllByText(/unused scan variable retired/)).toHaveLength(2)
+
+    // Nor does the merge confirmation list them: the dialog protects documented
+    // values, overrides and drift history, none of which these rows have.
+    vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
+    expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
   })
 })
 

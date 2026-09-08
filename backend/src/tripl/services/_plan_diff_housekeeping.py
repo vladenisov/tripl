@@ -52,18 +52,18 @@ def mark_housekeeping(
 
     ``behind_entries`` is base-vs-main: what main did since the branch was cut.
     A removal present on both sides is already true on main, so the merge
-    leaves nothing for it to do. The scan-variable rule runs first because its
-    reason is the more specific one, and it needs no main side — a legacy
-    branch without a base snapshot still gets it.
+    leaves nothing for it to do — the stronger statement, so it wins when both
+    rules match. The scan-variable rule needs no main side, so a legacy branch
+    without a base snapshot still gets it.
     """
     removed_on_main = {_identity(e) for e in behind_entries if e.kind == "removed"}
     for entry in entries:
         if entry.kind != "removed":
             continue
-        if entry.entity_type == "variable" and _is_unused_scan_variable(entry.before):
-            entry.housekeeping = RETIRED_SCAN_VARIABLE
-        elif _identity(entry) in removed_on_main:
+        if _identity(entry) in removed_on_main:
             entry.housekeeping = ALREADY_REMOVED_ON_MAIN
+        elif entry.entity_type == "variable" and _is_unused_scan_variable(entry.before):
+            entry.housekeeping = RETIRED_SCAN_VARIABLE
 
 
 def reviewable(entries: Iterable[PlanDiffEntry]) -> list[PlanDiffEntry]:

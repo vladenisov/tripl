@@ -1176,6 +1176,18 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
       .closest('[role="row"]') as HTMLElement
     expect(within(firstSeen).getByText('—')).toBeInTheDocument()
   })
+
+  it('names an owner the roster cannot resolve as unknown, not as still loading', async () => {
+    // The harness answers no `/users` request, so the roster query fails —
+    // the same outcome as a member who has since been removed.
+    installEventDetailFetch({ event: { ...eventFixture(), owner_id: 'u-ghost' } })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    const ownerRow = within(properties).getByText('Owner').closest('[role="row"]') as HTMLElement
+    expect(await within(ownerRow).findByText('Unknown user')).toBeInTheDocument()
+  })
 })
 
 describe('MonitoringDetailPage catalog-metric drilldown', () => {

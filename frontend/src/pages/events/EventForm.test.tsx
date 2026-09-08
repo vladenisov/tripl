@@ -894,12 +894,23 @@ describe('EventForm ticket prefill from the branch name (tripl-kjhi.14)', () => 
     sensitivity: 'none',
   }
 
-  function renderInBranch(event: TEvent | null, branchName: string) {
-    vi.mocked(planBranchesApi.list).mockResolvedValue({
-      items: [{ id: 'b-wnd', name: branchName, kind: 'working' }],
-      total: 1,
-    } as never)
-    return render(
+  function renderInBranch(
+    event: TEvent | null,
+    branchName: string,
+    { deferred = false }: { deferred?: boolean } = {},
+  ) {
+    const list = { items: [{ id: 'b-wnd', name: branchName, kind: 'working' }], total: 1 } as never
+    let release = () => {}
+    if (deferred) {
+      vi.mocked(planBranchesApi.list).mockReturnValue(
+        new Promise(resolve => {
+          release = () => resolve(list)
+        }),
+      )
+    } else {
+      vi.mocked(planBranchesApi.list).mockResolvedValue(list)
+    }
+    render(
       createElement(EventForm, {
         slug: 'demo',
         eventTypes: [EVENT_TYPE],
@@ -921,6 +932,7 @@ describe('EventForm ticket prefill from the branch name (tripl-kjhi.14)', () => 
           ),
       },
     )
+    return { release }
   }
 
   it('fills the linking meta field with the key the branch is named after', async () => {
@@ -932,6 +944,19 @@ describe('EventForm ticket prefill from the branch name (tripl-kjhi.14)', () => 
     renderInBranch(null, 'checkout-v2')
     await waitFor(() => expect(planBranchesApi.list).toHaveBeenCalled())
     expect(screen.getByLabelText('Jira')).toHaveValue('')
+  })
+
+  it('leaves a field the reader cleared before the branch list arrived alone', async () => {
+    const { release } = renderInBranch(null, 'WND-4770', { deferred: true })
+    const jira = screen.getByLabelText('Jira')
+    fireEvent.change(jira, { target: { value: 'WND-1' } })
+    fireEvent.change(jira, { target: { value: '' } })
+
+    release()
+    // The branch has arrived and the prefill effect has had its turn.
+    await waitFor(() => expect(planBranchesApi.list).toHaveBeenCalled())
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(jira).toHaveValue('')
   })
 
   it('never overwrites what an existing event already holds', async () => {

@@ -4305,8 +4305,18 @@ async def test_diff_keeps_scan_housekeeping_out_of_the_reviewers_counts(
     diff = (await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")).json()
     by_name = {e["name"]: e for e in diff["entries"]}
     assert by_name["property_city"]["housekeeping"] == "already removed on main"
+    assert by_name["property_adana"]["housekeeping"] == "unused scan variable retired"
     assert diff["summary"] == {"added": 1, "removed": 0, "changed": 0, "housekeeping": 2}
     assert diff["behind_base"] is True
+
+    # Once main retires the junk one as well, "already removed on main" is the
+    # stronger statement — the merge does nothing for it — and wins.
+    gone_junk = await client.delete(f"/api/v1/projects/{slug}/variables/{junk.json()['id']}")
+    assert gone_junk.status_code == 204, gone_junk.text
+    diff = (await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")).json()
+    by_name = {e["name"]: e for e in diff["entries"]}
+    assert by_name["property_adana"]["housekeeping"] == "already removed on main"
+    assert diff["summary"] == {"added": 1, "removed": 0, "changed": 0, "housekeeping": 2}
 
     listed = (await client.get(f"/api/v1/projects/{slug}/branches?include_diff_counts=true")).json()
     row = next(b for b in listed["items"] if b["id"] == branch_id)

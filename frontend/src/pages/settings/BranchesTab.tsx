@@ -925,10 +925,13 @@ function FeatureBranchDetail({
   // A variable removed relative to the branch base and not paired with an
   // addition is an intentional deletion; warn because its observed values,
   // overrides and drift history cascade. A rename is paired away — it keeps
-  // all three. A removal main has already made is not a deletion the merge
-  // performs, so it is not one the merge warns about (tripl-kjhi.12).
+  // all three. Housekeeping rows are not the author's deletions: a removal
+  // main has already made is nothing the merge does, and a retired scan
+  // variable nobody bound, documented or referenced has none of the three
+  // things this dialog exists to protect — so neither is warned about, which
+  // keeps the dialog consistent with the counts (tripl-kjhi.12).
   const removedVariables = variablesDeletedByMerge(
-    entries.filter((entry) => entry.housekeeping !== HOUSEKEEPING_ALREADY_ON_MAIN),
+    entries.filter((entry) => !entry.housekeeping),
     renames,
   )
 
@@ -2177,14 +2180,9 @@ function CreateBranchDialog({
 /** The reasons the backend stamps on `PlanDiffEntry.housekeeping`
  * (`services/_plan_diff_housekeeping.py`), and how each reads as a count:
  * "7 unused scan variables retired". */
-const HOUSEKEEPING_RETIRED_SCAN_VARIABLE = 'unused scan variable retired'
-const HOUSEKEEPING_ALREADY_ON_MAIN = 'already removed on main'
 const HOUSEKEEPING_WORDING: Record<string, [string, string]> = {
-  [HOUSEKEEPING_RETIRED_SCAN_VARIABLE]: [
-    'unused scan variable retired',
-    'unused scan variables retired',
-  ],
-  [HOUSEKEEPING_ALREADY_ON_MAIN]: ['removal already made on main', 'removals already made on main'],
+  'unused scan variable retired': ['unused scan variable retired', 'unused scan variables retired'],
+  'already removed on main': ['removal already made on main', 'removals already made on main'],
 }
 
 function housekeepingLine(entries: PlanDiffEntry[]): string {
