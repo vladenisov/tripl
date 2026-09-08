@@ -29,6 +29,7 @@ from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.event_photo import EventPhoto
+from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
@@ -425,6 +426,15 @@ def _merge_event_into_group(
     _move_event_meta_values(session, source=source, target=target)
     session.execute(
         update(EventPhoto).where(EventPhoto.event_id == source.id).values(event_id=target.id)
+    )
+    # Event-anchored discussion follows the event, because a comment is human
+    # input no later pipeline step can rebuild. Only the event-anchored rows:
+    # a photo-anchored comment hangs off ``photo_id`` and rides along with the
+    # photo the line above just re-pointed.
+    session.execute(
+        update(EventPhotoComment)
+        .where(EventPhotoComment.event_id == source.id)
+        .values(event_id=target.id)
     )
     _merge_event_metric_rows(session, source_ids=[source.id], target_id=target.id)
     _merge_event_metric_breakdown_rows(session, source_ids=[source.id], target_id=target.id)

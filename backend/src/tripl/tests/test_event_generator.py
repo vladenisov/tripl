@@ -34,6 +34,7 @@ from tripl.models.domain_enums import MetricKind
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
+from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.implementation_ticket import ImplementationTicket
@@ -3971,6 +3972,56 @@ def test_group_merge_moves_variable_contexts_onto_the_surviving_event(
     assert contexts[0].field_definition_id == fds["screen"].id
     assert contexts[0].values == ["a", "b"]
     assert contexts[0].observed_count == 7
+
+
+def test_group_merge_carries_the_event_discussion_onto_the_survivor(
+    sync_session: Session, project_and_type
+):
+    # A comment is human input: no later scan step rebuilds it, and the FK
+    # cascades, so anything the merge does not explicitly move dies with the
+    # source event (tripl-h2sx.25 added this anchor; the FK ledger pins it).
+    project, et, fds = project_and_type
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="home",
+        action="click:one",
+        order=0,
+    )
+    parent = EventPhotoComment(id=uuid.uuid4(), event_id=source.id, body="Is this the old one?")
+    sync_session.add(parent)
+    sync_session.flush()
+    sync_session.add(
+        EventPhotoComment(
+            id=uuid.uuid4(), event_id=source.id, parent_id=parent.id, body="Yes, since March."
+        )
+    )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+    sync_session.commit()
+
+    assert merged == 1
+    grouped_event = sync_session.execute(
+        select(Event).where(Event.project_id == project.id)
+    ).scalar_one()
+    comments = (
+        sync_session.execute(select(EventPhotoComment).order_by(EventPhotoComment.body))
+        .scalars()
+        .all()
+    )
+    # The whole thread, reply included — a reply carries the same anchor as its
+    # parent, so one UPDATE moves both.
+    assert [comment.body for comment in comments] == ["Is this the old one?", "Yes, since March."]
+    assert {comment.event_id for comment in comments} == {grouped_event.id}
 
 
 def test_group_merge_folds_colliding_contexts_instead_of_violating_the_unique_constraint(
