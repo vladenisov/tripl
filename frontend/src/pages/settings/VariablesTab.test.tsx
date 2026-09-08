@@ -372,6 +372,32 @@ describe('VariablesTab', () => {
     expect(await screen.findByText(/invalid path/i)).toBeInTheDocument()
   })
 
+  it('creates a variable with neither values nor bindings', async () => {
+    // The whole of feedback item 6: nothing ever required them, and nothing
+    // on screen said so.
+    mockList([])
+    vi.mocked(variablesApi.create).mockResolvedValue(
+      makeVariable({ id: 'var-new', name: 'variant', allowed_values: [], bindings: [] }),
+    )
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+
+    expect(screen.getByText('Possible values (optional)')).toBeInTheDocument()
+    expect(screen.getByText('Data bindings (optional)')).toBeInTheDocument()
+    expect(screen.getByText(/scans match this variable by its name/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('my_variable'), { target: { value: 'variant' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() =>
+      expect(variablesApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ name: 'variant', allowed_values: [], bindings: [] }),
+        null,
+      ),
+    )
+  })
+
   it('saves a per-event override from the edit dialog', async () => {
     mockList([
       makeVariable({

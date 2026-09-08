@@ -718,13 +718,17 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                 </div>
               </div>
               <div className="grid gap-2">
-                <Label>Possible values</Label>
+                <Label>Possible values (optional)</Label>
                 <ChipListInput values={allowedValues} onChange={setAllowedValues} placeholder="Type a value, press Enter" ariaLabel="Add possible value" />
               </div>
               <div className="grid gap-2">
-                <Label>Data bindings</Label>
+                {/* Three of the four fields here are optional and only Description
+                    said so, which read as "the other two are not". Bindings least
+                    of all: a scan matches a variable by NAME first, so a variable
+                    named after its column needs none. */}
+                <Label>Data bindings (optional)</Label>
                 <ChipListInput values={bindings} onChange={setBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} />
-                <p className="text-[11px] text-muted-foreground">Warehouse column or JSON path this variable maps to — scans will adopt this variable instead of creating a new one.</p>
+                <p className="text-[11px] text-muted-foreground">Leave it empty and scans match this variable by its name. Add a binding only when the warehouse column or JSON path is spelled differently — <code className="rounded bg-muted px-1">page_data.extra.variant</code> behind <code className="rounded bg-muted px-1">{'${variant}'}</code>.</p>
               </div>
               {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
@@ -766,6 +770,11 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
               <div className="grid gap-2">
                 <Label>Data bindings</Label>
                 <ChipListInput values={editBindings} onChange={setEditBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} />
+                {/* Deliberately not "you can leave this empty", which is true of
+                    creation and misleading here: emptying a binding a scan filled
+                    in makes the row read as hand-owned to `_human_claim`, and it
+                    is then exempt from the retirement sweep for good. */}
+                <p className="text-[11px] text-muted-foreground">Needed only where the warehouse column or JSON path is spelled differently from the name; otherwise scans match on the name. A binding a scan filled in is how it keeps finding this variable — removing it marks the variable as yours, and retirement stops considering it.</p>
               </div>
               {editingVar && driftItems.length > 0 && (
                 <div className={activeDrifts.length > 0 ? 'rounded-md border border-warning/40 bg-warning-soft p-3' : 'rounded-md border bg-muted/30 p-3'}>

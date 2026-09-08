@@ -22,8 +22,8 @@ Each variable has:
 - a **type** (`string`, `number`, `boolean`, `date`, `datetime`, `json`, or an
   array type);
 - a human-readable **description**;
-- **documented values** — the global list the team expects;
-- one or more **bindings** — warehouse columns or dotted JSON paths such as
+- optional **documented values** — the global list the team expects;
+- optional **bindings** — warehouse columns or dotted JSON paths such as
   `variant` or `page_data.extra.variant`;
 - observed contexts and samples discovered by scans;
 - optional **per-event documented-value overrides**.
@@ -32,6 +32,10 @@ The name is for people and templates. A binding is how a scan recognizes the
 same concept in raw data. Keeping those separate lets a scan turn a long source
 path into a short, readable `${variant}` placeholder without losing the source
 mapping.
+
+Only the name and type are required. **You do not have to fill in bindings** —
+a scan matches a variable by its name first, so a variable named after the
+column it stands for needs no binding at all.
 
 ## Documented, observed, and effective values
 
@@ -88,6 +92,18 @@ project type into the search box above it to reach the event you want — the no
 under the list says how many events it is not currently showing.
 
 ## Bind a variable to warehouse data
+
+Skip this when the variable's name already matches the column — a binding earns
+its keep only when the two are spelled differently, such as
+`page_data.extra.variant` behind `${variant}`. In that one case, leaving it
+empty costs you quietly and later: the next scan does not recognize your
+variable, mints a second one beside it (`extra_variant`, say), and the one you
+made by hand collects no contexts, ever. It will not show up under **Unused**
+either — a variable you described is a variable you claimed.
+
+On a variable a scan created, the binding it filled in is how it keeps finding
+that variable. Clearing it marks the variable as hand-owned, which permanently
+exempts it from the retirement sweep.
 
 Bindings accept a scalar column name or dotted JSON path:
 
