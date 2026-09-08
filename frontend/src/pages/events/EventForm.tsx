@@ -56,6 +56,57 @@ function normalizeMetricBreakdownColumns(columns: string[]): string[] {
     })
 }
 
+/**
+ * Says which way a field value is heading. The two things an analyst reaches
+ * for have opposite and permanent effects, and neither announced itself:
+ * typing a correction sets `is_authored`, after which `_upsert_field_values`
+ * skips the field for good, while clearing the box deletes the row and the
+ * next scan fills it in again.
+ */
+function ScanMaintenanceNotice({
+  stored,
+  current,
+  onHandBack,
+}: {
+  /** The saved row behind this box, or null on a field the event never carried. */
+  stored: { value: string; isAuthored: boolean } | null
+  current: string
+  /**
+   * Absent where clearing the box would 422 on save — a required field, or one
+   * the scan's name format builds the event's identity out of.
+   */
+  onHandBack?: () => void
+}) {
+  if (!stored) return null
+  if (stored.isAuthored) {
+    if (current.trim() === '') {
+      return (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Cleared. Save, and the next scan fills this in again.
+        </p>
+      )
+    }
+    return (
+      <p className="mt-1 text-xs text-muted-foreground">
+        Edited by hand, so scans leave it alone.{' '}
+        {onHandBack && (
+          <button
+            type="button"
+            onClick={onHandBack}
+            className="underline underline-offset-2 hover:text-foreground"
+          >
+            Hand back to scans
+          </button>
+        )}
+      </p>
+    )
+  }
+  if (current === stored.value) return null
+  return (
+    <p className="mt-1 text-xs text-warning">Saving this stops scans from updating the field.</p>
+  )
+}
+
 function FieldTemplateHints({
   value,
   variables,
@@ -305,6 +356,19 @@ export function EventForm({
   )
   const [metaValues, setMetaValues] = useState<Record<string, string>>(() =>
     event ? Object.fromEntries(event.meta_values.map(mv => [mv.meta_field_definition_id, mv.value])) : {},
+  )
+  // What the form must say about a field depends on the SAVED row, not only on
+  // what is typed: `_authored_after_edit` freezes a value the moment its text
+  // changes, and the box alone cannot tell a frozen value from a live one.
+  const storedFieldValues = useMemo(
+    () =>
+      new Map(
+        (event?.field_values ?? []).map(fv => [
+          fv.field_definition_id,
+          { value: fv.value, isAuthored: fv.is_authored ?? false },
+        ]),
+      ),
+    [event],
   )
 
   // The owner used to be settable only from the list's bulk bar, after the
@@ -943,6 +1007,15 @@ export function EventForm({
                   variables={projectVariables}
                   namesEvent={namingColumns.has(f.name)}
                   slug={slug}
+                />
+                <ScanMaintenanceNotice
+                  stored={storedFieldValues.get(f.id) ?? null}
+                  current={fieldValues[f.id] ?? ''}
+                  onHandBack={
+                    f.is_required || namingColumns.has(f.name)
+                      ? undefined
+                      : () => setFieldValues({ ...fieldValues, [f.id]: '' })
+                  }
                 />
               </EvField>
             ))}

@@ -134,6 +134,12 @@ class EventFieldValueResponse(BaseModel):
     id: uuid.UUID
     field_definition_id: uuid.UUID
     value: str
+    # A hand-typed correction is frozen: ``_upsert_field_values`` never
+    # overwrites an authored value, so the scan stops maintaining this field
+    # for good. That was invisible — the flag reached plan snapshots and the
+    # branch diff but never the event API, so the form could not tell a value
+    # the scan still refreshes from one it has permanently stopped touching.
+    is_authored: bool = False
     variable_values: list[EventFieldVariableValueResponse] = []
 
     model_config = {"from_attributes": True}

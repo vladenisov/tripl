@@ -22,6 +22,12 @@ export interface EventFieldValue {
   id: string
   field_definition_id: string
   value: string
+  /**
+   * A hand-typed value scans will never overwrite again. Optional to mirror the
+   * backend default: an older response omits it, and a missing flag must read
+   * as "the scan still maintains this", not as "frozen".
+   */
+  is_authored?: boolean
   variable_values?: EventFieldVariableValue[]
 }
 

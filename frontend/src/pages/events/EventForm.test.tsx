@@ -993,3 +993,55 @@ describe('EventForm ticket prefill from the branch name (tripl-kjhi.14)', () => 
     expect(planBranchesApi.list).not.toHaveBeenCalled()
   })
 })
+
+describe('EventForm scan maintenance notice', () => {
+  const scanned = (value: string) =>
+    ({
+      ...EDIT_EVENT,
+      field_values: [{ field_definition_id: 'field-product-id', value, is_authored: false }],
+    }) as unknown as TEvent
+  const authored = (value: string) =>
+    ({
+      ...EDIT_EVENT,
+      field_values: [{ field_definition_id: 'field-product-id', value, is_authored: true }],
+    }) as unknown as TEvent
+
+  it('says nothing about a scan-maintained value until the reader changes it', () => {
+    renderForm(scanned('prod_monthly'), { eventTypes: [EDIT_EVENT_TYPE] })
+    expect(screen.queryByText(/scans/i)).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText(/Product ID/), { target: { value: 'prod_annual' } })
+    expect(screen.getByText('Saving this stops scans from updating the field.')).toBeInTheDocument()
+  })
+
+  it('marks a hand-edited value as frozen and hands it back on request', () => {
+    renderForm(authored('prod_monthly'), { eventTypes: [EDIT_EVENT_TYPE] })
+    expect(screen.getByText(/Edited by hand, so scans leave it alone/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hand back to scans' }))
+    expect(screen.getByLabelText(/Product ID/)).toHaveValue('')
+    expect(
+      screen.getByText('Cleared. Save, and the next scan fills this in again.'),
+    ).toBeInTheDocument()
+  })
+
+  it('does not offer to clear a required field, which the server would reject', () => {
+    const requiredType = {
+      ...EDIT_EVENT_TYPE,
+      field_definitions: [{ ...EDIT_EVENT_TYPE.field_definitions[0], is_required: true }],
+    } as unknown as EventType
+    renderForm(authored('prod_monthly'), { eventTypes: [requiredType] })
+
+    expect(screen.getByText(/Edited by hand, so scans leave it alone/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Hand back to scans' })).not.toBeInTheDocument()
+  })
+
+  it('treats a response with no flag as still maintained, not as frozen', () => {
+    const legacy = {
+      ...EDIT_EVENT,
+      field_values: [{ field_definition_id: 'field-product-id', value: 'prod_monthly' }],
+    } as unknown as TEvent
+    renderForm(legacy, { eventTypes: [EDIT_EVENT_TYPE] })
+    expect(screen.queryByText(/Edited by hand/)).not.toBeInTheDocument()
+  })
+})

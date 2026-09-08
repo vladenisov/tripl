@@ -205,6 +205,14 @@ labels (lower-cased) used for filtering. Field and meta values accept variable
 references (`${variable}`), and `url`/`date`/`json` field types render
 type-appropriate inputs.
 
+**Who owns a field value.** A scan fills field values in from what it observes
+and keeps them up to date. The moment you type over one, it is yours: scans stop
+touching that field, permanently, and the form says so under the box. To hand it
+back, use **Hand back to scans** — that empties the box, and the next scan fills
+it in again from live data. Clearing a field and correcting it therefore do
+opposite things, which is worth knowing when a value looks wrong: correcting it
+freezes your answer, clearing it asks for a fresh one.
+
 ### Event photos & specs
 
 **Where:** the **Photos & specs** panel on an event's **monitoring detail** page

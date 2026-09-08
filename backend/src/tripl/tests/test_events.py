@@ -136,6 +136,49 @@ async def test_user_authored_field_values_are_marked_on_create_and_update(client
 
 
 @pytest.mark.asyncio
+async def test_field_value_response_says_whether_scans_still_maintain_it(client: AsyncClient):
+    """``is_authored`` reached plan snapshots and the branch diff but never the
+    event API, so the form had no way to tell a value the scan still refreshes
+    from one a hand edit froze for good — and the two edits an analyst reaches
+    for (clearing the box, typing a correction) have opposite permanent effects.
+    """
+    et_id, field_id, _ = await _setup_events(client, "ev-authored-exposed")
+    create_response = await client.post(
+        "/api/v1/projects/ev-authored-exposed/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "/home"}],
+        },
+    )
+    assert create_response.status_code == 201
+    event_id = uuid.UUID(create_response.json()["id"])
+
+    detail = await client.get(f"/api/v1/projects/ev-authored-exposed/events/{event_id}")
+    assert detail.status_code == 200
+    assert [fv["is_authored"] for fv in detail.json()["field_values"]] == [True]
+
+    # Stand in for a scan-written row. The response has to carry the flag
+    # through rather than defaulting every value to "frozen" — a form that
+    # marks a live value as frozen is as wrong as one that marks none at all.
+    async with TestSessionLocal() as session:
+        scanned = (
+            await session.execute(
+                select(EventFieldValue).where(EventFieldValue.event_id == event_id)
+            )
+        ).scalar_one()
+        scanned.is_authored = False
+        await session.commit()
+
+    detail = await client.get(f"/api/v1/projects/ev-authored-exposed/events/{event_id}")
+    assert [fv["is_authored"] for fv in detail.json()["field_values"]] == [False]
+
+    listing = await client.get("/api/v1/projects/ev-authored-exposed/events")
+    listed = next(item for item in listing.json()["items"] if item["id"] == str(event_id))
+    assert [fv["is_authored"] for fv in listed["field_values"]] == [False]
+
+
+@pytest.mark.asyncio
 async def test_event_mutations_warn_for_unknown_template_tokens(client: AsyncClient):
     et_id, field_id, meta_id = await _setup_events(client, "ev-template-warnings")
     variable_response = await client.post(

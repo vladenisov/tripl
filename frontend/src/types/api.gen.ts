@@ -5555,6 +5555,11 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Is Authored
+             * @default false
+             */
+            is_authored: boolean;
             /** Value */
             value: string;
             /**

@@ -6405,6 +6405,11 @@
             "title": "Id",
             "type": "string"
           },
+          "is_authored": {
+            "default": false,
+            "title": "Is Authored",
+            "type": "boolean"
+          },
           "value": {
             "title": "Value",
             "type": "string"
