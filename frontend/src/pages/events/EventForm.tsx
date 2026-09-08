@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   Event as TEvent,
@@ -18,6 +18,7 @@ import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { variablesApi } from '@/api/variables'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenario, useDemoScenarioActions } from '@/demo/demoScenarioContext'
@@ -996,10 +997,21 @@ export function EventForm({
 export default function EventEditPage() {
   const { slug, tab, eventId } = useParams<{ slug: string; tab?: string; eventId?: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const branchId = useActiveBranchId()
   const isNew = !eventId
 
+  // Reviewing a branch and fixing three of its events used to cost three round
+  // trips through Settings > Branches, because closing the editor always landed
+  // on the events list. Go back to wherever the editor was opened from instead
+  // — react-router gives the initial history entry the key 'default', so this
+  // only steps back when there is somewhere in-app to step back to, and the
+  // list stays the answer for a cold-opened URL.
   const goBack = () => {
+    if (location.key !== 'default') {
+      navigate(-1)
+      return
+    }
     const base = !tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`
     navigate(base)
   }
@@ -1068,14 +1080,29 @@ export default function EventEditPage() {
     : undefined
 
   return (
-    <EventForm
-      slug={slug}
-      eventTypes={eventTypesData}
-      metaFields={metaFieldsQuery.data ?? EMPTY_META_FIELDS}
-      projectVariables={variablesQuery.data ?? EMPTY_VARIABLES}
-      event={eventQuery.data ?? null}
-      defaultEventTypeId={defaultEventTypeId}
-      onClose={goBack}
-    />
+    <div className="h-full overflow-y-auto">
+      {eventId ? (
+        // The form is where a branch edit is actually made, and it was the one
+        // authoring surface that never said which plan it was writing to. The
+        // read is lenient and the write is strict, so a mismatch rendered a
+        // perfectly normal form and failed as a bare 404 at Save.
+        <div className="mx-auto max-w-[880px] px-6 pt-4">
+          <EntityBranchBanner
+            slug={slug}
+            rowBranchId={eventQuery.data?.branch_id}
+            path={`/p/${slug}/events/${tab ?? 'all'}/${eventId}/edit`}
+          />
+        </div>
+      ) : null}
+      <EventForm
+        slug={slug}
+        eventTypes={eventTypesData}
+        metaFields={metaFieldsQuery.data ?? EMPTY_META_FIELDS}
+        projectVariables={variablesQuery.data ?? EMPTY_VARIABLES}
+        event={eventQuery.data ?? null}
+        defaultEventTypeId={defaultEventTypeId}
+        onClose={goBack}
+      />
+    </div>
   )
 }

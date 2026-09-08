@@ -592,6 +592,36 @@ describe('BranchesTab', () => {
     )
   })
 
+  it('offers authoring on the branch you are reviewing, and not on a merged one', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
+    const { unmount } = renderTab('feat-1')
+
+    expect(await screen.findByRole('link', { name: 'New event on this branch' })).toHaveAttribute(
+      'href',
+      '/p/demo/events/all/new?branch=feat-1',
+    )
+    expect(screen.getByRole('link', { name: 'Events on this branch' })).toHaveAttribute(
+      'href',
+      '/p/demo/events?branch=feat-1',
+    )
+    unmount()
+
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, MERGED], total: 2 })
+    vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([])
+    renderTab('feat-merged')
+
+    await screen.findByText('No changes in this branch.')
+    expect(screen.queryByRole('link', { name: 'New event on this branch' })).not.toBeInTheDocument()
+  })
+
   it('offers Edit on the collapsed row, straight to the editor on this branch', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })

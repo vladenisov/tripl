@@ -800,6 +800,7 @@ function FeatureBranchDetail({
 }: FeatureBranchDetailProps) {
   const qc = useQueryClient()
   const usersById = useUsersById()
+  const branchLink = useBranchLinkProps()
   // The ticket a branch is named after, linked through the meta field that
   // links event values to the tracker (tripl-kjhi.14). Main's fields: the
   // template is project-wide and a branch copy carries the same one.
@@ -1056,6 +1057,32 @@ function FeatureBranchDetail({
             <Chip tone={STATUS_TONE[branch.status]} size="xs">
               {STATUS_LABEL[branch.status]}
             </Chip>
+            {/* Authoring on the branch you are reviewing had no entry point at
+                all: the only way in was the sidebar switcher, which changes no
+                URL and lives on a different surface. Hidden once the branch is
+                merged or closed, for the same reason its rows lose their Edit
+                action. */}
+            {branch.status !== 'merged' && branch.status !== 'closed' ? (
+              <>
+                <Button asChild variant="ghost" size="sm">
+                  <Link
+                    {...branchLink(`/p/${slug}/events`, branch.id)}
+                    aria-label="Events on this branch"
+                  >
+                    Events
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" size="sm">
+                  <Link
+                    {...branchLink(`/p/${slug}/events/all/new`, branch.id)}
+                    aria-label="New event on this branch"
+                  >
+                    <Plus className="size-3" />
+                    New event
+                  </Link>
+                </Button>
+              </>
+            ) : null}
             {branch.status === 'approved' ? (
               <Button
                 size="sm"
