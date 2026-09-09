@@ -1356,11 +1356,36 @@ function entityPath(slug: string, entry: PlanDiffEntry): string | null {
   }
 }
 
-/** Where a diff row's Edit action points. Only events have an editor route;
- * `/events/:tab/:eventId/edit` is a first-class route, so this skips the list
- * route that would otherwise bounce through EventsPage. */
-function eventEditPath(slug: string, eventId: string): string {
-  return `/p/${slug}/events/all/${eventId}/edit`
+/** Where a diff row's Edit action points, per entity type.
+ *
+ * An event has an editor ROUTE, and `/events/:tab/:eventId/edit` is a
+ * first-class one, so this skips the list route that would otherwise bounce
+ * through EventsPage.
+ *
+ * A variable has an editor too — the Variables tab's dialog — but no address of
+ * its own, so the row asks the tab to open it with `?edit=1` on the same link
+ * that already focuses the row (tripl-htfn.2). Without it, fixing a variable
+ * from a branch review cost exactly the clicks tripl-h2sx.1 removed for events:
+ * expand the row, find the 11px link after Revert, land on a highlighted row
+ * that is not open.
+ *
+ * Event types are deliberately absent. `entityPath` already lands them on
+ * EventTypeDetail, which IS their editor, so a second affordance to the same
+ * page would not be closing the same gap.
+ */
+function entityEditPath(
+  slug: string,
+  entityType: PlanDiffEntry['entity_type'],
+  entityId: string,
+): string | null {
+  switch (entityType) {
+    case 'event':
+      return `/p/${slug}/events/all/${entityId}/edit`
+    case 'variable':
+      return `/p/${slug}/settings/variables/${entityId}?edit=1`
+    default:
+      return null
+  }
 }
 
 interface ChangeRowProps {
@@ -1416,13 +1441,15 @@ function ChangeRow({
   // The row's own primary action. Gated on "has a branch-side id", not on the
   // kind: a rename is rendered by the removed entry, and that row IS the branch
   // copy the author wants to fix.
-  const editableEventId =
-    entry.entity_type !== 'event' || !editable
-      ? null
-      : entry.kind === 'removed'
-        ? (renamedTo ? renamedEntityId ?? null : null)
-        : entry.entity_id ?? null
-  const editLink = editableEventId ? branchLink(eventEditPath(slug, editableEventId), branchId) : null
+  const editableEntityId = !editable
+    ? null
+    : entry.kind === 'removed'
+      ? (renamedTo ? renamedEntityId ?? null : null)
+      : entry.entity_id ?? null
+  const editPath = editableEntityId
+    ? entityEditPath(slug, entry.entity_type, editableEntityId)
+    : null
+  const editLink = editPath ? branchLink(editPath, branchId) : null
   const REVERT_LABEL: Record<PlanDiffKind, string> = {
     added: 'Discard this addition',
     changed: 'Revert all changes',

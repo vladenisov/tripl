@@ -104,6 +104,18 @@ const SCOPE_KIND_LABEL: Record<MetricScopeType, string> = {
 }
 
 /**
+ * How one scope kind is named, for a surface that names a single kind rather
+ * than an incident's whole set.
+ *
+ * Exported so the inbox's scope-kind filter offers the SAME words the chip it
+ * filters by shows. A picker that says "Event" over cards that say "volume"
+ * makes the reader hold two vocabularies for one column (tripl-htfn.4).
+ */
+export function scopeKindLabel(scopeType: MetricScopeType): string {
+  return SCOPE_KIND_LABEL[scopeType] ?? scopeType
+}
+
+/**
  * "drop · release regression" — the one line that answers "why did the same
  * alert come back for a different reason?".
  *

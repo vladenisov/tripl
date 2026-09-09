@@ -81,15 +81,20 @@ function mockList(items: Variable[], total = items.length) {
   vi.mocked(variablesApi.listPage).mockResolvedValue({ items, total })
 }
 
-function renderVariablesTab(props: { focusId?: string } = {}) {
+function renderVariablesTab(props: { focusId?: string; openEditor?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <VariablesTab slug="demo" {...props} />
-    </QueryClientProvider>,
-  )
+  // The client is handed back so a test can make the list REFETCH — the only
+  // faithful way to reproduce "the poll landed while the reviewer was reading".
+  return {
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <VariablesTab slug="demo" {...props} />
+      </QueryClientProvider>,
+    ),
+    queryClient,
+  }
 }
 
 /** Mounts the tab inside a BranchContext the way the app does, and hands back a
@@ -361,10 +366,14 @@ describe('VariablesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
     const dialog = await screen.findByRole('dialog')
 
-    expect(await within(dialog).findByText('Observed at:')).toBeInTheDocument()
-    expect(within(dialog).getAllByText('variant', { selector: 'code' })).toHaveLength(1)
+    // Scoped to the "Observed at:" row rather than the whole dialog: the
+    // caption below the bindings now carries an example path of its own, and
+    // the claim here is about where the scan ANSWERED, not about any code
+    // element on screen.
+    const observedAt = (await within(dialog).findByText('Observed at:')).parentElement as HTMLElement
+    expect(within(observedAt).getAllByText('variant', { selector: 'code' })).toHaveLength(1)
     expect(
-      within(dialog).getByText('page_data.extra.variant', { selector: 'code' }),
+      within(observedAt).getByText('page_data.extra.variant', { selector: 'code' }),
     ).toBeInTheDocument()
   })
 
@@ -1371,5 +1380,107 @@ describe('VariablesTab clear observed values (tripl-h2sx.21)', () => {
     const dialog = await screen.findByRole('dialog')
 
     expect(within(dialog).getByRole('button', { name: 'Clear observed values' })).toBeDisabled()
+  })
+})
+
+/**
+ * tripl-htfn.2 — a variable changed on a branch had no Edit action, because its
+ * editor is a dialog rather than a route. `?edit=1` is that address.
+ */
+describe('VariablesTab — opening one variable’s editor from a link', () => {
+  it('opens the linked variable’s dialog once the list holding it has arrived', async () => {
+    mockList([
+      makeVariable({ id: 'var-1', name: 'variant', description: 'Which arm' }),
+      makeVariable({ id: 'var-2', name: 'spot_id' }),
+    ])
+
+    renderVariablesTab({ focusId: 'var-2', openEditor: true })
+
+    // The dialog names the variable it is editing, so this asserts WHICH one
+    // opened, not merely that something did.
+    expect(await screen.findByRole('heading', { name: 'Edit: spot_id' })).toBeInTheDocument()
+  })
+
+  it('does not reopen the dialog after it is closed', async () => {
+    // The list refetches while the tab is open — a colleague adds a variable, or
+    // the window regains focus. Every refetch hands the effect a fresh array, so
+    // without the once-only guard the dialog reopens under a reviewer who had
+    // just closed it. Reproduced through a real refetch rather than a remount:
+    // a remount resets the guard by design and would prove nothing.
+    mockList([makeVariable({ id: 'var-2', name: 'spot_id' })])
+
+    const { queryClient } = renderVariablesTab({ focusId: 'var-2', openEditor: true })
+    expect(await screen.findByRole('heading', { name: 'Edit: spot_id' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Edit: spot_id' })).not.toBeInTheDocument(),
+    )
+
+    mockList([
+      makeVariable({ id: 'var-2', name: 'spot_id' }),
+      makeVariable({ id: 'var-9', name: 'arrived_later' }),
+    ])
+    await act(async () => {
+      await queryClient.invalidateQueries()
+    })
+    await waitFor(() => expect(screen.getByText('${arrived_later}')).toBeInTheDocument())
+
+    expect(screen.queryByRole('heading', { name: 'Edit: spot_id' })).not.toBeInTheDocument()
+  })
+
+  it('leaves the dialog closed when the link only focuses a row', async () => {
+    mockList([makeVariable({ id: 'var-2', name: 'spot_id' })])
+
+    renderVariablesTab({ focusId: 'var-2' })
+
+    await waitFor(() => expect(screen.getByText('${spot_id}')).toBeInTheDocument())
+    expect(screen.queryByRole('heading', { name: 'Edit: spot_id' })).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * tripl-htfn.3 — "is the path under Data bindings the same thing as the token
+ * after `$`?" They are not, and the hard-coded example was making it worse.
+ */
+describe('VariablesTab — bindings versus tokens', () => {
+  it('draws the example from the project’s own variables, showing both roles', async () => {
+    mockList([
+      makeVariable({
+        id: 'var-1',
+        name: 'bite_threshold',
+        source_name: 'property.bite_threshold',
+        bindings: ['property.bite_threshold'],
+      }),
+    ])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+    const dialog = await screen.findByRole('dialog')
+
+    // The pair, in this project's own vocabulary: the scan reads the path, the
+    // plan writes the name. The generic `page_data.extra.variant` was three
+    // segments deep in a container this warehouse does not have, which is what
+    // made it read as a different namespace.
+    expect(
+      within(dialog).getByText('property.bite_threshold', { selector: 'code' }),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText('${bite_threshold}', { selector: 'code' })).toBeInTheDocument()
+    expect(
+      within(dialog).queryByText('page_data.extra.variant', { selector: 'code' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('falls back to the generic example when no variable is bound yet', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant' })])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(
+      within(dialog).getByText('page_data.extra.variant', { selector: 'code' }),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText('${variant}', { selector: 'code' })).toBeInTheDocument()
   })
 })

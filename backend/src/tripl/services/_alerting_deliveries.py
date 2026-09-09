@@ -24,7 +24,7 @@ from tripl.models.anomaly_scope_override import (
     ratchet_min_expected_count,
     ratchet_sigma_threshold,
 )
-from tripl.models.domain_enums import AlertInboxStatus, MetricScopeType
+from tripl.models.domain_enums import AlertInboxStatus, AnomalyDirection, MetricScopeType
 from tripl.models.project_anomaly_settings import (
     DEFAULT_MIN_EXPECTED_COUNT,
     DEFAULT_SIGMA_THRESHOLD,
@@ -789,11 +789,124 @@ async def count_open_incidents(
     }
 
 
+def _utc(value: datetime) -> datetime:
+    """Read *value* as UTC when it says nothing about its zone.
+
+    Both sides of the date comparison below can be naive. A bare ``?from=
+    2026-09-01`` parses to a naive datetime, and SQLite hands back naive columns
+    while Postgres hands back aware ones — so an un-normalized ``<=`` is a
+    ``TypeError`` on one engine and correct on the other, which is the worst
+    shape a comparison can have.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class InboxFilters:
+    """What the reader asked the inbox to narrow to, besides ``status``.
+
+    Applied to BUILT group responses rather than to the delivery rows, for the
+    same reason ``status`` is: every member here is a property of the incident,
+    and an incident does not exist until its rows are grouped. It costs the
+    build of a few cards that are then dropped, and buys one filtering site
+    whose result the page's own ``total`` counts.
+
+    Two members deliberately read a DERIVED value rather than the widest one
+    available:
+
+    * ``direction`` matches the group's ``direction``, which is the NEWEST
+      item's — the one the card shows. An incident that dropped five times and
+      spiked last is a spike on screen, so ``?direction=drop`` hiding it is the
+      answer that matches what the operator is looking at.
+    * ``last_fired_from`` / ``last_fired_to`` bound ``latest_delivery_at``, not
+      ``first_delivery_at``. "Everything I have not seen since Friday" is the
+      triage question; when an incident STARTED is a different one, and the card
+      shows both.
+
+    ``scope`` is the exception and must NOT read the response: ``scope_names``
+    is truncated to eight entries by ``_build_inbox_group_response``, so a
+    search over it would silently fail to find the ninth scope of a wide
+    incident. It is matched against the incident's ROWS instead — and only when
+    a search is actually being run, because building that text is the one part
+    of this that costs anything per group.
+    """
+
+    last_fired_from: datetime | None = None
+    last_fired_to: datetime | None = None
+    scope_type: MetricScopeType | None = None
+    direction: AnomalyDirection | None = None
+    scope: str | None = None
+
+    @property
+    def needle(self) -> str:
+        """The scope search, normalized. Empty when there is nothing to search
+        for — which whitespace alone is, since a cleared box posts one."""
+        return (self.scope or "").strip().casefold()
+
+    @property
+    def is_active(self) -> bool:
+        """Whether anything here narrows the list at all.
+
+        The router hands the service an ``InboxFilters`` on every request,
+        including the overwhelmingly common one that filters by nothing, so the
+        caller checks this before entering the loop rather than walking every
+        group to decide each one survives (Copilot, PR #162).
+        """
+        return (
+            self.last_fired_from is not None
+            or self.last_fired_to is not None
+            or self.scope_type is not None
+            or self.direction is not None
+            or bool(self.needle)
+        )
+
+    def matches(self, group: AlertInboxGroupResponse, *, rows: list[InboxGroupRow]) -> bool:
+        """Whether *group* survives every filter.
+
+        Takes the incident's ROWS rather than a prepared haystack so the text
+        can be built lazily: a keyword argument is evaluated before the call, so
+        passing ``_scope_haystack(...)`` in built it for every group of every
+        request, including the ones with no search — a set, a sort, a join and a
+        casefold over every delivery item, thrown away unread.
+        """
+        if self.last_fired_from is not None and _utc(group.latest_delivery_at) < _utc(
+            self.last_fired_from
+        ):
+            return False
+        if self.last_fired_to is not None and _utc(group.latest_delivery_at) > _utc(
+            self.last_fired_to
+        ):
+            return False
+        # `scope_types` is the whole set the incident fired on, unlike
+        # `scope_type`, which names only the newest item. An incident holding one
+        # release regression among ten event firings IS a release-regression
+        # incident to somebody filtering for them.
+        if self.scope_type is not None and self.scope_type not in group.scope_types:
+            return False
+        if self.direction is not None and group.direction != self.direction:
+            return False
+        # Last, and only now, because this is the expensive one.
+        needle = self.needle
+        return not needle or needle in _scope_haystack(rows)
+
+
+def _scope_haystack(rows: list[InboxGroupRow]) -> str:
+    """Every scope name and ref an incident fired on, case-folded into one
+    string. Built from the ROWS so the eight-name display cap cannot hide a
+    match — see :class:`InboxFilters`."""
+    parts: set[str] = set()
+    for item, *_rest in rows:
+        parts.add(item.scope_name or "")
+        parts.add(item.scope_ref or "")
+    return "\n".join(sorted(parts)).casefold()
+
+
 async def list_alert_inbox(
     session: AsyncSession,
     slug: str,
     *,
     status: str | None = None,
+    filters: InboxFilters | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> AlertInboxListResponse:
@@ -867,6 +980,12 @@ async def list_alert_inbox(
     ]
     if status is not None:
         responses = [group for group in responses if group.status == status]
+    if filters is not None and filters.is_active:
+        responses = [
+            group
+            for group in responses
+            if filters.matches(group, rows=groups[group.correlation_group_id])
+        ]
     responses.sort(key=_inbox_sort_key, reverse=True)
     total = len(responses)
     return AlertInboxListResponse(

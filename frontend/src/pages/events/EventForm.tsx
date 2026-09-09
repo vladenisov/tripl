@@ -22,6 +22,7 @@ import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { ChipListInput } from '@/components/chip-list-input'
 import { CommentThread } from '@/components/comment-thread'
+import { DraftDiscussionNote } from './DraftDiscussionNote'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
@@ -45,6 +46,7 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
 import { branchTicket } from '@/lib/branchTicket'
 import { eventTypesKey, planBranchesKey, variablesKey } from '@/lib/queryKeys'
+import { getErrorMessage } from '@/lib/utils'
 
 // Replacement candidates offered at once. Deliberately small, for the reason
 // the variables tab spells out (tripl-46am): the search below is server-side,
@@ -413,6 +415,7 @@ export function EventForm({
   event,
   defaultEventTypeId,
   onClose,
+  onCreated,
 }: {
   slug: string
   eventTypes: EventType[]
@@ -421,6 +424,11 @@ export function EventForm({
   event: TEvent | null
   defaultEventTypeId?: string
   onClose: () => void
+  /** Runs after a CREATE succeeds, with the event that was created, before the
+   *  form closes. Return `false` to keep it from closing — the caller has taken
+   *  over the navigation. Never called on an update: the event already existed,
+   *  so there is nothing here that a save makes possible. */
+  onCreated?: (created: EventMutationResponse) => Promise<boolean | void> | boolean | void
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
@@ -794,7 +802,7 @@ export function EventForm({
           )
         : eventsApi.create(slug, payload, branchId)
     },
-    onSuccess: (_data, closeAfterSave: boolean) => {
+    onSuccess: async (_data, closeAfterSave: boolean) => {
       qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
       qc.invalidateQueries({ queryKey: ['eventTags', slug, branchId] })
       if (event) qc.invalidateQueries({ queryKey: ['event', slug] })
@@ -810,10 +818,18 @@ export function EventForm({
         notifyStepCompleted('edit-event/set-token')
       }
       notifyStepCompleted('edit-event/save')
-      if (closeAfterSave) {
+      // Whatever has to happen with the event now that it EXISTS — today, the
+      // discussion note drafted while it was being authored. Awaited, so the
+      // form does not close out from under a post that is still in flight, and
+      // able to veto the close: if the caller has already landed the author
+      // somewhere else because that post failed, stepping back through history
+      // on top of it would undo the recovery (tripl-htfn.1).
+      const closeAfterCreate = event ? true : ((await onCreated?.(_data)) ?? true)
+      if (closeAfterSave && closeAfterCreate) {
         onClose()
         return
       }
+      if (!closeAfterCreate) return
       // Keeping the entered values is the point of this button, not an
       // oversight: it exists to author a RUN of similar events by changing one
       // field between saves, and the docs say so
@@ -1397,6 +1413,37 @@ export default function EventEditPage() {
     navigate(base)
   }
 
+  // A question raised while the event is being authored. It cannot be a comment
+  // yet — a comment hangs off an event — so it is held here and posted the
+  // moment one exists (tripl-htfn.1).
+  const [draftNote, setDraftNote] = useState('')
+  // What a previous attempt could not post, handed across the navigation below
+  // so the words are not lost with the request that failed.
+  const handoff = location.state as { commentDraft?: string; commentError?: string } | null
+
+  const postDraftNote = async (created: EventMutationResponse): Promise<boolean> => {
+    const body = draftNote.trim()
+    if (!body) return true
+    try {
+      await eventCommentsApi.create(slug!, created.id, body, null)
+      setDraftNote('')
+      return true
+    } catch (error) {
+      // The event EXISTS. Leaving its author on a create form for it is the
+      // worse failure — pressing Create again makes a second one — so land them
+      // on the event, carrying what they wrote into its own composer. `replace`
+      // keeps Back meaning what it meant before the save.
+      navigate(`/p/${slug}/events/${tab ?? 'all'}/${created.id}/edit${location.search}`, {
+        replace: true,
+        state: {
+          commentDraft: body,
+          commentError: `The event was created, but the note was not posted: ${getErrorMessage(error)}`,
+        },
+      })
+      return false
+    }
+  }
+
   const eventTypesQuery = useQuery({
     queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug!, branchId),
@@ -1483,6 +1530,7 @@ export default function EventEditPage() {
         event={eventQuery.data ?? null}
         defaultEventTypeId={defaultEventTypeId}
         onClose={goBack}
+        onCreated={postDraftNote}
       />
       {/* The one home for the discussion, and outside the form on purpose: it
           is not plan content. Every other box on this page ships to whoever
@@ -1492,7 +1540,13 @@ export default function EventEditPage() {
           event to hang a thread on until one exists. */}
       {eventId ? (
         <div className="mx-auto max-w-[880px] px-6 pb-10">
+          {handoff?.commentError && (
+            <p role="alert" className="mb-2 text-xs text-destructive">
+              {handoff.commentError}
+            </p>
+          )}
           <CommentThread
+            initialBody={handoff?.commentDraft}
             queryKey={['eventComments', slug, eventId]}
             list={() => eventCommentsApi.list(slug, eventId)}
             create={(body, parentId) => eventCommentsApi.create(slug, eventId, body, parentId)}
@@ -1507,7 +1561,11 @@ export default function EventEditPage() {
             className="flex flex-col rounded-md border bg-card p-3"
           />
         </div>
-      ) : null}
+      ) : (
+        <div className="mx-auto max-w-[880px] px-6 pb-10">
+          <DraftDiscussionNote value={draftNote} onChange={setDraftNote} />
+        </div>
+      )}
     </div>
   )
 }

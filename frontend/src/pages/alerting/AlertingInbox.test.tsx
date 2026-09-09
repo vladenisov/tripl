@@ -8,6 +8,11 @@ import { formatDateTime } from '@/lib/datetime'
 import type { AlertInboxGroup, AlertInboxListResponse, Role } from '@/types'
 
 import { AlertingInbox, type InboxActionVariables } from './AlertingInbox'
+import {
+  EMPTY_INBOX_FILTERS,
+  earliestReachableDay,
+  type InboxFilterState,
+} from './inboxFilters'
 
 /**
  * A session at one role.
@@ -90,6 +95,7 @@ function renderInbox(
   // drafts and the expanded set above it (tripl-gpfr), so the default here is
   // "nothing picked" and a test that cares supplies its own set.
   const toggleIncidentSelected = vi.fn<(id: string, selected: boolean) => void>()
+  const onFiltersChange = vi.fn<(next: InboxFilterState) => void>()
   const setIncidentsSelected =
     vi.fn<(ids: readonly string[], selected: boolean) => void>()
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -107,6 +113,8 @@ function renderInbox(
           hasRules
           statusFilter=""
           onStatusFilterChange={vi.fn()}
+          filters={EMPTY_INBOX_FILTERS}
+          onFiltersChange={onFiltersChange}
           onLoadMore={vi.fn()}
           hasMore={false}
           isLoadingMore={false}
@@ -128,7 +136,7 @@ function renderInbox(
     </QueryClientProvider>
     </AuthContext.Provider>,
   )
-  return { ...utils, onAction, toggleIncidentSelected, setIncidentsSelected }
+  return { ...utils, onAction, toggleIncidentSelected, setIncidentsSelected, onFiltersChange }
 }
 
 /**
@@ -1017,5 +1025,94 @@ describe('AlertingInbox — viewer gating (tripl-oxkt.9)', () => {
     expect(screen.getByText('onboarding/reviews_carousel')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Volume rule' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /what was sent/ })).toBeEnabled()
+  })
+})
+
+/**
+ * tripl-htfn.4 — an analyst working through "the events I already know are
+ * fine" had one control over 180 incidents.
+ */
+describe('AlertingInbox — narrowing the list past its status', () => {
+  it('offers the scope kinds by the same names the cards use', () => {
+    const { onFiltersChange } = renderInbox()
+
+    // "volume", not "event": the chip on the card below says the former, and a
+    // picker with its own vocabulary makes one column read as two things.
+    fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'event' } })
+
+    expect(onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({ scopeType: 'event' }),
+    )
+    expect(
+      within(screen.getByLabelText('Kind')).getByRole('option', { name: 'volume' }),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByLabelText('Kind')).getByRole('option', { name: 'release regression' }),
+    ).toBeInTheDocument()
+  })
+
+  it('states the window a date filter can reach, on the control itself', () => {
+    renderInbox()
+
+    // The list is read over 30 days and then capped, so a date older than that
+    // narrows nothing — a control that accepted one and answered "none" would
+    // be describing the project rather than the page (tripl-39n6).
+    const from = screen.getByLabelText('Last fired from')
+    expect(from).toHaveAttribute('min', earliestReachableDay(new Date()))
+    expect(screen.getByText(/Dates narrow the 30 days this list already covers/)).toBeInTheDocument()
+  })
+
+  it('names the filters in the empty state, and Show all clears them with the status', () => {
+    const { onFiltersChange, ...utils } = renderInbox({
+      inbox: makeInbox({ items: [], total: 0 }),
+      filters: { ...EMPTY_INBOX_FILTERS, direction: 'drop' },
+    })
+    const onStatusFilterChange = vi.fn()
+    utils.rerender(
+      <AuthContext.Provider value={authValue('editor')}>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <MemoryRouter>
+            <AlertingInbox
+              slug="demo"
+              inbox={makeInbox({ items: [], total: 0 })}
+              isLoading={false}
+              isError={false}
+              loadError={null}
+              pinnedGroup={null}
+              hasRules
+              statusFilter=""
+              onStatusFilterChange={onStatusFilterChange}
+              filters={{ ...EMPTY_INBOX_FILTERS, direction: 'drop' }}
+              onFiltersChange={onFiltersChange}
+              onLoadMore={vi.fn()}
+              hasMore={false}
+              isLoadingMore={false}
+              noteDrafts={{}}
+              setNoteDrafts={vi.fn()}
+              expandedIncidents={new Set()}
+              toggleIncident={vi.fn()}
+              selectedIncidents={new Set()}
+              toggleIncidentSelected={vi.fn()}
+              setIncidentsSelected={vi.fn()}
+              onAction={vi.fn()}
+              pendingGroupId={null}
+              errorGroupId={null}
+              actionError={null}
+              onGoToMonitors={vi.fn()}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </AuthContext.Provider>,
+    )
+
+    const showAll = screen.getByRole('button', { name: 'Show all' })
+    // Naming the filter is the difference between "nothing has ever happened
+    // here" and "nothing matches what you asked for" — the second is undoable.
+    expect(showAll.closest('div')?.textContent).toContain('No incidents match these filters.')
+
+    fireEvent.click(showAll)
+    // Both halves, because either can be the one that emptied the page.
+    expect(onStatusFilterChange).toHaveBeenCalledWith('')
+    expect(onFiltersChange).toHaveBeenCalledWith(EMPTY_INBOX_FILTERS)
   })
 })

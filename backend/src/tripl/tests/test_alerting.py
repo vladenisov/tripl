@@ -3,6 +3,7 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from httpx import AsyncClient
@@ -17,6 +18,7 @@ from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.data_source import DataSource
+from tripl.models.domain_enums import AnomalyDirection, MetricScopeType
 from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
@@ -25,6 +27,7 @@ from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.user import User
+from tripl.services._alerting_deliveries import InboxFilters
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import metrics
 from tripl.worker.tasks.alerts import check_deprecated_sunset_events
@@ -5791,11 +5794,13 @@ def _inbox_item(
     correlation_group_id: uuid.UUID,
     actual_count: float = 20,
     expected_count: float = 10,
+    scope_name: str | None = None,
+    scope_ref: str | None = None,
 ) -> dict[str, object]:
     return {
         "scope_type": scope_type,
-        "scope_ref": str(uuid.uuid4()),
-        "scope_name": f"{scope_type} scope",
+        "scope_ref": scope_ref if scope_ref is not None else str(uuid.uuid4()),
+        "scope_name": scope_name if scope_name is not None else f"{scope_type} scope",
         "bucket": bucket,
         "direction": "spike" if percent_delta >= 0 else "drop",
         "actual_count": actual_count,
@@ -8562,3 +8567,264 @@ async def test_naming_a_destination_for_the_audit_log_costs_no_rollup_queries(
     named = {action: target_name for action, target_name in rows}
     assert named["alert_destination.test"] == "Test Me"
     assert named["alert_destination.delete"] == "Delete Me"
+
+
+# --- tripl-htfn.4: the inbox narrows by more than status --------------------
+#
+# An analyst working through "the events I already know are fine" had exactly
+# one control on a list of 180 incidents. Every filter below is applied to the
+# BUILT groups, beside `status`, so the page's own `total` counts what was
+# asked for.
+
+
+async def _seed_filterable_inbox(client: AsyncClient) -> dict[str, uuid.UUID]:
+    """Three incidents that differ in every axis the filters read."""
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Inbox Filters", "slug": "inbox-filters", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    groups = {"fresh_spike": uuid.uuid4(), "old_drop": uuid.uuid4(), "release": uuid.uuid4()}
+    plan = [
+        (groups["fresh_spike"], now - timedelta(hours=1), "event", 120.0, "Checkout completed"),
+        (groups["old_drop"], now - timedelta(days=5), "event", -60.0, "Signup started"),
+        (
+            groups["release"],
+            now - timedelta(hours=2),
+            "release_regression",
+            -40.0,
+            "Windy 7.4 rollout",
+        ),
+    ]
+    for group_id, created_at, scope_type, delta, scope_name in plan:
+        await _seed_inbox_delivery(
+            project_id,
+            scan_config_id=scan_config_id,
+            destination_id=destination_id,
+            rule_id=rule_ids[0],
+            created_at=created_at,
+            items=[
+                _inbox_item(
+                    scope_type=scope_type,
+                    bucket=created_at,
+                    percent_delta=delta,
+                    correlation_group_id=group_id,
+                    scope_name=scope_name,
+                )
+            ],
+        )
+    return groups
+
+
+class _ExplodingRows(list):
+    """A row list that refuses to be read.
+
+    The only way to assert that the scope text was NOT built: the work is
+    invisible from the outside, and a timing assertion on an SBC proves nothing.
+    """
+
+    def __iter__(self):  # type: ignore[override]
+        raise AssertionError("the scope haystack was built for a filter that does not search")
+
+
+def test_inbox_filters_build_the_scope_text_only_when_something_searches() -> None:
+    """A keyword argument is evaluated before the call.
+
+    Passing ``scope_haystack=_scope_haystack(rows)`` therefore built that text
+    for every group of every request — a set, a sort, a join and a casefold over
+    every delivery item — including the overwhelmingly common request that
+    searches for nothing (Copilot, PR #162). ``matches`` takes the rows instead
+    and reads them last, after every cheap predicate has had its say.
+    """
+    group = SimpleNamespace(
+        latest_delivery_at=datetime.now(UTC),
+        scope_types=["event"],
+        direction="drop",
+    )
+
+    # Filtering by a date, a kind and a direction touches no row.
+    for filters in (
+        InboxFilters(last_fired_from=datetime.now(UTC) - timedelta(days=1)),
+        InboxFilters(scope_type=MetricScopeType.event),
+        InboxFilters(direction=AnomalyDirection.drop),
+        # A cleared search box posts whitespace, which is not a search.
+        InboxFilters(scope="   "),
+    ):
+        assert filters.matches(group, rows=_ExplodingRows()) is True
+
+    # …and a filter that no longer needs to look does not look either: the
+    # direction says no before the scope text would have been built.
+    assert (
+        InboxFilters(direction=AnomalyDirection.spike, scope="anything").matches(
+            group, rows=_ExplodingRows()
+        )
+        is False
+    )
+
+    # `is_active` is what keeps the loop itself off an unfiltered request.
+    assert InboxFilters().is_active is False
+    assert InboxFilters(scope="  ").is_active is False
+    assert InboxFilters(direction=AnomalyDirection.drop).is_active is True
+
+
+@pytest.mark.asyncio
+async def test_inbox_filters_by_when_the_incident_last_fired(client: AsyncClient) -> None:
+    """The filter the reporter asked for first, on the column the card leads
+    with: `latest_delivery_at`, not when the incident started."""
+    groups = await _seed_filterable_inbox(client)
+    base = "/api/v1/projects/inbox-filters/alert-inbox"
+    now = datetime.now(UTC)
+
+    everything = await client.get(base)
+    assert everything.status_code == 200
+    assert everything.json()["total"] == 3
+
+    recent = await client.get(
+        base, params={"last_fired_from": (now - timedelta(days=1)).isoformat()}
+    )
+    assert recent.status_code == 200
+    assert {item["correlation_group_id"] for item in recent.json()["items"]} == {
+        str(groups["fresh_spike"]),
+        str(groups["release"]),
+    }
+    # `total` counts what was asked for, the way it does for `status` — a filter
+    # that narrows the page but not the count is how "3 incidents" ends up above
+    # two cards.
+    assert recent.json()["total"] == 2
+
+    stale = await client.get(base, params={"last_fired_to": (now - timedelta(days=1)).isoformat()})
+    assert stale.status_code == 200
+    assert [item["correlation_group_id"] for item in stale.json()["items"]] == [
+        str(groups["old_drop"])
+    ]
+
+    window = await client.get(
+        base,
+        params={
+            "last_fired_from": (now - timedelta(hours=3)).isoformat(),
+            "last_fired_to": (now - timedelta(minutes=90)).isoformat(),
+        },
+    )
+    assert window.status_code == 200
+    assert [item["correlation_group_id"] for item in window.json()["items"]] == [
+        str(groups["release"])
+    ]
+
+    # A bare date carries no zone. The stored column is naive under SQLite and
+    # aware under Postgres, so an un-normalized comparison is a TypeError on one
+    # engine and correct on the other — the worst shape a comparison can have.
+    naive = await client.get(
+        base, params={"last_fired_from": (now - timedelta(days=1)).replace(tzinfo=None).isoformat()}
+    )
+    assert naive.status_code == 200
+    assert naive.json()["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_inbox_filters_by_scope_type_and_direction(client: AsyncClient) -> None:
+    groups = await _seed_filterable_inbox(client)
+    base = "/api/v1/projects/inbox-filters/alert-inbox"
+
+    releases = await client.get(base, params={"scope_type": "release_regression"})
+    assert releases.status_code == 200
+    assert [item["correlation_group_id"] for item in releases.json()["items"]] == [
+        str(groups["release"])
+    ]
+
+    drops = await client.get(base, params={"direction": "drop"})
+    assert drops.status_code == 200
+    assert {item["correlation_group_id"] for item in drops.json()["items"]} == {
+        str(groups["old_drop"]),
+        str(groups["release"]),
+    }
+
+    combined = await client.get(base, params={"scope_type": "event", "direction": "drop"})
+    assert combined.status_code == 200
+    assert [item["correlation_group_id"] for item in combined.json()["items"]] == [
+        str(groups["old_drop"])
+    ]
+
+    # Enums, for the reason `status` is one (tripl-57g0): a typo has to be a 422
+    # rather than an empty inbox nobody can explain.
+    for params in ({"scope_type": "BOGUS"}, {"direction": "BOGUS"}):
+        rejected = await client.get(base, params=params)
+        assert rejected.status_code == 422, f"{params} was accepted: {rejected.text}"
+
+
+@pytest.mark.asyncio
+async def test_inbox_scope_search_reaches_past_the_eight_name_display_cap(
+    client: AsyncClient,
+) -> None:
+    """The search must read the incident's ROWS, not its response.
+
+    `_build_inbox_group_response` truncates `scope_names` to eight entries, so a
+    search over the payload silently cannot find the ninth scope of a wide
+    incident — and a wide incident is exactly the one an operator needs to search
+    rather than read.
+    """
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Inbox Search", "slug": "inbox-search", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+    scan_config_id, rule_ids, destination_id = await _seed_inbox_fixture(project_id)
+    now = datetime.now(UTC)
+    wide_group = uuid.uuid4()
+    # Sorted, "zz_quiet_event" lands ninth and is dropped by the [:8] slice.
+    names = [f"a{index}_noisy_event" for index in range(8)] + ["zz_quiet_event"]
+    await _seed_inbox_delivery(
+        project_id,
+        scan_config_id=scan_config_id,
+        destination_id=destination_id,
+        rule_id=rule_ids[0],
+        created_at=now - timedelta(hours=1),
+        items=[
+            _inbox_item(
+                scope_type="event",
+                bucket=now - timedelta(hours=1),
+                percent_delta=120.0,
+                correlation_group_id=wide_group,
+                scope_name=name,
+            )
+            for name in names
+        ],
+    )
+
+    base = "/api/v1/projects/inbox-search/alert-inbox"
+    listed = await client.get(base)
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["scope_names"] == sorted(names)[:8]
+    assert "zz_quiet_event" not in listed.json()["items"][0]["scope_names"]
+
+    found = await client.get(base, params={"scope": "QUIET"})
+    assert found.status_code == 200
+    assert [item["correlation_group_id"] for item in found.json()["items"]] == [str(wide_group)]
+
+    missing = await client.get(base, params={"scope": "nothing_is_called_this"})
+    assert missing.status_code == 200
+    assert missing.json()["total"] == 0
+
+    # Whitespace is not a filter. A cleared search box posts one, and treating it
+    # as a needle would empty the inbox.
+    blank = await client.get(base, params={"scope": "   "})
+    assert blank.status_code == 200
+    assert blank.json()["total"] == 1
+
+    # Nor is a NUL. `scope` is a FreeTextFilter like every other free-text filter
+    # in the API, so U+0000 is stripped rather than searched for — the two
+    # candidate answers are "match nothing" and "the filter the user plainly
+    # meant", and schemas/text_filters.py argues for the second. Answering
+    # differently here from the eight filters beside it would be inconsistent
+    # rather than stricter. The repo-wide pin in test_text_filters.py is what
+    # forces the decision to be made at all; this is what the decision WAS.
+    laced = await client.get(base, params={"scope": "\x00"})
+    assert laced.status_code == 200
+    assert laced.json()["total"] == 1
+
+    partial = await client.get(base, params={"scope": "qui\x00et"})
+    assert partial.status_code == 200
+    assert [item["correlation_group_id"] for item in partial.json()["items"]] == [str(wide_group)]

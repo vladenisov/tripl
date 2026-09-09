@@ -47,6 +47,13 @@ import {
   InboxBulkActionBar,
   type InboxBulkActionRequest,
 } from './alerting/InboxBulkActionBar'
+import {
+  INBOX_FILTER_PARAM_KEYS,
+  inboxFilterQuery,
+  readInboxFilters,
+  writeInboxFilters,
+  type InboxFilterState,
+} from './alerting/inboxFilters'
 import { DeliveryScheduleField } from './alerting/DeliveryScheduleField'
 import { resolveScheduleTimezone } from './alerting/deliverySchedule'
 import { DestinationsSection } from './alerting/DestinationsSection'
@@ -352,7 +359,26 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       },
       { replace: true },
     )
-  const inboxKey = ['alertInbox', slug, inboxStatus]
+  // Everything the reader narrowed the list to besides status, read from and
+  // written to the URL exactly the way status is — so a filtered inbox is a
+  // link, and changing a filter changes the query key and restarts paging at
+  // offset 0 by construction (tripl-htfn.4).
+  const inboxFilters = useMemo(() => readInboxFilters(searchParams), [searchParams])
+  const setInboxFilters = (next: InboxFilterState) =>
+    setSearchParams(
+      current => {
+        const params = new URLSearchParams(current)
+        for (const key of INBOX_FILTER_PARAM_KEYS) params.delete(key)
+        for (const [key, value] of Object.entries(writeInboxFilters(next))) params.set(key, value)
+        return params
+      },
+      { replace: true },
+    )
+  const inboxRequest = inboxFilterQuery(inboxFilters, inboxStatus)
+  // Spread into the key, not the state object: two states that ask the server
+  // the same question must share one cache entry, and only the request says
+  // which those are (a blank search box and a whitespace one, for instance).
+  const inboxKey = ['alertInbox', slug, inboxStatus, inboxRequest]
   // The same hook and the same cadence as RoutingRulesPanel, deliberately: the
   // page held open during an incident showed a live CONFIGURATION panel beside a
   // frozen triage queue — a new incident never appeared and a colleague's Ack
@@ -372,7 +398,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     queryKey: inboxKey,
     queryFn: ({ pageParam }) =>
       alertingApi.listInbox(slug, {
-        status: inboxStatus || undefined,
+        ...inboxRequest,
         offset: pageParam,
         limit: INBOX_PAGE_SIZE,
       }),
@@ -1122,6 +1148,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           hasRules={hasRules}
           statusFilter={inboxStatus}
           onStatusFilterChange={setInboxStatus}
+          filters={inboxFilters}
+          onFiltersChange={setInboxFilters}
           onLoadMore={() => void inboxQuery.fetchNextPage()}
           hasMore={inboxQuery.hasNextPage}
           isLoadingMore={inboxQuery.isFetchingNextPage}

@@ -22,6 +22,7 @@ import { Panel } from "@/components/settings/kit"
 import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
 import { useDemoScenarioActions } from "@/demo/demoScenarioContext"
 import { SCENARIO_SEEDED } from "@/demo/scenarioModel"
+import { bindingExample, type BindingExample } from "./bindingExample"
 import { VariablesBulkBar } from "./VariablesBulkBar"
 import { VariablesTableRow } from "./VariablesTableRow"
 import { getErrorMessage } from '@/lib/utils'
@@ -41,6 +42,28 @@ const BINDING_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/
 const isValidBinding = (value: string) => BINDING_PATTERN.test(value)
 const INVALID_BINDING_MESSAGE =
   'Invalid path — use letters/digits/underscores with dots, e.g. page_data.extra.variant'
+
+/**
+ * The one sentence that separates the two dotted things on this screen.
+ *
+ * A reader asked whether the path under Data bindings and the token offered
+ * after `$` in a field value are the same. They are not — a binding is a
+ * warehouse address, a token is a variable's NAME — and they look alike because
+ * a scan that discovers a path stores it as the binding and, when every short
+ * name is taken, as the name too. Showing the project's own pair says that
+ * faster than explaining it (tripl-htfn.3).
+ */
+function BindingVersusTokenNote({ example }: { example: BindingExample }) {
+  return (
+    <p className="text-[11px] text-muted-foreground">
+      A binding is where the value lives in the warehouse. It is not what you type in a field
+      value — that is the variable&apos;s name.{' '}
+      {example.fromProject ? 'In this project, for instance, scans read' : 'For instance, scans read'}{' '}
+      <code className="rounded bg-muted px-1">{example.binding}</code> and you write{' '}
+      <code className="rounded bg-muted px-1">{'${' + example.name + '}'}</code>.
+    </p>
+  )
+}
 
 // Rows rendered at once. The whole set arrives in one request, but a governance
 // project can hold >1k variables and painting them all froze the tab for
@@ -104,8 +127,18 @@ function useStableCallback<Args extends unknown[]>(fn: (...args: Args) => void) 
 
 /** `focusId` scrolls to and highlights one variable — the landing spot for a
  * branch-diff link, which knows the variable's id but has no detail page to
- * send the reviewer to. */
-export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string }) {
+ * send the reviewer to. `openEditor` goes one step further and opens that
+ * variable's edit dialog, which is what makes the diff row's Edit action
+ * possible for a variable at all (tripl-htfn.2). */
+export function VariablesTab({
+  slug,
+  focusId,
+  openEditor = false,
+}: {
+  slug: string
+  focusId?: string
+  openEditor?: boolean
+}) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const focusRef = useRef<HTMLTableRowElement | null>(null)
@@ -199,6 +232,11 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     placeholderData: keepPreviousData,
   })
   const variables = useMemo(() => variablePage?.items ?? [], [variablePage])
+  // Drawn from this project rather than hard-coded, because the hard-coded one
+  // was the confusion: `page_data.extra.variant` is three segments deep in a
+  // container many warehouses do not have, so it read as a different namespace
+  // from the tokens the reader actually picks (tripl-htfn.3).
+  const example = useMemo(() => bindingExample(variables), [variables])
   const truncatedCount = Math.max(0, (variablePage?.total ?? 0) - variables.length)
 
   const createMut = useMutation({
@@ -517,6 +555,20 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     setShowQuietDrifts(false)
   })
 
+  // Open the linked variable's editor once, when the list that holds it has
+  // arrived. ONCE is the whole subtlety: the list refetches, and without the
+  // guard a reviewer who closed the dialog would have it reopened under them on
+  // the next poll. A ref rather than state because nothing renders from it —
+  // and it is keyed on the id, so following a second Edit link still opens.
+  const autoOpenedVariableId = useRef<string | null>(null)
+  useEffect(() => {
+    if (!openEditor || !focusId || autoOpenedVariableId.current === focusId) return
+    const target = variables.find(v => v.id === focusId)
+    if (!target) return
+    autoOpenedVariableId.current = focusId
+    startEdit(target)
+  }, [openEditor, focusId, variables, startEdit])
+
   const activeVariables = useMemo(
     () => variables.filter(v => !v.excluded_from_scans),
     [variables],
@@ -737,8 +789,9 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                     of all: a scan matches a variable by NAME first, so a variable
                     named after its column needs none. */}
                 <Label>Data bindings (optional)</Label>
-                <ChipListInput values={bindings} onChange={setBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
-                <p className="text-[11px] text-muted-foreground">Leave it empty and scans match this variable by its name. Add a binding only when the warehouse column or JSON path is spelled differently — <code className="rounded bg-muted px-1">page_data.extra.variant</code> behind <code className="rounded bg-muted px-1">{'${variant}'}</code>.</p>
+                <ChipListInput values={bindings} onChange={setBindings} placeholder={`e.g. ${example.binding}`} ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
+                <p className="text-[11px] text-muted-foreground">Leave it empty and scans match this variable by its name. Add a binding only when the warehouse column or JSON path is spelled differently.</p>
+                <BindingVersusTokenNote example={example} />
               </div>
               {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
@@ -779,7 +832,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
               </div>
               <div className="grid gap-2">
                 <Label>Data bindings</Label>
-                <ChipListInput values={editBindings} onChange={setEditBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
+                <ChipListInput values={editBindings} onChange={setEditBindings} placeholder={`e.g. ${example.binding}`} ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
                 {observedSourceColumns.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
                     <span>Observed at:</span>
@@ -793,6 +846,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                     in makes the row read as hand-owned to `_human_claim`, and it
                     is then exempt from the retirement sweep for good. */}
                 <p className="text-[11px] text-muted-foreground">Needed only where the warehouse column or JSON path is spelled differently from the name; otherwise scans match on the name. A binding a scan filled in is how it keeps finding this variable — removing it marks the variable as yours, and retirement stops considering it.</p>
+                <BindingVersusTokenNote example={example} />
               </div>
               {editingVar && driftItems.length > 0 && (
                 <div className={activeDrifts.length > 0 ? 'rounded-md border border-warning/40 bg-warning-soft p-3' : 'rounded-md border bg-muted/30 p-3'}>

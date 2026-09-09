@@ -14,6 +14,7 @@ import type {
   AlertRule,
   AlertRuleFilterPayload,
   AlertRuleSimulateResponse,
+  MetricScopeType,
   MonitorDetail,
   MonitorsSummaryResponse,
 } from '../types'
@@ -324,13 +325,32 @@ export const alertingApi = {
 
   listInbox: (
     slug: string,
-    // `status` is the union, not a bare string: the API 422s on anything else,
-    // and a filter chip typo should fail at build time rather than as an empty
-    // inbox nobody can explain.
-    params?: { status?: AlertInboxStatus; offset?: number; limit?: number },
+    // Every narrowing member is its union, not a bare string: the API 422s on
+    // anything else, and a filter typo should fail at build time rather than as
+    // an empty inbox nobody can explain (tripl-57g0).
+    //
+    // `lastFiredFrom`/`lastFiredTo` are instants, and both bound
+    // `latest_delivery_at` — when the incident last spoke, the column the card
+    // leads with. They narrow INSIDE the list's own 30-day window; neither can
+    // reach an older incident, which is why the control that sets them says so.
+    params?: {
+      status?: AlertInboxStatus
+      lastFiredFrom?: string
+      lastFiredTo?: string
+      scopeType?: MetricScopeType
+      direction?: 'spike' | 'drop'
+      scope?: string
+      offset?: number
+      limit?: number
+    },
   ) => {
     const sp = new URLSearchParams()
     if (params?.status) sp.set('status', params.status)
+    if (params?.lastFiredFrom) sp.set('last_fired_from', params.lastFiredFrom)
+    if (params?.lastFiredTo) sp.set('last_fired_to', params.lastFiredTo)
+    if (params?.scopeType) sp.set('scope_type', params.scopeType)
+    if (params?.direction) sp.set('direction', params.direction)
+    if (params?.scope) sp.set('scope', params.scope)
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
     if (params?.limit !== undefined) sp.set('limit', String(params.limit))
     const qs = sp.toString()
