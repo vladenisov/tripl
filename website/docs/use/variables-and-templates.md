@@ -37,6 +37,32 @@ Only the name and type are required. **You do not have to fill in bindings** —
 a scan matches a variable by its name first, so a variable named after the
 column it stands for needs no binding at all.
 
+### A binding and a `${token}` are not the same thing
+
+They are written the same way and they are frequently the same string, which is
+why the question comes up. They are still two different things:
+
+- a **binding** is an address in the warehouse — a column, or a dotted path
+  inside one. It tells a scan where to read.
+- a **`${token}`** is a variable's **name**. It is what the plan references, and
+  it is what the suggestion list offers as you type `$` in a field value.
+
+They coincide on a variable a scan created, by construction: the scan stores the
+path it found as the binding, and derives a short name from its trailing
+segments — `variant`, then `extra_variant`, then `page_data_extra_variant` —
+falling back to the **raw path as the name** when every short candidate is
+already taken. That is why a mature project can be full of variables literally
+named `property.forecast_profile`, whose token is that same dotted string.
+
+On a variable you create yourself they differ on purpose: name it `variant`,
+bind it to `page_data.extra.variant`, and write `${variant}`.
+
+The example under the **Data bindings** field is taken from a variable in your
+own project when there is one to take it from, so the shape it shows is the
+shape your warehouse actually uses. Note also that nothing checks a binding
+against the warehouse: a path with a typo is accepted, and the only symptom is
+that the variable never collects an observed value.
+
 ## Documented, observed, and effective values
 
 tripl deliberately keeps two kinds of value list separate:

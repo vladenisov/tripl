@@ -366,10 +366,14 @@ describe('VariablesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
     const dialog = await screen.findByRole('dialog')
 
-    expect(await within(dialog).findByText('Observed at:')).toBeInTheDocument()
-    expect(within(dialog).getAllByText('variant', { selector: 'code' })).toHaveLength(1)
+    // Scoped to the "Observed at:" row rather than the whole dialog: the
+    // caption below the bindings now carries an example path of its own, and
+    // the claim here is about where the scan ANSWERED, not about any code
+    // element on screen.
+    const observedAt = (await within(dialog).findByText('Observed at:')).parentElement as HTMLElement
+    expect(within(observedAt).getAllByText('variant', { selector: 'code' })).toHaveLength(1)
     expect(
-      within(dialog).getByText('page_data.extra.variant', { selector: 'code' }),
+      within(observedAt).getByText('page_data.extra.variant', { selector: 'code' }),
     ).toBeInTheDocument()
   })
 
@@ -1432,5 +1436,51 @@ describe('VariablesTab — opening one variable’s editor from a link', () => {
 
     await waitFor(() => expect(screen.getByText('${spot_id}')).toBeInTheDocument())
     expect(screen.queryByRole('heading', { name: 'Edit: spot_id' })).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * tripl-htfn.3 — "is the path under Data bindings the same thing as the token
+ * after `$`?" They are not, and the hard-coded example was making it worse.
+ */
+describe('VariablesTab — bindings versus tokens', () => {
+  it('draws the example from the project’s own variables, showing both roles', async () => {
+    mockList([
+      makeVariable({
+        id: 'var-1',
+        name: 'bite_threshold',
+        source_name: 'property.bite_threshold',
+        bindings: ['property.bite_threshold'],
+      }),
+    ])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+    const dialog = await screen.findByRole('dialog')
+
+    // The pair, in this project's own vocabulary: the scan reads the path, the
+    // plan writes the name. The generic `page_data.extra.variant` was three
+    // segments deep in a container this warehouse does not have, which is what
+    // made it read as a different namespace.
+    expect(
+      within(dialog).getByText('property.bite_threshold', { selector: 'code' }),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText('${bite_threshold}', { selector: 'code' })).toBeInTheDocument()
+    expect(
+      within(dialog).queryByText('page_data.extra.variant', { selector: 'code' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('falls back to the generic example when no variable is bound yet', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant' })])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(
+      within(dialog).getByText('page_data.extra.variant', { selector: 'code' }),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText('${variant}', { selector: 'code' })).toBeInTheDocument()
   })
 })
