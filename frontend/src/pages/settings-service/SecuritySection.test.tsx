@@ -50,7 +50,7 @@ function settingsFixture(
       smtp_port: 587,
       smtp_username: '',
       smtp_password_configured: false,
-      smtp_use_tls: true,
+      smtp_security: 'starttls',
       smtp_from_address: '',
     },
     ai: {

@@ -67,7 +67,7 @@ export const RESET_FIELDS: Record<SectionKey, readonly string[]> = {
     'smtp_port',
     'smtp_username',
     'smtp_password',
-    'smtp_use_tls',
+    'smtp_security',
     'smtp_from_address',
   ],
   security: [

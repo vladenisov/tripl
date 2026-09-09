@@ -33,7 +33,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.alert_templates import ALERT_MESSAGE_FORMAT_PLAIN
 from tripl.alerting_validation import (
-    validate_email_address,
     validate_email_recipients,
     validate_jira_api_token,
     validate_jira_auth_email,
@@ -42,6 +41,7 @@ from tripl.alerting_validation import (
     validate_jira_project_key,
     validate_linear_api_key,
     validate_linear_team_id,
+    validate_sender_address,
     validate_slack_webhook_url,
     validate_telegram_bot_token,
     validate_telegram_chat_id,
@@ -230,8 +230,8 @@ def _send_email(target: _TestTarget) -> None:
         smtp_port=email_config.smtp_port,
         smtp_username=email_config.smtp_username,
         smtp_password=email_config.smtp_password,
-        smtp_use_tls=email_config.smtp_use_tls,
-        from_address=validate_email_address(from_address),
+        smtp_security=email_config.smtp_security,
+        from_address=validate_sender_address(from_address),
         recipients=recipients,
         subject=TEST_MESSAGE_SUBJECT,
         body=target.message,

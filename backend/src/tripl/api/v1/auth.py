@@ -120,12 +120,12 @@ def _send_password_reset_email(
     )
     try:
         _send_email_message(
-            smtp_cls=smtplib.SMTP,
+            smtp_module=smtplib,
             smtp_host=email_config.smtp_host,
             smtp_port=email_config.smtp_port,
             smtp_username=email_config.smtp_username,
             smtp_password=email_config.smtp_password,
-            smtp_use_tls=email_config.smtp_use_tls,
+            smtp_security=email_config.smtp_security,
             from_address=from_address,
             recipients=[recipient],
             subject="Reset your tripl password",
@@ -249,7 +249,11 @@ async def request_password_reset(
     # (for the UI's fallback copy) does not enable enumeration.
     overrides = await app_settings_service.get_service_overrides(session)
     email_config = app_settings_service.build_email_config(overrides)
-    email_configured = bool(email_config.smtp_host)
+    # Both, not just the host: ``_send_password_reset_email`` returns without
+    # sending when there is no From: address, so an instance with a relay and no
+    # sender would mint a token, drop the mail, and still have the UI promise a
+    # link was on its way. The flag has to mean "this can actually send".
+    email_configured = bool(email_config.smtp_host and email_config.smtp_from_address)
 
     if email_configured:
         issued = await auth_service.request_password_reset(session, data.email)

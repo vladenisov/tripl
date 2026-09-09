@@ -79,7 +79,7 @@ const SETTINGS = {
     smtp_port: 587,
     smtp_username: '',
     smtp_password_configured: true,
-    smtp_use_tls: true,
+    smtp_security: 'starttls',
     smtp_from_address: '',
   },
   ai: {

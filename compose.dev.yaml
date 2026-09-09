@@ -34,6 +34,18 @@ x-backend-environment: &backend-environment
   # DEMO_RUNTIME_ENABLED gates the background freshness tick (tripl-2su6.16).
   DEMO_ENABLED: ${DEMO_ENABLED:-true}
   DEMO_RUNTIME_ENABLED: ${DEMO_RUNTIME_ENABLED:-true}
+  # Outbound email. Blank by default, so the dev stack still sends nothing
+  # unless you point it somewhere — but it CAN now be pointed, which it could
+  # not before: none of these were forwarded, so a developer had no way to
+  # reproduce an SMTP transport problem locally, and tripl-x1vk was found in
+  # production for that reason. SMTP_SECURITY must match SMTP_PORT: starttls
+  # for 587/2525, implicit_tls for 465.
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_SECURITY: ${SMTP_SECURITY:-}
+  SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
   SEARCH_EMBEDDINGS_ENABLED: ${SEARCH_EMBEDDINGS_ENABLED:-false}
   SEARCH_EMBEDDING_PROVIDER: ${SEARCH_EMBEDDING_PROVIDER:-openai}
   SEARCH_EMBEDDING_MODEL: ${SEARCH_EMBEDDING_MODEL:-text-embedding-3-small}

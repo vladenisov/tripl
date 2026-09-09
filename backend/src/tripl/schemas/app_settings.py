@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 # Mirrors app_settings_service.SettingSource. "default" means the value equals
 # the built-in default — either nothing was delivered for it, or what was
@@ -13,6 +13,12 @@ SettingSource = Literal["env", "override", "default"]
 # create an account; "disabled" refuses new signups (the first-owner bootstrap
 # on an empty instance stays exempt so a fresh install can still be claimed).
 RegistrationMode = Literal["open", "disabled"]
+# How the SMTP client secures the connection: plaintext, upgrade-after-greeting
+# (STARTTLS, the port-587 convention), or TLS from the first byte (SMTPS, what
+# port 465 means). Mirrors config.SMTP_SECURITY_MODES, and a test pins the two
+# lists equal — a value this type accepts but the transport cannot dispatch on
+# would be stored happily and fail only at send time.
+SmtpSecurity = Literal["none", "starttls", "implicit_tls"]
 
 
 class RuntimeSettings(BaseModel):
@@ -104,7 +110,7 @@ class EmailSettings(BaseModel):
     smtp_port: int
     smtp_username: str
     smtp_password_configured: bool
-    smtp_use_tls: bool
+    smtp_security: SmtpSecurity
     smtp_from_address: str
 
 
@@ -113,7 +119,7 @@ class EmailSettingsUpdate(BaseModel):
     smtp_port: int | None = Field(default=None, ge=1, le=65535)
     smtp_username: str | None = None
     smtp_password: str | None = Field(default=None, max_length=4096)
-    smtp_use_tls: bool | None = None
+    smtp_security: SmtpSecurity | None = None
     smtp_from_address: str | None = None
 
 
@@ -229,6 +235,13 @@ class AiSettingsTestRequest(BaseModel):
         min_length=1,
         max_length=500,
     )
+
+
+class EmailSettingsTestRequest(BaseModel):
+    # Defaults to the caller's own address, resolved in the route. An owner
+    # testing a relay almost always wants to mail themselves, and asking for an
+    # address before the first probe is a step that answers nothing.
+    recipient: EmailStr | None = None
 
 
 class SettingsTestResponse(BaseModel):

@@ -11,11 +11,12 @@ from tripl.schemas.app_settings import (
     AiSettingsResponse,
     AiSettingsTestRequest,
     AiSettingsUpdate,
+    EmailSettingsTestRequest,
     ServiceSettingsResponse,
     ServiceSettingsUpdate,
     SettingsTestResponse,
 )
-from tripl.services import app_settings_service, llm_service
+from tripl.services import _email_test_send, app_settings_service, llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -126,3 +127,31 @@ async def test_ai_settings(
         return SettingsTestResponse(ok=False, message=str(exc))
     message = (raw or "").strip()
     return SettingsTestResponse(ok=bool(message), message=message or "No response from provider.")
+
+
+@router.post("/email/test", response_model=SettingsTestResponse)
+async def test_email_settings(
+    session: SessionDep,
+    current_user: OwnerUserDep,
+    payload: EmailSettingsTestRequest,
+) -> SettingsTestResponse:
+    """Send one probe message with the saved SMTP settings and report what happened.
+
+    Always 200: a relay refusing us is the answer the caller asked for, not a
+    server fault — the same reasoning the alert-destination test states. The
+    error text is passed through verbatim because a useful SMTP diagnostic is
+    the server's own words ("535 authentication failed", a connection timeout);
+    smtplib carries the relay's response in there, never the credential we sent.
+    """
+    config = await app_settings_service.get_email_config(session)
+    recipient = payload.recipient or current_user.email
+    try:
+        await asyncio.to_thread(
+            _email_test_send.send_test_email,
+            email_config=config,
+            recipient=recipient,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("SMTP settings test failed", exc_info=True)
+        return SettingsTestResponse(ok=False, message=str(exc))
+    return SettingsTestResponse(ok=True, message=f"Test message sent to {recipient}.")

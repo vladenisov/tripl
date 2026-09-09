@@ -233,7 +233,7 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                         smtp_port=email_config.smtp_port,
                         smtp_username=email_config.smtp_username,
                         smtp_password=email_config.smtp_password,
-                        smtp_use_tls=email_config.smtp_use_tls,
+                        smtp_security=email_config.smtp_security,
                         from_address=from_address,
                         recipients=recipients,
                         subject=_build_email_subject(

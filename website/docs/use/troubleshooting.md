@@ -182,11 +182,20 @@ sends. A break anywhere in that chain produces silence.
    plus `SMTP_FROM_ADDRESS` or a per-destination From: address. The worker reads
    SMTP settings at send time, so a config change takes effect without
    recreating the destination.
-6. **Destination credentials are invalid.** Slack/Telegram/webhook/Jira/Linear
+6. **The port and the security mode disagree.** The symptom is a ten-second
+   pause followed by *"Connection unexpectedly closed: timed out"*, which looks
+   like the relay is down when it is answering perfectly well. Port 465 is
+   implicit TLS — the server expects a TLS handshake immediately and never sends
+   the plaintext greeting a STARTTLS client waits for. Set **Security** to
+   *Implicit TLS* for 465, or *STARTTLS* for 587/2525. Settings → Email →
+   **Send test email** reproduces it in one click and prints what the relay
+   said. This is also the failure that silently breaks password-reset links,
+   since a failed reset send is invisible to the person who requested it.
+7. **Destination credentials are invalid.** Slack/Telegram/webhook/Jira/Linear
    each re-validate their secret at send time; on failure the delivery is marked
    `failed` with a message like *"Slack destination configuration is invalid.
    Update the webhook URL."* Check the failed delivery's error in the UI/logs.
-7. **The delivery was stranded.** If the worker died between creating the
+8. **The delivery was stranded.** If the worker died between creating the
    `pending` delivery and dispatching it, or the broker was down at dispatch, a
    maintenance task (`requeue_stranded_alert_deliveries`, every 5 minutes)
    re-enqueues deliveries still `pending` after 15 minutes, up to 5 attempts,
@@ -202,7 +211,7 @@ sends. A break anywhere in that chain produces silence.
    automatically: fix the cause and press **Retry**, which also resets the
    attempt budget. A permanently failing delivery will eventually stop cycling
    and show as failed.
-8. **A drift scope is on but nothing feeds it.** The two drift scopes act on
+9. **A drift scope is on but nothing feeds it.** The two drift scopes act on
    signals another part of the project has to produce first, so a rule can have
    one enabled and be structurally unable to fire. **Variable value drift**
    needs some variable to document an allowed-values list on the **main**

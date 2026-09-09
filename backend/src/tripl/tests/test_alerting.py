@@ -3767,14 +3767,18 @@ def _email_sender_with(refused: object):
         def send_message(self, msg) -> object:  # type: ignore[no-untyped-def]
             return refused
 
+    class FakeSmtplib:
+        SMTP = FakeSMTP
+        SMTP_SSL = FakeSMTP
+
     def send() -> None:
         _send_email_message(
-            smtp_cls=FakeSMTP,
+            smtp_module=FakeSmtplib,
             smtp_host="smtp.example.com",
             smtp_port=587,
             smtp_username="",
             smtp_password="",
-            smtp_use_tls=False,
+            smtp_security="none",
             from_address="alerts@example.com",
             recipients=["alice@example.com", "bob@example.com", "carol@example.com"],
             subject="Subject",

@@ -4,6 +4,7 @@ import ipaddress
 import re
 import socket
 from collections.abc import Callable
+from email.utils import parseaddr
 from urllib.parse import urlparse
 
 from email_validator import EmailNotValidError, validate_email
@@ -254,6 +255,35 @@ def validate_email_address(value: str | None) -> str:
         return validate_email(normalized, check_deliverability=False).normalized
     except EmailNotValidError as exc:
         raise ValueError(f"Invalid email address: {exc}") from exc
+
+
+def validate_sender_address(value: str) -> str:
+    """Check a From: address the way the SEND PATH will use it, and return it intact.
+
+    Not ``validate_email_address``: that one refuses a display name, and every
+    real send path — the alert tasks, the digest tasks, the password-reset mail —
+    hands the configured string straight to ``EmailMessage``, which accepts
+    ``Tripl Alerts <no-reply@example.com>`` without complaint. Validating a
+    sender strictly therefore made the alert-destination test report a failure
+    for a destination that delivers on every fire (tripl-q9o6), which is worse
+    than not checking at all: it sends the operator hunting a fault that is not
+    there.
+
+    So the display name is parsed off and only the address is validated, and the
+    ORIGINAL string comes back — normalising it away would silently drop the
+    name the operator configured.
+
+    This is not a header-injection guard and must not be described as one.
+    ``EmailMessage.__setitem__`` already raises on a linefeed or carriage
+    return, so a newline cannot reach the wire through any of these paths. What
+    this catches is a value with no @-sign, which serialises happily and comes
+    back from the relay as an error naming nothing.
+    """
+    _, address = parseaddr(value)
+    if not address:
+        raise ValueError(f"Not a usable From: address: {value!r}")
+    validate_email_address(address)
+    return value
 
 
 def validate_email_recipients(value: str | None) -> str:

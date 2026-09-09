@@ -22,6 +22,7 @@ from tripl.alerting_validation import (
     validate_email_recipients,
     validate_slack_webhook_url,
 )
+from tripl.config import SMTP_SECURITY_IMPLICIT_TLS, SMTP_SECURITY_STARTTLS
 from tripl.crypto import decrypt_value
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.project import Project
@@ -312,14 +313,42 @@ def _parse_email_recipients(value: str | None) -> list[str]:
     return [r.strip() for r in value.split(",") if r.strip()]
 
 
+class SmtpModule(Protocol):
+    """The two smtplib entry points, injected together.
+
+    Taking the MODULE rather than one class is what keeps the transport choice
+    in a single place. Handing each of the six call sites a class would copy the
+    "which client does this mode need?" decision six times over, and the mode is
+    already threaded past all of them anyway.
+    """
+
+    # Read-only properties rather than plain attributes on purpose: a mutable
+    # protocol member is invariant, so ``smtplib`` itself would not satisfy
+    # ``SMTP: type`` — ``type[smtplib.SMTP]`` is narrower, and invariance
+    # rejects exactly that. Declared this way the match is covariant, which is
+    # what "I only ever read these two names off you" actually means.
+    @property
+    def SMTP(self) -> type: ...  # noqa: N802 — mirrors smtplib's own name
+
+    @property
+    def SMTP_SSL(self) -> type: ...  # noqa: N802 — mirrors smtplib's own name
+
+
+# Long enough for a busy relay to answer, short enough that a caller waiting on
+# the send does not look hung. Worth a name: when the client speaks the wrong
+# protocol the connection does not fail, it stalls until exactly this deadline,
+# and as a bare literal that read like a network problem (tripl-x1vk).
+SMTP_TIMEOUT_SECONDS = 10
+
+
 def _send_email_message(
     *,
-    smtp_cls: type,
+    smtp_module: SmtpModule,
     smtp_host: str,
     smtp_port: int,
     smtp_username: str,
     smtp_password: str,
-    smtp_use_tls: bool,
+    smtp_security: str,
     from_address: str,
     recipients: list[str],
     subject: str,
@@ -330,8 +359,15 @@ def _send_email_message(
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
     msg.set_content(body)
-    with smtp_cls(smtp_host, smtp_port, timeout=10) as conn:
-        if smtp_use_tls:
+    # Implicit TLS wraps the socket before a single byte is exchanged, so it
+    # needs SMTP_SSL: the server's greeting arrives already encrypted and the
+    # plaintext 220 that smtplib.SMTP blocks waiting for is never spoken.
+    # STARTTLS is the opposite order — connect in the clear, read the greeting,
+    # then upgrade — so asking for it here would be too late to help.
+    implicit_tls = smtp_security == SMTP_SECURITY_IMPLICIT_TLS
+    smtp_cls = smtp_module.SMTP_SSL if implicit_tls else smtp_module.SMTP
+    with smtp_cls(smtp_host, smtp_port, timeout=SMTP_TIMEOUT_SECONDS) as conn:
+        if smtp_security == SMTP_SECURITY_STARTTLS:
             conn.starttls()
         if smtp_username:
             conn.login(smtp_username, smtp_password)
@@ -385,7 +421,7 @@ def _send_digest_to_destination(
             smtp_port=email_config.smtp_port,
             smtp_username=email_config.smtp_username,
             smtp_password=email_config.smtp_password,
-            smtp_use_tls=email_config.smtp_use_tls,
+            smtp_security=email_config.smtp_security,
             from_address=from_address,
             recipients=recipients,
             subject=f"[{project.name}] Weekly tripl digest",
