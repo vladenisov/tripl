@@ -355,16 +355,26 @@ Core server configuration.
 
 ### Email
 
-SMTP transport for alert delivery (and, in the UI's framing, invitations and
-digests). Leaving **SMTP host** blank disables email destinations.
+SMTP transport for alert delivery, scheduled digests, invitations and
+password-reset links. Leaving **SMTP host** blank disables all of them.
 
 - **SMTP host** (`smtp_host`)
-- **Port** (`smtp_port`, default 587)
+- **Port** (`smtp_port`, default 587) — has to agree with **Security** below.
 - **SMTP username** (`smtp_username`)
 - **SMTP password** (`smtp_password`, secret — write-only)
-- **Use TLS** (`smtp_use_tls`, default on)
+- **Security** (`smtp_security`, default STARTTLS) — `starttls` connects in the
+  clear and upgrades after the greeting (ports 587/2525); `implicit_tls` wraps
+  the socket in TLS before sending anything (SMTPS, port 465); `none` stays
+  plaintext. Mismatching this with the port does not raise an error, it stalls:
+  the client waits for a greeting that never arrives. Replaces the old **Use
+  TLS** switch, which could only ever mean STARTTLS and so left a 465 relay
+  unreachable however it was set.
 - **Default From address** (`smtp_from_address`) — used when a destination
-  doesn't override it.
+  doesn't override it, and **required** for password-reset mail: without it a
+  reset link is minted and then dropped.
+- A **Send test email** button that sends one message to your own address using
+  the SAVED settings and shows what the relay answered. Save before testing, or
+  you are testing what is still stored rather than what is on screen.
 
 ### AI
 

@@ -271,11 +271,34 @@ destinations.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SMTP_HOST` | `""` | SMTP server host. Blank disables email delivery. |
-| `SMTP_PORT` | `587` | SMTP port. |
+| `SMTP_PORT` | `587` | SMTP port. Has to agree with `SMTP_SECURITY`. |
 | `SMTP_USERNAME` | `""` | SMTP auth username. |
 | `SMTP_PASSWORD` | `""` | SMTP auth password. |
-| `SMTP_USE_TLS` | `true` | Use STARTTLS/TLS. |
-| `SMTP_FROM_ADDRESS` | `""` | Default `From:` address when a destination doesn't override it. |
+| `SMTP_SECURITY` | derived | `starttls`, `implicit_tls` or `none`. See below. |
+| `SMTP_USE_TLS` | `true` | **Deprecated.** Only supplies `SMTP_SECURITY`'s default when that is unset. |
+| `SMTP_FROM_ADDRESS` | `""` | Default `From:` address. Required — password reset mail is dropped without one. |
+
+`SMTP_SECURITY` names the transport, and the transport has to match the port:
+
+| Value | What happens on the wire | Usual port |
+| --- | --- | --- |
+| `starttls` | Connects in the clear, reads the server greeting, then upgrades in place. | 587, 2525 |
+| `implicit_tls` | Wraps the socket in TLS before sending anything, so the greeting itself is encrypted (SMTPS). | 465 |
+| `none` | Plaintext for the whole session. Only reasonable for a relay on localhost or a network path you already trust. | 25 |
+
+Getting this pair wrong does not fail fast. Pointing `starttls` at an
+implicit-TLS port leaves the client waiting for a plaintext greeting that will
+never arrive, so the send stalls for ten seconds and then reports a dropped
+connection — which reads like a network problem rather than a configuration one.
+
+When `SMTP_SECURITY` is unset it is derived from the deprecated `SMTP_USE_TLS`
+(`true` → `starttls`, `false` → `none`), so an existing deployment keeps the
+behaviour it already had. Set `SMTP_SECURITY` instead; it wins.
+
+Settings → Email has a **Send test email** button that sends one message with
+the saved settings and shows what the relay answered. Use it after changing any
+of these — a failed password-reset send is deliberately invisible to the person
+who asked for the link, so this is the only place the failure surfaces.
 
 ### Event photo storage
 

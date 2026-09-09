@@ -18,6 +18,13 @@ export interface RuntimeSettings {
  *  signups apart from the first-owner bootstrap on an empty instance. */
 export type RegistrationMode = 'open' | 'disabled'
 
+/** How the SMTP client secures the connection (backend `SmtpSecurity`). Three
+ *  different protocols, not three strengths of one: `starttls` connects in the
+ *  clear and upgrades after the greeting (ports 587/2525), `implicit_tls` wraps
+ *  the socket before a byte is sent (SMTPS, port 465), `none` stays plaintext.
+ *  Mismatching the mode and the port does not error — it stalls. */
+export type SmtpSecurity = 'none' | 'starttls' | 'implicit_tls'
+
 export interface SecuritySettings {
   registration_mode: RegistrationMode
   cors_allow_origins: string
@@ -59,7 +66,7 @@ export interface EmailSettings {
   smtp_port: number
   smtp_username: string
   smtp_password_configured: boolean
-  smtp_use_tls: boolean
+  smtp_security: SmtpSecurity
   smtp_from_address: string
 }
 
@@ -134,7 +141,7 @@ export type EmailSettingsUpdate = Partial<{
   smtp_port: number | null
   smtp_username: string | null
   smtp_password: string | null
-  smtp_use_tls: boolean | null
+  smtp_security: SmtpSecurity | null
   smtp_from_address: string | null
 }>
 
