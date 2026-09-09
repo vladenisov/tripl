@@ -132,9 +132,13 @@ export function SqlEditor({
 
   return (
     <div className="flex flex-col gap-1.5">
+      {/* `sql-editor` is a styling hook, not decoration: index.css targets
+          `.sql-editor .cm-editor .cm-content` to soft-wrap long lines. Renaming
+          it here silently stops the wrapping, which is why a test pins the pair
+          (tripl-h2sx.33). */}
       <div
         id={id}
-        className="overflow-hidden rounded-[7px]"
+        className="sql-editor overflow-hidden rounded-[7px]"
         style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
       >
         <CodeMirror
