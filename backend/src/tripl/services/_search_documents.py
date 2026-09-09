@@ -571,9 +571,16 @@ def _event_document(
 
     meta_names: list[str] = []
     safe_meta_values: list[str] = []
+    # Names once per FIELD, values once per row. A multi-valued field
+    # (tripl-h2sx.31) has several rows, and extending the names inside the loop
+    # would repeat "jira" once per key and weight the field by how many tickets
+    # happen to be attached to the event.
+    seen_meta_fields: set[uuid.UUID] = set()
     for meta_value in sorted(event.meta_values, key=lambda item: item.meta_field_definition.name):
         meta_field = meta_value.meta_field_definition
-        meta_names.extend([meta_field.name, meta_field.display_name])
+        if meta_field.id not in seen_meta_fields:
+            seen_meta_fields.add(meta_field.id)
+            meta_names.extend([meta_field.name, meta_field.display_name])
         if not _is_sensitive(meta_field.sensitivity):
             safe_meta_values.append(meta_value.value)
 

@@ -1,7 +1,7 @@
 import json
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -42,7 +42,11 @@ from tripl.schemas.event import (
 )
 from tripl.services._branch_counterparts import attach_main_last_seen, metrics_row_for
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
-from tripl.services.plan_branch_service import resolve_branch_id
+from tripl.services.event_comment_service import (
+    events_with_open_questions,
+    open_question_counts,
+)
+from tripl.services.plan_branch_service import ensure_main_branch_id, resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.scan_config_lookup import (
     governing_name_format,
@@ -55,7 +59,14 @@ from tripl.services.search_service import (
 )
 from tripl.services.variable_value_service import attach_event_field_variable_values
 
-_TRACKED_FIELDS = ("status", "name", "title", "description", "sunset_at")
+_TRACKED_FIELDS = (
+    "status",
+    "name",
+    "title",
+    "description",
+    "sunset_at",
+    "superseded_by_event_id",
+)
 # One ``${token}`` grammar for the codebase; this module's spelling is the one
 # it standardised on (``core.name_template``).
 _TEMPLATE_TOKEN_PATTERN = VARIABLE_TOKEN_PATTERN
@@ -266,23 +277,58 @@ async def _normalize_meta_values(
     """
     if not meta_values:
         return list(meta_values)
-    templates: dict[uuid.UUID, str | None] = {
-        definition_id: template
-        for definition_id, template in (
+    definitions = {
+        definition_id: (template, allow_multiple, name)
+        for definition_id, template, allow_multiple, name in (
             await session.execute(
-                select(MetaFieldDefinition.id, MetaFieldDefinition.link_template).where(
-                    MetaFieldDefinition.id.in_({mv.meta_field_definition_id for mv in meta_values}),
-                    MetaFieldDefinition.link_template.is_not(None),
+                select(
+                    MetaFieldDefinition.id,
+                    MetaFieldDefinition.link_template,
+                    MetaFieldDefinition.allow_multiple,
+                    MetaFieldDefinition.name,
+                ).where(
+                    MetaFieldDefinition.id.in_({mv.meta_field_definition_id for mv in meta_values})
                 )
             )
         ).all()
     }
     out: list[EventMetaValueIn] = []
+    # A field opted in to several values may repeat; one that did not may not.
+    # The row constraint stopped counting fields when it started counting values
+    # (tripl-h2sx.31), so the "one value here" rule lives here now, where the
+    # definition says whether it applies.
+    seen: dict[uuid.UUID, set[str]] = {}
     for mv in meta_values:
-        template = templates.get(mv.meta_field_definition_id) or ""
-        stripped = strip_link_template(template, mv.value)
+        template, allow_multiple, name = definitions.get(
+            mv.meta_field_definition_id, (None, False, "")
+        )
+        stripped = strip_link_template(template or "", mv.value)
+        already = seen.setdefault(mv.meta_field_definition_id, set())
+        if already and not allow_multiple:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Meta field '{name}' holds one value; enable Allow multiple for more",
+            )
+        # An exact repeat is the same fact twice, not a second value — and it
+        # would collide on uq_event_meta_value_event_meta_value.
+        if stripped in already:
+            continue
+        already.add(stripped)
         out.append(mv if stripped == mv.value else mv.model_copy(update={"value": stripped}))
     return out
+
+
+def _meta_by_definition(pairs: Iterable[tuple[uuid.UUID, str]]) -> dict[uuid.UUID, str]:
+    """One activity-log line per meta field, its values joined.
+
+    The log is keyed by field, so a multi-valued field would otherwise have its
+    entries overwrite each other under one key and report the last one as the
+    whole change. "WND-4770, WND-5012" is what actually happened.
+    """
+    grouped: dict[uuid.UUID, list[str]] = {}
+    for definition_id, value in pairs:
+        grouped.setdefault(definition_id, []).append(value)
+    return {definition_id: ", ".join(values) for definition_id, values in grouped.items()}
 
 
 def strip_link_template(template: str, value: str) -> str:
@@ -379,6 +425,7 @@ async def list_events(
     field_value: str | None = None,
     meta_value: str | None = None,
     reviewed: bool | None = None,
+    has_open_questions: bool | None = None,
     branch_id: uuid.UUID | None = None,
     order_by: str = "catalog",
 ) -> tuple[list[Event], int]:
@@ -451,6 +498,24 @@ async def list_events(
         # the queue" — the question the review tab could not ask (tripl-invv).
         query = query.where(Event.reviewed.is_(reviewed))
         count_query = count_query.where(Event.reviewed.is_(reviewed))
+    if has_open_questions is not None:
+        # Resolved to a set of ids rather than a join: the discussion hangs on
+        # the event's MAIN twin, and pairing a branch row with it is the natural
+        # key (event type name + scan identity), not something the events table
+        # can express in a WHERE clause. The set is bounded by how many
+        # questions are actually unanswered, not by the catalog.
+        main_branch_id = await ensure_main_branch_id(session, project_id)
+        open_ids = await events_with_open_questions(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            main_branch_id=main_branch_id,
+        )
+        questions_clause = (
+            Event.id.in_(open_ids) if has_open_questions else Event.id.not_in(open_ids)
+        )
+        query = query.where(questions_clause)
+        count_query = count_query.where(questions_clause)
     if silent_since_days is not None and silent_since_days >= 0:
         cutoff = datetime.now(UTC) - timedelta(days=silent_since_days)
         silent_clause = or_(Event.last_seen_at.is_(None), Event.last_seen_at < cutoff)
@@ -506,6 +571,14 @@ async def list_events(
             )
             for rule in coverage_rules
         )
+
+    # Unanswered questions per row, read through to the main twin the way every
+    # other borrowed signal on a branch copy is. Shipped with the catalog row so
+    # the filter has something visible to agree with — a filter whose result the
+    # list cannot explain reads as a bug.
+    question_counts = await open_question_counts(session, project_id=project_id, events=events)
+    for event in events:
+        event.open_question_count = question_counts.get(event.id, 0)  # type: ignore[attr-defined]
 
     await attach_event_field_variable_values(session, events)
     await attach_main_last_seen(session, project_id=project_id, events=events)
@@ -1087,6 +1160,10 @@ async def update_event(
         event.status = update_data["status"]
     if "sunset_at" in update_data:
         event.sunset_at = update_data["sunset_at"]
+    if "superseded_by_event_id" in update_data:
+        event.superseded_by_event_id = await _resolve_successor(
+            session, event, update_data["superseded_by_event_id"]
+        )
     if "metric_breakdown_columns" in update_data:
         event.metric_breakdown_columns = update_data["metric_breakdown_columns"]
     if "owner_id" in update_data:
@@ -1165,7 +1242,12 @@ async def update_event(
 
     if data.meta_values is not None:
         meta_values = await _normalize_meta_values(session, data.meta_values)
-        meta_before = {mv.meta_field_definition_id: mv.value for mv in event.meta_values}
+        meta_before = _meta_by_definition(
+            (mv.meta_field_definition_id, mv.value) for mv in event.meta_values
+        )
+        meta_after = _meta_by_definition(
+            (mv.meta_field_definition_id, mv.value) for mv in meta_values
+        )
         _record_keyed_changes(
             session,
             event=event,
@@ -1173,10 +1255,10 @@ async def update_event(
             names=await _definition_names(
                 session,
                 MetaFieldDefinition,
-                set(meta_before) | {mv.meta_field_definition_id for mv in meta_values},
+                set(meta_before) | set(meta_after),
             ),
             old=meta_before,
-            new={mv.meta_field_definition_id: mv.value for mv in meta_values},
+            new=meta_after,
             user_id=user_id,
         )
         await session.execute(delete(EventMetaValue).where(EventMetaValue.event_id == event.id))
@@ -1678,3 +1760,35 @@ async def get_event_history(
             }
         )
     return history
+
+
+async def _resolve_successor(
+    session: AsyncSession,
+    event: Event,
+    successor_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Validate the "replaced by" target before it is stored.
+
+    A client sends a bare uuid, which is the one real surface here: unchecked,
+    it would let an event point at another project's row and make that row's
+    name readable through this project. So the successor has to live in the
+    same project AND on the same branch — a pointer across branches would
+    dangle the moment either side is deep-copied or merged — and an event
+    cannot replace itself.
+    """
+    if successor_id is None:
+        return None
+    if successor_id == event.id:
+        raise HTTPException(status_code=400, detail="An event cannot replace itself")
+    successor = (
+        await session.execute(
+            select(Event).where(
+                Event.id == successor_id,
+                Event.project_id == event.project_id,
+                Event.branch_id == event.branch_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if successor is None:
+        raise HTTPException(status_code=404, detail="Successor event not found")
+    return successor.id

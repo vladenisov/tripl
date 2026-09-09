@@ -36,9 +36,11 @@ function buildSqlNamespace(tables: readonly TableSchema[]): SQLNamespace {
  * Shared SQL editor: CodeMirror with dialect-aware syntax highlighting and
  * keyword/function completion (ClickHouse / BigQuery / Postgres), schema-aware
  * table+column autocomplete, a one-click dialect-correct Format button, and a
- * collapsible table/column picker that inserts names at the cursor. Used by the
- * scans base query, the SQL metric query, and the fact-table SELECT so every
- * place a user writes warehouse SQL gets the same first-class editor.
+ * collapsible table/column picker that inserts names at the cursor. Editable on
+ * four surfaces — the scans base query, the SQL metric query, the fact-table
+ * SELECT and the free-text fact row filter — so every place a user writes
+ * warehouse SQL gets the same first-class editor, and read-only on the
+ * monitoring metric-definition card, which shows the query it ran.
  */
 export function SqlEditor({
   value,
@@ -130,9 +132,13 @@ export function SqlEditor({
 
   return (
     <div className="flex flex-col gap-1.5">
+      {/* `sql-editor` is a styling hook, not decoration: index.css targets
+          `.sql-editor .cm-editor .cm-content` to soft-wrap long lines. Renaming
+          it here silently stops the wrapping, which is why a test pins the pair
+          (tripl-h2sx.33). */}
       <div
         id={id}
-        className="relative overflow-hidden rounded-[7px]"
+        className="sql-editor overflow-hidden rounded-[7px]"
         style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
       >
         <CodeMirror
@@ -147,18 +153,18 @@ export function SqlEditor({
           minHeight={minHeight}
           onCreateEditor={view => { viewRef.current = view }}
         />
-        {!readOnly && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={handleFormat}
-            className="absolute right-1.5 top-1.5 h-6 text-[10px]"
-          >
+      </div>
+      {/* Format sits under the editor, not over it: an overlay button covered
+          the first line of every query wider than the box — the same fix the
+          JSON editor took, in the same shape. The guard wraps the whole row so
+          a read-only mount gains no empty strip. */}
+      {!readOnly && (
+        <div className="flex items-start justify-end gap-2">
+          <Button type="button" variant="ghost" size="xs" onClick={handleFormat} className="shrink-0">
             Format
           </Button>
-        )}
-      </div>
+        </div>
+      )}
       {!readOnly && tables && tables.length > 0 && (
         <SqlSchemaBrowser tables={tables} onInsert={insertToken} />
       )}

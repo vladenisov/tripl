@@ -484,6 +484,7 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
                 )
             )
         ).scalar_one()
+        branch_event_id = branch_event.id
         branch_event.description = "edited on branch"
         await session.commit()
 
@@ -512,8 +513,17 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
     assert entry["field_changes"] == [
         {"field": "description", "before": "", "after": "edited on branch", "items": []}
     ]
-    # The row can link to the event it describes.
-    assert entry["entity_id"] is not None
+    # The row links to the event it describes, and WHICH copy it names is the
+    # whole contract: `changed` carries the BRANCH-side row, because the entry
+    # is a deep link to /edit and only the branch copy is editable here. The
+    # inequality is what makes this non-vacuous — the deep copy mints a fresh
+    # uuid, so the two ids genuinely differ (tripl-h2sx.6).
+    main_events = await client.get("/api/v1/projects/branch-diff/events")
+    main_event_id = next(
+        e["id"] for e in main_events.json()["items"] if e["name"] == "purchase:success"
+    )
+    assert entry["entity_id"] == str(branch_event_id)
+    assert entry["entity_id"] != main_event_id
     # Full before/after state carries the raw values, with DB ids / ordering stripped.
     assert entry["before"]["description"] == ""
     assert entry["after"]["description"] == "edited on branch"
@@ -632,11 +642,24 @@ async def test_diff_entries_carry_before_after_state(client: AsyncClient) -> Non
     assert added_entry["field_changes"] == []
     assert "id" not in added_entry["after"]
 
+    # `added` exists only on the branch, so its id is the branch row's.
+    assert added_entry["entity_id"] == added.json()["id"]
+
     removed_entry = entries["purchase:success"]
     assert removed_entry["kind"] == "removed"
     assert removed_entry["after"] is None
     assert removed_entry["before"]["name"] == "purchase:success"
     assert "id" not in removed_entry["before"]
+    # `removed` is the mirror image and the one worth pinning: the entry comes
+    # from the BASE payload, which `create_branch` built from main, so the id
+    # is MAIN's row — never the branch copy that was just deleted, which no
+    # longer exists to link to.
+    main_events = await client.get("/api/v1/projects/branch-diff-state/events")
+    main_event_id = next(
+        e["id"] for e in main_events.json()["items"] if e["name"] == "purchase:success"
+    )
+    assert removed_entry["entity_id"] == main_event_id
+    assert removed_entry["entity_id"] != seed_event["id"]
 
 
 @pytest.mark.asyncio
@@ -1556,6 +1579,44 @@ async def test_merge_3way_auto_merges_non_overlapping_field_changes(
 
 
 @pytest.mark.asyncio
+async def test_merge_blocks_when_both_sides_retitle_the_same_event(
+    client: AsyncClient,
+) -> None:
+    """`title` is authored text, so two people can write it differently.
+
+    It reached the event and the diff's key list without reaching the merge's,
+    so a title edited on both sides merged silently with one side winning and
+    nothing reported.
+    """
+    slug = "merge-title-conflict"
+    await _seed_plan(client, slug)
+    branch_id = await _create_branch(client, slug)
+
+    main_event_id = (await client.get(f"/api/v1/projects/{slug}/events")).json()["items"][0]["id"]
+    on_main = await client.patch(
+        f"/api/v1/projects/{slug}/events/{main_event_id}",
+        json={"title": "Purchase completed"},
+    )
+    assert on_main.status_code == 200
+
+    branch_events = await client.get(f"/api/v1/projects/{slug}/events?branch={branch_id}")
+    branch_event_id = branch_events.json()["items"][0]["id"]
+    on_branch = await client.patch(
+        f"/api/v1/projects/{slug}/events/{branch_event_id}?branch={branch_id}",
+        json={"title": "Checkout finished"},
+    )
+    assert on_branch.status_code == 200
+
+    resp = await _approve_and_merge(client, slug, branch_id)
+    assert resp.status_code == 409, resp.text
+
+    # Main keeps its own text while the conflict stands — the merge changed
+    # nothing rather than picking a winner.
+    main_after = await client.get(f"/api/v1/projects/{slug}/events/{main_event_id}")
+    assert main_after.json()["title"] == "Purchase completed"
+
+
+@pytest.mark.asyncio
 async def test_merge_blocks_on_same_field_conflict_until_resolved(
     client: AsyncClient,
 ) -> None:
@@ -1823,6 +1884,113 @@ async def test_merge_carries_branch_photo_changes_to_main(client: AsyncClient) -
     assert listed.status_code == 200
     urls = [row["external_url"] for row in listed.json()]
     assert urls == [new_url]
+
+
+@pytest.mark.asyncio
+async def test_merge_keeps_comments_written_on_main_and_the_photo_id(
+    client: AsyncClient,
+) -> None:
+    """Regression (tripl-h2sx.28): a merge used to replace main's whole photo
+    canvas whenever the branch's snapshot subtree differed — and comments are
+    nested INSIDE each photo there, so one comment written on the branch was
+    enough. Main's photo rows were deleted, ``event_photo_comments.photo_id``
+    cascaded, and everything said on main since the branch was cut went with
+    them. The photo ids churned too, so any link into the canvas broke.
+    """
+    slug = "merge-photo-comments"
+    await _seed_plan(client, slug)
+    events = await client.get(f"/api/v1/projects/{slug}/events")
+    main_event_id = events.json()["items"][0]["id"]
+    main_photo_id = await _attach_main_figma(
+        client,
+        slug,
+        main_event_id,
+        "https://www.figma.com/file/abc/Spec",
+        "Spec",
+    )
+    main_comments_url = (
+        f"/api/v1/projects/{slug}/events/{main_event_id}/photos/{main_photo_id}/comments"
+    )
+    before = await client.post(main_comments_url, json={"body": "before the branch"})
+    assert before.status_code == 201
+
+    branch_id = await _create_branch(client, slug, "feature-art")
+
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
+            .scalars()
+            .first()
+        )
+        assert branch_event is not None
+        branch_event_id = branch_event.id
+        branch_photo = (
+            (
+                await session.execute(
+                    select(EventPhoto).where(EventPhoto.event_id == branch_event_id)
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_photo_id = branch_photo.id
+        branch_copy_of_before = (
+            (
+                await session.execute(
+                    select(EventPhotoComment).where(
+                        EventPhotoComment.photo_id == branch_photo_id,
+                        EventPhotoComment.body == "before the branch",
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+
+    branch_comments_url = (
+        f"/api/v1/projects/{slug}/events/{branch_event_id}/photos/{branch_photo_id}/comments"
+    )
+    on_branch = await client.post(
+        branch_comments_url,
+        json={"body": "answered on the branch", "parent_id": str(branch_copy_of_before.id)},
+    )
+    assert on_branch.status_code == 201
+    # Meanwhile, someone reading main says something there. This is the comment
+    # the merge used to destroy.
+    on_main = await client.post(main_comments_url, json={"body": "said on main"})
+    assert on_main.status_code == 201
+
+    resp = await _approve_and_merge(client, slug, branch_id)
+    assert resp.status_code == 200
+
+    listed = await client.get(f"/api/v1/projects/{slug}/events/{main_event_id}/photos")
+    assert [row["id"] for row in listed.json()] == [main_photo_id]
+
+    async with TestSessionLocal() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(EventPhotoComment).where(
+                        EventPhotoComment.photo_id == uuid.UUID(main_photo_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    # Both sides survive, and the branch's copy of a comment main already holds
+    # is recognised as the same comment rather than added a second time.
+    assert sorted(row.body for row in rows) == [
+        "answered on the branch",
+        "before the branch",
+        "said on main",
+    ]
+    root = next(row for row in rows if row.body == "before the branch")
+    reply = next(row for row in rows if row.body == "answered on the branch")
+    # The reply came over from the branch and found main's own comment to hang
+    # under, not the branch copy it was written against.
+    assert reply.parent_id == root.id
+    assert root.id == uuid.UUID(before.json()["id"])
 
 
 # --- ?branch= router param threading ----------------------------------------
@@ -4174,6 +4342,187 @@ def test_snapshot_rename_pairs_follows_main_not_the_base() -> None:
     # Same branch, main untouched: now it is a rename the merge will pair.
     paired = snapshot_rename_pairs(base, base, branch)
     assert [pair.removed_name for pair in paired] == ["plan_tier"]
+
+
+async def _event_id_by_name(client: AsyncClient, slug: str, name: str, branch: str = "") -> str:
+    query = f"?branch={branch}" if branch else ""
+    listed = await client.get(f"/api/v1/projects/{slug}/events{query}")
+    return next(e["id"] for e in listed.json()["items"] if e["name"] == name)
+
+
+@pytest.mark.asyncio
+async def test_the_branch_copy_points_at_its_own_successor_not_at_mains(
+    client: AsyncClient,
+) -> None:
+    """A self-FK is the one reference a deep copy can get wrong two ways.
+
+    Left alone it would point at a MAIN row from a branch row — the only such
+    reference in the whole copy — and built one-pass it would silently NULL any
+    successor authored before the event it replaces, because the events SELECT
+    is unordered.
+    """
+    slug = "branch-superseded"
+    et_id = await _seed_plan(client, slug)
+    # The successor is created SECOND here and FIRST in the sibling test below,
+    # so between them both orderings are covered.
+    successor = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:completed"},
+    )
+    assert successor.status_code == 201
+    main_old_id = await _event_id_by_name(client, slug, "purchase:success")
+    await client.patch(
+        f"/api/v1/projects/{slug}/events/{main_old_id}",
+        json={"status": "deprecated", "superseded_by_event_id": successor.json()["id"]},
+    )
+
+    branch_id = await _create_branch(client, slug)
+
+    branch_old_id = await _event_id_by_name(client, slug, "purchase:success", branch_id)
+    branch_new_id = await _event_id_by_name(client, slug, "purchase:completed", branch_id)
+    assert branch_old_id != main_old_id
+
+    copied = await client.get(f"/api/v1/projects/{slug}/events/{branch_old_id}?branch={branch_id}")
+    assert copied.status_code == 200
+    # Points INTO the branch, not back at main.
+    assert copied.json()["superseded_by_event_id"] == branch_new_id
+    assert copied.json()["superseded_by_event_id"] != successor.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_successor_authored_before_its_predecessor_survives_the_copy(
+    client: AsyncClient,
+) -> None:
+    """The forward reference. `_seed_plan` creates `purchase:success` first, so
+    naming an event created LATER as the successor of one created EARLIER puts
+    the pointer ahead of its target in an unordered SELECT."""
+    slug = "branch-superseded-forward"
+    et_id = await _seed_plan(client, slug)
+    successor = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "purchase:completed"},
+    )
+    main_old_id = await _event_id_by_name(client, slug, "purchase:success")
+    # The EARLIER row names the LATER one.
+    await client.patch(
+        f"/api/v1/projects/{slug}/events/{main_old_id}",
+        json={"superseded_by_event_id": successor.json()["id"]},
+    )
+
+    branch_id = await _create_branch(client, slug)
+    branch_old_id = await _event_id_by_name(client, slug, "purchase:success", branch_id)
+    branch_new_id = await _event_id_by_name(client, slug, "purchase:completed", branch_id)
+
+    copied = await client.get(f"/api/v1/projects/{slug}/events/{branch_old_id}?branch={branch_id}")
+    assert copied.json()["superseded_by_event_id"] == branch_new_id
+
+
+@pytest.mark.asyncio
+async def test_merging_a_successor_translates_the_pointer_onto_mains_own_rows(
+    client: AsyncClient,
+) -> None:
+    """The merge must never copy this column: on a branch row it holds a BRANCH
+    id, and writing that onto main would point one project's catalog at rows
+    that only exist on a branch."""
+    slug = "branch-superseded-merge"
+    await _seed_plan(client, slug)
+    main_old_id = await _event_id_by_name(client, slug, "purchase:success")
+    branch_id = await _create_branch(client, slug)
+
+    branch_et = await client.get(f"/api/v1/projects/{slug}/event-types?branch={branch_id}")
+    branch_et_id = next(et["id"] for et in branch_et.json() if et["name"] == "track")
+    # Both the successor and the pointer are authored on the branch, so main
+    # learns the whole fact at merge time.
+    created = await client.post(
+        f"/api/v1/projects/{slug}/events?branch={branch_id}",
+        json={"event_type_id": branch_et_id, "name": "purchase:completed"},
+    )
+    assert created.status_code == 201
+    branch_old_id = await _event_id_by_name(client, slug, "purchase:success", branch_id)
+    await client.patch(
+        f"/api/v1/projects/{slug}/events/{branch_old_id}?branch={branch_id}",
+        json={"status": "deprecated", "superseded_by_event_id": created.json()["id"]},
+    )
+    merged = await _approve_and_merge(client, slug, branch_id)
+    assert merged.status_code == 200, merged.text
+
+    main_new_id = await _event_id_by_name(client, slug, "purchase:completed")
+    after = await client.get(f"/api/v1/projects/{slug}/events/{main_old_id}")
+    assert after.json()["status"] == "deprecated"
+    # Main's own row for the successor, which the merge created moments earlier.
+    assert after.json()["superseded_by_event_id"] == main_new_id
+    assert after.json()["superseded_by_event_id"] != created.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_event_splits_into_entries_pointing_at_opposite_sides(
+    client: AsyncClient,
+) -> None:
+    """The case where following an entry's own id is a trap.
+
+    A rename shows up as removed + added, and the two entries name DIFFERENT
+    rows: the removed one carries main's id, because it comes from the base
+    payload, and main's row still exists under the old name; the added one
+    carries the branch copy — which is the same physical row the removal is
+    talking about, renamed. A client that deep-links the removed entry lands on
+    main's untouched event, not on the edit the reviewer is looking at, so the
+    pairing has to be resolved rather than either id followed blindly
+    (tripl-h2sx.6).
+    """
+    slug = "branch-diff-rename-ids"
+    await _seed_plan(client, slug)
+    main_events = await client.get(f"/api/v1/projects/{slug}/events")
+    main_event_id = next(
+        e["id"] for e in main_events.json()["items"] if e["name"] == "purchase:success"
+    )
+    # `pair_renames` joins the two sides on their SCAN identity, which the API
+    # never accepts — the same ORM stamp the variable rename test above needs,
+    # and it has to land before the branch is cut so the deep copy carries it.
+    async with TestSessionLocal() as session:
+        main_event = await session.get(Event, uuid.UUID(main_event_id))
+        assert main_event is not None
+        main_event.source_name = "purchase_success_raw"
+        await session.commit()
+    branch_id = await _create_branch(client, slug)
+
+    branch_events = await client.get(f"/api/v1/projects/{slug}/events?branch={branch_id}")
+    branch_event_id = next(
+        e["id"] for e in branch_events.json()["items"] if e["name"] == "purchase:success"
+    )
+    assert branch_event_id != main_event_id
+
+    renamed = await client.patch(
+        f"/api/v1/projects/{slug}/events/{branch_event_id}?branch={branch_id}",
+        json={"name": "purchase:completed"},
+    )
+    assert renamed.status_code == 200
+
+    diff = await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")
+    assert diff.status_code == 200
+    body = diff.json()
+    # The pairing REPORTS the rename; it does not collapse the two entries.
+    # The pairing joins on scan identity, so it reports the rename here only
+    # because `source_name` was stamped above; a hand-named event has none and
+    # the two entries stand alone. Either way the pairing REPORTS — it never
+    # collapses the entries.
+    assert body["renames"] == [
+        {
+            "entity_type": "event",
+            "parent": "track",
+            "removed_name": "purchase:success",
+            "added_name": "purchase:completed",
+        }
+    ]
+    entries = {e["name"]: e for e in body["entries"]}
+    removed = entries["purchase:success"]
+    added = entries["purchase:completed"]
+    assert removed["kind"] == "removed"
+    assert added["kind"] == "added"
+    assert removed["entity_id"] == main_event_id
+    assert added["entity_id"] == branch_event_id
+    # The inequality IS the hazard: the removed row names a live event on main,
+    # not the branch copy that was renamed.
+    assert removed["entity_id"] != branch_event_id
 
 
 @pytest.mark.asyncio

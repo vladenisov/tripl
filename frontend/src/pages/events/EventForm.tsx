@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   Event as TEvent,
   EventMutationResponse,
@@ -10,6 +10,7 @@ import type {
   Variable,
 } from '@/types'
 import { aiApi } from '@/api/ai'
+import { eventCommentsApi } from '@/api/eventComments'
 import { eventsApi } from '@/api/events'
 import { scansApi } from '@/api/scans'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -17,7 +18,11 @@ import { metaFieldsApi } from '@/api/metaFields'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { variablesApi } from '@/api/variables'
-import { useActiveBranchId } from '@/hooks/useBranch'
+import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { displayUser, useUsersById } from '@/hooks/useUsersById'
+import { ChipListInput } from '@/components/chip-list-input'
+import { CommentThread } from '@/components/comment-thread'
+import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenario, useDemoScenarioActions } from '@/demo/demoScenarioContext'
@@ -32,6 +37,7 @@ import {
 } from '@/lib/metaFields'
 import { ErrorState } from '@/components/error-state'
 import { JsonEditor } from './JsonEditor'
+import { validateJsonWithVars } from './jsonTemplate'
 import { VariableInput, type VariableSuggestion } from './VariableInput'
 import { applyEventNameFormat, nameFormatBaseColumns, resolveTemplateTokens } from './utils'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard, TEXT_INPUT_CLASS } from './eventFormLayout'
@@ -39,6 +45,12 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
 import { branchTicket } from '@/lib/branchTicket'
 import { eventTypesKey, planBranchesKey, variablesKey } from '@/lib/queryKeys'
+
+// Replacement candidates offered at once. Deliberately small, for the reason
+// the variables tab spells out (tripl-46am): the search below is server-side,
+// so anything outside the page is one keystroke away, and the count of what is
+// missing is printed rather than hidden.
+const SUCCESSOR_PAGE_SIZE = 100
 
 const EMPTY_EVENT_TYPES: EventType[] = []
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
@@ -55,7 +67,119 @@ function normalizeMetricBreakdownColumns(columns: string[]): string[] {
     })
 }
 
-function FieldTemplateHints({ value, variables }: { value: string; variables: Variable[] }) {
+/**
+ * Says which way a field value is heading. The two things an analyst reaches
+ * for have opposite and permanent effects, and neither announced itself:
+ * typing a correction sets `is_authored`, after which `_upsert_field_values`
+ * skips the field for good, while clearing the box deletes the row and the
+ * next scan fills it in again.
+ */
+function ScanMaintenanceNotice({
+  stored,
+  current,
+  onHandBack,
+}: {
+  /** The saved row behind this box, or null on a field the event never carried. */
+  stored: { value: string; isAuthored: boolean } | null
+  current: string
+  /**
+   * Absent where clearing the box would 422 on save — a required field, or one
+   * the scan's name format builds the event's identity out of.
+   */
+  onHandBack?: () => void
+}) {
+  if (!stored) return null
+  if (stored.isAuthored) {
+    if (current.trim() === '') {
+      return (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Cleared. Save, and the next scan fills this in again.
+        </p>
+      )
+    }
+    return (
+      <p className="mt-1 text-xs text-muted-foreground">
+        Edited by hand, so scans leave it alone.{' '}
+        {onHandBack && (
+          <button
+            type="button"
+            onClick={onHandBack}
+            className="underline underline-offset-2 hover:text-foreground"
+          >
+            Hand back to scans
+          </button>
+        )}
+      </p>
+    )
+  }
+  if (current === stored.value) return null
+  return (
+    <p className="mt-1 text-xs text-warning">Saving this stops scans from updating the field.</p>
+  )
+}
+
+/**
+ * Points a field at the Breakdowns tab, which already answers "and what else
+ * does this field hold?" — one value per box is all an event can carry, so the
+ * question came up every time a scanned value looked wrong. The tab needed the
+ * column in the breakdown set and a reader who knew the tab existed; this is
+ * both, from where the question is asked.
+ */
+function FieldBreakdownLink({
+  column,
+  href,
+  state,
+  onSelect,
+}: {
+  column: string
+  href: { to: string; onClick: () => void }
+  /** `collecting` = added in this session and not yet saved, so there is nothing to open. */
+  state: 'collected' | 'collecting' | 'off'
+  onSelect: () => void
+}) {
+  if (state === 'collecting') {
+    return (
+      <p className="mt-1 text-xs text-muted-foreground">
+        Added to metric breakdowns. Save, and collection starts splitting by{' '}
+        <span className="mono">{column}</span>.
+      </p>
+    )
+  }
+  return (
+    <p className="mt-1 text-xs">
+      {state === 'collected' ? (
+        <Link
+          to={href.to}
+          onClick={href.onClick}
+          className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          See every value this field takes
+        </Link>
+      ) : (
+        <button
+          type="button"
+          onClick={onSelect}
+          className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          Split volume by this field
+        </button>
+      )}
+    </p>
+  )
+}
+
+function FieldTemplateHints({
+  value,
+  variables,
+  namesEvent = false,
+  slug,
+}: {
+  value: string
+  variables: Variable[]
+  /** The governing scan rule builds the event's identity out of this field. */
+  namesEvent?: boolean
+  slug?: string
+}) {
   const [copied, setCopied] = useState<string | null>(null)
   const resolved = resolveTemplateTokens(value, variables)
   if (resolved.length === 0) return null
@@ -67,9 +191,29 @@ function FieldTemplateHints({ value, variables }: { value: string; variables: Va
         .map(({ variable }) => [variable!.id, variable!]),
     ).values(),
   ]
-  if (unknown.length === 0 && documented.length === 0) return null
+  if (!namesEvent && unknown.length === 0 && documented.length === 0) return null
   return (
     <div className="mt-1 space-y-1">
+      {/* Validating the token and offering its documented values reads as a
+          promise that the scanner will expand it. It will not:
+          apply_scan_name_format substitutes {key} only, so the event is stamped
+          with a literal ${…} identity that matches nothing. Say so where the
+          mistake is made, and point at the mechanism that does collapse a
+          family of legacy names onto one event. */}
+      {namesEvent && (
+        <p className="text-xs text-warning">
+          This field names the event, so <span className="font-mono">{'${variable}'}</span> is
+          stored literally and will not match a family of names.{' '}
+          {slug ? (
+            <Link to={`/p/${slug}/settings/scans`} className="underline underline-offset-2">
+              Group them with a scan event rule
+            </Link>
+          ) : (
+            <span>Group them with a scan event rule</span>
+          )}{' '}
+          instead.
+        </p>
+      )}
       {unknown.map(({ token }) => (
         <p key={token} className="text-xs text-warning">Unknown variable token: {token}</p>
       ))}
@@ -158,20 +302,53 @@ function FieldValueControl({
 
 function MetaFieldControl({
   metaField,
-  value,
+  values,
   onChange,
   variables,
   inputId,
 }: {
   metaField: MetaFieldDefinition
-  value: string
-  onChange: (value: string) => void
+  /** Always a list: a single-valued field simply holds none or one. */
+  values: string[]
+  onChange: (values: string[]) => void
   variables: VariableSuggestion[]
   inputId?: string
 }) {
+  const value = values[0] ?? ''
+  const setOne = (next: string) => onChange(next === '' ? [] : [next])
+  // Several values, the way tags work — the interaction the analyst asked for
+  // when an event picked up in a second task had nowhere to put the second Jira
+  // key. The link template still applies per value: resolveMetaFieldHref is
+  // already per-value, so N chips render N links with no new concept.
+  if (metaField.allow_multiple) {
+    const template = metaField.link_template
+    return (
+      <div className="max-w-[320px]">
+        <ChipListInput
+          inputId={inputId}
+          values={values}
+          // A whole address pasted into a chip is the same mistake as one
+          // pasted into the single input, and the server strips per value —
+          // so the chip shows the key that will be stored, not the address.
+          onChange={next => {
+            const keys = next.map(v => stripLinkTemplate(template, v))
+            onChange(keys.filter((v, i) => keys.indexOf(v) === i))
+          }}
+          placeholder={metaFieldLinkExample(template) ? 'Type a key + Enter' : 'Type a value + Enter'}
+          ariaLabel={`Add ${metaField.display_name}`}
+        />
+        {template && (
+          <p className="mt-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span> — each
+            one opens on its own.
+          </p>
+        )}
+      </div>
+    )
+  }
   if (metaField.field_type === 'boolean') {
     return (
-      <SelectControl id={inputId} value={value} onChange={onChange} maxWidth={160}>
+      <SelectControl id={inputId} value={value} onChange={setOne} maxWidth={160}>
         <option value="">—</option>
         <option value="true">true</option>
         <option value="false">false</option>
@@ -180,7 +357,7 @@ function MetaFieldControl({
   }
   if (metaField.field_type === 'enum' && metaField.enum_options) {
     return (
-      <SelectControl id={inputId} value={value} onChange={onChange} maxWidth={240}>
+      <SelectControl id={inputId} value={value} onChange={setOne} maxWidth={240}>
         <option value="">—</option>
         {metaField.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
       </SelectControl>
@@ -198,13 +375,13 @@ function MetaFieldControl({
       className="max-w-[320px]"
       onBlur={() => {
         const settled = strip(value)
-        if (settled !== value) onChange(settled)
+        if (settled !== value) setOne(settled)
       }}
     >
       <VariableInput
         id={inputId}
         value={value}
-        onChange={next => onChange(strip(next))}
+        onChange={next => setOne(strip(next))}
         variables={variables}
         type={metaField.field_type === 'url' ? 'url' : metaField.field_type === 'date' ? 'date' : 'text'}
       />
@@ -247,6 +424,7 @@ export function EventForm({
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
+  const branchLink = useBranchLinkProps()
   const aiEnabled = useAiStatus(slug)
   const { step: scenarioStep } = useDemoScenario()
   const { notifyStepCompleted } = useDemoScenarioActions()
@@ -262,6 +440,8 @@ export function EventForm({
   const [status, setStatus] = useState(event?.status ?? 'draft')
   const [ownerId, setOwnerId] = useState(event?.owner_id ?? '')
   const [sunsetAt, setSunsetAt] = useState(event?.sunset_at ? event.sunset_at.slice(0, 16) : '')
+  const [supersededBy, setSupersededBy] = useState(event?.superseded_by_event_id ?? '')
+  const [successorSearch, setSuccessorSearch] = useState('')
   const [metricBreakdownColumns, setMetricBreakdownColumns] = useState(
     () => normalizeMetricBreakdownColumns(event?.metric_breakdown_columns ?? []),
   )
@@ -271,8 +451,36 @@ export function EventForm({
   const [fieldValues, setFieldValues] = useState<Record<string, string>>(() =>
     event ? Object.fromEntries(event.field_values.map(fv => [fv.field_definition_id, fv.value])) : {},
   )
-  const [metaValues, setMetaValues] = useState<Record<string, string>>(() =>
-    event ? Object.fromEntries(event.meta_values.map(mv => [mv.meta_field_definition_id, mv.value])) : {},
+  // A list per field, even where only one value is allowed: a field with
+  // `allow_multiple` carries several rows (tripl-h2sx.31), and one shape for
+  // both keeps every read site from having to ask which kind it is holding.
+  const [metaValues, setMetaValues] = useState<Record<string, string[]>>(() => {
+    if (!event) return {}
+    const grouped: Record<string, string[]> = {}
+    for (const mv of event.meta_values) {
+      ;(grouped[mv.meta_field_definition_id] ??= []).push(mv.value)
+    }
+    return grouped
+  })
+  // Columns the event was ALREADY splitting by when the form opened. A column
+  // added in this session has no collected rows behind it yet, so linking
+  // straight to the Breakdowns tab would open an empty chart.
+  const collectedBreakdownColumns = useMemo(
+    () => new Set(event?.metric_breakdown_columns ?? []),
+    [event],
+  )
+  // What the form must say about a field depends on the SAVED row, not only on
+  // what is typed: `_authored_after_edit` freezes a value the moment its text
+  // changes, and the box alone cannot tell a frozen value from a live one.
+  const storedFieldValues = useMemo(
+    () =>
+      new Map(
+        (event?.field_values ?? []).map(fv => [
+          fv.field_definition_id,
+          { value: fv.value, isAuthored: fv.is_authored ?? false },
+        ]),
+      ),
+    [event],
   )
 
   // The owner used to be settable only from the list's bulk bar, after the
@@ -300,7 +508,7 @@ export function EventForm({
     if (!isNew || !ticket || ticketPrefilled.current) return
     ticketPrefilled.current = true
     setMetaValues(prev =>
-      ticket.field.id in prev ? prev : { ...prev, [ticket.field.id]: ticket.key },
+      ticket.field.id in prev ? prev : { ...prev, [ticket.field.id]: [ticket.key] },
     )
   }, [isNew, ticket])
 
@@ -417,6 +625,31 @@ export function EventForm({
     })
   }, [generatedName, sortedFields])
 
+  // The server refuses malformed JSON with a 422 (`_normalize_json_template_value`,
+  // event_service.py); ask the same question here so Save is refused with the row
+  // NAMED instead of round-tripping to find out (tripl-h2sx.10).
+  //
+  // It runs the validator over the value that will be POSTed rather than reading
+  // JsonEditor's own error state: the editor validates what the user TYPES, so an
+  // untouched field holding an invalid stored value would sail past a gate that
+  // trusted the child. The client validator is strictly more permissive than the
+  // server's, so this can let a 422 through — it can never block a save the server
+  // would have accepted.
+  const invalidJsonFieldLabels = useMemo(
+    () =>
+      sortedFields
+        .filter(field => field.field_type === 'json')
+        .filter(field => {
+          const value = fieldValues[field.id] ?? ''
+          // Empty is not sent at all; whitespace IS sent and `json.loads` refuses
+          // it, while `validateJsonWithVars` treats it as empty.
+          if (value === '') return false
+          return value.trim() === '' || validateJsonWithVars(value) !== null
+        })
+        .map(field => field.display_name),
+    [sortedFields, fieldValues],
+  )
+
   // Advisory duplicate check. The SERVER is what refuses a taken scan identity
   // (409 from create_event); this only spares the user filling a whole form to
   // find out on submit. `search` is a plain ILIKE over name/description/
@@ -448,6 +681,50 @@ export function EventForm({
       ) ?? null
     )
   }, [probedName, completedName, identityProbe])
+
+  // The successor roster, searched SERVER-side for the reason the variables tab
+  // states at length (tripl-46am): /events returns full list rows, so pulling a
+  // whole catalog into a <select> to spare the user typing is the wrong trade,
+  // and narrowing a page the server already truncated is the defect itself.
+  // Only fetched while the field is on screen — an event that is not being
+  // retired asks nothing of this.
+  const debouncedSuccessorSearch = useDebouncedValue(successorSearch, 350)
+  const { data: successorRoster } = useQuery({
+    queryKey: ['events', slug, branchId, 'successor-picker', debouncedSuccessorSearch],
+    queryFn: () =>
+      eventsApi.list(
+        slug,
+        { search: debouncedSuccessorSearch || undefined, limit: SUCCESSOR_PAGE_SIZE, offset: 0 },
+        branchId,
+      ),
+    enabled: !isNew && status === 'deprecated',
+    placeholderData: keepPreviousData,
+  })
+  // Same key shape as the detail page's own event query, so the successor is
+  // read from cache when it has already been opened.
+  const { data: successorEvent } = useQuery({
+    queryKey: ['event', slug, branchId, supersededBy],
+    queryFn: () => eventsApi.get(slug, supersededBy, branchId),
+    enabled: !isNew && status === 'deprecated' && !!supersededBy,
+  })
+  const successorOptions = useMemo(() => {
+    const roster = (successorRoster?.items ?? [])
+      // An event cannot replace itself; the server answers 400, but offering it
+      // at all invites the trip.
+      .filter(item => item.id !== event?.id)
+      .map(item => ({ id: item.id, name: item.name }))
+    // The current choice is prepended when the search does not hold it, so
+    // opening a retired event shows what replaced it rather than a blank select,
+    // and a selection survives retyping the search.
+    if (!successorEvent || roster.some(option => option.id === successorEvent.id)) return roster
+    return [{ id: successorEvent.id, name: successorEvent.name }, ...roster]
+  }, [successorRoster, successorEvent, event?.id])
+  // What the search did not return, printed rather than hidden — a short list
+  // and a complete one are otherwise indistinguishable.
+  const hiddenSuccessorCount = Math.max(
+    0,
+    (successorRoster?.total ?? 0) - (successorRoster?.items.length ?? 0),
+  )
 
   // Adjust-during-render with an equality guard — this repo's idiom for state
   // that has to follow a computed value (see the comments in
@@ -489,12 +766,32 @@ export function EventForm({
         field_values: Object.entries(fieldValues)
           .filter(([, v]) => v !== '')
           .map(([k, v]) => ({ field_definition_id: k, value: v })),
-        meta_values: Object.entries(metaValues)
-          .filter(([, v]) => v !== '')
-          .map(([k, v]) => ({ meta_field_definition_id: k, value: v })),
+        meta_values: Object.entries(metaValues).flatMap(([k, values]) => {
+          // Submit what the control SHOWS. A field that held several values and
+          // then lost `allow_multiple` renders as a single input on `values[0]`;
+          // sending the rest would 422 the save and strand the event on a
+          // setting the author may not own (tripl-h2sx.31).
+          const allowMultiple = metaFields.find(mf => mf.id === k)?.allow_multiple ?? false
+          const visible = allowMultiple ? values : values.slice(0, 1)
+          return visible
+            .filter(value => value !== '')
+            .map(value => ({ meta_field_definition_id: k, value }))
+        }),
       }
       return event
-        ? eventsApi.update(slug, event.id, payload, branchId)
+        ? eventsApi.update(
+            slug,
+            event.id,
+            {
+              ...payload,
+              // Cleared alongside the sunset date when the event leaves
+              // `deprecated`: both answer "this is being retired, here is what
+              // to do about it", and a successor left behind on a live event
+              // documents a retirement that was called off.
+              superseded_by_event_id: status === 'deprecated' ? supersededBy || null : null,
+            },
+            branchId,
+          )
         : eventsApi.create(slug, payload, branchId)
     },
     onSuccess: (_data, closeAfterSave: boolean) => {
@@ -542,7 +839,10 @@ export function EventForm({
   // expression was already written out twice; a third copy for the identity
   // check is how the two would start disagreeing.
   const cannotSave =
-    saveMut.isPending || (generatedName?.missing.length ?? 0) > 0 || identityTaken !== null
+    saveMut.isPending
+    || (generatedName?.missing.length ?? 0) > 0
+    || identityTaken !== null
+    || invalidJsonFieldLabels.length > 0
 
   const saveAndAddAnother = () => {
     if (cannotSave || !formRef.current?.reportValidity()) return
@@ -743,7 +1043,7 @@ export function EventForm({
               label="Sunset date"
               htmlFor="form-sunset"
               hint="When this event stops being supported."
-              last
+              last={isNew}
             >
               <input
                 id="form-sunset"
@@ -752,6 +1052,45 @@ export function EventForm({
                 value={sunsetAt}
                 onChange={e => setSunsetAt(e.target.value)}
               />
+            </EvField>
+          )}
+
+          {/* Not offered while creating: `EventCreate` does not accept a
+              successor — a brand-new event has no predecessor to name — so the
+              control would quietly discard the choice. */}
+          {status === 'deprecated' && !isNew && (
+            <EvField
+              label="Replaced by"
+              htmlFor="form-superseded"
+              hint="What to send instead. Documentation only: nothing is matched, collected or counted through it."
+              last
+            >
+              <div className="flex flex-col gap-[6px]">
+                <input
+                  type="search"
+                  className={`${TEXT_INPUT_CLASS} max-w-[240px]`}
+                  placeholder="Search events…"
+                  aria-label="Search for the replacement event"
+                  value={successorSearch}
+                  onChange={e => setSuccessorSearch(e.target.value)}
+                />
+                <SelectControl
+                  id="form-superseded"
+                  value={supersededBy}
+                  onChange={setSupersededBy}
+                  maxWidth={240}
+                >
+                  <option value="">Nothing replaces it</option>
+                  {successorOptions.map(option => (
+                    <option key={option.id} value={option.id}>{option.name}</option>
+                  ))}
+                </SelectControl>
+                {hiddenSuccessorCount > 0 && (
+                  <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                    {hiddenSuccessorCount} more not shown — narrow the search.
+                  </p>
+                )}
+              </div>
             </EvField>
           )}
         </SurfCard>
@@ -906,7 +1245,41 @@ export function EventForm({
                     />
                   </div>
                 </ScenarioCoachMark>
-                <FieldTemplateHints value={fieldValues[f.id] ?? ''} variables={projectVariables} />
+                <FieldTemplateHints
+                  value={fieldValues[f.id] ?? ''}
+                  variables={projectVariables}
+                  namesEvent={namingColumns.has(f.name)}
+                  slug={slug}
+                />
+                <ScanMaintenanceNotice
+                  stored={storedFieldValues.get(f.id) ?? null}
+                  current={fieldValues[f.id] ?? ''}
+                  onHandBack={
+                    f.is_required || namingColumns.has(f.name)
+                      ? undefined
+                      : () => setFieldValues({ ...fieldValues, [f.id]: '' })
+                  }
+                />
+                {/* A JSON field is not a warehouse column, so it can never be a
+                    breakdown — `breakdownOptions` leaves those out too. */}
+                {event && f.field_type !== 'json' && (
+                  <FieldBreakdownLink
+                    column={f.name}
+                    href={branchLink(
+                      `/p/${slug}/monitoring/event/${event.id}`
+                        + `?tab=breakdowns&column=${encodeURIComponent(f.name)}`,
+                      branchId,
+                    )}
+                    state={
+                      collectedBreakdownColumns.has(f.name)
+                        ? 'collected'
+                        : metricBreakdownColumns.includes(f.name)
+                          ? 'collecting'
+                          : 'off'
+                    }
+                    onSelect={() => toggleBreakdown(f.name)}
+                  />
+                )}
               </EvField>
             ))}
           </SurfCard>
@@ -925,8 +1298,8 @@ export function EventForm({
                 <MetaFieldControl
                   metaField={mf}
                   inputId={`meta-${mf.id}`}
-                  value={metaValues[mf.id] ?? ''}
-                  onChange={v => setMetaValues({ ...metaValues, [mf.id]: v })}
+                  values={metaValues[mf.id] ?? []}
+                  onChange={next => setMetaValues({ ...metaValues, [mf.id]: next })}
                   variables={varSuggestions}
                 />
               </EvField>
@@ -944,6 +1317,14 @@ export function EventForm({
           <p className="mb-[14px] text-[12px]" role="status" style={{ color: 'var(--fg-muted)' }}>
             Created <span className="mono">{justCreated}</span>. The values below are still the
             ones it was made from — change what differs and save the next one.
+          </p>
+        )}
+
+        {/* A JSON field can sit far above the fold, so the reason a disabled Save
+            is disabled belongs next to the button, not only beside the field. */}
+        {invalidJsonFieldLabels.length > 0 && (
+          <p className="mt-2 text-right text-xs text-warning" role="alert">
+            Fix the JSON in: {invalidJsonFieldLabels.join(', ')}
           </p>
         )}
 
@@ -996,10 +1377,22 @@ export function EventForm({
 export default function EventEditPage() {
   const { slug, tab, eventId } = useParams<{ slug: string; tab?: string; eventId?: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const branchId = useActiveBranchId()
+  const usersById = useUsersById()
   const isNew = !eventId
 
+  // Reviewing a branch and fixing three of its events used to cost three round
+  // trips through Settings > Branches, because closing the editor always landed
+  // on the events list. Go back to wherever the editor was opened from instead
+  // — react-router gives the initial history entry the key 'default', so this
+  // only steps back when there is somewhere in-app to step back to, and the
+  // list stays the answer for a cold-opened URL.
   const goBack = () => {
+    if (location.key !== 'default') {
+      navigate(-1)
+      return
+    }
     const base = !tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`
     navigate(base)
   }
@@ -1068,14 +1461,53 @@ export default function EventEditPage() {
     : undefined
 
   return (
-    <EventForm
-      slug={slug}
-      eventTypes={eventTypesData}
-      metaFields={metaFieldsQuery.data ?? EMPTY_META_FIELDS}
-      projectVariables={variablesQuery.data ?? EMPTY_VARIABLES}
-      event={eventQuery.data ?? null}
-      defaultEventTypeId={defaultEventTypeId}
-      onClose={goBack}
-    />
+    <div className="h-full overflow-y-auto">
+      {eventId ? (
+        // The form is where a branch edit is actually made, and it was the one
+        // authoring surface that never said which plan it was writing to. The
+        // read is lenient and the write is strict, so a mismatch rendered a
+        // perfectly normal form and failed as a bare 404 at Save.
+        <div className="mx-auto max-w-[880px] px-6 pt-4">
+          <EntityBranchBanner
+            slug={slug}
+            rowBranchId={eventQuery.data?.branch_id}
+            path={`/p/${slug}/events/${tab ?? 'all'}/${eventId}/edit`}
+          />
+        </div>
+      ) : null}
+      <EventForm
+        slug={slug}
+        eventTypes={eventTypesData}
+        metaFields={metaFieldsQuery.data ?? EMPTY_META_FIELDS}
+        projectVariables={variablesQuery.data ?? EMPTY_VARIABLES}
+        event={eventQuery.data ?? null}
+        defaultEventTypeId={defaultEventTypeId}
+        onClose={goBack}
+      />
+      {/* The one home for the discussion, and outside the form on purpose: it
+          is not plan content. Every other box on this page ships to whoever
+          implements the event — Description is an indexed search column and a
+          line in the pasted spec — so "should this fire on cancel too?" typed
+          there reads as part of the specification. Edit only: there is no
+          event to hang a thread on until one exists. */}
+      {eventId ? (
+        <div className="mx-auto max-w-[880px] px-6 pb-10">
+          <CommentThread
+            queryKey={['eventComments', slug, eventId]}
+            list={() => eventCommentsApi.list(slug, eventId)}
+            create={(body, parentId) => eventCommentsApi.create(slug, eventId, body, parentId)}
+            remove={commentId => eventCommentsApi.remove(slug, eventId, commentId)}
+            onAction={(commentId, action, snoozedUntil) =>
+              eventCommentsApi.action(slug, eventId, commentId, action, snoozedUntil)
+            }
+            authorName={comment => displayUser(usersById, comment.user_id)}
+            heading="Discussion"
+            emptyText="Nothing raised yet. Questions and notes here stay out of the spec."
+            composerId="event-discussion-body"
+            className="flex flex-col rounded-md border bg-card p-3"
+          />
+        </div>
+      ) : null}
+    </div>
   )
 }

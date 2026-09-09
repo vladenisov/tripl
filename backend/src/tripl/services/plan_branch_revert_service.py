@@ -79,7 +79,14 @@ _PLAIN_ATTRS: dict[str, tuple[str, ...]] = {
         "contract_max_value",
         "contract_max_bad_rate",
     ),
-    "event": ("source_name", "description", "status", "reviewed", "metric_breakdown_columns"),
+    "event": (
+        "source_name",
+        "title",
+        "description",
+        "status",
+        "reviewed",
+        "metric_breakdown_columns",
+    ),
     "variable": (
         "variable_type",
         "source_name",
@@ -91,6 +98,7 @@ _PLAIN_ATTRS: dict[str, tuple[str, ...]] = {
     "meta_field": (
         "field_type",
         "is_required",
+        "allow_multiple",
         "enum_options",
         "default_value",
         "link_template",
@@ -847,6 +855,10 @@ async def _recreate_entity(
                 display_name=_required(base_item, "display_name"),
                 field_type=_required(base_item, "field_type"),
                 is_required=base_item.get("is_required", False),
+                # An older snapshot predates the key; with_snapshot_defaults
+                # fills it in on read, and the default here covers a payload
+                # that reached this call by another route.
+                allow_multiple=base_item.get("allow_multiple", False),
                 enum_options=list(base_item["enum_options"])
                 if base_item.get("enum_options")
                 else None,
@@ -923,6 +935,14 @@ async def _restore_field(
         if field == "owner_id":
             raw = base_item.get("owner_id")
             entity.owner_id = uuid.UUID(raw) if raw else None
+            return
+        if field == "superseded_by":
+            # Stored as "<event_type_name>.<name>", never a uuid — the snapshot
+            # keys it that way because ids are branch-local. Resolve it against
+            # THIS branch.
+            entity.superseded_by_event_id = await _event_id_by_dotted_key(
+                session, project_id, branch_id, base_item.get("superseded_by")
+            )
             return
         if field == "event_type_name":
             event_type = (
@@ -1109,3 +1129,35 @@ async def revert_change(
             ),
         ) from exc
     return await plan_branch_service.diff_branch(session, slug, branch_id)
+
+
+async def _event_id_by_dotted_key(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    dotted: str | None,
+) -> uuid.UUID | None:
+    """``"<event_type_name>.<name>"`` → that event's id on this branch, or None.
+
+    Deliberately NOT a 409 when the successor is missing, which is where this
+    diverges from the ``event_type_name`` arm above. Moving an event back to an
+    event type that no longer exists is structurally impossible and has to be
+    refused; naming a successor that has since been deleted is simply a fact
+    that stopped being true, on a column that is documentation. Clearing it is
+    the honest restore.
+    """
+    if not dotted or "." not in dotted:
+        return None
+    type_name, _, event_name = dotted.partition(".")
+    return (
+        await session.execute(
+            select(Event.id)
+            .join(EventType, EventType.id == Event.event_type_id)
+            .where(
+                Event.project_id == project_id,
+                Event.branch_id == branch_id,
+                Event.name == event_name,
+                EventType.name == type_name,
+            )
+        )
+    ).scalar_one_or_none()

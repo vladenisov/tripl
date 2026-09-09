@@ -2,6 +2,7 @@ import { Variable } from 'lucide-react'
 import type { EventFieldVariableValue } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { formatDateTime } from '@/lib/datetime'
 
 export function VariableValueContextTrigger({
   contexts,
@@ -42,6 +43,11 @@ export function VariableValueContextTrigger({
           // collapsed empty state: one appearance for two things a reader has to
           // act on differently.
           const isExcluded = context.excluded_from_scans === true
+          // Formatted once, then used as both the guard and the text.
+          // `formatDateTime` returns '' for a value it cannot parse, so the
+          // empty string is what decides the row is not rendered — calling it
+          // twice asked the same question twice and let the two answers drift.
+          const lastRefreshed = context.updated_at ? formatDateTime(context.updated_at) : ''
           return (
             <div key={context.id} className="space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -74,6 +80,14 @@ export function VariableValueContextTrigger({
               <div className="text-muted-foreground">
                 {context.source_column} - {context.observed_count} observed
               </div>
+              {/* "Refreshed", not "seen": the timestamp tracks the last WRITE.
+                  A scan that re-observes nothing new leaves the row untouched,
+                  so "last seen" would overstate it. Rendered on its own line so
+                  the frozen-value sentences below stay the final word for an
+                  excluded context. */}
+              {lastRefreshed && (
+                <div className="text-muted-foreground">Last refreshed {lastRefreshed}</div>
+              )}
               {context.values.length > 0 ? (
                 <div className="flex max-h-36 flex-wrap gap-1 overflow-auto">
                   {context.values.map((value) => (

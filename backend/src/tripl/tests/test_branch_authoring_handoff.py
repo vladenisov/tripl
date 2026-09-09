@@ -302,7 +302,15 @@ async def test_title_is_a_label_beside_the_identity(client: AsyncClient) -> None
 
 
 def test_a_base_snapshot_without_title_reads_as_an_empty_title() -> None:
-    """No version bump: an older v2 base must not flag every event as changed."""
+    """No version bump: an older v2 base must not flag every event as changed.
+
+    ``new`` has to spell out EVERY key in ``_V2_EVENT_DEFAULTS`` — hence
+    ``superseded_by`` beside ``title`` — because the identity assertion below is
+    the point of the test: a snapshot that already carries the defaults is
+    handed back untouched rather than rebuilt. Adding a default makes this line
+    fail, which is the intended tripwire: the new key has to be checked against
+    both halves of the shim, not just added to it.
+    """
     old = {
         "snapshot_version": PLAN_SNAPSHOT_VERSION,
         "events": [{"id": "1", "event_type_name": "track", "name": "a", "field_values": []}],
@@ -310,10 +318,18 @@ def test_a_base_snapshot_without_title_reads_as_an_empty_title() -> None:
     new = {
         "snapshot_version": PLAN_SNAPSHOT_VERSION,
         "events": [
-            {"id": "1", "event_type_name": "track", "name": "a", "title": "", "field_values": []}
+            {
+                "id": "1",
+                "event_type_name": "track",
+                "name": "a",
+                "title": "",
+                "superseded_by": None,
+                "field_values": [],
+            }
         ],
     }
     assert with_snapshot_defaults(old)["events"][0]["title"] == ""
+    assert with_snapshot_defaults(old)["events"][0]["superseded_by"] is None
     assert with_snapshot_defaults(new) is new
     assert compute_plan_diff_entries(old, new) == []
 

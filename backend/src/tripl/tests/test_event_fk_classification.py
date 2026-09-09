@@ -40,6 +40,26 @@ MIGRATED: dict[tuple[str, str], str] = {
         "event_photos",
         "event_id",
     ): "_merge_event_into_group: blanket UPDATE, photos have no unique key",
+    ("events", "superseded_by_event_id"): (
+        "MERGE: _move_superseded_pointers re-points every event whose successor was the "
+        "merged-away source onto the target — 'send this instead' is a statement about what to "
+        "do from now on, and the target is what to send now. No fold: the column is not unique "
+        "and any number of retired events may name the same successor. "
+        "DELETE: the FK is ondelete SET NULL and that is the entire policy — a deleted "
+        "successor means there is no successor to name, so the pointer clears itself. Nothing "
+        "is added to _event_reference_cleanup, because a second mechanism for one rule is how "
+        "the two drift apart."
+    ),
+    ("event_photo_comments", "event_id"): (
+        "MERGE: _merge_event_into_group re-points the event-anchored discussion onto the "
+        "survivor with a blanket UPDATE — the table has no unique key on event_id, and a "
+        "comment is human input no later pipeline step can rebuild. Replies carry the same "
+        "anchor as their parent, so one UPDATE moves whole threads. Photo-anchored rows are "
+        "NOT touched there: they hang off photo_id and ride along with the photo the "
+        "preceding statement re-points. DELETE: the FK is ondelete CASCADE and that is the "
+        "right answer — there is no survivor to carry the thread to, and the discussion is "
+        "about a row that no longer exists."
+    ),
     ("event_metrics", "event_id"): (
         "_merge_event_metric_rows: sums both events' counts per (scan_config, bucket) onto target"
     ),

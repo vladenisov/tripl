@@ -136,6 +136,49 @@ async def test_user_authored_field_values_are_marked_on_create_and_update(client
 
 
 @pytest.mark.asyncio
+async def test_field_value_response_says_whether_scans_still_maintain_it(client: AsyncClient):
+    """``is_authored`` reached plan snapshots and the branch diff but never the
+    event API, so the form had no way to tell a value the scan still refreshes
+    from one a hand edit froze for good — and the two edits an analyst reaches
+    for (clearing the box, typing a correction) have opposite permanent effects.
+    """
+    et_id, field_id, _ = await _setup_events(client, "ev-authored-exposed")
+    create_response = await client.post(
+        "/api/v1/projects/ev-authored-exposed/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "/home"}],
+        },
+    )
+    assert create_response.status_code == 201
+    event_id = uuid.UUID(create_response.json()["id"])
+
+    detail = await client.get(f"/api/v1/projects/ev-authored-exposed/events/{event_id}")
+    assert detail.status_code == 200
+    assert [fv["is_authored"] for fv in detail.json()["field_values"]] == [True]
+
+    # Stand in for a scan-written row. The response has to carry the flag
+    # through rather than defaulting every value to "frozen" — a form that
+    # marks a live value as frozen is as wrong as one that marks none at all.
+    async with TestSessionLocal() as session:
+        scanned = (
+            await session.execute(
+                select(EventFieldValue).where(EventFieldValue.event_id == event_id)
+            )
+        ).scalar_one()
+        scanned.is_authored = False
+        await session.commit()
+
+    detail = await client.get(f"/api/v1/projects/ev-authored-exposed/events/{event_id}")
+    assert [fv["is_authored"] for fv in detail.json()["field_values"]] == [False]
+
+    listing = await client.get("/api/v1/projects/ev-authored-exposed/events")
+    listed = next(item for item in listing.json()["items"] if item["id"] == str(event_id))
+    assert [fv["is_authored"] for fv in listed["field_values"]] == [False]
+
+
+@pytest.mark.asyncio
 async def test_event_mutations_warn_for_unknown_template_tokens(client: AsyncClient):
     et_id, field_id, meta_id = await _setup_events(client, "ev-template-warnings")
     variable_response = await client.post(
@@ -2246,3 +2289,202 @@ async def test_create_event_free_name_without_scan_rule(client: AsyncClient):
     )
     assert resp.status_code == 201
     assert resp.json()["name"] == "hand written"
+
+
+async def _multi_meta_field(client: AsyncClient, slug: str) -> str:
+    """A second meta field on `slug`, opted in to several values."""
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/meta-fields",
+        json={
+            "name": "jira_keys",
+            "display_name": "Jira keys",
+            "field_type": "string",
+            "allow_multiple": True,
+            "link_template": "https://tracker.example.com/browse/${value}",
+        },
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_multi_value_meta_field_keeps_every_value(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-meta-multi")
+    multi_id = await _multi_meta_field(client, "ev-meta-multi")
+    resp = await client.post(
+        "/api/v1/projects/ev-meta-multi/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            "meta_values": [
+                {"meta_field_definition_id": multi_id, "value": "WND-1"},
+                {"meta_field_definition_id": multi_id, "value": "WND-2"},
+                # Pasted whole out of the browser: stored as the bare key, like
+                # any single value would be.
+                {
+                    "meta_field_definition_id": multi_id,
+                    "value": "https://tracker.example.com/browse/WND-3",
+                },
+            ],
+        },
+    )
+    assert resp.status_code == 201
+    stored = [mv["value"] for mv in resp.json()["meta_values"]]
+    assert sorted(stored) == ["WND-1", "WND-2", "WND-3"]
+
+
+@pytest.mark.asyncio
+async def test_multi_value_meta_field_drops_an_exact_repeat(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-meta-multi-dup")
+    multi_id = await _multi_meta_field(client, "ev-meta-multi-dup")
+    resp = await client.post(
+        "/api/v1/projects/ev-meta-multi-dup/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            "meta_values": [
+                {"meta_field_definition_id": multi_id, "value": "WND-1"},
+                {"meta_field_definition_id": multi_id, "value": "WND-1"},
+            ],
+        },
+    )
+    assert resp.status_code == 201
+    assert [mv["value"] for mv in resp.json()["meta_values"]] == ["WND-1"]
+
+
+@pytest.mark.asyncio
+async def test_single_valued_meta_field_refuses_a_second_value(client: AsyncClient):
+    et_id, field_id, meta_id = await _setup_events(client, "ev-meta-single")
+    resp = await client.post(
+        "/api/v1/projects/ev-meta-single/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            "meta_values": [
+                {"meta_field_definition_id": meta_id, "value": "https://jira.example.com/A"},
+                {"meta_field_definition_id": meta_id, "value": "https://jira.example.com/B"},
+            ],
+        },
+    )
+    assert resp.status_code == 422
+    assert "Allow multiple" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_updating_an_event_replaces_the_whole_multi_value_set(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-meta-multi-upd")
+    multi_id = await _multi_meta_field(client, "ev-meta-multi-upd")
+    created = await client.post(
+        "/api/v1/projects/ev-meta-multi-upd/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            "meta_values": [
+                {"meta_field_definition_id": multi_id, "value": "WND-1"},
+                {"meta_field_definition_id": multi_id, "value": "WND-2"},
+            ],
+        },
+    )
+    event_id = created.json()["id"]
+    resp = await client.patch(
+        f"/api/v1/projects/ev-meta-multi-upd/events/{event_id}",
+        json={
+            "meta_values": [
+                {"meta_field_definition_id": multi_id, "value": "WND-2"},
+                {"meta_field_definition_id": multi_id, "value": "WND-9"},
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    assert sorted(mv["value"] for mv in resp.json()["meta_values"]) == ["WND-2", "WND-9"]
+
+
+async def _two_events(client: AsyncClient, slug: str) -> tuple[str, str, str]:
+    """A project with two events on main: the old one and its replacement."""
+    et_id, field_id, _ = await _setup_events(client, slug)
+    made = []
+    for name in ("profile_click_boat", "profile:opened"):
+        resp = await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={
+                "event_type_id": et_id,
+                "name": name,
+                "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            },
+        )
+        assert resp.status_code == 201
+        made.append(resp.json()["id"])
+    return et_id, made[0], made[1]
+
+
+@pytest.mark.asyncio
+async def test_a_retired_event_can_name_what_replaced_it(client: AsyncClient):
+    _, old_id, new_id = await _two_events(client, "ev-superseded")
+
+    resp = await client.patch(
+        f"/api/v1/projects/ev-superseded/events/{old_id}",
+        json={"status": "deprecated", "superseded_by_event_id": new_id},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["superseded_by_event_id"] == new_id
+
+    # And it is answered on a plain read, not only on the write's echo.
+    fetched = await client.get(f"/api/v1/projects/ev-superseded/events/{old_id}")
+    assert fetched.json()["superseded_by_event_id"] == new_id
+
+    # The pointer is history worth keeping, so the edit lands in the event's log.
+    history = await client.get(f"/api/v1/projects/ev-superseded/events/{old_id}/history")
+    assert any(change["field"] == "superseded_by_event_id" for change in history.json())
+
+    cleared = await client.patch(
+        f"/api/v1/projects/ev-superseded/events/{old_id}",
+        json={"superseded_by_event_id": None},
+    )
+    assert cleared.json()["superseded_by_event_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_an_event_cannot_replace_itself(client: AsyncClient):
+    _, old_id, _ = await _two_events(client, "ev-superseded-self")
+
+    resp = await client.patch(
+        f"/api/v1/projects/ev-superseded-self/events/{old_id}",
+        json={"superseded_by_event_id": old_id},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_the_successor_must_belong_to_the_same_project(client: AsyncClient):
+    """A bare uuid from a client is the one real surface here: unchecked, an
+    event could point at another project's row and read its name back out."""
+    _, old_id, _ = await _two_events(client, "ev-superseded-mine")
+    _, _, outsider_id = await _two_events(client, "ev-superseded-theirs")
+
+    resp = await client.patch(
+        f"/api/v1/projects/ev-superseded-mine/events/{old_id}",
+        json={"superseded_by_event_id": outsider_id},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_successor_clears_the_pointer_rather_than_the_event(
+    client: AsyncClient,
+):
+    _, old_id, new_id = await _two_events(client, "ev-superseded-del")
+    await client.patch(
+        f"/api/v1/projects/ev-superseded-del/events/{old_id}",
+        json={"superseded_by_event_id": new_id},
+    )
+
+    deleted = await client.delete(f"/api/v1/projects/ev-superseded-del/events/{new_id}")
+    assert deleted.status_code == 204
+
+    survivor = await client.get(f"/api/v1/projects/ev-superseded-del/events/{old_id}")
+    assert survivor.status_code == 200
+    assert survivor.json()["superseded_by_event_id"] is None

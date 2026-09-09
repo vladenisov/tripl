@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import EventsPage from './EventsPage'
 import EventEditPage from './events/EventForm'
@@ -64,6 +64,17 @@ function makeEvent(overrides: Record<string, unknown> = {}) {
   }
 }
 
+/** Reads back where the router ended up, so a redirect can be asserted. */
+function LocationProbe() {
+  const location = useLocation()
+  return (
+    <span data-testid="location" hidden>
+      {location.pathname}
+      {location.search}
+    </span>
+  )
+}
+
 function renderEventsPage(initialEntries: string[] = ['/p/demo/events']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -71,6 +82,7 @@ function renderEventsPage(initialEntries: string[] = ['/p/demo/events']) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={initialEntries}>
+        <LocationProbe />
         <Routes>
           <Route path="/p/:slug/events" element={<EventsPage />} />
           <Route path="/p/:slug/events/:tab/new" element={<EventEditPage />} />
@@ -88,6 +100,71 @@ afterEach(() => {
 })
 
 describe('EventsPage', () => {
+  it('says on the edit form which branch the event lives on', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/api/v1/projects/demo/branches')) {
+        return mockJsonResponse({
+          items: [
+            { id: 'main-1', name: 'main', kind: 'main', status: 'merged' },
+            { id: 'feat-1', name: 'checkout-v2', kind: 'working', status: 'draft' },
+          ],
+          total: 2,
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
+      // Before the event itself: `includes` would otherwise answer the
+      // discussion request with an event object.
+      if (url.endsWith('/api/v1/projects/demo/events/ev-1/comments')) {
+        return mockJsonResponse([])
+      }
+      if (url.includes('/api/v1/projects/demo/events/ev-1')) {
+        return mockJsonResponse(
+          makeEvent({ id: 'ev-1', name: 'checkout_started', branch_id: 'feat-1' }),
+        )
+      }
+      if (url.includes('/api/v1/projects/demo/events')) return mockJsonResponse({ items: [], total: 0 })
+      return mockJsonResponse({})
+    })
+
+    // No BranchProvider here, so the app reads as being on main while the row
+    // says otherwise — the mismatch the form used to hide until Save 404d.
+    renderEventsPage(['/p/demo/events/all/ev-1/edit'])
+
+    const banner = await screen.findByTestId('entity-branch-banner')
+    expect(banner).toHaveTextContent(/lives on branch checkout-v2/i)
+    expect(within(banner).getByRole('link', { name: /Switch to checkout-v2/i })).toHaveAttribute(
+      'href',
+      '/p/demo/events/all/ev-1/edit?branch=feat-1',
+    )
+  })
+
+  it('carries ?branch= through the redirect into the editor', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events')) return mockJsonResponse({ items: [], total: 0 })
+      return mockJsonResponse({})
+    })
+
+    renderEventsPage(['/p/demo/events/all/ev-1?branch=feat-1'])
+
+    // Dropping the param here turns a shared branch-diff link into a main-plan
+    // edit, which renders normally and 404s at Save (tripl-h2sx.2).
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent(
+        '/p/demo/events/all/ev-1/edit?branch=feat-1',
+      ),
+    )
+  })
+
   it('renders monitoring signal links for active view and rows', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)

@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type ReactNode } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { chartAnnotationsApi } from '@/api/chartAnnotations'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -37,7 +37,8 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useActiveBranchId } from '@/hooks/useBranch'
+import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { ImplementationTicketRow } from '@/components/implementation-ticket-row'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { eventNameLabel } from '@/lib/eventName'
@@ -48,7 +49,7 @@ import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { EventSpecCard } from '@/components/EventSpecCard'
 import { historyFieldLabel } from '@/lib/eventHistory'
-import { formatSignalSeverity, resolveDetailScope } from '@/lib/monitoring'
+import { formatSignalSeverity, getMonitoringPath, resolveDetailScope } from '@/lib/monitoring'
 import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
@@ -118,7 +119,14 @@ const GRANULARITY_FOR_INTERVAL: Record<string, MetricsGranularity> = {
   '1w': 'week',
 }
 
-type MonitoringDetailTab = 'volume' | 'versions' | 'distribution' | 'heatmap' | 'breakdowns'
+const MONITORING_DETAIL_TABS = [
+  'volume',
+  'versions',
+  'distribution',
+  'heatmap',
+  'breakdowns',
+] as const
+type MonitoringDetailTab = (typeof MONITORING_DETAIL_TABS)[number]
 type VersionFilter = 'all' | 'latest'
 
 const VERSION_CHART_COLORS = [
@@ -304,16 +312,29 @@ export default function MonitoringDetailPage() {
   // null = "no manual pick yet": the effective granularity then follows the
   // scope's default (interval-aware for catalog metrics, range-aware otherwise).
   const [granularityOverride, setGranularityOverride] = useState<MetricsGranularity | null>(null)
-  const [activeTab, setActiveTab] = useState<MonitoringDetailTab>('volume')
+  // `?tab=` and `?column=` make this page linkable to the answer instead of to
+  // its front door: the event form points a scan-observed field at the split it
+  // belongs to. Read ONCE, as the branch context does — after mount the tab and
+  // the column are the reader's, and re-reading would yank them back on every
+  // navigation that touches the query string.
+  const [activeTab, setActiveTab] = useState<MonitoringDetailTab>(() => {
+    const requested = new URLSearchParams(location.search).get('tab')
+    return MONITORING_DETAIL_TABS.includes(requested as MonitoringDetailTab)
+      ? (requested as MonitoringDetailTab)
+      : 'volume'
+  })
   const metricsRef = useRef<HTMLSpanElement>(null)
   const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
   const [distributionField, setDistributionField] = useState('')
-  const [breakdownColumn, setBreakdownColumn] = useState('')
+  const [breakdownColumn, setBreakdownColumn] = useState(
+    () => new URLSearchParams(location.search).get('column') ?? '',
+  )
   // Breakdown VALUE filter: empty = show every value (the default). Selecting
   // labels narrows the chart to just those series (tripl-egt5).
   const [breakdownValueFilter, setBreakdownValueFilter] = useState<string[]>([])
 
   const branchId = useActiveBranchId()
+  const branchLink = useBranchLinkProps()
   const scopeId = id ?? eventId ?? ''
   // Reused by the header Edit button and the metric-scope Breakdowns empty state.
   const metricEditPath = `/p/${slug}/metrics/${scopeId}/edit`
@@ -430,9 +451,20 @@ export default function MonitoringDetailPage() {
   const hasVersionColumn = scope === 'metric'
     ? Boolean(metricDefinition?.app_version_column)
     : Boolean(scanConfigQuery.data?.app_version_column)
-  const selectedTab: MonitoringDetailTab = activeTab === 'versions' && !hasVersionColumn
-    ? 'volume'
-    : activeTab
+  // Which tabs this scope actually renders a trigger for — kept in step with
+  // the TabsList below. A URL can now ask for any of them, so the fallback has
+  // to cover every absent tab, not only `versions` on a scan with no version
+  // column: a value with no trigger leaves the reader on an empty page.
+  const availableTabs = useMemo<MonitoringDetailTab[]>(
+    () => [
+      'volume',
+      ...(hasVersionColumn ? (['versions'] as const) : []),
+      ...(scope !== 'metric' ? (['heatmap', 'distribution'] as const) : []),
+      ...(scope === 'event' || scope === 'metric' ? (['breakdowns'] as const) : []),
+    ],
+    [hasVersionColumn, scope],
+  )
+  const selectedTab: MonitoringDetailTab = availableTabs.includes(activeTab) ? activeTab : 'volume'
 
   const appVersionScope = useMemo(() => {
     // The catalog `metric` scope fetches versions from its own endpoint, so it
@@ -898,9 +930,16 @@ export default function MonitoringDetailPage() {
           eventType={eventType}
           metrics={metrics}
           onBack={goBack}
-          onEdit={() => navigate(
-            `/p/${slug}/events/${event.event_type?.name ?? 'all'}/${event.id}/edit`,
-          )}
+          // Branch-aware: a bare path would drop the branch out of the URL and
+          // leave the editor relying on context alone (tripl-h2sx.2).
+          onEdit={() => {
+            const link = branchLink(
+              `/p/${slug}/events/${event.event_type?.name ?? 'all'}/${event.id}/edit`,
+              event.branch_id ?? branchId,
+            )
+            link.onClick()
+            navigate(link.to)
+          }}
           onMetrics={() => metricsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
         />
       ) : (
@@ -1035,7 +1074,7 @@ export default function MonitoringDetailPage() {
       {isEventDetail && event && (
         <div className="grid items-start gap-[14px] lg:grid-cols-[1.5fr_1fr]">
           <EventFieldsTable eventType={eventType} event={event} fieldDefMap={fieldDefMap} />
-          <EventSideColumn event={event} eventType={eventType} history={eventHistory} metaFieldMap={metaFieldMap} />
+          <EventSideColumn slug={slug ?? ''} event={event} eventType={eventType} history={eventHistory} metaFieldMap={metaFieldMap} />
         </div>
       )}
 
@@ -2541,22 +2580,69 @@ function EventMetaCard({
   )
 }
 
+function EventTicketsCard({ slug, event }: { slug: string; event: TEvent }) {
+  const branchId = useActiveBranchId()
+  const { data: tickets } = useQuery({
+    queryKey: ['eventImplementationTickets', slug, branchId, event.id],
+    queryFn: () => eventsApi.implementationTickets(slug, event.id, branchId),
+  })
+  // Hidden, not empty. Rows exist only where the Jira integration is on and a
+  // branch has merged, so "no tickets" is the normal state for most events and
+  // an empty card would be noise on every one of them — the same rule the
+  // branch panel states for itself. No merged-status gate here: an event has
+  // no branch status to gate on, and these tickets come from branches that
+  // already merged (tripl-h2sx.32).
+  if (!tickets || tickets.length === 0) return null
+  return (
+    <div className={SURFACE_CARD} style={SURFACE_STYLE}>
+      <div
+        className="border-b px-4 py-3 text-[12.5px] font-semibold"
+        style={{ borderColor: 'var(--border-subtle)' }}
+      >
+        Implementation tickets
+      </div>
+      <div>
+        {tickets.map(ticket => (
+          <ImplementationTicketRow key={ticket.id} ticket={ticket} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function EventSideColumn({
+  slug,
   event,
   eventType,
   history,
   metaFieldMap,
 }: {
+  slug: string
   event: TEvent
   eventType: EventType | undefined
   history: EventHistoryItem[]
   metaFieldMap: Map<string, MetaFieldDefinition>
 }) {
   const breakdowns = event.metric_breakdown_columns
+  const activeBranchId = useActiveBranchId()
+  const branchLink = useBranchLinkProps()
   const usersQuery = useQuery({
     queryKey: ['users'],
     queryFn: () => usersApi.list(),
     enabled: Boolean(event.owner_id),
+  })
+  // The successor is guaranteed to sit on the same branch as this event (the
+  // server refuses a cross-branch pointer), so it resolves against the row's
+  // OWN branch — the same fallback the edit link uses, since a detail page can
+  // answer for a branch that is not the active one.
+  const successorBranchId = event.branch_id ?? activeBranchId
+  const successorId = event.superseded_by_event_id ?? null
+  const successorQuery = useQuery({
+    // Same key shape as the page's own event query, so a successor already
+    // visited is read from cache instead of refetched.
+    queryKey: ['event', slug, successorBranchId, successorId],
+    queryFn: () => eventsApi.get(slug, successorId!, successorBranchId),
+    enabled: Boolean(successorId),
   })
   const owner = event.owner_id ? usersQuery.data?.find(user => user.id === event.owner_id) : undefined
   // An owner the roster no longer lists (a removed member, or a roster the
@@ -2594,10 +2680,42 @@ function EventSideColumn({
           <PropertyRow label="Updated" value={formatRelativeTime(event.updated_at)} />
           <PropertyRow label="Last seen" value={event.last_seen_at ? formatTimestamp(event.last_seen_at) : '—'} />
           {event.sunset_at && <PropertyRow label="Sunset" value={formatTimestamp(event.sunset_at)} />}
+          {/* What to send instead. Shown whenever the pointer is set, not only
+              on a deprecated event: an analyst can name the successor while the
+              old event is still live, and hiding the row until the status flips
+              would lose the one answer the retirement notice owes its reader
+              (tripl-h2sx.13). Falls back to the raw id if the successor cannot
+              be loaded — a link to a name we do not have is worse than the id. */}
+          {successorId && (
+            <PropertyRow
+              label="Replaced by"
+              mono={!successorQuery.data}
+              value={
+                successorQuery.data ? (
+                  <Link
+                    {...branchLink(
+                      getMonitoringPath(slug, { scope_type: 'event', scope_ref: successorId }),
+                      successorBranchId,
+                    )}
+                    className="underline underline-offset-2"
+                    style={{ color: 'var(--fg)' }}
+                  >
+                    {successorQuery.data.name}
+                  </Link>
+                ) : successorQuery.isPending ? (
+                  '…'
+                ) : (
+                  successorId
+                )
+              }
+            />
+          )}
         </div>
       </div>
 
       <EventMetaCard event={event} metaFieldMap={metaFieldMap} />
+
+      <EventTicketsCard slug={slug} event={event} />
 
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
         <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>

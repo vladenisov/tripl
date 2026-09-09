@@ -437,6 +437,47 @@ describe('BranchesTab', () => {
     expect(await screen.findByText(/Priya S\./)).toBeInTheDocument()
   })
 
+  it('answers a review remark in place instead of starting a second one', async () => {
+    // PlanBranchComment has carried parent_id all along and the service has
+    // validated it; the panel simply never posted one (tripl-h2sx.27).
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([
+      {
+        id: 'comment-1',
+        branch_id: 'feat-1',
+        parent_id: null,
+        user_id: 'u-priya',
+        body: 'Please rename this event.',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+    ])
+    vi.mocked(planBranchesApi.createComment).mockResolvedValue({} as never)
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'reply' }))
+    fireEvent.change(screen.getByLabelText('Write a comment'), {
+      target: { value: 'Renamed on the branch.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+
+    await waitFor(() =>
+      expect(planBranchesApi.createComment).toHaveBeenCalledWith(
+        'demo',
+        'feat-1',
+        'Renamed on the branch.',
+        'comment-1',
+      ),
+    )
+  })
+
   it('breaks a changed collection down per member instead of dumping JSON', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
@@ -590,6 +631,215 @@ describe('BranchesTab', () => {
         field: null,
       }),
     )
+  })
+
+  it('offers authoring on the branch you are reviewing, and not on a merged one', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
+    const { unmount } = renderTab('feat-1')
+
+    expect(await screen.findByRole('link', { name: 'New event on this branch' })).toHaveAttribute(
+      'href',
+      '/p/demo/events/all/new?branch=feat-1',
+    )
+    expect(screen.getByRole('link', { name: 'Events on this branch' })).toHaveAttribute(
+      'href',
+      '/p/demo/events?branch=feat-1',
+    )
+    unmount()
+
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, MERGED], total: 2 })
+    vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([])
+    renderTab('feat-merged')
+
+    await screen.findByText('No changes in this branch.')
+    expect(screen.queryByRole('link', { name: 'New event on this branch' })).not.toBeInTheDocument()
+  })
+
+  it('reads a created event as a table, not as middot-joined prose', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 0, changed: 0 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'se_spot_forecast_profile_confirm',
+          parent: 'se',
+          entity_id: 'ev-9',
+          changes: [],
+          // An event created on a branch has no field_changes at all, so the
+          // full state below is its whole detail view.
+          field_changes: [],
+          before: null,
+          after: {
+            name: 'se_spot_forecast_profile_confirm',
+            field_values: [
+              { field_name: 'action', value: 'confirm', is_authored: true },
+              { field_name: 'category', value: 'spot', is_authored: false },
+              {
+                field_name: 'property',
+                value:
+                  '{"from_profile": "${property.forecast_profile}", "mode": "${property.mode}"}',
+                is_authored: true,
+              },
+            ],
+          },
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /se_spot_forecast_profile_confirm/i }))
+
+    const table = await screen.findByRole('table')
+    expect(within(table).getByRole('columnheader', { name: 'Field' })).toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: 'Value' })).toBeInTheDocument()
+    // is_authored is not a column: the backend already rules a flip of it out of
+    // change detection. It shows only where a scan, not a person, wrote the row.
+    expect(within(table).queryByRole('columnheader', { name: /authored/i })).not.toBeInTheDocument()
+    expect(within(table).getByText('from scan')).toBeInTheDocument()
+    expect(screen.queryByText(/field_name: action/)).not.toBeInTheDocument()
+
+    // The JSON payload is the value that blew the line out; it collapses to a
+    // preview with the pretty-printed form one click away.
+    const payload = within(table).getByRole('button', { name: /from_profile/ })
+    expect(payload).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(payload)
+    expect(payload).toHaveAttribute('aria-expanded', 'true')
+    const pretty = payload.parentElement?.querySelector('pre')
+    expect(pretty?.textContent).toContain('"mode": "${property.mode}"')
+    expect(pretty?.textContent).toContain('\n')
+  })
+
+  it('offers Edit on the collapsed row, straight to the editor on this branch', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 0, changed: 0 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'checkout_started',
+          parent: 'track',
+          entity_id: 'ev-9',
+          changes: [],
+          field_changes: [],
+          before: null,
+          after: { name: 'checkout_started', status: 'active' },
+        },
+        {
+          entity_type: 'variable',
+          kind: 'added',
+          name: 'variant',
+          parent: null,
+          entity_id: 'var-3',
+          changes: [],
+          field_changes: [],
+          before: null,
+          after: { name: 'variant' },
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    // No expansion first: the shortcut is the point.
+    const edit = await screen.findByRole('link', { name: 'Edit checkout_started' })
+    expect(edit).toHaveAttribute('href', '/p/demo/events/all/ev-9/edit?branch=feat-1')
+
+    // Only events have an editor route; a variable row keeps its detail link.
+    expect(screen.queryByRole('link', { name: 'Edit variant' })).not.toBeInTheDocument()
+  })
+
+  it('edits the branch-side copy of a renamed event, not the base-side id the row carries', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 1, changed: 0 },
+      renames: [
+        {
+          entity_type: 'event',
+          parent: 'track',
+          removed_name: 'checkout_start',
+          added_name: 'checkout_started',
+        },
+      ],
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'removed',
+          name: 'checkout_start',
+          parent: 'track',
+          entity_id: 'ev-base',
+          changes: [],
+          field_changes: [],
+          before: { name: 'checkout_start' },
+          after: null,
+        },
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'checkout_started',
+          parent: 'track',
+          entity_id: 'ev-branch',
+          changes: [],
+          field_changes: [],
+          before: null,
+          after: { name: 'checkout_started' },
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    const edit = await screen.findByRole('link', { name: 'Edit checkout_started' })
+    expect(edit).toHaveAttribute('href', '/p/demo/events/all/ev-branch/edit?branch=feat-1')
+  })
+
+  it('does not offer Edit on a merged branch, whose writes nothing would refuse', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, MERGED], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 0, changed: 0 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'checkout_started',
+          parent: 'track',
+          entity_id: 'ev-9',
+          changes: [],
+          field_changes: [],
+          before: null,
+          after: { name: 'checkout_started' },
+        },
+      ],
+    })
+
+    renderTab('feat-merged')
+
+    await screen.findByRole('button', { name: /checkout_started/i })
+    expect(screen.queryByRole('link', { name: /^Edit / })).not.toBeInTheDocument()
   })
 
   it('links a diff row to the entity it describes, in the branch', async () => {

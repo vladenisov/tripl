@@ -103,7 +103,8 @@ export type EventRowProps = {
   rowSignal: MonitoringSignal | undefined
   windowTotal: number | undefined
   windowData: EventMetricPoint[]
-  metaValueMap: Map<string, string> | undefined
+  /** Field id → every value this row holds for it, in API order. */
+  metaValueMap: Map<string, string[]> | undefined
   getFieldValue: (ev: EventListItem, f: FieldDefinition) => string
   /** The value row behind `getFieldValue` — same lookup, carrying the contexts. */
   getFieldValueRow: (ev: EventListItem, f: FieldDefinition) => EventFieldValue | undefined
@@ -266,6 +267,19 @@ export const EventRow = memo(function EventRow({
               title={ev.title}
             >
               {ev.title}
+            </span>
+          )}
+          {/* An unanswered question on this event's discussion. A count, not a
+              dot: the filter beside it says "open questions", and a marker that
+              cannot say how many leaves the operator guessing whether the row
+              matched for one reason or several (tripl-h2sx.26). */}
+          {(ev.open_question_count ?? 0) > 0 && (
+            <span
+              className="shrink-0 rounded px-1 text-[10px] font-medium"
+              style={{ background: 'var(--surface-hover)', color: 'var(--fg-muted)' }}
+              title={`${ev.open_question_count} unanswered question${ev.open_question_count === 1 ? '' : 's'} in the discussion`}
+            >
+              ?{ev.open_question_count}
             </span>
           )}
           {ev.drift_count > 0 && (
@@ -502,29 +516,41 @@ export const EventRow = memo(function EventRow({
         )
       })}
       {metaFields.map((mf) => {
-        const mvRaw = metaValueMap?.get(mf.id)
-        const mv = mvRaw ?? ''
-        const href = resolveMetaFieldHref(mf, mv)
+        // Every value gets its own rendering. A field with `allow_multiple`
+        // holds several, and joining them first would hand the link template a
+        // string it wraps into one broken address (tripl-h2sx.31).
+        const values = metaValueMap?.get(mf.id) ?? []
+        const first = values[0] ?? ''
         return (
           <TableCell key={mf.id} className="text-muted-foreground max-w-40 truncate text-xs">
-            {href ? (
-              <a
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block truncate text-primary underline-offset-4 hover:underline"
-                title={mv}
-              >
-                {mv}
-              </a>
-            ) : mf.field_type === 'boolean' && mvRaw ? (
-              <Badge variant={mvRaw === 'true' ? 'success' : 'secondary'} className="text-[10px]">
-                {mvRaw === 'true' ? 'Yes' : 'No'}
-              </Badge>
-            ) : mv === '' ? (
+            {values.length === 0 ? (
               <NoData title="No data" />
+            ) : mf.field_type === 'boolean' ? (
+              <Badge variant={first === 'true' ? 'success' : 'secondary'} className="text-[10px]">
+                {first === 'true' ? 'Yes' : 'No'}
+              </Badge>
             ) : (
-              mv
+              <span
+                className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5"
+                title={values.join(', ')}
+              >
+                {values.map(value => {
+                  const href = resolveMetaFieldHref(mf, value)
+                  return href ? (
+                    <a
+                      key={value}
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="truncate text-primary underline-offset-4 hover:underline"
+                    >
+                      {value}
+                    </a>
+                  ) : (
+                    <span key={value} className="truncate">{value}</span>
+                  )
+                })}
+              </span>
             )}
           </TableCell>
         )

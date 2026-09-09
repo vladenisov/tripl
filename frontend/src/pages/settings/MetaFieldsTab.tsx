@@ -16,7 +16,7 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
-import { META_FIELD_LINK_PLACEHOLDER } from "@/lib/metaFields"
+import { META_FIELD_LINK_PLACEHOLDER, MULTI_VALUE_META_FIELD_TYPES } from "@/lib/metaFields"
 import { getErrorMessage } from '@/lib/utils'
 
 export function MetaFieldsTab({ slug }: { slug: string }) {
@@ -27,6 +27,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const [displayName, setDisplayName] = useState('')
   const [fieldType, setFieldType] = useState('string')
   const [isRequired, setIsRequired] = useState(false)
+  const [allowMultiple, setAllowMultiple] = useState(false)
   const [enumOptions, setEnumOptions] = useState<string[]>([])
   const [enumInput, setEnumInput] = useState('')
   const [defaultValue, setDefaultValue] = useState('')
@@ -37,6 +38,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const [editDisplayName, setEditDisplayName] = useState('')
   const [editFieldType, setEditFieldType] = useState('')
   const [editIsRequired, setEditIsRequired] = useState(false)
+  const [editAllowMultiple, setEditAllowMultiple] = useState(false)
   const [editEnumOptions, setEditEnumOptions] = useState<string[]>([])
   const [editEnumInput, setEditEnumInput] = useState('')
   const [editDefaultValue, setEditDefaultValue] = useState('')
@@ -64,6 +66,16 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
 
   const metaFieldTypes = ['string', 'url', 'boolean', 'enum', 'date']
 
+  // Switching to `boolean` or `date` while the box is ticked would send a pair
+  // the server rejects, so the type decides the VALUE sent, not whether it is
+  // sent: the payload always carries `allow_multiple`, forced to false for a
+  // type that cannot hold several values. Sending it beats omitting it — on an
+  // update, omission would leave a previously-true flag standing while the type
+  // moved to one that forbids it, which is the pair the server refuses. The
+  // checkbox state itself is left alone, so switching back restores the tick.
+  const canAllowMultiple = MULTI_VALUE_META_FIELD_TYPES.has(fieldType)
+  const canEditAllowMultiple = MULTI_VALUE_META_FIELD_TYPES.has(editFieldType)
+
   const { data: metaFields = [] } = useQuery({
     queryKey: ['metaFields', slug, branchId],
     queryFn: () => metaFieldsApi.list(slug, branchId),
@@ -72,6 +84,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const createMut = useMutation({
     mutationFn: () => metaFieldsApi.create(slug, {
       name, display_name: displayName, field_type: fieldType, is_required: isRequired,
+      allow_multiple: canAllowMultiple && allowMultiple,
       ...(fieldType === 'enum' && enumOptions.length > 0 ? { enum_options: enumOptions } : {}),
       ...(defaultValue ? { default_value: defaultValue } : {}),
       ...(displayAsLink ? { link_template: linkTemplate.trim() || null } : {}),
@@ -80,7 +93,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['metaFields', slug, branchId] })
       setShowForm(false); setName(''); setDisplayName(''); setFieldType('string')
-      setIsRequired(false); setEnumOptions([]); setEnumInput(''); setDefaultValue('')
+      setIsRequired(false); setAllowMultiple(false); setEnumOptions([]); setEnumInput(''); setDefaultValue('')
       setDisplayAsLink(false); setLinkTemplate(''); setSensitivity('none')
     },
   })
@@ -88,6 +101,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const updateMut = useMutation({
     mutationFn: (id: string) => metaFieldsApi.update(slug, id, {
       display_name: editDisplayName, field_type: editFieldType as MetaFieldDefinition['field_type'], is_required: editIsRequired,
+      allow_multiple: canEditAllowMultiple && editAllowMultiple,
       ...(editFieldType === 'enum' ? { enum_options: editEnumOptions } : { enum_options: null }),
       default_value: editDefaultValue || null,
       link_template: editDisplayAsLink ? (editLinkTemplate.trim() || null) : null,
@@ -119,6 +133,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
     setEditDisplayName(mf.display_name)
     setEditFieldType(mf.field_type)
     setEditIsRequired(mf.is_required)
+    setEditAllowMultiple(Boolean(mf.allow_multiple))
     setEditEnumOptions(mf.enum_options ?? [])
     setEditEnumInput('')
     setEditDefaultValue(mf.default_value ?? '')
@@ -166,11 +181,17 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                     {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
-                <div className="flex items-end pb-2">
+                <div className="flex flex-col justify-end gap-2 pb-2">
                   <div className="flex items-center gap-2">
                     <Checkbox id="meta-req" checked={isRequired} onCheckedChange={c => setIsRequired(!!c)} />
                     <Label htmlFor="meta-req" className="cursor-pointer">Required</Label>
                   </div>
+                  {canAllowMultiple && (
+                    <div className="flex items-center gap-2">
+                      <Checkbox id="meta-multi" checked={allowMultiple} onCheckedChange={c => setAllowMultiple(!!c)} />
+                      <Label htmlFor="meta-multi" className="cursor-pointer">Multiple values</Label>
+                    </div>
+                  )}
                 </div>
               </div>
               {fieldType === 'enum' && (
@@ -246,13 +267,25 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                     {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
-                <div className="flex items-end pb-2">
+                <div className="flex flex-col justify-end gap-2 pb-2">
                   <div className="flex items-center gap-2">
                     <Checkbox id="edit-meta-req" checked={editIsRequired} onCheckedChange={c => setEditIsRequired(!!c)} />
                     <Label htmlFor="edit-meta-req" className="cursor-pointer">Required</Label>
                   </div>
+                  {canEditAllowMultiple && (
+                    <div className="flex items-center gap-2">
+                      <Checkbox id="edit-meta-multi" checked={editAllowMultiple} onCheckedChange={c => setEditAllowMultiple(!!c)} />
+                      <Label htmlFor="edit-meta-multi" className="cursor-pointer">Multiple values</Label>
+                    </div>
+                  )}
                 </div>
               </div>
+              {editingMf?.allow_multiple && !(canEditAllowMultiple && editAllowMultiple) && (
+                <p className="text-xs text-warning">
+                  Values already stored stay on their events. The next edit of one of those events
+                  keeps the first value only.
+                </p>
+              )}
               {editFieldType === 'enum' && (
                 <div className="grid gap-2">
                   <Label htmlFor={editEnumOptionsId}>Enum Options</Label>
@@ -341,6 +374,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableCell>
                     <Badge variant="outline" className="text-[10px]">{mf.field_type}</Badge>
                     {mf.field_type === 'enum' && mf.enum_options && <span className="text-muted-foreground text-[10px] ml-1">({mf.enum_options.length})</span>}
+                    {mf.allow_multiple && <span className="text-muted-foreground text-[10px] ml-1" title="Holds several values on one event">multi</span>}
                   </TableCell>
                   <TableCell>
                     <SensitivityChip value={mf.sensitivity} />

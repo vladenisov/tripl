@@ -16,12 +16,23 @@ export interface EventFieldVariableValue {
   values: string[]
   /** Optional to mirror the backend default: an older response omits it. */
   excluded_from_scans?: boolean
+  /** When these values were last WRITTEN — not when a scan last confirmed
+   *  them. Optional because `SearchEventVariableValue` extends this interface
+   *  and the search response is hand-built without the column; declaring it
+   *  required would make that type claim a field its endpoint never sends. */
+  updated_at?: string
 }
 
 export interface EventFieldValue {
   id: string
   field_definition_id: string
   value: string
+  /**
+   * A hand-typed value scans will never overwrite again. Optional to mirror the
+   * backend default: an older response omits it, and a missing flag must read
+   * as "the scan still maintains this", not as "frozen".
+   */
+  is_authored?: boolean
   variable_values?: EventFieldVariableValue[]
 }
 
@@ -54,6 +65,13 @@ export interface Event {
   order: number
   status: EventStatus
   sunset_at: string | null
+  /**
+   * The event that replaced this one — documentation and nothing else: no
+   * matcher, collector or coverage count reads it. Ids are branch-local, so on
+   * a branch copy this names that branch's own row, never main's. Absent from
+   * list items, which do not carry it.
+   */
+  superseded_by_event_id?: string | null
   last_seen_at: string | null
   /** Oldest metric bucket with traffic; null until a collection sees the event,
    * and on list responses, which do not compute it (tripl-kjhi.10). */
@@ -120,10 +138,14 @@ export interface SchemaDriftList {
 }
 
 // Slim shape returned by GET /events: drops nested event_type since the
-// frontend already has EventTypes cached and looks them up by id, and adds
-// `monitored` — alert-rule coverage the list endpoint computes per row (the
-// detail response does not carry it).
-export type EventListItem = Omit<Event, 'event_type'> & { monitored: boolean }
+// frontend already has EventTypes cached and looks them up by id, and adds two
+// values the list endpoint computes per row and the detail response does not
+// carry — `monitored` (alert-rule coverage) and `open_question_count`
+// (unanswered discussion threads, read through to the main twin on a branch).
+export type EventListItem = Omit<Event, 'event_type'> & {
+  monitored: boolean
+  open_question_count?: number
+}
 
 export interface EventListResponse {
   items: EventListItem[]
@@ -150,13 +172,32 @@ export interface EventPhoto {
 
 export interface EventPhotoComment {
   id: string
-  photo_id: string
+  /** Exactly one anchor is set, enforced by ck_event_photo_comment_one_anchor:
+   *  a comment pinned to one attachment, or the event's own discussion. Both
+   *  are nullable here for that reason — the type claimed a photo_id was
+   *  always present, which stopped being true when the event anchor landed. */
+  photo_id: string | null
+  event_id?: string | null
   parent_id: string | null
   user_id: string | null
   body: string
+  /** Resolution state of the THREAD. Present on every row because both anchors
+   *  share one table, but only a top-level comment can be acted on — the server
+   *  refuses an action on a reply. A `snoozed` thread whose `snoozed_until` has
+   *  passed counts as open again; `isThreadUnanswered` is the one place that
+   *  decides it. */
+  status?: EventCommentStatus
+  resolution_note?: string | null
+  snoozed_until?: string | null
+  resolved_at?: string | null
+  resolved_by?: string | null
   created_at: string
   updated_at: string
 }
+
+export type EventCommentStatus = 'open' | 'resolved' | 'snoozed'
+
+export type EventCommentAction = 'resolve' | 'snooze' | 'reopen'
 
 export type VariableType = 'string' | 'number' | 'boolean' | 'date' | 'datetime' | 'json' | 'string_array' | 'number_array'
 

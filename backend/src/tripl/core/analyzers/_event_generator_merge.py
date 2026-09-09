@@ -29,6 +29,7 @@ from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.event_photo import EventPhoto
+from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
@@ -147,10 +148,16 @@ def apply_event_group_rules(
         # surface for one grouped scan. ``reserved_catalog_columns`` refuses the
         # same reduction on its own side: the two key spaces are one rule, and
         # matching a dotted key is not a licence to shorten it.
+        # Both spellings of the identity pseudo-column are excluded, not just
+        # the underscored one: ``_event_values_for_group_matching`` sets
+        # ``event_name`` alongside ``__event_name``, and the rule editor offers
+        # ``event_name`` FIRST — so the obvious choice used to write an override
+        # under a key that names no field. Harmless only because the lookup is
+        # exact and nothing is usually called ``event_name``.
         overrides = {
             field_name: f"/{pattern}/"
             for field_name, pattern, matched in condition_results
-            if matched and field_name != "__event_name"
+            if matched and field_name not in {"__event_name", "event_name"}
         }
         if len(group_name) > 500:
             group_name = group_name[:497] + "..."
@@ -419,6 +426,15 @@ def _merge_event_into_group(
     _move_event_meta_values(session, source=source, target=target)
     session.execute(
         update(EventPhoto).where(EventPhoto.event_id == source.id).values(event_id=target.id)
+    )
+    # Event-anchored discussion follows the event, because a comment is human
+    # input no later pipeline step can rebuild. Only the event-anchored rows:
+    # a photo-anchored comment hangs off ``photo_id`` and rides along with the
+    # photo the line above just re-pointed.
+    session.execute(
+        update(EventPhotoComment)
+        .where(EventPhotoComment.event_id == source.id)
+        .values(event_id=target.id)
     )
     _merge_event_metric_rows(session, source_ids=[source.id], target_id=target.id)
     _merge_event_metric_breakdown_rows(session, source_ids=[source.id], target_id=target.id)

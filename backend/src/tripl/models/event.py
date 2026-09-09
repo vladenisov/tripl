@@ -104,6 +104,18 @@ class Event(UUIDMixin, TimestampMixin, Base):
         nullable=False,
     )
     sunset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The event that replaced this one — documentation, and only that. No
+    # matcher reads it, no collector, no coverage counting; retiring an event
+    # answers "what should I send instead?" and nothing else changes.
+    #
+    # SET NULL for the reason ``owner_id`` chose it: deleting the successor
+    # must not delete its predecessor, and a cleared pointer beats a dangling
+    # one. Deliberately no ``relationship()`` — the branch deep copy inserts
+    # events in one flush and this FK is immediate on Postgres, so the ordering
+    # is handled explicitly there rather than left to the unit of work.
+    superseded_by_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("events.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metric_breakdown_columns: Mapped[list[str]] = mapped_column(
         JSON,

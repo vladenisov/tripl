@@ -1,43 +1,10 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { getErrorMessage } from '@/lib/utils'
+import { relaxedToJson } from './jsonRelaxed'
+import { formatJsonTemplate, templateJsonError, validateJsonWithVars } from './jsonTemplate'
 import { SuggestionRow, type VariableSuggestion } from './VariableInput'
 import { suggestionMatches } from './utils'
-
-const TEMPLATE_TOKEN_PATTERN = /\$\{([^}]*)\}/g
-const TEMPLATE_TOKEN_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
-const JSON_TEMPLATE_VALUE_PATTERN = /"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"|\$\{[A-Za-z_][A-Za-z0-9_.-]*\}/g
-const JSON_TEMPLATE_KEY_PATTERN = /"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"\s*:/
-
-function templateJsonError(text: string): string | null {
-  const tokens = [...text.matchAll(TEMPLATE_TOKEN_PATTERN)].map(match => match[1])
-  if (tokens.some(token => !TEMPLATE_TOKEN_NAME_PATTERN.test(token))) {
-    return 'Variable tokens may use letters, digits, underscores, dots, or hyphens.'
-  }
-  const templateValues = text.match(JSON_TEMPLATE_VALUE_PATTERN) ?? []
-  if (templateValues.length !== tokens.length) {
-    return 'Variable templates must occupy a complete JSON value.'
-  }
-  if (JSON_TEMPLATE_KEY_PATTERN.test(text)) {
-    return 'Variable templates cannot be JSON object keys.'
-  }
-  return null
-}
-
-function validateJsonWithVars(text: string): string | null {
-  if (!text.trim()) return null
-  const templateError = templateJsonError(text)
-  if (templateError) return templateError
-  if (!text.includes('${')) {
-    try { JSON.parse(text); return null } catch (e) { return getErrorMessage(e) }
-  }
-  // Replace ${var} placeholders with a sentinel string before validating, so
-  // partially-templated JSON parses successfully. Quoted tokens ("${var}")
-  // must be swapped together with their quotes or the sentinel doubles them.
-  const safe = text.replace(JSON_TEMPLATE_VALUE_PATTERN, '"__var__"')
-  try { JSON.parse(safe); return null } catch (e) { return getErrorMessage(e) }
-}
 
 export function JsonEditor({
   id,
@@ -54,20 +21,25 @@ export function JsonEditor({
 }) {
   const uid = useId()
   const listboxId = `json-var-listbox-${uid}`
+  const errorId = `json-error-${uid}`
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
-  const [error, setError] = useState<string | null>(null)
+  // Validated on mount, not only on the first keystroke: a stored value can be
+  // invalid — seven backend paths write a field value without going through
+  // `_normalize_json_template_value` — and an untouched field used to render
+  // aria-invalid="false" over text the server would refuse (tripl-h2sx.10).
+  const [error, setError] = useState<string | null>(() => validateJsonWithVars(value))
   const [showMenu, setShowMenu] = useState(false)
   const [filter, setFilter] = useState('')
   const [highlightIdx, setHighlightIdx] = useState(0)
   const [insertPos, setInsertPos] = useState(0)
-  const [raw, setRaw] = useState(() => {
-    if (!value) return ''
-    if (!value.includes('${')) {
-      try { return JSON.stringify(JSON.parse(value), null, 2) } catch { return value }
-    }
-    return value
-  })
+  // What the last Format repaired, and the text it replaced. Repairing is a
+  // guess about intent, so it is always both reported and undoable.
+  const [repair, setRepair] = useState<{ fixes: string[]; previous: string } | null>(null)
+  // The server stores JSON as a single canonical line, so a stored value —
+  // templated or not — arrives unbroken. Re-indent it on the way in, or every
+  // edit session starts with the whole payload on line one.
+  const [raw, setRaw] = useState(() => (value ? formatJsonTemplate(value) ?? value : ''))
 
   const filtered = useMemo(
     () => variables.filter(v => suggestionMatches(v, filter)),
@@ -88,6 +60,7 @@ export function JsonEditor({
     const dollarIdx = before.lastIndexOf('$')
     const newValue = before.slice(0, dollarIdx) + '${' + varName + '}' + after
     setRaw(newValue)
+    setRepair(null)
     const err = validateJsonWithVars(newValue)
     onChange(newValue)
     setError(err)
@@ -102,6 +75,7 @@ export function JsonEditor({
   const handleChange = (v: string) => {
     const cursor = textareaRef.current?.selectionStart ?? v.length
     setRaw(v)
+    setRepair(null)
     if (!v.trim()) {
       onChange('')
       setError(null)
@@ -147,40 +121,46 @@ export function JsonEditor({
     }
   }
 
+  const apply = (next: string) => {
+    setRaw(next)
+    onChange(next)
+    setError(validateJsonWithVars(next))
+  }
+
+  // Format used to fail silently on anything it could not parse, which read as
+  // a dead button. Try strict first — already-valid JSON is only re-indented,
+  // never reinterpreted — then the tolerant reader, and failing both, say what
+  // is wrong.
   const handleFormat = () => {
     if (!raw.trim()) return
-    const templateError = templateJsonError(raw)
-    if (templateError) return
-    if (!raw.includes('${')) {
-      try {
-        const formatted = JSON.stringify(JSON.parse(raw), null, 2)
-        setRaw(formatted)
-        onChange(formatted)
-        setError(null)
-      } catch { /* keep as is */ }
+
+    const strict = formatJsonTemplate(raw)
+    if (strict !== null) {
+      setRepair(null)
+      apply(strict)
       return
     }
-    // Round-trip ${var} placeholders through unique sentinels so JSON.stringify
-    // doesn't escape them — then put them back as-is.
-    const placeholders = new Map<string, string>()
-    const stash = (match: string) => {
-      let sentinel = `__TRIPL_VAR_${crypto.randomUUID()}__`
-      while (raw.includes(sentinel) || placeholders.has(sentinel)) {
-        sentinel = `__TRIPL_VAR_${crypto.randomUUID()}__`
+
+    // A malformed ${token} is a mistake to report, not to repair.
+    const templateError = templateJsonError(raw)
+    if (!templateError) {
+      const relaxed = relaxedToJson(raw, variables.map(v => v.name))
+      const formatted = relaxed && formatJsonTemplate(relaxed.text)
+      if (relaxed && formatted && validateJsonWithVars(formatted) === null) {
+        setRepair({ fixes: relaxed.fixes, previous: raw })
+        apply(formatted)
+        return
       }
-      placeholders.set(sentinel, match)
-      return `"${sentinel}"`
     }
-    const safe = raw.replace(JSON_TEMPLATE_VALUE_PATTERN, stash)
-    try {
-      let formatted = JSON.stringify(JSON.parse(safe), null, 2)
-      placeholders.forEach((placeholder, sentinel) => {
-        formatted = formatted.replace(`"${sentinel}"`, placeholder)
-      })
-      setRaw(formatted)
-      onChange(formatted)
-      setError(null)
-    } catch { /* keep as is */ }
+
+    setError(templateError ?? validateJsonWithVars(raw))
+  }
+
+  const handleUndoRepair = () => {
+    if (!repair) return
+    const previous = repair.previous
+    setRepair(null)
+    apply(previous)
   }
 
   return (
@@ -203,17 +183,9 @@ export function JsonEditor({
           aria-haspopup="listbox"
           aria-autocomplete="list"
           aria-controls={listboxId}
+          aria-describedby={error ? errorId : undefined}
           aria-activedescendant={showMenu && filtered.length > 0 ? `${listboxId}-opt-${highlightIdx}` : undefined}
         />
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={handleFormat}
-          className="absolute right-1.5 top-1.5 h-6 text-[10px]"
-        >
-          Format
-        </Button>
         {showMenu && filtered.length > 0 && (
           <div id={listboxId} role="listbox" className="absolute z-50 mt-1 w-full rounded-md border bg-popover p-1 shadow-md">
             {filtered.map((v, i) => (
@@ -232,7 +204,24 @@ export function JsonEditor({
           </div>
         )}
       </div>
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {/* Format sits under the field, not over it: an overlay button covered the
+          first line of every payload wider than the box. */}
+      <div className="flex items-start justify-between gap-2">
+        <p id={errorId} className="min-w-0 text-xs text-destructive">{error}</p>
+        <Button type="button" variant="ghost" size="xs" onClick={handleFormat} className="shrink-0">
+          Format
+        </Button>
+      </div>
+      {repair && (
+        <div className="flex items-start justify-between gap-2" aria-live="polite">
+          <p className="min-w-0 text-xs text-muted-foreground">
+            Format {repair.fixes.join(', ')}.
+          </p>
+          <Button type="button" variant="ghost" size="xs" onClick={handleUndoRepair} className="shrink-0">
+            Undo
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

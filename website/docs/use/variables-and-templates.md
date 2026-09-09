@@ -22,8 +22,8 @@ Each variable has:
 - a **type** (`string`, `number`, `boolean`, `date`, `datetime`, `json`, or an
   array type);
 - a human-readable **description**;
-- **documented values** — the global list the team expects;
-- one or more **bindings** — warehouse columns or dotted JSON paths such as
+- optional **documented values** — the global list the team expects;
+- optional **bindings** — warehouse columns or dotted JSON paths such as
   `variant` or `page_data.extra.variant`;
 - observed contexts and samples discovered by scans;
 - optional **per-event documented-value overrides**.
@@ -32,6 +32,10 @@ The name is for people and templates. A binding is how a scan recognizes the
 same concept in raw data. Keeping those separate lets a scan turn a long source
 path into a short, readable `${variant}` placeholder without losing the source
 mapping.
+
+Only the name and type are required. **You do not have to fill in bindings** —
+a scan matches a variable by its name first, so a variable named after the
+column it stands for needs no binding at all.
 
 ## Documented, observed, and effective values
 
@@ -52,6 +56,43 @@ tripl deliberately keeps two kinds of value list separate:
   union outgrows the cardinality threshold, and only then does it stop keeping
   the full list and behave as high-cardinality — whose stored list is a capped
   sample — from then on.
+
+### The other store: an event's own field value
+
+Accumulation is a property of observed values, and **only** of them. An event's
+plain field value is a single string: one value per field, per event, full stop.
+That matters because a scan can produce several warehouse rows for one event —
+one per breakdown combination — and they collapse onto that one field.
+
+The rule is **the busiest row wins**. Rows are applied in ascending order of
+volume, so the highest-count row for an identity is written last and its value
+is the one stored. A rare row cannot overwrite the common case: an event seen
+12,000 times on `spot` and three times on `purchase/main` keeps `spot`.
+
+Nothing is merged, and nothing warns you in the plan itself — so when a field
+did see more than one value, the **scan report says so**, naming the field and
+how many values it saw (`windbar_tap.screen (3 values)`). Read that as "this
+field varies across the rows behind this event"; the stored value is the
+dominant one, not the only one.
+
+Ordering between events is unaffected: identities keep first-appearance order,
+so the sort changes which value survives, never which events exist or in what
+order they were created.
+
+### Clearing what a scan has recorded
+
+**Plan › Variables › edit a variable › Clear observed values** drops that
+variable's contexts and keeps everything else on the row — description,
+documented values, bindings, per-event overrides, and every drift verdict. It
+is the reset that previously required deleting the whole variable, which took
+all of that with it.
+
+Two consequences worth knowing before you use it. A later scan re-records a
+context only where an event field still refers to the variable, so a context
+whose event has moved on does not come back. And because "has observed values"
+is one of the reasons the retirement sweep keeps a variable, clearing them can
+make an otherwise unreferenced variable retirable — the next scan's cleanup may
+then remove it.
 
 A **context** is one (variable, event, field) pairing — the record that this
 event's field refers to this variable through that binding. The context and the
@@ -88,6 +129,18 @@ project type into the search box above it to reach the event you want — the no
 under the list says how many events it is not currently showing.
 
 ## Bind a variable to warehouse data
+
+Skip this when the variable's name already matches the column — a binding earns
+its keep only when the two are spelled differently, such as
+`page_data.extra.variant` behind `${variant}`. In that one case, leaving it
+empty costs you quietly and later: the next scan does not recognize your
+variable, mints a second one beside it (`extra_variant`, say), and the one you
+made by hand collects no contexts, ever. It will not show up under **Unused**
+either — a variable you described is a variable you claimed.
+
+On a variable a scan created, the binding it filled in is how it keeps finding
+that variable. Clearing it marks the variable as hand-owned, which permanently
+exempts it from the retirement sweep.
 
 Bindings accept a scalar column name or dotted JSON path:
 

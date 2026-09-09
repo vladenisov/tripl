@@ -7,7 +7,7 @@ import { variablesApi } from '@/api/variables'
 import { variableDriftsApi } from '@/api/variableDrifts'
 import { variableOverridesApi } from '@/api/variableOverrides'
 import { formatDateTime } from '@/lib/datetime'
-import type { Variable } from '@/types'
+import type { Variable, VariableValueContext } from '@/types'
 import { VariablesTab } from './VariablesTab'
 
 vi.mock('@/api/variables', () => ({
@@ -18,6 +18,7 @@ vi.mock('@/api/variables', () => ({
     update: vi.fn(),
     del: vi.fn(),
     values: vi.fn(),
+    clearValues: vi.fn(),
     bulkUpdate: vi.fn(),
     bulkDelete: vi.fn(),
   },
@@ -43,6 +44,25 @@ vi.mock('@/api/events', () => ({
     list: vi.fn(),
   },
 }))
+
+function makeContext(
+  overrides: Partial<VariableValueContext> & { id: string },
+): VariableValueContext {
+  return {
+    variable_id: 'var-1',
+    variable_name: 'variant',
+    event_id: 'ev-1',
+    event_name: 'Profile View',
+    field_definition_id: 'fd-1',
+    field_name: 'variant',
+    field_display_name: 'Variant',
+    source_column: 'variant',
+    value_kind: 'low',
+    observed_count: 2,
+    values: ['a', 'b'],
+    ...overrides,
+  }
+}
 
 function makeVariable(overrides: Partial<Variable> & { id: string; name: string }): Variable {
   return {
@@ -320,7 +340,44 @@ describe('VariablesTab', () => {
     expect(within(dialog).getByRole('columnheader', { name: 'Event' })).toBeInTheDocument()
     expect(within(dialog).getByRole('columnheader', { name: 'Description' })).toBeInTheDocument()
     expect(within(dialog).getByRole('columnheader', { name: 'Possible values' })).toBeInTheDocument()
+    // The two scan-derived facts the dialog used to fetch and discard
+    // (tripl-h2sx.30, tripl-h2sx.22).
+    expect(within(dialog).getByRole('columnheader', { name: 'Source' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('columnheader', { name: 'Last refreshed' })).toBeInTheDocument()
     expect(await within(dialog).findByText('u2')).toBeInTheDocument()
+  })
+
+  it('names the warehouse paths the scan answered on, beside the bindings', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant' })])
+    // Two contexts on two different paths, one of them repeated: the analyst
+    // needs the distinct list, which is what tells her a binding is missing.
+    vi.mocked(variablesApi.values).mockResolvedValue([
+      makeContext({ id: 'ctx-1', source_column: 'variant' }),
+      makeContext({ id: 'ctx-2', source_column: 'page_data.extra.variant' }),
+      makeContext({ id: 'ctx-3', source_column: 'variant' }),
+    ])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(await within(dialog).findByText('Observed at:')).toBeInTheDocument()
+    expect(within(dialog).getAllByText('variant', { selector: 'code' })).toHaveLength(1)
+    expect(
+      within(dialog).getByText('page_data.extra.variant', { selector: 'code' }),
+    ).toBeInTheDocument()
+  })
+
+  it('says nothing about observed paths when the scan has recorded none', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant' })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    await within(dialog).findByText('Observed values')
+    expect(within(dialog).queryByText('Observed at:')).not.toBeInTheDocument()
   })
 
   it('creates a variable with documented values and bindings', async () => {
@@ -370,6 +427,32 @@ describe('VariablesTab', () => {
     fireEvent.keyDown(bindingInput, { key: 'Enter' })
 
     expect(await screen.findByText(/invalid path/i)).toBeInTheDocument()
+  })
+
+  it('creates a variable with neither values nor bindings', async () => {
+    // The whole of feedback item 6: nothing ever required them, and nothing
+    // on screen said so.
+    mockList([])
+    vi.mocked(variablesApi.create).mockResolvedValue(
+      makeVariable({ id: 'var-new', name: 'variant', allowed_values: [], bindings: [] }),
+    )
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+
+    expect(screen.getByText('Possible values (optional)')).toBeInTheDocument()
+    expect(screen.getByText('Data bindings (optional)')).toBeInTheDocument()
+    expect(screen.getByText(/scans match this variable by its name/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('my_variable'), { target: { value: 'variant' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() =>
+      expect(variablesApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ name: 'variant', allowed_values: [], bindings: [] }),
+        null,
+      ),
+    )
   })
 
   it('saves a per-event override from the edit dialog', async () => {
@@ -1238,5 +1321,55 @@ describe('VariablesTab', () => {
     expect(screen.getByText('${still_scanned}').closest('tr')).not.toHaveAttribute('data-focused')
 
     scrollIntoView.mockRestore()
+  })
+})
+
+describe('VariablesTab clear observed values (tripl-h2sx.21)', () => {
+  it('clears the contexts on confirm, and refreshes both queries', async () => {
+    vi.mocked(variablesApi.clearValues).mockResolvedValue(undefined as never)
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant', context_count: 2 })])
+    vi.mocked(variablesApi.values).mockResolvedValue([makeContext({ id: 'ctx-1' })])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear observed values' }))
+
+    // The copy has to carry both surprises: a scan does not simply put them
+    // back, and an unreferenced variable can be swept once it has none.
+    expect(await screen.findByText(/observed value contexts/)).toBeInTheDocument()
+    expect(screen.getByText(/re-records a context only where/)).toBeInTheDocument()
+    expect(screen.getByText(/may then remove it/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear values' }))
+
+    await waitFor(() =>
+      expect(variablesApi.clearValues).toHaveBeenCalledWith('demo', 'var-1', null),
+    )
+  })
+
+  it('calls nothing when the confirm is dismissed', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant', context_count: 2 })])
+    vi.mocked(variablesApi.values).mockResolvedValue([makeContext({ id: 'ctx-1' })])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear observed values' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+
+    expect(variablesApi.clearValues).not.toHaveBeenCalled()
+  })
+
+  it('offers nothing to clear when the scan has recorded nothing', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', source_name: 'variant', context_count: 0 })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(within(dialog).getByRole('button', { name: 'Clear observed values' })).toBeDisabled()
   })
 })

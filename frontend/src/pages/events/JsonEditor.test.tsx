@@ -75,4 +75,89 @@ describe('JsonEditor template authoring', () => {
       '{\n  "literal": "__TRIPL_VAR_1__",\n  "a": "${variant}",\n  "b": "${variant}"\n}',
     )
   })
+  it('re-indents a templated value on mount, because the server stores JSON on one line', () => {
+    render(
+      <JsonEditor
+        value={'{"from_profile": "${variant}", "mode": "dark"}'}
+        onChange={vi.fn()}
+        variables={VARIABLES}
+      />,
+    )
+
+    expect(screen.getByRole('combobox')).toHaveValue(
+      '{\n  "from_profile": "${variant}",\n  "mode": "dark"\n}',
+    )
+  })
+
+  it('keeps a value it cannot parse rather than blanking the field', () => {
+    render(<JsonEditor value="not json at all" onChange={vi.fn()} variables={VARIABLES} />)
+
+    expect(screen.getByRole('combobox')).toHaveValue('not json at all')
+    // ...and says so on mount. Validity used to start null and only be written
+    // by a keystroke, so an untouched stored value read as valid (tripl-h2sx.10).
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('reports nothing on an empty field', () => {
+    render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
+
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-invalid', 'false')
+  })
+
+  it('reports why Format refused instead of silently doing nothing', () => {
+    const onChange = vi.fn()
+    render(<JsonEditor value="" onChange={onChange} variables={VARIABLES} />)
+
+    const editor = screen.getByRole('combobox')
+    fireEvent.change(editor, { target: { value: '{"variant": ' } })
+    onChange.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+
+    expect(onChange).not.toHaveBeenCalled()
+    expect(editor).toHaveAttribute('aria-invalid', 'true')
+    const described = editor.getAttribute('aria-describedby')
+    expect(described).toBeTruthy()
+    expect(document.getElementById(described!)?.textContent).toBeTruthy()
+  })
+
+  it('keeps Format out of the text: it is a sibling control, not an overlay', () => {
+    render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
+
+    const formatButton = screen.getByRole('button', { name: 'Format' })
+    expect(formatButton).not.toHaveClass('absolute')
+    expect(formatButton.parentElement).not.toContain(screen.getByRole('combobox'))
+  })
+  it('repairs loose input, says what it changed and can undo it', () => {
+    const onChange = vi.fn()
+    render(<JsonEditor value="" onChange={onChange} variables={VARIABLES} />)
+
+    const editor = screen.getByRole('combobox')
+    const loose = 'from_profile: property.forecast_profile, mode: property.mode'
+    fireEvent.change(editor, { target: { value: loose } })
+    expect(editor).toHaveAttribute('aria-invalid', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+
+    expect(editor).toHaveValue(
+      '{\n  "from_profile": "${property.forecast_profile}",\n  "mode": "${property.mode}"\n}',
+    )
+    expect(editor).toHaveAttribute('aria-invalid', 'false')
+    expect(screen.getByText(/read 2 values as variables/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(editor).toHaveValue(loose)
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+  })
+
+  it('does not offer to repair a malformed variable token', () => {
+    render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
+
+    const editor = screen.getByRole('combobox')
+    fireEvent.change(editor, { target: { value: 'a: ${bad"token}' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Variable tokens may use/)).toBeInTheDocument()
+  })
 })

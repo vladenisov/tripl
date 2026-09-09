@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Pencil, Plus, RotateCcw, Trash2, Variable as VariableIcon, X } from "lucide-react"
+import { Pencil, Plus, RotateCcw, Trash2, Variable as VariableIcon } from "lucide-react"
 import { eventsApi } from "@/api/events"
 import { variablesApi } from "@/api/variables"
 import { variableDriftsApi } from "@/api/variableDrifts"
@@ -15,6 +15,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { ChipListInput } from "@/components/chip-list-input"
+import { formatDateTime } from "@/lib/datetime"
 import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
 import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
@@ -37,6 +39,8 @@ import {
 // Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 const BINDING_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/
 const isValidBinding = (value: string) => BINDING_PATTERN.test(value)
+const INVALID_BINDING_MESSAGE =
+  'Invalid path — use letters/digits/underscores with dots, e.g. page_data.extra.variant'
 
 // Rows rendered at once. The whole set arrives in one request, but a governance
 // project can hold >1k variables and painting them all froze the tab for
@@ -96,48 +100,6 @@ function useStableCallback<Args extends unknown[]>(fn: (...args: Args) => void) 
     ref.current = fn
   })
   return useCallback((...args: Args) => ref.current(...args), [])
-}
-
-function ChipListInput({ values, onChange, placeholder, ariaLabel, validate }: {
-  values: string[]
-  onChange: (next: string[]) => void
-  placeholder: string
-  ariaLabel: string
-  validate?: (value: string) => boolean
-}) {
-  const [draft, setDraft] = useState('')
-  const [invalid, setInvalid] = useState(false)
-  const add = () => {
-    const value = draft.trim()
-    if (!value) return
-    if (validate && !validate(value)) { setInvalid(true); return }
-    if (!values.includes(value)) onChange([...values, value])
-    setDraft(''); setInvalid(false)
-  }
-  return (
-    <div>
-      <div className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-input bg-transparent px-2 py-1">
-        {values.map(value => (
-          <span key={value} className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
-            {value}
-            <button type="button" aria-label={`Remove ${value}`} onClick={() => onChange(values.filter(v => v !== value))}>
-              <X className="h-3 w-3" aria-hidden="true" />
-            </button>
-          </span>
-        ))}
-        <input
-          aria-label={ariaLabel}
-          className="h-6 min-w-28 flex-1 bg-transparent text-sm outline-none"
-          value={draft}
-          onChange={e => { setDraft(e.target.value); setInvalid(false) }}
-          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
-          onBlur={add}
-          placeholder={placeholder}
-        />
-      </div>
-      {invalid && <p className="mt-1 text-xs text-destructive">Invalid path — use letters/digits/underscores with dots, e.g. page_data.extra.variant</p>}
-    </div>
-  )
 }
 
 /** `focusId` scrolls to and highlights one variable — the landing spot for a
@@ -253,6 +215,16 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
       setEditingVar(null)
+    },
+  })
+
+  const clearValuesMut = useMutation({
+    mutationFn: (id: string) => variablesApi.clearValues(slug, id, branchId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
+      // The contexts query key is an inline literal and sits OUTSIDE the
+      // variablesKey prefix, so the line above does not reach it.
+      qc.invalidateQueries({ queryKey: ['variable-values', slug, branchId] })
     },
   })
 
@@ -422,6 +394,26 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
       qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
       deselect(id)
     },
+  })
+
+  const handleClearValues = useStableCallback(async (v: Variable) => {
+    const contextCount = v.context_count ?? 0
+    const ok = await confirm({
+      title: 'Clear observed values',
+      message:
+        `Clear the ${countOf(contextCount, 'observed value context', 'observed value contexts')} `
+        + `recorded for "${v.name}"? The variable keeps its description, documented values, `
+        + 'bindings, per-event overrides and every drift verdict.\n\n'
+        // Two things a person would otherwise discover the hard way. The first
+        // is why this is not simply undone by re-scanning; the second is that
+        // "keep the variable" is not a guarantee the sweep is bound by.
+        + `A later scan re-records a context only where an event field still says \${${v.name}}. `
+        + 'And if nothing refers to this variable any more, having no observed values makes it '
+        + "retirable — the next scan's cleanup may then remove it.",
+      confirmLabel: 'Clear values',
+      variant: 'danger',
+    })
+    if (ok) clearValuesMut.mutate(v.id)
   })
 
   const handleDelete = useStableCallback(async (v: Variable) => {
@@ -675,6 +667,15 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     queryFn: () => variablesApi.values(slug, editingVar!.id, branchId),
     enabled: !!editingVar,
   })
+  // The warehouse paths the scan actually ANSWERED on, distinct and in
+  // first-seen order. Not the same question as the bindings above, which are
+  // what the plan ASKS for: a path here that is missing there is the case worth
+  // seeing — the scan reached this variable by name and the binding list is
+  // incomplete (tripl-h2sx.30).
+  const observedSourceColumns = useMemo(
+    () => [...new Set(editingVarContexts.map(context => context.source_column).filter(Boolean))],
+    [editingVarContexts],
+  )
   const editingSummaryRows = editingVarContexts.length > 0
     ? editingVarContexts.map((context) => ({
       id: context.id,
@@ -683,11 +684,20 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
       // Event column paints nothing (tripl-wkwv.5). The no-contexts branch below
       // keeps its own '—': that is "no event at all", a different statement.
       eventName: eventNameLabel(context.event_name),
+      sourceColumn: context.source_column,
       values: context.values,
       valueKind: context.value_kind,
+      updatedAt: context.updated_at,
     }))
     : editingVar
-      ? [{ id: `${editingVar.id}-empty`, eventName: '—', values: [] as string[], valueKind: null }]
+      ? [{
+        id: `${editingVar.id}-empty`,
+        eventName: '—',
+        sourceColumn: '',
+        values: [] as string[],
+        valueKind: null,
+        updatedAt: undefined as string | undefined,
+      }]
       : []
 
   return (
@@ -718,13 +728,17 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                 </div>
               </div>
               <div className="grid gap-2">
-                <Label>Possible values</Label>
+                <Label>Possible values (optional)</Label>
                 <ChipListInput values={allowedValues} onChange={setAllowedValues} placeholder="Type a value, press Enter" ariaLabel="Add possible value" />
               </div>
               <div className="grid gap-2">
-                <Label>Data bindings</Label>
-                <ChipListInput values={bindings} onChange={setBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} />
-                <p className="text-[11px] text-muted-foreground">Warehouse column or JSON path this variable maps to — scans will adopt this variable instead of creating a new one.</p>
+                {/* Three of the four fields here are optional and only Description
+                    said so, which read as "the other two are not". Bindings least
+                    of all: a scan matches a variable by NAME first, so a variable
+                    named after its column needs none. */}
+                <Label>Data bindings (optional)</Label>
+                <ChipListInput values={bindings} onChange={setBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
+                <p className="text-[11px] text-muted-foreground">Leave it empty and scans match this variable by its name. Add a binding only when the warehouse column or JSON path is spelled differently — <code className="rounded bg-muted px-1">page_data.extra.variant</code> behind <code className="rounded bg-muted px-1">{'${variant}'}</code>.</p>
               </div>
               {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
@@ -765,7 +779,20 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
               </div>
               <div className="grid gap-2">
                 <Label>Data bindings</Label>
-                <ChipListInput values={editBindings} onChange={setEditBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} />
+                <ChipListInput values={editBindings} onChange={setEditBindings} placeholder="e.g. page_data.extra.variant" ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
+                {observedSourceColumns.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+                    <span>Observed at:</span>
+                    {observedSourceColumns.map((column) => (
+                      <code key={column} className="rounded bg-muted px-1 font-mono">{column}</code>
+                    ))}
+                  </div>
+                )}
+                {/* Deliberately not "you can leave this empty", which is true of
+                    creation and misleading here: emptying a binding a scan filled
+                    in makes the row read as hand-owned to `_human_claim`, and it
+                    is then exempt from the retirement sweep for good. */}
+                <p className="text-[11px] text-muted-foreground">Needed only where the warehouse column or JSON path is spelled differently from the name; otherwise scans match on the name. A binding a scan filled in is how it keeps finding this variable — removing it marks the variable as yours, and retirement stops considering it.</p>
               </div>
               {editingVar && driftItems.length > 0 && (
                 <div className={activeDrifts.length > 0 ? 'rounded-md border border-warning/40 bg-warning-soft p-3' : 'rounded-md border bg-muted/30 p-3'}>
@@ -952,8 +979,22 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
               )}
               {editingVar && (
                 <div className="rounded-md border bg-muted/30 p-3">
-                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Observed values
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Observed values
+                    </div>
+                    {/* Sits with the thing it clears. Deleting the variable was
+                        the only reset available, and it takes everything else
+                        on the row with it (tripl-h2sx.21). */}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      disabled={(editingVar.context_count ?? 0) === 0 || clearValuesMut.isPending}
+                      onClick={() => handleClearValues(editingVar)}
+                    >
+                      Clear observed values
+                    </Button>
                   </div>
                   <div className="max-h-72 overflow-auto rounded border bg-background">
                     <Table>
@@ -962,8 +1003,13 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                           <TableHead>Variable</TableHead>
                           <TableHead>Type</TableHead>
                           <TableHead>Event</TableHead>
+                          {/* The two scan-derived facts sit together — which
+                              event, which warehouse path — ahead of the three
+                              columns that only echo the form above. */}
+                          <TableHead>Source</TableHead>
                           <TableHead>Description</TableHead>
                           <TableHead>Possible values</TableHead>
+                          <TableHead>Last refreshed</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -972,6 +1018,11 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                             <TableCell className="font-mono text-xs">{editVarName || '—'}</TableCell>
                             <TableCell className="text-xs">{typeLabels[editVarType]}</TableCell>
                             <TableCell className="text-xs">{row.eventName}</TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {row.sourceColumn
+                                ? <span title={row.sourceColumn}>{row.sourceColumn}</span>
+                                : <span className="text-muted-foreground">—</span>}
+                            </TableCell>
                             <TableCell className="text-xs text-muted-foreground">{editDescription || '—'}</TableCell>
                             <TableCell className="text-xs">
                               {row.values.length > 0 ? (
@@ -988,6 +1039,9 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                               ) : (
                                 <span className="text-muted-foreground">—</span>
                               )}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {(row.updatedAt && formatDateTime(row.updatedAt)) || '—'}
                             </TableCell>
                           </TableRow>
                         ))}

@@ -101,7 +101,7 @@ export type EventsTableProps = {
   expandedCell: string | null
   eventWindowMetricsByEvent: Map<string, EventWindowMetrics>
   eventRowSignals: Map<string, MonitoringSignal>
-  metaValuesByEvent: Map<string, Map<string, string>>
+  metaValuesByEvent: Map<string, Map<string, string[]>>
   eventTypesById: Map<string, EventTypeBrief>
   slug: string
   selectedSet: Set<string>

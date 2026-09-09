@@ -270,8 +270,13 @@ def generate_events(
     # actually rewrote. Only those can invalidate an existing variable context.
     rewritten_fields: set[tuple[uuid.UUID, uuid.UUID]] = set()
 
+    # ``(event identity, column)`` -> the distinct values this run saw for it.
+    # More than one means breakdown rows collapsed and all but one value was
+    # discarded; the run summary says so rather than leaving it silent.
+    values_seen: dict[tuple[str, str], set[str]] = {}
+
     # Materialise the plan — one planned entry per breakdown row.
-    for planned in plan.events:
+    for planned in _rows_most_frequent_last(plan.events):
         if result.events_created >= max_events:
             result.details.append(f"Reached max_events limit ({max_events})")
             break
@@ -289,6 +294,8 @@ def generate_events(
             (fd_id, col_name, _normalize_variable_tokens(value, variable_index))
             for fd_id, col_name, value in planned.field_values
         ]
+        for _, col_name, value in field_values:
+            values_seen.setdefault((event_name, col_name), set()).add(value)
 
         existing = existing_by_identity.get(event_name)
         if existing is None:
@@ -344,6 +351,28 @@ def generate_events(
             index=variable_index,
         )
         result.events_skipped += 1
+
+    # An event keeps one value per field, so a collapse throws the rest away.
+    # Before this the run said nothing about it, and the reader had no way to
+    # know that eleven other screens had been observed for the same event.
+    collapsed = sorted(
+        (
+            (event_name, col_name, len(values))
+            for (event_name, col_name), values in values_seen.items()
+            if len(values) > 1
+        ),
+        key=lambda item: (-item[2], item[0], item[1]),
+    )
+    if collapsed:
+        sample = "; ".join(
+            f"{event_name}.{col_name} ({count} values)"
+            for event_name, col_name, count in collapsed[:3]
+        )
+        more = "" if len(collapsed) <= 3 else f", and {len(collapsed) - 3} more"
+        result.details.append(
+            f"{len(collapsed)} field(s) saw more than one value across collapsing rows; "
+            f"the busiest row won: {sample}{more}"
+        )
 
     result.events_merged += _merge_existing_grouped_events(
         session,
@@ -415,6 +444,37 @@ def generate_events(
         k for k, v in existing_by_identity.items() if v.status == EventStatus.archived
     }
     return result
+
+
+def _rows_most_frequent_last(events: Sequence[PlannedEvent]) -> list[PlannedEvent]:
+    """Order planned rows so the busiest row of each identity is written last.
+
+    ``plan_events`` emits one entry per breakdown row and leaves collapsing to
+    the caller, and ``_upsert_field_values`` keeps exactly one value per field,
+    overwriting on every later row. Every adapter returns rows ``ORDER BY _cnt
+    DESC``, so the value that survived a collapse used to come from the LAST row
+    processed — the *least* frequent combination the event fired on. That is not
+    merely arbitrary: it is anti-correlated with traffic, so an event advertised
+    the rarest screen it was ever seen on, which is what a windbar tap on a spot
+    reading ``purchase/main`` turned out to be.
+
+    ``row_count`` was already computed for every row and read by the dry run;
+    the real run simply never looked at it. Identities keep their
+    first-appearance order, so creation order and ``next_event_order`` are
+    unchanged — only the rows within one identity are re-ordered, ascending, so
+    the busiest is applied last and wins. A row with no count sorts first: a
+    known count is a better answer than no answer.
+    """
+    first_seen: dict[str, int] = {}
+    for planned in events:
+        first_seen.setdefault(planned.name, len(first_seen))
+    return sorted(
+        events,
+        key=lambda planned: (
+            first_seen[planned.name],
+            -1 if planned.row_count is None else planned.row_count,
+        ),
+    )
 
 
 def _upsert_field_values(

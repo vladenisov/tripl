@@ -247,6 +247,128 @@ async def _rename_main_variables(
         variable.name = new_name
 
 
+def _photo_identity(photo: EventPhoto) -> tuple[object, ...]:
+    """What makes two attachment rows the same attachment across a branch.
+
+    Branch creation copies every one of these verbatim — ``storage_key``
+    included, since no blob is duplicated — so a photo and its branch twin agree
+    on all of them and on nothing else: the ids differ by construction, and
+    ``created_at`` is when the copy was made. ``sort_order`` is deliberately
+    absent, so that re-ordering a canvas on a branch is a move rather than a
+    delete-and-replace.
+    """
+    return (
+        photo.kind,
+        photo.original_filename,
+        photo.content_type,
+        photo.size_bytes,
+        photo.external_url,
+        photo.storage_backend,
+        photo.storage_key,
+    )
+
+
+def _comment_thread_in_order(
+    rows: Sequence[EventPhotoComment],
+) -> list[tuple[EventPhotoComment, tuple[object, ...]]]:
+    """The thread parent-first, each row paired with a content key.
+
+    The key answers "is this the same comment?" the way the plan snapshot does —
+    by who wrote it and what it says, plus where it hangs — with an occurrence
+    number so that saying the same thing twice under one parent stays two
+    comments. Parent-first order lets a caller insert a reply after the comment
+    it answers, which is what the self-FK needs.
+    """
+    by_parent: dict[uuid.UUID | None, list[EventPhotoComment]] = {}
+    known = {row.id for row in rows}
+    for row in rows:
+        # A parent outside this photo's thread cannot be reached by the walk, so
+        # treat its child as top-level rather than dropping it silently.
+        parent_id = row.parent_id if row.parent_id in known else None
+        by_parent.setdefault(parent_id, []).append(row)
+
+    ordered: list[tuple[EventPhotoComment, tuple[object, ...]]] = []
+
+    def walk(parent_id: uuid.UUID | None, parent_key: tuple[object, ...]) -> None:
+        seen: dict[tuple[object, ...], int] = {}
+        siblings = sorted(by_parent.get(parent_id, []), key=lambda item: (item.created_at, item.id))
+        for row in siblings:
+            body_key = (parent_key, row.user_id, row.body)
+            occurrence = seen.get(body_key, 0)
+            seen[body_key] = occurrence + 1
+            key = (*body_key, occurrence)
+            ordered.append((row, key))
+            walk(row.id, key)
+
+    walk(None, ())
+    return ordered
+
+
+async def _merge_photo_comments(
+    session: AsyncSession,
+    *,
+    target_photo_id: uuid.UUID,
+    source_photo_id: uuid.UUID,
+) -> None:
+    """Add the source thread's comments to the target, keeping the target's.
+
+    A merge used to hand main the branch's discussion and nothing else, because
+    it replaced the photo rows outright. Both sides are real: the branch author
+    commented while working, and whoever was reading main commented while they
+    did. Neither is a draft of the other, so the merge takes the union and drops
+    only exact repeats of a comment the target already holds.
+    """
+    target_rows = list(
+        (
+            await session.execute(
+                select(EventPhotoComment).where(EventPhotoComment.photo_id == target_photo_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    source_rows = list(
+        (
+            await session.execute(
+                select(EventPhotoComment).where(EventPhotoComment.photo_id == source_photo_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not source_rows:
+        return
+
+    target_id_by_key = {key: row.id for row, key in _comment_thread_in_order(target_rows)}
+    inserted_id_by_source_id: dict[uuid.UUID, uuid.UUID] = {}
+    source_key_by_id = {row.id: key for row, key in _comment_thread_in_order(source_rows)}
+    for row, key in _comment_thread_in_order(source_rows):
+        if key in target_id_by_key:
+            continue
+        parent_id: uuid.UUID | None = None
+        if row.parent_id is not None:
+            # The parent is either a comment this call just carried over, or one
+            # the target already had under the same key.
+            parent_key = source_key_by_id.get(row.parent_id)
+            parent_id = inserted_id_by_source_id.get(row.parent_id) or (
+                target_id_by_key.get(parent_key) if parent_key is not None else None
+            )
+        new_id = uuid.uuid4()
+        inserted_id_by_source_id[row.id] = new_id
+        session.add(
+            EventPhotoComment(
+                id=new_id,
+                photo_id=target_photo_id,
+                parent_id=parent_id,
+                user_id=row.user_id,
+                body=row.body,
+            )
+        )
+        # A later reply keyed under this comment must find it.
+        target_id_by_key[key] = new_id
+    await session.flush()
+
+
 async def _apply_merge(
     session: AsyncSession,
     project_id: uuid.UUID,
@@ -480,6 +602,7 @@ async def _apply_merge(
         "display_name",
         "field_type",
         "is_required",
+        "allow_multiple",
         "enum_options",
         "default_value",
         "link_template",
@@ -508,6 +631,7 @@ async def _apply_merge(
                     display_name=b_mf.display_name,
                     field_type=b_mf.field_type,
                     is_required=b_mf.is_required,
+                    allow_multiple=b_mf.allow_multiple,
                     enum_options=list(b_mf.enum_options) if b_mf.enum_options else None,
                     default_value=b_mf.default_value,
                     link_template=b_mf.link_template,
@@ -672,6 +796,7 @@ async def _apply_merge(
         (event["event_type_name"], event["name"]): event
         for event in (base_payload or {}).get("events", [])
     }
+    created_event_by_key: dict[tuple[str, str], Event] = {}
     branch_event_snapshot_by_key = {
         (event["event_type_name"], event["name"]): event
         for event in branch_snapshot_payload.get("events", [])
@@ -790,25 +915,28 @@ async def _apply_merge(
             if key in base_event_by_key or et_name not in main_et_name_to_id:
                 continue
             new_ev_id = uuid.uuid4()
-            session.add(
-                Event(
-                    id=new_ev_id,
-                    project_id=project_id,
-                    branch_id=main_branch_id,
-                    event_type_id=main_et_name_to_id[et_name],
-                    name=b_ev.name,
-                    title=b_ev.title,
-                    source_name=b_ev.source_name,
-                    description=b_ev.description,
-                    order=b_ev.order,
-                    status=b_ev.status,
-                    sunset_at=b_ev.sunset_at,
-                    last_seen_at=b_ev.last_seen_at,
-                    metric_breakdown_columns=list(b_ev.metric_breakdown_columns or []),
-                    owner_id=b_ev.owner_id,
-                    reviewed=b_ev.reviewed,
-                )
+            created_event = Event(
+                id=new_ev_id,
+                project_id=project_id,
+                branch_id=main_branch_id,
+                event_type_id=main_et_name_to_id[et_name],
+                name=b_ev.name,
+                title=b_ev.title,
+                source_name=b_ev.source_name,
+                description=b_ev.description,
+                order=b_ev.order,
+                status=b_ev.status,
+                sunset_at=b_ev.sunset_at,
+                last_seen_at=b_ev.last_seen_at,
+                metric_breakdown_columns=list(b_ev.metric_breakdown_columns or []),
+                owner_id=b_ev.owner_id,
+                reviewed=b_ev.reviewed,
+                # superseded_by_event_id is deliberately absent: the value on
+                # the branch row is a BRANCH event id, meaningless on main.
+                # The translating pass after the flush below sets it.
             )
+            session.add(created_event)
+            created_event_by_key[key] = created_event
             for fv in b_ev.field_values:
                 bf_et, bf_name = branch_field_by_id[fv.field_definition_id]
                 session.add(
@@ -849,6 +977,44 @@ async def _apply_merge(
         await session.delete(m_ev)
     await session.flush()
 
+    # The successor pointer, translated rather than copied. `event_attrs` above
+    # copies raw ORM values, which for this column would write a BRANCH event id
+    # onto a main row; the snapshot carries the successor as a natural key for
+    # exactly that reason, so the branch's own pointer is re-resolved against
+    # main here. It runs after the flush because a successor may be an event
+    # this very merge created, and because the FK is immediate.
+    branch_event_key_by_id = {
+        e.id: (branch_et_id_to_name[e.event_type_id], e.name)
+        for e in branch_events
+        if e.event_type_id in branch_et_id_to_name
+    }
+    for key, b_ev in branch_event_by_key.items():
+        target = main_event_by_key.get(key) or created_event_by_key.get(key)
+        if target is None:
+            continue
+        base_event = base_event_by_key.get(key)
+        snapshot = branch_event_snapshot_by_key.get(key, {})
+        # Untouched on the branch: leave main's own answer alone, the same
+        # three-way rule every attribute above follows.
+        if base_event is not None and snapshot.get("superseded_by") == base_event.get(
+            "superseded_by"
+        ):
+            continue
+        successor_key = (
+            branch_event_key_by_id.get(b_ev.superseded_by_event_id)
+            if b_ev.superseded_by_event_id is not None
+            else None
+        )
+        successor = (
+            (main_event_by_key.get(successor_key) or created_event_by_key.get(successor_key))
+            if successor_key is not None
+            else None
+        )
+        # A successor the merge cannot place on main clears the pointer rather
+        # than leaving a branch id behind: "replaced by something that is not
+        # here" is not a fact worth keeping.
+        target.superseded_by_event_id = successor.id if successor is not None else None
+
     # --- photos + comments: replace only when the branch's design canvas
     # changed from the base. storage_key/external_url is reused — no blob copies.
     # Bulk delete via session.execute(delete(...)) is intentional: it bypasses
@@ -881,9 +1047,6 @@ async def _apply_merge(
             "photos"
         ):
             continue
-        await session.execute(delete(EventPhoto).where(EventPhoto.event_id == main_ev_id))
-        await session.flush()
-
         branch_photos = list(
             (
                 await session.execute(
@@ -895,10 +1058,48 @@ async def _apply_merge(
             .scalars()
             .all()
         )
-        photo_id_map: dict[uuid.UUID, uuid.UUID] = {}
+        main_photos = list(
+            (
+                await session.execute(
+                    select(EventPhoto)
+                    .where(EventPhoto.event_id == main_ev_id)
+                    .order_by(EventPhoto.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Pair the two sides up by what each attachment IS, rather than
+        # replacing main's whole canvas. The snapshot subtree this block is
+        # gated on nests every photo's comments inside it, so one comment
+        # written on the branch made all of main's photos look changed: they
+        # were dropped, taking `event_photo_comments` with them through the FK
+        # cascade, and anything holding a photo id was left pointing at nothing
+        # (tripl-h2sx.28).
+        unmatched_main: dict[tuple[object, ...], list[EventPhoto]] = {}
+        for m_ph in main_photos:
+            unmatched_main.setdefault(_photo_identity(m_ph), []).append(m_ph)
+        kept_pairs: list[tuple[EventPhoto, EventPhoto]] = []
+        added_pairs: list[tuple[uuid.UUID, EventPhoto]] = []
         for bp in branch_photos:
-            new_ph_id = uuid.uuid4()
-            photo_id_map[bp.id] = new_ph_id
+            twins = unmatched_main.get(_photo_identity(bp))
+            if twins:
+                kept_pairs.append((twins.pop(0), bp))
+            else:
+                added_pairs.append((uuid.uuid4(), bp))
+
+        doomed_photo_ids = [m_ph.id for twins in unmatched_main.values() for m_ph in twins]
+        if doomed_photo_ids:
+            await session.execute(delete(EventPhoto).where(EventPhoto.id.in_(doomed_photo_ids)))
+            await session.flush()
+
+        for main_photo, bp in kept_pairs:
+            # Position is the one thing a matched pair may disagree on: it is
+            # left out of the identity so that re-ordering a canvas on a branch
+            # does not read as "different attachment" and take the discussion
+            # down with it.
+            main_photo.sort_order = bp.sort_order
+        for new_ph_id, bp in added_pairs:
             session.add(
                 EventPhoto(
                     id=new_ph_id,
@@ -916,34 +1117,17 @@ async def _apply_merge(
                 )
             )
         await session.flush()
-        if photo_id_map:
-            branch_comments = list(
-                (
-                    await session.execute(
-                        select(EventPhotoComment)
-                        .where(EventPhotoComment.photo_id.in_(list(photo_id_map.keys())))
-                        .order_by(EventPhotoComment.created_at.asc())
-                    )
-                )
-                .scalars()
-                .all()
+
+        for target_photo_id, source_photo in [
+            *((main_photo.id, bp) for main_photo, bp in kept_pairs),
+            *((new_ph_id, bp) for new_ph_id, bp in added_pairs),
+        ]:
+            await _merge_photo_comments(
+                session,
+                target_photo_id=target_photo_id,
+                source_photo_id=source_photo.id,
             )
-            comment_id_map: dict[uuid.UUID, uuid.UUID] = {}
-            for bc in branch_comments:
-                new_c_id = uuid.uuid4()
-                comment_id_map[bc.id] = new_c_id
-                session.add(
-                    EventPhotoComment(
-                        id=new_c_id,
-                        photo_id=photo_id_map[bc.photo_id],
-                        parent_id=(
-                            comment_id_map.get(bc.parent_id) if bc.parent_id is not None else None
-                        ),
-                        user_id=bc.user_id,
-                        body=bc.body,
-                    )
-                )
-            await session.flush()
+        await session.flush()
 
     # --- variable event value overrides: replace only for variables whose
     # branch-side override map changed from the base.

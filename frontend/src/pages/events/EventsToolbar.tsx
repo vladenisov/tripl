@@ -34,6 +34,8 @@ export function EventsToolbar({
   onFilterSilentDaysChange,
   filterReviewed,
   onFilterReviewedChange,
+  filterOpenQuestions,
+  onFilterOpenQuestionsChange,
   sortOrder,
   onSortOrderChange,
   hasActiveFilters,
@@ -70,6 +72,10 @@ export function EventsToolbar({
   /** `undefined` = any; true/false isolate reviewed / still-unreviewed rows. */
   filterReviewed: boolean | undefined
   onFilterReviewedChange: (value: boolean | undefined) => void
+  /** `undefined` = any; true/false isolate events with / without an unanswered
+   *  discussion thread. */
+  filterOpenQuestions: boolean | undefined
+  onFilterOpenQuestionsChange: (value: boolean | undefined) => void
   sortOrder: EventsSortOrder
   onSortOrderChange: (value: EventsSortOrder) => void
   hasActiveFilters: boolean
@@ -180,6 +186,27 @@ export function EventsToolbar({
             <SelectItem value="__all__">Any</SelectItem>
             <SelectItem value="true">Reviewed</SelectItem>
             <SelectItem value="false">Not reviewed</SelectItem>
+          </SelectContent>
+        </Select>
+        {/* The discussion (tripl-h2sx.25) gave events a place to raise a
+            question; until threads could be resolved there was no way to ask
+            which events are still waiting on one (tripl-h2sx.26). Server-side,
+            like every filter here, so it sees the whole catalog and not one
+            loaded page — and twin-aware, so it answers on a branch too. */}
+        <Select
+          value={filterOpenQuestions === undefined ? '__all__' : String(filterOpenQuestions)}
+          onValueChange={value =>
+            onFilterOpenQuestionsChange(value === '__all__' ? undefined : value === 'true')
+          }
+        >
+          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Open questions filter">
+            <span style={{ color: 'var(--fg-subtle)' }}>Questions</span>
+            <SelectValue placeholder="any" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">Any</SelectItem>
+            <SelectItem value="true">Open questions</SelectItem>
+            <SelectItem value="false">Nothing open</SelectItem>
           </SelectContent>
         </Select>
         <Select

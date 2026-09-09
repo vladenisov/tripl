@@ -195,13 +195,13 @@ function appVersionAdoptionResponse(scanConfigId: string) {
   }
 }
 
-function renderMonitoringPage() {
+function renderMonitoringPage(search = '') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/monitoring/project-total/scan-1']}>
+      <MemoryRouter initialEntries={[`/p/demo/monitoring/project-total/scan-1${search}`]}>
         <Routes>
           <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
         </Routes>
@@ -563,11 +563,11 @@ function eventFixture() {
   }
 }
 
-function renderEventDetail() {
+function renderEventDetail(search = '') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/monitoring/event/event-1']}>
+      <MemoryRouter initialEntries={[`/p/demo/monitoring/event/event-1${search}`]}>
         <Routes>
           <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
           <Route path="/p/:slug/events/:tab/:eventId/edit" element={<div>edit-page</div>} />
@@ -688,6 +688,10 @@ function installEventDetailFetch(
     event?: Record<string, unknown>
     breakdowns?: Record<string, unknown>
     latestSignal?: Record<string, unknown> | null
+    tickets?: Record<string, unknown>[]
+    /** The event `superseded_by_event_id` points at. `null` answers 404, the
+     *  same as a successor the reader cannot see. */
+    successor?: Record<string, unknown> | null
   } = {},
 ) {
   const metricsData = opts.metricsData ?? [metricPoint('2026-01-02T00:00:00Z', 200)]
@@ -724,7 +728,15 @@ function installEventDetailFetch(
       })
     }
     if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
+    if (url.includes('/api/v1/projects/demo/events/event-1/implementation-tickets')) {
+      return mockJsonResponse(opts.tickets ?? [])
+    }
     if (url.endsWith('/api/v1/projects/demo/events/event-1')) return mockJsonResponse(event)
+    if (url.endsWith('/api/v1/projects/demo/events/event-2')) {
+      return opts.successor
+        ? mockJsonResponse(opts.successor)
+        : new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } })
+    }
     if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
       return mockJsonResponse({ id: 'scan-1', app_version_column: null })
     }
@@ -1175,6 +1187,42 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
       .getByText('First seen')
       .closest('[role="row"]') as HTMLElement
     expect(within(firstSeen).getByText('—')).toBeInTheDocument()
+  })
+
+  it('names the successor, and links to it, once one is set (tripl-h2sx.13)', async () => {
+    installEventDetailFetch({
+      event: { ...eventFixture(), superseded_by_event_id: 'event-2' },
+      successor: { ...eventFixture(), id: 'event-2', name: 'checkout_finished' },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    const link = await within(properties).findByRole('link', { name: 'checkout_finished' })
+    expect(link).toHaveAttribute('href', '/p/demo/monitoring/event/event-2')
+  })
+
+  it('falls back to the successor id when the successor cannot be read', async () => {
+    // A link to a name we do not have is worse than the id: the id is at least
+    // something the reader can look up.
+    installEventDetailFetch({
+      event: { ...eventFixture(), superseded_by_event_id: 'event-2' },
+      successor: null,
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    expect(await within(properties).findByText('event-2')).toBeInTheDocument()
+    expect(within(properties).queryByRole('link')).toBeNull()
+  })
+
+  it('says nothing about a replacement when none is named', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.queryByText('Replaced by')).not.toBeInTheDocument()
   })
 
   it('names an owner the roster cannot resolve as unknown, not as still loading', async () => {
@@ -1851,5 +1899,101 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       expect(callouts()).toHaveLength(0)
       expect(screen.queryByText(COLLECT_INSTRUCTION)).not.toBeInTheDocument()
     })
+  })
+})
+
+describe('MonitoringDetailPage deep links (tripl-h2sx.20)', () => {
+  it('opens the tab and the breakdown column the link names', async () => {
+    const fetchSpy = installEventDetailFetch({
+      breakdowns: {
+        event_id: 'event-1',
+        scan_config_id: 'scan-1',
+        interval: '1h',
+        columns: ['platform', 'screen'],
+        selected_column: 'screen',
+        series: [
+          {
+            breakdown_value: 'spot',
+            is_other: false,
+            total_count: 12000,
+            data: [metricPoint('2026-01-02T00:00:00Z', 12000)],
+            parity_anomalies: [],
+          },
+        ],
+      },
+    })
+    renderEventDetail('?tab=breakdowns&column=screen')
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    // No click: the link IS the navigation, which is the whole point of
+    // pointing a field value at the split that answers for it.
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Breakdowns/i })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    )
+    await waitFor(() =>
+      expect(
+        fetchSpy.mock.calls.some(([input]) => {
+          const url = String(input)
+          return url.includes('/events/event-1/metrics/breakdowns') && url.includes('column=screen')
+        }),
+      ).toBe(true),
+    )
+  })
+
+  it('falls back to volume when the link names a tab this scope has no trigger for', async () => {
+    // The scan carries no app_version_column, so there is no "By version" tab
+    // to land on. Before the URL could pick a tab only `versions` needed this
+    // guard; now any of the five can be asked for by a stale or hand-edited
+    // link, and a value with no trigger leaves the reader on a blank page.
+    installEventDetailFetch()
+    renderEventDetail('?tab=versions')
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.queryByRole('tab', { name: /By version/i })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('tab')[0]).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
+describe('Event implementation tickets (tripl-h2sx.32)', () => {
+  const TICKET = {
+    id: 'ticket-1',
+    project_id: 'p-1',
+    branch_id: 'branch-1',
+    tracker_type: 'jira',
+    external_id: '10042',
+    external_key: 'ENG-42',
+    external_url: 'https://example.atlassian.net/browse/ENG-42',
+    status: 'open',
+    summary: 'Implement checkout-v2',
+    event_ids: ['event-1'],
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    closed_at: null,
+  }
+
+  it('links every ticket that named the event', async () => {
+    installEventDetailFetch({ tickets: [TICKET, { ...TICKET, id: 'ticket-2', external_key: 'ENG-9', status: 'closed' }] })
+    renderEventDetail()
+
+    expect(await screen.findByText('Implementation tickets')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /ENG-42/ })).toHaveAttribute(
+      'href',
+      'https://example.atlassian.net/browse/ENG-42',
+    )
+    expect(screen.getByRole('link', { name: /ENG-9/ })).toBeInTheDocument()
+    expect(screen.getByText('Done')).toBeInTheDocument()
+  })
+
+  it('shows no card at all when nothing named the event', async () => {
+    // Hidden, not empty: rows exist only where the tracker is on and a branch
+    // merged, so an empty card would be noise on nearly every event.
+    installEventDetailFetch({ tickets: [] })
+    renderEventDetail()
+
+    await screen.findByText('Metric breakdowns')
+    expect(screen.queryByText('Implementation tickets')).not.toBeInTheDocument()
   })
 })

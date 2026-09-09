@@ -30,6 +30,15 @@ class MetaFieldDefinition(UUIDMixin, Base):
     display_name: Mapped[str] = mapped_column(String(255))
     field_type: Mapped[str] = mapped_column(db_enum(MetaFieldType, "meta_field_type"))
     is_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    # An event may carry several values for this field, the way it carries
+    # several tags. "One Jira key per event" was never a decision anyone made
+    # about tickets — it fell out of ``uq_event_meta_value_event_meta``, and an
+    # event updated in a second task had nowhere to put the second key
+    # (tripl-h2sx.31). Orthogonal to ``field_type`` so a url or enum field can
+    # be multi-valued too; ``default_value`` stays one value, the first entry.
+    allow_multiple: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=sa.false(), nullable=False
+    )
     enum_options: Mapped[list[str] | None] = mapped_column(sa.JSON, nullable=True)
     default_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     link_template: Mapped[str | None] = mapped_column(Text, nullable=True)

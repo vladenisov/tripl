@@ -98,7 +98,7 @@ identity; **Description** — with a
 **Suggest with AI** action that appears when editing an existing event and AI is
 enabled; **Status** — one of `draft`, `in_review`, `ready_for_dev`,
 `implemented`, `live`, `deprecated`, `archived` (selecting `deprecated` reveals a
-**Sunset date**); **Owner** — a project member, or none, the same value the
+**Sunset date** and, when editing an existing event, **Replaced by**); **Owner** — a project member, or none, the same value the
 list's bulk bar sets; **Tags**; **Metric breakdowns** (the selected type's scalar
 fields and the columns this project's scans collect — `platform`, the app
 version column and any configured breakdown column — plus any other warehouse
@@ -109,6 +109,37 @@ fields that validates and saves canonical JSON while preserving complete
 For a series of similar events, **Save and add another** creates the current
 event, says what it created, and keeps the entered form values in place for the
 next one — change what differs and save again.
+
+#### Retiring an event
+
+Setting the status to `deprecated` reveals two fields that together answer what a
+reader of a retired event needs to know: **Sunset date** — when it stops being
+supported — and **Replaced by** — what to send instead. The replacement is picked
+from a searchable list of the project's other events; the search runs on the
+server, so any event in the catalog is reachable by typing part of its name, and
+the picker prints how many matches it is not showing rather than quietly
+truncating. An event cannot replace itself.
+
+**Replaced by is documentation and nothing else.** No scan matches through it, no
+collection follows it, and no coverage or metric counts the successor's traffic
+towards the retired event. It exists so the catalog answers the question a
+sunset date raises and does not answer.
+
+It is offered only when editing an existing event — a brand-new event has no
+predecessor to name — and it is cleared, along with the sunset date, if the event
+later leaves `deprecated`: a successor left on a live event would document a
+retirement that was called off. The change is recorded in the event's own history
+like any other tracked field.
+
+On a **plan branch** the pointer is branch-local, like every other id in a
+branch copy. Opening a branch copies the successor relationship onto the
+branch's own events, so a branch's retired event points at the branch's copy of
+its replacement, never back at `main`. Merging translates it the other way, onto
+`main`'s rows, by event type and name — so naming a successor *and* creating it
+on the same branch works, and `main` ends up pointing at its own copy. If the
+branch's successor cannot be placed on `main` (it was deleted, or the branch
+change was rejected), the pointer is cleared rather than left dangling. Deleting
+the successor never deletes its predecessor; it only clears the pointer.
 
 #### Names a scan writes for you
 
@@ -204,6 +235,68 @@ project-wide; each event carries a meta value per meta field. Tags are free-form
 labels (lower-cased) used for filtering. Field and meta values accept variable
 references (`${variable}`), and `url`/`date`/`json` field types render
 type-appropriate inputs.
+
+**Who owns a field value.** A scan fills field values in from what it observes
+and keeps them up to date. The moment you type over one, it is yours: scans stop
+touching that field, permanently, and the form says so under the box. To hand it
+back, use **Hand back to scans** — that empties the box, and the next scan fills
+it in again from live data. Clearing a field and correcting it therefore do
+opposite things, which is worth knowing when a value looks wrong: correcting it
+freezes your answer, clearing it asks for a fresh one.
+
+**Seeing what else a field holds.** An event carries one value per field, so a
+scanned value is one out of however many the event actually fires with. Under
+each field, **Split volume by this field** adds that column to the event's
+metric breakdowns; once collection has data for it, **See every value this field
+takes** opens the event's **Breakdowns** tab on that column, with a series and a
+count per value.
+
+### Event discussion
+
+**Where:** under the form on an event's edit page (Plan › Events → open an
+event → **Edit**). It appears once the event exists — there is nothing to
+discuss before that.
+
+A threaded **Discussion** (top-level comments plus replies) for the questions
+an event raises: "should this fire on cancel too?", "waiting on design". It is
+deliberately **not** part of the plan. Title and Description describe the event
+and travel with it — into search, the catalog, the branch diff, the approval
+hash, and the Markdown spec pasted into the implementation ticket — so a
+question written there arrives as if it were part of the specification. Nothing
+written in the discussion goes to any of those places.
+
+Every comment shows who wrote it and when, and replies nest under the comment
+they answer. The same thread powers the notes on an individual attachment and
+the review comments on a branch, so all three read and behave alike.
+
+An event has **one** discussion. Open the event on a branch and you see and add
+to the same thread as on main, so a question raised while drafting a change is
+answerable by whoever is reading the live plan, and merging the branch neither
+duplicates nor loses it.
+
+#### Closing a question
+
+Each top-level comment carries a resolution state, so a thread can end:
+**resolve** it when it is answered, **snooze** it for a week when the answer is
+not due yet, or **reopen** one that was closed too early. A snooze that has
+lapsed counts as open again — the state is worked out when the thread is read,
+not written back by a background job, so it is never briefly wrong.
+
+Resolution belongs to the **thread**, not to individual replies: a three-reply
+conversation is one question, and only the top-level comment carries the
+control. Reopening clears the resolution note along with the state, because a
+reopened question has no resolution any more.
+
+The events list can then be filtered by **Questions** — *Open questions* or
+*Nothing open* — beside the Status, Silent and Reviewed filters. It is a
+server-side filter over the whole catalog, not a narrowing of the loaded page,
+and it is branch-aware: because an event has one discussion living on its main
+row, a branch listing answers about the same threads main does. A row with an
+unanswered thread carries a small `?n` marker beside its name, so the list can
+say why it matched.
+
+The **photo** threads and the **branch review** threads have no resolution
+state; only the event discussion does.
 
 ### Event photos & specs
 
@@ -301,6 +394,16 @@ strips the template's fixed text before saving — the server does the same to
 whatever a client sends — so `https://tracker.example.com/browse/TRK-42` is
 stored as `TRK-42` and rendered back as the link. The field's caption shows an
 example of what to paste.
+
+**Several values on one event.** Tick **Multiple values** on a `string`, `url`,
+or `enum` meta field and the event form gives it a chip input instead of a
+single box — one event picked up in two tickets holds both keys, and each is a
+link of its own. `boolean` and `date` fields are not offered the option: a
+second value there is a contradiction, not a list. Repeats of the same value
+are dropped.
+
+Turning the option back off leaves values already stored on their events; the
+form then shows the first one, and the next save of that event keeps only it.
 
 ### Variables
 
@@ -439,6 +542,17 @@ same list from
 read-only (tickets are written by the merge and sync workers) and open to any
 authenticated user, and answers `404` for a branch that belongs to another
 project.
+
+An **event** sees the same rows from its own side. One ticket covers one
+branch, and it records which events that branch touched, so an event carried by
+three merged branches is named by three tickets — its detail page lists all of
+them under **Implementation tickets**, newest work included, with the same
+links and status chips. It is history, not the editable field: the panel is
+hidden when nothing has named the event, and it never replaces a ticket key you
+type into a meta field yourself. A branch copy of an event shows its main
+counterpart's history, since the ticket names the event rather than one copy of
+it. The list is at
+`GET /api/v1/projects/{slug}/events/{event_id}/implementation-tickets`.
 
 ### Plan rules
 
@@ -834,6 +948,32 @@ its **run summary** reports how many archived identities were seen and how many
 rows they carried, deliberately kept off the data-match percentage rather than
 folded into it. Its volume also still appears in the event type's volume series.
 
+**One event for a family of legacy names.** A legacy event whose name varies in
+its tail — `profile_click_boat`, `profile_click_kite`, `profile_click_fish` — is
+one concept in the plan and many identities in the warehouse. Two things look
+like they should join them up, and neither does:
+
+- **Scan identity is derived, never authored.** The server stamps it from the
+  governing scan rule. There is no box to type a second name into, so leaving one
+  "empty" is not a choice you have.
+- **A `${variable}` in a name-forming field is stored literally.** The event form
+  validates the token and offers its documented values, but the naming rule
+  substitutes `{column}` only — so `profile_click_${forecast_profile}` becomes an
+  identity that matches nothing at all. The form now says so next to the field.
+
+What does join them up is an **event group rule**, under
+Settings › Scans › *Event names and grouping*:
+
+| Field | Pattern | Group name |
+| --- | --- | --- |
+| `__event_name` | `^profile_click_` | `profile_click` |
+
+The rule rewrites the derived name before the plan is matched, so every future
+scan files the whole family under one event. It also works backwards: **Apply
+event groups** on the scan folds catalog events that already exist into the
+survivor, carrying over everything listed below. `__event_name` and
+`event_name` both name the event's identity and behave the same.
+
 **What a group merge carries over.** When a group rule folds several events into
 one, the survivor inherits the settings that pointed at the events it absorbed,
 so a merge does not quietly undo work you did:
@@ -1204,7 +1344,7 @@ log answers **who, what, when and on which branch**, and it survives the event:
 an `event.delete` row still names what was deleted after the event and its
 history are gone. **Per-event history** on the event's own detail page answers
 the **before/after values** of `status`, `name`, `title`, `description` and
-`sunset_at`, of `tags`, and of each field value (`field:<name>`) and meta value
+`sunset_at`, `superseded_by_event_id`, of `tags`, and of each field value (`field:<name>`) and meta value
 (`meta:<name>`), opening with a `created` row that names who created the event
 and when; it is removed with the event. Neither is a backup — an `event.delete` row
 does not let you reconstruct the deleted event's field values, deliberately, as

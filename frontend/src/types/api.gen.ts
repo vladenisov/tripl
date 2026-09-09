@@ -1662,6 +1662,65 @@ export interface paths {
         patch: operations["update_event_api_v1_projects__slug__events__event_id__patch"];
         trace?: never;
     };
+    "/api/v1/projects/{slug}/events/{event_id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Event Comments */
+        get: operations["list_event_comments_api_v1_projects__slug__events__event_id__comments_get"];
+        put?: never;
+        /** Create Event Comment */
+        post: operations["create_event_comment_api_v1_projects__slug__events__event_id__comments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/events/{event_id}/comments/{comment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Event Comment */
+        delete: operations["delete_event_comment_api_v1_projects__slug__events__event_id__comments__comment_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/events/{event_id}/comments/{comment_id}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Event Comment Action
+         * @description Resolve, snooze or reopen one thread.
+         *
+         *     An ``/actions`` sub-resource, not a PATCH on the comment: the body names an
+         *     intent and the service decides which of the five resolution columns move —
+         *     the shape every other resolvable thing here already uses.
+         */
+        post: operations["apply_event_comment_action_api_v1_projects__slug__events__event_id__comments__comment_id__actions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/events/{event_id}/history": {
         parameters: {
             query?: never;
@@ -1671,6 +1730,29 @@ export interface paths {
         };
         /** Get Event History */
         get: operations["get_event_history_api_v1_projects__slug__events__event_id__history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/events/{event_id}/implementation-tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Event Implementation Tickets
+         * @description The tickets that named this event, across every branch that merged.
+         *
+         *     Shows history; it does not replace the editable meta field. Rows only exist
+         *     where the Jira integration is enabled and a branch has merged.
+         */
+        get: operations["list_event_implementation_tickets_api_v1_projects__slug__events__event_id__implementation_tickets_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3061,7 +3143,15 @@ export interface paths {
         get: operations["list_variable_values_api_v1_projects__slug__variables__variable_id__values_get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Clear Variable Values
+         * @description Drop the variable's observed contexts and keep the variable.
+         *
+         *     Deleting the variable was the only reset available and it takes the
+         *     description, documented values, bindings, overrides and drift triage with
+         *     it — none of which a scan rebuilds.
+         */
+        delete: operations["clear_variable_values_api_v1_projects__slug__variables__variable_id__values_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -5394,6 +5484,37 @@ export interface components {
             /** User Id */
             user_id?: string | null;
         };
+        /**
+         * EventCommentActionRequest
+         * @description One action on one thread, shaped like ``SchemaDriftActionRequest``.
+         *
+         *     POST to an ``/actions`` sub-resource rather than PATCH on the comment, the
+         *     way every other resolvable thing in this codebase does it: the body names an
+         *     intent, and the five columns it moves are the service's business, not the
+         *     client's.
+         */
+        EventCommentActionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "resolve" | "snooze" | "reopen";
+            /** Note */
+            note?: string | null;
+            /** Snoozed Until */
+            snoozed_until?: string | null;
+        };
+        /**
+         * EventCommentStatus
+         * @description Resolution state of one discussion thread on an event.
+         *
+         *     The five columns come from ``SchemaDrift``, but not its vocabulary:
+         *     ``accepted`` and ``false_positive`` are verdicts a detector's finding earns,
+         *     and a question someone typed is neither accepted nor false. A thread is
+         *     open, answered, or deliberately parked (tripl-h2sx.26).
+         * @enum {string}
+         */
+        EventCommentStatus: "open" | "resolved" | "snoozed";
         /** EventCompositionMetricCreate */
         EventCompositionMetricCreate: {
             /**
@@ -5555,6 +5676,11 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Is Authored
+             * @default false
+             */
+            is_authored: boolean;
             /** Value */
             value: string;
             /**
@@ -5579,6 +5705,11 @@ export interface components {
             observed_count: number;
             /** Source Column */
             source_column: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
             value_kind: components["schemas"]["VariableValueKind"];
             /**
              * Values
@@ -5670,6 +5801,11 @@ export interface components {
             monitored: boolean;
             /** Name */
             name: string;
+            /**
+             * Open Question Count
+             * @default 0
+             */
+            open_question_count: number;
             /** Order */
             order: number;
             /** Owner Id */
@@ -5904,6 +6040,8 @@ export interface components {
             status: components["schemas"]["EventStatus"];
             /** Sunset At */
             sunset_at?: string | null;
+            /** Superseded By Event Id */
+            superseded_by_event_id?: string | null;
             /**
              * Tags
              * @default []
@@ -5938,6 +6076,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Event Id */
+            event_id?: string | null;
             /**
              * Id
              * Format: uuid
@@ -5945,11 +6085,18 @@ export interface components {
             id: string;
             /** Parent Id */
             parent_id: string | null;
-            /**
-             * Photo Id
-             * Format: uuid
-             */
-            photo_id: string;
+            /** Photo Id */
+            photo_id?: string | null;
+            /** Resolution Note */
+            resolution_note?: string | null;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Resolved By */
+            resolved_by?: string | null;
+            /** Snoozed Until */
+            snoozed_until?: string | null;
+            /** @default open */
+            status: components["schemas"]["EventCommentStatus"];
             /**
              * Updated At
              * Format: date-time
@@ -6097,6 +6244,8 @@ export interface components {
             status: components["schemas"]["EventStatus"];
             /** Sunset At */
             sunset_at?: string | null;
+            /** Superseded By Event Id */
+            superseded_by_event_id?: string | null;
             /**
              * Tags
              * @default []
@@ -6273,6 +6422,8 @@ export interface components {
             status?: components["schemas"]["EventStatus"] | null;
             /** Sunset At */
             sunset_at?: string | null;
+            /** Superseded By Event Id */
+            superseded_by_event_id?: string | null;
             /** Tags */
             tags?: string[] | null;
             /** Title */
@@ -7020,6 +7171,11 @@ export interface components {
         MergeResolutionChoice: "ours" | "theirs";
         /** MetaFieldCreate */
         MetaFieldCreate: {
+            /**
+             * Allow Multiple
+             * @default false
+             */
+            allow_multiple: boolean;
             /** Default Value */
             default_value?: string | null;
             /** Display Name */
@@ -7046,6 +7202,11 @@ export interface components {
         };
         /** MetaFieldResponse */
         MetaFieldResponse: {
+            /**
+             * Allow Multiple
+             * @default false
+             */
+            allow_multiple: boolean;
             /** Default Value */
             default_value: string | null;
             /** Display Name */
@@ -7080,6 +7241,8 @@ export interface components {
         MetaFieldType: "string" | "url" | "boolean" | "enum" | "date";
         /** MetaFieldUpdate */
         MetaFieldUpdate: {
+            /** Allow Multiple */
+            allow_multiple?: boolean | null;
             /** Default Value */
             default_value?: string | null;
             /** Display Name */
@@ -10446,6 +10609,11 @@ export interface components {
             observed_count: number;
             /** Source Column */
             source_column: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
             value_kind: components["schemas"]["VariableValueKind"];
             /**
              * Values
@@ -13921,6 +14089,7 @@ export interface operations {
                 tag?: string | null;
                 silent_since_days?: number | null;
                 reviewed?: boolean | null;
+                has_open_questions?: boolean | null;
                 field_value?: string | null;
                 meta_value?: string | null;
                 offset?: number;
@@ -14357,6 +14526,142 @@ export interface operations {
             };
         };
     };
+    list_event_comments_api_v1_projects__slug__events__event_id__comments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventPhotoCommentResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_event_comment_api_v1_projects__slug__events__event_id__comments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EventPhotoCommentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventPhotoCommentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_event_comment_api_v1_projects__slug__events__event_id__comments__comment_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+                comment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_event_comment_action_api_v1_projects__slug__events__event_id__comments__comment_id__actions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+                comment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EventCommentActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventPhotoCommentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_event_history_api_v1_projects__slug__events__event_id__history_get: {
         parameters: {
             query?: {
@@ -14379,6 +14684,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EventChangeResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_event_implementation_tickets_api_v1_projects__slug__events__event_id__implementation_tickets_get: {
+        parameters: {
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImplementationTicketResponse"][];
                 };
             };
             /** @description Validation Error */
@@ -17664,6 +18004,41 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["VariableValueContextResponse"][];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_variable_values_api_v1_projects__slug__variables__variable_id__values_delete: {
+        parameters: {
+            query?: {
+                /** @description Clear one context row instead of all of them. The id is the `id` on VariableValueContextResponse — the same value /values already returns, so a client can scope the clear to a single (event, field). */
+                context_id?: string | null;
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                variable_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

@@ -2,6 +2,20 @@ import type { MetaFieldDefinition } from '@/types'
 
 export const META_FIELD_LINK_PLACEHOLDER = '${value}'
 
+/**
+ * The field types that can hold several values on one event.
+ *
+ * Mirrors `MULTI_VALUE_FIELD_TYPES` in `schemas/meta_field.py`: `boolean` and
+ * `date` are excluded because a second value there is a contradiction, not a
+ * list. The server rejects the pair with a 422 — this constant only keeps the
+ * settings form from offering a checkbox that cannot be saved.
+ */
+export const MULTI_VALUE_META_FIELD_TYPES: ReadonlySet<string> = new Set([
+  'string',
+  'url',
+  'enum',
+])
+
 /** The example key the form substitutes into a template to show what a value looks like. */
 export const META_FIELD_LINK_EXAMPLE_KEY = 'WND-1234'
 

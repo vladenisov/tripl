@@ -2,7 +2,7 @@ import re
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import lazyload
 from sqlalchemy.sql.elements import ColumnElement
@@ -12,6 +12,7 @@ from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
+from tripl.models.variable_value import VariableValue
 from tripl.schemas.variable import (
     VariableBulkDelete,
     VariableBulkUpdate,
@@ -357,6 +358,62 @@ async def delete_variable(
     await session.commit()
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     return name
+
+
+async def clear_variable_values(
+    session: AsyncSession,
+    slug: str,
+    variable_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+    context_id: uuid.UUID | None = None,
+) -> tuple[str, int]:
+    """Drop this variable's observed contexts, keeping the variable itself.
+
+    The reset that used to require deleting the whole row. Everything a person
+    put on the variable survives — description, documented values, bindings,
+    per-event overrides, the exclusion tombstone — and so does every drift
+    verdict, which is triage no scan can rebuild. Nothing is orphaned by this:
+    no table in the schema carries a foreign key into ``variable_values``, and
+    drift detection reads the run's own in-memory contexts rather than these
+    rows.
+
+    **Repopulation is not a promise this makes.** A scan re-records a context
+    only where a stored field value still names ``${token}``, so a context
+    whose event has moved on is gone for good.
+
+    **It can also cost the variable its place.** ``plan_retirement`` keeps a
+    row it finds in ``VariableValue`` (``KeptReason.OBSERVED``); clear the
+    contexts and that arm stops firing, so a scan-minted variable with no
+    human claim, no drift, no override and no surviving ``${token}`` becomes
+    retirable and the next sweep deletes it. The narrow case where that bites
+    — contexts recorded but the token no longer stored anywhere — is exactly
+    the fossil the sweep exists to collect, so the behaviour is right; the UI
+    says it out loud rather than surprising anyone.
+
+    Returns the variable's name for the audit record and the number of rows
+    removed.
+    """
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
+    var = await _get_variable_in_branch(session, project_id, branch_id, variable_id)
+    name = var.name
+    stmt = delete(VariableValue).where(
+        VariableValue.project_id == project_id,
+        VariableValue.branch_id == branch_id,
+        VariableValue.variable_id == variable_id,
+    )
+    if context_id is not None:
+        stmt = stmt.where(VariableValue.id == context_id)
+    result = await session.execute(stmt)
+    # ``Result`` only declares ``rowcount`` on the cursor subclass; the same
+    # getattr the detection reset uses, for the same reason.
+    removed = int(getattr(result, "rowcount", 0) or 0)
+    await session.commit()
+    # The event search document folds each context's source_column, value_kind,
+    # observed_count and values into its body, so a clear that skipped this
+    # would leave deleted values searchable.
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
+    return name, removed
 
 
 async def _load_variables_by_ids(

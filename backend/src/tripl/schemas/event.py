@@ -47,6 +47,10 @@ class EventUpdate(BaseModel):
     description: str | None = None
     status: EventStatus | None = None
     sunset_at: datetime | None = None
+    # The event that replaced this one. Documentation: nothing matches, collects
+    # or counts coverage through it. Not on EventCreate — a brand-new event has
+    # no predecessor to name.
+    superseded_by_event_id: uuid.UUID | None = None
     owner_id: uuid.UUID | None = None
     reviewed: bool | None = None
     metric_breakdown_columns: list[str] | None = None
@@ -119,6 +123,9 @@ class EventFieldVariableValueResponse(BaseModel):
     value_kind: VariableValueKind
     observed_count: int
     values: list[str] = []
+    # Last WRITE, not last confirmation — see the long note on
+    # ``VariableValueContextResponse.updated_at`` in schemas/variable.py.
+    updated_at: datetime
     # Excluding a variable no longer deletes its contexts, so this row can now
     # outlive the scanning that produced it. The values below are then the last
     # ones seen and not a live reading, and the client has to be able to say
@@ -134,6 +141,12 @@ class EventFieldValueResponse(BaseModel):
     id: uuid.UUID
     field_definition_id: uuid.UUID
     value: str
+    # A hand-typed correction is frozen: ``_upsert_field_values`` never
+    # overwrites an authored value, so the scan stops maintaining this field
+    # for good. That was invisible — the flag reached plan snapshots and the
+    # branch diff but never the event API, so the form could not tell a value
+    # the scan still refreshes from one it has permanently stopped touching.
+    is_authored: bool = False
     variable_values: list[EventFieldVariableValueResponse] = []
 
     model_config = {"from_attributes": True}
@@ -189,6 +202,10 @@ class EventResponse(BaseModel):
     order: int
     status: EventStatus
     sunset_at: datetime | None = None
+    # The event that replaced this one, when it was retired in favour of
+    # something. Absent from the LIST response: the row has no space for it and
+    # nothing on that surface asks the question.
+    superseded_by_event_id: uuid.UUID | None = None
     last_seen_at: datetime | None = None
     # The earliest metric bucket with traffic, read off the main twin for a
     # branch copy. ``created_at`` is when the ROW was authored, which the detail
@@ -254,6 +271,11 @@ class EventListItemResponse(BaseModel):
     reviewed: bool = False
     metric_breakdown_columns: list[str] = []
     drift_count: int = 0
+    # Unanswered threads on the event's discussion, read through to the main twin
+    # for a branch copy. A snooze that has lapsed counts again. Populated by
+    # list_events only; the detail response renders the thread itself and can
+    # count what it already holds.
+    open_question_count: int = 0
     # Alert-rule coverage: True when at least one enabled rule watches this event.
     # Populated by list_events; distinct from a live firing signal.
     monitored: bool = False

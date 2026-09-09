@@ -8,6 +8,7 @@ import {
   GitBranch,
   GitCompare,
   GitMerge,
+  Pencil,
   Plus,
   Settings2,
   Ticket,
@@ -19,11 +20,14 @@ import { branchSettingsApi } from '@/api/branchSettings'
 import { metaFieldsApi } from '@/api/metaFields'
 import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
-import { usersApi } from '@/api/users'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { DIFF_STALE_MS, rowDiffBranches } from './branchDiffFanout'
+import { DiffValue } from './DiffValue'
+import { CommentThread } from '@/components/comment-thread'
+import { ImplementationTicketRow } from '@/components/implementation-ticket-row'
+import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
 import { useBranchLinkProps } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -45,7 +49,6 @@ import { branchTicket } from '@/lib/branchTicket'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import type {
-  ImplementationTicket,
   PlanBranchApproval,
   PlanBranchConflictEntity,
   PlanBranchConflictField,
@@ -131,16 +134,8 @@ const ENTITY_LABEL: Record<PlanDiffEntityType, string> = {
 /** The API serialises `created_by` as a bare user id; resolve it against the
  * project roster (GET /users is open to any authenticated user), preferring
  * the name and falling back to the email — same convention as EventRow. */
-function useUsersById(): Map<string, string> {
-  const { data: users } = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
-  return useMemo(
-    () => new Map((users ?? []).map((u) => [u.id, u.name ?? u.email])),
-    [users],
-  )
-}
-
 function branchAuthor(branch: PlanBranchSummary, usersById: Map<string, string>): string {
-  return (branch.created_by ? usersById.get(branch.created_by) : undefined) ?? 'unknown'
+  return displayUser(usersById, branch.created_by)
 }
 
 function branchSubtitle(branch: PlanBranchSummary, usersById: Map<string, string>): string {
@@ -799,6 +794,7 @@ function FeatureBranchDetail({
 }: FeatureBranchDetailProps) {
   const qc = useQueryClient()
   const usersById = useUsersById()
+  const branchLink = useBranchLinkProps()
   // The ticket a branch is named after, linked through the meta field that
   // links event values to the tracker (tripl-kjhi.14). Main's fields: the
   // template is project-wide and a branch copy carries the same one.
@@ -911,6 +907,23 @@ function FeatureBranchDetail({
   )
   const pairedAdditions = new Set(
     renames.map((r) => entryKey(r.entity_type, r.parent, r.added_name)),
+  )
+  // The addition is dropped from the list, but its id is the only branch-side
+  // one a renamed row has — the removal it is paired with carries the base-side
+  // id. Keep it so the row's Edit action edits the branch copy, not main's.
+  const renamedEntityId = new Map(
+    renames.map((r) => {
+      const addition = entries.find(
+        (entry) =>
+          entry.kind === 'added' &&
+          entryKey(entry.entity_type, entry.parent, entry.name) ===
+            entryKey(r.entity_type, r.parent, r.added_name),
+      )
+      return [
+        entryKey(r.entity_type, r.parent, r.removed_name),
+        addition?.entity_id ?? null,
+      ] as const
+    }),
   )
   // Machine removals — scan-minted variables nobody used being retired, or
   // removals main already made — are folded into one line below the list
@@ -1038,6 +1051,32 @@ function FeatureBranchDetail({
             <Chip tone={STATUS_TONE[branch.status]} size="xs">
               {STATUS_LABEL[branch.status]}
             </Chip>
+            {/* Authoring on the branch you are reviewing had no entry point at
+                all: the only way in was the sidebar switcher, which changes no
+                URL and lives on a different surface. Hidden once the branch is
+                merged or closed, for the same reason its rows lose their Edit
+                action. */}
+            {branch.status !== 'merged' && branch.status !== 'closed' ? (
+              <>
+                <Button asChild variant="ghost" size="sm">
+                  <Link
+                    {...branchLink(`/p/${slug}/events`, branch.id)}
+                    aria-label="Events on this branch"
+                  >
+                    Events
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" size="sm">
+                  <Link
+                    {...branchLink(`/p/${slug}/events/all/new`, branch.id)}
+                    aria-label="New event on this branch"
+                  >
+                    <Plus className="size-3" />
+                    New event
+                  </Link>
+                </Button>
+              </>
+            ) : null}
             {branch.status === 'approved' ? (
               <Button
                 size="sm"
@@ -1158,6 +1197,10 @@ function FeatureBranchDetail({
                 branchId={branch.id}
                 entry={entry}
                 renamedTo={renamedTo.get(entryKey(entry.entity_type, entry.parent, entry.name))}
+                renamedEntityId={renamedEntityId.get(
+                  entryKey(entry.entity_type, entry.parent, entry.name),
+                )}
+                editable={branch.status !== 'merged' && branch.status !== 'closed'}
                 onRevert={handleRevert}
                 reverting={revertMut.isPending}
               />
@@ -1217,51 +1260,6 @@ function ImplementationTicketsPanel({
         <ImplementationTicketRow key={ticket.id} ticket={ticket} />
       ))}
     </Panel>
-  )
-}
-
-function ImplementationTicketRow({ ticket }: { ticket: ImplementationTicket }) {
-  // Sync flips the ticket closed once the tracker reports the issue done, which
-  // is also what promotes the covered events to `implemented`.
-  const done = ticket.status === 'closed'
-  // The tracker can answer without an issue key (and then without a URL); show
-  // what we have as plain text rather than a link that goes nowhere.
-  const label = ticket.external_key || 'Ticket'
-
-  return (
-    <div
-      className="flex items-center gap-2 border-t px-4 py-2.5 first:border-t-0"
-      style={{ borderColor: 'var(--border-subtle)' }}
-    >
-      <Ticket
-        className="size-3.5 shrink-0"
-        style={{ color: 'var(--fg-subtle)' }}
-        aria-hidden="true"
-      />
-      {ticket.external_url ? (
-        <a
-          href={ticket.external_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0 text-[12.5px] font-medium underline"
-          style={{ color: 'var(--accent)' }}
-        >
-          {label}
-          <ArrowUpRight className="ml-0.5 inline size-3" aria-hidden="true" />
-        </a>
-      ) : (
-        <span className="shrink-0 text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
-          {label}
-        </span>
-      )}
-      <span className="truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        {ticket.summary}
-      </span>
-      <div className="flex-1" />
-      <Chip tone={done ? 'success' : 'neutral'} size="xs">
-        {done ? 'Done' : 'Open'}
-      </Chip>
-    </div>
   )
 }
 
@@ -1358,6 +1356,13 @@ function entityPath(slug: string, entry: PlanDiffEntry): string | null {
   }
 }
 
+/** Where a diff row's Edit action points. Only events have an editor route;
+ * `/events/:tab/:eventId/edit` is a first-class route, so this skips the list
+ * route that would otherwise bounce through EventsPage. */
+function eventEditPath(slug: string, eventId: string): string {
+  return `/p/${slug}/events/all/${eventId}/edit`
+}
+
 interface ChangeRowProps {
   slug: string
   branchId: string
@@ -1366,11 +1371,28 @@ interface ChangeRowProps {
    * row now wears on the branch. The row then reads as the rename it is, and
    * its revert undoes the rename rather than restoring a deletion. */
   renamedTo?: string
+  /** For a rename, the branch-side id: the surviving row is the *removal*, whose
+   * own `entity_id` is the base-side one, so editing it would edit main. The
+   * branch-side id lives on the paired addition the list filters out. */
+  renamedEntityId?: string | null
+  /** A merged or closed branch still renders its diff, and `resolve_branch_id`
+   * validates ownership but not status — so a write aimed at one is accepted.
+   * Do not offer the shortcut. */
+  editable: boolean
   onRevert: (entry: PlanDiffEntry, field?: string) => void
   reverting: boolean
 }
 
-function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: ChangeRowProps) {
+function ChangeRow({
+  slug,
+  branchId,
+  entry,
+  renamedTo,
+  renamedEntityId,
+  editable,
+  onRevert,
+  reverting,
+}: ChangeRowProps) {
   const [open, setOpen] = useState(false)
   const detailId = useId()
   const branchLink = useBranchLinkProps()
@@ -1391,6 +1413,16 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
   // one has not gone anywhere, but the id on a removed entry is the base-side
   // one, so main is still where that id resolves.
   const link = path ? branchLink(path, entry.kind === 'removed' ? null : branchId) : null
+  // The row's own primary action. Gated on "has a branch-side id", not on the
+  // kind: a rename is rendered by the removed entry, and that row IS the branch
+  // copy the author wants to fix.
+  const editableEventId =
+    entry.entity_type !== 'event' || !editable
+      ? null
+      : entry.kind === 'removed'
+        ? (renamedTo ? renamedEntityId ?? null : null)
+        : entry.entity_id ?? null
+  const editLink = editableEventId ? branchLink(eventEditPath(slug, editableEventId), branchId) : null
   const REVERT_LABEL: Record<PlanDiffKind, string> = {
     added: 'Discard this addition',
     changed: 'Revert all changes',
@@ -1405,6 +1437,11 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
         background: `color-mix(in oklab, var(--${meta.tone}) 6%, transparent)`,
       }}
     >
+      {/* Toggle and Edit are siblings, not nested: a link inside a button is
+          invalid markup, and the shortcut has to be visible without first
+          performing the very click it saves. The coach mark still wraps the
+          toggle alone, because expanding is what completes the demo step. */}
+      <div className="flex items-stretch">
       <ScenarioCoachMark
         step="branches/review-diff"
         // The seeded diff carries exactly one modified event; only its row coaches.
@@ -1420,7 +1457,7 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
         }}
         aria-expanded={open}
         aria-controls={open ? detailId : undefined}
-        className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
+        className="flex min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
       >
         <ChevronRight
           className="size-3.5 shrink-0 transition-transform"
@@ -1459,6 +1496,18 @@ function ChangeRow({ slug, branchId, entry, renamedTo, onRevert, reverting }: Ch
         </Chip>
       </button>
       </ScenarioCoachMark>
+      {editLink ? (
+        <Link
+          {...editLink}
+          aria-label={`Edit ${renamedTo ?? entry.name}`}
+          className="flex shrink-0 items-center gap-1 pl-1 pr-4 text-[11px] transition-colors hover:underline"
+          style={{ color: 'var(--accent)' }}
+        >
+          <Pencil className="size-3" aria-hidden="true" />
+          Edit
+        </Link>
+      ) : null}
+      </div>
       {warnings.length > 0 ? (
         // Indented to the entity name (chevron + gutter symbol + their gaps),
         // so the note reads as belonging to the row above it. One line per
@@ -1655,15 +1704,26 @@ function ValueChangeRow({ item }: { item: PlanValueChange }) {
 
 function StateView({ state }: { state: Record<string, unknown> }) {
   const keys = Object.keys(state)
+  const uid = useId()
   return (
     <dl className="grid grid-cols-[minmax(0,140px)_1fr] gap-x-3 gap-y-1.5">
       {keys.map((key) => (
         <Fragment key={key}>
-          <dt className="mono truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <dt
+            id={`${uid}-${key}`}
+            className="mono truncate text-[11.5px]"
+            style={{ color: 'var(--fg-subtle)' }}
+          >
             {key}
           </dt>
           <dd className="min-w-0">
-            <DiffValue value={state[key]} />
+            {/* Full state is the only thing an event *created* on the branch
+                shows — the backend builds an added entry with no field_changes —
+                so this is where a collection has to be readable. `table` is
+                passed only here: the side-by-side before/after fallback would
+                otherwise put two tables next to each other, in a column already
+                300px narrower than the page. */}
+            <DiffValue value={state[key]} table labelledBy={`${uid}-${key}`} />
           </dd>
         </Fragment>
       ))}
@@ -1671,92 +1731,6 @@ function StateView({ state }: { state: Record<string, unknown> }) {
   )
 }
 
-/** Flattens a small record to `key: value · key: value` — the shape an event
- * field value or a photo takes once its natural key is stripped off. */
-function inlineRecord(value: Record<string, unknown>): string {
-  return Object.entries(value)
-    .map(([key, item]) => `${key}: ${item === null || item === '' ? '∅' : String(item)}`)
-    .join(' · ')
-}
-
-function isFlatRecord(value: unknown): value is Record<string, unknown> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.values(value).every((item) => typeof item !== 'object' || item === null)
-  )
-}
-
-/** Renders a diff value the way a reviewer reads it: scalars plain, lists
- * comma-joined, flat records as inline `key: value` pairs, and nested records
- * one per line. Pretty-printed JSON is the last resort, not the default.
- * `tone` colours the before (danger) / after (success) sides of a diff.
- *
- * `wrap-anywhere` (overflow-wrap: anywhere) rather than `break-words`
- * (overflow-wrap: break-word): only the former reduces the element's
- * MIN-CONTENT width. `break-words` wraps once the box is already constrained,
- * but it still reports a long unbroken token as the minimum the box needs, so
- * inside an auto-minimum track it grows the column instead of wrapping — which
- * is how one long event description made the whole page scroll sideways. */
-function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
-  const color = tone ? `var(--${tone})` : 'var(--fg)'
-  const isEmpty =
-    value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)
-  if (isEmpty) {
-    return (
-      <span className="mono text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>
-        ∅
-      </span>
-    )
-  }
-  if (Array.isArray(value)) {
-    if (value.every((item) => typeof item !== 'object' || item === null)) {
-      return (
-        <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
-          {value.map((item) => String(item)).join(', ')}
-        </span>
-      )
-    }
-    if (value.every(isFlatRecord)) {
-      return (
-        <div className="flex flex-col gap-0.5">
-          {value.map((item, idx) => (
-            <span
-              key={idx}
-              className="mono wrap-anywhere text-[11.5px]"
-              style={{ color }}
-            >
-              {inlineRecord(item)}
-            </span>
-          ))}
-        </div>
-      )
-    }
-  }
-  if (isFlatRecord(value)) {
-    return (
-      <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
-        {inlineRecord(value)}
-      </span>
-    )
-  }
-  if (typeof value === 'object') {
-    return (
-      <pre
-        className="mono max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 text-[11px]"
-        style={{ color, background: 'color-mix(in oklab, var(--fg) 5%, transparent)' }}
-      >
-        {JSON.stringify(value, null, 2)}
-      </pre>
-    )
-  }
-  return (
-    <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
-      {String(value)}
-    </span>
-  )
-}
 
 function ConflictsPanel({ slug, branchId }: { slug: string; branchId: string }) {
   const qc = useQueryClient()
@@ -1863,10 +1837,21 @@ function ConflictFieldRow({
 }
 
 function ConflictValue({ label, value }: { label: string; value: unknown }) {
+  // `String(value ?? '∅')` was correct for everything that can arrive today —
+  // `_field_conflicts_event_type` reports four scalar keys — but wrong for two
+  // things anyway. An empty string rendered as a BLANK cell rather than ∅, and
+  // a description cleared on one side is exactly a conflict this endpoint
+  // reports. And `base`/`ours`/`theirs` are `Any | None` on the wire and
+  // `unknown` here, next to a docstring that says "v1 covers event_type
+  // metadata only" — so the day a non-scalar key joins that list, this cell
+  // would degrade silently on the surface where a reviewer picks a side.
+  //
+  // No `table`: the three cells are peers in one grid row, and a table in one
+  // of them would break the alignment.
   return (
     <div>
       <span style={{ color: 'var(--fg-subtle)' }}>{label}: </span>
-      {String(value ?? '∅')}
+      <DiffValue value={value} />
     </div>
   )
 }
@@ -1880,65 +1865,37 @@ function CommentsPanel({
   branchId: string
   usersById: Map<string, string>
 }) {
-  const qc = useQueryClient()
-  const [commentBody, setCommentBody] = useState('')
   const { notifyStepCompleted } = useDemoScenarioActions()
-
   const { data: comments } = useQuery({
     queryKey: ['planBranchComments', slug, branchId],
     queryFn: () => planBranchesApi.listComments(slug, branchId),
   })
 
-  const createCommentMut = useMutation({
-    mutationFn: () => planBranchesApi.createComment(slug, branchId, commentBody),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['planBranchComments', slug, branchId] })
-      setCommentBody('')
-      // Posting review feedback lands the branches chapter's last step.
-      notifyStepCompleted('branches/comment')
-    },
-  })
-
-  const list = comments ?? []
-
+  // The panel used to render a flat list off a single-line <Input>, while
+  // PlanBranchComment has carried `parent_id` and the service has validated it
+  // all along — a review remark could be made but never answered in place. The
+  // shared thread already does the threading; what it did NOT have was the
+  // author, which this panel always showed, so that moved into the component
+  // for both callers rather than being lost here (tripl-h2sx.27).
   return (
-    <Panel title="Comments" subtitle={`${list.length}`}>
-      <div className="space-y-2 p-4">
-        {list.length === 0 && (
-          <p className="text-sm text-muted-foreground">No comments yet.</p>
-        )}
-        {list.map((c) => (
-          <div
-            key={c.id}
-            className="rounded-md border p-2 text-sm"
-            style={{ borderColor: 'var(--border-subtle)' }}
-          >
-            <p style={{ color: 'var(--fg)' }}>{c.body}</p>
-            <p className="mt-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              {(c.user_id ? usersById.get(c.user_id) : undefined) ?? 'unknown'} · {formatRelativeTime(c.created_at)}
-            </p>
-          </div>
-        ))}
-        <form
-          className="flex gap-2 pt-1"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (commentBody.trim()) createCommentMut.mutate()
-          }}
-        >
-          <Input
-            aria-label="Comment"
-            value={commentBody}
-            onChange={(event) => setCommentBody(event.target.value)}
-            placeholder="Write a comment…"
-          />
-          <ScenarioCoachMark step="branches/comment">
-            <Button type="submit" disabled={createCommentMut.isPending || !commentBody.trim()}>
-              Post
-            </Button>
-          </ScenarioCoachMark>
-        </form>
-      </div>
+    <Panel title="Comments" subtitle={`${comments?.length ?? 0}`}>
+      <ScenarioCoachMark step="branches/comment">
+        <CommentThread
+          queryKey={['planBranchComments', slug, branchId]}
+          list={() => planBranchesApi.listComments(slug, branchId)}
+          create={(body, parentId) =>
+            planBranchesApi.createComment(slug, branchId, body, parentId ?? undefined)
+          }
+          remove={(commentId) => planBranchesApi.deleteComment(slug, branchId, commentId)}
+          authorName={(comment) => displayUser(usersById, comment.user_id)}
+          // Posting review feedback lands the branches chapter's last step.
+          onCreated={() => notifyStepCompleted('branches/comment')}
+          heading="Comments"
+          emptyText="No comments yet."
+          composerId="branch-comment-body"
+          className="flex flex-col gap-2 p-4"
+        />
+      </ScenarioCoachMark>
     </Panel>
   )
 }
