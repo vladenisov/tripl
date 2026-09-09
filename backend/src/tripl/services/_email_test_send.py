@@ -14,6 +14,7 @@ to ``asyncio.to_thread``.
 from __future__ import annotations
 
 import smtplib
+from email.utils import parseaddr
 
 from tripl.alerting_validation import validate_email_address
 from tripl.services.app_settings_service import EmailConfig
@@ -24,6 +25,30 @@ TEST_BODY = (
     "If you are reading it, the instance can reach your SMTP relay, and password "
     "reset links and alert email will be delivered.\n"
 )
+
+
+def _check_from_address(from_address: str) -> None:
+    """Reject a From: the relay will reject, and nothing else.
+
+    Deliberately NOT ``validate_email_address(from_address)``, which is what the
+    alert-destination test does: that helper refuses ``Tripl <no-reply@x>``,
+    while real delivery accepts it — every send path but that one hands the
+    configured string straight to ``EmailMessage``. Copying the strict check
+    would make this endpoint answer "broken" for a configuration that delivers,
+    which is the one thing a diagnostic must never do. So the display name is
+    parsed off and only the address is checked.
+
+    Header injection is not the reason this exists, despite being the obvious
+    guess: ``EmailMessage.__setitem__`` raises ValueError on a linefeed or
+    carriage return, measured on the pinned interpreter, so a newline cannot
+    reach the wire through any of these paths. What CAN reach it is a value with
+    no @-sign at all, which serialises happily and comes back as an opaque relay
+    error — the exact confusion this endpoint exists to remove.
+    """
+    _, address = parseaddr(from_address)
+    if not address:
+        raise ValueError(f"The default From: address is not a usable address: {from_address!r}")
+    validate_email_address(address)
 
 
 def send_test_email(*, email_config: EmailConfig, recipient: str) -> None:
@@ -42,6 +67,7 @@ def send_test_email(*, email_config: EmailConfig, recipient: str) -> None:
             "No default From: address is configured. Password reset mail is dropped "
             "without one, even when the relay itself is reachable."
         )
+    _check_from_address(email_config.smtp_from_address)
     address = validate_email_address(recipient)
 
     # Lazy, for the reason ``api/v1/auth.py`` gives at its own copy of this

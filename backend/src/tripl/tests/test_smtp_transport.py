@@ -14,6 +14,7 @@ fake would have passed on the broken code too.
 from __future__ import annotations
 
 import uuid
+from email.message import EmailMessage
 from typing import Any, get_args
 
 import pytest
@@ -31,6 +32,7 @@ from tripl.config import (
 )
 from tripl.models.app_setting import SERVICE_SETTINGS_KEY, AppSetting
 from tripl.schemas.app_settings import SmtpSecurity
+from tripl.services import _email_test_send
 from tripl.tests.test_alembic_revisions import _load_migration
 from tripl.worker.tasks.alerts_channels import _send_email_message
 
@@ -302,6 +304,39 @@ async def test_the_smtp_test_names_the_missing_from_address(
     body = response.json()
     assert body["ok"] is False
     assert "From:" in body["message"]
+
+
+def test_a_display_name_sender_is_accepted_because_real_delivery_accepts_it() -> None:
+    """The diagnostic must not fail a configuration that actually delivers.
+
+    ``_alerting_test_send`` runs ``validate_email_address`` on the From: address,
+    which refuses ``Tripl <no-reply@x>`` — while every real send path hands the
+    configured string straight to ``EmailMessage``, which takes it. Copying that
+    check would make this endpoint report "broken" for a working relay, so only
+    the address part is validated.
+    """
+    _email_test_send._check_from_address("Tripl Alerts <no-reply@example.com>")
+    _email_test_send._check_from_address("no-reply@example.com")
+
+
+def test_a_sender_with_no_at_sign_is_refused_with_a_readable_reason() -> None:
+    """What a bare string actually costs, since header injection is not on the table.
+
+    ``EmailMessage.__setitem__`` raises on a linefeed or carriage return, so a
+    newline cannot reach the wire. A value with no @-sign serialises happily and
+    comes back as an opaque relay error instead.
+    """
+    with pytest.raises(ValueError, match="not a usable address|@-sign"):
+        _email_test_send._check_from_address("not-an-address")
+
+
+@pytest.mark.parametrize("injected", ["ok@example.com\nBcc: evil@example.com", "a@b.c\r\nX: y"])
+def test_a_newline_in_a_header_cannot_reach_the_wire(injected: str) -> None:
+    """Pinning the property the validation deliberately does NOT rest on."""
+    message = EmailMessage()
+
+    with pytest.raises(ValueError, match="linefeed or carriage return"):
+        message["From"] = injected
 
 
 @pytest.mark.asyncio
