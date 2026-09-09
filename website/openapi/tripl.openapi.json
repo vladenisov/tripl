@@ -4879,6 +4879,22 @@
             }
           },
           {
+            "name": "has_open_questions",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Has Open Questions"
+            }
+          },
+          {
             "name": "field_value",
             "in": "query",
             "required": false,
@@ -6324,6 +6340,250 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/events/{event_id}/comments": {
+      "get": {
+        "tags": [
+          "event-comments"
+        ],
+        "summary": "List Event Comments",
+        "operationId": "list_event_comments_api_v1_projects__slug__events__event_id__comments_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventPhotoCommentResponse"
+                  },
+                  "title": "Response List Event Comments Api V1 Projects  Slug  Events  Event Id  Comments Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "event-comments"
+        ],
+        "summary": "Create Event Comment",
+        "operationId": "create_event_comment_api_v1_projects__slug__events__event_id__comments_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventPhotoCommentCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPhotoCommentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/events/{event_id}/comments/{comment_id}/actions": {
+      "post": {
+        "tags": [
+          "event-comments"
+        ],
+        "summary": "Apply Event Comment Action",
+        "description": "Resolve, snooze or reopen one thread.\n\nAn ``/actions`` sub-resource, not a PATCH on the comment: the body names an\nintent and the service decides which of the five resolution columns move \u2014\nthe shape every other resolvable thing here already uses.",
+        "operationId": "apply_event_comment_action_api_v1_projects__slug__events__event_id__comments__comment_id__actions_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Event Id"
+            }
+          },
+          {
+            "name": "comment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Comment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventCommentActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPhotoCommentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/events/{event_id}/comments/{comment_id}": {
+      "delete": {
+        "tags": [
+          "event-comments"
+        ],
+        "summary": "Delete Event Comment",
+        "operationId": "delete_event_comment_api_v1_projects__slug__events__event_id__comments__comment_id__delete",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Event Id"
+            }
+          },
+          {
+            "name": "comment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Comment Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/variables/bulk-update": {
       "post": {
         "tags": [
@@ -6816,6 +7076,87 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "variables"
+        ],
+        "summary": "Clear Variable Values",
+        "description": "Drop the variable's observed contexts and keep the variable.\n\nDeleting the variable was the only reset available and it takes the\ndescription, documented values, bindings, overrides and drift triage with\nit \u2014 none of which a scan rebuilds.",
+        "operationId": "clear_variable_values_api_v1_projects__slug__variables__variable_id__values_delete",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "variable_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Variable Id"
+            }
+          },
+          {
+            "name": "context_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Clear one context row instead of all of them. The id is the `id` on VariableValueContextResponse \u2014 the same value /values already returns, so a client can scope the clear to a single (event, field).",
+              "title": "Context Id"
+            },
+            "description": "Clear one context row instead of all of them. The id is the `id` on VariableValueContextResponse \u2014 the same value /values already returns, so a client can scope the clear to a single (event, field)."
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            },
+            "description": "Plan branch id (UUID) to read and write instead of the main branch."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -12597,6 +12938,81 @@
                     "$ref": "#/components/schemas/ImplementationTicketResponse"
                   },
                   "title": "Response List Branch Implementation Tickets Api V1 Projects  Slug  Branches  Branch Id  Implementation Tickets Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/events/{event_id}/implementation-tickets": {
+      "get": {
+        "tags": [
+          "implementation-tickets"
+        ],
+        "summary": "List Event Implementation Tickets",
+        "description": "The tickets that named this event, across every branch that merged.\n\nShows history; it does not replace the editable meta field. Rows only exist\nwhere the Jira integration is enabled and a branch has merged.",
+        "operationId": "list_event_implementation_tickets_api_v1_projects__slug__events__event_id__implementation_tickets_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Event Id"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            },
+            "description": "Plan branch id (UUID) to read and write instead of the main branch."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ImplementationTicketResponse"
+                  },
+                  "title": "Response List Event Implementation Tickets Api V1 Projects  Slug  Events  Event Id  Implementation Tickets Get"
                 }
               }
             }
@@ -19788,6 +20204,59 @@
         ],
         "title": "EventChangeResponse"
       },
+      "EventCommentActionRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "resolve",
+              "snooze",
+              "reopen"
+            ],
+            "title": "Action"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snoozed Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "EventCommentActionRequest",
+        "description": "One action on one thread, shaped like ``SchemaDriftActionRequest``.\n\nPOST to an ``/actions`` sub-resource rather than PATCH on the comment, the\nway every other resolvable thing in this codebase does it: the body names an\nintent, and the five columns it moves are the service's business, not the\nclient's."
+      },
+      "EventCommentStatus": {
+        "type": "string",
+        "enum": [
+          "open",
+          "resolved",
+          "snoozed"
+        ],
+        "title": "EventCommentStatus",
+        "description": "Resolution state of one discussion thread on an event.\n\nThe five columns come from ``SchemaDrift``, but not its vocabulary:\n``accepted`` and ``false_positive`` are verdicts a detector's finding earns,\nand a question someone typed is neither accepted nor false. A thread is\nopen, answered, or deliberately parked (tripl-h2sx.26)."
+      },
       "EventCompositionMetricCreate": {
         "properties": {
           "kind": {
@@ -20193,6 +20662,11 @@
             "type": "string",
             "title": "Value"
           },
+          "is_authored": {
+            "type": "boolean",
+            "title": "Is Authored",
+            "default": false
+          },
           "variable_values": {
             "items": {
               "$ref": "#/components/schemas/EventFieldVariableValueResponse"
@@ -20245,6 +20719,11 @@
             "title": "Values",
             "default": []
           },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
           "excluded_from_scans": {
             "type": "boolean",
             "title": "Excluded From Scans",
@@ -20258,7 +20737,8 @@
           "variable_name",
           "source_column",
           "value_kind",
-          "observed_count"
+          "observed_count",
+          "updated_at"
         ],
         "title": "EventFieldVariableValueResponse"
       },
@@ -20430,6 +20910,11 @@
           "drift_count": {
             "type": "integer",
             "title": "Drift Count",
+            "default": 0
+          },
+          "open_question_count": {
+            "type": "integer",
+            "title": "Open Question Count",
             "default": 0
           },
           "monitored": {
@@ -20928,6 +21413,18 @@
             ],
             "title": "Sunset At"
           },
+          "superseded_by_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Event Id"
+          },
           "last_seen_at": {
             "anyOf": [
               {
@@ -21087,9 +21584,28 @@
             "title": "Id"
           },
           "photo_id": {
-            "type": "string",
-            "format": "uuid",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Photo Id"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
           },
           "parent_id": {
             "anyOf": [
@@ -21119,6 +21635,57 @@
             "type": "string",
             "title": "Body"
           },
+          "status": {
+            "$ref": "#/components/schemas/EventCommentStatus",
+            "default": "open"
+          },
+          "resolution_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Note"
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snoozed Until"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -21133,7 +21700,6 @@
         "type": "object",
         "required": [
           "id",
-          "photo_id",
           "parent_id",
           "user_id",
           "body",
@@ -21372,6 +21938,18 @@
               }
             ],
             "title": "Sunset At"
+          },
+          "superseded_by_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Event Id"
           },
           "last_seen_at": {
             "anyOf": [
@@ -21852,6 +22430,18 @@
               }
             ],
             "title": "Sunset At"
+          },
+          "superseded_by_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Event Id"
           },
           "owner_id": {
             "anyOf": [
@@ -23945,6 +24535,11 @@
             "title": "Is Required",
             "default": false
           },
+          "allow_multiple": {
+            "type": "boolean",
+            "title": "Allow Multiple",
+            "default": false
+          },
           "enum_options": {
             "anyOf": [
               {
@@ -24026,6 +24621,11 @@
           "is_required": {
             "type": "boolean",
             "title": "Is Required"
+          },
+          "allow_multiple": {
+            "type": "boolean",
+            "title": "Allow Multiple",
+            "default": false
           },
           "enum_options": {
             "anyOf": [
@@ -24131,6 +24731,17 @@
               }
             ],
             "title": "Is Required"
+          },
+          "allow_multiple": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Multiple"
           },
           "enum_options": {
             "anyOf": [
@@ -33138,6 +33749,11 @@
             "type": "array",
             "title": "Values",
             "default": []
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
           }
         },
         "type": "object",
@@ -33152,7 +33768,8 @@
           "field_display_name",
           "source_column",
           "value_kind",
-          "observed_count"
+          "observed_count",
+          "updated_at"
         ],
         "title": "VariableValueContextResponse"
       },

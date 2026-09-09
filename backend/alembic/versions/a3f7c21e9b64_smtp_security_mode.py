@@ -1,7 +1,7 @@
 """carry the stored SMTP override from a boolean to a transport mode
 
 Revision ID: a3f7c21e9b64
-Revises: f3a9b7c15d2e
+Revises: e5b19c74a208
 Create Date: 2026-09-09 14:05:00.000000
 
 ``smtp_use_tls`` only ever meant "run STARTTLS after connecting", so an operator
@@ -34,7 +34,7 @@ from alembic import op
 from sqlalchemy.engine import Connection
 
 revision: str = "a3f7c21e9b64"
-down_revision: str | None = "f3a9b7c15d2e"
+down_revision: str | None = "e5b19c74a208"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
