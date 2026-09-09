@@ -8759,3 +8759,18 @@ async def test_inbox_scope_search_reaches_past_the_eight_name_display_cap(
     blank = await client.get(base, params={"scope": "   "})
     assert blank.status_code == 200
     assert blank.json()["total"] == 1
+
+    # Nor is a NUL. `scope` is a FreeTextFilter like every other free-text filter
+    # in the API, so U+0000 is stripped rather than searched for — the two
+    # candidate answers are "match nothing" and "the filter the user plainly
+    # meant", and schemas/text_filters.py argues for the second. Answering
+    # differently here from the eight filters beside it would be inconsistent
+    # rather than stricter. The repo-wide pin in test_text_filters.py is what
+    # forces the decision to be made at all; this is what the decision WAS.
+    laced = await client.get(base, params={"scope": "\x00"})
+    assert laced.status_code == 200
+    assert laced.json()["total"] == 1
+
+    partial = await client.get(base, params={"scope": "qui\x00et"})
+    assert partial.status_code == 200
+    assert [item["correlation_group_id"] for item in partial.json()["items"]] == [str(wide_group)]

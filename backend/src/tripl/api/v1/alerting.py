@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
@@ -31,6 +32,7 @@ from tripl.schemas.alerting import (
     MonitorMuteRequest,
     MonitorsSummaryResponse,
 )
+from tripl.schemas.text_filters import FreeTextFilter
 from tripl.services import alerting_service, audit_service
 
 router = APIRouter(prefix="/projects/{slug}", tags=["alerting"])
@@ -428,7 +430,15 @@ async def list_alert_inbox(
     direction: AnomalyDirection | None = None,
     # Case-insensitive substring over every scope name and ref in the incident,
     # so "the events I already know are fine" can be pulled up by name.
-    scope: str | None = Query(None, max_length=200),
+    #
+    # FreeTextFilter, like every other free-text filter in the API. This one is
+    # compared in PYTHON rather than bound into Postgres, so it cannot hit the
+    # asyncpg abort the type was written for — but the type is also what decides
+    # what `?scope=%00` MEANS, and the two candidate answers are "match nothing"
+    # and "the filter the user plainly meant". schemas/text_filters.py argues
+    # for the second, and a filter here that answered differently from the eight
+    # beside it would be inconsistent rather than stricter.
+    scope: Annotated[FreeTextFilter | None, Query(max_length=200)] = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ) -> AlertInboxListResponse:
