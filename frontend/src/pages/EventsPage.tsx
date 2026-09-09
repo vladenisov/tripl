@@ -107,6 +107,8 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     setFilterSilentDays,
     filterReviewed,
     setFilterReviewed,
+    filterOpenQuestions,
+    setFilterOpenQuestions,
     sort,
     setSort,
     fieldFilters,
@@ -180,6 +182,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     filterStatuses,
     filterSilentDays,
     filterReviewed,
+    filterOpenQuestions,
     filterTag,
     hiddenColumns,
     metaFields,
@@ -467,6 +470,8 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               onFilterSilentDaysChange={setFilterSilentDays}
               filterReviewed={filterReviewed}
               onFilterReviewedChange={setFilterReviewed}
+              filterOpenQuestions={filterOpenQuestions}
+              onFilterOpenQuestionsChange={setFilterOpenQuestions}
               sortOrder={sort}
               onSortOrderChange={setSort}
               hasActiveFilters={hasActiveFilters}

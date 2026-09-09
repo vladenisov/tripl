@@ -26,6 +26,11 @@ function renderThread(
     remove: (commentId: string) => Promise<unknown>
     authorName: (comment: ThreadComment) => string
     onCreated: () => void
+    onAction: (
+      commentId: string,
+      action: 'resolve' | 'snooze' | 'reopen',
+      snoozedUntil?: string,
+    ) => Promise<unknown>
   }> = {},
 ) {
   const create = handlers.create ?? vi.fn().mockResolvedValue({})
@@ -38,6 +43,7 @@ function renderThread(
       remove,
       authorName: handlers.authorName,
       onCreated: handlers.onCreated,
+      onAction: handlers.onAction,
     }),
     { wrapper },
   )
@@ -152,5 +158,79 @@ describe('CommentThread authors (tripl-h2sx.27)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Comment' }))
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1))
+  })
+})
+
+
+describe('CommentThread resolution', () => {
+  it('shows no resolution controls when the caller offers no action', async () => {
+    // The branch-review thread's table has no resolution columns, so the same
+    // component must render exactly as it did before (tripl-h2sx.26).
+    renderThread([comment({ id: 'c-1' })])
+    await screen.findByText('a comment')
+
+    expect(screen.queryByRole('button', { name: 'resolve' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'snooze' })).toBeNull()
+  })
+
+  it('resolves a thread, and snoozes it with a date the caller never has to pick', async () => {
+    const onAction = vi.fn().mockResolvedValue({})
+    renderThread([comment({ id: 'c-1', status: 'open' })], { onAction })
+    await screen.findByText('a comment')
+
+    fireEvent.click(screen.getByRole('button', { name: 'resolve' }))
+    await waitFor(() => expect(onAction).toHaveBeenCalledWith('c-1', 'resolve', undefined))
+
+    fireEvent.click(screen.getByRole('button', { name: 'snooze' }))
+    await waitFor(() => expect(onAction).toHaveBeenCalledTimes(2))
+    const [, action, snoozedUntil] = onAction.mock.calls[1]
+    expect(action).toBe('snooze')
+    // The API requires a date on a snooze, so the control has to supply one.
+    expect(new Date(snoozedUntil as string).getTime()).toBeGreaterThan(Date.now())
+  })
+
+  it('offers reopen — and only reopen — once the thread is answered', async () => {
+    const onAction = vi.fn().mockResolvedValue({})
+    renderThread([comment({ id: 'c-1', status: 'resolved' })], { onAction })
+    await screen.findByText('a comment')
+
+    expect(screen.getByText('resolved')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'resolve' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'reopen' }))
+    await waitFor(() => expect(onAction).toHaveBeenCalledWith('c-1', 'reopen', undefined))
+  })
+
+  it('treats a lapsed snooze as unanswered again', async () => {
+    // Derived, not stored: a written-back flag is wrong for as long as it takes
+    // a sweeper to run, and the point of a snooze is that nobody is watching.
+    renderThread([comment({ id: 'c-1', status: 'snoozed', snoozed_until: '2000-01-01T00:00:00Z' })], {
+      onAction: vi.fn().mockResolvedValue({}),
+    })
+    await screen.findByText('a comment')
+
+    expect(screen.getByRole('button', { name: 'resolve' })).toBeInTheDocument()
+    expect(screen.queryByText('snoozed')).toBeNull()
+  })
+
+  it('leaves a live snooze parked', async () => {
+    renderThread([comment({ id: 'c-1', status: 'snoozed', snoozed_until: '2999-01-01T00:00:00Z' })], {
+      onAction: vi.fn().mockResolvedValue({}),
+    })
+    await screen.findByText('a comment')
+
+    expect(screen.getByText('snoozed')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'reopen' })).toBeInTheDocument()
+  })
+
+  it('does not offer a reply its own resolution state', async () => {
+    // The thread is the unit that gets answered; the server refuses an action on
+    // a reply, so the UI must not offer one.
+    renderThread(
+      [comment({ id: 'c-1' }), comment({ id: 'c-2', parent_id: 'c-1', body: 'a reply' })],
+      { onAction: vi.fn().mockResolvedValue({}) },
+    )
+    await screen.findByText('a reply')
+
+    expect(screen.getAllByRole('button', { name: 'resolve' })).toHaveLength(1)
   })
 })

@@ -269,6 +269,19 @@ export const EventRow = memo(function EventRow({
               {ev.title}
             </span>
           )}
+          {/* An unanswered question on this event's discussion. A count, not a
+              dot: the filter beside it says "open questions", and a marker that
+              cannot say how many leaves the operator guessing whether the row
+              matched for one reason or several (tripl-h2sx.26). */}
+          {(ev.open_question_count ?? 0) > 0 && (
+            <span
+              className="shrink-0 rounded px-1 text-[10px] font-medium"
+              style={{ background: 'var(--surface-hover)', color: 'var(--fg-muted)' }}
+              title={`${ev.open_question_count} unanswered question${ev.open_question_count === 1 ? '' : 's'} in the discussion`}
+            >
+              ?{ev.open_question_count}
+            </span>
+          )}
           {ev.drift_count > 0 && (
             <ScenarioCoachMark
               step="reconcile/review-drift"

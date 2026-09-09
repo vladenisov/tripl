@@ -45,6 +45,20 @@ class SchemaDriftStatus(enum.StrEnum):
     false_positive = "false_positive"
 
 
+class EventCommentStatus(enum.StrEnum):
+    """Resolution state of one discussion thread on an event.
+
+    The five columns come from ``SchemaDrift``, but not its vocabulary:
+    ``accepted`` and ``false_positive`` are verdicts a detector's finding earns,
+    and a question someone typed is neither accepted nor false. A thread is
+    open, answered, or deliberately parked (tripl-h2sx.26).
+    """
+
+    open = "open"
+    resolved = "resolved"
+    snoozed = "snoozed"
+
+
 class AlertInboxStatus(enum.StrEnum):
     open = "open"
     acknowledged = "acknowledged"

@@ -137,6 +137,13 @@ async def list_events(
     # "Mark reviewed" wrote a flag nobody could isolate afterwards (tripl-invv).
     # Omit for "any".
     reviewed: bool | None = None,
+    # "Which events are waiting on an answer?" — the question the discussion
+    # (tripl-h2sx.25) could not be asked until threads could be resolved. True
+    # keeps only events with an unanswered thread, False only those with none;
+    # omit for "any". A thread whose snooze has lapsed counts as unanswered
+    # again. Twin-aware: the discussion hangs on the event's main row, so this
+    # answers correctly on a branch too.
+    has_open_questions: bool | None = None,
     field_value: FreeTextFilter | None = None,
     meta_value: FreeTextFilter | None = None,
     offset: int = Query(0, ge=0),
@@ -166,6 +173,7 @@ async def list_events(
         field_value=field_value,
         meta_value=meta_value,
         reviewed=reviewed,
+        has_open_questions=has_open_questions,
         branch_id=branch_id,
         order_by=order_by,
     )

@@ -181,6 +181,28 @@ export function useEventsQuery({
     [setSearchParams],
   )
 
+  // "Which events are still waiting on an answer?" — the question the discussion
+  // (tripl-h2sx.25) could not be asked until threads could be resolved
+  // (tripl-h2sx.26). Same URL shape as `reviewed`: absent means any, so the
+  // default request is unchanged.
+  const filterOpenQuestionsRaw = searchParams.get('questions')
+  const filterOpenQuestions =
+    filterOpenQuestionsRaw === 'true' ? true : filterOpenQuestionsRaw === 'false' ? false : undefined
+  const setFilterOpenQuestions = useCallback(
+    (v: boolean | undefined) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (v === undefined) next.delete('questions')
+          else next.set('questions', String(v))
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
   // Sort order lives in the URL under `sort`; only 'volume' is persisted so the
   // default (catalog) request stays byte-identical to today.
   const sort: EventsSortOrder = searchParams.get('sort') === 'volume' ? 'volume' : 'catalog'
@@ -278,9 +300,19 @@ export function useEventsQuery({
       tag: filterTag || undefined,
       silent_since_days: filterSilentDays,
       reviewed: filterReviewed,
+      has_open_questions: filterOpenQuestions,
       order_by: sort === 'volume' ? ('volume' as const) : undefined,
     }),
-    [filterEtId, debouncedSearch, queryStatuses, filterTag, filterSilentDays, filterReviewed, sort],
+    [
+      filterEtId,
+      debouncedSearch,
+      queryStatuses,
+      filterTag,
+      filterSilentDays,
+      filterReviewed,
+      filterOpenQuestions,
+      sort,
+    ],
   )
 
   const eventsQuery = useInfiniteQuery({
@@ -294,6 +326,7 @@ export function useEventsQuery({
       filterTag,
       filterSilentDays,
       filterReviewed,
+      filterOpenQuestions,
       sort,
     ],
     queryFn: ({ pageParam }) =>
@@ -378,6 +411,8 @@ export function useEventsQuery({
     setFilterSilentDays,
     filterReviewed,
     setFilterReviewed,
+    filterOpenQuestions,
+    setFilterOpenQuestions,
     sort,
     setSort,
     fieldFilters,

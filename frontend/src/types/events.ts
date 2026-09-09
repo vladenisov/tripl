@@ -138,10 +138,14 @@ export interface SchemaDriftList {
 }
 
 // Slim shape returned by GET /events: drops nested event_type since the
-// frontend already has EventTypes cached and looks them up by id, and adds
-// `monitored` — alert-rule coverage the list endpoint computes per row (the
-// detail response does not carry it).
-export type EventListItem = Omit<Event, 'event_type'> & { monitored: boolean }
+// frontend already has EventTypes cached and looks them up by id, and adds two
+// values the list endpoint computes per row and the detail response does not
+// carry — `monitored` (alert-rule coverage) and `open_question_count`
+// (unanswered discussion threads, read through to the main twin on a branch).
+export type EventListItem = Omit<Event, 'event_type'> & {
+  monitored: boolean
+  open_question_count?: number
+}
 
 export interface EventListResponse {
   items: EventListItem[]
@@ -177,9 +181,23 @@ export interface EventPhotoComment {
   parent_id: string | null
   user_id: string | null
   body: string
+  /** Resolution state of the THREAD. Present on every row because both anchors
+   *  share one table, but only a top-level comment can be acted on — the server
+   *  refuses an action on a reply. A `snoozed` thread whose `snoozed_until` has
+   *  passed counts as open again; `isThreadUnanswered` is the one place that
+   *  decides it. */
+  status?: EventCommentStatus
+  resolution_note?: string | null
+  snoozed_until?: string | null
+  resolved_at?: string | null
+  resolved_by?: string | null
   created_at: string
   updated_at: string
 }
+
+export type EventCommentStatus = 'open' | 'resolved' | 'snoozed'
+
+export type EventCommentAction = 'resolve' | 'snooze' | 'reopen'
 
 export type VariableType = 'string' | 'number' | 'boolean' | 'date' | 'datetime' | 'json' | 'string_array' | 'number_array'
 

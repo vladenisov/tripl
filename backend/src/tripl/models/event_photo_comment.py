@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.domain_enums import EventCommentStatus
+from tripl.models.enum_types import db_enum
+
+EVENT_COMMENT_STATUS_OPEN = EventCommentStatus.open.value
+EVENT_COMMENT_STATUS_RESOLVED = EventCommentStatus.resolved.value
+EVENT_COMMENT_STATUS_SNOOZED = EventCommentStatus.snoozed.value
 
 
 class EventPhotoComment(UUIDMixin, TimestampMixin, Base):
@@ -32,6 +39,10 @@ class EventPhotoComment(UUIDMixin, TimestampMixin, Base):
             name="ck_event_photo_comment_one_anchor",
         ),
         Index("ix_event_photo_comment_event", "event_id"),
+        # The catalog filter asks "which events have an unanswered question",
+        # which is this index's exact shape: anchored on an event, top-level,
+        # not yet resolved.
+        Index("ix_event_photo_comment_event_status", "event_id", "status"),
     )
 
     photo_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -49,3 +60,23 @@ class EventPhotoComment(UUIDMixin, TimestampMixin, Base):
     )
 
     body: Mapped[str] = mapped_column(Text)
+
+    # Resolution state, the five columns SchemaDrift and VariableValueDrift both
+    # carry. It lives on every row because this is one table, but it only MEANS
+    # anything on a top-level comment: the thread is the unit that gets answered,
+    # and the service refuses an action on a reply. `snoozed_until` is the escape
+    # valve that keeps "open question" from becoming a permanent nag — a snooze
+    # that has lapsed counts as open again, computed at read time rather than
+    # stored, so no job has to sweep it.
+    status: Mapped[str] = mapped_column(
+        db_enum(EventCommentStatus, "event_comment_status"),
+        default=EVENT_COMMENT_STATUS_OPEN,
+        server_default=EVENT_COMMENT_STATUS_OPEN,
+        nullable=False,
+    )
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )

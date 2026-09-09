@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Loader2, MessageCircle, Trash2 } from 'lucide-react'
 import { formatDateTime } from '@/lib/datetime'
+import { isThreadUnanswered, threadStateLabel } from '@/components/commentThreadState'
+import type { EventCommentAction, EventCommentStatus } from '@/types'
 
 /**
  * The shape the thread renders. Both anchors — a photo and an event — keep
@@ -16,6 +18,11 @@ export interface ThreadComment {
   /** Null once the author's account is gone — the FK is SET NULL, because a
    *  deleted account must not take the discussion with it. */
   user_id?: string | null
+  /** Resolution state, on the event thread only. The branch-review thread has
+   *  no such columns, so these stay optional and the controls stay hidden
+   *  unless a caller passes `onAction`. */
+  status?: EventCommentStatus
+  snoozed_until?: string | null
 }
 
 export interface CommentThreadProps {
@@ -37,7 +44,20 @@ export interface CommentThreadProps {
   /** Fired after a comment is posted. The branch panel's demo scenario marks
    *  its last step here, and losing that would strand the chapter. */
   onCreated?: () => void
+  /** Resolve / snooze / reopen one thread. Omitted by the branch-review thread,
+   *  whose table has no resolution columns — without it no control renders and
+   *  the component behaves exactly as it did. */
+  onAction?: (
+    commentId: string,
+    action: EventCommentAction,
+    snoozedUntil?: string,
+  ) => Promise<unknown>
 }
+
+/** How long "snooze" parks a thread. A week is long enough to stop the nag and
+ *  short enough that the question comes back while it still matters; the API
+ *  takes any date, so a caller that wants a picker can have one later. */
+const SNOOZE_DAYS = 7
 
 /**
  * One comment thread, anchored by whatever the callbacks point at.
@@ -59,6 +79,7 @@ export function CommentThread({
   className = 'flex h-full min-h-[400px] flex-col rounded-md border bg-card p-3',
   authorName,
   onCreated,
+  onAction,
 }: CommentThreadProps) {
   const queryClient = useQueryClient()
   const [body, setBody] = useState('')
@@ -80,6 +101,24 @@ export function CommentThread({
     mutationFn: (commentId: string) => remove(commentId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: [...queryKey] })
+    },
+  })
+
+  const actionMut = useMutation({
+    mutationFn: ({
+      commentId,
+      action,
+      snoozedUntil,
+    }: {
+      commentId: string
+      action: EventCommentAction
+      snoozedUntil?: string
+    }) => onAction!(commentId, action, snoozedUntil),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [...queryKey] })
+      // The catalog's open-question count and filter read the same threads, so
+      // a resolve here has to reach the list the user came from.
+      void queryClient.invalidateQueries({ queryKey: ['events'] })
     },
   })
 
@@ -124,6 +163,13 @@ export function CommentThread({
               onDelete={id => deleteMut.mutate(id)}
               replyingTo={replyTo}
               authorName={authorName}
+              onAction={
+                onAction
+                  ? (action, snoozedUntil) =>
+                      actionMut.mutate({ commentId: comment.id, action, snoozedUntil })
+                  : undefined
+              }
+              actionPending={actionMut.isPending}
             />
           ))
         )}
@@ -180,6 +226,8 @@ function CommentItem({
   onDelete,
   replyingTo,
   authorName,
+  onAction,
+  actionPending,
 }: {
   comment: ThreadComment
   replies: ThreadComment[]
@@ -187,7 +235,16 @@ function CommentItem({
   onDelete: (id: string) => void
   replyingTo: string | null
   authorName?: (comment: ThreadComment) => string
+  onAction?: (action: EventCommentAction, snoozedUntil?: string) => void
+  actionPending?: boolean
 }) {
+  const unanswered = isThreadUnanswered(comment)
+  const stateLabel = threadStateLabel(comment)
+  const snooze = () => {
+    const until = new Date()
+    until.setDate(until.getDate() + SNOOZE_DAYS)
+    onAction?.('snooze', until.toISOString())
+  }
   return (
     <div className="space-y-2">
       <div className="rounded-md border bg-muted/30 px-2 py-1.5">
@@ -197,6 +254,40 @@ function CommentItem({
             {formatDateTime(comment.created_at)}
           </span>
           <div className="flex items-center gap-2">
+            {stateLabel && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
+                {stateLabel}
+              </span>
+            )}
+            {onAction && (unanswered ? (
+              <>
+                <button
+                  type="button"
+                  className="hover:text-foreground"
+                  disabled={actionPending}
+                  onClick={() => onAction('resolve')}
+                >
+                  resolve
+                </button>
+                <button
+                  type="button"
+                  className="hover:text-foreground"
+                  disabled={actionPending}
+                  onClick={snooze}
+                >
+                  snooze
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="hover:text-foreground"
+                disabled={actionPending}
+                onClick={() => onAction('reopen')}
+              >
+                reopen
+              </button>
+            ))}
             <button type="button" className="hover:text-foreground" onClick={onReply}>
               {replyingTo === comment.id ? 'replying…' : 'reply'}
             </button>

@@ -274,6 +274,30 @@ to the same thread as on main, so a question raised while drafting a change is
 answerable by whoever is reading the live plan, and merging the branch neither
 duplicates nor loses it.
 
+#### Closing a question
+
+Each top-level comment carries a resolution state, so a thread can end:
+**resolve** it when it is answered, **snooze** it for a week when the answer is
+not due yet, or **reopen** one that was closed too early. A snooze that has
+lapsed counts as open again — the state is worked out when the thread is read,
+not written back by a background job, so it is never briefly wrong.
+
+Resolution belongs to the **thread**, not to individual replies: a three-reply
+conversation is one question, and only the top-level comment carries the
+control. Reopening clears the resolution note along with the state, because a
+reopened question has no resolution any more.
+
+The events list can then be filtered by **Questions** — *Open questions* or
+*Nothing open* — beside the Status, Silent and Reviewed filters. It is a
+server-side filter over the whole catalog, not a narrowing of the loaded page,
+and it is branch-aware: because an event has one discussion living on its main
+row, a branch listing answers about the same threads main does. A row with an
+unanswered thread carries a small `?n` marker beside its name, so the list can
+say why it matched.
+
+The **photo** threads and the **branch review** threads have no resolution
+state; only the event discussion does.
+
 ### Event photos & specs
 
 **Where:** the **Photos & specs** panel on an event's **monitoring detail** page

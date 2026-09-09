@@ -42,7 +42,11 @@ from tripl.schemas.event import (
 )
 from tripl.services._branch_counterparts import attach_main_last_seen, metrics_row_for
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
-from tripl.services.plan_branch_service import resolve_branch_id
+from tripl.services.event_comment_service import (
+    events_with_open_questions,
+    open_question_counts,
+)
+from tripl.services.plan_branch_service import ensure_main_branch_id, resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.scan_config_lookup import (
     governing_name_format,
@@ -421,6 +425,7 @@ async def list_events(
     field_value: str | None = None,
     meta_value: str | None = None,
     reviewed: bool | None = None,
+    has_open_questions: bool | None = None,
     branch_id: uuid.UUID | None = None,
     order_by: str = "catalog",
 ) -> tuple[list[Event], int]:
@@ -493,6 +498,24 @@ async def list_events(
         # the queue" — the question the review tab could not ask (tripl-invv).
         query = query.where(Event.reviewed.is_(reviewed))
         count_query = count_query.where(Event.reviewed.is_(reviewed))
+    if has_open_questions is not None:
+        # Resolved to a set of ids rather than a join: the discussion hangs on
+        # the event's MAIN twin, and pairing a branch row with it is the natural
+        # key (event type name + scan identity), not something the events table
+        # can express in a WHERE clause. The set is bounded by how many
+        # questions are actually unanswered, not by the catalog.
+        main_branch_id = await ensure_main_branch_id(session, project_id)
+        open_ids = await events_with_open_questions(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            main_branch_id=main_branch_id,
+        )
+        questions_clause = (
+            Event.id.in_(open_ids) if has_open_questions else Event.id.not_in(open_ids)
+        )
+        query = query.where(questions_clause)
+        count_query = count_query.where(questions_clause)
     if silent_since_days is not None and silent_since_days >= 0:
         cutoff = datetime.now(UTC) - timedelta(days=silent_since_days)
         silent_clause = or_(Event.last_seen_at.is_(None), Event.last_seen_at < cutoff)
@@ -548,6 +571,14 @@ async def list_events(
             )
             for rule in coverage_rules
         )
+
+    # Unanswered questions per row, read through to the main twin the way every
+    # other borrowed signal on a branch copy is. Shipped with the catalog row so
+    # the filter has something visible to agree with — a filter whose result the
+    # list cannot explain reads as a bug.
+    question_counts = await open_question_counts(session, project_id=project_id, events=events)
+    for event in events:
+        event.open_question_count = question_counts.get(event.id, 0)  # type: ignore[attr-defined]
 
     await attach_event_field_variable_values(session, events)
     await attach_main_last_seen(session, project_id=project_id, events=events)

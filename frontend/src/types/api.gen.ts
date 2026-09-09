@@ -1697,6 +1697,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/events/{event_id}/comments/{comment_id}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Event Comment Action
+         * @description Resolve, snooze or reopen one thread.
+         *
+         *     An ``/actions`` sub-resource, not a PATCH on the comment: the body names an
+         *     intent and the service decides which of the five resolution columns move —
+         *     the shape every other resolvable thing here already uses.
+         */
+        post: operations["apply_event_comment_action_api_v1_projects__slug__events__event_id__comments__comment_id__actions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/events/{event_id}/history": {
         parameters: {
             query?: never;
@@ -5460,6 +5484,37 @@ export interface components {
             /** User Id */
             user_id?: string | null;
         };
+        /**
+         * EventCommentActionRequest
+         * @description One action on one thread, shaped like ``SchemaDriftActionRequest``.
+         *
+         *     POST to an ``/actions`` sub-resource rather than PATCH on the comment, the
+         *     way every other resolvable thing in this codebase does it: the body names an
+         *     intent, and the five columns it moves are the service's business, not the
+         *     client's.
+         */
+        EventCommentActionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "resolve" | "snooze" | "reopen";
+            /** Note */
+            note?: string | null;
+            /** Snoozed Until */
+            snoozed_until?: string | null;
+        };
+        /**
+         * EventCommentStatus
+         * @description Resolution state of one discussion thread on an event.
+         *
+         *     The five columns come from ``SchemaDrift``, but not its vocabulary:
+         *     ``accepted`` and ``false_positive`` are verdicts a detector's finding earns,
+         *     and a question someone typed is neither accepted nor false. A thread is
+         *     open, answered, or deliberately parked (tripl-h2sx.26).
+         * @enum {string}
+         */
+        EventCommentStatus: "open" | "resolved" | "snoozed";
         /** EventCompositionMetricCreate */
         EventCompositionMetricCreate: {
             /**
@@ -5746,6 +5801,11 @@ export interface components {
             monitored: boolean;
             /** Name */
             name: string;
+            /**
+             * Open Question Count
+             * @default 0
+             */
+            open_question_count: number;
             /** Order */
             order: number;
             /** Owner Id */
@@ -6027,6 +6087,16 @@ export interface components {
             parent_id: string | null;
             /** Photo Id */
             photo_id?: string | null;
+            /** Resolution Note */
+            resolution_note?: string | null;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Resolved By */
+            resolved_by?: string | null;
+            /** Snoozed Until */
+            snoozed_until?: string | null;
+            /** @default open */
+            status: components["schemas"]["EventCommentStatus"];
             /**
              * Updated At
              * Format: date-time
@@ -14019,6 +14089,7 @@ export interface operations {
                 tag?: string | null;
                 silent_since_days?: number | null;
                 reviewed?: boolean | null;
+                has_open_questions?: boolean | null;
                 field_value?: string | null;
                 meta_value?: string | null;
                 offset?: number;
@@ -14542,6 +14613,43 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_event_comment_action_api_v1_projects__slug__events__event_id__comments__comment_id__actions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                event_id: string;
+                comment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EventCommentActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventPhotoCommentResponse"];
+                };
             };
             /** @description Validation Error */
             422: {

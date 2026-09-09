@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { createElement, type ReactNode } from 'react'
@@ -85,6 +85,28 @@ describe('useEventsQuery.fetchAllMatchingIds', () => {
         .mocked(eventsApi.list)
         .mock.calls.every(([, params]) => (params?.limit ?? 0) <= BACKEND_LIMIT_CAP),
     ).toBe(true)
+  })
+
+  it('sends the open-questions filter to the server, and keeps it out of the default request', async () => {
+    // Absent means "any", so the default request has to stay byte-identical to
+    // what it was before the filter existed (tripl-h2sx.26).
+    const { result } = renderEventsQuery()
+    await waitFor(() => expect(result.current.eventsQuery.isSuccess).toBe(true))
+    expect(
+      vi.mocked(eventsApi.list).mock.calls.every(
+        ([, params]) => params?.has_open_questions === undefined,
+      ),
+    ).toBe(true)
+
+    act(() => result.current.setFilterOpenQuestions(true))
+
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(eventsApi.list)
+          .mock.calls.some(([, params]) => params?.has_open_questions === true),
+      ).toBe(true),
+    )
   })
 
   it('returns an empty list without hitting the API when nothing matches', async () => {

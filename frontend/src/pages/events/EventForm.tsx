@@ -1497,6 +1497,9 @@ export default function EventEditPage() {
             list={() => eventCommentsApi.list(slug, eventId)}
             create={(body, parentId) => eventCommentsApi.create(slug, eventId, body, parentId)}
             remove={commentId => eventCommentsApi.remove(slug, eventId, commentId)}
+            onAction={(commentId, action, snoozedUntil) =>
+              eventCommentsApi.action(slug, eventId, commentId, action, snoozedUntil)
+            }
             authorName={comment => displayUser(usersById, comment.user_id)}
             heading="Discussion"
             emptyText="Nothing raised yet. Questions and notes here stay out of the spec."

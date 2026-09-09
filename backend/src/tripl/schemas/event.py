@@ -271,6 +271,11 @@ class EventListItemResponse(BaseModel):
     reviewed: bool = False
     metric_breakdown_columns: list[str] = []
     drift_count: int = 0
+    # Unanswered threads on the event's discussion, read through to the main twin
+    # for a branch copy. A snooze that has lapsed counts again. Populated by
+    # list_events only; the detail response renders the thread itself and can
+    # count what it already holds.
+    open_question_count: int = 0
     # Alert-rule coverage: True when at least one enabled rule watches this event.
     # Populated by list_events; distinct from a live firing signal.
     monitored: bool = False

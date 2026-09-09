@@ -518,3 +518,27 @@ describe('EventRow multi-value meta field (tripl-h2sx.31)', () => {
     expect(second).toHaveAttribute('href', 'https://jira.example/browse/WND-2')
   })
 })
+
+describe('EventRow open questions', () => {
+  it('marks a row whose discussion is still waiting, with the count', async () => {
+    // The filter beside it says "open questions"; a marker that cannot say how
+    // many leaves the reader guessing whether one thing is open or five
+    // (tripl-h2sx.26).
+    renderRow({ ...makeEvent(), open_question_count: 3 } as EventListItem, [])
+
+    const marker = await screen.findByTitle('3 unanswered questions in the discussion')
+    expect(marker).toHaveTextContent('?3')
+  })
+
+  it('singularises one question, and says nothing when none is open', () => {
+    const { unmount } = renderRow(
+      { ...makeEvent(), open_question_count: 1 } as EventListItem,
+      [],
+    )
+    expect(screen.getByTitle('1 unanswered question in the discussion')).toBeInTheDocument()
+    unmount()
+
+    renderRow(makeEvent(), [])
+    expect(screen.queryByTitle(/unanswered question/)).toBeNull()
+  })
+})

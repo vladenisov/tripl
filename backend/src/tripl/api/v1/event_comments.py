@@ -5,7 +5,11 @@ import uuid
 from fastapi import APIRouter
 
 from tripl.api.deps import EditorUserDep, SessionDep
-from tripl.schemas.event_photo import EventPhotoCommentCreate, EventPhotoCommentResponse
+from tripl.schemas.event_photo import (
+    EventCommentActionRequest,
+    EventPhotoCommentCreate,
+    EventPhotoCommentResponse,
+)
 from tripl.services import event_comment_service
 
 # A sibling of the photo threads under the same event prefix, not a nested
@@ -42,6 +46,32 @@ async def create_event_comment(
         event_id,
         body=data.body,
         parent_id=data.parent_id,
+        user_id=current_user.id,
+    )
+    return EventPhotoCommentResponse.model_validate(comment)
+
+
+@router.post("/{comment_id}/actions", response_model=EventPhotoCommentResponse)
+async def apply_event_comment_action(
+    session: SessionDep,
+    slug: str,
+    event_id: uuid.UUID,
+    comment_id: uuid.UUID,
+    data: EventCommentActionRequest,
+    current_user: EditorUserDep,
+) -> EventPhotoCommentResponse:
+    """Resolve, snooze or reopen one thread.
+
+    An ``/actions`` sub-resource, not a PATCH on the comment: the body names an
+    intent and the service decides which of the five resolution columns move —
+    the shape every other resolvable thing here already uses.
+    """
+    comment = await event_comment_service.apply_comment_action(
+        session,
+        slug,
+        event_id,
+        comment_id,
+        data,
         user_id=current_user.id,
     )
     return EventPhotoCommentResponse.model_validate(comment)

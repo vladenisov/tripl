@@ -16,6 +16,8 @@ function renderToolbar(overrides: Partial<React.ComponentProps<typeof EventsTool
       onFilterSilentDaysChange={() => {}}
       filterReviewed={undefined}
       onFilterReviewedChange={() => {}}
+      filterOpenQuestions={undefined}
+      onFilterOpenQuestionsChange={() => {}}
       sortOrder="catalog"
       onSortOrderChange={onSortOrderChange}
       hasActiveFilters={false}
@@ -78,6 +80,20 @@ describe('EventsToolbar More menu (tripl-evbw)', () => {
 
     fireEvent.click(exportItem)
     expect(onExportCsv).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks the server which events are waiting on an answer', async () => {
+    // Server-side like every other filter here: narrowing the loaded page would
+    // answer for the page, not the catalog (tripl-h2sx.26).
+    const onFilterOpenQuestionsChange = vi.fn()
+    renderToolbar({ onFilterOpenQuestionsChange })
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Open questions filter' }), {
+      key: 'Enter',
+    })
+    fireEvent.click(await screen.findByRole('option', { name: 'Open questions' }))
+
+    expect(onFilterOpenQuestionsChange).toHaveBeenCalledWith(true)
   })
 
   it('withholds the export until the loaded view matches the current filters', async () => {

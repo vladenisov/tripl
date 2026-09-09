@@ -6004,6 +6004,59 @@
         "title": "EventChangeResponse",
         "type": "object"
       },
+      "EventCommentActionRequest": {
+        "description": "One action on one thread, shaped like ``SchemaDriftActionRequest``.\n\nPOST to an ``/actions`` sub-resource rather than PATCH on the comment, the\nway every other resolvable thing in this codebase does it: the body names an\nintent, and the five columns it moves are the service's business, not the\nclient's.",
+        "properties": {
+          "action": {
+            "enum": [
+              "resolve",
+              "snooze",
+              "reopen"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snoozed Until"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "EventCommentActionRequest",
+        "type": "object"
+      },
+      "EventCommentStatus": {
+        "description": "Resolution state of one discussion thread on an event.\n\nThe five columns come from ``SchemaDrift``, but not its vocabulary:\n``accepted`` and ``false_positive`` are verdicts a detector's finding earns,\nand a question someone typed is neither accepted nor false. A thread is\nopen, answered, or deliberately parked (tripl-h2sx.26).",
+        "enum": [
+          "open",
+          "resolved",
+          "snoozed"
+        ],
+        "title": "EventCommentStatus",
+        "type": "string"
+      },
       "EventCompositionMetricCreate": {
         "properties": {
           "anomaly_detection_enabled": {
@@ -6628,6 +6681,11 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "open_question_count": {
+            "default": 0,
+            "title": "Open Question Count",
+            "type": "integer"
           },
           "order": {
             "title": "Order",
@@ -7369,6 +7427,57 @@
               }
             ],
             "title": "Photo Id"
+          },
+          "resolution_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Note"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snoozed Until"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EventCommentStatus",
+            "default": "open"
           },
           "updated_at": {
             "format": "date-time",
@@ -25632,6 +25741,22 @@
           },
           {
             "in": "query",
+            "name": "has_open_questions",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Has Open Questions"
+            }
+          },
+          {
+            "in": "query",
             "name": "field_value",
             "required": false,
             "schema": {
@@ -26731,6 +26856,79 @@
           }
         },
         "summary": "Delete Event Comment",
+        "tags": [
+          "event-comments"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/events/{event_id}/comments/{comment_id}/actions": {
+      "post": {
+        "description": "Resolve, snooze or reopen one thread.\n\nAn ``/actions`` sub-resource, not a PATCH on the comment: the body names an\nintent and the service decides which of the five resolution columns move \u2014\nthe shape every other resolvable thing here already uses.",
+        "operationId": "apply_event_comment_action_api_v1_projects__slug__events__event_id__comments__comment_id__actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "comment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Comment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventCommentActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPhotoCommentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Event Comment Action",
         "tags": [
           "event-comments"
         ]

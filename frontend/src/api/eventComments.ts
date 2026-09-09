@@ -1,4 +1,4 @@
-import type { EventPhotoComment } from '../types'
+import type { EventCommentAction, EventPhotoComment } from '../types'
 
 const BASE = '/api/v1'
 
@@ -39,6 +39,34 @@ export const eventCommentsApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ body, parent_id: parentId }),
     })
+    return unwrap<EventPhotoComment>(res)
+  },
+
+  /**
+   * Resolve, snooze or reopen one thread.
+   *
+   * An `/actions` sub-resource rather than a PATCH on the comment: the body
+   * names an intent and the server decides which of the five resolution columns
+   * move. Refused on a reply — the thread is the unit that gets answered.
+   */
+  action: async (
+    slug: string,
+    eventId: string,
+    commentId: string,
+    action: EventCommentAction,
+    snoozedUntil?: string,
+  ): Promise<EventPhotoComment> => {
+    const res = await fetch(
+      `${BASE}/projects/${slug}/events/${eventId}/comments/${commentId}/actions`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          snoozedUntil ? { action, snoozed_until: snoozedUntil } : { action },
+        ),
+      },
+    )
     return unwrap<EventPhotoComment>(res)
   },
 
