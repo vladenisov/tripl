@@ -63,6 +63,11 @@ export default function ProjectSettingsPage() {
   // The incident an alert link points at — the card that holds Ack / Resolve /
   // Mute. `item` still picks the row the message quoted inside it.
   const focusIncidentId = searchParams.get('incident') ?? undefined
+  // `?edit=1` asks the tab to OPEN the thing `itemId` names, not merely to mark
+  // it. A variable has no detail route of its own — its editor is a dialog — so
+  // this is the address a branch diff's Edit action can point at
+  // (tripl-htfn.2).
+  const openItemEditor = searchParams.get('edit') === '1'
 
   if (!slug) return null
 
@@ -85,8 +90,11 @@ export default function ProjectSettingsPage() {
       {tab === 'event-types' && !itemId && <EventTypesTab slug={slug} />}
       {tab === 'meta-fields' && <MetaFieldsTab slug={slug} />}
       {tab === 'relations' && <RelationsTab slug={slug} />}
-      {/* `itemId` focuses one variable — the target of a branch-diff link. */}
-      {tab === 'variables' && <VariablesTab slug={slug} focusId={itemId} />}
+      {/* `itemId` focuses one variable — the target of a branch-diff link — and
+          `?edit=1` opens its editor, which is that link's Edit action. */}
+      {tab === 'variables' && (
+        <VariablesTab slug={slug} focusId={itemId} openEditor={openItemEditor} />
+      )}
       {tab === 'monitoring' && <MonitoringTab slug={slug} />}
       {tab === 'alerting' && (
         <Suspense fallback={<p className="text-sm text-muted-foreground">Loading alerting settings…</p>}>

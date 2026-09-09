@@ -488,7 +488,12 @@ collection-valued fields (an event's field values and meta values, its tags, a
 variable's documented values and per-event overrides) are broken out member by
 member rather than dumped whole. A row also links to the entity it describes —
 the event, event type, or variable — opened in the branch, or on `main` when the
-branch deleted it. Catalog rows, diff rows and the command palette carry the
+branch deleted it. Events and variables additionally carry **Edit** on the
+collapsed row, without expanding it first: an event opens its editor on that
+branch, and a variable opens its edit dialog on the Variables tab
+(`?edit=1`) — including a renamed row, whose Edit reaches the branch-side copy
+rather than the base one it is drawn from. A merged or closed branch offers no
+Edit, matching what its writes would be refused for. Catalog rows, diff rows and the command palette carry the
 branch in the link (`?branch=`), and an entity page opened that way shows a
 banner naming the branch it belongs to, so a link handed to a developer opens
 the right copy. A diff row also carries **warnings** for an event authored on

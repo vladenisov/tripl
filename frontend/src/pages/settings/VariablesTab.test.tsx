@@ -81,15 +81,20 @@ function mockList(items: Variable[], total = items.length) {
   vi.mocked(variablesApi.listPage).mockResolvedValue({ items, total })
 }
 
-function renderVariablesTab(props: { focusId?: string } = {}) {
+function renderVariablesTab(props: { focusId?: string; openEditor?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <VariablesTab slug="demo" {...props} />
-    </QueryClientProvider>,
-  )
+  // The client is handed back so a test can make the list REFETCH — the only
+  // faithful way to reproduce "the poll landed while the reviewer was reading".
+  return {
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <VariablesTab slug="demo" {...props} />
+      </QueryClientProvider>,
+    ),
+    queryClient,
+  }
 }
 
 /** Mounts the tab inside a BranchContext the way the app does, and hands back a
@@ -1371,5 +1376,61 @@ describe('VariablesTab clear observed values (tripl-h2sx.21)', () => {
     const dialog = await screen.findByRole('dialog')
 
     expect(within(dialog).getByRole('button', { name: 'Clear observed values' })).toBeDisabled()
+  })
+})
+
+/**
+ * tripl-htfn.2 — a variable changed on a branch had no Edit action, because its
+ * editor is a dialog rather than a route. `?edit=1` is that address.
+ */
+describe('VariablesTab — opening one variable’s editor from a link', () => {
+  it('opens the linked variable’s dialog once the list holding it has arrived', async () => {
+    mockList([
+      makeVariable({ id: 'var-1', name: 'variant', description: 'Which arm' }),
+      makeVariable({ id: 'var-2', name: 'spot_id' }),
+    ])
+
+    renderVariablesTab({ focusId: 'var-2', openEditor: true })
+
+    // The dialog names the variable it is editing, so this asserts WHICH one
+    // opened, not merely that something did.
+    expect(await screen.findByRole('heading', { name: 'Edit: spot_id' })).toBeInTheDocument()
+  })
+
+  it('does not reopen the dialog after it is closed', async () => {
+    // The list refetches while the tab is open — a colleague adds a variable, or
+    // the window regains focus. Every refetch hands the effect a fresh array, so
+    // without the once-only guard the dialog reopens under a reviewer who had
+    // just closed it. Reproduced through a real refetch rather than a remount:
+    // a remount resets the guard by design and would prove nothing.
+    mockList([makeVariable({ id: 'var-2', name: 'spot_id' })])
+
+    const { queryClient } = renderVariablesTab({ focusId: 'var-2', openEditor: true })
+    expect(await screen.findByRole('heading', { name: 'Edit: spot_id' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Edit: spot_id' })).not.toBeInTheDocument(),
+    )
+
+    mockList([
+      makeVariable({ id: 'var-2', name: 'spot_id' }),
+      makeVariable({ id: 'var-9', name: 'arrived_later' }),
+    ])
+    await act(async () => {
+      await queryClient.invalidateQueries()
+    })
+    await waitFor(() => expect(screen.getByText('${arrived_later}')).toBeInTheDocument())
+
+    expect(screen.queryByRole('heading', { name: 'Edit: spot_id' })).not.toBeInTheDocument()
+  })
+
+  it('leaves the dialog closed when the link only focuses a row', async () => {
+    mockList([makeVariable({ id: 'var-2', name: 'spot_id' })])
+
+    renderVariablesTab({ focusId: 'var-2' })
+
+    await waitFor(() => expect(screen.getByText('${spot_id}')).toBeInTheDocument())
+    expect(screen.queryByRole('heading', { name: 'Edit: spot_id' })).not.toBeInTheDocument()
   })
 })

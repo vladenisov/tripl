@@ -104,8 +104,18 @@ function useStableCallback<Args extends unknown[]>(fn: (...args: Args) => void) 
 
 /** `focusId` scrolls to and highlights one variable — the landing spot for a
  * branch-diff link, which knows the variable's id but has no detail page to
- * send the reviewer to. */
-export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string }) {
+ * send the reviewer to. `openEditor` goes one step further and opens that
+ * variable's edit dialog, which is what makes the diff row's Edit action
+ * possible for a variable at all (tripl-htfn.2). */
+export function VariablesTab({
+  slug,
+  focusId,
+  openEditor = false,
+}: {
+  slug: string
+  focusId?: string
+  openEditor?: boolean
+}) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const focusRef = useRef<HTMLTableRowElement | null>(null)
@@ -516,6 +526,20 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
     setOverrideValues([])
     setShowQuietDrifts(false)
   })
+
+  // Open the linked variable's editor once, when the list that holds it has
+  // arrived. ONCE is the whole subtlety: the list refetches, and without the
+  // guard a reviewer who closed the dialog would have it reopened under them on
+  // the next poll. A ref rather than state because nothing renders from it —
+  // and it is keyed on the id, so following a second Edit link still opens.
+  const autoOpenedVariableId = useRef<string | null>(null)
+  useEffect(() => {
+    if (!openEditor || !focusId || autoOpenedVariableId.current === focusId) return
+    const target = variables.find(v => v.id === focusId)
+    if (!target) return
+    autoOpenedVariableId.current = focusId
+    startEdit(target)
+  }, [openEditor, focusId, variables, startEdit])
 
   const activeVariables = useMemo(
     () => variables.filter(v => !v.excluded_from_scans),

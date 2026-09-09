@@ -753,6 +753,17 @@ describe('BranchesTab', () => {
           before: null,
           after: { name: 'variant' },
         },
+        {
+          entity_type: 'field_definition',
+          kind: 'added',
+          name: 'order_id',
+          parent: 'track',
+          entity_id: 'fd-2',
+          changes: [],
+          field_changes: [],
+          before: null,
+          after: { name: 'order_id' },
+        },
       ],
     })
 
@@ -762,8 +773,19 @@ describe('BranchesTab', () => {
     const edit = await screen.findByRole('link', { name: 'Edit checkout_started' })
     expect(edit).toHaveAttribute('href', '/p/demo/events/all/ev-9/edit?branch=feat-1')
 
-    // Only events have an editor route; a variable row keeps its detail link.
-    expect(screen.queryByRole('link', { name: 'Edit variant' })).not.toBeInTheDocument()
+    // A variable's editor is a dialog, not a route, so its Edit asks the
+    // Variables tab to open the one `itemId` names (tripl-htfn.2). Before this
+    // it had no Edit at all and a reviewer had to expand the row, find the
+    // 11px link after Revert, and land on a highlighted row that was closed.
+    const editVariable = await screen.findByRole('link', { name: 'Edit variant' })
+    expect(editVariable).toHaveAttribute(
+      'href',
+      '/p/demo/settings/variables/var-3?edit=1&branch=feat-1',
+    )
+
+    // Field definitions still have no editor to point at, so the row must not
+    // grow a link that goes nowhere.
+    expect(screen.queryByRole('link', { name: 'Edit order_id' })).not.toBeInTheDocument()
   })
 
   it('edits the branch-side copy of a renamed event, not the base-side id the row carries', async () => {
