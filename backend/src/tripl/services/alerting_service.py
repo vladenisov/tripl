@@ -34,6 +34,7 @@ from tripl.schemas.alerting import (
 from tripl.services._alerting_deliveries import (
     INBOX_LOOKBACK_DAYS,
     INBOX_MAX_SOURCE_ITEMS,
+    InboxFilters,
     apply_alert_inbox_action,
     apply_alert_inbox_bulk_action,
     count_open_incidents,
@@ -114,6 +115,7 @@ __all__ = [
     "get_monitor",
     "get_monitors_summary",
     "get_rule",
+    "InboxFilters",
     "list_alert_inbox",
     "list_deliveries",
     "list_destinations",

@@ -12302,6 +12302,11 @@ export interface operations {
         parameters: {
             query?: {
                 status?: components["schemas"]["AlertInboxStatus"] | null;
+                last_fired_from?: string | null;
+                last_fired_to?: string | null;
+                scope_type?: components["schemas"]["MetricScopeType"] | null;
+                direction?: components["schemas"]["AnomalyDirection"] | null;
+                scope?: string | null;
                 offset?: number;
                 limit?: number;
             };

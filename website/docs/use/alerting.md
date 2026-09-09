@@ -1107,6 +1107,26 @@ filter removes the parameter; unlike the API, a value the page does not
 recognise degrades quietly to **All**, the same rule `?section=` and `?scan=`
 already follow.
 
+**Status is not the only filter.** A bar above the list narrows it four more
+ways, each of them a field the cards already show, and each of them in the URL
+beside `?status=`:
+
+| Control | Parameter | What it matches |
+| --- | --- | --- |
+| Last fired from / to | `?fired_from=`, `?fired_to=` (`YYYY-MM-DD`) | When the incident **last** spoke, not when it started. Both ends are inclusive whole days, read in your own timezone, so "to the 8th" includes that evening. |
+| Kind | `?scope_type=` | Any scope the incident fired on — an incident holding one release regression among ten volume firings is found by either. |
+| Direction | `?direction=drop` / `spike` | The direction of its **newest** firing, which is the one the card shows. |
+| Scope | `?scope=` | Case-insensitive substring of any scope name or reference in the incident, including the ones past the eight the card lists. |
+
+The date filter **narrows the 30 days the list already covers**; it cannot fetch
+an incident older than that, and the bar says so under the inputs. Combined with
+a status, the filters read as "and": `?status=open&direction=drop&scope=checkout`
+is the open drops on checkout. The count under the list and the "of N" beside it
+both describe the filtered set, so the number above the cards always counts the
+cards. An unrecognised `scope_type` or `direction` is a 422 from the API, while
+the page — like `?status=` — drops it quietly rather than turning a stale link
+into a failed request.
+
 The Inbox lists the last **30 days**, but an alert's link is not bound by that
 window: `GET /api/v1/projects/{slug}/alert-inbox/{correlation_group_id}` resolves
 one incident by id and deliberately ignores the lookback, because the reader

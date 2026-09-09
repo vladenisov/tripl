@@ -9,7 +9,7 @@ from tripl.models.alert_delivery import AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestinationType
 from tripl.models.alert_rule import AlertRule
 from tripl.models.anomaly_scope_override import RATCHET_SIGMA_CAP
-from tripl.models.domain_enums import AlertInboxStatus
+from tripl.models.domain_enums import AlertInboxStatus, AnomalyDirection, MetricScopeType
 from tripl.schemas.alerting import (
     AlertDeliveryDetailResponse,
     AlertDeliveryListResponse,
@@ -414,6 +414,21 @@ async def list_alert_inbox(
     # "no incidents", which is worse than a crash. AlertInboxStatus makes the
     # typo a 422 (tripl-57g0).
     status: AlertInboxStatus | None = None,
+    # Bounds on `latest_delivery_at` — when the incident last spoke, which is
+    # the column the card leads with and the one triage asks about. Both are
+    # INCLUSIVE, and both are narrowings INSIDE the list's own window: nothing
+    # here can reach an incident older than INBOX_LOOKBACK_DAYS, or one the
+    # source cap dropped. The page states that; the API cannot, so it must not
+    # be read as an unbounded date search (tripl-htfn.4).
+    last_fired_from: datetime | None = None,
+    last_fired_to: datetime | None = None,
+    # Enums, not bare strings, for the reason `status` is one: a typo has to be
+    # a 422 rather than an empty inbox nobody can explain (tripl-57g0).
+    scope_type: MetricScopeType | None = None,
+    direction: AnomalyDirection | None = None,
+    # Case-insensitive substring over every scope name and ref in the incident,
+    # so "the events I already know are fine" can be pulled up by name.
+    scope: str | None = Query(None, max_length=200),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ) -> AlertInboxListResponse:
@@ -421,6 +436,13 @@ async def list_alert_inbox(
         session,
         slug,
         status=status,
+        filters=alerting_service.InboxFilters(
+            last_fired_from=last_fired_from,
+            last_fired_to=last_fired_to,
+            scope_type=scope_type,
+            direction=direction,
+            scope=scope,
+        ),
         offset=offset,
         limit=limit,
     )

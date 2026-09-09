@@ -43,6 +43,13 @@ import type {
 } from '@/types'
 
 import { noteBudgetLabel } from './constants'
+import { InboxFilterBar } from './InboxFilterBar'
+import {
+  EMPTY_INBOX_FILTERS,
+  INBOX_LOOKBACK_DAYS,
+  hasActiveInboxFilters,
+  type InboxFilterState,
+} from './inboxFilters'
 import { IncidentDeliveries } from './IncidentDeliveries'
 
 /** The status filter, where `''` is "All" — the state with no `status=` param. */
@@ -77,8 +84,12 @@ export interface InboxActionVariables {
   mutedUntil?: string | null
 }
 
-/** How long the list reaches back, server-side (INBOX_LOOKBACK_DAYS). */
-const LOOKBACK_LABEL = 'last 30 days'
+/** How long the list reaches back, server-side (INBOX_LOOKBACK_DAYS).
+ *
+ *  Derived rather than spelled: the date filter's own bound reads the same
+ *  constant, and the day those two disagreed would be the day the page promised
+ *  a window its controls could not reach. */
+const LOOKBACK_LABEL = `last ${INBOX_LOOKBACK_DAYS} days`
 
 /**
  * What the list actually covers, which is no longer only the window
@@ -136,6 +147,11 @@ interface AlertingInboxProps {
   hasRules: boolean
   statusFilter: InboxStatusFilter
   onStatusFilterChange: (next: InboxStatusFilter) => void
+  // Everything narrowing the list past its status. Owned by the page for the
+  // same reason `statusFilter` is: it lives in the URL and it is part of the
+  // query key, so this component may render it but must not hold it.
+  filters: InboxFilterState
+  onFiltersChange: (next: InboxFilterState) => void
   onLoadMore: () => void
   hasMore: boolean
   isLoadingMore: boolean
@@ -194,6 +210,8 @@ export function AlertingInbox({
   hasRules,
   statusFilter,
   onStatusFilterChange,
+  filters,
+  onFiltersChange,
   onLoadMore,
   hasMore,
   isLoadingMore,
@@ -396,6 +414,11 @@ export function AlertingInbox({
         }
       >
         <div className="space-y-3 p-4">
+          {/* Above the truncation notice and the list alike: the controls that
+              decide what is below them must not move as the answer changes, and
+              a reader who filtered into an empty result needs the control that
+              did it on screen, not scrolled past. */}
+          <InboxFilterBar value={filters} onChange={onFiltersChange} />
           {/* ABOVE the loading/error/empty/list ternary, not inside its last
               branch. The cap drops rows before grouping and before the status
               filter, so a filter whose matching incidents were the dropped ones
@@ -428,7 +451,7 @@ export function AlertingInbox({
             </p>
           ) : items.length === 0 && !pinnedGroup ? (
             <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-              {statusFilter ? (
+              {statusFilter || hasActiveInboxFilters(filters) ? (
                 <>
                   {/* Naming the filter is the difference between "nothing has
                       ever happened here" and "nothing matches what you asked
@@ -440,10 +463,19 @@ export function AlertingInbox({
                       and ?status=muted is precisely the filter the rescue
                       serves. The filter's own name still does the work this
                       sentence exists for. */}
-                  No {alertInboxStatusLabel(statusFilter).toLowerCase()} incidents.{' '}
+                  {/* Both halves are named because either can be the one that
+                      emptied the page, and a sentence that mentions only the
+                      status sends a reader to clear a filter that was not the
+                      cause (tripl-htfn.4). */}
+                  No {statusFilter ? `${alertInboxStatusLabel(statusFilter).toLowerCase()} ` : ''}
+                  incidents
+                  {hasActiveInboxFilters(filters) ? ' match these filters' : ''}.{' '}
                   <button
                     type="button"
-                    onClick={() => onStatusFilterChange('')}
+                    onClick={() => {
+                      onStatusFilterChange('')
+                      onFiltersChange(EMPTY_INBOX_FILTERS)
+                    }}
                     className="underline underline-offset-2"
                   >
                     Show all
