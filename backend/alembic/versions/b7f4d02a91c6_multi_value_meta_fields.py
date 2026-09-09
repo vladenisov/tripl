@@ -49,14 +49,22 @@ def downgrade() -> None:
     # The old constraint is stronger, so anything a multi-valued field collected
     # has to go before it can be restored. Keep one row per (event, field) —
     # the lowest id, which is stable rather than arbitrary.
+    #
+    # DISTINCT ON rather than MIN(id): the column is a uuid and Postgres has no
+    # ``min(uuid)`` aggregate, so the obvious spelling raises UndefinedFunction
+    # the moment this downgrade actually runs. SQLite, which the test suite uses,
+    # accepts MIN over anything — so only executing the chain against real
+    # Postgres catches it, which is what the alembic round-trip gate is for.
+    # ``uuid`` still has a btree ordering, so ORDER BY picks the same row the
+    # aggregate would have.
     op.execute(
         sa.text(
             """
             DELETE FROM event_meta_values
             WHERE id NOT IN (
-                SELECT MIN(id)
+                SELECT DISTINCT ON (event_id, meta_field_definition_id) id
                 FROM event_meta_values
-                GROUP BY event_id, meta_field_definition_id
+                ORDER BY event_id, meta_field_definition_id, id
             )
             """
         )

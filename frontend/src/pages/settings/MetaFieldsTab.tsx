@@ -67,8 +67,12 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const metaFieldTypes = ['string', 'url', 'boolean', 'enum', 'date']
 
   // Switching to `boolean` or `date` while the box is ticked would send a pair
-  // the server rejects, so the type decides whether the flag is sent at all —
-  // the state itself is left alone, and switching back restores the tick.
+  // the server rejects, so the type decides the VALUE sent, not whether it is
+  // sent: the payload always carries `allow_multiple`, forced to false for a
+  // type that cannot hold several values. Sending it beats omitting it — on an
+  // update, omission would leave a previously-true flag standing while the type
+  // moved to one that forbids it, which is the pair the server refuses. The
+  // checkbox state itself is left alone, so switching back restores the tick.
   const canAllowMultiple = MULTI_VALUE_META_FIELD_TYPES.has(fieldType)
   const canEditAllowMultiple = MULTI_VALUE_META_FIELD_TYPES.has(editFieldType)
 

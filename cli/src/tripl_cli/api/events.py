@@ -80,6 +80,12 @@ def list_events(
     # event can be marked reviewed and still sit at status=in_review, which is
     # why the route grew an axis of its own (tripl-invv).
     reviewed: bool | None = None,
+    # Tri-state like `reviewed`, and for the same reason: True keeps only events
+    # whose discussion still has an unanswered thread, False only those with
+    # none, and OMITTING it means either. A snooze that has lapsed counts as
+    # unanswered again — the server decides that when it reads, so there is
+    # nothing for a caller to compute.
+    has_open_questions: bool | None = None,
     offset: int | None = None,
     limit: int | None = None,
     # One of ORDER_BY, or None to take the route's own default (ORDER_BY_DEFAULT
@@ -101,6 +107,7 @@ def list_events(
             "event_type_id": event_type_id,
             "silent_since_days": silent_since_days,
             "reviewed": reviewed,
+            "has_open_questions": has_open_questions,
             "offset": offset,
             "limit": limit,
             "order_by": order_by,

@@ -43,6 +43,11 @@ export function VariableValueContextTrigger({
           // collapsed empty state: one appearance for two things a reader has to
           // act on differently.
           const isExcluded = context.excluded_from_scans === true
+          // Formatted once, then used as both the guard and the text.
+          // `formatDateTime` returns '' for a value it cannot parse, so the
+          // empty string is what decides the row is not rendered — calling it
+          // twice asked the same question twice and let the two answers drift.
+          const lastRefreshed = context.updated_at ? formatDateTime(context.updated_at) : ''
           return (
             <div key={context.id} className="space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -80,10 +85,8 @@ export function VariableValueContextTrigger({
                   so "last seen" would overstate it. Rendered on its own line so
                   the frozen-value sentences below stay the final word for an
                   excluded context. */}
-              {context.updated_at && formatDateTime(context.updated_at) && (
-                <div className="text-muted-foreground">
-                  Last refreshed {formatDateTime(context.updated_at)}
-                </div>
+              {lastRefreshed && (
+                <div className="text-muted-foreground">Last refreshed {lastRefreshed}</div>
               )}
               {context.values.length > 0 ? (
                 <div className="flex max-h-36 flex-wrap gap-1 overflow-auto">

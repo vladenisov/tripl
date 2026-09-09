@@ -155,6 +155,25 @@ def _register_list(
             "event can be marked reviewed and still sit at --status in_review)"
         ),
     )
+    # Same tri-state shape as --reviewed/--unreviewed above, for the same
+    # reason: the third state is "leave the parameter off".
+    questions = parser.add_mutually_exclusive_group()
+    questions.add_argument(
+        "--open-questions",
+        dest="has_open_questions",
+        action="store_const",
+        const=True,
+        default=None,
+        help="keep only events whose discussion has an unanswered thread",
+    )
+    questions.add_argument(
+        "--no-open-questions",
+        dest="has_open_questions",
+        action="store_const",
+        const=False,
+        default=None,
+        help="keep only events with nothing left open in their discussion",
+    )
     parser.add_argument(
         "--offset",
         dest="offset",
@@ -243,6 +262,7 @@ def run_list(args: argparse.Namespace, config: Config) -> int:
                     event_type_id=args.event_type_id,
                     silent_since_days=args.silent_since_days,
                     reviewed=args.reviewed,
+                    has_open_questions=args.has_open_questions,
                     offset=offset,
                     limit=limit,
                     order_by=args.order_by,
