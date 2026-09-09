@@ -22,6 +22,7 @@ from httpx import AsyncClient
 from pydantic import ValidationError
 from sqlalchemy import create_engine, insert, select
 
+from tripl.alerting_validation import validate_sender_address
 from tripl.config import (
     SMTP_SECURITY_IMPLICIT_TLS,
     SMTP_SECURITY_MODES,
@@ -32,7 +33,7 @@ from tripl.config import (
 )
 from tripl.models.app_setting import SERVICE_SETTINGS_KEY, AppSetting
 from tripl.schemas.app_settings import SmtpSecurity
-from tripl.services import _email_test_send
+from tripl.services.app_settings_service import EmailConfig
 from tripl.tests.test_alembic_revisions import _load_migration
 from tripl.worker.tasks.alerts_channels import _send_email_message
 
@@ -307,16 +308,22 @@ async def test_the_smtp_test_names_the_missing_from_address(
 
 
 def test_a_display_name_sender_is_accepted_because_real_delivery_accepts_it() -> None:
-    """The diagnostic must not fail a configuration that actually delivers.
+    """A diagnostic must not fail a configuration that actually delivers.
 
-    ``_alerting_test_send`` runs ``validate_email_address`` on the From: address,
-    which refuses ``Tripl <no-reply@x>`` — while every real send path hands the
-    configured string straight to ``EmailMessage``, which takes it. Copying that
-    check would make this endpoint report "broken" for a working relay, so only
-    the address part is validated.
+    ``validate_email_address`` refuses ``Tripl <no-reply@x>``, while every real
+    send path hands the configured string straight to ``EmailMessage``, which
+    takes it. The alert-destination test used the strict helper and therefore
+    reported failure for destinations that deliver on every fire (tripl-q9o6);
+    both test sends now share this one, which checks only the address part.
+
+    The original string comes back, display name intact — normalising it away
+    would silently drop what the operator configured.
     """
-    _email_test_send._check_from_address("Tripl Alerts <no-reply@example.com>")
-    _email_test_send._check_from_address("no-reply@example.com")
+    assert (
+        validate_sender_address("Tripl Alerts <no-reply@example.com>")
+        == "Tripl Alerts <no-reply@example.com>"
+    )
+    assert validate_sender_address("no-reply@example.com") == "no-reply@example.com"
 
 
 def test_a_sender_with_no_at_sign_is_refused_with_a_readable_reason() -> None:
@@ -327,7 +334,69 @@ def test_a_sender_with_no_at_sign_is_refused_with_a_readable_reason() -> None:
     comes back as an opaque relay error instead.
     """
     with pytest.raises(ValueError, match="not a usable address|@-sign"):
-        _email_test_send._check_from_address("not-an-address")
+        validate_sender_address("not-an-address")
+
+
+def test_the_alert_destination_test_send_accepts_a_display_name_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The half of tripl-q9o6 that lives outside the shared helper.
+
+    Pinning the CALL SITE, not just the validator: the defect was that this path
+    used the strict helper, so a test asserting only ``validate_sender_address``
+    would stay green if someone put ``validate_email_address`` back here.
+    """
+    # celery_app FIRST, deliberately: ``alerts`` and ``celery_app`` import each
+    # other (alerts -> celery_app -> metrics -> alerts), and the cycle only
+    # resolves when celery_app is the module that starts loading — which is what
+    # the worker itself does. Entering from ``alerts`` raises ImportError on a
+    # partially initialized module.
+    import tripl.worker.celery_app  # noqa: F401
+    from tripl.services import _alerting_test_send, app_settings_service
+    from tripl.worker.tasks import alerts
+
+    sent: dict[str, object] = {}
+    monkeypatch.setattr(
+        app_settings_service,
+        "get_email_config_sync",
+        lambda *a, **k: EmailConfig(
+            smtp_host="relay.example.com",
+            smtp_port=587,
+            smtp_username="",
+            smtp_password="",
+            smtp_security=SMTP_SECURITY_STARTTLS,
+            smtp_from_address="",
+        ),
+    )
+    monkeypatch.setattr(alerts, "_send_email_message", lambda **kw: sent.update(kw))
+
+    target = _alerting_test_send._TestTarget(
+        destination_id=uuid.uuid4(),
+        destination_type="email",
+        destination_name="Ops",
+        message="body",
+        webhook_url=None,
+        bot_token=None,
+        chat_id=None,
+        target_url=None,
+        webhook_header_name=None,
+        webhook_header_value=None,
+        email_recipients="ops@example.com",
+        email_from_address="Tripl Alerts <no-reply@example.com>",
+        jira_base_url=None,
+        jira_auth_email=None,
+        jira_api_token=None,
+        jira_project_key=None,
+        jira_issue_type=None,
+        linear_api_key=None,
+        linear_team_id=None,
+        linear_state_id=None,
+        linear_label_ids=None,
+    )
+
+    _alerting_test_send._send_email(target)
+
+    assert sent["from_address"] == "Tripl Alerts <no-reply@example.com>"
 
 
 @pytest.mark.parametrize("injected", ["ok@example.com\nBcc: evil@example.com", "a@b.c\r\nX: y"])
