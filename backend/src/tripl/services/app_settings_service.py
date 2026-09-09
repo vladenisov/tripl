@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from tripl import crypto
-from tripl.config import Settings, settings
+from tripl.config import SMTP_SECURITY_NONE, SMTP_SECURITY_STARTTLS, Settings, settings
 from tripl.models.app_setting import AI_SETTINGS_KEY, SERVICE_SETTINGS_KEY, AppSetting
 from tripl.services import migration_status_service
 from tripl.services.ai_defaults import (
@@ -83,7 +83,13 @@ EMAIL_FIELDS = (
     "smtp_port",
     "smtp_username",
     "smtp_password",
-    "smtp_use_tls",
+    # Replaces the old ``smtp_use_tls`` boolean, which could not express
+    # implicit TLS and so left a 465 relay unreachable (tripl-x1vk). The boolean
+    # survives as a deprecated ENV default only — it is deliberately absent
+    # here, so it is neither reported nor editable and exactly one field decides
+    # the transport. Stored overrides carrying the old key are rewritten by
+    # migration a3f7c21e9b64.
+    "smtp_security",
     "smtp_from_address",
 )
 AI_FIELDS = (
@@ -143,7 +149,10 @@ class EmailConfig:
     smtp_port: int
     smtp_username: str
     smtp_password: str
-    smtp_use_tls: bool
+    # One of config.SMTP_SECURITY_MODES. A string rather than a bool because
+    # the three transports are not orderable: implicit TLS is not "more" than
+    # STARTTLS, it is a different conversation from the first byte.
+    smtp_security: str
     smtp_from_address: str
 
 
@@ -232,7 +241,7 @@ def env_service_values() -> dict[str, Any]:
         "smtp_port": settings.smtp_port,
         "smtp_username": settings.smtp_username,
         "smtp_password": settings.smtp_password,
-        "smtp_use_tls": settings.smtp_use_tls,
+        "smtp_security": settings.resolved_smtp_security(),
         "smtp_from_address": settings.smtp_from_address,
         "ai_enabled": settings.ai_enabled,
         "ai_base_url": settings.ai_base_url,
@@ -305,7 +314,7 @@ def build_email_config(overrides: dict[str, Any]) -> EmailConfig:
         smtp_port=int(values["smtp_port"]),
         smtp_username=str(values["smtp_username"]),
         smtp_password=str(values["smtp_password"]),
-        smtp_use_tls=bool(values["smtp_use_tls"]),
+        smtp_security=str(values["smtp_security"]),
         smtp_from_address=str(values["smtp_from_address"]),
     )
 
@@ -375,6 +384,11 @@ def get_ai_overrides_sync(session: Session) -> dict[str, Any]:
 
 async def get_ai_config(session: AsyncSession) -> AiConfig:
     return build_ai_config(await get_service_overrides(session))
+
+
+async def get_email_config(session: AsyncSession) -> EmailConfig:
+    """The async twin of ``get_email_config_sync``, for request-path callers."""
+    return build_email_config(await get_service_overrides(session))
 
 
 async def get_service_settings(session: AsyncSession) -> dict[str, Any]:
@@ -624,9 +638,26 @@ _NO_DEFAULT = object()
 # them and their built-in constant IS the default to compare against.
 _PROMPT_DEFAULTS = default_ai_prompts()
 
+# Fields whose REPORTED value is derived from more than one ``Settings`` field,
+# so the field's own class default is not what an untouched instance shows.
+# ``smtp_security`` defaults to "" meaning "ask the deprecated smtp_use_tls",
+# and what reaches the operator is the answer, never the empty string — so
+# comparing against "" would badge a fresh instance "Env" and credit a delivery
+# that never happened. Derived from the sibling's CLASS default rather than
+# written out, so the two cannot drift apart.
+_DERIVED_DEFAULTS: dict[str, Any] = {
+    "smtp_security": (
+        SMTP_SECURITY_STARTTLS
+        if Settings.model_fields["smtp_use_tls"].get_default()
+        else SMTP_SECURITY_NONE
+    ),
+}
+
 
 def _code_default(field: str) -> Any:
     """What this field holds when nothing — no env var, no .env line — delivered it."""
+    if field in _DERIVED_DEFAULTS:
+        return _DERIVED_DEFAULTS[field]
     # ``model_fields`` is read off the CLASS: instance access is deprecated in
     # pydantic 2.11+ and this project pins 2.13.
     info = Settings.model_fields.get(field)
@@ -735,7 +766,7 @@ def public_service_settings(
             "smtp_port": values["smtp_port"],
             "smtp_username": values["smtp_username"],
             "smtp_password_configured": bool(values["smtp_password"]),
-            "smtp_use_tls": values["smtp_use_tls"],
+            "smtp_security": values["smtp_security"],
             "smtp_from_address": values["smtp_from_address"],
         },
         "ai": {

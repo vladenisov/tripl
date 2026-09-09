@@ -3222,6 +3222,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/email/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Email Settings
+         * @description Send one probe message with the saved SMTP settings and report what happened.
+         *
+         *     Always 200: a relay refusing us is the answer the caller asked for, not a
+         *     server fault — the same reasoning the alert-destination test states. The
+         *     error text is passed through verbatim because a useful SMTP diagnostic is
+         *     the server's own words ("535 authentication failed", a connection timeout);
+         *     smtplib carries the relay's response in there, never the credential we sent.
+         */
+        post: operations["test_email_settings_api_v1_settings_email_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -5419,10 +5445,18 @@ export interface components {
             smtp_password_configured: boolean;
             /** Smtp Port */
             smtp_port: number;
-            /** Smtp Use Tls */
-            smtp_use_tls: boolean;
+            /**
+             * Smtp Security
+             * @enum {string}
+             */
+            smtp_security: "none" | "starttls" | "implicit_tls";
             /** Smtp Username */
             smtp_username: string;
+        };
+        /** EmailSettingsTestRequest */
+        EmailSettingsTestRequest: {
+            /** Recipient */
+            recipient?: string | null;
         };
         /** EmailSettingsUpdate */
         EmailSettingsUpdate: {
@@ -5434,8 +5468,8 @@ export interface components {
             smtp_password?: string | null;
             /** Smtp Port */
             smtp_port?: number | null;
-            /** Smtp Use Tls */
-            smtp_use_tls?: boolean | null;
+            /** Smtp Security */
+            smtp_security?: ("none" | "starttls" | "implicit_tls") | null;
             /** Smtp Username */
             smtp_username?: string | null;
         };
@@ -18200,6 +18234,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AiSettingsTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_email_settings_api_v1_settings_email_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailSettingsTestRequest"];
             };
         };
         responses: {

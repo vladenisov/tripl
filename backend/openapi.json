@@ -5752,9 +5752,14 @@
             "title": "Smtp Port",
             "type": "integer"
           },
-          "smtp_use_tls": {
-            "title": "Smtp Use Tls",
-            "type": "boolean"
+          "smtp_security": {
+            "enum": [
+              "none",
+              "starttls",
+              "implicit_tls"
+            ],
+            "title": "Smtp Security",
+            "type": "string"
           },
           "smtp_username": {
             "title": "Smtp Username",
@@ -5766,10 +5771,28 @@
           "smtp_port",
           "smtp_username",
           "smtp_password_configured",
-          "smtp_use_tls",
+          "smtp_security",
           "smtp_from_address"
         ],
         "title": "EmailSettings",
+        "type": "object"
+      },
+      "EmailSettingsTestRequest": {
+        "properties": {
+          "recipient": {
+            "anyOf": [
+              {
+                "format": "email",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient"
+          }
+        },
+        "title": "EmailSettingsTestRequest",
         "type": "object"
       },
       "EmailSettingsUpdate": {
@@ -5821,16 +5844,21 @@
             ],
             "title": "Smtp Port"
           },
-          "smtp_use_tls": {
+          "smtp_security": {
             "anyOf": [
               {
-                "type": "boolean"
+                "enum": [
+                  "none",
+                  "starttls",
+                  "implicit_tls"
+                ],
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Smtp Use Tls"
+            "title": "Smtp Security"
           },
           "smtp_username": {
             "anyOf": [
@@ -33678,6 +33706,48 @@
           }
         },
         "summary": "Test Ai Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/v1/settings/email/test": {
+      "post": {
+        "description": "Send one probe message with the saved SMTP settings and report what happened.\n\nAlways 200: a relay refusing us is the answer the caller asked for, not a\nserver fault \u2014 the same reasoning the alert-destination test states. The\nerror text is passed through verbatim because a useful SMTP diagnostic is\nthe server's own words (\"535 authentication failed\", a connection timeout);\nsmtplib carries the relay's response in there, never the credential we sent.",
+        "operationId": "test_email_settings_api_v1_settings_email_test_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailSettingsTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Email Settings",
         "tags": [
           "settings"
         ]

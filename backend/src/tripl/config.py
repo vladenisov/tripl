@@ -19,6 +19,30 @@ REGISTRATION_OPEN = "open"
 REGISTRATION_DISABLED = "disabled"
 REGISTRATION_MODES = (REGISTRATION_OPEN, REGISTRATION_DISABLED)
 
+# How the SMTP client secures the connection. These are three different
+# protocols, not three strengths of one:
+# "none"         — plaintext for the whole session. Only sane for a relay on
+#                  localhost or a trusted network segment.
+# "starttls"     — connect in plaintext, read the server's greeting, then
+#                  upgrade in place with STARTTLS. The submission-port (587)
+#                  convention.
+# "implicit_tls" — the socket is wrapped in TLS BEFORE anything is sent, so the
+#                  greeting itself arrives encrypted. The SMTPS convention, and
+#                  what port 465 means.
+#
+# The distinction is not cosmetic: a client that speaks STARTTLS to an
+# implicit-TLS port waits for a plaintext greeting that never comes and blocks
+# until its timeout. That is what took password-reset delivery down on a
+# SendGrid relay configured for 465 (tripl-x1vk).
+SMTP_SECURITY_NONE = "none"
+SMTP_SECURITY_STARTTLS = "starttls"
+SMTP_SECURITY_IMPLICIT_TLS = "implicit_tls"
+SMTP_SECURITY_MODES = (
+    SMTP_SECURITY_NONE,
+    SMTP_SECURITY_STARTTLS,
+    SMTP_SECURITY_IMPLICIT_TLS,
+)
+
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://tripl:tripl@localhost:5432/tripl"
@@ -178,7 +202,15 @@ class Settings(BaseSettings):
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
+    # DEPRECATED, kept only so an existing deployment's SMTP_USE_TLS keeps
+    # meaning what it always meant. It never expressed more than "run STARTTLS
+    # after connecting", which is why an implicit-TLS relay was unreachable no
+    # matter how it was set. ``smtp_security`` is the field the application
+    # reads; this one only supplies its default. Do not add new readers.
     smtp_use_tls: bool = True
+    # Empty means "derive from smtp_use_tls" — see ``resolved_smtp_security``.
+    # Set SMTP_SECURITY explicitly to pick a mode; it wins over SMTP_USE_TLS.
+    smtp_security: str = ""
     # Default From: address used when a destination doesn't override it.
     smtp_from_address: str = ""
 
@@ -249,6 +281,18 @@ class Settings(BaseSettings):
         normalized = value.strip().lower()
         if normalized not in REGISTRATION_MODES:
             msg = f"registration_mode must be one of {', '.join(REGISTRATION_MODES)}"
+            raise ValueError(msg)
+        return normalized
+
+    @field_validator("smtp_security")
+    @classmethod
+    def _normalize_smtp_security(cls, value: str) -> str:
+        # Empty is legal and means "fall back to the deprecated smtp_use_tls".
+        # A typo is not: silently treating SMTP_SECURITY="ssl" as plaintext
+        # would downgrade a connection the operator asked to encrypt.
+        normalized = value.strip().lower()
+        if normalized and normalized not in SMTP_SECURITY_MODES:
+            msg = f"smtp_security must be one of {', '.join(SMTP_SECURITY_MODES)}"
             raise ValueError(msg)
         return normalized
 
@@ -351,6 +395,18 @@ class Settings(BaseSettings):
 
     def resolved_ai_api_key(self) -> str:
         return self.ai_api_key or self.openai_api_key
+
+    def resolved_smtp_security(self) -> str:
+        """The transport mode, honouring the deprecated boolean when unset.
+
+        An instance that never heard of ``SMTP_SECURITY`` keeps exactly the
+        behaviour it had: SMTP_USE_TLS=true was STARTTLS and still is, false was
+        plaintext and still is. Nothing about this upgrade changes how an
+        already-working relay is reached.
+        """
+        if self.smtp_security:
+            return self.smtp_security
+        return SMTP_SECURITY_STARTTLS if self.smtp_use_tls else SMTP_SECURITY_NONE
 
 
 settings = Settings()

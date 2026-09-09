@@ -230,7 +230,7 @@ def _send_email(target: _TestTarget) -> None:
         smtp_port=email_config.smtp_port,
         smtp_username=email_config.smtp_username,
         smtp_password=email_config.smtp_password,
-        smtp_use_tls=email_config.smtp_use_tls,
+        smtp_security=email_config.smtp_security,
         from_address=validate_email_address(from_address),
         recipients=recipients,
         subject=TEST_MESSAGE_SUBJECT,
