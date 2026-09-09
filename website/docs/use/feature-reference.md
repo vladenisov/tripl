@@ -254,8 +254,12 @@ count per value.
 ### Event discussion
 
 **Where:** under the form on an event's edit page (Plan › Events → open an
-event → **Edit**). It appears once the event exists — there is nothing to
-discuss before that.
+event → **Edit**), and under the **New event** form as a single box. A comment
+needs an event to hang on, so the thread itself starts once the event exists —
+but the question does not wait for it. A note written while authoring is posted
+as the first comment the moment **Create event** succeeds. If that post fails
+the event is still created and you land on it with your words in its composer
+and the reason on screen, rather than losing them.
 
 A threaded **Discussion** (top-level comments plus replies) for the questions
 an event raises: "should this fire on cancel too?", "waiting on design". It is

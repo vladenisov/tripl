@@ -35,6 +35,14 @@ export interface CommentThreadProps {
   emptyText?: string
   /** Keeps the composer's label unique when two threads share a page. */
   composerId?: string
+  /** Text the composer opens with.
+   *
+   *  Read once, at mount. It exists for handing a note ACROSS a navigation:
+   *  a question drafted while creating an event is posted the moment the event
+   *  exists, and if that post fails the author lands here with the words they
+   *  wrote still in the box rather than losing them (tripl-htfn.1). Making it
+   *  live would fight the reader for their own textarea. */
+  initialBody?: string
   className?: string
   /** Resolves a comment to a display name. A callback rather than a roster
    *  map, so the component stays free of the users query and each caller
@@ -76,13 +84,14 @@ export function CommentThread({
   heading = 'Comments',
   emptyText = 'No comments yet. Start the thread.',
   composerId = 'comment-body',
+  initialBody = '',
   className = 'flex h-full min-h-[400px] flex-col rounded-md border bg-card p-3',
   authorName,
   onCreated,
   onAction,
 }: CommentThreadProps) {
   const queryClient = useQueryClient()
-  const [body, setBody] = useState('')
+  const [body, setBody] = useState(initialBody)
   const [replyTo, setReplyTo] = useState<string | null>(null)
 
   const commentsQuery = useQuery({ queryKey: [...queryKey], queryFn: list })
