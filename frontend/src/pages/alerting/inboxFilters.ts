@@ -79,14 +79,31 @@ const PARAM_KEYS = {
  *  URL forever, still filtering. */
 export const INBOX_FILTER_PARAM_KEYS: readonly string[] = Object.values(PARAM_KEYS)
 
-/** A `YYYY-MM-DD` day, and nothing else. An unparseable one is dropped rather
- *  than passed on: `new Date('banana')` is an Invalid Date whose `toISOString`
- *  throws, and a filter that throws while rendering takes the whole page. */
+/** A real `YYYY-MM-DD` calendar day, and nothing else.
+ *
+ *  Two things are dropped rather than passed on. An unparseable value, because
+ *  `new Date('banana')` is an Invalid Date whose `toISOString` throws and this
+ *  is read while rendering — a filter that throws takes the whole page. And a
+ *  day that does not exist: JS ROLLS `2026-02-31` forward to 3 March instead of
+ *  failing, so a successful parse is not proof (Copilot, PR #162).
+ *
+ *  The rollover is worse than a wrong date. `<input type="date">` cannot
+ *  produce one, so it arrives only from a hand-edited or stale URL — and the
+ *  input then shows BLANK for a value it will not accept, while the list is
+ *  quietly filtered from a day nobody named. The bar would be describing a
+ *  filter it is not applying. Dropping it makes the two agree. */
 function readDay(value: string | null): string {
   if (!value) return ''
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00`).getTime())
-    ? value
-    : ''
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!parts) return ''
+  const at = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(at.getTime())) return ''
+  // Read back through the same local calendar `dayBoundaryIso` will use.
+  const sameDay =
+    at.getFullYear() === Number(parts[1])
+    && at.getMonth() + 1 === Number(parts[2])
+    && at.getDate() === Number(parts[3])
+  return sameDay ? value : ''
 }
 
 /**

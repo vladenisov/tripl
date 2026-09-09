@@ -826,7 +826,9 @@ class InboxFilters:
     ``scope`` is the exception and must NOT read the response: ``scope_names``
     is truncated to eight entries by ``_build_inbox_group_response``, so a
     search over it would silently fail to find the ninth scope of a wide
-    incident. It is matched against the full set, passed in beside the group.
+    incident. It is matched against the incident's ROWS instead — and only when
+    a search is actually being run, because building that text is the one part
+    of this that costs anything per group.
     """
 
     last_fired_from: datetime | None = None
@@ -835,9 +837,38 @@ class InboxFilters:
     direction: AnomalyDirection | None = None
     scope: str | None = None
 
-    def matches(self, group: AlertInboxGroupResponse, *, scope_haystack: str) -> bool:
-        """Whether *group* survives every filter. ``scope_haystack`` is the
-        group's full, case-folded scope text — every name plus every ref."""
+    @property
+    def needle(self) -> str:
+        """The scope search, normalized. Empty when there is nothing to search
+        for — which whitespace alone is, since a cleared box posts one."""
+        return (self.scope or "").strip().casefold()
+
+    @property
+    def is_active(self) -> bool:
+        """Whether anything here narrows the list at all.
+
+        The router hands the service an ``InboxFilters`` on every request,
+        including the overwhelmingly common one that filters by nothing, so the
+        caller checks this before entering the loop rather than walking every
+        group to decide each one survives (Copilot, PR #162).
+        """
+        return (
+            self.last_fired_from is not None
+            or self.last_fired_to is not None
+            or self.scope_type is not None
+            or self.direction is not None
+            or bool(self.needle)
+        )
+
+    def matches(self, group: AlertInboxGroupResponse, *, rows: list[InboxGroupRow]) -> bool:
+        """Whether *group* survives every filter.
+
+        Takes the incident's ROWS rather than a prepared haystack so the text
+        can be built lazily: a keyword argument is evaluated before the call, so
+        passing ``_scope_haystack(...)`` in built it for every group of every
+        request, including the ones with no search — a set, a sort, a join and a
+        casefold over every delivery item, thrown away unread.
+        """
         if self.last_fired_from is not None and _utc(group.latest_delivery_at) < _utc(
             self.last_fired_from
         ):
@@ -854,8 +885,9 @@ class InboxFilters:
             return False
         if self.direction is not None and group.direction != self.direction:
             return False
-        needle = (self.scope or "").strip().casefold()
-        return not needle or needle in scope_haystack
+        # Last, and only now, because this is the expensive one.
+        needle = self.needle
+        return not needle or needle in _scope_haystack(rows)
 
 
 def _scope_haystack(rows: list[InboxGroupRow]) -> str:
@@ -948,14 +980,11 @@ async def list_alert_inbox(
     ]
     if status is not None:
         responses = [group for group in responses if group.status == status]
-    if filters is not None:
+    if filters is not None and filters.is_active:
         responses = [
             group
             for group in responses
-            if filters.matches(
-                group,
-                scope_haystack=_scope_haystack(groups[group.correlation_group_id]),
-            )
+            if filters.matches(group, rows=groups[group.correlation_group_id])
         ]
     responses.sort(key=_inbox_sort_key, reverse=True)
     total = len(responses)

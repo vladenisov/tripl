@@ -38,15 +38,32 @@ describe('readInboxFilters', () => {
   })
 
   it('drops a date that is not a real calendar day', () => {
-    // `new Date('banana').toISOString()` THROWS, and this value is read while
-    // rendering — an unparseable day in a URL must not be able to take the page.
+    // Two different ways of not being a day. `new Date('banana').toISOString()`
+    // THROWS, and this value is read while rendering — an unparseable day in a
+    // URL must not be able to take the page. And 31 February PARSES: JS rolls it
+    // forward to 3 March rather than failing, so parsing is not proof the day
+    // exists (Copilot, PR #162). Kept because `<input type="date">` shows blank
+    // for a value it will not accept, so a surviving rollover would leave the
+    // bar saying "no date filter" over a list filtered from a day nobody named.
     const params = new URLSearchParams({ fired_from: 'banana', fired_to: '2026-02-31' })
 
     const filters = readInboxFilters(params)
+
     expect(filters.firedFrom).toBe('')
-    // 2026-02-31 rolls over to 3 March in JS rather than failing, so it is a
-    // usable day; what matters is that nothing here can throw downstream.
-    expect(() => inboxFilterQuery(filters, '')).not.toThrow()
+    expect(filters.firedTo).toBe('')
+    expect(inboxFilterQuery(filters, '')).toMatchObject({ lastFiredTo: undefined })
+  })
+
+  it('keeps the last day of a short month, and a leap day', () => {
+    // The other side of the same guard: the check reads the parsed date back
+    // through the LOCAL calendar, so a legitimately short month and a real
+    // 29 February have to survive it. 2028 is a leap year; 2026 is not.
+    const kept = readInboxFilters(
+      new URLSearchParams({ fired_from: '2026-02-28', fired_to: '2028-02-29' }),
+    )
+
+    expect(kept.firedFrom).toBe('2026-02-28')
+    expect(kept.firedTo).toBe('2028-02-29')
   })
 })
 

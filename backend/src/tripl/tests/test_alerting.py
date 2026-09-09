@@ -3,6 +3,7 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from httpx import AsyncClient
@@ -17,6 +18,7 @@ from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.data_source import DataSource
+from tripl.models.domain_enums import AnomalyDirection, MetricScopeType
 from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
@@ -25,6 +27,7 @@ from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.user import User
+from tripl.services._alerting_deliveries import InboxFilters
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import metrics
 from tripl.worker.tasks.alerts import check_deprecated_sunset_events
@@ -8614,6 +8617,57 @@ async def _seed_filterable_inbox(client: AsyncClient) -> dict[str, uuid.UUID]:
             ],
         )
     return groups
+
+
+class _ExplodingRows(list):
+    """A row list that refuses to be read.
+
+    The only way to assert that the scope text was NOT built: the work is
+    invisible from the outside, and a timing assertion on an SBC proves nothing.
+    """
+
+    def __iter__(self):  # type: ignore[override]
+        raise AssertionError("the scope haystack was built for a filter that does not search")
+
+
+def test_inbox_filters_build_the_scope_text_only_when_something_searches() -> None:
+    """A keyword argument is evaluated before the call.
+
+    Passing ``scope_haystack=_scope_haystack(rows)`` therefore built that text
+    for every group of every request — a set, a sort, a join and a casefold over
+    every delivery item — including the overwhelmingly common request that
+    searches for nothing (Copilot, PR #162). ``matches`` takes the rows instead
+    and reads them last, after every cheap predicate has had its say.
+    """
+    group = SimpleNamespace(
+        latest_delivery_at=datetime.now(UTC),
+        scope_types=["event"],
+        direction="drop",
+    )
+
+    # Filtering by a date, a kind and a direction touches no row.
+    for filters in (
+        InboxFilters(last_fired_from=datetime.now(UTC) - timedelta(days=1)),
+        InboxFilters(scope_type=MetricScopeType.event),
+        InboxFilters(direction=AnomalyDirection.drop),
+        # A cleared search box posts whitespace, which is not a search.
+        InboxFilters(scope="   "),
+    ):
+        assert filters.matches(group, rows=_ExplodingRows()) is True
+
+    # …and a filter that no longer needs to look does not look either: the
+    # direction says no before the scope text would have been built.
+    assert (
+        InboxFilters(direction=AnomalyDirection.spike, scope="anything").matches(
+            group, rows=_ExplodingRows()
+        )
+        is False
+    )
+
+    # `is_active` is what keeps the loop itself off an unfiltered request.
+    assert InboxFilters().is_active is False
+    assert InboxFilters(scope="  ").is_active is False
+    assert InboxFilters(direction=AnomalyDirection.drop).is_active is True
 
 
 @pytest.mark.asyncio
