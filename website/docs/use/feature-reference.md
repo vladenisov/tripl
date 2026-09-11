@@ -326,8 +326,10 @@ summary, and **Owners** (shown only on the `main` branch — owners are a fact
 about `main`'s type, so in branch context neither the list's Owner column nor
 the detail's merge-gate chip is shown, and nothing is asked for). Owners gate
 branch merges: a type **with** owners is "gated" (the branch needs a fresh approval from
-one of those owners before an authorized editor can merge changes to that type);
-a type with no owners has no owner-approval gate.
+one of those owners before an authorized editor can merge a branch that adds,
+removes, or edits the type itself — its display name, description, color, or
+order; a branch that changes only the type's fields or events does not ask for
+one); a type with no owners has no owner-approval gate.
 
 ### Schema drift
 

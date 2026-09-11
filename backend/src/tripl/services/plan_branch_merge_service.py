@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import Sequence
@@ -10,8 +11,9 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import lazyload, selectinload
 
+from tripl import cache
 from tripl.models.event import Event
 from tripl.models.event import EventStatus as _ES
 from tripl.models.event import event_status_rank as _rank
@@ -53,6 +55,7 @@ from tripl.services.plan_branch_service import (
 )
 from tripl.services.plan_revision_service import (
     PLAN_SNAPSHOT_VERSION,
+    _snapshot_fingerprint,
     build_plan_snapshot,
     plan_snapshot_hash,
     with_snapshot_defaults,
@@ -247,6 +250,31 @@ async def _rename_main_variables(
         variable.name = new_name
 
 
+async def _load_variables(
+    session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID
+) -> list[Variable]:
+    """A branch's variables without their observed-value contexts.
+
+    ``Variable.value_contexts`` is ``lazy="selectin"``, and nothing in the merge
+    reads it: a bare select would pull every context row and its
+    FieldDefinition on each of the three loads, inside the open merge
+    transaction — the cost tripl-xkbb removed from ``build_plan_snapshot``. A
+    deleted variable still cascades its contexts; the ORM loads them at delete
+    time.
+    """
+    rows = await session.execute(
+        select(Variable)
+        .where(Variable.project_id == project_id, Variable.branch_id == branch_id)
+        .options(lazyload(Variable.value_contexts))
+    )
+    return list(rows.scalars().all())
+
+
+def _plain(value: object) -> object:
+    """An enum column's value as the snapshot stores it (a plain string)."""
+    return None if value is None else str(value)
+
+
 def _photo_identity(photo: EventPhoto) -> tuple[object, ...]:
     """What makes two attachment rows the same attachment across a branch.
 
@@ -255,17 +283,106 @@ def _photo_identity(photo: EventPhoto) -> tuple[object, ...]:
     on all of them and on nothing else: the ids differ by construction, and
     ``created_at`` is when the copy was made. ``sort_order`` is deliberately
     absent, so that re-ordering a canvas on a branch is a move rather than a
-    delete-and-replace.
+    delete-and-replace. The key is fingerprinted the way the snapshot records
+    it, so a row and the merge base's entry for it compare equal.
     """
     return (
-        photo.kind,
+        _plain(photo.kind),
         photo.original_filename,
         photo.content_type,
         photo.size_bytes,
         photo.external_url,
-        photo.storage_backend,
-        photo.storage_key,
+        _plain(photo.storage_backend),
+        _snapshot_fingerprint(photo.storage_key),
     )
+
+
+def _snapshot_photo_identity(photo: dict[str, Any]) -> tuple[object, ...]:
+    """``_photo_identity`` for a photo entry of a plan snapshot."""
+    return (
+        photo.get("kind"),
+        photo.get("original_filename"),
+        photo.get("content_type"),
+        photo.get("size_bytes"),
+        photo.get("external_url"),
+        photo.get("storage_backend"),
+        photo.get("storage_key_fingerprint"),
+    )
+
+
+def _three_way_count(*, base: int, ours: int, theirs: int) -> int:
+    """How many copies of one attachment main keeps after the merge.
+
+    The same three-way rule every other attribute follows, applied to a count:
+    a side that left the count where the base had it defers to the other side.
+    When both moved it the same way that is one change, not two; when they moved
+    it differently (conflict detection normally stops that first) the branch's
+    delta is applied on top of main's.
+    """
+    if theirs == base:
+        return ours
+    if ours in (base, theirs):
+        return theirs
+    return max(0, ours + theirs - base)
+
+
+def _split_identity_rows[M, B](
+    main_rows: Sequence[M], branch_rows: Sequence[B], keep: int
+) -> tuple[list[tuple[M, B]], list[B], list[M]]:
+    """Main's and the branch's rows of one attachment, sorted into what happens.
+
+    Returns ``(pairs, added, doomed)``: main rows kept beside the branch row
+    whose discussion merges into them, branch rows copied onto main as new
+    attachments, and main rows deleted — so that main ends with exactly
+    ``keep``. Additions are reserved first: when both sides added copies,
+    pairing a main copy with a branch copy would spend a branch row that is
+    one of the branch's additions.
+    """
+    kept_main = list(main_rows[:keep])
+    doomed = list(main_rows[keep:])
+    n_added = min(max(0, keep - len(kept_main)), len(branch_rows))
+    n_paired = min(len(kept_main), len(branch_rows) - n_added)
+    pairs = list(zip(kept_main[:n_paired], branch_rows[:n_paired], strict=True))
+    return pairs, list(branch_rows[n_paired : n_paired + n_added]), doomed
+
+
+def _base_thread_for(
+    branch_photo: EventPhoto, base_rows: Sequence[dict[str, Any]]
+) -> tuple[set[tuple[object, ...]], bool]:
+    """The base comment keys a branch photo's thread is compared against.
+
+    Usually one base entry has the photo's identity. When the same attachment
+    is on the event more than once, the entry in the branch photo's slot is
+    its own; failing that, the union of every copy's thread answers "was this
+    comment here at the cut?" but not "which copy was it on?" — so the second
+    value says whether a missing comment may be read as a branch deletion.
+    """
+    same_slot = [p for p in base_rows if p.get("sort_order") == branch_photo.sort_order]
+    attributed = same_slot if len(same_slot) == 1 else list(base_rows)
+    keys: set[tuple[object, ...]] = set()
+    for base_photo in attributed:
+        keys |= _snapshot_comment_keys(base_photo.get("comments") or [])
+    return keys, len(attributed) == 1
+
+
+def _snapshot_comment_keys(threads: Sequence[Any]) -> set[tuple[object, ...]]:
+    """The ``_comment_thread_in_order`` keys of a snapshot photo's comments."""
+    keys: set[tuple[object, ...]] = set()
+
+    def walk(nodes: Sequence[Any], parent_key: tuple[object, ...]) -> None:
+        seen: dict[tuple[object, ...], int] = {}
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            body_key = (parent_key, node.get("user_fingerprint"), node.get("body_fingerprint"))
+            occurrence = seen.get(body_key, 0)
+            seen[body_key] = occurrence + 1
+            key = (*body_key, occurrence)
+            keys.add(key)
+            walk(node.get("replies") or [], key)
+
+    walk(threads, ())
+    return keys
 
 
 def _comment_thread_in_order(
@@ -274,10 +391,11 @@ def _comment_thread_in_order(
     """The thread parent-first, each row paired with a content key.
 
     The key answers "is this the same comment?" the way the plan snapshot does —
-    by who wrote it and what it says, plus where it hangs — with an occurrence
-    number so that saying the same thing twice under one parent stays two
-    comments. Parent-first order lets a caller insert a reply after the comment
-    it answers, which is what the self-FK needs.
+    by who wrote it and what it says (fingerprinted exactly as the snapshot
+    fingerprints them, so a key can be looked up in the merge base), plus where
+    it hangs — with an occurrence number so that saying the same thing twice
+    under one parent stays two comments. Parent-first order lets a caller insert
+    a reply after the comment it answers, which is what the self-FK needs.
     """
     by_parent: dict[uuid.UUID | None, list[EventPhotoComment]] = {}
     known = {row.id for row in rows}
@@ -288,12 +406,37 @@ def _comment_thread_in_order(
         by_parent.setdefault(parent_id, []).append(row)
 
     ordered: list[tuple[EventPhotoComment, tuple[object, ...]]] = []
+    canonical_by_id: dict[uuid.UUID, str] = {}
+
+    def canonical(row: EventPhotoComment) -> str:
+        # The row's subtree in the snapshot's own shape and order. Numbering
+        # identical siblings in THIS order (not created_at: a branch copy's
+        # rows share one) gives each the occurrence the merge base gave it, so
+        # a reply cannot swap parents between the two and read as deleted.
+        if row.id not in canonical_by_id:
+            node = {
+                "user_fingerprint": _snapshot_fingerprint(row.user_id),
+                "body_fingerprint": _snapshot_fingerprint(row.body),
+                "replies": [
+                    json.loads(canonical(child))
+                    for child in sorted(by_parent.get(row.id, []), key=canonical)
+                ],
+            }
+            canonical_by_id[row.id] = json.dumps(node, sort_keys=True, separators=(",", ":"))
+        return canonical_by_id[row.id]
 
     def walk(parent_id: uuid.UUID | None, parent_key: tuple[object, ...]) -> None:
         seen: dict[tuple[object, ...], int] = {}
-        siblings = sorted(by_parent.get(parent_id, []), key=lambda item: (item.created_at, item.id))
+        siblings = sorted(
+            by_parent.get(parent_id, []),
+            key=lambda item: (canonical(item), item.created_at, item.id),
+        )
         for row in siblings:
-            body_key = (parent_key, row.user_id, row.body)
+            body_key = (
+                parent_key,
+                _snapshot_fingerprint(row.user_id),
+                _snapshot_fingerprint(row.body),
+            )
             occurrence = seen.get(body_key, 0)
             seen[body_key] = occurrence + 1
             key = (*body_key, occurrence)
@@ -304,20 +447,56 @@ def _comment_thread_in_order(
     return ordered
 
 
+def _comments_deleted_on_branch(
+    target_thread: list[tuple[EventPhotoComment, tuple[object, ...]]],
+    *,
+    base_keys: set[tuple[object, ...]],
+    source_keys: set[tuple[object, ...]],
+) -> list[uuid.UUID]:
+    """Target comments the branch deleted: in the base, gone from the branch.
+
+    A comment main has since answered is kept — deleting it would cascade the
+    reply main wrote after the cut, which the branch never saw.
+    """
+    key_by_id = {row.id: key for row, key in target_thread}
+    children: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for row, _key in target_thread:
+        if row.parent_id is not None and row.parent_id in key_by_id:
+            children.setdefault(row.parent_id, []).append(row.id)
+
+    def answered_on_main(row_id: uuid.UUID) -> bool:
+        return any(
+            key_by_id[child] not in base_keys or answered_on_main(child)
+            for child in children.get(row_id, [])
+        )
+
+    return [
+        row.id
+        for row, key in target_thread
+        if key in base_keys and key not in source_keys and not answered_on_main(row.id)
+    ]
+
+
 async def _merge_photo_comments(
     session: AsyncSession,
     *,
     target_photo_id: uuid.UUID,
     source_photo_id: uuid.UUID,
+    base_thread: tuple[set[tuple[object, ...]], bool],
 ) -> None:
-    """Add the source thread's comments to the target, keeping the target's.
+    """Merge the source thread into the target's, three-way against the base.
 
     A merge used to hand main the branch's discussion and nothing else, because
-    it replaced the photo rows outright. Both sides are real: the branch author
-    commented while working, and whoever was reading main commented while they
-    did. Neither is a draft of the other, so the merge takes the union and drops
-    only exact repeats of a comment the target already holds.
+    it replaced the photo rows outright; then it took the plain union, which
+    brought back every comment main had deleted since the cut and never carried
+    a branch-side deletion over. ``base_thread`` is the thread's keys as they
+    stood at the cut, so each side's own change can be told apart: a comment
+    new on the branch is added, one main deleted stays deleted (with any reply
+    the branch wrote under it), and one the branch deleted is removed from main
+    too — the last only when the base thread is known to be THIS photo's
+    (``base_thread[1]``), since a deletion on a guess is not recoverable.
     """
+    base_keys, deletions_allowed = base_thread
     target_rows = list(
         (
             await session.execute(
@@ -336,14 +515,30 @@ async def _merge_photo_comments(
         .scalars()
         .all()
     )
-    if not source_rows:
-        return
-
-    target_id_by_key = {key: row.id for row, key in _comment_thread_in_order(target_rows)}
+    target_thread = _comment_thread_in_order(target_rows)
+    source_thread = _comment_thread_in_order(source_rows)
+    source_key_by_id = {row.id: key for row, key in source_thread}
+    doomed_ids = (
+        _comments_deleted_on_branch(
+            target_thread, base_keys=base_keys, source_keys=set(source_key_by_id.values())
+        )
+        if deletions_allowed
+        else []
+    )
+    if doomed_ids:
+        await session.execute(delete(EventPhotoComment).where(EventPhotoComment.id.in_(doomed_ids)))
+    doomed = set(doomed_ids)
+    target_id_by_key = {key: row.id for row, key in target_thread if row.id not in doomed}
     inserted_id_by_source_id: dict[uuid.UUID, uuid.UUID] = {}
-    source_key_by_id = {row.id: key for row, key in _comment_thread_in_order(source_rows)}
-    for row, key in _comment_thread_in_order(source_rows):
+    deleted_on_main: set[uuid.UUID] = set()
+    for row, key in source_thread:
         if key in target_id_by_key:
+            continue
+        # On main at the cut and deleted there since: main's deletion took the
+        # replies with it, so a reply the branch wrote under it goes too rather
+        # than surfacing on main as a top-level comment answering nothing.
+        if key in base_keys or row.parent_id in deleted_on_main:
+            deleted_on_main.add(row.id)
             continue
         parent_id: uuid.UUID | None = None
         if row.parent_id is not None:
@@ -362,6 +557,10 @@ async def _merge_photo_comments(
                 parent_id=parent_id,
                 user_id=row.user_id,
                 body=row.body,
+                # When it was written, not when it was merged: the thread on
+                # main is ordered by created_at.
+                created_at=row.created_at,
+                updated_at=row.updated_at,
             )
         )
         # A later reply keyed under this comment must find it.
@@ -650,8 +849,8 @@ async def _apply_merge(
     branch_mf_id_to_name = {mf.id: mf.name for mf in branch_mfs}
 
     # --- variables: upsert by name
-    main_vars = await _load_for_branch(session, Variable, project_id, main_branch_id)
-    branch_vars = await _load_for_branch(session, Variable, project_id, branch_id)
+    main_vars = await _load_variables(session, project_id, main_branch_id)
+    branch_vars = await _load_variables(session, project_id, branch_id)
     main_var_by_name = {v.name: v for v in main_vars}
     branch_var_by_name = {v.name: v for v in branch_vars}
     base_var_by_name = {v["name"]: v for v in (base_payload or {}).get("variables", [])}
@@ -1070,35 +1269,52 @@ async def _apply_merge(
             .all()
         )
         # Pair the two sides up by what each attachment IS, rather than
-        # replacing main's whole canvas. The snapshot subtree this block is
-        # gated on nests every photo's comments inside it, so one comment
-        # written on the branch made all of main's photos look changed: they
-        # were dropped, taking `event_photo_comments` with them through the FK
-        # cascade, and anything holding a photo id was left pointing at nothing
-        # (tripl-h2sx.28).
-        unmatched_main: dict[tuple[object, ...], list[EventPhoto]] = {}
+        # replacing main's whole canvas (tripl-h2sx.28), and decide every
+        # attachment three-way against the base. The gate above compares the
+        # raw subtree, comments included, so this block also runs when the
+        # branch only talked about a photo — and then the branch's photo SET
+        # equals the base's, which must leave main's own additions, deletions
+        # and moves after the cut exactly as they are.
+        base_photos_by_identity: dict[tuple[object, ...], list[dict[str, Any]]] = {}
+        for base_photo in (base_event or {}).get("photos") or []:
+            if isinstance(base_photo, dict):
+                base_photos_by_identity.setdefault(_snapshot_photo_identity(base_photo), []).append(
+                    base_photo
+                )
+        branch_by_identity: dict[tuple[object, ...], list[EventPhoto]] = {}
+        for bp in branch_photos:
+            branch_by_identity.setdefault(_photo_identity(bp), []).append(bp)
+        main_by_identity: dict[tuple[object, ...], list[EventPhoto]] = {}
         for m_ph in main_photos:
-            unmatched_main.setdefault(_photo_identity(m_ph), []).append(m_ph)
+            main_by_identity.setdefault(_photo_identity(m_ph), []).append(m_ph)
+
         kept_pairs: list[tuple[EventPhoto, EventPhoto]] = []
         added_pairs: list[tuple[uuid.UUID, EventPhoto]] = []
-        for bp in branch_photos:
-            twins = unmatched_main.get(_photo_identity(bp))
-            if twins:
-                kept_pairs.append((twins.pop(0), bp))
-            else:
-                added_pairs.append((uuid.uuid4(), bp))
+        doomed_photo_ids: list[uuid.UUID] = []
+        base_thread_by_source_id: dict[uuid.UUID, tuple[set[tuple[object, ...]], bool]] = {}
+        for identity in {**branch_by_identity, **main_by_identity}:
+            b_rows = branch_by_identity.get(identity, [])
+            m_rows = main_by_identity.get(identity, [])
+            base_rows = base_photos_by_identity.get(identity, [])
+            keep = _three_way_count(base=len(base_rows), ours=len(m_rows), theirs=len(b_rows))
+            pairs, added, doomed_rows = _split_identity_rows(m_rows, b_rows, keep)
+            doomed_photo_ids.extend(m_ph.id for m_ph in doomed_rows)
+            base_sort_orders = {base_photo.get("sort_order") for base_photo in base_rows}
+            for main_photo, bp in pairs:
+                # Position is left out of the identity so that re-ordering a
+                # canvas does not read as "different attachment"; it is
+                # carried over only when the branch is the side that moved it.
+                if bp.sort_order not in base_sort_orders:
+                    main_photo.sort_order = bp.sort_order
+            kept_pairs.extend(pairs)
+            added_pairs.extend((uuid.uuid4(), bp) for bp in added)
+            for bp in b_rows:
+                base_thread_by_source_id[bp.id] = _base_thread_for(bp, base_rows)
 
-        doomed_photo_ids = [m_ph.id for twins in unmatched_main.values() for m_ph in twins]
         if doomed_photo_ids:
             await session.execute(delete(EventPhoto).where(EventPhoto.id.in_(doomed_photo_ids)))
             await session.flush()
 
-        for main_photo, bp in kept_pairs:
-            # Position is the one thing a matched pair may disagree on: it is
-            # left out of the identity so that re-ordering a canvas on a branch
-            # does not read as "different attachment" and take the discussion
-            # down with it.
-            main_photo.sort_order = bp.sort_order
         for new_ph_id, bp in added_pairs:
             session.add(
                 EventPhoto(
@@ -1126,12 +1342,13 @@ async def _apply_merge(
                 session,
                 target_photo_id=target_photo_id,
                 source_photo_id=source_photo.id,
+                base_thread=base_thread_by_source_id.get(source_photo.id, (set(), False)),
             )
         await session.flush()
 
     # --- variable event value overrides: replace only for variables whose
     # branch-side override map changed from the base.
-    main_vars_after = await _load_for_branch(session, Variable, project_id, main_branch_id)
+    main_vars_after = await _load_variables(session, project_id, main_branch_id)
     main_var_name_to_id = {v.name: v.id for v in main_vars_after}
     branch_event_id_to_key = {e.id: key for key, e in branch_event_by_key.items()}
     branch_overrides = await _load_for_branch(
@@ -1407,25 +1624,35 @@ async def assign_owner_reviewers_for_branch(
     return added
 
 
-def _touched_event_names(base_payload: dict[str, Any], branch_payload: dict[str, Any]) -> set[str]:
-    """Event names added or changed on the branch relative to its merge base.
+def _snapshot_event_key(event: dict[str, Any]) -> tuple[str, str]:
+    """An event's natural key in a plan snapshot: ``(event_type_name, name)``.
 
-    ADDED = a name present on the branch but not the base. CHANGED = a name on
-    both whose ``status``, ``description`` or ``event_type_name`` differs. These
-    are exactly the events an implementation ticket should cover — a pure
-    reorder (``order`` only) or unchanged carry-over is ignored."""
-    base_by_name = {e["name"]: e for e in base_payload.get("events", [])}
-    touched: set[str] = set()
-    for name, branch_event in {e["name"]: e for e in branch_payload.get("events", [])}.items():
-        base_event = base_by_name.get(name)
-        if base_event is None:
-            touched.add(name)
-            continue
-        if any(
-            base_event.get(key) != branch_event.get(key)
-            for key in ("status", "description", "event_type_name")
+    The name alone is not a key — two event types may each have a ``login`` —
+    and a dict keyed on it keeps whichever sorts last.
+    """
+    return (str(event.get("event_type_name") or ""), str(event["name"]))
+
+
+def _touched_event_names(
+    base_payload: dict[str, Any], branch_payload: dict[str, Any]
+) -> set[tuple[str, str]]:
+    """Events added or changed on the branch relative to its merge base.
+
+    ADDED = a ``(event_type_name, name)`` present on the branch but not the base
+    (moving an event to another type is one of these). CHANGED = a key on both
+    whose ``status`` or ``description`` differs. These are exactly the events an
+    implementation ticket should cover — a pure reorder (``order`` only) or
+    unchanged carry-over is ignored."""
+    base_by_key = {_snapshot_event_key(e): e for e in base_payload.get("events", [])}
+    touched: set[tuple[str, str]] = set()
+    for key, branch_event in {
+        _snapshot_event_key(e): e for e in branch_payload.get("events", [])
+    }.items():
+        base_event = base_by_key.get(key)
+        if base_event is None or any(
+            base_event.get(field) != branch_event.get(field) for field in ("status", "description")
         ):
-            touched.add(name)
+            touched.add(key)
     return touched
 
 
@@ -1450,9 +1677,9 @@ async def _enqueue_implementation_ticket(
         touched = _touched_event_names(base_payload, branch_payload)
         if not touched:
             return
-        # Resolve touched names to the post-merge MAIN event ids the ticket covers.
-        post_id_by_name = {e["name"]: e["id"] for e in post_payload.get("events", [])}
-        event_ids = [post_id_by_name[name] for name in sorted(touched) if name in post_id_by_name]
+        # Resolve touched keys to the post-merge MAIN event ids the ticket covers.
+        post_id_by_key = {_snapshot_event_key(e): e["id"] for e in post_payload.get("events", [])}
+        event_ids = [post_id_by_key[key] for key in sorted(touched) if key in post_id_by_key]
         if not event_ids:
             return
         config = await session.scalar(
@@ -1691,6 +1918,18 @@ async def merge_branch(
     )
     await session.refresh(branch)
 
+    # The merge rewrote main's event types and meta fields behind the service
+    # functions that invalidate these caches on every other write, so main's
+    # lists (and the project list's counts) would stay pre-merge until their
+    # TTLs ran out. Best-effort by construction: delete_prefix swallows Redis
+    # errors.
+    for prefix in (
+        cache.prefix_event_types(slug),
+        cache.prefix_meta_fields(slug),
+        cache.prefix_projects(),
+    ):
+        await cache.delete_prefix(prefix)
+
     # Post-merge tracker automation (best-effort; the merge is already committed).
     await _enqueue_implementation_ticket(
         session,
@@ -1707,18 +1946,19 @@ async def merge_branch(
     # far off. Best-effort: the merge is committed, so a search-index failure
     # must never fail the merge response. Lazy import mirrors the ticket task
     # above (avoids service-module import cycles).
+    #
+    # In a session of its own. On the request's session a failed flush left it
+    # waiting for a rollback (a failed statement leaves Postgres in an aborted
+    # transaction), so the reads below 500'd a merge that is already committed —
+    # and rolling back here instead would expire every object the caller holds
+    # on that session, the current user the router audits with included.
     try:
         from tripl.services.search_service import reindex_project_branch
 
-        await reindex_project_branch(
-            session, project_id=project.id, branch_id=main_branch_id, slug=slug
-        )
+        async with AsyncSession(session.bind, expire_on_commit=False) as reindex_session:
+            await reindex_project_branch(
+                reindex_session, project_id=project.id, branch_id=main_branch_id, slug=slug
+            )
     except Exception:  # noqa: BLE001 — search staleness must never break a merge
-        # The plain parameter and not ``branch.id``, for the reason spelled out
-        # above ``_commit_merged_plan``'s try: whatever failed in there may have
-        # rolled the session back and expired ``branch``, and an
-        # expired-attribute reload inside this handler would turn a logged,
-        # swallowed search failure into a ``MissingGreenlet`` 500 on a merge that
-        # is already committed (tripl-htcz).
         logger.exception("Failed to reindex search after merging branch %s", branch_id)
     return await _to_detail(session, branch)

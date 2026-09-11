@@ -96,24 +96,32 @@ def _approval_relevant_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(photos, list):
             projected.append(event)
             continue
-        stripped = [
-            {key: value for key, value in photo.items() if key != "comments"}
-            if isinstance(photo, dict)
-            else photo
-            for photo in photos
-        ]
-        # Re-sort AFTER stripping, or the removal leaks through the ORDER.
-        # ``serialize_photos`` sorts by canonical JSON of the whole photo dict,
-        # and "comments" sorts first among a photo's keys — so with two or more
-        # photos a new comment can swap their positions, and dropping the field
-        # afterwards leaves that reordering in place, changing the hash exactly
-        # as before. Sorting the stripped dicts makes the order depend only on
-        # what an approval actually covers.
-        stripped.sort(
-            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), default=str)
-        )
-        projected.append({**event, "photos": stripped})
+        projected.append({**event, "photos": photos_without_comments(photos)})
     return {**payload, "events": projected}
+
+
+def photos_without_comments(photos: list[Any]) -> list[Any]:
+    """A snapshot ``photos`` list with every photo's discussion removed.
+
+    Re-sorted AFTER stripping, or the removal leaks through the ORDER.
+    ``serialize_photos`` sorts by canonical JSON of the whole photo dict, and
+    "comments" sorts first among a photo's keys — so with two or more photos a
+    new comment can swap their positions, and dropping the field afterwards
+    leaves that reordering in place. Sorting the stripped dicts makes the order
+    depend only on the attachments. Approval hashing and merge conflict
+    detection both compare through this, so they cannot disagree about whether
+    a comment changed the plan.
+    """
+    stripped = [
+        {key: value for key, value in photo.items() if key != "comments"}
+        if isinstance(photo, dict)
+        else photo
+        for photo in photos
+    ]
+    stripped.sort(
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), default=str)
+    )
+    return stripped
 
 
 def plan_snapshot_hash(payload: dict[str, Any]) -> str:

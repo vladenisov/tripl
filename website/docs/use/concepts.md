@@ -149,8 +149,10 @@ A couple of things tripl handles for you so merging is safe:
   different values, tripl reports a conflict rather than overwriting either
   side. Branches created before complete merge baselines were introduced must
   be recreated from current main before they can merge.
-- **Owners can gate their events.** An event type can have **owners**; merging a
-  branch that touches an owned type requires a sign-off from one of them.
+- **Owners can gate their event types.** An event type can have **owners**;
+  merging a branch that adds, removes, or edits the type itself (its display
+  name, description, color, or order) requires a sign-off from one of them.
+  Changes to only the type's fields or events do not ask for one.
 
 ---
 

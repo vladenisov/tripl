@@ -23,7 +23,7 @@ from tripl.services.plan_branch_service import (
     _resolve_project,
     ensure_main_branch_id,
 )
-from tripl.services.plan_revision_service import build_plan_snapshot
+from tripl.services.plan_revision_service import build_plan_snapshot, photos_without_comments
 
 # --- 3-way merge engine ---------------------------------------------------
 #
@@ -112,17 +112,14 @@ def comparable_field(item: dict[str, Any], field: str) -> Any:
     comment on main made the event conflict with the branch, an event conflict
     is not resolvable inline, and the branch became unmergeable while the
     conflicts endpoint reported nothing to resolve (tripl-h2sx.28). Compare the
-    attachments; leave the conversation out of it.
+    attachments; leave the conversation out of it — including the ORDER the
+    conversation gave them in the snapshot, which ``photos_without_comments``
+    re-sorts away.
     """
     value = item.get(field)
     if field != "photos" or not isinstance(value, list):
         return value
-    return [
-        {key: entry for key, entry in photo.items() if key != "comments"}
-        if isinstance(photo, dict)
-        else photo
-        for photo in value
-    ]
+    return photos_without_comments(value)
 
 
 def _entity_changed(

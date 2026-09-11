@@ -326,8 +326,9 @@ JSON** / **Copy as Markdown** for the ticket. If a diff row carries a warning
 that an event on the branch has **no scan identity**, fix that before merging:
 such an event would never match its traffic.
 
-If an event type has **owners**, merging a branch that touches it requires a
-sign-off from one of them.
+If an event type has **owners**, merging a branch that adds, removes, or edits
+the type itself (display name, description, color, order) requires a sign-off
+from one of them. Changing only its fields or events does not.
 
 Owners can make review stricter under **Plan → Plan branches → Merge policy**:
 require several distinct approvals and block authors from approving their own
