@@ -326,6 +326,45 @@ def _three_way_count(*, base: int, ours: int, theirs: int) -> int:
     return max(0, ours + theirs - base)
 
 
+def _split_identity_rows[M, B](
+    main_rows: Sequence[M], branch_rows: Sequence[B], keep: int
+) -> tuple[list[tuple[M, B]], list[B], list[M]]:
+    """Main's and the branch's rows of one attachment, sorted into what happens.
+
+    Returns ``(pairs, added, doomed)``: main rows kept beside the branch row
+    whose discussion merges into them, branch rows copied onto main as new
+    attachments, and main rows deleted — so that main ends with exactly
+    ``keep``. Additions are reserved first: when both sides added copies,
+    pairing a main copy with a branch copy would spend a branch row that is
+    one of the branch's additions.
+    """
+    kept_main = list(main_rows[:keep])
+    doomed = list(main_rows[keep:])
+    n_added = min(max(0, keep - len(kept_main)), len(branch_rows))
+    n_paired = min(len(kept_main), len(branch_rows) - n_added)
+    pairs = list(zip(kept_main[:n_paired], branch_rows[:n_paired], strict=True))
+    return pairs, list(branch_rows[n_paired : n_paired + n_added]), doomed
+
+
+def _base_thread_for(
+    branch_photo: EventPhoto, base_rows: Sequence[dict[str, Any]]
+) -> tuple[set[tuple[object, ...]], bool]:
+    """The base comment keys a branch photo's thread is compared against.
+
+    Usually one base entry has the photo's identity. When the same attachment
+    is on the event more than once, the entry in the branch photo's slot is
+    its own; failing that, the union of every copy's thread answers "was this
+    comment here at the cut?" but not "which copy was it on?" — so the second
+    value says whether a missing comment may be read as a branch deletion.
+    """
+    same_slot = [p for p in base_rows if p.get("sort_order") == branch_photo.sort_order]
+    attributed = same_slot if len(same_slot) == 1 else list(base_rows)
+    keys: set[tuple[object, ...]] = set()
+    for base_photo in attributed:
+        keys |= _snapshot_comment_keys(base_photo.get("comments") or [])
+    return keys, len(attributed) == 1
+
+
 def _snapshot_comment_keys(threads: Sequence[Any]) -> set[tuple[object, ...]]:
     """The ``_comment_thread_in_order`` keys of a snapshot photo's comments."""
     keys: set[tuple[object, ...]] = set()
@@ -443,18 +482,21 @@ async def _merge_photo_comments(
     *,
     target_photo_id: uuid.UUID,
     source_photo_id: uuid.UUID,
-    base_keys: set[tuple[object, ...]],
+    base_thread: tuple[set[tuple[object, ...]], bool],
 ) -> None:
     """Merge the source thread into the target's, three-way against the base.
 
     A merge used to hand main the branch's discussion and nothing else, because
     it replaced the photo rows outright; then it took the plain union, which
     brought back every comment main had deleted since the cut and never carried
-    a branch-side deletion over. ``base_keys`` is the thread as it stood at the
-    cut, so each side's own change can be told apart: a comment new on the
-    branch is added, one main deleted stays deleted, and one the branch deleted
-    is removed from main too.
+    a branch-side deletion over. ``base_thread`` is the thread's keys as they
+    stood at the cut, so each side's own change can be told apart: a comment
+    new on the branch is added, one main deleted stays deleted (with any reply
+    the branch wrote under it), and one the branch deleted is removed from main
+    too — the last only when the base thread is known to be THIS photo's
+    (``base_thread[1]``), since a deletion on a guess is not recoverable.
     """
+    base_keys, deletions_allowed = base_thread
     target_rows = list(
         (
             await session.execute(
@@ -476,17 +518,27 @@ async def _merge_photo_comments(
     target_thread = _comment_thread_in_order(target_rows)
     source_thread = _comment_thread_in_order(source_rows)
     source_key_by_id = {row.id: key for row, key in source_thread}
-    doomed_ids = _comments_deleted_on_branch(
-        target_thread, base_keys=base_keys, source_keys=set(source_key_by_id.values())
+    doomed_ids = (
+        _comments_deleted_on_branch(
+            target_thread, base_keys=base_keys, source_keys=set(source_key_by_id.values())
+        )
+        if deletions_allowed
+        else []
     )
     if doomed_ids:
         await session.execute(delete(EventPhotoComment).where(EventPhotoComment.id.in_(doomed_ids)))
     doomed = set(doomed_ids)
     target_id_by_key = {key: row.id for row, key in target_thread if row.id not in doomed}
     inserted_id_by_source_id: dict[uuid.UUID, uuid.UUID] = {}
+    deleted_on_main: set[uuid.UUID] = set()
     for row, key in source_thread:
-        # Already on main, or on main at the cut and deleted there since.
-        if key in target_id_by_key or key in base_keys:
+        if key in target_id_by_key:
+            continue
+        # On main at the cut and deleted there since: main's deletion took the
+        # replies with it, so a reply the branch wrote under it goes too rather
+        # than surfacing on main as a top-level comment answering nothing.
+        if key in base_keys or row.parent_id in deleted_on_main:
+            deleted_on_main.add(row.id)
             continue
         parent_id: uuid.UUID | None = None
         if row.parent_id is not None:
@@ -1239,14 +1291,14 @@ async def _apply_merge(
         kept_pairs: list[tuple[EventPhoto, EventPhoto]] = []
         added_pairs: list[tuple[uuid.UUID, EventPhoto]] = []
         doomed_photo_ids: list[uuid.UUID] = []
-        base_keys_by_source_id: dict[uuid.UUID, set[tuple[object, ...]]] = {}
+        base_thread_by_source_id: dict[uuid.UUID, tuple[set[tuple[object, ...]], bool]] = {}
         for identity in {**branch_by_identity, **main_by_identity}:
             b_rows = branch_by_identity.get(identity, [])
             m_rows = main_by_identity.get(identity, [])
             base_rows = base_photos_by_identity.get(identity, [])
             keep = _three_way_count(base=len(base_rows), ours=len(m_rows), theirs=len(b_rows))
-            doomed_photo_ids.extend(m_ph.id for m_ph in m_rows[keep:])
-            pairs = list(zip(m_rows[:keep], b_rows, strict=False))
+            pairs, added, doomed_rows = _split_identity_rows(m_rows, b_rows, keep)
+            doomed_photo_ids.extend(m_ph.id for m_ph in doomed_rows)
             base_sort_orders = {base_photo.get("sort_order") for base_photo in base_rows}
             for main_photo, bp in pairs:
                 # Position is left out of the identity so that re-ordering a
@@ -1255,14 +1307,9 @@ async def _apply_merge(
                 if bp.sort_order not in base_sort_orders:
                     main_photo.sort_order = bp.sort_order
             kept_pairs.extend(pairs)
-            added_pairs.extend(
-                (uuid.uuid4(), bp) for bp in b_rows[len(pairs) :][: max(0, keep - len(m_rows))]
-            )
-            base_keys: set[tuple[object, ...]] = set()
-            for base_photo in base_rows:
-                base_keys |= _snapshot_comment_keys(base_photo.get("comments") or [])
+            added_pairs.extend((uuid.uuid4(), bp) for bp in added)
             for bp in b_rows:
-                base_keys_by_source_id[bp.id] = base_keys
+                base_thread_by_source_id[bp.id] = _base_thread_for(bp, base_rows)
 
         if doomed_photo_ids:
             await session.execute(delete(EventPhoto).where(EventPhoto.id.in_(doomed_photo_ids)))
@@ -1295,7 +1342,7 @@ async def _apply_merge(
                 session,
                 target_photo_id=target_photo_id,
                 source_photo_id=source_photo.id,
-                base_keys=base_keys_by_source_id.get(source_photo.id, set()),
+                base_thread=base_thread_by_source_id.get(source_photo.id, (set(), False)),
             )
         await session.flush()
 
