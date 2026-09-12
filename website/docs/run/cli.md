@@ -1711,16 +1711,19 @@ wrong revision would answer plan questions about a plan you are not looking at,
 and a read that is quietly wrong is worse than one that refuses. A selector
 matching nothing exits 2 and lists the candidates.
 
-:::warning There is no id for `main`, and no way to spell it
-The API resolves main by the `?branch=` parameter being **absent**. Any non-empty
-value must parse as a UUID belonging to the project or the request is refused
-(`400` for a malformed id, `404` for one belonging to another project). So
-`--branch main` does **not** work unless a branch is literally named `main`, and
-omitting the flag is how you ask for the live plan.
+:::note `--branch main` reads the live plan too
+The API resolves main by the `?branch=` parameter being **absent**, and treats
+main's own id, as `GET /branches` lists it, exactly the same. Any other
+non-empty value must parse as a UUID belonging to the project or the request is
+refused (`400` for a malformed id, `404` for one belonging to another project).
+`--branch` is matched against that listing, where main appears under the name
+`main`, a name no other branch can take. So `--branch main`, or main's id,
+reads the live plan just as omitting the flag does.
 
-The human output reflects that: it prints `prod` with no branch named when you
-read main, and `prod (branch 'checkout-redesign')` when you name one. The
-`--json` document carries `"branch": null` for main.
+Only the output tells the two apart. Without the flag it prints `prod` with no
+branch named, and the `--json` document carries `"branch": null`. With
+`--branch main` it prints `prod (branch 'main')` and carries main's id and name,
+as it prints `prod (branch 'checkout-redesign')` for a working branch.
 
 One consequence worth knowing: `?branch=` is contributed by a shared FastAPI
 **dependency**, so it is declared on every route that takes plan context at once
@@ -1879,7 +1882,8 @@ prod
 The columns are the branch id, its name, its kind (`main` or `working`), its
 status (`draft`, `ready_for_review`, `changes_requested`, `approved`, `merged`,
 `closed`), how many changes it is ahead of its base, and whether its **base has
-moved under it**.
+moved under it**. Both are computed for open branches only: a `merged` or
+`closed` row shows `-` and no `behind base`, like `main`.
 
 `behind base` is the one to act on. A branch whose base has moved has a diff
 that no longer describes what merging it would do — rebase it in the app before
@@ -2072,8 +2076,8 @@ Three files, and only three.
 | `.env` | `0600` | Generated. The only file that holds secrets. |
 
 There is deliberately **no data directory**. PostgreSQL lives in the named volume
-`pgdata18`, so backing up `--dir` backs up your configuration and **none of your
-data**.
+`pgdata18` and uploaded event photos in the named volume `photos`, so backing up
+`--dir` backs up your configuration and **none of your data**.
 
 Each file gets one of five actions, and the same five words appear in the human
 table and in the `--json` document:

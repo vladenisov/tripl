@@ -26,7 +26,7 @@ several roles — only the command differs:
 | `rabbitmq` | `rabbitmq:3.13-management` | **Ephemeral** — no data volume | `rabbitmq-diagnostics -q ping` |
 | `redis` | `redis:8.6.2-alpine` (`--maxmemory 256mb --maxmemory-policy allkeys-lru --save ""`) | **Ephemeral** — no volume, no RDB/AOF | `redis-cli ping` |
 | `migrate` | `alembic upgrade head` (one-shot) | — | — |
-| `app` | API + built SPA on `:8000` | — | **None** (probe externally — see [Health checks](#health-checks)) |
+| `app` | API + built SPA on `:8000` | **Durable** — named volume `photos` at `/app/var/photos` (uploaded event photos, local photo backend) | **None** (probe externally — see [Health checks](#health-checks)) |
 | `celery-worker` | `celery -A tripl.worker.celery_app worker --loglevel=info` | — | **Disabled** (`healthcheck.disable: true`) |
 | `celery-beat` | `celery -A tripl.worker.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule` | — | **Disabled** (`healthcheck.disable: true`) |
 
@@ -35,10 +35,14 @@ all declare `depends_on: migrate: condition: service_completed_successfully`, so
 a multi-worker deploy never races the schema upgrade.
 
 :::note
-PostgreSQL is the **only** stateful service with a durable volume (`pgdata18`,
-mounted at `/var/lib/postgresql`, with `PGDATA=/var/lib/postgresql/18/docker`).
-Redis is a cache and RabbitMQ has no data volume in `compose.yaml` — both are
-intentionally ephemeral. Your backup strategy only needs to cover PostgreSQL.
+The durable state lives in two named volumes: `pgdata18` on `postgres`
+(mounted at `/var/lib/postgresql`, with `PGDATA=/var/lib/postgresql/18/docker`)
+and `photos` on `app` (mounted at `/app/var/photos`, the local photo backend's
+default root). Redis is a cache and RabbitMQ has no data volume in
+`compose.yaml` — both are intentionally ephemeral. Your backup strategy needs to
+cover PostgreSQL and, while photos use the local backend, the `photos` volume
+([Photo volume backup](#photo-volume-backup)). A photo row whose file is missing
+still lists, but its image fails to load.
 :::
 
 ## PostgreSQL backup & restore
@@ -109,6 +113,39 @@ docker compose start postgres
 The Compose project prefixes the volume name (commonly `tripl_pgdata18`); confirm
 with `docker volume ls`.
 
+## Photo volume backup
+
+With the local photo backend (the default; see
+[Event photo storage](configuration.md#event-photo-storage)), each uploaded
+event photo is a file in the `photos` volume, while its row, including the key
+that locates the file, is in PostgreSQL. Back both up at about the same time: a
+database restored without the files lists photos whose images fail to load.
+Files are written once under a fresh random name and never rewritten, so the
+archive can be taken while `app` runs (an upload landing at that moment may be
+missed):
+
+```bash
+docker run --rm \
+  -v tripl_photos:/data:ro \
+  -v "$PWD":/backup alpine \
+  tar czf /backup/photos-$(date +%F).tar.gz -C /data .
+```
+
+To restore, stop `app`, unpack into the volume, and hand it back to the image's
+`app` user (uid 1000), which must be able to write there:
+
+```bash
+docker compose stop app
+docker run --rm \
+  -v tripl_photos:/data \
+  -v "$PWD":/backup alpine \
+  sh -c 'tar xzf /backup/photos-2026-06-27.tar.gz -C /data && chown -R 1000:1000 /data'
+docker compose start app
+```
+
+As with `pgdata18`, confirm the prefixed volume name with `docker volume ls`.
+With the Google Cloud Storage backend new files go to the bucket instead.
+
 ## Disaster recovery
 
 Recovery hinges on the durable/ephemeral split:
@@ -116,6 +153,9 @@ Recovery hinges on the durable/ephemeral split:
 - **PostgreSQL (`pgdata18`) — durable, must be restored.** This holds tracking
   plans, data sources, scan history, metrics, alerts, and user accounts. Restore
   it from your latest dump (above) on a fresh host before starting the app tier.
+- **Photos (`photos`) — durable, restore alongside PostgreSQL** when photos use
+  the local backend ([Photo volume backup](#photo-volume-backup)). A photo row
+  whose file is missing still lists, but its image fails to load.
 - **Redis — ephemeral cache, rebuilds itself.** It runs with `--save ""` and no
   volume, so a restart starts empty. The app degrades gracefully: reads fall
   through to PostgreSQL and the cache repopulates. (In `compose.yaml`,
@@ -144,7 +184,10 @@ docker compose pull
 # 3. Bring up only PostgreSQL and restore the dump.
 docker compose up -d postgres
 docker compose exec -T postgres pg_restore -U tripl -d tripl --clean --if-exists --no-owner < tripl-LATEST.dump
-# 4. Start the rest (migrate runs alembic upgrade head, then app + workers).
+# 4. Local photo backend: create the remaining containers and volumes without
+#    starting them, then unpack the photos archive (see Photo volume backup).
+docker compose up --no-start
+# 5. Start the rest (migrate runs alembic upgrade head, then app + workers).
 docker compose up -d
 ```
 
@@ -319,6 +362,23 @@ After any `docker compose up -d` (deploy, rollback, or recovery):
 
 If any step fails, see [Troubleshooting](../use/troubleshooting.md) for
 symptom-driven diagnosis, or roll back per the section above.
+
+### The photo-volume release: bring an older `compose.yaml` up to date
+
+:::warning `tripl upgrade` does not rewrite `compose.yaml`
+Before this release the image could not create the local photo backend's
+directory, so every photo upload failed unless photos went to Google Cloud
+Storage. Now local uploads succeed, and `compose.yaml` mounts the named
+volume `photos` at `/app/var/photos` so they survive a redeploy. `tripl upgrade`
+only moves the version pin, so a stack installed earlier keeps a `compose.yaml`
+without that volume: its uploads land in the container and are lost the next
+time the container is recreated. Before anyone uploads, re-run
+[`tripl install`](./cli.md#tripl-install) from a CLI that ships this release,
+with `--force` (the file it replaces is kept as `compose.yaml.bak.<timestamp>`,
+and `--force` never touches `.env`), or add the `volumes:` entry under `app` and the
+top-level `photos:` by hand. After `docker compose up -d`, `docker volume ls`
+lists the prefixed volume (commonly `tripl_photos`).
+:::
 
 ### The scan-identity release: look for events tagged `duplicate-identity`
 

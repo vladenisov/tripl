@@ -167,6 +167,14 @@ services:
     environment: *app-environment
     ports:
       - "8000:8000"
+    # Uploaded event photos: the local photo backend's default root
+    # (./var/photos under the image's WORKDIR /app). Without a volume, every
+    # redeploy recreates the container and discards the files while their
+    # rows stay in Postgres (tripl-0zpq.211). The image creates this
+    # directory owned by the app user, and a new named volume starts out with
+    # that ownership. Back it up together with pgdata18.
+    volumes:
+      - photos:/app/var/photos
     depends_on:
       postgres:
         condition: service_healthy
@@ -242,3 +250,4 @@ services:
 
 volumes:
   pgdata18:
+  photos:

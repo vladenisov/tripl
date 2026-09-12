@@ -196,8 +196,10 @@ export interface PlanDiffEntry {
   entity_id?: string | null
   changes: string[]
   /** Things a reviewer should know that are not a change between the two sides
-   * — an event on a scan-governed type with no scan identity, for one. Plain
-   * sentences. Absent on responses from an older instance. */
+   * — an event on a scan-governed type with no scan identity, or a name more
+   * than one event (or a pair of fields more than one relation) holds, which
+   * the diff, the merge and a revert cannot tell apart. Plain sentences.
+   * Absent on responses from an older instance. */
   warnings?: string[]
   /** Set when the entry is the machine's doing rather than the author's — a
    * scan-minted variable nobody used being retired, or a removal main has

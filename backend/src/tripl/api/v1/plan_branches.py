@@ -38,11 +38,12 @@ async def list_branches(
 ) -> PlanBranchList:
     """List a project's branches.
 
-    ``include_diff_counts`` fills each feature branch's ``ahead`` /
-    ``behind_base`` from a single shared main snapshot, so a branches list does
-    not need one ``/branches/{id}/diff`` call per row. It is opt-in because it
-    makes the response cost N+1 plan snapshots; leave it off when you only need
-    the branch rows.
+    ``include_diff_counts`` fills ``ahead`` / ``behind_base`` for each open
+    feature branch (draft, ready_for_review, changes_requested, approved) from a
+    single shared main snapshot, so a branches list does not need one
+    ``/branches/{id}/diff`` call per row. Merged and closed branches keep both
+    null, like main. It is opt-in because it costs one plan snapshot per open
+    branch plus one for main; leave it off when you only need the branch rows.
     """
     return await plan_branch_service.list_branches(
         session, slug, include_diff_counts=include_diff_counts

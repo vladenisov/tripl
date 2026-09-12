@@ -30,7 +30,7 @@ For tuning individual settings (logging, rate limits, metrics, AI/search feature
 
 `compose.yaml` defines **eight services**: `postgres`, `rabbitmq`, `redis`, the one-shot `migrate`, `app`, `celery-worker`, `celery-beat`, and the profile-gated `mcp`. A default `docker compose up -d` starts seven of them — `mcp` sits behind `--profile mcp` — and `migrate` runs once and exits, so the steady state is **six long-running containers**. The `app` container runs **4 uvicorn workers by default** (`UVICORN_WORKERS=4`, baked into the image).
 
-A modest single-host deployment is comfortable at roughly **2 vCPU / 4 GB RAM** for trials and small teams. Give it more headroom (4+ vCPU, 8 GB+) if you connect large warehouses or run frequent scans, since warehouse queries and scans execute on `celery-worker`. Redis is capped at 256 MB (`--maxmemory 256mb`, `allkeys-lru`) and runs without persistence (`--save ""`), so it is a pure cache — losing it costs nothing but a cache warm-up. PostgreSQL holds all durable application state and is the volume you must back up (`pgdata18`).
+A modest single-host deployment is comfortable at roughly **2 vCPU / 4 GB RAM** for trials and small teams. Give it more headroom (4+ vCPU, 8 GB+) if you connect large warehouses or run frequent scans, since warehouse queries and scans execute on `celery-worker`. Redis is capped at 256 MB (`--maxmemory 256mb`, `allkeys-lru`) and runs without persistence (`--save ""`), so it is a pure cache — losing it costs nothing but a cache warm-up. PostgreSQL holds the durable application state in the `pgdata18` volume; uploaded event photos, while they use the default local photo backend, are files in the `photos` volume. Back up both ([runbook](./runbook.md#photo-volume-backup)).
 
 ## Registry access
 
@@ -62,7 +62,7 @@ It writes three files into `--dir` (default `./tripl`) — `compose.yaml` and `i
 Every flag, the plan output, the file actions and the safety rules live in [`tripl install`](./cli.md#tripl-install) and are not repeated here. What is left is what the command means for a *deployment*:
 
 - **The health poll goes to your public `--app-url`, never to `localhost`.** If your TLS terminator is not in front of port `8000` yet, that URL cannot answer however healthy the stack is, and the command [times out](./cli.md#waiting-for-health) and exits **1** — with the stack running and nothing rolled back. Bring the proxy up first, or pass `--wait 0` and `curl -fsS http://127.0.0.1:8000/health` from the host.
-- **Your data is not in `--dir`.** PostgreSQL lives in the named volume `pgdata18`, so backing up the install directory backs up your configuration and none of your data.
+- **Your data is not in `--dir`.** PostgreSQL lives in the named volume `pgdata18` and uploaded event photos in the named volume `photos`, so backing up the install directory backs up your configuration and none of your data.
 - **The `compose.yaml` it writes is the one described [below](#the-compose-stack)**, minus the `mcp` service's `build:` block: a fresh host has no source tree, so `--profile mcp` pulls the published image instead of building it.
 - **Re-running converges.** A second run leaves `.env` alone, reports the other two files as `unchanged` or `kept`, and still runs `pull` and `up -d` — which is how you apply an edit to `compose.yaml` or a `compose.override.yaml`.
 - **It stops at a running, empty instance.** The owner account and the warehouse connection are browser steps; see [Connecting a warehouse](#connecting-a-warehouse).
@@ -122,7 +122,7 @@ If you put a trusted reverse proxy or load balancer in front that overwrites `X-
 | `rabbitmq` | `rabbitmq:3.13-management` | Celery broker (user `tripl`). Mounts `infra/rabbitmq/rabbitmq.conf`. Health-checked with `rabbitmq-diagnostics ping`. |
 | `redis` | `redis:8.6.2-alpine` | Cache only — 256 MB cap, `allkeys-lru`, no persistence. Health-checked with `redis-cli ping`. |
 | `migrate` | tripl image | One-shot. Runs `alembic upgrade head`, then exits. App and workers wait for it to complete successfully. |
-| `app` | tripl image | The single API + SPA process on port `8000`. Runs uvicorn with `UVICORN_WORKERS` (default 4). |
+| `app` | tripl image | The single API + SPA process on port `8000`. Runs uvicorn with `UVICORN_WORKERS` (default 4). Mounts the `photos` volume at `/app/var/photos`, where the local photo backend keeps uploaded event photos. |
 | `celery-worker` | tripl image | Runs `celery -A tripl.worker.celery_app worker`. Executes scans, warehouse queries, monitor evaluation, and alert delivery. Its container healthcheck is disabled. |
 | `celery-beat` | tripl image | Runs `celery -A tripl.worker.celery_app beat` with the schedule at `/tmp/celerybeat-schedule`. Enqueues periodic jobs. Its container healthcheck is disabled. |
 | `mcp` | `${TRIPL_MCP_IMAGE:-ghcr.io/vladenisov/tripl-mcp}:${TRIPL_VERSION}` | **Not started by default** — it is behind `profiles: [mcp]`, so it needs `docker compose --profile mcp up -d`. Serves the [MCP server](../integrate/mcp-server.md) over streamable HTTP for agents. |
@@ -200,7 +200,7 @@ An upgrade is a version bump plus a pull-and-up, and the order matters:
 tripl upgrade --to 1.5.0 --dir /srv/tripl
 ```
 
-It reads the current pin out of `.env`, refuses a **downgrade** outright, prints the `pg_dump` command and waits for you to acknowledge it, then pulls, moves the pin, restarts and waits for `/health`. Why that order, what it does when the pull fails versus when `up -d` fails, and why a failed `up -d` leaves the new pin in place, are all in [`tripl upgrade`](./cli.md#tripl-upgrade).
+It reads the current pin out of `.env`, refuses a **downgrade** outright, prints the `pg_dump` command and waits for you to acknowledge it, then pulls, moves the pin, restarts and waits for `/health`. Why that order, what it does when the pull fails versus when `up -d` fails, and why a failed `up -d` leaves the new pin in place, are all in [`tripl upgrade`](./cli.md#tripl-upgrade). It never rewrites `compose.yaml`, so a release that changes the stack (the `photos` volume, for one) needs the file updated separately; see the [runbook](./runbook.md#the-photo-volume-release-bring-an-older-composeyaml-up-to-date).
 
 The `migrate` one-shot applies any new Alembic migrations before the new `app` and workers come up, so a rolling deploy never races the upgrade. Pin `TRIPL_VERSION` to an explicit released tag in production rather than tracking `latest`, so upgrades are deliberate and reproducible. Releases are cut from git tags via `bin/release.sh`; the full release machinery is documented in [the release guide](./release.md).
 

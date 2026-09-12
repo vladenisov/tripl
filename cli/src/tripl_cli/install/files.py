@@ -2,8 +2,9 @@
 
 Three files, and only three: ``compose.yaml``, ``infra/rabbitmq/rabbitmq.conf``
 and ``.env``. There is deliberately NO data directory — Postgres lives in the
-named volume ``pgdata18`` (compose.yaml), so an operator who backs up the
-install directory has backed up the configuration and none of the data.
+named volume ``pgdata18`` and uploaded event photos in the named volume
+``photos`` (both in compose.yaml), so an operator who backs up the install
+directory has backed up the configuration and none of the data.
 
 ``infra/rabbitmq/rabbitmq.conf`` is not optional and is the whole reason a
 hand-copied ``compose.yaml`` is not enough: the compose file bind-mounts it, and

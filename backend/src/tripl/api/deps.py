@@ -1,15 +1,16 @@
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Query, Request, status
+from fastapi.dependencies.models import Dependant
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.config import settings
 from tripl.database import get_session
 from tripl.middleware.branch_context import bound_branch
-from tripl.models.plan_branch import BranchKind, PlanBranch
+from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.services import api_key_service, project_service
@@ -229,23 +230,145 @@ EditorUserDep = Annotated[User, Depends(get_editor_user)]
 OwnerUserDep = Annotated[User, Depends(get_owner_user)]
 KeyReachableOwnerUserDep = Annotated[User, Depends(get_key_reachable_owner_user)]
 
+_WriteGate = Callable[..., Awaitable[User]]
+_GateReplay = Callable[[Request, AsyncSession, User], Awaitable[User]]
+
+# Every write gate, with the call that runs its checks again by hand, passing the
+# arguments FastAPI would inject. get_branch_id_override replays a route's gates
+# before its read-only 409 (see :func:`_refuse_writes_to_a_read_only_branch`).
+_WRITE_GATE_REPLAYS: dict[_WriteGate, _GateReplay] = {
+    get_write_user: lambda request, _session, user: get_write_user(request, user),
+    get_editor_user: get_editor_user,
+    get_owner_user: lambda request, _session, user: get_owner_user(request, user),
+    get_key_reachable_owner_user: (
+        lambda request, _session, user: get_key_reachable_owner_user(request, user)
+    ),
+}
+
 # The route audits in tests/ classify every route by the gate it carries. Each
 # audit used to spell its own literal set of gate functions, so adding a gate
 # meant remembering every copy — and a forgotten copy does not fail, it silently
-# reclassifies the new route as ungated. Spelled once here, next to the gates
-# themselves, so a new gate is added in the same edit that defines it.
-WRITE_GATES = frozenset(
-    {get_write_user, get_editor_user, get_owner_user, get_key_reachable_owner_user}
-)
+# reclassifies the new route as ungated. Spelled once, next to the gates
+# themselves, so a new gate is added in the same edit that defines it. Read off
+# the replay table's keys, so a gate cannot be a write gate without a replay.
+WRITE_GATES = frozenset(_WRITE_GATE_REPLAYS)
 # Gates that resolve the path's project as well as the caller's role:
 # ``get_editor_user`` runs :func:`require_project_mutation_access`, and the two
 # owner gates demand the instance-owner role, which passes it by definition.
 PROJECT_SCOPED_GATES = frozenset({get_editor_user, get_owner_user, get_key_reachable_owner_user})
 
+# A merged branch is the record of what landed on main and a closed one is
+# shelved until someone reopens it, so neither takes plan writes. Main is stored
+# with ``status="merged"`` too, which is why the check runs only after main has
+# been split off (tripl-0zpq.145). Photo and Figma spec writes address a
+# branch's event by its own id, with no ``?branch=``, so they never reach this;
+# ``event_photo_service._get_plan_writable_event`` refuses them the same way.
+_READ_ONLY_BRANCH_STATUSES = frozenset({BranchStatus.merged.value, BranchStatus.closed.value})
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# The one write-gated route deliberately let through on a merged or closed
+# branch. A search reindex derives its index from the plan without changing it,
+# and the runbook rebuilds that "once per project AND per plan branch" after a
+# migration, merged and closed branches included. It is not the only gated
+# route that changes nothing: the AI describe-event and describe-event-type
+# suggestions write nothing either, and they are refused on purpose, since a
+# description suggested for a branch that cannot take the edit has nowhere to
+# go. Named by handler because this module cannot import the routers that
+# import it. test_branch_context_batch2 fails if the name stops matching.
+_DERIVED_DATA_HANDLERS = frozenset({"tripl.api.v1.search.reindex_project_search"})
+
+
+def _write_gates_in(dependant: Dependant) -> list[_WriteGate]:
+    """Every write gate in ``dependant``'s tree, in the order FastAPI runs them.
+
+    FastAPI solves a sub-dependency's own dependencies before the sub-dependency
+    itself, and siblings in declaration order, so this walk does the same.
+    """
+    found: list[_WriteGate] = []
+    for sub in dependant.dependencies:
+        found.extend(gate for gate in _write_gates_in(sub) if gate not in found)
+        call = sub.call
+        if call is not None and call in _WRITE_GATE_REPLAYS and call not in found:
+            found.append(call)
+    return found
+
+
+def _is_a_write(request: Request) -> bool:
+    """Whether this request is on the mutation surface.
+
+    Keyed on the matched route's write gate, not on the method alone.
+    ``POST /ai/ask`` is a read that carries its question in a body, has no gate,
+    and the command palette sends it with the active branch, which a diff-row
+    link can set to a merged one. The write gates are already this module's
+    definition of "mutation" (see :func:`require_project_mutation_access`),
+    less :data:`_DERIVED_DATA_HANDLERS`.
+
+    FastAPI resolves dependencies before it validates the endpoint's own path,
+    query and body parameters, so the 409 wins over the route's own 404s and
+    over the 422 for a body that parses but fails its schema. On a route that
+    takes a body, one sent with a JSON Content-Type (``application/json`` or
+    ``application/*+json``) that is not valid JSON at all is refused with 422
+    before any dependency runs, authentication included. Under any other
+    Content-Type, or none, FastAPI keeps the raw bytes and only validates them
+    after the dependencies, so the 409 wins there too. The route's write gate
+    answers ahead of the 409: see :func:`_refuse_writes_to_a_read_only_branch`.
+
+    When the route cannot be seen (a call from outside the router), the method
+    decides, so an unknown write is refused rather than let through.
+    """
+    if request.method in _SAFE_METHODS:
+        return False
+    route = request.scope.get("route")
+    dependant = getattr(route, "dependant", None)
+    if dependant is None:
+        return True
+    endpoint = getattr(route, "endpoint", None)
+    handler = f"{getattr(endpoint, '__module__', '')}.{getattr(endpoint, '__qualname__', '')}"
+    if handler in _DERIVED_DATA_HANDLERS:
+        return False
+    return bool(_write_gates_in(dependant))
+
+
+async def _refuse_writes_to_a_read_only_branch(
+    request: Request, session: AsyncSession, user: User, plan_branch: PlanBranch
+) -> None:
+    """409 when a write targets a merged or closed branch.
+
+    Before this, only revert and the transition route read ``status``. Every
+    other write landed, so a merged branch kept drifting from the revision it
+    merged. The docs said such writes are refused, which is why the UI offers no
+    Edit on these branches (tripl-0zpq.145). 409 matches the revert refusal for
+    the same state. The status is read when the request arrives and nothing is
+    locked, so a write already past this check when a merge or a close commits
+    still lands; this check does not close that race (tripl-0zpq.288).
+
+    Authorization answers first. FastAPI runs a route's dependencies in the
+    order its signature declares them, and most event write routes, two
+    reconciliation routes and the AI describe suggestions declare ``?branch=``
+    ahead of their write gate. There a viewer or a ``read`` key got this 409
+    instead of the gate's 403: told to reopen a branch it has no right to
+    reopen, about a write it could never make. So the route's own gates run
+    here, in FastAPI's order, before the 409, and the caller gets exactly the
+    403 the gate would have given. A gate that already ran passes again; the
+    editor gate's project-scope query is the only work repeated. That keeps the
+    precedence out of each route's parameter order, including the next route's.
+    """
+    if plan_branch.status not in _READ_ONLY_BRANCH_STATUSES or not _is_a_write(request):
+        return
+    dependant = getattr(request.scope.get("route"), "dependant", None)
+    if dependant is not None:
+        for gate in _write_gates_in(dependant):
+            await _WRITE_GATE_REPLAYS[gate](request, session, user)
+    if plan_branch.status == BranchStatus.merged.value:
+        detail = f"Branch '{plan_branch.name}' is merged, so its plan is read-only"
+    else:
+        detail = f"Branch '{plan_branch.name}' is closed; reopen it before editing its plan"
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
 
 async def get_branch_id_override(
     request: Request,
     session: SessionDep,
+    user: CurrentUserDep,
     branch: Annotated[
         str | None,
         Query(description="Plan branch id (UUID) to read and write instead of the main branch."),
@@ -253,9 +376,16 @@ async def get_branch_id_override(
 ) -> AsyncIterator[uuid.UUID | None]:
     """Resolve the editor's active branch from the ``?branch=`` query param.
 
-    Yields ``None`` when no override is supplied (services then default to the
-    project's main branch). Validates that the branch belongs to the project
-    referenced by the path's ``slug`` so cross-project ids can't leak through.
+    Yields ``None`` for main, whether no override is supplied or it names main
+    by id (services then default to the project's main branch). Validates that
+    the branch belongs to the project referenced by the path's ``slug`` so
+    cross-project ids can't leak through, and refuses writes to a merged or
+    closed branch with 409, once the route's write gate has admitted the caller.
+
+    ``user`` is only needed to replay that gate. Every route carrying this
+    dependency is already mounted behind :func:`get_current_user`, and FastAPI
+    caches a dependency per request, so declaring it here re-runs nothing; it
+    also puts the 401 ahead of the 409 by construction.
 
     Declared as a parameter rather than read off ``request.query_params`` so
     FastAPI propagates it into the OpenAPI schema of every route carrying
@@ -268,12 +398,12 @@ async def get_branch_id_override(
     A generator rather than a plain ``async def`` because this is also the ONE
     place that binds the request's branch for ``audit_service.record`` — see
     :mod:`tripl.middleware.branch_context` — and the binding needs a teardown
-    point. Every raise below stays ahead of the first ``yield``, so the 400 and
-    404 contracts are unchanged. A yield dependency's teardown runs in the same
-    task, and so the same ``Context``, as its setup (fastapi/routing.py enters
-    and exits ``request_stack`` inside one coroutine), which is what makes
-    ``ContextVar.reset`` valid here; that has only been true since FastAPI
-    0.106, and the pin is 0.141.1.
+    point. Every raise below, the replayed gate's 403 included, stays ahead of
+    the first ``yield``, so the 400, 403, 404 and 409 contracts hold. A yield
+    dependency's teardown runs in the same task, and so the same ``Context``, as
+    its setup (fastapi/routing.py enters and exits ``request_stack`` inside one
+    coroutine), which is what makes ``ContextVar.reset`` valid here; that has
+    only been true since FastAPI 0.106, and the pin is 0.141.1.
     """
     if not branch:
         # Unbound rather than bound-to-None: a route with no ``?branch=`` is
@@ -310,10 +440,23 @@ async def get_branch_id_override(
         # the audit tab's chip, the CLI's "there is no literal for main" — so
         # binding it would spell it a second way and make two identical writes
         # to main render differently in the same compliance trail
-        # (tripl-wkwv.6). The id still yields unchanged: the write targets main
-        # exactly as it does with no ``?branch=`` at all.
-        yield plan_branch.id
+        # (tripl-wkwv.6).
+        #
+        # The same holds for what this yields, so it yields ``None``, not the
+        # id. event_type_service, meta_field_service and event_service decide
+        # "main" by ``branch_id is None``, and their event-type, meta-field and
+        # project cache busts key on it. field_service used to as well, for its
+        # name-format delete guard and its cache busts; it now reads main off
+        # the row instead (see ``field_service._on_main``), so it holds however
+        # a caller spells main. With the id passed through, the write still
+        # landed on main but skipped the checks and busts keyed on
+        # ``branch_id is None``, and a field a scan names events by could be
+        # deleted from the live plan (tripl-0zpq.121, tripl-0zpq.215).
+        # Normalising here, in the one place that resolves ``?branch=``, makes
+        # the request exactly what it is with no ``?branch=`` at all.
+        yield None
         return
+    await _refuse_writes_to_a_read_only_branch(request, session, user, plan_branch)
     # The name comes free — the query above already loads the whole row — and it
     # is what keeps an audit entry readable after the branch is deleted.
     with bound_branch(plan_branch.id, plan_branch.name):

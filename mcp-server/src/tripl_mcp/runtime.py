@@ -174,11 +174,14 @@ async def ensure_branch_not_main(client: TriplClient, slug: str, branch_id: str 
     """Refuse plan mutations that target the main branch via its explicit id.
 
     ``require_branch_id`` catches the *missing* branch_id path; this closes the
-    second path onto the live plan: the backend accepts any branch UUID that
-    belongs to the project — including the ``kind="main"`` branch that
-    ``list_branches`` returns — so passing main's id would silently write to
-    the live main plan. Costs one branch lookup per write; skipped entirely
-    when the operator opted in via the env override.
+    second path onto the live plan: the backend accepts the id of the
+    ``kind="main"`` branch that ``list_branches`` returns and treats it exactly
+    as no branch at all, so passing main's id would silently write to the live
+    main plan. That holds although main is stored with ``status="merged"``:
+    the backend refuses writes naming a merged or closed WORKING branch with a
+    409, which reaches the agent as a ToolError, but splits main off before
+    that check. Costs one branch lookup per write; skipped entirely when the
+    operator opted in via the env override.
     """
     if not branch_id or is_main_write_allowed():
         return

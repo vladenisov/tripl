@@ -372,10 +372,17 @@ to put that change back to the state the plan was in when the branch was opened:
   meta values, tags, and per-event overrides.
 
 Reverting only ever touches the branch — main is left alone — and it works while
-the branch is open (a merged or closed branch has to be reopened first). Two
-things are refused rather than half-done: an event's **photos** are not restored
-(their files are not part of the plan snapshot), and a field or event cannot come
-back before the event type it belongs to, so restore the event type first.
+the branch is open: a closed branch has to be reopened first, and a merged one
+stays read-only. Neither takes any other plan edit (a closed one until it is
+reopened), photos and Figma specs included; comments still work. Some things
+are refused rather than half-done: an event's **photos** are not restored
+(their files are not part of the plan snapshot); a field or event cannot come
+back before the event type it belongs to, so restore the event type first; and
+a change the revert cannot pin on one row, because several events share its
+name or several answer to the successor it would restore, is refused. If the
+plan already held those events when the branch was opened, undo the change by
+hand: renaming one on the branch does not help. Renaming (or removing) one
+helps only when the branch itself added the duplicate.
 
 ### Branch best practices
 

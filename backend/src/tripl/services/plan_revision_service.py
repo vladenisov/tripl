@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections import Counter
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -40,6 +41,7 @@ from tripl.schemas.plan_revision import (
     PlanRevisionSummary,
     PlanValueChange,
 )
+from tripl.services._plan_diff_housekeeping import note_references
 from tripl.services.project_lookup import get_project_by_slug
 
 PLAN_REVISIONS_DEFAULT_LIMIT = 50
@@ -164,7 +166,10 @@ _EVENT_CHANGE_KEYS = (
     "status",
     "sunset_at",
     "superseded_by",
-    "event_type_name",
+    # Not ``event_type_name``: it is half of the key events are aligned by, so
+    # a changed entry has the same type on both sides by construction, and
+    # nothing moves an event between types. Listed, it was a change key the
+    # diff could never report and the revert no longer restores (tripl-0zpq.155).
     "owner_id",
     "reviewed",
     "metric_breakdown_columns",
@@ -185,12 +190,36 @@ _VARIABLE_CHANGE_KEYS = (
 _META_FIELD_CHANGE_KEYS = (
     "field_type",
     "is_required",
+    # Behaviour, not cosmetics: it decides whether an event may hold several
+    # values. The snapshot (and so the approval hash), the conflict scan, the
+    # merge and the revert all carry it; left out here, flipping it voided every
+    # approval with an empty diff, merged a change no reviewer saw, and made the
+    # revert answer "not in this branch's diff" (tripl-0zpq.148, tripl-0zpq.141).
+    "allow_multiple",
     "enum_options",
     "default_value",
     "link_template",
     "sensitivity",
 )
 _RELATION_CHANGE_KEYS = ("relation_type", "description")
+
+
+def _meta_value_order(member: dict[str, Any]) -> tuple[str, str]:
+    """The one order an event's ``meta_values`` are written and compared in.
+
+    By field name, then by value. The name alone was enough while a meta field
+    held one value per event; with ``allow_multiple`` (tripl-h2sx.31) a field
+    holds several rows and nothing orders them — the selectin load has no ORDER
+    BY, ``update_event`` deletes and re-inserts them in payload order, and a heap
+    reorder moves them with no edit at all. A stable sort on the name kept that
+    arrival order, so one unchanged set could serialize two ways: a diff row, a
+    stale approval and a spurious merge conflict out of nothing (tripl-0zpq.140).
+
+    For a field with one value per event the order is exactly what it was, so a
+    snapshot without a multi-value field hashes as it did before. ``str`` on both
+    halves so a hand-edited payload cannot make the sort raise.
+    """
+    return (str(member.get("meta_field_name", "")), str(member.get("value", "")))
 
 
 async def _resolve_project(session: AsyncSession, slug: str) -> Project:
@@ -470,7 +499,9 @@ async def build_plan_snapshot(
     # applies branch changes onto main BY (event_type_name, name) and matched
     # main rows keep their own live ids, so a branch-local uuid means nothing
     # over there. Exactly the reason `event_type_name` rides beside the raw
-    # `event_type_id` below, with only the NAME in the change keys.
+    # `event_type_id` below. Neither is a change key: the name is half of the
+    # key the diff aligns events by, so it cannot differ within a change, and
+    # the id is branch-local (tripl-0zpq.155).
     event_by_id = {ev.id: ev for ev in events_rows}
 
     def _superseded_key(ev: Event) -> str | None:
@@ -518,7 +549,7 @@ async def build_plan_snapshot(
                     }
                     for value in ev.meta_values
                 ],
-                key=lambda value: value["meta_field_name"],
+                key=_meta_value_order,
             ),
             "tags": sorted(tag.name for tag in ev.tags),
             "photos": serialize_photos(ev.id),
@@ -721,7 +752,8 @@ _V2_EVENT_DEFAULTS: dict[str, Any] = {"title": "", "superseded_by": None}
 # older payload predates the key, and ``_field_changes_between`` refuses to
 # treat one absent from a current-version payload as skew (tripl-2d3d), so
 # without this every pre-existing snapshot would diff every meta field as
-# changed the moment the column shipped.
+# changed. That danger is real only because the key IS diffed — which it was
+# not until tripl-0zpq.148 put it in ``_META_FIELD_CHANGE_KEYS``.
 _V2_META_FIELD_DEFAULTS: dict[str, Any] = {"allow_multiple": False}
 
 # Member attributes the diff does not read as a change on their own. A field
@@ -732,13 +764,38 @@ _V2_META_FIELD_DEFAULTS: dict[str, Any] = {"allow_multiple": False}
 _MEMBER_ATTRS_NOT_A_CHANGE: dict[str, tuple[str, ...]] = {"field_values": ("is_authored",)}
 
 
-def with_snapshot_defaults(payload: dict[str, Any]) -> dict[str, Any]:
-    """The payload with the keys later v2 serializers added, filled in.
+def _with_ordered_meta_values(event: Any) -> Any:
+    """``event`` with its meta values in ``_meta_value_order`` — itself if already so.
 
-    Returns a new dict when something was missing and the same object when
-    nothing was, so callers holding a base payload can normalize it once and
-    pass it everywhere — the diff, the conflict scan and the merge all read the
-    same shape.
+    A revision stores the snapshot exactly as it was serialized, and one written
+    before tripl-0zpq.140 holds a multi-value field's rows in whatever order the
+    database returned them. Read beside a fresh snapshot of the same content,
+    that order alone would be a change to the diff and a divergence to the merge.
+    """
+    if not isinstance(event, dict):
+        return event
+    values = event.get("meta_values")
+    if not isinstance(values, list) or not all(isinstance(value, dict) for value in values):
+        return event
+    ordered = sorted(values, key=_meta_value_order)
+    if ordered == values:
+        return event
+    return {**event, "meta_values": ordered}
+
+
+def with_snapshot_defaults(payload: dict[str, Any]) -> dict[str, Any]:
+    """The payload with the keys later v2 serializers added, and meta values in order.
+
+    Fills in the keys later v2 serializers added, and puts each event's meta
+    values in the order ``build_plan_snapshot`` now emits them — an ordering
+    fixed without a version bump for the reason the defaults were
+    (tripl-0zpq.140), so a stored base's meta values compare equal to a fresh
+    snapshot's of the same content.
+
+    Returns a new dict when something was missing or out of order and the same
+    object when nothing was, so callers holding a base payload can normalize it
+    once and pass it everywhere — the diff, the conflict scan and the merge all
+    read the same shape. The input is never modified.
     """
     filled = payload
     for key, defaults in (
@@ -754,6 +811,11 @@ def with_snapshot_defaults(payload: dict[str, Any]) -> dict[str, Any]:
             **filled,
             key: [{**defaults, **item} if isinstance(item, dict) else item for item in items],
         }
+    events = filled.get("events")
+    if isinstance(events, list):
+        ordered_events = [_with_ordered_meta_values(event) for event in events]
+        if any(new is not old for new, old in zip(ordered_events, events, strict=True)):
+            filled = {**filled, "events": ordered_events}
     return filled
 
 
@@ -854,6 +916,34 @@ def _entity_id(item: dict[str, Any]) -> str | None:
     return None if value is None else str(value)
 
 
+# Entity types whose natural key nothing makes unique: an event's type and name,
+# and the two fields a relation links. Event types, fields, variables and meta
+# fields carry a unique constraint on theirs.
+_SHARED_KEY_TYPES = ("event", "relation")
+
+
+def _shared_key_warning(entity_type: str, name: str, parent: str | None) -> str:
+    """The notice on an entry whose natural key more than one row holds.
+
+    ``_diff_set`` keeps one row per key (the last one listed), and the merge and
+    a revert match rows by that key too, so with two rows under it none of them
+    can tell which row a change was made to. Said on the row rather than solved:
+    pairing rows that share a key needs to know which base row each branch copy
+    came from, which the snapshot does not record.
+    """
+    if entity_type == "event":
+        return (
+            f"More than one event is named '{name}' in '{parent}'. This diff, the merge "
+            "and a revert match rows by name, so a change to one of them can show on, or "
+            "land on, the other. Rename one of them before changing either."
+        )
+    return (
+        f"More than one relation links the same two fields ({name}). This diff, the "
+        "merge and a revert match relations by those fields, so a change to one of them "
+        "can show on, or land on, the other. Remove one of them before changing either."
+    )
+
+
 def _diff_set(
     *,
     entity_type: str,
@@ -869,6 +959,18 @@ def _diff_set(
     new_by_key = {key_of(item): item for item in new_items}
     entries: list[PlanDiffEntry] = []
 
+    shared_keys: set[object] = set()
+    if entity_type in _SHARED_KEY_TYPES:
+        for items in (old_items, new_items):
+            held = Counter(key_of(item) for item in items)
+            shared_keys.update(key for key, count in held.items() if count > 1)
+
+    def warnings_for(key: object, item: dict[str, Any]) -> list[str]:
+        if key not in shared_keys:
+            return []
+        parent = parent_of(item) if parent_of else None
+        return [_shared_key_warning(entity_type, name_of(item), parent)]
+
     for key, item in new_by_key.items():
         if key not in old_by_key:
             entries.append(
@@ -879,6 +981,7 @@ def _diff_set(
                     parent=parent_of(item) if parent_of else None,
                     entity_id=_entity_id(item),
                     after=_public_state(item),
+                    warnings=warnings_for(key, item),
                 )
             )
     for key, item in old_by_key.items():
@@ -893,6 +996,7 @@ def _diff_set(
                     # resolves is the old one.
                     entity_id=_entity_id(item),
                     before=_public_state(item),
+                    warnings=warnings_for(key, item),
                 )
             )
     for key, new_item in new_by_key.items():
@@ -917,6 +1021,7 @@ def _diff_set(
                     field_changes=field_changes,
                     before=_public_state(old_item),
                     after=_public_state(new_item),
+                    warnings=warnings_for(key, new_item),
                 )
             )
     return entries
@@ -984,17 +1089,20 @@ def compute_plan_diff_entries(
         )
     )
 
-    entries.extend(
-        _diff_set(
-            entity_type="variable",
-            old_items=old_payload.get("variables", []),
-            new_items=new_payload.get("variables", []),
-            key_of=lambda item: item["name"],
-            name_of=lambda item: item["name"],
-            change_keys=_VARIABLE_CHANGE_KEYS,
-            old_is_current_version=old_is_current_version,
-        )
+    variable_entries = _diff_set(
+        entity_type="variable",
+        old_items=old_payload.get("variables", []),
+        new_items=new_payload.get("variables", []),
+        key_of=lambda item: item["name"],
+        name_of=lambda item: item["name"],
+        change_keys=_VARIABLE_CHANGE_KEYS,
+        old_is_current_version=old_is_current_version,
     )
+    # Read here, where the new side is at hand: whether an event there still
+    # names a variable that side no longer has decides whether its removal can
+    # be housekeeping at all (tripl-0zpq.138).
+    note_references(variable_entries, new_payload)
+    entries.extend(variable_entries)
 
     entries.extend(
         _diff_set(

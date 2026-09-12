@@ -84,8 +84,8 @@ def register(
             "a directory, then run `docker compose pull` and `docker compose up -d` in it and "
             "wait for /health. Re-running converges: an existing .env is never overwritten, "
             "and a compose.yaml you have edited is reported and kept. Needs Docker Engine "
-            "with the Compose V2 plugin. Database data lives in the named volume pgdata18, "
-            "not in this directory."
+            "with the Compose V2 plugin. Database data lives in the named volume pgdata18 "
+            "and uploaded event photos in the named volume photos, not in this directory."
         ),
     )
     parser.add_argument(

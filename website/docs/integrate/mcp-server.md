@@ -279,7 +279,11 @@ tool layer: the plan-mutating tools (`create_event`, `update_event`) **require**
 `branch_id`. Calls without a branch are rejected by the server itself unless
 the operator explicitly sets `TRIPL_MCP_ALLOW_MAIN=1` in the server
 environment. Discover branch ids with `list_branches` and review pending work
-with `get_branch_diff`.
+with `get_branch_diff`. Pick an open working branch (status `draft`,
+`ready_for_review`, `changes_requested` or `approved`): a merged branch is
+read-only, and a closed one is read-only until someone reopens it in the app,
+so a write naming either comes back as a tool error carrying the backend's
+`409` message.
 
 ## Deliberately not exposed in v1
 
