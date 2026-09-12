@@ -179,40 +179,69 @@ class GCSPhotoStorage(PhotoStorage):
         )
 
 
-_INSTANCE: PhotoStorage | None = None
+_BY_NAME: dict[str, PhotoStorage] = {}
 
 
-def get_photo_storage() -> PhotoStorage:
-    """Return the process-wide photo storage driver.
+class UnknownPhotoBackend(RuntimeError):
+    """A photo names a backend this process cannot build a driver for."""
 
-    The driver is built lazily from current settings the first time it's
-    requested, then cached. Tests can override ``photo_storage_backend`` and
-    ``photo_local_dir`` and clear the cache by calling :func:`reset_photo_storage`.
+
+def storage_for(backend: str) -> PhotoStorage:
+    """The driver for a NAMED backend, built once and cached under that name.
+
+    Every ``EventPhoto`` records the backend its blob was written to, and that
+    is the only store the key means anything in. An instance can be switched
+    from ``local`` to ``gcs`` (or back) while rows from the other one are still
+    in the database, so reading has to follow the row rather than the current
+    setting: with one driver per process, every photo taken before the switch
+    was looked up in the new store, where that key names nothing, and 404ed
+    (tripl-0zpq.295). Writing still follows the setting — that is what
+    ``get_photo_storage`` is for.
+
+    Raises :class:`UnknownPhotoBackend` for a name neither driver answers to,
+    which from a stored row means the row, not the configuration. Everything
+    else is left to fail where it always did: a ``gcs`` row on an instance whose
+    bucket setting is gone still builds a driver here and raises from the client.
     """
-
-    global _INSTANCE
-    if _INSTANCE is not None:
-        return _INSTANCE
-
-    backend = settings.photo_storage_backend.lower().strip()
-    if backend == "gcs":
-        _INSTANCE = GCSPhotoStorage(
+    name = backend.lower().strip()
+    cached = _BY_NAME.get(name)
+    if cached is not None:
+        return cached
+    if name == "gcs":
+        built: PhotoStorage = GCSPhotoStorage(
             bucket_name=settings.gcs_photo_bucket,
             credentials_path=settings.gcs_photo_credentials_path,
             public=settings.gcs_photo_public,
             signed_url_ttl_seconds=settings.gcs_photo_signed_url_ttl_seconds,
         )
-    elif backend == "local":
-        root = settings.photo_local_dir or str(Path.cwd() / "var" / "photos")
-        _INSTANCE = LocalPhotoStorage(root)
+    elif name == "local":
+        built = LocalPhotoStorage(settings.photo_local_dir or str(Path.cwd() / "var" / "photos"))
     else:
+        raise UnknownPhotoBackend(
+            f"Unknown photo storage backend {backend!r} (expected 'local' or 'gcs')"
+        )
+    _BY_NAME[name] = built
+    return built
+
+
+def get_photo_storage() -> PhotoStorage:
+    """The driver new uploads are written to: whatever ``settings`` names now.
+
+    Reads go through :func:`storage_for` with the row's own backend instead.
+    Tests override ``photo_storage_backend`` and ``photo_local_dir`` and clear
+    the cache with :func:`reset_photo_storage`.
+    """
+    backend = settings.photo_storage_backend.lower().strip()
+    try:
+        return storage_for(backend)
+    except UnknownPhotoBackend as exc:
+        # A misconfigured instance, not a stored row that named something odd:
+        # the old message names the setting, and startup-time callers expect it.
         raise RuntimeError(
             f"Unknown photo_storage_backend={settings.photo_storage_backend!r} "
             "(expected 'local' or 'gcs')"
-        )
-    return _INSTANCE
+        ) from exc
 
 
 def reset_photo_storage() -> None:
-    global _INSTANCE
-    _INSTANCE = None
+    _BY_NAME.clear()

@@ -742,3 +742,83 @@ def test_the_runtime_image_can_write_the_default_photo_directory(dockerfile: str
         ):
             handed_over = True
     assert handed_over, f"{dockerfile} never gives {photo_dir} to the app user"
+
+
+# --- tripl-0zpq.295: a photo is read through the backend its ROW names --------
+
+
+class _FakeGCS:
+    """A driver for a backend this instance switched TO; it holds no old keys."""
+
+    backend_name = "gcs"
+
+    def __init__(self) -> None:
+        self.asked_for: list[str] = []
+
+    async def read(self, key: str) -> bytes:
+        self.asked_for.append(key)
+        raise FileNotFoundError(key)
+
+    async def delete(self, key: str) -> None:
+        self.asked_for.append(key)
+
+    async def public_url(self, key: str, content_type: str) -> str | None:
+        self.asked_for.append(key)
+        return f"https://storage.example/{key}"
+
+    async def save(self, key: str, data: bytes, content_type: str) -> None:
+        raise AssertionError("this test never uploads through the new backend")
+
+
+async def _main_photo(client: AsyncClient, slug: str) -> tuple[str, str]:
+    """``(event id, photo id)`` of one screenshot uploaded onto main."""
+    events = await client.get(f"/api/v1/projects/{slug}/events")
+    event_id = str(events.json()["items"][0]["id"])
+    uploaded = await client.post(
+        f"/api/v1/projects/{slug}/events/{event_id}/photos",
+        files={"file": ("shot.png", _PNG, "image/png")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    return event_id, uploaded.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_photo_survives_a_switch_of_the_storage_backend(
+    client: AsyncClient, local_photos: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner moves the instance from local to GCS. Everything uploaded
+    before that keeps `storage_backend="local"`, and the files are still on the
+    volume — but /file read through the process's CURRENT driver, so it looked
+    every one of those keys up in the bucket and 404ed the lot."""
+    slug = "photo-backend-switch"
+    await _seed_plan(client, slug)
+    event_id, photo_id = await _main_photo(client, slug)
+
+    new_backend = _FakeGCS()
+    monkeypatch.setitem(photo_storage._BY_NAME, "gcs", new_backend)
+    monkeypatch.setattr(settings, "photo_storage_backend", "gcs")
+
+    served = await client.get(f"/api/v1/projects/{slug}/events/{event_id}/photos/{photo_id}/file")
+    assert served.status_code == 200
+    assert served.content == _PNG
+    assert new_backend.asked_for == [], "the old row must not be looked up in the new store"
+
+
+@pytest.mark.asyncio
+async def test_a_photo_naming_a_backend_this_build_cannot_read_says_so(
+    client: AsyncClient, local_photos: Path
+) -> None:
+    """Not a 404 blaming the photo: the row is there and the name is the
+    problem, so the answer names the backend and what to do about it."""
+    slug = "photo-backend-unknown"
+    await _seed_plan(client, slug)
+    event_id, photo_id = await _main_photo(client, slug)
+    async with TestSessionLocal() as session:
+        row = await session.get(EventPhoto, uuid.UUID(photo_id))
+        assert row is not None
+        row.storage_backend = "s3"
+        await session.commit()
+
+    served = await client.get(f"/api/v1/projects/{slug}/events/{event_id}/photos/{photo_id}/file")
+    assert served.status_code == 409
+    assert "s3" in served.json()["detail"]

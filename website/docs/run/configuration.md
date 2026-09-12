@@ -313,6 +313,16 @@ who asked for the link, so this is the only place the failure surfaces.
 | `GCS_PHOTO_PUBLIC` | `false` | Return public URLs instead of time-limited signed URLs. |
 | `GCS_PHOTO_SIGNED_URL_TTL_SECONDS` | `3600` | Signed-URL lifetime when not public. |
 
+**Switching `PHOTO_STORAGE_BACKEND` does not move anything.** Every photo row
+records the backend its file was written to, and that is the backend it is read
+and deleted through from then on — so photos taken before a switch keep working,
+as long as the old backend stays configured. Leave `PHOTO_LOCAL_DIR` pointing at
+the same volume when moving to `gcs`, and leave `GCS_PHOTO_BUCKET` set when
+moving back to `local`; new uploads follow the new setting either way. Take the
+old backend away and only its photos are affected: they answer `409` naming it,
+the rest of the page loads, and nothing is deleted. There is no migration
+command — copy the objects across yourself before retiring a backend.
+
 ### Warehouse query row caps
 
 | Variable | Default | Purpose |

@@ -17,7 +17,7 @@ from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.services.project_service import get_project_id_by_slug
-from tripl.storage import get_photo_storage
+from tripl.storage import PhotoStorage, get_photo_storage, storage_for
 
 logger = logging.getLogger(__name__)
 
@@ -306,23 +306,17 @@ async def delete_unreferenced_blobs(
     released = sorted(set(blobs))
     if not released:
         return
-    try:
-        storage = get_photo_storage()
-    except Exception:
-        logger.exception(
-            "Photo storage unavailable; %d released blob(s) left behind", len(released)
-        )
-        return
     for storage_backend, storage_key in released:
-        if storage_backend != storage.backend_name:
-            # Written through another backend than this process runs: the same
-            # key here names a different store, so deleting it could only miss
-            # or hit the wrong object.
-            logger.warning(
-                "Released photo blob %s lives on the %s backend, not %s; left behind",
-                storage_key,
+        # Each key in the store it was WRITTEN to. An instance switched between
+        # backends still holds rows from the other one, and the same key there
+        # names a different object, or none (tripl-0zpq.295).
+        try:
+            storage = storage_for(storage_backend)
+        except Exception:
+            logger.exception(
+                "Cannot reach the %s backend; released photo blob %s left behind",
                 storage_backend,
-                storage.backend_name,
+                storage_key,
             )
             continue
         try:
@@ -365,7 +359,17 @@ async def delete_photo(
         and photo.storage_key
         and not await _blob_referenced_elsewhere(session, photo)
     ):
-        storage = get_photo_storage()
+        # Through the backend the ROW names: after a backend switch the current
+        # driver would look this key up in the wrong store (tripl-0zpq.295).
+        storage = _storage_of(photo)
+        if storage is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This photo is stored on the '{photo.storage_backend}' backend, which "
+                    "this instance cannot reach, so its file cannot be deleted with it."
+                ),
+            )
         await storage.delete(photo.storage_key)
     await session.delete(photo)
     await session.commit()
@@ -523,6 +527,56 @@ def _log_public_url_failure(backend_name: str, exc: Exception) -> None:
     )
 
 
+def _storage_of(photo: EventPhoto) -> PhotoStorage | None:
+    """The driver that can read this row's blob, or ``None`` if none can.
+
+    ``storage_backend`` is recorded per row for exactly this: it names the store
+    the key was written to, which an instance switched to the other backend can
+    still read as long as it is configured. ``None`` for a row that names
+    neither driver, and for a Figma row, which has no blob at all.
+
+    Every failure to BUILD the driver answers ``None`` too, not an exception:
+    ``GCSPhotoStorage`` raises without a bucket, and its client raises without
+    credentials, so a stray ``gcs`` row on a local instance would otherwise turn
+    every photo list into a 500 — the shape of tripl-0zpq.213. ``url_for`` then
+    hands back the ``/file`` URL and ``read_blob`` answers a 409 that names the
+    backend, which is a page that loads and an error that explains itself.
+    """
+    if photo.kind != PHOTO_KIND_PHOTO or not photo.storage_backend:
+        return None
+    try:
+        return storage_for(photo.storage_backend)
+    except Exception:
+        logger.warning(
+            "Photo %s names storage backend %r, which this instance cannot reach",
+            photo.id,
+            photo.storage_backend,
+            exc_info=True,
+        )
+        return None
+
+
+async def read_blob(photo: EventPhoto) -> bytes:
+    """The photo's bytes, read through the backend the ROW names.
+
+    Reading through the process's current driver instead sent every row written
+    before a backend switch to the wrong store, where the key names nothing: a
+    404 for all of them, with no hint that the switch was the cause
+    (tripl-0zpq.295).
+    """
+    storage = _storage_of(photo)
+    if storage is None or not photo.storage_key:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This photo is stored on the '{photo.storage_backend}' backend, which this "
+                "instance cannot read. Restore that backend's configuration, or migrate the "
+                "objects before switching."
+            ),
+        )
+    return await storage.read(photo.storage_key)
+
+
 async def url_for(photo: EventPhoto, slug: str) -> str:
     """Build the URL surfaced to clients for this photo.
 
@@ -534,8 +588,12 @@ async def url_for(photo: EventPhoto, slug: str) -> str:
     if photo.kind == PHOTO_KIND_FIGMA:
         return photo.external_url or ""
 
-    storage = get_photo_storage()
-    if photo.storage_key and photo.storage_backend == storage.backend_name:
+    # The row's OWN backend, not the one new uploads go to: an instance switched
+    # from local to GCS (or back) still holds rows from the other store, and the
+    # key only means anything there (tripl-0zpq.295). A row naming a backend
+    # this build has no driver for keeps the /file URL, which says so properly.
+    storage = _storage_of(photo)
+    if photo.storage_key and storage is not None:
         try:
             external = await storage.public_url(photo.storage_key, photo.content_type)
         except Exception as exc:

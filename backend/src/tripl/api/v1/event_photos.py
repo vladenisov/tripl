@@ -18,7 +18,6 @@ from tripl.schemas.event_photo import (
     EventPhotoResponse,
 )
 from tripl.services import event_photo_service
-from tripl.storage import get_photo_storage
 
 
 class _PhotoBodyCapRoute(APIRoute):
@@ -161,8 +160,7 @@ async def download_event_photo(
     if photo.kind != event_photo_service.PHOTO_KIND_PHOTO or not photo.storage_key:
         # Figma-kind attachments have no blob to stream.
         return Response(status_code=204)
-    storage = get_photo_storage()
-    data = await storage.read(photo.storage_key)
+    data = await event_photo_service.read_blob(photo)
     return Response(
         content=data,
         media_type=photo.content_type or "application/octet-stream",
