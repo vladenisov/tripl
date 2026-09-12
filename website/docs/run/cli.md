@@ -3332,7 +3332,7 @@ before reading it.
 | Key | Meaning |
 |-----|---------|
 | `project` | The slug that was read. Always exactly one. |
-| `branch` | `null` for the live main plan, otherwise `{id, name}`. There is no id for main — see [`--branch`](#the---branch-flag). |
+| `branch` | `{id, name}` when `--branch` was passed, `null` when it was not. `null` means "no branch was named", not "this is main": `--branch main` reads the live plan and still carries main's own id and name, so branch on whether the flag was given rather than on `null` — see [`--branch`](#the---branch-flag). |
 | `kind` | What one member of `items` **is**: `event`, `event_type`, `field`, `variable`, `branch` or `search_result`. Branch on this, never on `command`'s wording. |
 | `total` | The count the API reported **before** paging, or `null` where the route reports none. |
 | `offset` / `limit` | What was requested, or `null` where the route takes no such parameter. `plan search` has no offset; `plan types`, `plan fields` and `plan branches` page nothing at all. |

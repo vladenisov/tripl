@@ -4348,7 +4348,7 @@
         "type": "object"
       },
       "BranchStatus": {
-        "description": "Review workflow states for a working branch.\n\nThe ``main`` branch is stored with ``merged`` here: the migration that added\nbranches, ``default_branch_id`` and\n``plan_branch_service.ensure_main_branch_id`` all write it so. That status\nsays nothing about main, so code must decide main-ness by ``kind == main``\nBEFORE it reads the status. The read-only refusal of writes to a merged or\nclosed branch (``api.deps.get_branch_id_override``,\n``event_photo_service._get_plan_writable_event``) splits main off first for\nexactly this reason. Reversed, a write naming main by its id, and every\nphoto write on a main event, would answer 409.",
+        "description": "Review workflow states for a working branch.\n\nThe ``main`` branch is stored with ``merged`` here: the migration that added\nbranches, ``default_branch_id`` and\n``plan_branch_service.ensure_main_branch_id`` all write it so. That status\nsays nothing about main, so code must decide main-ness by ``kind == main``\nBEFORE it reads the status. The read-only refusal of writes to a merged or\nclosed branch (``api.deps.get_branch_id_override``,\n``event_photo_service._get_plan_writable_event``) splits main off first for\nexactly this reason: a write naming main by its id lands on main, and a\nphoto write on a main event is accepted, because both split main off before\nthey look at the status. Were the status read first, main's stored\n``merged`` would refuse them both with a 409 \u2014 which is what this field\nmeans for a WORKING branch and what it must never be allowed to mean here.",
         "enum": [
           "draft",
           "ready_for_review",

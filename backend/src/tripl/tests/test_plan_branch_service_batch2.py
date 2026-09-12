@@ -18,7 +18,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import event as sa_event
 from sqlalchemy import func, select
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
@@ -461,3 +461,60 @@ def test_serialization_failure_is_recognised_by_its_sqlstate(
 ) -> None:
     error = DBAPIError("SELECT 1", None, orig)
     assert plan_branch_service._is_serialization_failure(error) is expected
+
+
+# --- the branch-name race (Copilot on PR #164) -------------------------------
+
+
+class _Diag:
+    def __init__(self, constraint_name: str | None) -> None:
+        self.constraint_name = constraint_name
+
+
+class _UniqueViolation(Exception):
+    """A 23505 as psycopg reports one, with the index it was raised on."""
+
+    def __init__(self, message: str, constraint_name: str | None) -> None:
+        super().__init__(message)
+        self.sqlstate = "23505"
+        self.diag = _Diag(constraint_name)
+
+
+@pytest.mark.parametrize(
+    ("orig", "expected"),
+    [
+        pytest.param(
+            _UniqueViolation("duplicate key", "uq_plan_branch_project_name"),
+            True,
+            id="the-branch-name-index",
+        ),
+        pytest.param(
+            _UniqueViolation("duplicate key", "uq_event_type_project_name"),
+            False,
+            id="some-other-index",
+        ),
+        pytest.param(
+            _UniqueViolation(
+                'duplicate key value violates unique constraint "uq_plan_branch_project_name"',
+                None,
+            ),
+            True,
+            id="no-diag-read-off-the-message",
+        ),
+        pytest.param(
+            _DriverError("serialization failure", "40001"),
+            False,
+            id="not-a-unique-violation",
+        ),
+    ],
+)
+def test_a_lost_branch_name_race_is_told_apart_from_other_unique_violations(
+    orig: Exception, expected: bool
+) -> None:
+    """The preflight SELECT holds nothing and the copy that follows takes the
+    better part of a second, so two requests naming one branch can both pass it.
+    The loser met the index and escaped as a 500; it now answers the 409 the
+    preflight would have given. Any OTHER unique violation must still be a 500,
+    or a real defect in the copy would be reported to the user as a name clash."""
+    error = IntegrityError("INSERT", None, orig)
+    assert plan_branch_service._is_duplicate_branch_name(error) is expected

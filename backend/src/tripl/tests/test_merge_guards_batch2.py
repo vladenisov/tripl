@@ -118,6 +118,31 @@ async def test_the_merge_releases_the_blob_of_a_screenshot_the_branch_deleted(
 
 
 @pytest.mark.asyncio
+async def test_the_merge_releases_the_blobs_of_an_event_the_branch_deleted(
+    client: AsyncClient, local_photos: Path
+) -> None:
+    """Copilot on PR #164: deleting the whole EVENT goes down another path.
+    ``doomed_main_events`` are deleted before the photo reconciliation runs, and
+    their attachments go with them through the FK cascade, so their keys never
+    reached the release set and the screenshot stayed in storage for good."""
+    slug = "merge-releases-deleted-event-blob"
+    await _seed_plan(client, slug)
+    storage_key = await _screenshot_on_main(client, slug)
+    blob = local_photos / storage_key
+    branch_id = await _create_branch(client, slug)
+
+    branch_event_id, _photo_id = await _copy_on(branch_id, storage_key)
+    dropped = await client.delete(f"/api/v1/projects/{slug}/events/{branch_event_id}")
+    assert dropped.status_code == 204, dropped.text
+    assert blob.read_bytes() == _PNG
+
+    merged = await _approve_and_merge(client, slug, branch_id)
+    assert merged.status_code == 200, merged.text
+    assert await _rows_holding(storage_key) == 0
+    assert not blob.exists()
+
+
+@pytest.mark.asyncio
 async def test_the_merge_keeps_a_blob_another_branch_still_holds(
     client: AsyncClient, local_photos: Path
 ) -> None:

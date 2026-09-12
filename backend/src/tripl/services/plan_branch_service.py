@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -130,6 +130,8 @@ _CONSISTENT_READ_ISOLATION: dict[str, IsolationLevel] = {"postgresql": "REPEATAB
 # the level above, ``create_branch`` retries it rather than answering 500 —
 # see the comment there for when it happens (tripl-0zpq.153).
 _SERIALIZATION_FAILURE_SQLSTATE = "40001"
+_UNIQUE_VIOLATION_SQLSTATE = "23505"
+_BRANCH_NAME_CONSTRAINT = "uq_plan_branch_project_name"
 # Attempts ``create_branch`` makes before it asks the client to retry. Each one
 # takes a fresh snapshot, and one that already sees the conflicting commit
 # cannot collide with it, so a second attempt normally lands; the third covers
@@ -813,6 +815,27 @@ def _is_serialization_failure(exc: DBAPIError) -> bool:
     return _SERIALIZATION_FAILURE_SQLSTATE in codes
 
 
+def _is_duplicate_branch_name(exc: IntegrityError) -> bool:
+    """Whether the insert lost a race for the branch name (23505 on its index).
+
+    The duplicate check above is a plain SELECT holding nothing, and the copy
+    that follows takes the better part of a second (main's snapshot alone
+    measured 507 ms on a 1300-variable project), so two requests naming the same
+    branch can both pass it and the loser meets ``uq_plan_branch_project_name``
+    at the flush. That is the very case the SELECT exists to answer, so it gets
+    the same 409 rather than escaping as a 500. Matched on the index name too,
+    so another unique violation from the copy is still a 500 the logs will show.
+    """
+    orig = exc.orig
+    codes = (getattr(orig, "sqlstate", None), getattr(orig, "pgcode", None))
+    if _UNIQUE_VIOLATION_SQLSTATE not in codes:
+        return False
+    constraint = getattr(getattr(orig, "diag", None), "constraint_name", None)
+    if constraint is not None:
+        return bool(constraint == _BRANCH_NAME_CONSTRAINT)
+    return _BRANCH_NAME_CONSTRAINT in str(exc)
+
+
 async def create_branch(
     session: AsyncSession,
     slug: str,
@@ -881,6 +904,12 @@ async def create_branch(
                     data=data,
                     user_id=user_id,
                 )
+            except IntegrityError as exc:
+                if not _is_duplicate_branch_name(exc):
+                    raise
+                raise HTTPException(
+                    status_code=409, detail="Branch with this name already exists"
+                ) from exc
             except DBAPIError as exc:
                 if not _is_serialization_failure(exc):
                     raise

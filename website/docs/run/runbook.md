@@ -118,11 +118,23 @@ with `docker volume ls`.
 With the local photo backend (the default; see
 [Event photo storage](configuration.md#event-photo-storage)), each uploaded
 event photo is a file in the `photos` volume, while its row, including the key
-that locates the file, is in PostgreSQL. Back both up at about the same time: a
-database restored without the files lists photos whose images fail to load.
-Files are written once under a fresh random name and never rewritten, so the
-archive can be taken while `app` runs (an upload landing at that moment may be
-missed):
+that locates the file, is in PostgreSQL. Back both up, and take **PostgreSQL
+first, the files second** — the order matters, and it is the opposite of the
+intuitive one. A database restored without its files lists photos whose images
+fail to load; a file no row points at is inert and costs nothing but disk.
+
+An upload writes its file and only then commits the row, so every row in a dump
+names a file that was complete before the dump was taken — and therefore before
+an archive that starts afterwards reads it. An upload landing during the
+archive is either missed or caught half-written, and either way no row in the
+dump refers to it. Reverse the order and that stops holding: the dump taken
+last would carry a row for a file the archive caught truncated.
+
+A file is written once under a fresh random name and never rewritten, so the
+archive cannot catch an *edit* — but the local backend writes straight to the
+final path, so it can catch a write in progress. If you would rather have no
+partial member in the archive at all, stop `app` for it, or take a filesystem
+snapshot (LVM, ZFS, or the volume driver's own) and tar that:
 
 ```bash
 docker run --rm \

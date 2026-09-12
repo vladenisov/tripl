@@ -571,6 +571,36 @@ async def _merge_photo_comments(
     await session.flush()
 
 
+async def _blob_keys_of(
+    session: AsyncSession, event_ids: Sequence[uuid.UUID]
+) -> set[tuple[str, str]]:
+    """Every uploaded blob the given events' attachments point at.
+
+    Read BEFORE the rows go, because they go by FK cascade: ``EventPhoto``
+    declares ``ondelete="CASCADE"`` on ``event_id`` and ``Event`` carries no
+    ``photos`` relationship, so deleting an event takes its attachments at the
+    database level with nothing in Python seeing them leave (tripl-0zpq.291).
+    The merge deletes events on two paths — a removed event type takes its
+    events, and a removed event goes on its own — and neither reached the photo
+    reconciliation that fills ``released_blobs``, so a screenshot on an event
+    the branch deleted stayed in storage with no row left to find it by.
+
+    Over-collecting is safe: ``delete_unreferenced_blobs`` re-checks every key
+    against the rows that survived the commit and skips the ones still in use.
+    """
+    if not event_ids:
+        return set()
+    rows = await session.execute(
+        select(EventPhoto.storage_backend, EventPhoto.storage_key).where(
+            EventPhoto.event_id.in_(event_ids),
+            EventPhoto.kind == PHOTO_KIND_PHOTO,
+            EventPhoto.storage_backend.is_not(None),
+            EventPhoto.storage_key.is_not(None),
+        )
+    )
+    return {(str(backend), key) for backend, key in rows.all()}
+
+
 async def _event_thread_twins(
     session: AsyncSession, *, project_id: uuid.UUID, branch_id: uuid.UUID
 ) -> dict[uuid.UUID, uuid.UUID | None]:
@@ -789,6 +819,7 @@ async def _apply_merge(
             .scalars()
             .all()
         )
+        released_blobs |= await _blob_keys_of(session, doomed_event_ids)
         await drop_dangling_event_references(
             session, project_id=project_id, event_ids=doomed_event_ids
         )
@@ -1269,10 +1300,12 @@ async def _apply_merge(
         if key in base_event_by_key and key not in branch_event_by_key
     ]
     if doomed_main_events:
+        doomed_main_event_ids = [m_ev.id for m_ev in doomed_main_events]
+        released_blobs |= await _blob_keys_of(session, doomed_main_event_ids)
         await drop_dangling_event_references(
             session,
             project_id=project_id,
-            event_ids=[m_ev.id for m_ev in doomed_main_events],
+            event_ids=doomed_main_event_ids,
         )
     for m_ev in doomed_main_events:
         await session.delete(m_ev)
