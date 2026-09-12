@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.core.bucketing import floor_to_bucket
 from tripl.models.data_source import DataSource, DBType
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
@@ -439,6 +440,24 @@ async def trigger_metrics_replay(
             detail="Scan config requires time_column and interval to replay metrics",
         )
 
+    # The worker refuses a period reaching into the interval that is still
+    # filling — it holds no complete bucket to replay — and it refuses it AFTER
+    # the job exists, so the caller got a 201 and then an unexplained failed run.
+    # Answer it here instead, before any ScanJob row is created. This is the same
+    # boundary the worker computes: ``_floor_to_interval`` is
+    # ``floor_to_bucket``'s grid, and the worker's ``now`` is never earlier than
+    # this one, so a window accepted here cannot be refused there.
+    latest_complete = floor_to_bucket(datetime.now(UTC), config.interval)
+    if data.time_to > latest_complete:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Replay period must end at or before {latest_complete:%Y-%m-%d %H:%M} UTC: "
+                f"the current {config.interval} interval has not finished, so it holds no "
+                f"complete bucket to replay."
+            ),
+        )
+
     job = ScanJob(
         scan_config_id=config.id,
         status=ScanJobStatus.pending.value,
@@ -508,8 +527,12 @@ async def cancel_scan_job(
     """Cancel an active (pending/running) scan job.
 
     Marks the job ``cancelled`` and best-effort revokes the Celery task. A
-    running task is not killed: it polls this status at each chunk boundary and
-    stops cooperatively, leaving already-written metrics intact.
+    running task is not killed; it stops cooperatively at its next checkpoint,
+    and every scan task has one: a metrics collection or replay polls this status
+    at each chunk boundary and keeps what it already wrote, while a catalog run
+    or an event-group apply re-reads it before it commits and therefore writes
+    nothing at all. Either way the job stays ``cancelled`` and never turns itself
+    back into ``completed``.
     """
     job = await get_scan_job(session, slug, scan_id, job_id)
     if job.status not in (ScanJobStatus.pending.value, ScanJobStatus.running.value):
@@ -522,7 +545,13 @@ async def cancel_scan_job(
         try:
             from tripl.worker.celery_app import celery_app
 
-            celery_app.control.revoke(job.celery_task_id)
+            # Off the event loop, like every other broker call in this module: a
+            # revoke is a synchronous kombu broadcast, and against a hung broker
+            # an inline call holds the uvicorn thread for seconds. Harmless while
+            # ``celery_task_id`` was almost always NULL — which is exactly what
+            # tripl-0zpq.44 stopped being true, since the scan tasks now record
+            # it and every Stop run reaches this branch.
+            await dispatch(celery_app.control.revoke, job.celery_task_id)
         except Exception:  # noqa: BLE001 — revoke is best-effort; cooperative stop is the backstop
             logger.warning(
                 "Failed to revoke celery task %s for scan job %s",

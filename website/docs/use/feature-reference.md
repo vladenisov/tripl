@@ -100,15 +100,22 @@ enabled; **Status** — one of `draft`, `in_review`, `ready_for_dev`,
 `implemented`, `live`, `deprecated`, `archived` (selecting `deprecated` reveals a
 **Sunset date** and, when editing an existing event, **Replaced by**); **Owner** — a project member, or none, the same value the
 list's bulk bar sets; **Tags**; **Metric breakdowns** (the selected type's scalar
-fields and the columns this project's scans collect — `platform`, the app
-version column and any configured breakdown column — plus any other warehouse
-column typed in by hand; JSON fields are excluded); **Field values**
+fields and the columns this project's scans collect — `platform` and any
+configured breakdown column — plus any other warehouse column typed in by hand;
+JSON fields are excluded); **Field values**
 (per the event type's schema — boolean/enum selects, a JSON editor for `json`
 fields that validates and saves canonical JSON while preserving complete
 `${variable}` values, variable-aware text inputs); and **Meta fields** values.
 For a series of similar events, **Save and add another** creates the current
 event, says what it created, and keeps the entered form values in place for the
 next one — change what differs and save again.
+
+The **app version column** is deliberately absent from the breakdown picker, and
+adding it by hand is refused: app versions are already collected as their own
+version series, so listing the column as a breakdown would collect the same
+value twice. A column stored back when the picker still offered it is left
+alone — it stays in the list so you can remove it, and collection skips it
+either way.
 
 #### Retiring an event
 
@@ -383,6 +390,13 @@ reads the `category` key out of the JSON `event` column, and that lookup only
 happens for columns the event type still declares — so the format depends on the
 field definition for `event`, and a `missing_field` drift on `event` is refused
 exactly as one on `action` is.
+
+A row that simply does not carry the JSON key is a different matter, and is not
+a failure. `GROUP BY ALL` over the JSON paths gives a row that omits the key a
+group of its own, which is ordinary warehouse shape rather than drift, so the
+key contributes an **empty segment** exactly as a NULL regular column does. The
+failure is reserved for a missing **base column** — one the query or the event
+type no longer supplies — which is what the 409 above protects.
 
 **Why the refusal exists.** A `missing_field` drift for the column `action` was
 accepted in good faith on production, on an event type whose scan named
@@ -1002,7 +1016,11 @@ that it measures data match — not the Coverage page's plan coverage — so the
 governance numbers are not read as contradictory. The **shadow events inbox** (tabs: `new` / `accepted` /
 `dismissed`) lists events seen in data but missing from the plan — **Accept**
 creates the event on the active branch (you pick an event type when none is
-inferred), or **Dismiss** it. **Dead events** (in plan, not seen recently over a
+inferred), or **Dismiss** it. In a scan grouped by an event type column one
+generated identity can turn up under more than one event type — the identity
+does not carry the type — and such an identity is a single inbox row carrying
+the combined volume across those types, attributed to the event type that
+contributed most of it. **Dead events** (in plan, not seen recently over a
 14-day window) can be selected and archived; archiving targets the project's
 `main` branch.
 
@@ -1039,8 +1057,21 @@ Settings › Scans › *Event names and grouping*:
 The rule rewrites the derived name before the plan is matched, so every future
 scan files the whole family under one event. It also works backwards: **Apply
 event groups** on the scan folds catalog events that already exist into the
-survivor, carrying over everything listed below. `__event_name` and
-`event_name` both name the event's identity and behave the same.
+survivor, carrying over everything listed below.
+
+**Apply event groups** acts on the **main plan only**. Events on an open working
+branch are left exactly as their author left them: the branch's own copies are
+not folded, and merging the branch does not apply the rule to what it brings in
+either. Run **Apply event groups** again after the merge to fold those.
+
+`__event_name` is always the derived identity. `event_name` normally means the
+same thing — but when the warehouse itself has a column called `event_name`, a
+rule on `event_name` matches that column's raw value, and the identity
+pseudo-field fills in only where no such column exists. Rules read every column
+of the row, not just the ones that became event fields: the reserved role
+columns (event type, app version, platform) and the rule columns themselves are
+all matchable, and none of them becomes an event field. The one column a rule
+cannot match on is the **Time column**.
 
 **What a group merge carries over.** When a group rule folds several events into
 one, the survivor inherits the settings that pointed at the events it absorbed,
@@ -1062,6 +1093,16 @@ so a merge does not quietly undo work you did:
   exception is a **ratio** whose numerator and denominator both end up on the
   same event: that would compute a flat 1.0 forever, so the metric is marked
   failed instead, naming the events involved so it can be redefined.
+- **lifecycle status.** The survivor keeps the furthest-along status of the
+  events it absorbs, but only along the `draft` → `in_review` → `ready_for_dev`
+  → `implemented` → `live` progression. Retirement is never inferred in either
+  direction: folding a `deprecated` member into a live group does not retire the
+  group, and folding a live member into a group you deprecated does not
+  un-retire it. Where the merge has to create the group event itself and the
+  member it was minted from was already `deprecated` or `archived`, the new
+  group event starts at `in_review` — it arrives in the review queue rather than
+  retired with no sunset date, and neither the sunset date nor **Replaced by**
+  is carried across.
 
 Variable data moves too — see
 [Variables and templates](./variables-and-templates.md#when-a-scan-merges-events-into-a-group).
@@ -1183,7 +1224,12 @@ Sections that need your query's columns stay empty until a preview is loaded and
 say so. The shared number of releases to retain lives under **Settings → Project
 → General**. The platform column powers the platform-presence matrix. Reserved
 role columns (event type, time, version, platform) cannot simultaneously be
-selected as scalar breakdown/drift fields.
+selected as scalar breakdown/drift fields. The **Event name format** is the
+exception that may name the **Event type column**: a column the format names is
+never reserved away, and the row's own value fills the placeholder, so the
+`{action}:{category}` shape the field's hint advertises works. The value goes
+into the name only — that column still carries no per-event field value of its
+own.
 
 #### The preview panel
 
@@ -1249,8 +1295,9 @@ Four more things it reports, each answering a question the raw rows could not:
   fails *every* run of that config. Catching it here, instead of after two
   hundred failed production runs, is the single most valuable thing this feature
   does. The error is reported, not raised — the dry run still completes.
-- **Rows with no derived name.** When every column the **Event name format**
-  names is NULL for a row, the name comes out empty. Such rows are **not
+- **Rows with no derived name.** When every placeholder the **Event name
+  format** names resolves to nothing for a row — a NULL column, or a JSON path
+  that row does not carry — the name comes out empty. Such rows are **not
   planned** — the preview does not list an event for them, because the run will
   not create one — and the dry run reports the count as a warning:
   *Skipped N rows whose derived event name was empty* (singular *row* when N is
@@ -1313,6 +1360,24 @@ name format** refers to was NULL for those rows, so the run planned nothing for
 them rather than creating a nameless event. Repeated identical failures collapse into
 a streak with an expander, and **Run again** retries the config without losing
 its history.
+
+**Stopping a run.** **Stop run** is offered on every run that is still queued or
+running, whatever kind it is, and a run you stop stays **Cancelled** — a metrics
+run that goes on to finish the chunk it was in does not flip the row back to
+*Succeeded*, and the metric points it had already written are kept. A catalog run
+and an event-group apply each look once, at the last point before they commit:
+stopped there they write nothing at all and the plan is exactly as it was.
+Stopped after that — while the run is retiring variables or rebuilding the search
+index — their work is already durable and the run finishes as *Succeeded*.
+
+**What period a replay may cover.** A replay period must end **at or before the
+last completed interval**: the interval that is still filling holds no complete
+bucket to replay. **Run a one-off replay** seeds exactly that — the period it
+opens with ends on this scan's own last closed bucket and reaches at least 24
+hours back — so its defaults are always accepted. A period reaching into the
+interval still filling is refused when you submit it, with a message naming the
+latest end that would be accepted, instead of being accepted and turning into a
+failed run minutes later.
 
 The scan list heads three figures: **Scans**, **Monitoring** (scans that have
 both a time column and a schedule, so the dispatcher actually picks them up), and

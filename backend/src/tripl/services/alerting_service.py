@@ -132,6 +132,34 @@ __all__ = [
 ]
 
 
+async def _build_event_type_by_event_id(
+    session: AsyncSession,
+    anomalies: list[AlertMatchCandidate],
+) -> dict[uuid.UUID, uuid.UUID]:
+    """Event -> event type for candidates carrying an event but no type.
+
+    The async twin of ``worker.tasks.metrics.alert_payload
+    ._build_event_type_by_event_id``; same predicate, same query, so the in-UI
+    replay narrows an ``event_type`` filter exactly as live dispatch does
+    (tripl-0zpq.7).
+    """
+    from sqlalchemy import select
+
+    from tripl.models.event import Event
+
+    event_ids = {
+        anomaly.event_id
+        for anomaly in anomalies
+        if anomaly.event_id is not None and anomaly.event_type_id is None
+    }
+    if not event_ids:
+        return {}
+    rows = await session.execute(
+        select(Event.id, Event.event_type_id).where(Event.id.in_(event_ids))
+    )
+    return {event_id: event_type_id for event_id, event_type_id in rows.all()}
+
+
 async def _build_scope_name_map(
     session: AsyncSession,
     anomalies: list[AlertMatchCandidate],
@@ -504,6 +532,15 @@ async def simulate_rule(
             anomaly for anomaly in anomalies if _clears_sigma(anomaly, sigma_threshold_override)
         ]
 
+    # Event-anchored candidates (event scope, and the drift/regression families
+    # once they are loaded here) store a NULL ``event_type_id`` on purpose, so an
+    # ``event_type`` filter can only narrow them through this lookup. Built with
+    # the same predicate the live path uses in
+    # ``dispatch._prepare_alert_deliveries`` — the replay and the pipeline have to
+    # answer the same question, which is the whole point of
+    # ``tripl.alerting_matching`` (tripl-0zpq.7).
+    event_type_by_event_id = await _build_event_type_by_event_id(session, anomalies)
+
     matched_before_cooldown = sum(
         1
         for anomaly in anomalies
@@ -512,6 +549,7 @@ async def simulate_rule(
             anomaly,
             min_percent_delta_override=min_percent_delta_override,
             min_expected_count_override=min_expected_count_override,
+            event_type_by_event_id=event_type_by_event_id,
         )
     )
     fired = simulate_rule_firings(
@@ -520,6 +558,7 @@ async def simulate_rule(
         cooldown_minutes_override=cooldown_minutes_override,
         min_percent_delta_override=min_percent_delta_override,
         min_expected_count_override=min_expected_count_override,
+        event_type_by_event_id=event_type_by_event_id,
     )
 
     scope_names = await _build_scope_name_map(session, fired)

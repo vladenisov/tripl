@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol, cast
@@ -109,6 +110,78 @@ def _delete_chunk_window(
         time_from=chunk_from,
         time_to=chunk_to,
     )
+
+
+def _build_shadow_candidate_rows(
+    shadow_agg: Mapping[tuple[uuid.UUID | None, str], Sequence[object]],
+    *,
+    project_id: uuid.UUID,
+    scan_config_id: uuid.UUID,
+) -> list[dict[str, object]]:
+    """Fold the per-(event type, identity) totals onto the grain of the table.
+
+    ``shadow_agg`` is keyed per event type because the collector has to know
+    which type contributed what, but ``shadow_event_candidates`` is unique on
+    (scan_config_id, event_name) alone. The generated identity never carries the
+    event type column — ``event_plan`` skips it when it builds the name — so in
+    a grouped scan two event types produce the SAME identity whenever their
+    name-bearing values coincide. Emitting a row per type then put two rows with
+    one conflict key into a single multi-row ON CONFLICT DO UPDATE, which
+    Postgres refuses outright (cardinality violation) and which aborted the
+    whole collection run, every run, until a plan event absorbed one of the two
+    identities (tripl-0zpq.14).
+
+    One row per identity, carrying the combined volume and the widest observed
+    window. ``event_type_id`` is the type that contributed most of that volume —
+    it is what the shadow inbox pre-fills on Accept, so the meaningful type is
+    the right one to keep. Ties break on the textual id so the stored type
+    cannot flap between collections with dict iteration order.
+    """
+    # event_name -> (count, first_seen, last_seen, event_type_id, dominance rank)
+    folded: dict[str, tuple[int, datetime, datetime, uuid.UUID | None, tuple[int, str]]] = {}
+    for (event_type_id, event_name), entry in shadow_agg.items():
+        count = cast(int, entry[0])
+        first_seen = cast(datetime, entry[1])
+        last_seen = cast(datetime, entry[2])
+        # A single-event-type config takes config.event_type_id, which is
+        # nullable, so the unbound scope has to rank as something.
+        rank = (count, "" if event_type_id is None else str(event_type_id))
+        held = folded.get(event_name)
+        if held is None:
+            folded[event_name] = (count, first_seen, last_seen, event_type_id, rank)
+            continue
+        held_count, held_first, held_last, held_type_id, held_rank = held
+        dominant_type_id, dominant_rank = (
+            (event_type_id, rank) if rank > held_rank else (held_type_id, held_rank)
+        )
+        folded[event_name] = (
+            held_count + count,
+            min(held_first, first_seen),
+            max(held_last, last_seen),
+            dominant_type_id,
+            dominant_rank,
+        )
+
+    return [
+        {
+            "id": uuid.uuid4(),
+            "project_id": project_id,
+            "scan_config_id": scan_config_id,
+            "event_type_id": event_type_id,
+            "event_name": event_name,
+            "observed_count": count,
+            "first_seen_at": first_seen,
+            "last_seen_at": last_seen,
+            "status": SHADOW_STATUS_NEW,
+        }
+        for event_name, (
+            count,
+            first_seen,
+            last_seen,
+            event_type_id,
+            _rank,
+        ) in folded.items()
+    ]
 
 
 def process_chunk(
@@ -251,6 +324,8 @@ def process_chunk(
             json_value_names,
             config.event_name_format,
             config.event_group_rules,
+            event_type_column=config.event_type_column,
+            time_column=config.time_column,
         )
 
         if event_name:
@@ -413,26 +488,32 @@ def process_chunk(
         type_delete_keys: list[tuple[uuid.UUID, datetime]] = [
             (et_id, bucket) for (_, et_id, bucket) in type_agg
         ]
-        breakdown_event_delete_keys: list[tuple[uuid.UUID, datetime, str, str, bool]] = [
-            (
-                cast(uuid.UUID, row["event_id"]),
-                cast(datetime, row["bucket"]),
-                cast(str, row["breakdown_column"]),
-                cast(str, row["breakdown_value"]),
-                cast(bool, row["is_other"]),
+        # The breakdown delete key deliberately stops at the column: whether a
+        # value is stored under its own label or folded into "Other" follows
+        # from the window the top-N was ranked over, not from the data, and a
+        # replay chunk is rarely as wide as the chunk that first collected the
+        # window. Keying on the value left the previous label behind next to
+        # the new one, so the value was counted twice at read time.
+        breakdown_event_delete_keys: list[tuple[uuid.UUID, datetime, str]] = list(
+            dict.fromkeys(
+                (
+                    cast(uuid.UUID, row["event_id"]),
+                    cast(datetime, row["bucket"]),
+                    cast(str, row["breakdown_column"]),
+                )
+                for row in breakdown_event_rows
             )
-            for row in breakdown_event_rows
-        ]
-        breakdown_type_delete_keys: list[tuple[uuid.UUID, datetime, str, str, bool]] = [
-            (
-                cast(uuid.UUID, row["event_type_id"]),
-                cast(datetime, row["bucket"]),
-                cast(str, row["breakdown_column"]),
-                cast(str, row["breakdown_value"]),
-                cast(bool, row["is_other"]),
+        )
+        breakdown_type_delete_keys: list[tuple[uuid.UUID, datetime, str]] = list(
+            dict.fromkeys(
+                (
+                    cast(uuid.UUID, row["event_type_id"]),
+                    cast(datetime, row["bucket"]),
+                    cast(str, row["breakdown_column"]),
+                )
+                for row in breakdown_type_rows
             )
-            for row in breakdown_type_rows
-        ]
+        )
         drift_delete_keys: list[tuple[uuid.UUID | None, datetime, str]] = [
             (
                 cast(uuid.UUID | None, row["event_type_id"]),
@@ -508,20 +589,11 @@ def process_chunk(
     )
     _upsert_shadow_event_candidates(
         session,
-        rows=[
-            {
-                "id": uuid.uuid4(),
-                "project_id": config.project_id,
-                "scan_config_id": config.id,
-                "event_type_id": event_type_id_key,
-                "event_name": event_name_key,
-                "observed_count": cast(int, entry[0]),
-                "first_seen_at": cast(datetime, entry[1]),
-                "last_seen_at": cast(datetime, entry[2]),
-                "status": SHADOW_STATUS_NEW,
-            }
-            for (event_type_id_key, event_name_key), entry in shadow_agg.items()
-        ],
+        rows=_build_shadow_candidate_rows(
+            shadow_agg,
+            project_id=config.project_id,
+            scan_config_id=config.id,
+        ),
     )
     _upsert_event_metric_breakdown_rows(
         session,

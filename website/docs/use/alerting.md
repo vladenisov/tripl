@@ -558,6 +558,14 @@ Alerting tab until you re-aim and re-enable it.
 operators `eq` / `ne` / `in` / `not_in`. Multiple filters are ANDed; a signal
 that doesn't carry the filtered field passes through.
 
+An `event_type` filter narrows **any** signal anchored to an event — event
+scope, variable-value drift and event-scope release regression alike — by that
+event's type, looked up when the rule is matched rather than read off the stored
+row, which deliberately keeps no type of its own. What passes through is only
+what genuinely carries no such field: for an `event_type` filter that is the
+project-total rollups and catalog metrics; for an `event` filter it is those
+plus the event-type rollups.
+
 The `event` value picker searches the catalog server-side and shows one page of
 matches at a time, so type to reach an event that isn't in the first page — the
 footer tells you how many matches are still hidden.
@@ -901,7 +909,7 @@ Which lever fits which intent:
 | Do not tell me before *T*, whatever the signal does | **Mute 1h / 24h / 7d** | Exactly that long | The only decision that outlives the incident |
 | Do not tell me until I say so | **Mute indefinitely** (Inbox only) | Until you press **Reopen** | Outlives everything except Reopen |
 | The detector is wrong about this scope | **False positive** | Until this incident ends | **Permanently** raises that scope's `sigma_threshold` (+0.5, capped at 10) and `min_expected_count` (+5, capped at 1000), compounding on repeat clicks. It never decays; it is listed and removable under **Settings → Monitoring → Scope overrides**. Volume scopes only — on a schema drift, distribution drift or release regression it suppresses like an acknowledge and tunes nothing, because those are not scored by these two knobs, and the confirmation says how many scopes it actually tightened |
-| This event must never reach this channel again | A rule **filter**, `event` `not_in` […] | Permanent, per rule, no expiry | Excludes that event's *own* signals only. The project-total and event-type rollups it feeds carry no `event_id`, and a filter on a field a signal does not carry passes through — so those keep alerting |
+| This event must never reach this channel again | A rule **filter**, `event` `not_in` […] | Permanent, per rule, no expiry | Excludes that event's *own* signals only. The project-total and event-type rollups it feeds carry no `event_id`, and a filter on a field a signal does not carry passes through — so those keep alerting. An `event_type` filter reaches the same rows from the other side: an event-anchored signal is narrowed by its event's type, resolved at match time, even though the stored row's own `event_type_id` is NULL |
 | This event should not be monitored at all | **Archive** the event | Until you un-archive it | Takes it out of detection entirely: no metric points scored, no signals raised, so there is nothing left to alert on |
 
 Read that table as "how permanent do you want this to be". The common mistake is

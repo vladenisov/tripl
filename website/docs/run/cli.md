@@ -900,7 +900,7 @@ is the one table to read before you run any of them:
 | Command | What it changes on the instance | Key | Backing role | Asks first |
 |---------|---------------------------------|-----|--------------|------------|
 | `tripl scans run` | Queues a scan job, which executes the config's stored SQL against your warehouse. | `tk_w_` | editor or owner | **No** |
-| `tripl scans cancel` | Stops a `pending` or `running` job. A running job is not killed: it stops at the next chunk boundary and metrics already written are kept. | `tk_w_` | editor or owner | **Yes** |
+| `tripl scans cancel` | Stops a `pending` or `running` job. A running job is not killed: it stops at its next checkpoint — a metrics run at the next chunk boundary, keeping the metrics it already wrote; a catalog run or an event-group apply before its write commits, so it writes nothing at all. A stopped job stays `cancelled`. | `tk_w_` | editor or owner | **Yes** |
 | `tripl drifts dismiss` | Moves one schema drift to `false_positive` or `snoozed`, which takes it out of `doctor`'s untriaged count. | `tk_w_` | editor or owner | **Yes** |
 | `tripl drifts reopen` | Moves one schema drift back to `open`, and **discards** its resolution note and resolver. | `tk_w_` | editor or owner | **Yes** |
 

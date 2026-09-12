@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,6 +80,42 @@ _FMT_PATTERN = NAME_FORMAT_PATTERN
 
 # Database limit on ``events.name``.
 _EVENT_NAME_MAX_LEN = 500
+
+# How much of a single value the default name shows before it is elided.
+_DEFAULT_NAME_VALUE_MAX_LEN = 80
+
+
+def render_default_event_name(entries: Iterable[tuple[str, str]]) -> str:
+    """The name a row gets when the scan has no ``event_name_format``.
+
+    One segment per COLUMN, never per JSON path. The metric collector used to
+    append a ``col.path=`` segment for every path on the row while this planner
+    — the builder that wrote the ``Event.source_name`` the collector then looks
+    itself up by — appended none, so a JSON-column scan with no name format
+    matched none of its own events and filed its whole volume as unplanned
+    (tripl-0zpq.91). Both builders call this now so they cannot drift again.
+    """
+    parts = []
+    for key, value in entries:
+        display = (
+            value
+            if len(value) <= _DEFAULT_NAME_VALUE_MAX_LEN
+            else value[: _DEFAULT_NAME_VALUE_MAX_LEN - 3] + "..."
+        )
+        parts.append(f"{key}={display}")
+    return " | ".join(parts)
+
+
+def truncate_event_name(name: str) -> str:
+    """Clamp a derived name to what ``events.name`` can hold.
+
+    Shared for the same reason as :func:`render_default_event_name`: the planner
+    and the collector must produce the same string for the same row, and a cap
+    applied at one of two spellings is a divergence waiting to happen.
+    """
+    if len(name) > _EVENT_NAME_MAX_LEN:
+        return name[: _EVENT_NAME_MAX_LEN - 3] + "..."
+    return name
 
 
 def unnamed_skip_detail(count: int) -> str:
@@ -136,6 +172,40 @@ def name_format_base_columns(event_name_format: str | None) -> set[str]:
     module for one pure string helper.
     """
     return {key.split(".", 1)[0] for key in event_name_format_columns(event_name_format)}
+
+
+def json_name_format_keys(
+    event_name_format: str | None,
+    col_meta: Mapping[str, Mapping[str, Any]],
+) -> tuple[str, ...]:
+    """Dotted placeholders whose base column is a JSON column in *col_meta*.
+
+    These are the keys a row may legitimately not carry. ``GROUP BY ALL`` over
+    ``JSONAllPaths`` gives a row that omits the key a group of its own, and the
+    key is then absent from that row's path list; seeding it empty makes an
+    absent JSON path behave exactly like a NULL regular column instead of
+    killing the whole scan on "references unknown keys" (tripl-0zpq.92).
+
+    Deliberately narrow. A dotted key whose BASE column is missing from
+    ``col_meta`` — its FieldDefinition was deleted, or the column was reserved
+    away — or that is not JSON is not seeded and still raises: that failure is
+    what tripl-3mmh and tripl-lpin exist for.
+
+    Reads ``is_json`` with ``.get`` because the same helper runs against the
+    planner's ``col_meta`` and against the replay rebuild in
+    ``worker.tasks.metrics.generation``, which does not always set the key.
+    """
+    if not event_name_format:
+        return ()
+    keys: list[str] = []
+    for key in format_keys(event_name_format):
+        base, _, rest = key.partition(".")
+        if not rest:
+            continue
+        meta = col_meta.get(base)
+        if meta is not None and meta.get("is_json"):
+            keys.append(key)
+    return tuple(dict.fromkeys(keys))
 
 
 @dataclass(frozen=True)
@@ -442,6 +512,10 @@ def plan_events(
         for idx, name in enumerate(analysis.json_value_names)
     }
     row_width = n_reg + len(analysis.json_names) + len(analysis.json_value_names)
+    # Placeholders the format names, and of those the dotted ones a row is
+    # allowed not to carry. Both are row-independent, so they are derived once.
+    name_columns = event_name_format_columns(event_name_format)
+    json_format_keys = json_name_format_keys(event_name_format, col_meta)
     distinct_names: set[str] = set()
     unnamed_rows = 0
 
@@ -452,9 +526,12 @@ def plan_events(
             break
 
         field_values: list[tuple[uuid.UUID, str, str]] = []
-        raw_values_by_field = _raw_values_from_row(
+        raw_values_by_field = raw_values_from_row(
             row,
-            analysis=analysis,
+            reg_index=reg_index,
+            json_index=json_index,
+            n_reg=n_reg,
+            json_value_names=analysis.json_value_names,
             event_type_column=event_type_column,
             time_column=time_column,
         )
@@ -497,6 +574,19 @@ def plan_events(
             fmt_kwargs: dict[str, str] = {}
             for _, col_name, value in field_values:
                 fmt_kwargs[col_name] = value
+            # The event type column is never in ``col_meta`` — ``plan_column_meta``
+            # skips it outright, and in the grouped shape ``_process_breakdown``
+            # does not even leave it in ``analysis.results``. But
+            # ``reserved_catalog_columns`` deliberately UN-reserves it when the
+            # format names it (tripl-lpin), so the format is entitled to it and
+            # the row carries the value. Reading it straight off the row is what
+            # makes ``{category}:{action}`` work at all (tripl-0zpq.93); it is
+            # deliberately NOT routed through ``col_meta``, so the column still
+            # gets no EventFieldValue and the snapshot shape is unchanged.
+            if event_type_column and event_type_column in name_columns:
+                et_idx = reg_index.get(event_type_column)
+                if et_idx is not None:
+                    fmt_kwargs.setdefault(event_type_column, _format_value(row[et_idx]))
             for col_name, meta in col_meta.items():
                 if not meta["is_json"]:
                     continue
@@ -518,17 +608,18 @@ def plan_events(
                         )
                     else:
                         fmt_kwargs[full_path] = f"${{{full_path}}}"
+            # ``setdefault`` so a path the row DOES carry keeps its real value:
+            # this only rescues the rows that would otherwise abort the run.
+            for key in json_format_keys:
+                fmt_kwargs.setdefault(key, "")
             event_name = _apply_name_format(event_name_format, fmt_kwargs)
         else:
-            parts = []
-            for _, col_name, value in field_values:
-                display = value if len(value) <= 80 else value[:77] + "..."
-                parts.append(f"{col_name}={display}")
-            event_name = " | ".join(parts)
+            event_name = render_default_event_name(
+                (col_name, value) for _, col_name, value in field_values
+            )
 
         # Truncate event_name to respect VARCHAR(500) database limit
-        if len(event_name) > _EVENT_NAME_MAX_LEN:
-            event_name = event_name[: _EVENT_NAME_MAX_LEN - 3] + "..."
+        event_name = truncate_event_name(event_name)
 
         raw_values_by_field["__event_name"] = event_name
         raw_values_by_field.setdefault("event_name", event_name)
@@ -620,26 +711,43 @@ def _format_value(raw_val: object) -> str:
     return str(raw_val)
 
 
-def _raw_values_from_row(
-    row: tuple[object, ...],
+def raw_values_from_row(
+    row: Sequence[object],
     *,
-    analysis: BreakdownAnalysis,
+    reg_index: Mapping[str, int],
+    json_index: Mapping[str, int],
+    n_reg: int,
+    json_value_names: Sequence[str],
     event_type_column: str | None,
     time_column: str | None,
 ) -> dict[str, str]:
+    """What an event group rule may match on, for one breakdown row.
+
+    EVERY column of the row, not only the ones that earned a FieldDefinition.
+    That distinction is the whole point of sharing this: a group rule is keyed
+    on a column by name, and the columns rules are usually keyed on — the event
+    type column, and the rule columns themselves — are exactly the ones
+    ``reserved_catalog_columns`` denies a FieldDefinition, so building this dict
+    from ``col_meta`` made the metric collector match no rule the catalog pass
+    had already matched. Grouped events then lost their volume to shadow
+    candidates (tripl-0zpq.90).
+
+    Keyed off index maps rather than a :class:`BreakdownAnalysis` so the sync
+    worker, which never has one, calls the same code.
+    """
     values: dict[str, str] = {}
-    n_reg = len(analysis.reg_names)
     json_value_index = {
-        name: n_reg + len(analysis.json_names) + idx
-        for idx, name in enumerate(analysis.json_value_names)
+        name: n_reg + len(json_index) + idx for idx, name in enumerate(json_value_names)
     }
 
-    for idx, col_name in enumerate(analysis.reg_names):
+    for col_name, idx in reg_index.items():
+        # A no-op on the collector side (the metric query strips the time column
+        # before the index is built) and load-bearing on the planner side.
         if col_name == time_column:
             continue
         values[col_name] = _format_value(row[idx])
 
-    for idx, col_name in enumerate(analysis.json_names):
+    for col_name, idx in json_index.items():
         if col_name in (event_type_column, time_column):
             continue
         paths = row[n_reg + idx]

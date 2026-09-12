@@ -42,6 +42,7 @@ from tripl.worker.db import _build_adapter, _get_sync_session
 from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError, user_facing_error
+from tripl.worker.utils.event_types import ensure_event_type_with_fields
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
 from tripl.worker.variable_sweep import retire_unused_variables, retired_details_line
@@ -76,6 +77,40 @@ def _publish_scan_job_event(
         realtime.EVENT_SCAN_JOB_UPDATED,
         {"scan_config_id": scan_config_id, "job_id": job_id, "status": status},
     )
+
+
+# Statuses from which a job must never be resurrected by the worker. ``running``
+# is deliberately absent: with ``task_acks_late`` a redelivered message
+# legitimately re-enters its own running job. Spelled out here rather than
+# imported from ``worker.tasks.metrics._helpers`` — that import would pull the
+# whole ``collect_metrics`` task graph into this module's import path — but it
+# means the same thing as its twin there and must stay in step with it.
+_TERMINAL_BEFORE_START = (ScanJobStatus.cancelled.value, ScanJobStatus.failed.value)
+
+
+def _job_is_cancelled(session: Session, job_id: uuid.UUID) -> bool:
+    """Re-read the status THROUGH the database.
+
+    The worker sessionmaker is ``expire_on_commit=False`` (``worker.db``), so the
+    in-session ``job.status`` is frozen at whatever value this task itself last
+    wrote and can never observe a cancel. Reading the attribute instead of
+    issuing this SELECT is the one way to ship a guard that looks right and is
+    silently always false. Same reason ``collect_metrics`` re-selects at each
+    chunk boundary.
+    """
+    current = session.execute(select(ScanJob.status).where(ScanJob.id == job_id)).scalar()
+    return current == ScanJobStatus.cancelled.value
+
+
+def _task_id(task: object) -> str | None:
+    """The Celery task id of the running request, or None outside a worker.
+
+    Recorded on the job so ``cancel_scan_job`` can best-effort revoke a message
+    that is still queued — the invariant ``ScanJob.celery_task_id`` documents and
+    which, before tripl-0zpq.44, only ``collect_metrics`` honoured, leaving the
+    revoke branch unreachable for every catalog run and event-group apply.
+    """
+    return getattr(getattr(task, "request", None), "id", None)
 
 
 def _serialize_generation_result(result: GenerationResult) -> dict[str, object]:
@@ -155,6 +190,19 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             msg = f"ScanJob {job_id} not found"
             raise ValueError(msg)
 
+        # Trustworthy without a re-read: this is the session's first look at the
+        # row and nothing has been committed yet. A job can reach a terminal
+        # state while its message sits queued — the user stopped it, or the
+        # stale reaper stamped it failed — and ``task_acks_late`` makes
+        # redelivery routine rather than a race.
+        if job.status in _TERMINAL_BEFORE_START:
+            logger.info("run_scan %s is %s before start; skipping", job_id, job.status)
+            return {
+                "cancelled": True,
+                "job_status": job.status,
+                "scan_config_id": scan_config_id,
+            }
+
         config = session.get(ScanConfig, uuid.UUID(scan_config_id))
         if config is None:
             msg = f"ScanConfig {scan_config_id} not found"
@@ -168,6 +216,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
         # Mark job as running
         job.status = ScanJobStatus.running.value
         job.started_at = datetime.now(UTC)
+        job.celery_task_id = _task_id(self)
         session.commit()
         _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.running.value)
 
@@ -253,6 +302,24 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             scan_truncated = analysis.row_limit_reached
         else:
             raise ScanError(NO_EVENT_NAMING_MSG)
+
+        # The LAST moment at which a stop is still free. Everything the run
+        # generated is pending in this session, so the rollback is a real undo;
+        # one line later it is durable and the sweep, the reindex and the
+        # ``completed`` write all follow. Checking "before the final commit"
+        # instead would leave the catalog rewritten and the job flipped from
+        # ``cancelled`` to ``completed`` while still carrying "Cancelled by
+        # user" (tripl-0zpq.44).
+        #
+        # This is only a true undo because neither ``generate_events`` nor
+        # ``merge_existing_events_for_group_rules`` commits internally. A
+        # generator that starts committing would turn this guard into a partial
+        # catalog.
+        if _job_is_cancelled(session, job.id):
+            session.rollback()
+            logger.info("run_scan for %s cancelled mid-run; discarding generation", scan_config_id)
+            scan_runs_total.labels(status="cancelled").inc()
+            return {"cancelled": True, "scan_config_id": scan_config_id}
 
         session.commit()
         # Scans mint variables and, before this, never retired one, so a project
@@ -392,23 +459,26 @@ def _scan_with_grouping(
     combined = GenerationResult()
     per_group_results: dict[str, GenerationResult] = {}
 
-    # Scans operate on the main plan; a working branch deep-copies event types
-    # under the same names, so the by-name lookup must be branch-scoped.
-    plan_branch = main_branch_id(session, project_id)
+    # The SAME resolver the scheduled catalog sync uses (``catalog_sync`` ->
+    # ``ensure_event_type_with_fields``), and it creates rather than skips. A
+    # manual run used to only LOOK UP the event type by name and drop the whole
+    # group when it was missing, which made a Catalog-only config — the mode
+    # whose entire promise is "adds events and fields to your tracking plan when
+    # you run it", and which by definition never reaches the scheduler — create
+    # zero events forever, while the dry run promised the type "would be added"
+    # (tripl-0zpq.45). It also handed ``generate_events`` only the
+    # already-declared fields, so a new warehouse column stayed dropped from
+    # event identities until the next scheduled tick declared it.
+    #
+    # ``skip_cols`` is the same set this function already passes to
+    # ``generate_events`` as ``reserved_columns``, which reproduces the sync's
+    # invariant exactly: a column denied a FieldDefinition is the same column the
+    # generator stays quiet about. The resolver scopes to the main plan itself,
+    # so no branch lookup is needed here.
+    skip_cols = reserved_catalog_columns(config)
 
     for et_value in group_values:
-        # Find or skip event type by name
-        et = session.execute(
-            select(EventType).where(
-                EventType.project_id == project_id,
-                EventType.branch_id == plan_branch,
-                EventType.name == et_value,
-            )
-        ).scalar_one_or_none()
-
-        if et is None:
-            combined.details.append(f"Skipped event type {et_value!r}: not found in project")
-            continue
+        et = ensure_event_type_with_fields(session, project_id, et_value, columns, skip_cols)
 
         field_defs = {fd.name: fd for fd in et.field_definitions}
         # Use per-group cardinality results for this event type
@@ -424,7 +494,7 @@ def _scan_with_grouping(
             time_column=config.time_column,
             event_name_format=config.event_name_format,
             event_group_rules=config.event_group_rules,
-            reserved_columns=reserved_catalog_columns(config),
+            reserved_columns=skip_cols,
             scan_config_id=config.id,
         )
         combined.events_created += result.events_created
@@ -453,6 +523,16 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             msg = f"ScanJob {job_id} not found"
             raise ValueError(msg)
 
+        # See ``run_scan``: a stopped or reaped job must not be resurrected by an
+        # ``acks_late`` redelivery, and this pass DELETES the events it folds.
+        if job.status in _TERMINAL_BEFORE_START:
+            logger.info("apply_event_groups %s is %s before start; skipping", job_id, job.status)
+            return {
+                "cancelled": True,
+                "job_status": job.status,
+                "scan_config_id": scan_config_id,
+            }
+
         config = session.get(ScanConfig, uuid.UUID(scan_config_id))
         if config is None:
             msg = f"ScanConfig {scan_config_id} not found"
@@ -463,15 +543,38 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
 
         job.status = ScanJobStatus.running.value
         job.started_at = datetime.now(UTC)
+        job.celery_task_id = _task_id(self)
         session.commit()
 
+        # Apply-groups MUTATES the catalog — it rewrites rows and DELETES the
+        # sources it folds — so like every other scan path it stays on the main
+        # plan. A working branch deep-copies every EventType, FieldDefinition and
+        # Event under fresh ids, so a DISTINCT over ``Event.event_type_id`` alone
+        # returned each open branch's private copies too, and the merge then
+        # deleted the branch author's events, analyst edits included, minting a
+        # group event there that only main's reindex would ever have indexed
+        # (tripl-0zpq.43). ``Event.branch_id`` states the intent;
+        # ``EventType.branch_id`` is the column the downstream load actually keys
+        # on, since the merge re-selects by ``event_type_id``.
+        #
+        # NOT narrowed by this: on main the pass still folds every event type
+        # that has any event, regardless of which scan config produced it.
+        # ``Event`` carries no ``scan_config_id`` and this task has no warehouse
+        # adapter, so there is no honest way to learn which event types are this
+        # config's; that needs a product decision, not a query change.
+        plan_branch = main_branch_id(session, config.project_id)
         if config.event_type_id is not None:
             event_type_ids = [config.event_type_id]
         else:
             event_type_ids = list(
                 session.execute(
                     select(Event.event_type_id)
-                    .where(Event.project_id == config.project_id)
+                    .join(EventType, EventType.id == Event.event_type_id)
+                    .where(
+                        Event.project_id == config.project_id,
+                        Event.branch_id == plan_branch,
+                        EventType.branch_id == plan_branch,
+                    )
                     .distinct()
                 ).scalars()
             )
@@ -487,6 +590,18 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             # never moved it and wrong for everyone who did (tripl-3rex).
             cardinality_threshold=config.cardinality_threshold,
         )
+
+        # Same placement and same reasoning as ``run_scan``: the fold is still
+        # pending in this session, so a stop here discards it whole. One line
+        # later the deletes are durable and the reindex has run.
+        if _job_is_cancelled(session, job.id):
+            session.rollback()
+            logger.info(
+                "apply_event_groups for %s cancelled mid-run; discarding the merge",
+                scan_config_id,
+            )
+            return {"cancelled": True, "scan_config_id": scan_config_id}
+
         session.commit()
         # AFTER the commit, exactly as run_scan does and for the same reason:
         # the reindex opens its own connection and cannot see this session's

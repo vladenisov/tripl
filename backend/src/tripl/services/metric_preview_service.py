@@ -341,8 +341,9 @@ async def preview_sql_metric(
     interval ending now, applied by the adapter's time-window wrapping (the
     same wrapping ``_collect_sql`` uses), with a hard ``PREVIEW_ROW_LIMIT`` row
     cap. Rows are floored to interval buckets exactly like a real collection
-    (later rows for the same bucket overwrite earlier ones). Nothing is
-    persisted and the full SQL is never logged here.
+    (later rows for the same bucket overwrite earlier ones), and a ``NULL``
+    value cell yields no point for that bucket — the same gap a collection
+    would store. Nothing is persisted and the full SQL is never logged here.
     """
     # Reuses the worker's bucket/value coercion so preview points match what a
     # collection would store. Imported lazily to keep the Celery worker stack
@@ -409,16 +410,23 @@ async def preview_sql_metric(
 
     time_index = index_by_name[data.time_column]
     value_index = index_by_name[value_column]
-    values: dict[datetime, float] = {}
+    # A NULL value cell is a gap, not an error — the same reading ``_collect_sql``
+    # gives it — so the preview must drop the bucket rather than render CPython's
+    # "float() argument must be ... not 'NoneType'" at the user. The except still
+    # owns a genuinely non-numeric cell (a value column projected as text).
+    values: dict[datetime, float | None] = {}
     try:
         for row in rows:
             bucket = _coerce_bucket(row[time_index], data.interval)
-            values[bucket] = _coerce_value(row[value_index])
+            cell = row[value_index]
+            values[bucket] = None if cell is None else _coerce_value(cell)
     except (TypeError, ValueError) as exc:
         return _error_response(_trimmed_error(exc), columns=list(columns))
 
     points = [
-        MetricPreviewPoint(bucket=bucket, value=value) for bucket, value in sorted(values.items())
+        MetricPreviewPoint(bucket=bucket, value=value)
+        for bucket, value in sorted(values.items())
+        if value is not None
     ]
     return MetricPreviewResponse(
         columns=list(columns),

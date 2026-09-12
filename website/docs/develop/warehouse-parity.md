@@ -141,6 +141,21 @@ taking the dialect default:
 `floor_to_bucket(value, code)` in `core/bucketing.py` is the definition all three
 are measured against.
 
+The same origins govern the **window**, not only the bucket. `_floor_to_interval`
+/ `_ceil_to_interval` in `worker/tasks/metrics/_helpers.py` — which produce the
+`[time_from, time_to)` bounds a collection or a replay hands the adapter, and the
+"latest complete interval" boundary `check_metrics_due` compares a scan against —
+bin on `floor_to_bucket`'s grid, weeks from `WEEK_ORIGIN` included. They used to
+anchor *every* interval at 2000-01-01, which is a **Saturday**, so every weekly
+bound they produced fell five days into a bucket instead of on its edge. Two
+consequences followed, both of them silent. A scheduled run ended on a Saturday,
+so the newest week it wrote held Monday through Friday and nothing more until the
+next run widened it. And because a chunk replaces the buckets inside its own
+window, a run chunked by `replay_chunk_interval` split every Monday bucket across
+two chunks — the second chunk's two-day tail overwrote the five days the first
+had written. A weekly window now opens and closes on a Monday, so the bounds, the
+chunk edges and the buckets inside them all describe the same weeks.
+
 ### Supported time types
 
 A time column must carry a date. Anything that does not — a time-of-day type —

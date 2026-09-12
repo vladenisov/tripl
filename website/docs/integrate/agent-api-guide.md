@@ -440,6 +440,13 @@ backfill a window the scheduler missed or to recompute after a metric definition
 changed. The config must already carry `time_column` and `interval`, otherwise
 the call is `400`.
 
+`time_to` must land **at or before the last completed interval**. The interval
+still filling holds no complete bucket to replay, so a period reaching into it is
+now a `400` — *"Replay period must end at or before … UTC"*, naming the latest
+end it would accept — where it previously answered `201` and then produced a
+failed run. An agent that posts a window ending at "now" must floor that end to
+the config's own interval first.
+
 This is the **only** owner-gated route an API key can reach, and the gate is
 strict about all three of its parts: the key's scope must be `write`, the user
 behind it must have the `owner` role, and a project-bound key still only reaches

@@ -19,6 +19,11 @@ from tripl.core.analyzers.event_generator import (
     _apply_name_format,
     _format_value,
     apply_event_group_rules,
+    event_name_format_columns,
+    json_name_format_keys,
+    raw_values_from_row,
+    render_default_event_name,
+    truncate_event_name,
 )
 from tripl.json_paths import (
     build_json_value,
@@ -50,13 +55,35 @@ def _build_event_name_from_row(
     json_value_names: list[str],
     event_name_format: str | None,
     event_group_rules: Sequence[Mapping[str, object]] | None = None,
+    *,
+    event_type_column: str | None = None,
+    time_column: str | None = None,
 ) -> str | None:
-    """Build event name from a CH row using col_meta (same logic as generate_events)."""
+    """Build event name from a CH row using col_meta (same logic as generate_events).
+
+    Every branch below has a counterpart in ``plan_events``, which mints the
+    ``Event.source_name`` this name is then looked up by. The two must agree
+    byte for byte or the row's volume is filed as an unplanned identity, so the
+    parts that used to be spelled twice — the default name, the truncation and
+    the group-rule value dict — are now imported from the planner rather than
+    re-derived here.
+    """
     kwargs: dict[str, str] = {}
-    raw_values_by_field: dict[str, str] = {}
     json_value_index = {
         name: n_reg + len(json_index) + idx for idx, name in enumerate(json_value_names)
     }
+    # Group rules see the whole row, not just the columns with a field
+    # definition: rule columns are reserved columns by construction, and a
+    # reserved column never enters ``col_meta`` (tripl-0zpq.90).
+    raw_values_by_field = raw_values_from_row(
+        data_row,
+        reg_index=reg_index,
+        json_index=json_index,
+        n_reg=n_reg,
+        json_value_names=json_value_names,
+        event_type_column=event_type_column,
+        time_column=time_column,
+    )
 
     for col_name, meta in col_meta.items():
         if meta.get("is_json"):
@@ -88,13 +115,9 @@ def _build_event_name_from_row(
             i = reg_index.get(col_name)
             if i is None:
                 continue
-            raw_values_by_field[col_name] = _format_value(data_row[i])
             value = _format_value(data_row[i])
         else:
             # High-cardinality: use template
-            i = reg_index.get(col_name)
-            if i is not None:
-                raw_values_by_field[col_name] = _format_value(data_row[i])
             template = meta.get("template")
             if not isinstance(template, str):
                 continue
@@ -105,32 +128,43 @@ def _build_event_name_from_row(
             for path in sorted_paths:
                 full_path = f"{col_name}.{path}"
                 if full_path in json_value_index:
-                    raw_values_by_field[full_path] = format_json_path_value(
-                        data_row[json_value_index[full_path]]
-                    )
-                    kwargs[full_path] = format_json_path_value(
-                        data_row[json_value_index[full_path]]
-                    )
+                    rendered = format_json_path_value(data_row[json_value_index[full_path]])
                 else:
-                    kwargs[full_path] = f"${{{full_path}}}"
+                    rendered = f"${{{full_path}}}"
+                # Only a name format can consume a per-path key. The default
+                # name is one segment per COLUMN, which is how ``plan_events``
+                # builds the ``source_name`` this has to match: appending a
+                # ``col.path=`` segment here matched nothing (tripl-0zpq.91).
+                if event_name_format:
+                    kwargs[full_path] = rendered
 
     if not kwargs:
         return None
 
     if event_name_format:
+        # The event type column has no ``col_meta`` entry — it is skipped there
+        # by design — but ``reserved_catalog_columns`` un-reserves it when the
+        # format names it, so the format is entitled to it and the row carries
+        # the value. The planner injects it the same way (tripl-0zpq.93); this
+        # must stay AFTER the ``not kwargs`` guard so the collector never mints
+        # an identity the planner, which returns no events at all for an empty
+        # ``col_meta``, did not plan.
+        if event_type_column and event_type_column in event_name_format_columns(event_name_format):
+            et_idx = reg_index.get(event_type_column)
+            if et_idx is not None:
+                kwargs.setdefault(event_type_column, _format_value(data_row[et_idx]))
+        # A dotted placeholder whose path this row does not carry is an empty
+        # segment, exactly like a NULL regular column (tripl-0zpq.92).
+        for key in json_name_format_keys(event_name_format, col_meta):
+            kwargs.setdefault(key, "")
         # Second caller of ``_apply_name_format``. It raises ``NameFormatError``,
         # which ``user_facing_error`` surfaces verbatim, so this path needs no
         # try/except wrapper — do not add one (tripl-3mmh).
         res = _apply_name_format(event_name_format, kwargs)
     else:
-        parts = []
-        for k, v in kwargs.items():
-            display = v if len(v) <= 80 else v[:77] + "..."
-            parts.append(f"{k}={display}")
-        res = " | ".join(parts)
+        res = render_default_event_name(kwargs.items())
 
-    if res and len(res) > 500:
-        res = res[:497] + "..."
+    res = truncate_event_name(res)
     raw_values_by_field["__event_name"] = res
     raw_values_by_field.setdefault("event_name", res)
     group_match = apply_event_group_rules(res, raw_values_by_field, event_group_rules)
@@ -155,6 +189,42 @@ def _is_supported_metric_breakdown_column(
         column in regular_cols
         and column != config.event_type_column
         and column != config.time_column
+    )
+
+
+def _is_supported_configured_breakdown_column(
+    config: ScanConfig,
+    *,
+    column: str,
+    regular_cols: list[str],
+) -> bool:
+    """The test for a column a USER listed in ``metric_breakdown_columns``.
+
+    One exclusion on top of the base test: ``app_version_column``. Versions are
+    already collected on their own path (``_collect_app_version_breakdown_rows``)
+    into the same table with the same row shape, so collecting them here as well
+    writes the SAME (scope, bucket, column, value, is_other) key twice inside one
+    multi-row ON CONFLICT DO UPDATE — a cardinality violation on Postgres — and
+    adds a generic ``('app_version', 'Other', True)`` row the version path never
+    writes and never deletes, which then double-counts in the version series
+    (tripl-0zpq.15).
+
+    ``platform_column`` is deliberately NOT excluded. It is added scan-wide below
+    and deduped through ``scan_breakdown_column_set``, so an event listing it
+    takes the scan-wide branch and can only ever produce one key — and the demo
+    project ships an event that lists it.
+
+    The base test stays as it is: ``_collect_app_version_breakdown_rows`` guards
+    itself with it, so tightening that one instead would silently delete every
+    app-version series.
+    """
+    return (
+        _is_supported_metric_breakdown_column(
+            config,
+            column=column,
+            regular_cols=regular_cols,
+        )
+        and column != config.app_version_column
     )
 
 
@@ -200,6 +270,24 @@ def _chunk_rows(rows: list[dict[str, object]]) -> Iterator[list[dict[str, object
     batch_size = max(1, _MAX_BIND_PARAMS // columns)
     for start in range(0, len(rows), batch_size):
         yield rows[start : start + batch_size]
+
+
+def _chunk_keys[KeyT: tuple[object, ...]](keys: Sequence[KeyT]) -> Iterator[list[KeyT]]:
+    """Yield key batches sized so ``keys_per_batch * width + 1 <= _MAX_BIND_PARAMS``.
+
+    Same ceiling and same reason as ``_chunk_rows``: an expanded tuple ``IN``
+    contributes one bind parameter per element per key, and a replay chunk can
+    carry up to ``metrics_row_limit`` keys. The ``+ 1`` is the ``scan_config_id``
+    bind every one of these deletes carries alongside the ``IN``. Empty input
+    yields nothing, so callers that split their key list by scope can hand each
+    half over unguarded.
+    """
+    if not keys:
+        return
+    width = max(1, len(keys[0]))
+    batch_size = max(1, (_MAX_BIND_PARAMS - 1) // width)
+    for start in range(0, len(keys), batch_size):
+        yield list(keys[start : start + batch_size])
 
 
 def _upsert_event_metrics_rows(
@@ -401,14 +489,17 @@ def _delete_event_metrics_rows(
     if not keys:
         return 0
 
-    result = session.execute(
-        delete(EventMetric).where(
-            EventMetric.scan_config_id == scan_config_id,
-            tuple_(EventMetric.event_id, EventMetric.bucket).in_(keys),
+    deleted = 0
+    for batch in _chunk_keys(keys):
+        result = session.execute(
+            delete(EventMetric).where(
+                EventMetric.scan_config_id == scan_config_id,
+                tuple_(EventMetric.event_id, EventMetric.bucket).in_(batch),
+            )
         )
-    )
-    rowcount = getattr(result, "rowcount", 0)
-    return int(rowcount or 0)
+        rowcount = getattr(result, "rowcount", 0)
+        deleted += int(rowcount or 0)
+    return deleted
 
 
 def _delete_event_type_metrics_rows(
@@ -420,14 +511,17 @@ def _delete_event_type_metrics_rows(
     if not keys:
         return 0
 
-    result = session.execute(
-        delete(EventMetric).where(
-            EventMetric.scan_config_id == scan_config_id,
-            tuple_(EventMetric.event_type_id, EventMetric.bucket).in_(keys),
+    deleted = 0
+    for batch in _chunk_keys(keys):
+        result = session.execute(
+            delete(EventMetric).where(
+                EventMetric.scan_config_id == scan_config_id,
+                tuple_(EventMetric.event_type_id, EventMetric.bucket).in_(batch),
+            )
         )
-    )
-    rowcount = getattr(result, "rowcount", 0)
-    return int(rowcount or 0)
+        rowcount = getattr(result, "rowcount", 0)
+        deleted += int(rowcount or 0)
+    return deleted
 
 
 def _delete_event_metric_breakdowns_window(
@@ -481,9 +575,21 @@ def _delete_event_metric_breakdown_rows(
     session: Session,
     *,
     scan_config_id: uuid.UUID,
-    keys: Sequence[tuple[uuid.UUID, datetime, str, str, bool]],
+    keys: Sequence[tuple[uuid.UUID, datetime, str]],
     constraint: str,
 ) -> int:
+    """Delete the produced breakdown rows for a replayed chunk, per (scope, bucket, column).
+
+    The key deliberately stops at the column. Whether a value is stored under
+    its own label or folded into ``("Other", is_other=True)`` is a property of
+    the query window the top-N was ranked over, not of the data, and a replay
+    chunk is generally wider than the chunk that first collected the window. A
+    value-scoped key therefore left the previous label behind next to the new
+    one and the read side summed both, so the breakdown total exceeded the
+    event's own metric. Clearing every row of a (scope, bucket, column) the
+    chunk re-derived makes the fold idempotent while still keeping rows for
+    scopes the chunk produced nothing for.
+    """
     if not keys:
         return 0
 
@@ -492,26 +598,25 @@ def _delete_event_metric_breakdown_rows(
             EventMetricBreakdown.event_id,
             EventMetricBreakdown.bucket,
             EventMetricBreakdown.breakdown_column,
-            EventMetricBreakdown.breakdown_value,
-            EventMetricBreakdown.is_other,
         )
         if constraint == "event"
         else tuple_(
             EventMetricBreakdown.event_type_id,
             EventMetricBreakdown.bucket,
             EventMetricBreakdown.breakdown_column,
-            EventMetricBreakdown.breakdown_value,
-            EventMetricBreakdown.is_other,
         )
     )
-    result = session.execute(
-        delete(EventMetricBreakdown).where(
-            EventMetricBreakdown.scan_config_id == scan_config_id,
-            metric_key.in_(keys),
+    deleted = 0
+    for batch in _chunk_keys(keys):
+        result = session.execute(
+            delete(EventMetricBreakdown).where(
+                EventMetricBreakdown.scan_config_id == scan_config_id,
+                metric_key.in_(batch),
+            )
         )
-    )
-    rowcount = getattr(result, "rowcount", 0)
-    return int(rowcount or 0)
+        rowcount = getattr(result, "rowcount", 0)
+        deleted += int(rowcount or 0)
+    return deleted
 
 
 def _delete_distribution_drifts_window(
@@ -538,21 +643,53 @@ def _delete_distribution_drifts_rows(
     scan_config_id: uuid.UUID,
     keys: Sequence[tuple[uuid.UUID | None, datetime, str]],
 ) -> int:
+    """Delete the produced drift rows for a replayed chunk.
+
+    ``event_type_id`` is NULL on the scan-wide row the producer emits for every
+    (field, bucket). A row-value ``IN`` whose component is NULL compares as
+    unknown rather than true, so those keys matched nothing and every replay of
+    an already-collected window appended another duplicate scan-wide row. The
+    scan-wide keys therefore need an explicit ``IS NULL`` predicate instead of
+    being folded into the tuple.
+    """
     if not keys:
         return 0
 
-    result = session.execute(
-        delete(DistributionDrift).where(
-            DistributionDrift.scan_config_id == scan_config_id,
-            tuple_(
-                DistributionDrift.event_type_id,
-                DistributionDrift.bucket,
-                DistributionDrift.field_name,
-            ).in_(keys),
+    scoped_keys = [key for key in keys if key[0] is not None]
+    scan_wide_keys = [
+        (bucket, field_name)
+        for (event_type_id, bucket, field_name) in keys
+        if event_type_id is None
+    ]
+
+    deleted = 0
+    for batch in _chunk_keys(scoped_keys):
+        result = session.execute(
+            delete(DistributionDrift).where(
+                DistributionDrift.scan_config_id == scan_config_id,
+                tuple_(
+                    DistributionDrift.event_type_id,
+                    DistributionDrift.bucket,
+                    DistributionDrift.field_name,
+                ).in_(batch),
+            )
         )
-    )
-    rowcount = getattr(result, "rowcount", 0)
-    return int(rowcount or 0)
+        rowcount = getattr(result, "rowcount", 0)
+        deleted += int(rowcount or 0)
+    for scan_wide_batch in _chunk_keys(scan_wide_keys):
+        result = session.execute(
+            delete(DistributionDrift).where(
+                DistributionDrift.scan_config_id == scan_config_id,
+                DistributionDrift.event_type_id.is_(None),
+                tuple_(
+                    DistributionDrift.bucket,
+                    DistributionDrift.field_name,
+                ).in_(scan_wide_batch),
+            )
+        )
+        rowcount = getattr(result, "rowcount", 0)
+        deleted += int(rowcount or 0)
+    return deleted
 
 
 def _collect_metric_breakdown_rows(
@@ -583,8 +720,18 @@ def _collect_metric_breakdown_rows(
     seen_breakdown_columns: set[str] = set()
     unsupported_breakdown_columns: set[str] = set()
 
-    def add_supported_column(configured_column: str, *, source: str) -> bool:
-        if _is_supported_metric_breakdown_column(
+    def add_supported_column(
+        configured_column: str, *, source: str, allow_reserved_roles: bool = False
+    ) -> bool:
+        # ``allow_reserved_roles`` is for the columns this function adds itself
+        # because the scan designates them (the platform column), not for the
+        # ones a user typed into a metric_breakdown_columns list.
+        is_supported = (
+            _is_supported_metric_breakdown_column
+            if allow_reserved_roles
+            else _is_supported_configured_breakdown_column
+        )
+        if is_supported(
             config,
             column=configured_column,
             regular_cols=regular_cols,
@@ -617,7 +764,11 @@ def _collect_metric_breakdown_rows(
     if (
         config.platform_column
         and config.platform_column not in scan_breakdown_column_set
-        and add_supported_column(config.platform_column, source="platform_column")
+        and add_supported_column(
+            config.platform_column,
+            source="platform_column",
+            allow_reserved_roles=True,
+        )
     ):
         scan_breakdown_column_set.add(config.platform_column)
 
@@ -700,6 +851,8 @@ def _collect_metric_breakdown_rows(
             breakdown_json_value_names,
             config.event_name_format,
             config.event_group_rules,
+            event_type_column=config.event_type_column,
+            time_column=config.time_column,
         )
 
         scan_wide_column = breakdown_column in scan_breakdown_column_set
@@ -850,6 +1003,8 @@ def _collect_app_version_breakdown_rows(
             json_value_names,
             config.event_name_format,
             config.event_group_rules,
+            event_type_column=config.event_type_column,
+            time_column=config.time_column,
         )
 
         if event_name:
@@ -980,8 +1135,14 @@ def _collect_distribution_drift_rows(
         ", ".join(distribution_fields),
     )
 
-    counts: dict[tuple[uuid.UUID | None, str, datetime, str], int] = {}
-    buckets_seen: dict[tuple[uuid.UUID | None, str], set[datetime]] = {}
+    # Pre-grouped by scope and then by bucket, NOT flat. The analysis below needs
+    # one bucket's values and its handful of predecessors at a time; against a
+    # flat dict that is a full rescan per (scope, bucket) pair, and the fetch is
+    # bounded only by metrics_row_limit (100k rows, two scopes each), so a chunk
+    # spent minutes of pure-Python dict iteration inside one Celery task
+    # (tripl-0zpq.17). ``grouped[scope].keys()`` is exactly the set of buckets
+    # the scope has data for, so no parallel bucket index is needed.
+    grouped: dict[tuple[uuid.UUID | None, str], dict[datetime, dict[str, int]]] = {}
     et_col_idx = reg_index.get(config.event_type_column) if config.event_type_column else None
 
     def add_count(
@@ -992,9 +1153,9 @@ def _collect_distribution_drift_rows(
         value: str,
         count: int,
     ) -> None:
-        key = (event_type_id, field_name, bucket, value)
-        counts[key] = counts.get(key, 0) + count
-        buckets_seen.setdefault((event_type_id, field_name), set()).add(bucket)
+        by_bucket = grouped.setdefault((event_type_id, field_name), {})
+        bucket_counts = by_bucket.setdefault(bucket, {})
+        bucket_counts[value] = bucket_counts.get(value, 0) + count
 
     for row in rows:
         bucket = cast(datetime, row[0])
@@ -1030,28 +1191,39 @@ def _collect_distribution_drift_rows(
 
     output_rows: list[dict[str, object]] = []
     significant_count = 0
-    scopes = sorted(buckets_seen, key=lambda item: (str(item[0] or ""), item[1]))
+    scopes = sorted(grouped, key=lambda item: (str(item[0] or ""), item[1]))
     for event_type_id, field_name in scopes:
-        buckets = sorted(buckets_seen[(event_type_id, field_name)])
-        for bucket in buckets:
+        by_bucket = grouped[(event_type_id, field_name)]
+        ordered_buckets = sorted(by_bucket)
+        for index, bucket in enumerate(ordered_buckets):
             if bucket < time_from or bucket >= time_to:
                 continue
 
             baseline_from = bucket - interval_delta * baseline_window_buckets
             baseline_counts: dict[str, int] = {}
-            baseline_buckets: set[datetime] = set()
-            current_counts: dict[str, int] = {}
-
-            for (row_event_type_id, row_field_name, row_bucket, value), count in counts.items():
-                if row_event_type_id != event_type_id or row_field_name != field_name:
-                    continue
-                if row_bucket == bucket:
-                    current_counts[value] = current_counts.get(value, 0) + count
-                elif baseline_from <= row_bucket < bucket:
+            # ``min_history_buckets`` counts DISTINCT populated buckets, not rows
+            # and not values: one dense bucket must not satisfy a seven-bucket
+            # history requirement. Every key of ``by_bucket`` holds at least one
+            # value, so counting the keys walked is the same number the old set
+            # of seen buckets carried.
+            baseline_bucket_count = 0
+            # ``ordered_buckets`` ascends, so the predecessors of ``bucket`` are
+            # exactly ``ordered_buckets[:index]`` — the old condition was
+            # ``baseline_from <= row_bucket < bucket``, half-open on both ends.
+            # Walking them backwards lets the window end the scan instead of the
+            # dict ending it.
+            for prior_bucket in reversed(ordered_buckets[:index]):
+                if prior_bucket < baseline_from:
+                    break
+                baseline_bucket_count += 1
+                for value, count in by_bucket[prior_bucket].items():
                     baseline_counts[value] = baseline_counts.get(value, 0) + count
-                    baseline_buckets.add(row_bucket)
 
-            if len(baseline_buckets) < min_history_buckets or not current_counts:
+            # A live reference into ``grouped``, not a copy: ``compute_psi`` takes
+            # a Mapping and only reads it. Keep it that way.
+            current_counts = by_bucket[bucket]
+
+            if baseline_bucket_count < min_history_buckets or not current_counts:
                 continue
 
             result = compute_psi(baseline_counts, current_counts)

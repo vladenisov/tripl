@@ -65,11 +65,18 @@ class _DryRunTarget:
     name: str
     event_type: EventType | None
     analysis: BreakdownAnalysis
-    # True on the grouped path only: ``catalog_sync`` auto-creates the event type
-    # and a FieldDefinition per unreserved column there, so those fields WOULD
-    # exist by the time events are generated. The single-event-type path creates
-    # nothing, so a column with no field definition really is dropped and must be
-    # reported as unmapped instead of quietly folded into an event name.
+    # True on the grouped path only: BOTH grouped runners — the manual
+    # ``_scan_with_grouping`` and the scheduled ``catalog_sync`` — go through
+    # ``ensure_event_type_with_fields``, which auto-creates the event type and a
+    # FieldDefinition per unreserved column, so those fields WOULD exist by the
+    # time events are generated. The single-event-type path creates nothing, so a
+    # column with no field definition really is dropped and must be reported as
+    # unmapped instead of quietly folded into an event name.
+    #
+    # This flag was right before the manual path was (tripl-0zpq.45): the dry run
+    # promised a missing event type "would be added" while a real manual run
+    # skipped the group outright. Nothing here changed to close that gap — the
+    # runner did.
     may_create_fields: bool
 
 

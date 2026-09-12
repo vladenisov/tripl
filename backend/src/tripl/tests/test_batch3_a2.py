@@ -1,0 +1,1042 @@
+"""Batch 3 lane A2: the metric-scope purge, signed volume floors, event_type filters.
+
+Three defects that share nothing but the files they live in:
+
+* ``tripl-0zpq.8`` — unticking the project's **Metrics** detection scope deleted
+  the project's WHOLE metric-scope anomaly history instead of the window an
+  enabled pass would have rewritten, so a temporary toggle-off destroyed months
+  of history nothing else ever ages out;
+* ``tripl-0zpq.102`` — every volume gate compared a SIGNED expectation against a
+  non-negative floor, so a catalog metric whose level legitimately sits below
+  zero could never be scored and, if it had been, could never have matched a
+  rule;
+* ``tripl-0zpq.7`` — event-anchored signals carry a NULL ``event_type_id``, and
+  the matcher read a missing type as "this signal has no such field", so an
+  alert rule's ``event_type`` filter was silently inert for all of them.
+
+Sync sqlite fixtures mirror ``test_metric_anomaly_scope.py`` /
+``test_alert_digest_delivery.py``; the async simulator test uses the shared
+in-memory fixtures from ``conftest``.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+from httpx import AsyncClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from tripl.alerting_matching import (
+    SCOPE_METRIC,
+    SCOPE_RELEASE_REGRESSION,
+    SCOPE_VARIABLE_VALUE_DRIFT,
+    rule_matches_anomaly,
+)
+from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_EVENT,
+    SCOPE_PROJECT_TOTAL,
+    AnomalyDetectionSettings,
+    DetectedAnomaly,
+    SeriesPoint,
+    _detect_trend_shift,
+    detect_anomalies,
+)
+from tripl.models import Base
+from tripl.models.alert_delivery import AlertDelivery
+from tripl.models.alert_delivery_item import AlertDeliveryItem
+from tripl.models.alert_destination import AlertDestination
+from tripl.models.alert_rule import AlertRule
+from tripl.models.alert_rule_filter import AlertRuleFilter
+from tripl.models.data_source import DataSource
+from tripl.models.domain_enums import (
+    MetricAggregation,
+    MetricComposition,
+    MetricKind,
+    MetricStatus,
+)
+from tripl.models.event import Event
+from tripl.models.event_metric import EventMetric
+from tripl.models.event_type import EventType
+from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
+from tripl.models.project import Project
+from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.scan_config import ScanConfig
+from tripl.tests.conftest import TestSessionLocal
+from tripl.worker.tasks.metrics import detect as metrics_detect
+from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
+
+# Recent, hour-aligned and tz-naive, matching the sync fixtures' bucket columns.
+_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(
+    hours=12
+)
+_EVAL_FROM = _BASE + timedelta(hours=8)
+_EVAL_TO = _BASE + timedelta(hours=10)
+_SPIKE_HOUR = 9
+_DAY = timedelta(days=1)
+_DAY_END = _BASE.replace(hour=0, minute=0, second=0, microsecond=0)
+# The scan-grid window ``collect_metrics`` computes for a 1h config: 30 buckets
+# of the SCAN's grid, which is 30 hours however coarse the metric is.
+_SCAN_WINDOW = timedelta(hours=30)
+
+
+@pytest.fixture
+def sync_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
+    engine = create_engine(f"sqlite:///{tmp_path / 'batch3_a2.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        yield factory
+        Base.metadata.drop_all(engine)
+    finally:
+        engine.dispose()
+
+
+def _seed_project(
+    session: Session,
+    *,
+    detect_metrics: bool = True,
+    anomaly_detection_enabled: bool = True,
+) -> ScanConfig:
+    project = Project(
+        id=uuid.uuid4(),
+        name="Batch3 A2",
+        slug=f"batch3-a2-{uuid.uuid4().hex[:8]}",
+        description="",
+    )
+    data_source = DataSource(
+        id=uuid.uuid4(),
+        name=f"DS {uuid.uuid4().hex[:8]}",
+        db_type="clickhouse",
+        host="localhost",
+        port=8123,
+        database_name="default",
+        username="default",
+        password_encrypted="",
+    )
+    config = ScanConfig(
+        id=uuid.uuid4(),
+        data_source_id=data_source.id,
+        project_id=project.id,
+        name="Scan",
+        base_query="SELECT time, event_name FROM events",
+        time_column="time",
+        cardinality_threshold=100,
+        interval="1h",
+    )
+    settings = ProjectAnomalySettings(
+        project_id=project.id,
+        anomaly_detection_enabled=anomaly_detection_enabled,
+        detect_metrics=detect_metrics,
+        sigma_threshold=3.0,
+        min_expected_count=10,
+    )
+    session.add_all([project, data_source, config, settings])
+    session.commit()
+    return config
+
+
+def _add_metric(
+    session: Session,
+    config: ScanConfig,
+    *,
+    kind: MetricKind,
+    name: str,
+    aggregation: MetricAggregation | None = None,
+    composition: MetricComposition | None = None,
+    interval: str | None = "1h",
+) -> MetricDefinition:
+    metric = MetricDefinition(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        name=name,
+        display_name=name.upper(),
+        kind=kind.value,
+        aggregation=aggregation.value if aggregation else None,
+        composition=composition.value if composition else None,
+        config={},
+        data_source_id=config.data_source_id,
+        interval=interval,
+        status=MetricStatus.active.value,
+        anomaly_detection_enabled=True,
+    )
+    session.add(metric)
+    session.commit()
+    return metric
+
+
+def _add_metric_anomaly(session: Session, metric: MetricDefinition, bucket: datetime) -> None:
+    """One stored metric-scope marker, shaped exactly as detection writes it."""
+    session.add(
+        MetricAnomaly(
+            id=uuid.uuid4(),
+            scan_config_id=None,
+            scope_type=SCOPE_METRIC,
+            scope_ref=str(metric.id),
+            event_id=None,
+            event_type_id=None,
+            bucket=bucket,
+            direction="drop",
+            actual_count=1.0,
+            expected_count=10.0,
+            stddev=1.0,
+            z_score=-9.0,
+        )
+    )
+    session.commit()
+
+
+def _metric_anomaly_buckets(session: Session, metric_id: uuid.UUID) -> set[datetime]:
+    return {
+        anomaly.bucket
+        for anomaly in session.execute(
+            select(MetricAnomaly).where(
+                MetricAnomaly.scope_type == SCOPE_METRIC,
+                MetricAnomaly.scope_ref == str(metric_id),
+            )
+        ).scalars()
+    }
+
+
+def _seed_values_at(
+    session: Session,
+    metric: MetricDefinition,
+    values: dict[datetime, float],
+) -> None:
+    for bucket, value in values.items():
+        session.add(
+            MetricValue(
+                id=uuid.uuid4(),
+                metric_definition_id=metric.id,
+                scan_config_id=None,
+                bucket=bucket,
+                value=value,
+            )
+        )
+    session.commit()
+
+
+# ---------------------------------------------------------------------------
+# tripl-0zpq.8 — the detect_metrics purge
+# ---------------------------------------------------------------------------
+
+
+def test_detect_metrics_disabled_keeps_history_older_than_the_reeval_window(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Unticking the Metrics scope box clears its window, not the project's past.
+
+    The three event scopes have always deleted exactly
+    ``[evaluation_start, evaluation_end)`` when switched off. The metric scope
+    deleted every row below ``evaluation_end`` with no start bound at all, so one
+    toggle-off erased history no later run can re-derive: re-enabling only
+    re-scores the trailing 30 buckets.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session, detect_metrics=False)
+        metric = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="signups",
+        )
+        # The metric's own re-evaluation window is 30 hourly buckets back from
+        # the end, so `recent` is inside it and `old` is 170 hours outside.
+        old = _EVAL_TO - timedelta(hours=200)
+        recent = _EVAL_TO - timedelta(hours=2)
+        _add_metric_anomaly(session, metric, old)
+        _add_metric_anomaly(session, metric, recent)
+
+        metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=_EVAL_FROM,
+            evaluation_end=_EVAL_TO,
+        )
+        session.commit()
+
+        assert _metric_anomaly_buckets(session, metric.id) == {old}
+
+
+def test_detect_metrics_disabled_clears_a_daily_metric_on_its_own_grid(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The purge window is the METRIC's grid, not the scan config's.
+
+    Guards the naive fix as well as the defect. A 1d metric under a 1h scan is
+    scored over 30 DAYS, so bounding the disabled-scope delete by the scan's
+    30-hour window would strand its in-window rows as markers no later run
+    re-evaluates — the failure the old whole-history wipe was reaching for.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session, detect_metrics=False)
+        metric = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="daily_signups",
+            interval="1d",
+        )
+        inside = _DAY_END - _DAY * 20
+        ancient = _DAY_END - _DAY * 200
+        _add_metric_anomaly(session, metric, inside)
+        _add_metric_anomaly(session, metric, ancient)
+
+        metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=_DAY_END - _SCAN_WINDOW,
+            evaluation_end=_DAY_END,
+        )
+        session.commit()
+
+        assert _metric_anomaly_buckets(session, metric.id) == {ancient}
+
+
+def test_master_switch_off_still_wipes_metric_history(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The branch that must NOT change.
+
+    ``anomaly_detection_enabled = False`` is the documented project master
+    switch and already drops every config-scoped row this scan owns, so it keeps
+    taking the metric-scope history with it. Narrowing the old purge's signature
+    must leave that behaviour alone.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session, anomaly_detection_enabled=False)
+        metric = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="signups",
+        )
+        _add_metric_anomaly(session, metric, _EVAL_TO - timedelta(hours=200))
+        _add_metric_anomaly(session, metric, _EVAL_TO - timedelta(hours=2))
+
+        metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=_EVAL_FROM,
+            evaluation_end=_EVAL_TO,
+        )
+        session.commit()
+
+        assert _metric_anomaly_buckets(session, metric.id) == set()
+
+
+def test_detect_metrics_disabled_leaves_another_projects_history_alone(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Metric-scope rows share one global ``scan_config_id IS NULL`` space.
+
+    The old purge was scoped by the project's metric ids for exactly this
+    reason; the per-grid replacement has to keep that scoping.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session, detect_metrics=False)
+        mine = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="signups",
+        )
+        other_config = _seed_project(session)
+        theirs = _add_metric(
+            session,
+            other_config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="their_signups",
+        )
+        in_window = _EVAL_TO - timedelta(hours=2)
+        _add_metric_anomaly(session, mine, in_window)
+        _add_metric_anomaly(session, theirs, in_window)
+
+        metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=_EVAL_FROM,
+            evaluation_end=_EVAL_TO,
+        )
+        session.commit()
+
+        assert _metric_anomaly_buckets(session, mine.id) == set()
+        assert _metric_anomaly_buckets(session, theirs.id) == {in_window}
+
+
+# ---------------------------------------------------------------------------
+# tripl-0zpq.102 — the signed volume floor
+# ---------------------------------------------------------------------------
+
+_FRACTIONAL_SETTINGS = AnomalyDetectionSettings(
+    baseline_window_buckets=14,
+    min_history_buckets=7,
+    sigma_threshold=3.0,
+    # What ``detect._recalculate_project_metric_anomalies`` pins every fractional
+    # catalog metric to.
+    min_expected_count=1e-6,
+)
+_SERIES_START = datetime(2026, 7, 1, tzinfo=UTC)
+_SERIES_BUCKETS = 40
+_HOUR = timedelta(hours=1)
+
+
+def _bucket(hour: int) -> datetime:
+    return _SERIES_START + _HOUR * hour
+
+
+def _level_series(sign: float) -> list[SeriesPoint]:
+    """A flat level of ``sign * ~100`` for 39 buckets, then ``sign * 300``.
+
+    The jitter is deterministic and never strictly monotonic, so the fractional
+    path's sustained-ramp exemption does not defer the last bucket.
+    """
+    counts = [sign * (100.0 - (hour % 3) * 0.5) for hour in range(_SERIES_BUCKETS)]
+    counts[-1] = sign * 300.0
+    return [SeriesPoint(bucket=_bucket(hour), count=count) for hour, count in enumerate(counts)]
+
+
+def _score_last_bucket(points: list[SeriesPoint]) -> list[DetectedAnomaly]:
+    return detect_anomalies(
+        points,
+        interval=_HOUR,
+        evaluation_start=_bucket(_SERIES_BUCKETS - 1),
+        evaluation_end=_bucket(_SERIES_BUCKETS),
+        settings=_FRACTIONAL_SETTINGS,
+        fill_gaps=False,
+    ).anomalies
+
+
+def test_negative_level_fractional_series_is_scored() -> None:
+    """A fractional series living below zero must be scored, not silently dropped.
+
+    A ``fact`` sum/avg/min/max over a signed column, or any ``sql`` metric, can
+    sit at -100 as naturally as at +100. Every volume gate compared that signed
+    expectation against a non-negative floor, so the whole class was rejected on
+    all three scoring paths (tripl-0zpq.102).
+    """
+    anomalies = _score_last_bucket(_level_series(-1.0))
+
+    assert [(a.direction, a.actual_count) for a in anomalies] == [("drop", -300.0)]
+    assert anomalies[0].expected_count < 0
+    assert anomalies[0].expected_count == pytest.approx(-99.46, abs=0.1)
+
+
+def test_negative_and_positive_fractional_levels_score_alike() -> None:
+    """The symmetry the defect broke: -100 is as substantial a level as +100.
+
+    Same series, mirrored through zero. The floors are magnitude-derived, so the
+    two must produce the same |z| and mirrored expectations — and the positive
+    half doubles as the no-regression anchor for an over-broad fix.
+    """
+    negative = _score_last_bucket(_level_series(-1.0))
+    positive = _score_last_bucket(_level_series(1.0))
+
+    assert len(negative) == 1
+    assert len(positive) == 1
+    assert negative[0].direction == "drop"
+    assert positive[0].direction == "spike"
+    assert negative[0].expected_count == pytest.approx(-positive[0].expected_count)
+    assert abs(negative[0].z_score) == pytest.approx(abs(positive[0].z_score))
+
+
+def test_fractional_series_flatlined_at_zero_is_still_gated() -> None:
+    """The magnitude gate must not undo the deliberate zero-flatline guard.
+
+    ``_FRACTIONAL_MIN_EXPECTED_COUNT`` is a tiny POSITIVE floor precisely so an
+    empty/flatlined-at-zero fractional series cannot manufacture multi-sigma
+    anomalies out of noise (tripl-dmch.17). A single negative wobble puts the
+    series on the signed lane; the expectation is still 0, so nothing emits.
+    """
+    counts = [0.0] * _SERIES_BUCKETS
+    counts[-1] = -0.5
+    points = [SeriesPoint(bucket=_bucket(hour), count=count) for hour, count in enumerate(counts)]
+
+    assert _score_last_bucket(points) == []
+
+
+def test_trend_shift_reports_a_signed_expectation() -> None:
+    """The trend path must surface the real negative level, not a clamped 0.0.
+
+    Hand-built components so the arithmetic is exact and no MSTL fit is needed,
+    mirroring the harness in ``test_anomaly_detector``. With ``signed=False`` —
+    the default every existing direct-call test gets — the deseasonalized trend
+    of -160 fails the volume gate and nothing is emitted at all, which is the
+    defect; with ``signed=True`` the reconstruction is reported as it stands.
+    """
+    hours = 24 * 22  # three full hour-of-week cycles, so period 168 is selectable
+    anchor = hours - 1
+    points = [SeriesPoint(bucket=_bucket(hour), count=-100.0) for hour in range(hours)]
+    points[anchor] = SeriesPoint(bucket=_bucket(anchor), count=-400.0)
+    trend = [-100.0] * hours
+    trend[anchor] = -160.0
+    components = (tuple(trend), tuple([0.0] * hours), tuple([0.0] * hours))
+
+    def trend_rows(*, signed: bool) -> list[tuple[str, float]]:
+        result = _detect_trend_shift(
+            points,
+            components,
+            evaluation_start=_bucket(anchor - 1),
+            settings=_FRACTIONAL_SETTINGS,
+            interval=_HOUR,
+            signed=signed,
+        )
+        return [(row.direction, row.expected_count) for row in result.anomalies]
+
+    assert trend_rows(signed=True) == [("drop", -100.0)]
+    # The count lane is untouched: a negative deseasonalized trend is still
+    # rejected outright there, which is what keeps the tripl-wkwv.8 rows gone.
+    assert trend_rows(signed=False) == []
+
+
+def test_negative_level_fractional_metric_is_scored_end_to_end(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A monitored catalog metric sitting below zero can finally signal.
+
+    End-to-end through ``_recalculate_metric_anomalies``: before the fix the
+    metric stayed listed as monitored and produced nothing, forever.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        metric = _add_metric(session, config, kind=MetricKind.sql, name="net_margin")
+        values = {
+            _BASE + timedelta(hours=hour): (-9.0 if hour == _SPIKE_HOUR else -3.0)
+            for hour in range(_SPIKE_HOUR + 1)
+        }
+        _seed_values_at(session, metric, values)
+
+        metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=_EVAL_FROM,
+            evaluation_end=_EVAL_TO,
+        )
+        session.commit()
+
+        anomalies = list(
+            session.execute(
+                select(MetricAnomaly).where(
+                    MetricAnomaly.scope_type == SCOPE_METRIC,
+                    MetricAnomaly.scope_ref == str(metric.id),
+                )
+            ).scalars()
+        )
+
+    assert len(anomalies) == 1
+    assert anomalies[0].bucket == _BASE + timedelta(hours=_SPIKE_HOUR)
+    assert anomalies[0].direction == "drop"
+    assert anomalies[0].actual_count == -9.0
+    assert anomalies[0].expected_count < 0
+
+
+# ---------------------------------------------------------------------------
+# Shared matcher fixtures for the two alerting defects
+# ---------------------------------------------------------------------------
+
+_CANDIDATE_BUCKET = datetime(2026, 7, 10, 12, tzinfo=UTC)
+
+
+@dataclass
+class _Candidate:
+    """Minimal ``AlertMatchCandidate``: only the fields the matcher reads."""
+
+    scope_type: str
+    scope_ref: str = "scope"
+    event_id: uuid.UUID | None = None
+    event_type_id: uuid.UUID | None = None
+    direction: str = "drop"
+    actual_count: float = 0.0
+    expected_count: float = 0.0
+    scan_config_id: uuid.UUID | None = None
+    bucket: datetime = _CANDIDATE_BUCKET
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+
+
+def _build_rule(*, filters: list[AlertRuleFilter] | None = None, **overrides: object) -> AlertRule:
+    defaults: dict[str, object] = {
+        "id": uuid.uuid4(),
+        "destination_id": uuid.uuid4(),
+        "name": "Rule",
+        "enabled": True,
+        "scan_config_id": None,
+        "include_project_total": True,
+        "include_event_types": True,
+        "include_events": True,
+        "include_schema_drifts": False,
+        "include_distribution_drifts": False,
+        "include_variable_value_drifts": False,
+        "include_release_regressions": False,
+        "include_metrics": False,
+        "notify_on_spike": True,
+        "notify_on_drop": True,
+        "min_percent_delta": 0.0,
+        "min_absolute_delta": 0.0,
+        "min_expected_count": 0.0,
+        "cooldown_minutes": 60,
+        "message_template": None,
+        "items_template": None,
+        "message_format": "plain",
+    }
+    defaults.update(overrides)
+    rule = AlertRule(**defaults)
+    rule.filters = filters or []
+    return rule
+
+
+def _event_type_filter(operator: str, *values: uuid.UUID) -> AlertRuleFilter:
+    return AlertRuleFilter(
+        id=uuid.uuid4(),
+        rule_id=uuid.uuid4(),
+        field="event_type",
+        operator=operator,
+        values=[str(value) for value in values],
+        position=0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# tripl-0zpq.102 — the alert layer's half of the signed gate
+# ---------------------------------------------------------------------------
+
+
+def _metric_candidate(*, expected: float, actual: float) -> _Candidate:
+    return _Candidate(
+        scope_type=SCOPE_METRIC,
+        scope_ref=str(uuid.uuid4()),
+        direction="drop",
+        actual_count=actual,
+        expected_count=expected,
+    )
+
+
+def test_metric_rule_matches_a_negative_expectation() -> None:
+    """``min_expected_count`` is a floor on volume, and volume has no sign.
+
+    ``AlertRule.min_expected_count`` is ``ge=0`` by schema, so comparing a
+    signed expectation against it dropped every negative-level metric anomaly
+    even after the detector had emitted one.
+    """
+    rule = _build_rule(include_metrics=True, min_expected_count=50.0, min_percent_delta=100.0)
+
+    assert rule_matches_anomaly(rule, _metric_candidate(expected=-100.0, actual=-300.0)) is True
+
+
+def test_metric_rule_still_applies_the_percent_gate_to_a_negative_expectation() -> None:
+    """Closing the floor must not open the percent gate.
+
+    A 1% move against a -100 baseline has to fail a 100% threshold. Left in the
+    ``expected_count > 0`` branch it would have fallen through to the
+    "no baseline" case and matched regardless.
+    """
+    rule = _build_rule(include_metrics=True, min_expected_count=50.0, min_percent_delta=100.0)
+
+    assert rule_matches_anomaly(rule, _metric_candidate(expected=-100.0, actual=-101.0)) is False
+
+
+def test_metric_rule_keeps_matching_a_positive_expectation() -> None:
+    """No-regression anchor: the ordinary positive case is untouched."""
+    rule = _build_rule(include_metrics=True, min_expected_count=50.0, min_percent_delta=100.0)
+
+    assert rule_matches_anomaly(rule, _metric_candidate(expected=100.0, actual=300.0)) is True
+    assert rule_matches_anomaly(rule, _metric_candidate(expected=100.0, actual=101.0)) is False
+    assert rule_matches_anomaly(rule, _metric_candidate(expected=10.0, actual=300.0)) is False
+
+
+# ---------------------------------------------------------------------------
+# tripl-0zpq.7 — event_type filters on event-anchored signals
+# ---------------------------------------------------------------------------
+
+_TYPE_A = uuid.uuid4()
+_TYPE_B = uuid.uuid4()
+_EVENT_ID = uuid.uuid4()
+
+
+def _event_anchored_candidate(scope_type: str) -> _Candidate:
+    """An event-anchored candidate exactly as its producer writes it.
+
+    Event-scope anomalies, variable-value drifts and event-scope release
+    regressions all carry a real ``event_id`` and a NULL ``event_type_id``.
+    """
+    return _Candidate(
+        scope_type=scope_type,
+        scope_ref=str(_EVENT_ID),
+        event_id=_EVENT_ID,
+        event_type_id=None,
+        direction="drop",
+        actual_count=1.0,
+        expected_count=10.0,
+    )
+
+
+_EVENT_ANCHORED_SCOPES = [
+    (SCOPE_EVENT, {"include_events": True}),
+    (SCOPE_VARIABLE_VALUE_DRIFT, {"include_variable_value_drifts": True}),
+    (SCOPE_RELEASE_REGRESSION, {"include_release_regressions": True}),
+]
+
+
+@pytest.mark.parametrize(("scope_type", "scope_toggle"), _EVENT_ANCHORED_SCOPES)
+def test_event_type_filter_excludes_a_mismatched_event_anchored_signal(
+    scope_type: str,
+    scope_toggle: dict[str, object],
+) -> None:
+    """The filed defect: an ``in {A}`` filter admitted a type-B signal.
+
+    The candidate's own ``event_type_id`` is NULL by design, and the matcher
+    read that as "this signal carries no such field, pass it through" — so the
+    filter was silently a no-op for every event-anchored family at once.
+    """
+    rule = _build_rule(filters=[_event_type_filter("in", _TYPE_A)], **scope_toggle)
+    candidate = _event_anchored_candidate(scope_type)
+
+    assert (
+        rule_matches_anomaly(rule, candidate, event_type_by_event_id={_EVENT_ID: _TYPE_B}) is False
+    )
+
+
+@pytest.mark.parametrize(("scope_type", "scope_toggle"), _EVENT_ANCHORED_SCOPES)
+def test_event_type_filter_excludes_an_explicitly_excluded_type(
+    scope_type: str,
+    scope_toggle: dict[str, object],
+) -> None:
+    """The mirror half: ``not_in {B}`` admitted the very signal it excluded."""
+    rule = _build_rule(filters=[_event_type_filter("not_in", _TYPE_B)], **scope_toggle)
+    candidate = _event_anchored_candidate(scope_type)
+
+    assert (
+        rule_matches_anomaly(rule, candidate, event_type_by_event_id={_EVENT_ID: _TYPE_B}) is False
+    )
+
+
+@pytest.mark.parametrize(("scope_type", "scope_toggle"), _EVENT_ANCHORED_SCOPES)
+def test_event_type_filter_admits_a_matching_event_anchored_signal(
+    scope_type: str,
+    scope_toggle: dict[str, object],
+) -> None:
+    """Positive control: the filter must still admit what it names."""
+    rule = _build_rule(filters=[_event_type_filter("in", _TYPE_B)], **scope_toggle)
+    candidate = _event_anchored_candidate(scope_type)
+
+    assert (
+        rule_matches_anomaly(rule, candidate, event_type_by_event_id={_EVENT_ID: _TYPE_B}) is True
+    )
+
+
+def test_event_type_filter_still_passes_a_genuinely_event_less_rollup() -> None:
+    """The passthrough stays: a project-total rollup carries no event at all.
+
+    Only a signal that is ANCHORED to an event gains a resolvable type. The
+    ``actual is None`` passthrough is still the right answer for the rollups and
+    for catalog metrics, and the docs promise it.
+    """
+    rule = _build_rule(filters=[_event_type_filter("in", _TYPE_A)])
+    rollup = _Candidate(
+        scope_type=SCOPE_PROJECT_TOTAL,
+        scope_ref=str(uuid.uuid4()),
+        direction="drop",
+        actual_count=1.0,
+        expected_count=10.0,
+    )
+
+    assert rule_matches_anomaly(rule, rollup, event_type_by_event_id={_EVENT_ID: _TYPE_B}) is True
+
+
+def _seed_event_scope_alerting(
+    session: Session,
+    *,
+    filtered_type: str,
+) -> tuple[ScanConfig, EventType, EventType]:
+    """A project whose only live signal is one event-scope anomaly on type B.
+
+    ``filtered_type`` picks which type the rule's ``event_type`` filter names:
+    ``"a"`` is the type the event does NOT have, ``"b"`` the one it does.
+    """
+    config = _seed_project(session)
+    type_a = EventType(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        name="checkout",
+        display_name="Checkout",
+        description="",
+    )
+    type_b = EventType(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        name="session",
+        display_name="Session",
+        description="",
+    )
+    session.add_all([type_a, type_b])
+    session.commit()
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        event_type_id=type_b.id,
+        name="session_start",
+        description="",
+    )
+    destination = AlertDestination(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        type="slack",
+        name="Main Slack",
+        enabled=True,
+        webhook_url_encrypted="secret",
+        delivery_schedule_cron=None,
+    )
+    rule = AlertRule(
+        id=uuid.uuid4(),
+        destination_id=destination.id,
+        name="Events only",
+        enabled=True,
+        include_project_total=False,
+        include_event_types=False,
+        include_events=True,
+        notify_on_spike=True,
+        notify_on_drop=True,
+        min_percent_delta=0,
+        min_absolute_delta=0,
+        min_expected_count=0,
+        cooldown_minutes=1440,
+    )
+    # Wired through the relationships, not by bare foreign keys, so the graph the
+    # dispatch run walks in memory matches what is written.
+    rule.filters = [
+        AlertRuleFilter(
+            id=uuid.uuid4(),
+            rule_id=rule.id,
+            field="event_type",
+            operator="in",
+            values=[str(type_a.id if filtered_type == "a" else type_b.id)],
+            position=0,
+        )
+    ]
+    destination.rules = [rule]
+    bucket = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(
+        hours=2
+    )
+    # Dispatch only treats a scope as live while the scan has metrics for it.
+    session.add_all([event, destination, rule])
+    session.add(
+        EventMetric(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            event_id=event.id,
+            event_type_id=type_b.id,
+            bucket=bucket,
+            count=200,
+        )
+    )
+    session.add(
+        MetricAnomaly(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            scope_type=SCOPE_EVENT,
+            scope_ref=str(event.id),
+            event_id=event.id,
+            # The producer's NULL, which is the whole defect.
+            event_type_id=None,
+            bucket=bucket,
+            direction="spike",
+            actual_count=200.0,
+            expected_count=20.0,
+            stddev=1.0,
+            z_score=10.0,
+        )
+    )
+    session.commit()
+    return config, type_a, type_b
+
+
+def test_dispatch_drops_an_event_signal_whose_type_the_filter_excludes(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Live dispatch: the rule filters on type A, the event is type B.
+
+    Before the fix one delivery was minted for it, because the candidate's NULL
+    ``event_type_id`` made the filter inert.
+    """
+    with sync_session_factory() as session:
+        config, _type_a, _type_b = _seed_event_scope_alerting(session, filtered_type="a")
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+        assert delivery_ids == []
+        assert session.execute(select(AlertDelivery)).scalars().all() == []
+        assert session.execute(select(AlertDeliveryItem)).scalars().all() == []
+
+
+def test_dispatch_keeps_an_event_signal_whose_type_the_filter_names(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Positive control in the same harness: filtering on type B still delivers."""
+    with sync_session_factory() as session:
+        config, _type_a, _type_b = _seed_event_scope_alerting(session, filtered_type="b")
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+        assert len(delivery_ids) == 1
+        items = session.execute(select(AlertDeliveryItem)).scalars().all()
+        assert [item.scope_type for item in items] == [SCOPE_EVENT]
+
+
+async def _simulate_event_type_filter(
+    client: AsyncClient, *, filtered_type: str
+) -> dict[str, object]:
+    """Seed a project with one event-scope anomaly and replay a filtered rule."""
+    slug = f"a2-sim-{filtered_type}"
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": f"A2 Sim {filtered_type}", "slug": slug, "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    now = datetime.now(UTC)
+    type_a_id = uuid.uuid4()
+    type_b_id = uuid.uuid4()
+    async with TestSessionLocal() as session, session.begin():
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"ds-{filtered_type}",
+            db_type="clickhouse",
+            host="h",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        session.add(data_source)
+        await session.flush()
+        scan = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name=f"sc-{filtered_type}",
+            base_query="SELECT 1",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        type_a = EventType(
+            id=type_a_id,
+            project_id=project_id,
+            name="checkout",
+            display_name="Checkout",
+            description="",
+        )
+        type_b = EventType(
+            id=type_b_id,
+            project_id=project_id,
+            name="session",
+            display_name="Session",
+            description="",
+        )
+        session.add_all([scan, type_a, type_b])
+        await session.flush()
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            event_type_id=type_b_id,
+            name="session_start",
+            description="",
+        )
+        session.add(event)
+        await session.flush()
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=scan.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(event.id),
+                event_id=event.id,
+                event_type_id=None,
+                bucket=now - timedelta(days=1),
+                actual_count=200.0,
+                expected_count=20.0,
+                stddev=1.0,
+                z_score=10.0,
+                direction="spike",
+            )
+        )
+
+    destination_resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Sim Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/a2sim",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    filtered_id = type_a_id if filtered_type == "a" else type_b_id
+    rule_resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules",
+        json={
+            "name": "Events only",
+            "enabled": True,
+            "include_project_total": False,
+            "include_event_types": False,
+            "include_events": True,
+            "notify_on_spike": True,
+            "notify_on_drop": True,
+            "min_percent_delta": 0,
+            "min_absolute_delta": 0,
+            "min_expected_count": 0,
+            "cooldown_minutes": 60,
+            "filters": [
+                {"field": "event_type", "operator": "in", "values": [str(filtered_id)]},
+            ],
+        },
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules/{rule_id}/simulate"
+        "?days=7"
+    )
+    assert resp.status_code == 200
+    return resp.json()
+
+
+async def test_simulator_applies_the_event_type_filter_like_live_dispatch(
+    client: AsyncClient,
+) -> None:
+    """The replay and the pipeline must answer the same question.
+
+    ``alerting_matching`` exists so the in-UI simulator cannot drift from live
+    dispatch; a fix applied only in the worker would have re-introduced exactly
+    that drift.
+    """
+    excluded = await _simulate_event_type_filter(client, filtered_type="a")
+    assert excluded["anomalies_considered"] == 1
+    assert excluded["matched_before_cooldown"] == 0
+    assert excluded["firings"] == []
+
+    included = await _simulate_event_type_filter(client, filtered_type="b")
+    assert included["anomalies_considered"] == 1
+    assert included["matched_before_cooldown"] == 1
+    assert [firing["scope_type"] for firing in included["firings"]] == [SCOPE_EVENT]

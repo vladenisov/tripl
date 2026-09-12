@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from tripl.core.bucketing import EPOCH, WEEK_ORIGIN
 from tripl.models.domain_enums import MetricScopeType
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.services import monitoring_utils
@@ -25,6 +26,7 @@ __all__ = [
     "RECENT_SIGNAL_WINDOW",
     "SCOPE_SCHEMA_DRIFT",
     "STALE_ACTIVE_SCAN_JOB_TIMEOUT",
+    "TERMINAL_SCAN_JOB_STATUSES",
     "_build_adapter",
     "_ceil_to_interval",
     "_fail_stale_active_scan_job",
@@ -42,6 +44,18 @@ logger = logging.getLogger(__name__)
 ACTIVE_SCAN_JOB_STATUSES = (
     ScanJobStatus.pending.value,
     ScanJobStatus.running.value,
+)
+# Statuses from which a job never runs again. ``running`` is deliberately NOT
+# here: with ``task_acks_late`` a redelivered message legitimately re-enters its
+# OWN running job and resumes from the chunks its ``result_summary`` records
+# (see ``collect_metrics``). Terminal means somebody else already closed the row
+# — the user cancelled it, the stale reaper stamped it failed, or its completed
+# ack was lost — and re-running it would redo the window and, worse, overwrite
+# that verdict.
+TERMINAL_SCAN_JOB_STATUSES = (
+    ScanJobStatus.completed.value,
+    ScanJobStatus.failed.value,
+    ScanJobStatus.cancelled.value,
 )
 # Must exceed the default Celery hard ``task_time_limit`` (60 min, see
 # celery_app.py). Metrics collection has a longer per-task override for replay,
@@ -65,15 +79,31 @@ MAX_BREAKDOWN_VALUE_LENGTH = 500
 SCOPE_SCHEMA_DRIFT = MetricScopeType.schema.value
 
 
+#: A week, as ``get_interval("1w").delta``. Only the weekly grid has an origin of
+#: its own, so this is the test for "is this the week interval" without needing
+#: the interval code here — the callers only ever have the delta.
+_WEEK = timedelta(weeks=1)
+
+
 def _floor_to_interval(dt: datetime, delta: timedelta) -> datetime:
-    """Floor a datetime to the nearest interval boundary."""
-    epoch = datetime(2000, 1, 1, tzinfo=UTC)
+    """Floor a datetime to the start of its bucket, on the contract's grid.
+
+    MUST agree with :func:`tripl.core.bucketing.floor_to_bucket` for every
+    interval code: these bounds are the window the warehouse's own ``GROUP BY``
+    is evaluated over, so a bound off the bucket grid splits a bucket across two
+    chunks and lets an incomplete bucket be written as complete. Weeks therefore
+    bin from ``WEEK_ORIGIN`` (Monday) like every adapter does; everything else
+    bins from ``EPOCH``. The anchor this replaces was 2000-01-01, a *Saturday*,
+    so weekly windows opened and closed five days off the buckets they covered.
+
+    Kept on a ``(dt, delta)`` signature rather than an interval code because
+    ``_resolve_collection_window`` lives where it does precisely so tests can
+    monkey-patch this name; the delta is all its callers hold.
+    """
+    origin = WEEK_ORIGIN if delta % _WEEK == timedelta(0) else EPOCH
     if dt.tzinfo is None:
-        epoch = epoch.replace(tzinfo=None)
-    total_seconds = delta.total_seconds()
-    elapsed = (dt - epoch).total_seconds()
-    floored = int(elapsed // total_seconds) * total_seconds
-    return epoch + timedelta(seconds=floored)
+        origin = origin.replace(tzinfo=None)
+    return origin + ((dt - origin) // delta) * delta
 
 
 def _ceil_to_interval(dt: datetime, delta: timedelta) -> datetime:

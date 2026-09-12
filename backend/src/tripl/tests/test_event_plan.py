@@ -382,7 +382,7 @@ def _payload_analysis() -> BreakdownAnalysis:
     """One JSON column whose two paths split the way the rule needs them to.
 
     ``payload.action`` is a passthrough — the scan's ``json_value_paths`` name it,
-    so the row carries its VALUE and ``_raw_values_from_row`` offers it to a group
+    so the row carries its VALUE and ``raw_values_from_row`` offers it to a group
     rule under its dotted name. That is the only kind of path a dotted condition
     can ever be matched against. ``payload.screen`` is not named, so it becomes a
     variable and ``build_json_value`` writes its ``${payload.screen}`` token into

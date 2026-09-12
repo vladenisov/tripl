@@ -15,7 +15,10 @@ direction that DOES arise is the opposite one, and it is not dead code:
 
 A metric keeps every ``MetricAnomaly`` row it ever had when it leaves ``active``.
 Nothing purges them. ``detect._purge_project_metric_anomalies`` runs only when
-PROJECT-level detection is switched off; ``detect._age_out_config_anomalies``
+the project MASTER switch ``anomaly_detection_enabled`` is off — unticking the
+**Metrics** scope box runs ``detect._purge_disabled_metric_scope`` instead,
+which clears only the rows inside each metric's own re-evaluation window and
+leaves older ones on the chart as history; ``detect._age_out_config_anomalies``
 matches on ``scan_config_id`` and metric-scope rows carry NULL there;
 ``metric_definition_service._clear_collected_metric_data`` fires on a DEFINITION
 change, not a status change; and the catalog's bulk archive/restore issues a bare

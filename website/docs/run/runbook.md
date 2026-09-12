@@ -597,3 +597,50 @@ proves nothing. Use a pair that actually straddles the split:
 
 Both spellings of a pair should return the same entities. Before this release one
 of the two returned nothing at all.
+
+### The bucket-alignment release: weekly scans re-phase to Monday
+
+:::warning Weekly (`1w`) scans only — nothing changes for `15m`, `1h`, `6h` or `1d`
+The warehouses always grouped weeks from Monday, but the worker measured the
+**window** it queried from a 2000-01-01 anchor, which is a *Saturday*. The two
+grids did not line up, and only weeks are affected — every shorter interval
+divides a day evenly, so its window boundaries landed on bucket boundaries from
+either anchor. This release measures the window from the same Monday origin the
+buckets use, so a weekly window now opens and closes on a Monday.
+
+**What to expect after the deploy, without doing anything.**
+
+- **One re-phasing gap.** The first weekly collection waits for the next Monday
+  boundary instead of the next Saturday one, so it lands about **two days later**
+  than the old cadence implied. After that it is weekly again, on Mondays. (A
+  weekly scan that has stored nothing yet becomes due at the next Monday instead,
+  which can be sooner.)
+- **The newest weekly point stops reading low.** A run used to end on a Saturday,
+  so the most recent weekly point it wrote covered Monday through Friday — five
+  days of seven — and was only completed by the following week's run. A run now
+  ends on a Monday, so every weekly point it writes covers its whole week. The
+  first post-deploy run re-collects roughly the last three weekly points and
+  fills in the partial one; expect that bar to step **up**, which is the
+  correction, not a traffic spike.
+- **A weekly scan that sets Replay chunk size needs a replay.** Chunk boundaries
+  were on the same misaligned grid, and a chunk replaces the points inside its
+  own window, so each weekly point kept only the part of the week that fell in
+  the last chunk touching it. Points written that way are understated and the
+  scheduled run above only reaches the newest few. Fill the rest with **Run a
+  one-off replay** over the period you care about — chunking is Monday-aligned
+  now, so the replay writes whole weeks.
+- **Signals on the corrected points.** The detector scores each run against the
+  points in storage at the time, so a corrected weekly point can read as a jump
+  against uncorrected history behind it. Replaying that history removes the
+  cause.
+:::
+
+:::note The replay API refuses a period ending "now"
+In the same release, `POST /projects/{slug}/scans/{scan_id}/metrics/replay`
+answers **`400`** when `time_to` falls inside the interval that is still filling.
+It previously answered `201` and then produced a failed run. The browser dialog
+already seeds a period that ends on the last complete bucket, so this only
+affects a non-UI caller that posts a window ending at the current instant: floor
+that end to the scan's own interval. See
+[Replaying Metrics](../integrate/agent-api-guide.md#replaying-metrics).
+:::

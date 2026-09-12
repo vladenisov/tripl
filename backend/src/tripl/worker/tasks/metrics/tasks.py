@@ -32,6 +32,7 @@ from tripl.core.analyzers.cardinality import (
     analyze_cardinality_grouped,
 )
 from tripl.core.analyzers.event_generator import generate_events
+from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import get_interval
 from tripl.models.data_source import DataSource
 from tripl.models.event_metric import EventMetric
@@ -49,9 +50,10 @@ from tripl.services import app_settings_service
 from tripl.worker.celery_app import celery_app
 from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
-from tripl.worker.tasks._errors import user_facing_error
+from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.tasks.alerts import send_alert_delivery
 from tripl.worker.tasks.metrics._helpers import (
+    TERMINAL_SCAN_JOB_STATUSES,
     _build_adapter,
     _ceil_to_interval,
     _floor_to_interval,
@@ -60,11 +62,13 @@ from tripl.worker.tasks.metrics._helpers import (
 )
 from tripl.worker.tasks.metrics.catalog_sync import sync_catalog
 from tripl.worker.tasks.metrics.chunk_processing import process_chunk
+from tripl.worker.tasks.metrics.coverage import covered_buckets_from_scan_jobs
 from tripl.worker.tasks.metrics.detect import (
     ANOMALY_TRAILING_REEVAL_BUCKETS,
     NO_INGESTION_SETTLING,
     _recalculate_metric_anomalies,
     _recalculate_metric_breakdown_anomalies,
+    coverage_history_start,
 )
 from tripl.worker.tasks.metrics.dispatch import _prepare_alert_deliveries
 from tripl.worker.tasks.metrics.generation import (
@@ -94,6 +98,25 @@ logger = logging.getLogger(__name__)
 # summary is still identifiable as a scheduled collection.
 METRICS_COLLECTION_MODE = "metrics_collection"
 METRICS_REPLAY_MODE = "metrics_replay"
+
+# How far back to walk a config's job history when reading the collection
+# watermark. ``scan_jobs`` is shared with manual scans, replays, event-group
+# applies and the demo's hourly runtime tick, so this bounds ROWS, not
+# dispatcher jobs; 40 covers several intervals of that traffic and keeps the
+# read a cheap indexed one. A window holding no dispatcher job yields no
+# watermark, which only makes the resume point EARLIER — the safe direction.
+_RECENT_JOB_SCAN_LIMIT = 40
+
+# How far back a scheduled collection reaches when the config has never been
+# collected: enough history for the detector to have a baseline on the first run.
+SCHEDULED_BACKFILL_BUCKETS = 30
+
+# How much of the already-collected grid a scheduled run re-reads. Warehouses
+# keep delivering rows for a bucket after it closes (see
+# ``ANOMALY_INGESTION_SETTLING`` below), so the newest stored bucket is
+# re-collected rather than trusted. Two buckets back from the exclusive progress
+# end is exactly the historical ``last_bucket - delta``.
+SCHEDULED_RESUME_OVERLAP_BUCKETS = 2
 
 COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS = 24 * 60 * 60
 COLLECT_METRICS_TIME_LIMIT_SECONDS = 25 * 60 * 60
@@ -138,71 +161,97 @@ def _ingestion_settling_delay(session: Session, project_id: uuid.UUID) -> timede
     return timedelta(minutes=minutes)
 
 
-def _covered_buckets_from_scan_jobs(
-    session: Session,
-    *,
-    scan_config_id: uuid.UUID,
-    delta: timedelta,
-    current_window: tuple[datetime, datetime],
-) -> set[datetime]:
-    """Buckets a successful collection actually covered, on the interval grid.
+# Re-exported under its historical private name so the module attribute callers
+# (and tests) reach through ``metrics.tasks`` keeps resolving after the helper
+# moved to its own leaf module; the detector now calls it too, per catalog
+# metric, which is what made a shared module worth having.
+_covered_buckets_from_scan_jobs = covered_buckets_from_scan_jobs
 
-    A collection gap (an interval that a failed/never-run job left uncollected)
-    is otherwise zero-filled by the detector and masquerades as a 'drop'
-    anomaly. We union the ``[time_from, time_to)`` windows of every COMPLETED
-    scan job (recorded in ``result_summary``) with the window this run just
-    wrote, and hand the enumerated set to ``detect_anomalies`` as
-    ``covered_buckets`` so a MISSING bucket is only zero-filled when it fell
-    inside real coverage; missing-and-uncovered buckets are excluded instead of
-    read as zeros.
 
-    Every bucket that already carries stored data is unioned in as well: data
-    only exists because a collection produced it, so a present observation is by
-    definition covered. This keeps the baseline intact even for buckets whose
-    originating job window is no longer recorded, and never marks a genuine gap
-    (which has no row) as covered.
+def _is_dispatcher_collection_job(result_summary: object) -> bool:
+    """Whether a ScanJob is one the dispatcher created for metrics collection.
+
+    Positive identification, not exclusion: ``scan_jobs`` is keyed on
+    ``scan_config_id`` and shared with manual catalog scans (``run_scan``),
+    metrics replays, event-group applies and the demo runtime tick. Only the
+    ``mode`` stamp distinguishes them, and the dispatcher writes it at job
+    creation so a failure that never reached its summary still carries it.
+
+    The shared identity test for all three readers of a config's job history:
+    the collection watermark below, the demo cooldown and the failure streak
+    (both in ``schedule``). Rows written before this stamp existed have no
+    ``mode`` and simply do not count — which can only make a config look due
+    earlier or reach further back, never the reverse.
     """
-    windows: list[tuple[datetime, datetime]] = [current_window]
+    return isinstance(result_summary, dict) and result_summary.get("mode") == (
+        METRICS_COLLECTION_MODE
+    )
+
+
+def _last_collected_window_to(session: Session, scan_config_id: uuid.UUID) -> datetime | None:
+    """Exclusive end of the source grid the newest COMPLETED collection covered.
+
+    The catalog-metric path stores this as a column
+    (``MetricDefinition.last_collection_window_to``); a scan config has no such
+    column, so the same fact is read back from the window the finished job
+    recorded in ``result_summary["time_to"]`` — which a scheduled collection sets
+    to ``floor(now)``, the grid boundary it collected up to.
+
+    Without it, a collection that COMPLETES but writes no ``EventMetric`` row (a
+    fresh config whose warehouse window is still empty, or a stream that has gone
+    silent) leaves ``max(EventMetric.bucket)`` untouched and is due again on the
+    very next 300 s tick — the same unbounded loop the failure backoff fixes,
+    minus the failures that would trigger it (tripl-wopq).
+
+    Only ``metrics_collection`` jobs count. A replay carries its own explicit
+    historical window and must not be read as progress on the live grid; a demo
+    runtime tick and a catalog scan never collected metrics at all. Manual
+    collections DO count and should: they resolve the same window and cover the
+    same grid, unlike the failure streak, which is about blame rather than
+    coverage. A row with no parseable ``time_to`` (written before the stamp
+    existed) simply does not count, which can only make a config look due
+    earlier — the safe direction.
+
+    Lives here rather than in ``schedule`` because the collection worker reads it
+    too, and ``schedule`` already imports this module (the reverse would cycle).
+    """
     summaries = session.execute(
-        select(ScanJob.result_summary).where(
+        select(ScanJob.result_summary)
+        .where(
             ScanJob.scan_config_id == scan_config_id,
             ScanJob.status == ScanJobStatus.completed.value,
         )
+        .order_by(ScanJob.created_at.desc())
+        .limit(_RECENT_JOB_SCAN_LIMIT)
     ).scalars()
     for summary in summaries:
-        if not isinstance(summary, dict):
+        if summary is None or not _is_dispatcher_collection_job(summary):
             continue
-        raw_from = summary.get("time_from")
         raw_to = summary.get("time_to")
-        if not isinstance(raw_from, str) or not isinstance(raw_to, str):
+        if not isinstance(raw_to, str):
             continue
         try:
-            window_from = _parse_task_datetime(raw_from)
-            window_to = _parse_task_datetime(raw_to)
-        # result_summary is free-form JSON, so a recorded bound can be malformed
-        # (ValueError) or not a string at all (TypeError).
-        except ValueError, TypeError:
+            return _parse_task_datetime(raw_to)
+        except ValueError:
             continue
-        if window_from < window_to:
-            windows.append((window_from, window_to))
+    return None
 
-    covered: set[datetime] = set()
-    for window_from, window_to in windows:
-        bucket = window_from
-        while bucket < window_to:
-            covered.add(bucket)
-            bucket += delta
 
-    present_buckets = session.execute(
-        select(EventMetric.bucket)
-        .where(
-            EventMetric.scan_config_id == scan_config_id,
-            EventMetric.bucket < current_window[1],
-        )
-        .distinct()
-    ).scalars()
-    covered.update(bucket for bucket in present_buckets if bucket is not None)
-    return covered
+def _closed_by_someone_else(session: Session, job: ScanJob) -> str | None:
+    """The terminal status another writer stamped on ``job``, or ``None``.
+
+    Re-reads the row's status rather than trusting the instance: the worker's
+    session does not expire on commit, so the in-memory ``running`` it wrote at
+    start-up survives a stale-job reap or a user cancel that landed in another
+    session meanwhile. Deliberately reads only the status column and assigns
+    nothing back — the closing writer owns ``status``, ``completed_at`` and
+    ``error_message``, and a re-assignment here would flush this run's stale
+    copies over theirs.
+    """
+    current = session.execute(select(ScanJob.status).where(ScanJob.id == job.id)).scalar()
+    if current is not None and current in TERMINAL_SCAN_JOB_STATUSES:
+        return str(current)
+    return None
 
 
 def main_plan_event_types_by_name(session: Session, project_id: uuid.UUID) -> dict[str, EventType]:
@@ -357,11 +406,25 @@ def _resolve_collection_window(
         effective_to = _ceil_to_interval(requested_to, delta)
         latest_complete_boundary = _floor_to_interval(now, delta)
         if effective_to > latest_complete_boundary:
-            msg = "time_to must not include the current incomplete interval"
-            raise ValueError(msg)
+            # ``ScanError``, not ``ValueError``: this is the one refusal in here
+            # a user can actually provoke (the Replay dialog's own defaults used
+            # to land on it), and a bare ValueError is sanitised down to "Scan
+            # failed due to an internal error." on the run report. The API
+            # refuses the same window before creating a job; this stays as the
+            # worker's own guard for a window that was legal at submit time.
+            msg = (
+                f"the replay end {requested_to:%Y-%m-%d %H:%M} UTC falls inside the current "
+                f"{config.interval} interval, which is still filling. Choose an end at or "
+                f"before {latest_complete_boundary:%Y-%m-%d %H:%M} UTC."
+            )
+            raise ScanError(msg)
         if effective_from >= effective_to:
-            msg = "Replay window does not include a complete interval"
-            raise ValueError(msg)
+            # Unreachable in production: ``requested_from < requested_to`` is
+            # checked above and ``floor(x) <= x <= ceil(x)``, so the floored start
+            # is always below the ceiled end. Kept as a guard, and curated for the
+            # same reason as the branch above.
+            msg = "the replay period does not contain a single complete interval."
+            raise ScanError(msg)
         return effective_from, effective_to, True
 
     last_bucket = session.execute(
@@ -369,7 +432,24 @@ def _resolve_collection_window(
             EventMetric.scan_config_id == config.id,
         )
     ).scalar()
-    time_from = last_bucket - delta if last_bucket is not None else time_to - delta * 30
+    # Resume from where collection actually GOT TO, which is the later of the
+    # newest stored bucket and the window a completed run recorded — the same
+    # ``collection_progress_to`` contract the dispatcher's due-ness check and the
+    # catalog-metric collector already read. Reading stored buckets alone let a
+    # source that had gone silent (query succeeds, returns nothing, stores
+    # nothing) widen its window by one interval per tick without bound, while
+    # due-ness — which does read the watermark — kept re-dispatching it.
+    progress_to = collection_progress_to(
+        last_bucket=last_bucket,
+        watermark=_last_collected_window_to(session, config.id),
+        delta=delta,
+    )
+    if progress_to is None:
+        time_from = time_to - delta * SCHEDULED_BACKFILL_BUCKETS
+    else:
+        # ``min`` so a future-dated bucket (clock skew on the source) cannot push
+        # the start past the end and invert the window.
+        time_from = min(progress_to, time_to) - delta * SCHEDULED_RESUME_OVERLAP_BUCKETS
     return time_from, time_to, False
 
 
@@ -419,11 +499,31 @@ def collect_metrics(
                 raise ValueError(msg)
 
             previous_job_status = job.status
-            # The job may have been cancelled by the user while it sat queued;
-            # don't flip it back to running or do any work in that case.
-            if job.status == ScanJobStatus.cancelled.value:
-                logger.info("collect_metrics %s was cancelled before start; skipping", job_id)
-                return {"cancelled": True, "scan_config_id": scan_config_id}
+            # A job can reach a TERMINAL state while its message sits queued: the
+            # user cancelled it, the dispatcher's stale reaper stamped it failed
+            # and dispatched a replacement, or its completed ack was lost under
+            # ``task_acks_late``. Running it again would redo the same
+            # delete+upsert window and — worse — flip the row back to completed,
+            # erasing a recorded failure from the dispatcher's backoff streak.
+            #
+            # ``running`` is NOT terminal: both dispatch sites create the row as
+            # ``pending``, so re-entering a running job can only be an acks_late
+            # redelivery of this very message, which legitimately resumes from
+            # the chunks ``result_summary`` records (see the replay resume below).
+            if job.status in TERMINAL_SCAN_JOB_STATUSES:
+                if job.status == ScanJobStatus.cancelled.value:
+                    logger.info("collect_metrics %s was cancelled before start; skipping", job_id)
+                    return {"cancelled": True, "scan_config_id": scan_config_id}
+                logger.warning(
+                    "collect_metrics %s is already %s before start; skipping",
+                    job_id,
+                    job.status,
+                )
+                return {
+                    "skipped": True,
+                    "job_status": job.status,
+                    "scan_config_id": scan_config_id,
+                }
 
             job.status = ScanJobStatus.running.value
             job.started_at = job.started_at or datetime.now(UTC)
@@ -568,9 +668,10 @@ def collect_metrics(
         # catalog is ALWAYS judged through a window — the task returns early
         # without a ``time_column`` — and when the operator set no
         # ``scan_lookback_hours`` that window is the collection window
-        # (``_resolve_collection_window``: ``last_bucket - delta`` to the newest
-        # complete boundary — three intervals in steady state, more when the
-        # newest buckets were empty, and thirty on a first run). The sweep's
+        # (``_resolve_collection_window``: two intervals back from how far
+        # collection has got, to the newest complete boundary — three intervals
+        # wide in steady state, and thirty on a first run; it no longer widens
+        # without bound when the newest buckets are empty). The sweep's
         # predicate reads the field values this run's catalog pass has just
         # re-planned from that window, and the
         # re-plan is what costs a variable its evidence: ``_upsert_field_values``
@@ -897,14 +998,25 @@ def collect_metrics(
         # The head of that window is additionally held back from EMISSION for the
         # ingestion-settling allowance, so a bucket the warehouse is still filling
         # is scored by a later run instead of read as a drop (tripl-jfm3.7).
-        covered_buckets = _covered_buckets_from_scan_jobs(
+        anomaly_evaluation_start = min(
+            time_from_dt, time_to_dt - delta * ANOMALY_TRAILING_REEVAL_BUCKETS
+        )
+        # Coverage is read only as deep as a pass in this run can consult it.
+        # Unbounded, both reads walked the config's whole lifetime every run
+        # (tripl-0zpq.25) — and a REPLAY's recorded window is multi-year, so even
+        # one row was unbounded.
+        coverage_from = coverage_history_start(
+            session,
+            config,
+            evaluation_start=anomaly_evaluation_start,
+            evaluation_end=time_to_dt,
+        )
+        covered_buckets = covered_buckets_from_scan_jobs(
             session,
             scan_config_id=config.id,
             delta=delta,
+            history_from=coverage_from,
             current_window=(time_from_dt, time_to_dt),
-        )
-        anomaly_evaluation_start = min(
-            time_from_dt, time_to_dt - delta * ANOMALY_TRAILING_REEVAL_BUCKETS
         )
         # A replay states its own window, so the allowance is not just idle
         # there — it is destructive. ``_replace_scope_anomalies`` deletes all of
@@ -944,12 +1056,11 @@ def collect_metrics(
             covered_buckets=covered_buckets,
             settling_delay=settling_delay,
         )
-        release_regressions_detected = _recalculate_release_regressions(
-            session,
-            config,
-            evaluation_start=time_from_dt,
-            evaluation_end=time_to_dt,
-        )
+        # Deliberately window-free, unlike the two anomaly passes above: a
+        # release verdict describes the CURRENT rollout, so it anchors on the
+        # newest bucket the scan has stored rather than on the slice this run
+        # happened to collect (tripl-0zpq.18).
+        release_regressions_detected = _recalculate_release_regressions(session, config)
         buffered_counts: list[int] = []
         delivery_ids = _prepare_alert_deliveries(
             session,
@@ -1079,9 +1190,24 @@ def collect_metrics(
             result_summary["variables_retired"] = variables_retired
 
         if job:
-            job.status = ScanJobStatus.completed.value
-            job.completed_at = datetime.now(UTC)
             job.result_summary = result_summary
+            closed_status = _closed_by_someone_else(session, job)
+            if closed_status is not None:
+                # Somebody already closed this row — the stale reaper stamped it
+                # failed while the run was still alive, or the user cancelled it
+                # after the last chunk boundary. Their verdict stands: a run that
+                # re-opens it as ``completed`` zeroes the dispatcher's failure
+                # streak and reports a success that the replacement run, not this
+                # one, owns. The summary is still recorded for the run report.
+                logger.warning(
+                    "collect_metrics %s finished but the job is already %s; "
+                    "leaving that status in place",
+                    job.id,
+                    closed_status,
+                )
+            else:
+                job.status = ScanJobStatus.completed.value
+                job.completed_at = datetime.now(UTC)
         session.commit()
         # Fresh anomalies → invalidate project summaries + signals cache so
         # dashboards reflect the new state immediately (TTL would add up to
@@ -1125,9 +1251,20 @@ def collect_metrics(
         if job:
             try:
                 session.rollback()
-                job.status = ScanJobStatus.failed.value
-                job.completed_at = datetime.now(UTC)
-                job.error_message = user_facing_error(exc)
+                closed_status = _closed_by_someone_else(session, job)
+                if closed_status is not None:
+                    # Same rule as the success path: a cancelled or already-reaped
+                    # row keeps the status and message whoever closed it wrote.
+                    logger.warning(
+                        "collect_metrics %s failed but the job is already %s; "
+                        "leaving that status in place",
+                        job.id,
+                        closed_status,
+                    )
+                else:
+                    job.status = ScanJobStatus.failed.value
+                    job.completed_at = datetime.now(UTC)
+                    job.error_message = user_facing_error(exc)
                 session.commit()
                 project = session.get(Project, config.project_id) if config is not None else None
                 if project is not None:

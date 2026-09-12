@@ -23,6 +23,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.worker.tasks.metrics.alert_payload import (
     _build_alert_scope_names,
     _build_delivery_snapshot,
+    _build_event_type_by_event_id,
     _load_enabled_alert_destinations,
 )
 from tripl.worker.tasks.metrics.signals import (
@@ -367,6 +368,12 @@ def _prepare_alert_deliveries(
     # canonical config so cooldown is shared across every config's dispatch run.
     metric_state_config_id = _project_metric_state_config_id(session, config)
     scope_names = _build_alert_scope_names(session, list(active_candidates.values()))
+    # Event-anchored candidates store a NULL event_type_id on purpose; without
+    # this map an ``event_type`` filter is silently inert for every one of them
+    # (tripl-0zpq.7).
+    event_type_by_event_id = _build_event_type_by_event_id(
+        session, list(active_candidates.values())
+    )
     delivery_ids: list[uuid.UUID] = []
     buffered_count = 0
     suppressed_group_ids = _suppressed_correlation_group_ids(
@@ -425,7 +432,9 @@ def _prepare_alert_deliveries(
             matched_anomalies = [
                 candidate
                 for candidate in active_candidates.values()
-                if _rule_matches_anomaly(rule, candidate)
+                if _rule_matches_anomaly(
+                    rule, candidate, event_type_by_event_id=event_type_by_event_id
+                )
             ]
             matched_keys = {
                 (anomaly.scope_type, anomaly.scope_ref) for anomaly in matched_anomalies

@@ -129,6 +129,39 @@ def _build_alert_scope_names(
     return scope_names
 
 
+def _build_event_type_by_event_id(
+    session: Session,
+    anomalies: list[AlertMatchCandidate],
+) -> dict[uuid.UUID, uuid.UUID]:
+    """Event -> event type, for the candidates that carry an event but no type.
+
+    Event-scope anomalies, variable-value drifts and event-scope release
+    regressions are all anchored to a real ``event_id`` and deliberately store
+    ``event_type_id = NULL`` (stamping it would leak them into the event-TYPE
+    series that ``metrics_service`` / ``project_service`` / ``activity_service``
+    select by that column alone). ``alerting_matching.filter_matches_anomaly``
+    resolves the type through this map instead, so an ``event_type`` filter
+    narrows them the same way ``rule_covers_event`` already does for the
+    catalog's Monitor column (tripl-0zpq.7).
+
+    One query per dispatch run, covering all three candidate families at once,
+    and none at all when no such candidate is present.
+    """
+    event_ids = {
+        anomaly.event_id
+        for anomaly in anomalies
+        if anomaly.event_id is not None and anomaly.event_type_id is None
+    }
+    if not event_ids:
+        return {}
+    return {
+        event_id: event_type_id
+        for event_id, event_type_id in session.execute(
+            select(Event.id, Event.event_type_id).where(Event.id.in_(event_ids))
+        ).all()
+    }
+
+
 def _load_enabled_alert_destinations(
     session: Session,
     project_id: uuid.UUID,

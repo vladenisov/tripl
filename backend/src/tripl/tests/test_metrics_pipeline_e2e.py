@@ -383,6 +383,15 @@ class _DistinctUserAdapter:
     def test_connection(self) -> bool:
         return True
 
+    def get_columns(self, base_query: str) -> list[ColumnInfo]:
+        # The columns the source scan's base_query projects: the collector
+        # introspects them to arm the adapter allowlist before it can hand
+        # the distinct-user column to the aggregate.
+        return [
+            ColumnInfo(name="ts", type_name="DateTime"),
+            ColumnInfo(name="user_id", type_name="String"),
+        ]
+
     def get_time_bucketed_aggregate(
         self,
         base_query: str,

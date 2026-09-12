@@ -237,7 +237,9 @@ def _prepare_demo_dispatch(
                 status=ScanJobStatus.completed.value,
                 created_at=now - timedelta(hours=1),
                 completed_at=now - timedelta(hours=1),
-                result_summary={"events_created": 0},
+                # What the dispatcher writes: the positive ``mode`` stamp is what
+                # marks a job as a scheduled collection (tripl-0zpq.24).
+                result_summary={"mode": metrics.METRICS_COLLECTION_MODE},
             )
         )
     if tick_job:
@@ -1488,6 +1490,174 @@ def test_collect_metrics_stores_every_app_version_without_collapse(
         } == expected
 
 
+def test_collect_metrics_never_collects_the_version_column_as_a_generic_breakdown(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An event listing the scan's app_version column takes the version path only.
+
+    The version column already has its own series
+    (``_collect_app_version_breakdown_rows``, the test above). Collecting it a
+    second time as a generic breakdown wrote the SAME (scope, bucket, column,
+    value, is_other) key twice inside one multi-row ON CONFLICT DO UPDATE — a
+    cardinality violation on Postgres — and added a generic
+    ``('app_version', 'Other', True)`` row the version path neither writes nor
+    deletes, which then double-counts in the version series (tripl-0zpq.15).
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+        config.app_version_column = "app_version"
+        config.app_version_keep_releases = 2
+        login_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            status="implemented",
+            # The stored value this fix has to tolerate: saved back when the
+            # event form still offered the column.
+            metric_breakdown_columns=["app_version"],
+        )
+        session.add(login_event)
+        session.commit()
+        config_id = str(config.id)
+        login_event_id = login_event.id
+        event_type_id = config.event_type_id
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.breakdown_calls: list[tuple[list[str], int | None]] = []
+
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+                ColumnInfo(name="app_version", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (
+                ["event_name", "app_version"],
+                [],
+                [
+                    (datetime(2026, 1, 1, 10), "Login", "2.2.0", 10),
+                    (datetime(2026, 1, 1, 10), "Login", "2.1.0", 8),
+                ],
+            )
+
+        def get_time_bucketed_breakdown_counts_multi(
+            self,
+            base_query: str,
+            time_column: str,
+            interval: str,
+            breakdown_columns: list[str],
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            values_limit: int | None = None,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            self.breakdown_calls.append((breakdown_columns, values_limit))
+            return (
+                ["event_name", "app_version"],
+                [],
+                [
+                    (
+                        datetime(2026, 1, 1, 10),
+                        "app_version",
+                        "Other",
+                        True,
+                        "Login",
+                        "1.0.0",
+                        18,
+                    ),
+                ],
+            )
+
+        def close(self) -> None:
+            return None
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11), False),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            persisted_event = session.get(Event, login_event_id)
+            assert persisted_event is not None
+            return GenerationResult(
+                columns_analyzed=2,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={"event_name=Login": persisted_event},
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    result = metrics.collect_metrics.run(config_id)
+
+    # The configured column is refused before any query is built, so the generic
+    # breakdown pass never runs at all -- the "Other" row the fake stands ready
+    # to return is unreachable.
+    assert adapter.breakdown_calls == []
+    assert result["breakdown_event_metrics"] == 2
+    assert result["breakdown_type_metrics"] == 2
+
+    expected = {
+        ("app_version", "2.2.0", False, 10),
+        ("app_version", "2.1.0", False, 8),
+    }
+    with sync_session_factory() as session:
+        event_breakdowns = (
+            session.execute(
+                select(EventMetricBreakdown).where(EventMetricBreakdown.event_id == login_event_id)
+            )
+            .scalars()
+            .all()
+        )
+        # The version series is intact and carries no generic rollup row.
+        assert {
+            (row.breakdown_column, row.breakdown_value, row.is_other, row.count)
+            for row in event_breakdowns
+        } == expected
+        type_breakdowns = (
+            session.execute(
+                select(EventMetricBreakdown).where(
+                    EventMetricBreakdown.event_type_id == event_type_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {
+            (row.breakdown_column, row.breakdown_value, row.is_other, row.count)
+            for row in type_breakdowns
+        } == expected
+
+
 def test_reserved_catalog_columns_includes_version_and_platform() -> None:
     from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
 
@@ -2127,8 +2297,6 @@ def _seed_app_version_breakdowns(
 def test_recalculate_release_regressions_flags_missing_event_idempotently(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
-    eval_start = datetime(2026, 1, 1)
-    eval_end = datetime(2026, 1, 11)
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
         config.app_version_column = "app_version"
@@ -2154,9 +2322,7 @@ def test_recalculate_release_regressions_flags_missing_event_idempotently(
         _seed_app_version_breakdowns(session, config, login_id=login_id, filler_id=filler.id)
         session.commit()
 
-        detected = metrics._recalculate_release_regressions(
-            session, config, evaluation_start=eval_start, evaluation_end=eval_end
-        )
+        detected = metrics._recalculate_release_regressions(session, config)
         session.commit()
         assert detected == 1
         rows = (
@@ -2177,9 +2343,7 @@ def test_recalculate_release_regressions_flags_missing_event_idempotently(
         assert regression.expected_count == 200.0
 
         # Re-run replaces, never accumulates.
-        detected_again = metrics._recalculate_release_regressions(
-            session, config, evaluation_start=eval_start, evaluation_end=eval_end
-        )
+        detected_again = metrics._recalculate_release_regressions(session, config)
         session.commit()
         assert detected_again == 1
         rows_again = (
@@ -2278,12 +2442,7 @@ def test_recalculate_release_regressions_records_a_withheld_verdict(
                 )
         session.commit()
 
-        metrics._recalculate_release_regressions(
-            session,
-            config,
-            evaluation_start=datetime(2026, 1, 1),
-            evaluation_end=datetime(2026, 1, 11),
-        )
+        metrics._recalculate_release_regressions(session, config)
         session.commit()
 
         verdict = (
@@ -2387,12 +2546,7 @@ def test_recalculate_release_regressions_writes_one_verdict_for_both_scopes(
             )
         session.commit()
 
-        metrics._recalculate_release_regressions(
-            session,
-            config,
-            evaluation_start=datetime(2026, 1, 1),
-            evaluation_end=datetime(2026, 1, 11),
-        )
+        metrics._recalculate_release_regressions(session, config)
         session.commit()
 
         verdicts = {
@@ -2473,12 +2627,7 @@ def test_recalculate_release_regressions_skips_prerelease_builds(
                     )
         session.commit()
 
-        detected = metrics._recalculate_release_regressions(
-            session,
-            config,
-            evaluation_start=datetime(2026, 1, 1),
-            evaluation_end=datetime(2026, 1, 11),
-        )
+        detected = metrics._recalculate_release_regressions(session, config)
         session.commit()
 
         assert detected == 0
@@ -2540,12 +2689,7 @@ def test_recalculate_release_regressions_inert_without_version_column(
         )
         session.commit()
 
-        detected = metrics._recalculate_release_regressions(
-            session,
-            config,
-            evaluation_start=datetime(2026, 1, 1),
-            evaluation_end=datetime(2026, 1, 11),
-        )
+        detected = metrics._recalculate_release_regressions(session, config)
         session.commit()
         assert detected == 0
         rows = (
@@ -4264,6 +4408,7 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
             .all()
         )
         assert len(rows) == 3
+        first_detected_at = {row.field_name: row.detected_at for row in rows}
 
         # Re-running the diff/upsert must be idempotent (unique constraint
         # collapses duplicates onto detected_at refresh).
@@ -4274,12 +4419,20 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
             drift_items=drift_items,
         )
         session.commit()
+        # The factory is expire_on_commit=False, so the identity map would hand
+        # back the pre-conflict attribute values without this.
+        session.expire_all()
         rows = (
             session.execute(select(SchemaDrift).where(SchemaDrift.event_type_id == et.id))
             .scalars()
             .all()
         )
         assert len(rows) == 3
+        # What the ON CONFLICT branch actually assigns: the provenance every
+        # consumer filters on survives the re-upsert, and detected_at moves on so
+        # the drift reads as seen again rather than as stale.
+        assert {row.scan_config_id for row in rows} == {config.id}
+        assert all(row.detected_at > first_detected_at[row.field_name] for row in rows)
 
 
 def test_diff_event_type_schema_ignores_columns_this_event_type_never_fills(
@@ -5880,6 +6033,12 @@ def test_replay_enriches_existing_high_context_values(
         )
         session.add_all([fd_event_name, fd_payload])
 
+        # The identity below is an arbitrary placeholder, NOT the shape the
+        # planner mints: a default name carries one segment per COLUMN
+        # (``payload={...}``), never a ``payload.user.id=`` segment per JSON
+        # path. Nothing here depends on it — replay enrichment attributes
+        # samples through the ``${token}`` in the field value below, never
+        # through the event name.
         event = Event(
             id=uuid.uuid4(),
             project_id=config.project_id,
@@ -6038,6 +6197,12 @@ def test_replay_enriches_high_context_values_for_a_shortened_variable_name(
         )
         session.add_all([fd_event_name, fd_payload])
 
+        # The identity below is an arbitrary placeholder, NOT the shape the
+        # planner mints: a default name carries one segment per COLUMN
+        # (``payload={...}``), never a ``payload.user.id=`` segment per JSON
+        # path. Nothing here depends on it — replay enrichment attributes
+        # samples through the ``${token}`` in the field value below, never
+        # through the event name.
         event = Event(
             id=uuid.uuid4(),
             project_id=config.project_id,
@@ -7647,11 +7812,25 @@ def test_covered_buckets_from_scan_jobs_unions_completed_windows(
         )
         session.commit()
 
+        # ``history_from`` is required: it is the oldest bucket the caller's
+        # detector pass can consult, and both reads are over the config's whole
+        # lifetime without it. Both seeded jobs carry a server-defaulted
+        # ``created_at`` of now, far above this horizon.
         covered = metrics._covered_buckets_from_scan_jobs(
             session,
             scan_config_id=config.id,
             delta=delta,
+            history_from=base - timedelta(days=30),
             current_window=(base + delta * 10, base + delta * 11),
+        )
+        # The same config asked about as a FOREIGN one: no window was claimed,
+        # so ``presence_before`` bounds the stored-bucket read on its own.
+        foreign_covered = metrics._covered_buckets_from_scan_jobs(
+            session,
+            scan_config_id=config.id,
+            delta=delta,
+            history_from=base - timedelta(days=30),
+            presence_before=base + delta * 11,
         )
 
     assert base in covered
@@ -7659,6 +7838,8 @@ def test_covered_buckets_from_scan_jobs_unions_completed_windows(
     assert base + delta * 2 in covered
     assert base + delta * 5 not in covered  # failed job window is not coverage
     assert base + delta * 10 in covered  # the current run's window is always covered
+    # No current run to credit, so the bucket it would have written is not covered.
+    assert base + delta * 10 not in foreign_covered
 
 
 def test_recalculate_metric_anomalies_withholds_still_filling_head_of_window(

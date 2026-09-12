@@ -44,6 +44,20 @@ from tripl.models.variable_value_drift import VariableValueDrift
 # caller holding a ``ScanConfig`` should pass ``config.cardinality_threshold``.
 DEFAULT_CARDINALITY_THRESHOLD = 100
 
+# A group merge only ever advances the PROGRESSION axis —
+# draft -> in_review -> ready_for_dev -> implemented -> live. It never puts the
+# surviving event INTO a retired state, and never takes one OUT of one: folding
+# a retired member in is not a statement about the group's own retirement, the
+# way ``_move_superseded_pointers`` argues for the successor pointer.
+#
+# ``event_status_rank`` cannot express that by itself, and must not be made to:
+# it deliberately orders retirement ABOVE ``live`` (live: 4, deprecated: 5,
+# archived: 6) so that a closing implementation ticket cannot drag an already
+# retired event back to ``implemented`` (``worker/tasks/implementation_tickets``).
+# Ranking is right there and wrong here, so this side excludes the retired band
+# rather than reorder the shared table (tripl-0zpq.84).
+_RETIRED_STATUSES = frozenset({_ES.deprecated.value, _ES.archived.value})
+
 
 @dataclass(frozen=True)
 class EventGroupMatch:
@@ -377,7 +391,14 @@ def _create_group_event_from_source(
             source_name=group_name,
             description="Auto-generated event group from data source scan",
             order=order,
-            status=source.status,
+            # The group row is auto-generated under a name the user never
+            # retired, so minting it retired asserts a retirement nobody made —
+            # and, since any matched member can be the one that mints it, makes
+            # the family's outcome depend on which row the loop reaches first.
+            # It starts where every other scan-minted event starts instead.
+            # ``sunset_at`` and ``superseded_by_event_id`` are deliberately not
+            # copied over for the same reason ``_RETIRED_STATUSES`` exists.
+            status=(_ES.in_review.value if source.status in _RETIRED_STATUSES else source.status),
             last_seen_at=source.last_seen_at,
             metric_breakdown_columns=list(source.metric_breakdown_columns or []),
         ),
@@ -416,7 +437,10 @@ def _merge_event_into_group(
         target.last_seen_at = source.last_seen_at
     s_status = _ES(source.status) if source.status in _ES._value2member_map_ else _ES.draft
     t_status = _ES(target.status) if target.status in _ES._value2member_map_ else _ES.draft
-    if s_status != _ES.archived and t_status != _ES.archived:
+    if s_status.value not in _RETIRED_STATUSES and t_status.value not in _RETIRED_STATUSES:
+        # Both sides on the progression axis: the survivor takes the furthest
+        # along. Either side retired: the target's status is left exactly as it
+        # is — see ``_RETIRED_STATUSES`` for why the rank table cannot decide it.
         target.status = s_status if _rank(s_status) > _rank(t_status) else t_status
     target.metric_breakdown_columns = sorted(
         set(target.metric_breakdown_columns or []) | set(source.metric_breakdown_columns or [])

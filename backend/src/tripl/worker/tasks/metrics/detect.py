@@ -29,10 +29,10 @@ from tripl.core.analyzers.anomaly_detector import (
     settling_buckets_for,
 )
 from tripl.core.intervals import get_interval
-from tripl.metric_grid import metric_grid_stmt, metric_grids
+from tripl.metric_grid import MetricGrid, metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.anomaly_scope_override import AnomalyScopeOverride
-from tripl.models.domain_enums import MetricBreakdownAnomalyKind
+from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricKind
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -44,6 +44,7 @@ from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.observability.metrics import anomalies_detected_total
 from tripl.worker.analyzers.metric_value_kind import is_count_shaped
+from tripl.worker.tasks.metrics.coverage import covered_buckets_from_scan_jobs
 
 # Fractional (ratio/average/sql) catalog metrics drop the count-shaped
 # ``min_expected_count`` gate so sub-unit ratio movements survive (tripl-68bc).
@@ -51,6 +52,11 @@ from tripl.worker.analyzers.metric_value_kind import is_count_shaped
 # empty/flatlined-at-zero fractional series can't manufacture multi-sigma
 # anomalies from pure noise — the detector lane widens the stddev floor, this
 # preserves the volume guard (tripl-dmch.17).
+#
+# On a series that actually carries negative values the detector reads this as a
+# floor on |expected| (``anomaly_detector._clears_volume_gate``): a ratio
+# flatlined at 0 is still gated, while a level sitting at -100 is scored exactly
+# like one at +100 instead of being rejected for its sign (tripl-0zpq.102).
 _FRACTIONAL_MIN_EXPECTED_COUNT = 1e-6
 # Age-out horizon for config-scoped anomaly markers. Rows older than this are
 # deleted during each recompute so stale historical dots stop being served as
@@ -846,17 +852,81 @@ def _load_metric_value_points(
     return [SeriesPoint(bucket=bucket, count=float(value)) for bucket, value in rows]
 
 
-def _resolve_metric_interval(session: Session, metric: MetricDefinition) -> str | None:
-    """Interval for a metric's grid — the shared rule in :mod:`tripl.metric_grid`.
+def _resolve_metric_grid(session: Session, metric: MetricDefinition) -> MetricGrid | None:
+    """Grid of a metric — the shared rule in :mod:`tripl.metric_grid`.
 
     ``sql`` / ``fact`` carry their own ``interval``;
     ``event_composition`` leaves it NULL and inherits the grid of the
     most-recent value's ``scan_config_id``.
+
+    The whole entry is returned rather than just the interval because the SOURCE
+    config decides WHOSE scan-job coverage describes the series (see
+    :func:`_metric_covered_buckets`), not only which delta it is scored on.
     """
-    grid = metric_grids(
+    return metric_grids(
         session.execute(metric_grid_stmt(MetricDefinition.id == metric.id)).all()
     ).get(metric.id)
-    return None if grid is None else grid.interval
+
+
+def _metric_covered_buckets(
+    session: Session,
+    config: ScanConfig,
+    *,
+    metric: MetricDefinition,
+    grid: MetricGrid,
+    delta: timedelta,
+    history_from: datetime,
+    evaluation_end: datetime,
+    scan_covered_buckets: set[datetime] | None,
+    memo: dict[tuple[uuid.UUID, timedelta], set[datetime]],
+) -> set[datetime] | None:
+    """Scan-job coverage for ONE catalog metric, on THAT metric's own grid.
+
+    Only a count-shaped series ever consults it (``expand_series`` runs behind
+    ``fill_gaps``), and the right answer depends on where the values came from:
+
+    * ``fact`` / ``sql`` metrics collect on their own ``interval``, on their own
+      schedule, and store ``scan_config_id = NULL``. No scan job ever recorded a
+      window for them, so no scan's coverage describes them at all; ``None``
+      keeps the documented unconditional zero-fill.
+    * an ``event_composition`` metric reading THIS scan on THIS scan's grid
+      inherits the running scan's set verbatim. It is already enumerated on the
+      right delta, and it uniquely carries the window this run just wrote.
+    * anything else — a metric sourced from a DIFFERENT scan config, or from this
+      one but pinned to its own interval — gets its SOURCE config's coverage,
+      re-enumerated on the metric's own delta. Handing it the running scan's set
+      instead decimates the series (a 1h metric under a 1d scan keeps one bucket
+      in twenty-four, and ``_replace_scope_anomalies`` then rewrites its whole
+      trailing window from what survived) or blames it for another config's
+      outages.
+
+    ``memo`` keys on (source config, delta), which is enough: ``history_from``
+    is a pure function of the delta and the run's evaluation window, so two
+    metrics sharing both share a set.
+    """
+    if metric.kind != MetricKind.event_composition:
+        return None
+    if grid.scan_config_id is None:
+        # An event_composition metric that has never stored a value: no source
+        # scan is known, so there is no coverage to apply.
+        return None
+    if grid.scan_config_id == config.id and grid.interval == config.interval:
+        return scan_covered_buckets
+    key = (grid.scan_config_id, delta)
+    cached = memo.get(key)
+    if cached is None:
+        cached = covered_buckets_from_scan_jobs(
+            session,
+            scan_config_id=grid.scan_config_id,
+            delta=delta,
+            history_from=history_from,
+            # This run wrote nothing for that config, so it has no current
+            # window to vouch for; the stored-bucket read is bounded by the
+            # metric's own evaluation end instead.
+            presence_before=evaluation_end,
+        )
+        memo[key] = cached
+    return cached
 
 
 def _project_metric_scope_refs(session: Session, project_id: uuid.UUID) -> list[str]:
@@ -871,30 +941,85 @@ def _project_metric_scope_refs(session: Session, project_id: uuid.UUID) -> list[
 def _purge_project_metric_anomalies(
     session: Session,
     config: ScanConfig,
-    *,
-    evaluation_end: datetime | None = None,
 ) -> None:
-    """Delete ``metric``-scope anomalies for THIS project's metrics.
+    """Delete EVERY ``metric``-scope anomaly for THIS project's metrics.
 
     Scoped to the project's metric ids so it never touches another project's
     metric-scope rows (which share the global ``scan_config_id IS NULL`` space).
 
-    There is deliberately no start bound. Each metric writes its rows over its
-    OWN grid's trailing window, so the earliest row a project can hold is set by
-    its longest interval, not by the scan-grid window a caller happens to hold;
-    bounding the purge by that window would strand every older row as a marker
-    no later run re-evaluates.
+    The whole-history wipe belongs to the MASTER switch and nothing else: with
+    ``anomaly_detection_enabled`` off the same branch already drops every
+    config-scoped row this scan owns, so "stop detecting for this project" takes
+    the recorded markers with it. Unticking ONE scope box is a different act and
+    must not reuse this function — that is :func:`_purge_disabled_metric_scope`,
+    which clears only the window an enabled pass would have rewritten.
     """
     scope_refs = _project_metric_scope_refs(session, config.project_id)
     if not scope_refs:
         return
-    filters = [
-        MetricAnomaly.scope_type == SCOPE_METRIC,
-        MetricAnomaly.scope_ref.in_(scope_refs),
-    ]
-    if evaluation_end is not None:
-        filters.append(MetricAnomaly.bucket < evaluation_end)
-    session.execute(delete(MetricAnomaly).where(*filters))
+    session.execute(
+        delete(MetricAnomaly).where(
+            MetricAnomaly.scope_type == SCOPE_METRIC,
+            MetricAnomaly.scope_ref.in_(scope_refs),
+        )
+    )
+
+
+def _purge_disabled_metric_scope(
+    session: Session,
+    config: ScanConfig,
+    *,
+    evaluation_start: datetime,
+    evaluation_end: datetime,
+) -> None:
+    """Clear the window a disabled ``metric`` scope would have rewritten.
+
+    The invariant every scope in :func:`_recalculate_metric_anomalies` obeys:
+    switching a scope OFF deletes precisely the window the enabled pass would
+    have replaced and nothing older, so anomalies outside it stay on the chart
+    as history — the promise the per-metric ``anomaly_detection_enabled`` toggle
+    already makes. The three event scopes spell that as
+    ``[evaluation_start, evaluation_end)`` because they are scored on the SCAN's
+    grid.
+
+    A catalog metric is not. It is scored from ``min(evaluation_start,
+    evaluation_end - delta * ANOMALY_TRAILING_REEVAL_BUCKETS)`` on its OWN grid
+    (see :func:`_recalculate_project_metric_anomalies`), so the scan window is
+    the wrong bound: a daily metric's in-window rows sit far behind a 1h
+    config's 30-hour sweep and bounding by that sweep would strand them as
+    markers no later run re-evaluates. Take the enabled side's per-grid start
+    instead, one DELETE per distinct start — the interval vocabulary is small,
+    so a project with hundreds of metrics still issues a handful of statements.
+
+    Grids resolve in ONE query rather than per metric, and a metric with no
+    resolvable grid is skipped exactly as detection skips it, so neither side
+    ever touches its rows.
+    """
+    grids = metric_grids(
+        session.execute(metric_grid_stmt(MetricDefinition.project_id == config.project_id)).all()
+    )
+    refs_by_start: dict[datetime, list[str]] = {}
+    for metric_id, grid in grids.items():
+        if grid.interval is None:
+            continue
+        delta = get_interval(grid.interval).delta
+        start = min(evaluation_start, evaluation_end - delta * ANOMALY_TRAILING_REEVAL_BUCKETS)
+        refs_by_start.setdefault(start, []).append(str(metric_id))
+    for start, scope_refs in refs_by_start.items():
+        session.execute(
+            delete(MetricAnomaly).where(
+                # The enabled branch's own predicate (``_replace_scope_anomalies``
+                # with ``scan_config_id=None``) minus the suppressed-range
+                # carve-outs. Metric-scope rows always carry NULL here, so the
+                # first clause is a no-op today; it keeps the two sides literally
+                # comparable.
+                MetricAnomaly.scan_config_id.is_(None),
+                MetricAnomaly.scope_type == SCOPE_METRIC,
+                MetricAnomaly.scope_ref.in_(scope_refs),
+                MetricAnomaly.bucket >= start,
+                MetricAnomaly.bucket < evaluation_end,
+            )
+        )
 
 
 def _recalculate_project_metric_anomalies(
@@ -905,7 +1030,7 @@ def _recalculate_project_metric_anomalies(
     overrides: ScopeOverrides | None = None,
     evaluation_start: datetime,
     evaluation_end: datetime,
-    covered_buckets: set[datetime] | None = None,
+    scan_covered_buckets: set[datetime] | None = None,
     settling_delay: timedelta = NO_INGESTION_SETTLING,
 ) -> int:
     """Detect anomalies over the project's MONITORED catalog metric series.
@@ -918,13 +1043,22 @@ def _recalculate_project_metric_anomalies(
     Metric anomalies are project-global: stored with ``scope_type='metric'``,
     ``scope_ref=str(metric_definition_id)`` and a NULL ``scan_config_id``.
     Count-shaped metrics keep the standard zero-fill + ``min_expected_count``
-    behavior; fractional metrics (ratios/averages/sql) drop both so sparse or
-    sub-unit series do not produce false anomalies.
+    behavior; fractional metrics (ratios/averages/sql) drop the zero-fill and
+    swap the volume gate for a floor on |expected|, so sparse, sub-unit and
+    signed series neither produce false anomalies nor get rejected for sitting
+    below zero.
 
     ``evaluation_start`` arrives on the SCAN CONFIG's grid; each metric widens it
     onto its own grid (see ``ANOMALY_TRAILING_REEVAL_BUCKETS``). Widening only —
     a replay hands in a window wider than any metric's trailing sweep and keeps
     it, so a replayed range is still re-scored end to end.
+
+    ``scan_covered_buckets`` is the RUNNING scan's coverage, enumerated on the
+    RUNNING scan's grid from that config's own jobs and stored buckets. It is
+    inherited only by a metric whose resolved grid IS that grid; every other
+    metric resolves its own (:func:`_metric_covered_buckets`), because the same
+    set applied to a different grid or a different source silently decimates the
+    series it is scored from.
     """
     metrics = list(
         session.execute(
@@ -935,11 +1069,15 @@ def _recalculate_project_metric_anomalies(
         ).scalars()
     )
     detected = 0
+    # Coverage recomputed for a source config that is not the running scan,
+    # memoized so a project whose metrics share a source pays one pair of
+    # queries rather than one per metric.
+    source_coverage: dict[tuple[uuid.UUID, timedelta], set[datetime]] = {}
     for metric in metrics:
-        interval = _resolve_metric_interval(session, metric)
-        if interval is None:
+        grid = _resolve_metric_grid(session, metric)
+        if grid is None or grid.interval is None:
             continue
-        interval_spec = get_interval(interval)
+        interval_spec = get_interval(grid.interval)
         count_shaped = is_count_shaped(metric)
         # The scope override lands FIRST, so a fractional metric still drops the
         # count gate afterwards: ratcheting a ratio's min_expected_count would
@@ -971,7 +1109,17 @@ def _recalculate_project_metric_anomalies(
             evaluation_end=evaluation_end,
             settings=metric_settings,
             fill_gaps=count_shaped,
-            covered_buckets=covered_buckets,
+            covered_buckets=_metric_covered_buckets(
+                session,
+                config,
+                metric=metric,
+                grid=grid,
+                delta=interval_spec.delta,
+                history_from=history_from,
+                evaluation_end=evaluation_end,
+                scan_covered_buckets=scan_covered_buckets,
+                memo=source_coverage,
+            ),
             # Per-metric grid: a 1d ratio needs a whole bucket withheld for
             # the same allowance that withholds two hourly ones.
             settling_buckets=settling_buckets_for(interval_spec.delta, settling_delay),
@@ -1006,6 +1154,83 @@ def _age_out_config_anomalies(
     session.execute(
         delete(model).where(model.scan_config_id == scan_config_id, model.bucket < horizon)
     )
+
+
+# ``ScanJob.created_at`` is only an approximation of the window the job went on
+# to record: a job that sat queued stamps a created_at earlier than the window it
+# eventually wrote. One day of slack absorbs that, so the horizon below can be
+# used as a ``created_at`` floor without dropping a job whose window reaches back
+# past it.
+COVERAGE_HORIZON_SLACK = timedelta(days=1)
+# Column defaults on ``ProjectAnomalySettings`` fire at INSERT, so a transient
+# row reads them back as ``None`` and cannot be used to build settings for a
+# project that has no row yet. Only the baseline width feeds history depth, so
+# mirror that one default here. A project with no settings row detects nothing
+# anyway — both recalculation entrypoints return 0 for it — so the horizon it
+# produces is never consulted; it only has to be arithmetic, not ``None``.
+_FALLBACK_COVERAGE_SETTINGS = AnomalyDetectionSettings(
+    baseline_window_buckets=14,
+    min_history_buckets=0,
+    sigma_threshold=0.0,
+    min_expected_count=0.0,
+)
+
+
+def coverage_history_start(
+    session: Session,
+    config: ScanConfig,
+    *,
+    evaluation_start: datetime,
+    evaluation_end: datetime,
+) -> datetime:
+    """Oldest bucket this run can consult THIS scan's coverage set for.
+
+    ``covered_buckets_from_scan_jobs`` reads a config's completed-job windows and
+    its stored buckets; unbounded, that is the config's entire lifetime on every
+    scheduled collection. This is the floor that makes the read a constant
+    instead, derived from the detector rather than from a fixed number of days so
+    the two cannot drift apart.
+
+    The invariant: this scan's set is consulted only ON THIS SCAN'S GRID. The
+    project-total / event-type / event passes and the breakdown + parity passes
+    all load from ``evaluation_start - delta * required_history_buckets`` on
+    ``config.interval``; a catalog metric inherits the set only when its resolved
+    grid IS this scan's grid (same source config, same interval code), in which
+    case its own widened window works out to the same depth, and
+    ``_metric_covered_buckets`` resolves coverage separately — on that metric's
+    grid and horizon — for every other metric. So a coarser catalog metric
+    cannot outrun this bound.
+
+    Reading SHALLOWER than this would be silent: ``expand_series`` EXCLUDES an
+    uncovered bucket rather than zero-filling it, so a genuinely-zero bucket
+    below the horizon would quietly leave every baseline. Hence the derivation,
+    and hence ``COVERAGE_HORIZON_SLACK`` on top of it.
+    """
+    if not config.interval:
+        return evaluation_start - COVERAGE_HORIZON_SLACK
+    try:
+        interval_spec = get_interval(config.interval)
+    except ValueError:
+        return evaluation_start - COVERAGE_HORIZON_SLACK
+
+    project_settings = _get_project_anomaly_settings(session, config.project_id)
+    settings = (
+        _build_anomaly_settings(project_settings)
+        if project_settings is not None
+        else _FALLBACK_COVERAGE_SETTINGS
+    )
+    # Mirrors the two windows the passes compute: the trailing re-eval widening
+    # in ``_recalculate_project_metric_anomalies`` and the history depth every
+    # pass loads. ``evaluation_start`` already carries the widening for a
+    # scheduled run, but a caller handing in its own window may not.
+    trailing_start = min(
+        evaluation_start,
+        evaluation_end - interval_spec.delta * ANOMALY_TRAILING_REEVAL_BUCKETS,
+    )
+    history_from = trailing_start - interval_spec.delta * required_history_buckets(
+        interval_spec.delta, settings
+    )
+    return history_from - COVERAGE_HORIZON_SLACK
 
 
 def _recalculate_metric_anomalies(
@@ -1244,11 +1469,16 @@ def _recalculate_metric_anomalies(
             overrides=overrides,
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
-            covered_buckets=covered_buckets,
+            scan_covered_buckets=covered_buckets,
             settling_delay=settling_delay,
         )
     else:
-        _purge_project_metric_anomalies(session, config, evaluation_end=evaluation_end)
+        _purge_disabled_metric_scope(
+            session,
+            config,
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
+        )
 
     session.flush()
     return anomalies_detected

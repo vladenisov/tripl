@@ -600,10 +600,15 @@ export function EventForm({
   //     backend's own support test measures a configured column against the
   //     scan's real columns (metric_rows `_is_supported_metric_breakdown_column`);
   //  2. the columns the project's scans collect scan-wide, which reserved-column
-  //     handling deliberately keeps OUT of field definitions, so `platform` and
-  //     `app_version` could otherwise only be typed from memory;
+  //     handling deliberately keeps OUT of field definitions, so `platform`
+  //     could otherwise only be typed from memory. The app VERSION column is
+  //     excluded here although it is collected the same way: it already has its
+  //     own series (Breakdowns → App version), so an event listing it as a
+  //     breakdown made the collector write the same row twice, and the API now
+  //     refuses it (tripl-0zpq.15);
   //  3. anything already stored on this event, so editing never silently drops a
-  //     setting the user did not touch.
+  //     setting the user did not touch — including a version column stored back
+  //     when this list offered it, which stays visible so it can be removed.
   //
   // Anything else stays reachable through the manual input below.
   const breakdownOptions = useMemo(() => {
@@ -618,7 +623,6 @@ export function EventForm({
     for (const config of scanConfigs ?? []) {
       for (const column of config.metric_breakdown_columns ?? []) add(column)
       add(config.platform_column)
-      add(config.app_version_column)
     }
     for (const column of metricBreakdownColumns) add(column)
     return columns

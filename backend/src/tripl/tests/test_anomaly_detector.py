@@ -903,10 +903,12 @@ def test_trend_shift_emits_only_when_something_moved() -> None:
     ] == [("spike", 40.0, 0.0)]
 
     # A NEGATIVE actual against the same clamped-zero expectation is a real drop.
-    # No lane reaching this guard is signed today — the one zero-floor fractional
-    # lane, platform parity, is a ratio of two event counts. This pins the
-    # ``point.count == 0.0`` semantics for the day a signed fractional series does
-    # get a zero floor, so the guard swallows the degenerate pair and nothing else.
+    # A signed fractional series now DOES reach this guard (tripl-0zpq.102), so the
+    # ``point.count == 0.0`` spelling is live rather than hypothetical: the guard
+    # swallows the degenerate pair and nothing else. This harness calls
+    # ``_detect_trend_shift`` directly, which defaults to ``signed=False``, so what
+    # it pins is the COUNT path — the signed expectation itself is pinned by
+    # ``test_batch3_a2.test_trend_shift_reports_a_signed_expectation``.
     assert [(row.direction, row.expected_count) for row in trend_rows(0.5, -3.0)] == [("drop", 0.0)]
 
     # Both halves of the boundary against a REAL expectation are untouched.
