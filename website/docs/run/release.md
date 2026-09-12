@@ -251,3 +251,17 @@ applied a schema change, rolling the image back to a version that predates that
 migration can break against the upgraded schema. Treat schema changes as
 forward-only and verify on a staging stack before relying on rollback.
 :::
+
+:::note One-off: approvals may need redoing after the plan-snapshot ordering fix
+A branch approval pins a digest of the plan as it stood when the approval was
+given, and the release that made
+[multi-value meta fields](../use/feature-reference.md#event-types) hash in
+sorted order changes those bytes for the events that carry one. An approval
+recorded **before** that upgrade, on a branch whose events hold a multi-value
+meta field whose values happened to be stored out of sorted order, therefore
+reads as `stale` afterwards even though nobody edited the plan, and the branch
+needs approving again before it will merge. Nothing is lost and no data is
+wrong; a digest cannot be recomputed backwards, which is why the release takes
+the re-approval rather than trying to. Branches with no multi-value meta field,
+and every approval given after the upgrade, are unaffected.
+:::

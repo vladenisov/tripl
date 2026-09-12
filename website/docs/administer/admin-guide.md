@@ -466,11 +466,19 @@ or **Google Cloud Storage**).
 - **Backend:** Photo storage backend, Photo max size (`photo_max_size_mb`,
   default 10), Allowed MIME types (`photo_allowed_mime`).
 - **Local filesystem:** Local photo directory (`photo_local_dir`, default
-  `./var/photos`).
+  `./var/photos`). In the shipped image the default resolves to
+  `/app/var/photos`, which `compose.yaml` mounts as the `photos` volume. Point
+  it elsewhere only at another mounted directory the image's `app` user can
+  write, or uploads are lost when the container is recreated.
 - **Google Cloud Storage:** GCS bucket (`gcs_photo_bucket`), GCS public URLs
   (`gcs_photo_public`), GCS credentials path (`gcs_photo_credentials_path`,
   blank falls back to Application Default Credentials), Signed URL TTL
-  (`gcs_photo_signed_url_ttl_seconds`, default 3600).
+  (`gcs_photo_signed_url_ttl_seconds`, default 3600). Credentials that cannot
+  sign URLs serve photos through the authenticated API endpoint instead.
+
+A branch merge that removes an uploaded screenshot from main deletes its file
+once no attachment row on any branch uses it. A file stored under a backend
+other than the one configured now is left in place, with a warning in the log.
 
 ### Observability
 

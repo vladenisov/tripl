@@ -31,7 +31,9 @@ INSTRUCTIONS = (
     "first, then fetch canonical entities by id before deciding anything; draft "
     "writes mentally (dry-run mindset) and prefer updating an existing event over "
     "creating a near-duplicate; pass a working branch_id on every plan write so the "
-    "live main plan is never mutated by accident; always read mutation warnings and "
+    "live main plan is never mutated by accident, picking an open branch (status "
+    "draft, ready_for_review, changes_requested or approved), since a merged or closed "
+    "branch is read-only and answers 409; always read mutation warnings and "
     "adopt the server-canonical names/ids over your proposed ones. Read tools work "
     "with a tk_r_ key; write tools need a tk_w_ key backed by an editor/owner user."
 )

@@ -9,10 +9,11 @@ the ``(project_id, branch_id, name)`` unique constraints are enforced on the liv
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -61,6 +62,9 @@ from tripl.services.plan_revision_service import (
 )
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
 
+if TYPE_CHECKING:
+    from sqlalchemy.engine.interfaces import IsolationLevel
+
 MAIN_BRANCH_NAME = "main"
 
 # action -> (allowed source states, target state)
@@ -100,6 +104,39 @@ _TRANSITIONS: dict[str, tuple[set[str], str]] = {
 }
 # Transitions that invalidate prior approvals (fresh review needed).
 _APPROVAL_CLEARING_ACTIONS = {"submit", "request_changes", "reopen"}
+
+# The branches ``include_diff_counts`` counts: every status a review can still
+# move. Merged and closed are settled, so they are left out — see
+# ``_diff_counts_for_branches`` for why (tripl-0zpq.152).
+_DIFF_COUNTED_STATUSES = frozenset(
+    {
+        BranchStatus.draft.value,
+        BranchStatus.ready_for_review.value,
+        BranchStatus.changes_requested.value,
+        BranchStatus.approved.value,
+    }
+)
+
+# The isolation under which every read of one transaction sees ONE committed
+# state, per dialect (tripl-0zpq.153). Postgres needs it: its default READ
+# COMMITTED gives each statement a fresh snapshot. SQLite, the test database, is
+# deliberately absent. SQLAlchemy has no REPEATABLE READ for it, pysqlite does not
+# honour its SERIALIZABLE for reads (it emits no BEGIN before a SELECT), and the
+# suite runs every session on one connection, where no other writer can
+# interleave.
+_CONSISTENT_READ_ISOLATION: dict[str, IsolationLevel] = {"postgresql": "REPEATABLE READ"}
+
+# The SQLSTATE of a transaction the database aborted as unserializable. Under
+# the level above, ``create_branch`` retries it rather than answering 500 —
+# see the comment there for when it happens (tripl-0zpq.153).
+_SERIALIZATION_FAILURE_SQLSTATE = "40001"
+_UNIQUE_VIOLATION_SQLSTATE = "23505"
+_BRANCH_NAME_CONSTRAINT = "uq_plan_branch_project_name"
+# Attempts ``create_branch`` makes before it asks the client to retry. Each one
+# takes a fresh snapshot, and one that already sees the conflicting commit
+# cannot collide with it, so a second attempt normally lands; the third covers
+# two conflicting commits arriving back to back.
+_CREATE_BRANCH_ATTEMPTS = 3
 
 
 async def ensure_main_branch_id(session: AsyncSession, project_id: uuid.UUID) -> uuid.UUID:
@@ -202,17 +239,37 @@ async def _diff_counts_for_branches(
     main_branch_id: uuid.UUID,
     branches: list[PlanBranch],
 ) -> dict[uuid.UUID, tuple[int, bool]]:
-    """ahead/behind for every feature branch, off ONE main snapshot.
+    """ahead/behind for every OPEN feature branch, off ONE main snapshot.
 
-    The Branches tab wants an ahead/behind badge per row. Asking
-    ``/branches/{id}/diff`` per row is what makes that page expensive: a diff is
-    two plan snapshots, a snapshot is essentially the whole cost of the call
-    (measured 507 ms main + 157 ms branch of a 484 ms diff on a 1300-variable
-    project), and every row rebuilt main's snapshot again. Answering the whole
-    list here builds main once and each branch once — N+1 snapshots instead of
-    2N — and collapses N HTTP calls into the one the page already makes.
+    ``tripl plan branches`` is the only caller that asks for these. The Branches
+    tab does not use this path: it fans out one ``/branches/{id}/diff`` per row,
+    capped at ROW_DIFF_LIMIT (the selected branch plus the most recently updated
+    others), and counts its badge through the paired view, so a rename is one
+    change there. ``ahead`` here is the
+    reviewable total of ``diff_branch``'s ``summary``, where a rename is its
+    removal plus its addition.
+
+    Per-row diffs are what this saves: a diff is two plan snapshots, a snapshot
+    is essentially the whole cost of the call (measured 507 ms main + 157 ms
+    branch of a 484 ms diff on a 1300-variable project), and every row rebuilt
+    main's snapshot again. Here main is built once and each counted branch
+    once — N+1 snapshots instead of 2N, in one HTTP call.
+
+    Only open branches are counted (tripl-0zpq.152). A merge deletes only
+    main-side rows and closing deletes nothing, so a merged or closed branch
+    keeps its whole deep copy for good, and counting every non-main row cost one
+    snapshot per branch in the project's HISTORY. That crossed the CLI's 10 s
+    default timeout once a few dozen had piled up, for numbers that meant
+    nothing: a merged branch has landed, and its "behind base" only says main
+    moved on since. Those rows keep ``ahead`` / ``behind_base`` at ``None``, the
+    same "not computed" the main row carries. A reopened branch is a draft again
+    and is counted from then on.
     """
-    feature_branches = [b for b in branches if b.kind != BranchKind.main.value]
+    feature_branches = [
+        b
+        for b in branches
+        if b.kind != BranchKind.main.value and b.status in _DIFF_COUNTED_STATUSES
+    ]
     if not feature_branches:
         return {}
 
@@ -232,12 +289,14 @@ async def _diff_counts_for_branches(
             # Legacy branch with no base snapshot: same fallback as diff_branch —
             # it cannot tell branch-authored changes from later main changes.
             legacy_entries = compute_plan_diff_entries(main_snapshot, branch_snapshot)
-            mark_housekeeping(legacy_entries)
+            mark_housekeeping(legacy_entries, main_payload=main_snapshot)
             counts[branch.id] = (len(reviewable(legacy_entries)), False)
             continue
-        ahead_entries = compute_plan_diff_entries(base_payload, branch_snapshot)
+        ahead_entries = compute_plan_diff_entries(
+            base_payload, branch_snapshot, key_collisions_from=main_snapshot
+        )
         behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
-        mark_housekeeping(ahead_entries, behind_entries=behind_entries)
+        mark_housekeeping(ahead_entries, behind_entries=behind_entries, main_payload=main_snapshot)
         counts[branch.id] = (len(reviewable(ahead_entries)), len(behind_entries) > 0)
     return counts
 
@@ -370,15 +429,24 @@ async def deep_copy_plan_to_branch(
 ) -> None:
     """Copy every design-time entity from source branch into target branch.
 
-    New ids are minted up front so FK remaps need no intermediate flush. The
-    one exception is photo comments, which are flushed after their photos
-    because no ORM relationship orders that insert (see below).
+    New ids are minted up front, so almost no FK remap has to wait for the
+    database. The two exceptions each cost a flush. Photo comments go in after
+    their photos, because no ORM relationship orders that insert (see below).
+    ``superseded_by_event_id`` is remapped only once the copied events exist,
+    because the unit of work will not order two rows of one table by a raw FK
+    column.
     Child tables (field_definitions, event_field_values, event_meta_values,
     event_tags) inherit their branch from the parent and carry no branch_id.
 
-    Never commits or flushes beyond the photo-comment ordering flush, so it can
-    run inside a caller-owned transaction — ``create_branch`` below and the demo
-    seeder's branches builder both reuse it.
+    Flushes but never commits, so it runs inside a caller-owned transaction —
+    ``create_branch`` below and the demo seeder's branches builder both reuse
+    it. There are two flushes: the photo-ordering one (only when the source has
+    photos), which writes every row queued so far, and the final one once every
+    row is queued. Either also writes whatever the caller left pending, which
+    the first SELECT here already does under autoflush, so a caller must not
+    hold unflushable objects across this call. The ``superseded_by_event_id``
+    remap set after the final flush stays pending until the caller's next flush
+    or commit (tripl-0zpq.156).
     """
     event_types = (
         (
@@ -720,6 +788,54 @@ async def deep_copy_plan_to_branch(
             new_event_by_old_id[ev.id].superseded_by_event_id = successor_id
 
 
+async def _begin_consistent_read(session: AsyncSession) -> None:
+    """Open ``session``'s transaction at the level whose reads share one state.
+
+    Postgres fixes a transaction's isolation at its first statement, so the
+    level has to ride on the BEGIN and ``session`` must not have started a
+    transaction yet. The request session always has — the auth dependency read
+    the user through it before any service ran — and SQLAlchemy refuses to raise
+    the level in place, so ``create_branch`` passes a session of its own.
+    SQLAlchemy restores the engine default when the connection goes back to the
+    pool, so the level ends with this transaction.
+    """
+    level = _CONSISTENT_READ_ISOLATION.get(session.get_bind().dialect.name)
+    if level is not None:
+        await session.connection(execution_options={"isolation_level": level})
+
+
+def _is_serialization_failure(exc: DBAPIError) -> bool:
+    """Whether the database aborted the transaction as unserializable (40001).
+
+    SQLAlchemy's asyncpg adapter copies the server's SQLSTATE onto the error it
+    wraps as both ``sqlstate`` and ``pgcode``; psycopg 3 and psycopg2 each carry
+    one of the two.
+    """
+    codes = (getattr(exc.orig, "sqlstate", None), getattr(exc.orig, "pgcode", None))
+    return _SERIALIZATION_FAILURE_SQLSTATE in codes
+
+
+def _is_duplicate_branch_name(exc: IntegrityError) -> bool:
+    """Whether the insert lost a race for the branch name (23505 on its index).
+
+    The duplicate check above is a plain SELECT holding nothing, and the copy
+    that follows takes the better part of a second (main's snapshot alone
+    measured 507 ms on a 1300-variable project), so two requests naming the same
+    branch can both pass it and the loser meets ``uq_plan_branch_project_name``
+    at the flush. That is the very case the SELECT exists to answer, so it gets
+    the same 409 rather than escaping as a 500. Matched on the index name too,
+    so another unique violation from the copy is still a 500 the logs will show.
+    """
+    orig = exc.orig
+    codes = (getattr(orig, "sqlstate", None), getattr(orig, "pgcode", None))
+    if _UNIQUE_VIOLATION_SQLSTATE not in codes:
+        return False
+    constraint = getattr(getattr(orig, "diag", None), "constraint_name", None)
+    if constraint is not None:
+        return bool(constraint == _BRANCH_NAME_CONSTRAINT)
+    return _BRANCH_NAME_CONSTRAINT in str(exc)
+
+
 async def create_branch(
     session: AsyncSession,
     slug: str,
@@ -738,6 +854,90 @@ async def create_branch(
     )
     if dup is not None:
         raise HTTPException(status_code=409, detail="Branch with this name already exists")
+
+    # The merge base and the branch copy are two separate passes over main, and
+    # they must describe the SAME main (tripl-0zpq.153). Under Postgres' default
+    # READ COMMITTED every SELECT sees whatever committed last, so a catalog scan
+    # or another editor committing to main between the two passes (seconds
+    # apart on a large plan) left the base short of rows the copy has. A
+    # scan-added event then read as the author's addition. A main edit made in
+    # the gap read as a branch edit, and as the three-way baseline it later
+    # reported a conflict nobody made. One REPEATABLE READ transaction gives the
+    # snapshot, the copy and each of the copy's own SELECTs one MVCC snapshot.
+    # Building the base from the copy would not have needed the database's help,
+    # but it would put BRANCH ids in the base, and a removed diff entry links to
+    # main only because its id comes from the base.
+    #
+    # What the one snapshot costs. Under REPEATABLE READ, Postgres aborts the
+    # transaction with a serialization failure (SQLSTATE 40001) when a row it
+    # must lock was changed by a transaction that committed after its snapshot.
+    # Every insert here checks its foreign keys by locking the parent row as the
+    # snapshot saw it, so a key update or a delete of a referenced projects or
+    # users row, committed after the snapshot, aborts the creation. The key
+    # update is the new failure: READ COMMITTED locks the newest version of the
+    # row and carries on. A delete fails there too, as a foreign-key violation.
+    # A project rename is a key update, because the slug is unique. Nothing in
+    # the app changes a user's email (the unique user column) or deletes a user
+    # today. The base revision's insert locks the project row, and a rename from
+    # then on waits for the copy, so the exposure is a rename committed between
+    # the snapshot and that insert, a sub-second window.
+    #
+    # Nothing handled that abort, so it was a 500. Now each attempt runs in a
+    # session of its own and a failed one is retried from a fresh snapshot,
+    # which already sees the rename. After ``_CREATE_BRANCH_ATTEMPTS`` the client
+    # gets a 409 asking it to retry. A session per attempt, rather than rolling
+    # back the request's: the rollback discards every row the failed attempt
+    # wrote, so nothing is inserted twice, but on the request's session it would
+    # also expire every object the caller holds there, the current user the
+    # router audits with included (the reindex after a merge sidesteps the same
+    # trap the same way). The request's transaction is committed first. It holds
+    # only reads plus a lazily created main branch, which a session on another
+    # connection could not see otherwise.
+    await session.commit()
+    for _attempt in range(_CREATE_BRANCH_ATTEMPTS):
+        async with AsyncSession(session.bind, expire_on_commit=False) as attempt_session:
+            try:
+                branch = await _copy_main_into_new_branch(
+                    attempt_session,
+                    project_id=project_id,
+                    main_branch_id=main_branch_id,
+                    data=data,
+                    user_id=user_id,
+                )
+            except IntegrityError as exc:
+                if not _is_duplicate_branch_name(exc):
+                    raise
+                raise HTTPException(
+                    status_code=409, detail="Branch with this name already exists"
+                ) from exc
+            except DBAPIError as exc:
+                if not _is_serialization_failure(exc):
+                    raise
+                continue
+            # Committed. A failure from here on must not start another attempt,
+            # which would land a second copy next to this one.
+            await attempt_session.refresh(branch)
+            return _to_response(branch)
+    raise HTTPException(
+        status_code=409,
+        detail="The project changed while the branch was being created. Please try again.",
+    )
+
+
+async def _copy_main_into_new_branch(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    main_branch_id: uuid.UUID,
+    data: PlanBranchCreate,
+    user_id: uuid.UUID | None,
+) -> PlanBranch:
+    """One attempt at ``create_branch``: merge base, branch row and deep copy.
+
+    All three in one consistent-read transaction, which this opens on a
+    ``session`` that has none yet and commits.
+    """
+    await _begin_consistent_read(session)
 
     # Capture the main snapshot as the merge base.
     base_payload = await build_plan_snapshot(session, project_id, branch_id=main_branch_id)
@@ -769,8 +969,7 @@ async def create_branch(
         target_branch_id=branch.id,
     )
     await session.commit()
-    await session.refresh(branch)
-    return _to_response(branch)
+    return branch
 
 
 async def delete_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) -> None:
@@ -1013,10 +1212,12 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
             base_payload = base_revision.payload or {}
             # Visible entries are changes authored on the branch, not changes
             # that landed on main after the branch was opened.
-            entries = compute_plan_diff_entries(base_payload, branch_snapshot)
+            entries = compute_plan_diff_entries(
+                base_payload, branch_snapshot, key_collisions_from=main_snapshot
+            )
             behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
             behind_base = len(behind_entries) > 0
-            mark_housekeeping(entries, behind_entries=behind_entries)
+            mark_housekeeping(entries, behind_entries=behind_entries, main_payload=main_snapshot)
             # The MERGE's own pairing, read through the same function the merge
             # applies, so a rename reads as one change instead of a deletion
             # beside an unrelated addition. A second implementation here would
@@ -1028,7 +1229,7 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
         # branch-authored changes from later main changes — and with no third
         # side to read, the pairing has nothing to say either.
         entries = compute_plan_diff_entries(main_snapshot, branch_snapshot)
-        mark_housekeeping(entries)
+        mark_housekeeping(entries, main_payload=main_snapshot)
 
     await attach_identity_warnings(
         session,

@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import lazyload, selectinload
@@ -35,9 +36,11 @@ from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
+from tripl.services._branch_counterparts import main_counterparts
 from tripl.services._celery_dispatch import dispatch
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services._plan_branch_renames import pair_renames, rekey_in_place
+from tripl.services.event_photo_service import PHOTO_KIND_PHOTO, delete_unreferenced_blobs
 from tripl.services.event_type_owner_service import load_owner_user_ids
 from tripl.services.plan_branch_conflicts import (
     _ET_CHANGE_KEYS,
@@ -568,6 +571,126 @@ async def _merge_photo_comments(
     await session.flush()
 
 
+async def _blob_keys_of(
+    session: AsyncSession, event_ids: Sequence[uuid.UUID]
+) -> set[tuple[str, str]]:
+    """Every uploaded blob the given events' attachments point at.
+
+    Read BEFORE the rows go, because they go by FK cascade: ``EventPhoto``
+    declares ``ondelete="CASCADE"`` on ``event_id`` and ``Event`` carries no
+    ``photos`` relationship, so deleting an event takes its attachments at the
+    database level with nothing in Python seeing them leave (tripl-0zpq.291).
+    The merge deletes events on two paths — a removed event type takes its
+    events, and a removed event goes on its own — and neither reached the photo
+    reconciliation that fills ``released_blobs``, so a screenshot on an event
+    the branch deleted stayed in storage with no row left to find it by.
+
+    Over-collecting is safe: ``delete_unreferenced_blobs`` re-checks every key
+    against the rows that survived the commit and skips the ones still in use.
+    """
+    if not event_ids:
+        return set()
+    rows = await session.execute(
+        select(EventPhoto.storage_backend, EventPhoto.storage_key).where(
+            EventPhoto.event_id.in_(event_ids),
+            EventPhoto.kind == PHOTO_KIND_PHOTO,
+            EventPhoto.storage_backend.is_not(None),
+            EventPhoto.storage_key.is_not(None),
+        )
+    )
+    return {(str(backend), key) for backend, key in rows.all()}
+
+
+async def _event_thread_twins(
+    session: AsyncSession, *, project_id: uuid.UUID, branch_id: uuid.UUID
+) -> dict[uuid.UUID, uuid.UUID | None]:
+    """Branch row → the main twin its discussion reads through to, for every
+    branch row that holds a thread of its own (None: no twin yet).
+
+    Read BEFORE the merge writes anything, so the twin is the very one
+    ``event_comment_service.event_thread`` anchors new threads on right now —
+    through ``main_counterparts``, which pairs by type and scan identity. The
+    merge pairs by type and NAME, and the two part ways when main's row for the
+    identity carries another display name (an accepted shadow event, say): the
+    merge then creates a second main row under the branch's name, and moving
+    the old thread onto THAT split the discussion between it and the twin that
+    already held every thread started since (tripl-0zpq.122).
+
+    Bounded by how many branch rows hold a thread of their own, not by the
+    size of the catalog every branch copies.
+    """
+    anchored_ids = set(
+        (
+            await session.execute(
+                select(EventPhotoComment.event_id)
+                .join(Event, Event.id == EventPhotoComment.event_id)
+                .where(
+                    Event.project_id == project_id,
+                    Event.branch_id == branch_id,
+                    EventPhotoComment.photo_id.is_(None),
+                )
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not anchored_ids:
+        return {}
+    anchored = (
+        (await session.execute(select(Event).where(Event.id.in_(anchored_ids)))).scalars().all()
+    )
+    twins = await main_counterparts(session, project_id=project_id, events=anchored)
+    return {row.id: twins[row.id].id if row.id in twins else None for row in anchored}
+
+
+async def _move_event_threads_to_main(
+    session: AsyncSession,
+    *,
+    main_event_id_by_branch_event_id: dict[uuid.UUID, uuid.UUID],
+) -> None:
+    """Hand main the event discussions that hang on the branch's own rows.
+
+    The discussion is not plan content (tripl-h2sx.25): no snapshot carries it,
+    so no arm above sees it, and the deep copy leaves it on main's row, where a
+    branch copy reads and writes it through its twin. What sits on a BRANCH row
+    is only what had no twin to go to — the thread of an event created on the
+    branch, the note typed with it at creation included, or one started before
+    main grew a row for that identity. The merge used to leave all of it there:
+    main's new row opened with an empty thread, the branch row then read through
+    to that empty twin, and deleting the merged branch took the rows with it
+    through the cascade (tripl-0zpq.122).
+
+    None of it was ever copied from main, so all of it is the branch's own and
+    there is no base to merge three ways against — unlike the photo threads
+    above. The rows are MOVED, not copied: ids, replies and resolution state go
+    unchanged, beside whatever thread the target row already had. The target is
+    the twin the branch row already reads its discussion through
+    (``_event_thread_twins``), where every thread started since that twin
+    appeared already hangs; only a row that had none goes to the main row the
+    merge lands its key on, created or matched.
+
+    A branch row that lands nowhere — main deleted the event, or its event type,
+    after the cut — keeps its thread: main's deletion stands, as it does for the
+    photo threads, and this discussion goes with the branch. So does a row with
+    no twin whose type and name several events share, on main or on the branch:
+    the key cannot say which of them the thread is about, and the caller does
+    not guess. An event the merge itself deletes from main takes main's thread
+    with it through the same cascade as a delete on main.
+    """
+    for branch_event_id, main_event_id in main_event_id_by_branch_event_id.items():
+        await session.execute(
+            update(EventPhotoComment)
+            .where(
+                EventPhotoComment.event_id == branch_event_id,
+                EventPhotoComment.photo_id.is_(None),
+            )
+            # Re-anchored, not edited: named explicitly so the column's onupdate
+            # does not stamp the merge time on every row that moved.
+            .values(event_id=main_event_id, updated_at=EventPhotoComment.updated_at)
+        )
+
+
 async def _apply_merge(
     session: AsyncSession,
     project_id: uuid.UUID,
@@ -576,7 +699,7 @@ async def _apply_merge(
     *,
     resolutions: dict[tuple[str, str, str], str] | None = None,
     base_payload: dict[str, Any] | None = None,
-) -> None:
+) -> frozenset[tuple[str, str]]:
     """Apply the branch's plan onto main with upsert-by-natural-key.
 
     Matched event_type/event rows are updated in place (id preserved) so
@@ -589,8 +712,17 @@ async def _apply_merge(
     is honored for event_type metadata fields: "ours" keeps main's current
     value for that field instead of taking the branch's. Defaults to "theirs"
     (branch wins) when no resolution is supplied.
+
+    Returns the ``(storage_backend, storage_key)`` of every uploaded photo the
+    photos arm deleted from main, for ``merge_branch`` to release once the merge
+    has committed (tripl-0zpq.146).
     """
     resolutions = resolutions or {}
+    # Read before anything below writes: the twin each thread-holding branch
+    # row reads its discussion through today, which the thread move at the end
+    # prefers over the row the merge lands its key on (tripl-0zpq.122).
+    thread_twins = await _event_thread_twins(session, project_id=project_id, branch_id=branch_id)
+    released_blobs: set[tuple[str, str]] = set()
     base_et_by_name: dict[str, dict[str, Any]] = {
         e["name"]: e for e in (base_payload or {}).get("event_types", [])
     }
@@ -687,6 +819,7 @@ async def _apply_merge(
             .scalars()
             .all()
         )
+        released_blobs |= await _blob_keys_of(session, doomed_event_ids)
         await drop_dangling_event_references(
             session, project_id=project_id, event_ids=doomed_event_ids
         )
@@ -1167,10 +1300,12 @@ async def _apply_merge(
         if key in base_event_by_key and key not in branch_event_by_key
     ]
     if doomed_main_events:
+        doomed_main_event_ids = [m_ev.id for m_ev in doomed_main_events]
+        released_blobs |= await _blob_keys_of(session, doomed_main_event_ids)
         await drop_dangling_event_references(
             session,
             project_id=project_id,
-            event_ids=[m_ev.id for m_ev in doomed_main_events],
+            event_ids=doomed_main_event_ids,
         )
     for m_ev in doomed_main_events:
         await session.delete(m_ev)
@@ -1216,9 +1351,15 @@ async def _apply_merge(
 
     # --- photos + comments: replace only when the branch's design canvas
     # changed from the base. storage_key/external_url is reused — no blob copies.
-    # Bulk delete via session.execute(delete(...)) is intentional: it bypasses
-    # the ORM session.delete() path so storage backends aren't invoked here
-    # (the blob is still referenced by the freshly-inserted main row).
+    # Doomed rows go by one bulk delete that never touches storage, and must not
+    # inside this transaction: a merge failing after it rolls the rows back,
+    # and they would come back pointing at an object already gone. But a doomed
+    # row gets no replacement — ``_photo_identity`` includes the key, and one
+    # identity is never both doomed and added — so it can be the key's LAST
+    # holder: a screenshot deleted on the branch leaves its blob to main's row
+    # (tripl-0zpq.146), and deleting that row here used to strand the object
+    # for good. Its key is collected instead, and ``merge_branch`` deletes the
+    # blob after the commit unless some row still holds it.
     main_events_after = list(
         (
             await session.execute(
@@ -1299,6 +1440,9 @@ async def _apply_merge(
             keep = _three_way_count(base=len(base_rows), ours=len(m_rows), theirs=len(b_rows))
             pairs, added, doomed_rows = _split_identity_rows(m_rows, b_rows, keep)
             doomed_photo_ids.extend(m_ph.id for m_ph in doomed_rows)
+            for m_ph in doomed_rows:
+                if m_ph.kind == PHOTO_KIND_PHOTO and m_ph.storage_backend and m_ph.storage_key:
+                    released_blobs.add((str(m_ph.storage_backend), m_ph.storage_key))
             base_sort_orders = {base_photo.get("sort_order") for base_photo in base_rows}
             for main_photo, bp in pairs:
                 # Position is left out of the identity so that re-ordering a
@@ -1345,6 +1489,34 @@ async def _apply_merge(
                 base_thread=base_thread_by_source_id.get(source_photo.id, (set(), False)),
             )
         await session.flush()
+
+    # --- the event's own discussion: not plan content, so ungated by any diff.
+    # The twin the branch row reads through today when the merge kept it, else
+    # the row its key lands on — but only a key that names ONE row on each
+    # side. Several events can share a (type, name), and nothing records which
+    # main row a branch copy came from, so for such a key the lookup above
+    # returns an arbitrary member: a thread about an event main deleted moved
+    # onto its same-named sibling. That thread stays with the branch instead,
+    # as one whose event lands nowhere does.
+    surviving_main_ids = {e.id for e in main_events_after}
+    main_rows_per_key = Counter(
+        (main_et_id_to_name[e.event_type_id], e.name)
+        for e in main_events_after
+        if e.event_type_id in main_et_id_to_name
+    )
+    branch_rows_per_key = Counter(branch_event_key_by_id.values())
+    thread_targets: dict[uuid.UUID, uuid.UUID] = {}
+    for branch_event_id, twin_id in thread_twins.items():
+        thread_key = branch_event_key_by_id.get(branch_event_id)
+        if twin_id is not None and twin_id in surviving_main_ids:
+            thread_targets[branch_event_id] = twin_id
+        elif (
+            thread_key is not None
+            and main_rows_per_key[thread_key] == 1
+            and branch_rows_per_key[thread_key] == 1
+        ):
+            thread_targets[branch_event_id] = main_event_key_to_id[thread_key]
+    await _move_event_threads_to_main(session, main_event_id_by_branch_event_id=thread_targets)
 
     # --- variable event value overrides: replace only for variables whose
     # branch-side override map changed from the base.
@@ -1474,6 +1646,7 @@ async def _apply_merge(
         m_rel = main_relation_by_key.get(removed_relation_key)
         if m_rel is not None:
             await session.delete(m_rel)
+    return frozenset(released_blobs)
 
 
 def _touched_event_type_names(
@@ -1734,6 +1907,34 @@ async def _lock_branch_for_merge(
     return branch
 
 
+class _MergeOutcome(NamedTuple):
+    # The post-merge snapshot of the live plan.
+    post_payload: dict[str, Any]
+    # ``(storage_backend, storage_key)`` of every uploaded photo the merge
+    # deleted from main, for ``_release_photo_blobs`` (tripl-0zpq.146).
+    released_blobs: frozenset[tuple[str, str]]
+
+
+async def _release_photo_blobs(
+    session: AsyncSession, *, branch_id: uuid.UUID, blobs: frozenset[tuple[str, str]]
+) -> None:
+    """Best-effort: delete the blobs the committed merge left no row pointing at.
+
+    Runs after the commit, so a blob is never gone while a rolled-back merge
+    would still point at it, and in a session of its own, so a failed read
+    cannot leave the request's session in an aborted transaction for the reads
+    after it. The merge is committed by then: nothing here may fail it or roll
+    it back, and a blob this misses is one orphaned object, logged.
+    """
+    if not blobs:
+        return
+    try:
+        async with AsyncSession(session.bind, expire_on_commit=False) as blob_session:
+            await delete_unreferenced_blobs(blob_session, blobs)
+    except Exception:  # noqa: BLE001 — a leaked blob must never break a merge
+        logger.exception("Failed to release photo blobs after merging branch %s", branch_id)
+
+
 async def _commit_merged_plan(
     session: AsyncSession,
     *,
@@ -1743,10 +1944,11 @@ async def _commit_merged_plan(
     user_id: uuid.UUID,
     resolutions: dict[tuple[str, str, str], str],
     base_payload: dict[str, Any],
-) -> dict[str, Any]:
+) -> _MergeOutcome:
     """Apply the branch onto main, record the revision, and commit.
 
-    Returns the post-merge snapshot of the live plan.
+    Returns the post-merge snapshot of the live plan and the photo blobs the
+    merge released.
 
     Everything that writes lives in here, which makes this the one place a
     database constraint can reject a merge. It used to have no answer for that:
@@ -1781,7 +1983,7 @@ async def _commit_merged_plan(
     branch_id = branch.id
     branch_name = branch.name
     try:
-        await _apply_merge(
+        released_blobs = await _apply_merge(
             session,
             project_id,
             main_branch_id,
@@ -1822,7 +2024,7 @@ async def _commit_merged_plan(
                 ),
             },
         ) from exc
-    return post_payload
+    return _MergeOutcome(post_payload=post_payload, released_blobs=released_blobs)
 
 
 async def merge_branch(
@@ -1907,7 +2109,7 @@ async def merge_branch(
         current_plan_hash=current_plan_hash,
     )
 
-    post_payload = await _commit_merged_plan(
+    outcome = await _commit_merged_plan(
         session,
         project_id=project.id,
         main_branch_id=main_branch_id,
@@ -1916,7 +2118,12 @@ async def merge_branch(
         resolutions=resolution_map,
         base_payload=base_payload,
     )
+    post_payload = outcome.post_payload
     await session.refresh(branch)
+
+    # The blobs of photos the merge deleted from main that no row holds any
+    # more (tripl-0zpq.146). Best-effort; the merge is already committed.
+    await _release_photo_blobs(session, branch_id=branch.id, blobs=outcome.released_blobs)
 
     # The merge rewrote main's event types and meta fields behind the service
     # functions that invalidate these caches on every other write, so main's

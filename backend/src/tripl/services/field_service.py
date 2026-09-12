@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl import cache
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.schemas.field_definition import (
     FieldDefinitionBulkCreate,
     FieldDefinitionCreate,
@@ -19,6 +20,22 @@ from tripl.services.scan_config_lookup import (
     scan_configs_blocking_field_removal,
 )
 from tripl.services.search_service import reindex_project_branch
+
+
+async def _on_main(session: AsyncSession, event_type: EventType) -> bool:
+    """Whether ``event_type`` is a row of the live plan.
+
+    Read off the row's own branch, not off the caller's ``branch_id``. That
+    argument admits main's own id as well as ``None``, because
+    ``resolve_branch_id`` accepts both. Keying the name-format guard on
+    ``branch_id is None`` let ``?branch=<main id>`` delete a field a scan names
+    events by from the live plan (tripl-0zpq.121). ``get_branch_id_override``
+    now yields ``None`` for main, which closes the HTTP door. This keeps the
+    guard, which prevents an outage rather than a stale cache, correct however
+    a caller spells main.
+    """
+    branch = await session.get(PlanBranch, event_type.branch_id)
+    return branch is not None and branch.kind == BranchKind.main.value
 
 
 async def list_fields(
@@ -43,8 +60,8 @@ async def create_field(
     data: FieldDefinitionCreate,
     branch_id: uuid.UUID | None = None,
 ) -> FieldDefinition:
-    is_main = branch_id is None
     et = await get_event_type(session, slug, event_type_id, branch_id)
+    is_main = await _on_main(session, et)
     existing = await session.execute(
         select(FieldDefinition).where(
             FieldDefinition.event_type_id == et.id, FieldDefinition.name == data.name
@@ -78,8 +95,8 @@ async def bulk_create_fields(
 ) -> list[FieldDefinition]:
     """Create the supplied fields on an event type, skipping names that already
     exist. Idempotent so it can back a "create missing fields" action."""
-    is_main = branch_id is None
     et = await get_event_type(session, slug, event_type_id, branch_id)
+    is_main = await _on_main(session, et)
     existing = await session.execute(
         select(FieldDefinition).where(FieldDefinition.event_type_id == et.id)
     )
@@ -118,8 +135,8 @@ async def update_field(
     data: FieldDefinitionUpdate,
     branch_id: uuid.UUID | None = None,
 ) -> FieldDefinition:
-    is_main = branch_id is None
     et = await get_event_type(session, slug, event_type_id, branch_id)
+    is_main = await _on_main(session, et)
     result = await session.execute(
         select(FieldDefinition).where(
             FieldDefinition.id == field_id, FieldDefinition.event_type_id == event_type_id
@@ -214,8 +231,8 @@ async def delete_field(
     field_id: uuid.UUID,
     branch_id: uuid.UUID | None = None,
 ) -> None:
-    is_main = branch_id is None
     et = await get_event_type(session, slug, event_type_id, branch_id)
+    is_main = await _on_main(session, et)
     result = await session.execute(
         select(FieldDefinition).where(
             FieldDefinition.id == field_id, FieldDefinition.event_type_id == event_type_id
@@ -251,8 +268,8 @@ async def reorder_fields(
     data: FieldReorder,
     branch_id: uuid.UUID | None = None,
 ) -> list[FieldDefinition]:
-    is_main = branch_id is None
-    await get_event_type(session, slug, event_type_id, branch_id)
+    et = await get_event_type(session, slug, event_type_id, branch_id)
+    is_main = await _on_main(session, et)
     for idx, field_id in enumerate(data.field_ids):
         result = await session.execute(
             select(FieldDefinition).where(

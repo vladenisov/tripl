@@ -29,7 +29,10 @@ class EventPhotoComment(UUIDMixin, TimestampMixin, Base):
     which is also why every query meaning "the attachment threads" filters on
     ``photo_id`` rather than reading the whole table: an event thread must stay
     out of ``build_plan_snapshot``, out of the branch deep copy, and out of the
-    merge carry-back.
+    merge's photo-thread carry-back. The merge moves a thread hanging on a
+    branch row onto main separately: onto the main twin that row already reads
+    its discussion through, else onto the row the merge gives the event
+    (``plan_branch_merge_service._move_event_threads_to_main``, tripl-0zpq.122).
     """
 
     __tablename__ = "event_photo_comments"

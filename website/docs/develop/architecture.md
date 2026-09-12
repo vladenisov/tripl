@@ -550,7 +550,9 @@ branch is searchable from the next request.
 ## Storage & integrations
 
 - **PostgreSQL** stores the plan, metrics, audit log, and alert deliveries.
-- **Photo / attachment storage** is pluggable: local filesystem or **GCS**.
+- **Photo / attachment storage** is pluggable: local filesystem or **GCS**. In
+  `compose.yaml` the local backend's files live in the `photos` named volume on
+  `app`, which needs backing up alongside PostgreSQL's `pgdata18`.
 - **Alert destinations**: Slack, Telegram, generic webhook, email (SMTP),
   **Jira** (REST v3 with an ADF body), and **Linear** (GraphQL).
 

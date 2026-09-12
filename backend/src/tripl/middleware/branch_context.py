@@ -1,14 +1,24 @@
 """Request-scoped plan-branch context for the audit writer.
 
-``audit_service.record`` is called from every write route and must not grow a
-``branch=`` argument in the branch-scoped ones — that is a standing invitation
-for the next branch-scoped route to forget it, which is how tripl-wkwv.6 arrived
-in the first place. Deliberately not a census: the counts this paragraph used to
-carry were already wrong when they were written, and adding the six event routes
-moved them again. ``?branch=`` is already resolved in exactly one place
-(:func:`tripl.api.deps.get_branch_id_override`), so it is bound there and read in
-exactly one place (:func:`tripl.services.audit_service.record`). Those two are
-the only binder and the only reader; each names the other in a comment.
+``audit_service.record`` must not grow a ``branch=`` argument in the
+branch-scoped routes that call it — that is a standing invitation for the next
+branch-scoped route to forget it, which is how tripl-wkwv.6 arrived in the first
+place. That is a claim about the routes that audit, not about every write route:
+whether a write is audited is decided route by route, and some writes record
+nothing at all (tripl-0zpq.217). What this module guarantees is narrower: a row
+that IS written from a route that declares ``BranchIdDep``, on a request whose
+``?branch=`` resolves to a branch other than main, carries that branch. Two
+kinds of request leave ``branch_id`` NULL with a working branch in play: routes
+that address the branch by path (``/branches/{id}/revert`` and the like), which
+name it in ``target_id`` instead, and routes that deliberately omit
+``BranchIdDep`` although the client sends ``?branch=``
+(``POST /variables/drifts/{id}/action``, whose write lands on main whatever the
+request is scoped to). Deliberately not a census: the counts this paragraph
+used to carry were already wrong when they were written, and adding the six
+event routes moved them again. ``?branch=`` is already resolved in exactly one
+place (:func:`tripl.api.deps.get_branch_id_override`), so it is bound there and
+read in exactly one place (:func:`tripl.services.audit_service.record`). Those
+two are the only binder and the only reader; each names the other in a comment.
 
 Unlike the request id, this value needs no ASGI-scope mirror. The hazard that
 forced one on ``request_id`` — ServerErrorMiddleware serves the catch-all 500
@@ -40,9 +50,10 @@ _branch_var: ContextVar[tuple[uuid.UUID, str] | None] = ContextVar("tripl_branch
 def current_branch() -> tuple[uuid.UUID, str] | None:
     """The branch this request is scoped to, as ``(id, name)``.
 
-    ``None`` means "no branch scope": a request with no ``?branch=``, or any
-    caller outside an HTTP request — the Celery workers write no audit rows
-    today, but a future one must degrade to a null branch rather than raise.
+    ``None`` means "no branch scope": a request with no ``?branch=`` or one
+    naming main, a route that does not declare ``BranchIdDep``, or any caller
+    outside an HTTP request — the Celery workers write no audit rows today, but
+    a future one must degrade to a null branch rather than raise.
     """
     return _branch_var.get()
 

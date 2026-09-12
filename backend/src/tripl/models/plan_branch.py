@@ -25,8 +25,18 @@ class BranchKind(enum.StrEnum):
 class BranchStatus(enum.StrEnum):
     """Review workflow states for a working branch.
 
-    The ``main`` branch carries ``draft`` here but its status is ignored — code
-    keys off ``kind == main``. Transitions between these states land in Phase 3.
+    The ``main`` branch is stored with ``merged`` here: the migration that added
+    branches, ``default_branch_id`` and
+    ``plan_branch_service.ensure_main_branch_id`` all write it so. That status
+    says nothing about main, so code must decide main-ness by ``kind == main``
+    BEFORE it reads the status. The read-only refusal of writes to a merged or
+    closed branch (``api.deps.get_branch_id_override``,
+    ``event_photo_service._get_plan_writable_event``) splits main off first for
+    exactly this reason: a write naming main by its id lands on main, and a
+    photo write on a main event is accepted, because both split main off before
+    they look at the status. Were the status read first, main's stored
+    ``merged`` would refuse them both with a 409 — which is what this field
+    means for a WORKING branch and what it must never be allowed to mean here.
     """
 
     draft = "draft"

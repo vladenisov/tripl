@@ -25,8 +25,10 @@ class EventPhotoResponse(BaseModel):
     sort_order: int
     # Resolved URL the client can render directly. For "local" this is an
     # authenticated API endpoint; for "gcs" it's a signed URL (or public URL
-    # when the bucket is configured public). For figma-kind attachments this
-    # is the embed URL.
+    # when the bucket is configured public), or that same API endpoint when
+    # the backend cannot produce a direct URL (e.g. GCS credentials that
+    # cannot sign; event_photo_service.url_for). For figma-kind attachments
+    # this is the embed URL.
     url: str
     external_url: str | None = None
     uploaded_by_user_id: uuid.UUID | None = None

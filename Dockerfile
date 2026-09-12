@@ -49,8 +49,16 @@ ENV UVICORN_WORKERS=4
 ENV SERVE_FRONTEND=true
 ENV FRONTEND_DIST_DIR=/app/frontend_dist
 
+# The local photo backend's default root is ./var/photos under WORKDIR, and the
+# app user cannot create anything under the root-owned /app, so every photo
+# upload died on mkdir with a PermissionError (tripl-0zpq.211). Only the photo
+# directory is handed to the user; the venv and source stay read-only. A named
+# volume mounted here starts out with this ownership, which is what keeps the
+# blobs across a redeploy.
 RUN groupadd --system --gid 1000 app \
-    && useradd --system --uid 1000 --gid 1000 --no-create-home app
+    && useradd --system --uid 1000 --gid 1000 --no-create-home app \
+    && mkdir -p /app/var/photos \
+    && chown -R app:app /app/var
 USER app
 
 EXPOSE 8000

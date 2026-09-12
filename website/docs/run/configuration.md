@@ -305,13 +305,23 @@ who asked for the link, so this is the only place the failure surfaces.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PHOTO_STORAGE_BACKEND` | `local` | `local` (filesystem, served via authenticated API endpoint) or `gcs` (Google Cloud Storage). |
-| `PHOTO_LOCAL_DIR` | `./var/photos` | Directory for the `local` backend. |
-| `PHOTO_MAX_SIZE_MB` | `10` | Max upload size in MB. |
+| `PHOTO_LOCAL_DIR` | `./var/photos` | Directory for the `local` backend. In the shipped image this resolves to `/app/var/photos`, which is writable by the image's `app` user and mounted as the `photos` volume by `compose.yaml`. Point it elsewhere only at another mounted, writable volume, or uploads are lost when the container is recreated. |
+| `PHOTO_MAX_SIZE_MB` | `10` | Max upload size in MB. A request to the photo routes whose body is larger than this plus 1 MiB of multipart framing is refused with `413` without being read past that limit. |
 | `PHOTO_ALLOWED_MIME` | `image/jpeg,image/png,image/gif,image/webp` | Allowed MIME types (comma-separated). |
 | `GCS_PHOTO_BUCKET` | `""` | GCS bucket for the `gcs` backend. |
-| `GCS_PHOTO_CREDENTIALS_PATH` | `""` | Service-account JSON path. Empty falls back to Application Default Credentials. |
+| `GCS_PHOTO_CREDENTIALS_PATH` | `""` | Service-account JSON path. Empty falls back to Application Default Credentials. Credentials that cannot sign URLs (Application Default Credentials on Compute Engine or workload identity, `gcloud` user credentials) make photos fall back to the authenticated `/file` endpoint instead of signed URLs. |
 | `GCS_PHOTO_PUBLIC` | `false` | Return public URLs instead of time-limited signed URLs. |
 | `GCS_PHOTO_SIGNED_URL_TTL_SECONDS` | `3600` | Signed-URL lifetime when not public. |
+
+**Switching `PHOTO_STORAGE_BACKEND` does not move anything.** Every photo row
+records the backend its file was written to, and that is the backend it is read
+and deleted through from then on — so photos taken before a switch keep working,
+as long as the old backend stays configured. Leave `PHOTO_LOCAL_DIR` pointing at
+the same volume when moving to `gcs`, and leave `GCS_PHOTO_BUCKET` set when
+moving back to `local`; new uploads follow the new setting either way. Take the
+old backend away and only its photos are affected: they answer `409` naming it,
+the rest of the page loads, and nothing is deleted. There is no migration
+command — copy the objects across yourself before retiring a backend.
 
 ### Warehouse query row caps
 

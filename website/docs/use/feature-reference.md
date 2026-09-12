@@ -278,6 +278,20 @@ to the same thread as on main, so a question raised while drafting a change is
 answerable by whoever is reading the live plan, and merging the branch neither
 duplicates nor loses it.
 
+An event created on a branch has no row on main yet, so its discussion,
+including the note typed when it was created, starts on the branch copy. If
+main gets that event before the merge (a scan finds it, or someone adds it on
+main, under the same event type and scan identity), the branch copy shows its
+own thread beside main's and starts new ones on main's. The merge moves the
+branch copy's thread to main: onto that same main event when main still has it,
+so the discussion is not split between two main events when main holds the
+event under a different display name. Otherwise it goes to the event the merge
+creates or matches by type and name, but only when exactly one event has that
+type and name on main after the merge and exactly one on the branch. In every
+other case the thread stays with the branch: main has deleted the event, or its
+event type, since the branch was cut, or several events share the type and
+name, so the merge cannot tell which of them the thread is about.
+
 #### Closing a question
 
 Each top-level comment carries a resolution state, so a thread can end:
@@ -295,9 +309,16 @@ The events list can then be filtered by **Questions** — *Open questions* or
 *Nothing open* — beside the Status, Silent and Reviewed filters. It is a
 server-side filter over the whole catalog, not a narrowing of the loaded page,
 and it is branch-aware: because an event has one discussion living on its main
-row, a branch listing answers about the same threads main does. A row with an
-unanswered thread carries a small `?n` marker beside its name, so the list can
-say why it matched.
+row, a branch listing answers about the same threads main does. On a branch,
+*Open questions* matches the events whose own thread or main twin has an
+unanswered question; another branch's question on a same-named event does not
+count. A row with an unanswered thread carries a small `?n` marker beside its
+name, counted over the same threads, so the list can say why it matched. The
+exception is several events on main sharing one type and scan identity (two
+hand-written `purchase` events under `track`, which nothing forbids): a branch
+copy of either matches through a question on any of them, while its marker and
+its discussion come from only one of them, so it can match with no marker and
+open on a thread that does not hold the question.
 
 The **photo** threads and the **branch review** threads have no resolution
 state; only the event discussion does.
@@ -313,7 +334,10 @@ image** button (stored on the configured backend — local disk or GCS), attach 
 **Figma spec** by URL with an optional title (rendered as an embedded frame with
 an "Open in Figma" link), delete a photo or detach a spec, and hold a **threaded
 comment** discussion (top-level comments plus one level of replies) per
-attachment.
+attachment. On an event of a merged branch, or of a closed one until it is
+reopened, the attachments are read-only like the rest of that branch's plan:
+uploading, attaching, reordering or deleting one answers `409`. Their comment
+threads stay open.
 
 ### Event types
 
@@ -499,21 +523,40 @@ collapsed row, without expanding it first: an event opens its editor on that
 branch, and a variable opens its edit dialog on the Variables tab
 (`?edit=1`) — including a renamed row, whose Edit reaches the branch-side copy
 rather than the base one it is drawn from. A merged or closed branch offers no
-Edit, matching what its writes would be refused for. Catalog rows, diff rows and the command palette carry the
+Edit, matching what its writes would be refused for: the API answers a plan
+write sent with `?branch=` naming a merged branch, or a closed one until it is
+reopened, with `409`. That refusal comes after the route's own permission check,
+so a caller who could not make the write anyway (a viewer, a read-only API key)
+gets the route's `403` instead. Reads, and a search reindex, still work on
+either. Photo and Figma spec writes, which address the event by its id rather
+than by `?branch=`, answer the same `409` on such a branch's event; comments,
+on a photo or on the event, are discussion rather than plan content and still
+work there. Catalog rows, diff rows and the command palette carry the
 branch in the link (`?branch=`), and an entity page opened that way shows a
 banner naming the branch it belongs to, so a link handed to a developer opens
 the right copy. A diff row also carries **warnings** for an event authored on
 the branch without a scan identity — e.g.
 `No scan identity: the naming rule 'track:{name}' needs name.` — so a reviewer
-sees it before the merge lands an event that would never match its traffic. A branch copy of an event reads its
+sees it before the merge lands an event that would never match its traffic.
+Rows that share a name — two events called `purchase:success` under `track`,
+which nothing forbids, or two relations between the same two fields — are
+matched by that name like every other row, by the diff, the merge and a revert
+alike, so the diff shows at most one row for the name and a change to one of
+them can show on, or land on, the other: deleting one of two such events can
+read as an edit to the survivor, or as nothing when the two were identical. A
+diff row for such a name carries a warning to rename one of the events, or
+remove one of the relations, before changing either. A branch copy of an event reads its
 metrics and **last seen** through its `main` twin (the event with the same type
 name and identity), so the branch shows what the live plan collected rather than
-blanks. Removals that are the machine's doing — a scan-minted variable nobody
-bound, documented or referenced being retired, or a removal `main` has already
-made since the branch was cut — carry a `housekeeping` reason in the diff
-response, are left out of the added/removed/changed counts (`summary.housekeeping`
-counts them), are folded into one line under the list, opened on request, and
-are not what the merge confirmation warns about. A branch named after a tracker
+blanks. Removals that are the machine's doing — a scan-minted variable still
+exactly as the scan wrote it being retired (no binding beyond the scan's own, no
+documented values or per-event overrides, not renamed, not excluded from scans,
+not the removed half of a rename, and not named by a `${token}` in any field or
+meta value of an event on the branch), or a removal `main` has already made
+since the branch was cut — carry a `housekeeping` reason in the diff response,
+are left out of the added/removed/changed counts (`summary.housekeeping` counts them), are
+folded into one line under the list, opened on request, and are not what the
+merge confirmation warns about. A branch named after a tracker
 ticket (`WND-4770`) links to it from the detail
 header through the first meta field whose link template takes a key, and a new
 event opened in that branch has that meta field pre-filled with the key.
@@ -521,17 +564,31 @@ Branch comments identify their author using the current project roster.
 
 **Revert** on a diff row (or on a single field-change row) puts that change back
 to the branch's base state: an addition is discarded, an edit is written back,
-and a deletion is rebuilt with its child rows (values, tags, overrides). It never
-touches `main`, needs the branch to be open, and refuses two cases instead of
-half-applying them — an event's photos (their files are not in the plan snapshot)
-and a child whose parent event type is still deleted.
+and a deletion is rebuilt with its child rows (values, tags, overrides) and, for
+an event, its successor (`superseded_by`). It never touches `main`, needs the
+branch to be open, and refuses instead of half-applying: an event's photos
+(their files are not in the plan snapshot), a child whose parent event type is
+still deleted, and a change it cannot pin on one row, because several events or
+relations answer to its name, or several events to the successor it would
+restore. When those rows are in the branch's base snapshot, which is what the
+revert restores from and which never changes, renaming on the branch does not
+help: undo that change by hand. When the duplicate is the branch's own (the
+base held at most one such row), rename or remove it on the branch, then revert.
+A successor that no longer exists on the branch is cleared instead.
 
 The branch policy can require a minimum number of **distinct approvals** and can
-forbid self-approval. Approval hashes include event values, tags,
-photos/comments, ownership/review state, variable overrides, and metric
-breakdown settings, so any later merge-relevant edit makes the approval stale.
+forbid self-approval. Approval hashes include event values, tags, photos (the
+attachments, not the comment threads under them), ownership/review state,
+variable overrides, and metric breakdown settings, so any later merge-relevant
+edit makes the approval stale. Discussion is not a plan change: commenting on a
+photo, on an event or on the branch leaves every approval fresh. Neither is the
+order the database returns a multi-value meta field's values in: they are
+hashed in sorted order.
 Three-way merge preserves one-sided main and branch edits; divergent edits to
 the same state and parent deletion versus a new child fail with a conflict.
+When the merge removes an uploaded screenshot from main, its stored file is
+deleted after the merge commits, unless another attachment, on any branch,
+still uses it; a storage failure there is logged and never fails the merge.
 
 An owner may configure a separate **Implementation tracker** for the project.
 When enabled, a successful merge best-effort creates one Jira implementation

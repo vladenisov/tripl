@@ -32,8 +32,9 @@ ENDPOINTS: tuple[tuple[str, str], ...] = (
 def list_branches(slug: str, *, include_diff_counts: bool = False) -> ApiRequest:
     """Answers ``{items, total}``, not a bare list.
 
-    ``include_diff_counts`` fills ``ahead`` and ``behind_base``; without it the
-    service leaves both null, because each row costs a snapshot comparison. Off
+    ``include_diff_counts`` fills ``ahead`` and ``behind_base`` on open branches
+    (merged and closed ones, like main, stay null); without it the service
+    leaves both null everywhere, because each row costs a snapshot comparison. Off
     by default for that reason, and asked for in exactly one place: ``tripl plan
     branches``, where those two columns are the reason to run the command at
     all. The branch RESOLUTION path must keep the default — it needs only id and

@@ -6105,7 +6105,7 @@
           "event-photos"
         ],
         "summary": "Download Event Photo",
-        "description": "Stream the photo bytes through the API.\n\nUsed for the local backend (where blobs aren't web-reachable) and as a\nfallback if GCS URL generation ever fails. GCS-backed photos normally\nredirect to a signed URL on the list response, so this endpoint is rarely\nhit in production.",
+        "description": "Stream the photo bytes through the API.\n\nThe serving path for every photo on the local backend, the default, whose\nfiles are not reachable from the browser. On GCS a photo's `url` field is\na signed or public URL the browser fetches directly; when that URL cannot\nbe made, for instance with credentials that cannot sign, the `url` field\npoints here instead.",
         "operationId": "download_event_photo_api_v1_projects__slug__events__event_id__photos__photo_id__file_get",
         "parameters": [
           {
@@ -12104,7 +12104,7 @@
           "plan-branches"
         ],
         "summary": "List Branches",
-        "description": "List a project's branches.\n\n``include_diff_counts`` fills each feature branch's ``ahead`` /\n``behind_base`` from a single shared main snapshot, so a branches list does\nnot need one ``/branches/{id}/diff`` call per row. It is opt-in because it\nmakes the response cost N+1 plan snapshots; leave it off when you only need\nthe branch rows.",
+        "description": "List a project's branches.\n\n``include_diff_counts`` fills ``ahead`` / ``behind_base`` for each open\nfeature branch (draft, ready_for_review, changes_requested, approved) from a\nsingle shared main snapshot, so a branches list does not need one\n``/branches/{id}/diff`` call per row. Merged and closed branches keep both\nnull, like main. It is opt-in because it costs one plan snapshot per open\nbranch plus one for main; leave it off when you only need the branch rows.",
         "operationId": "list_branches_api_v1_projects__slug__branches_get",
         "parameters": [
           {
@@ -18613,7 +18613,7 @@
           "closed"
         ],
         "title": "BranchStatus",
-        "description": "Review workflow states for a working branch.\n\nThe ``main`` branch carries ``draft`` here but its status is ignored \u2014 code\nkeys off ``kind == main``. Transitions between these states land in Phase 3."
+        "description": "Review workflow states for a working branch.\n\nThe ``main`` branch is stored with ``merged`` here: the migration that added\nbranches, ``default_branch_id`` and\n``plan_branch_service.ensure_main_branch_id`` all write it so. That status\nsays nothing about main, so code must decide main-ness by ``kind == main``\nBEFORE it reads the status. The read-only refusal of writes to a merged or\nclosed branch (``api.deps.get_branch_id_override``,\n``event_photo_service._get_plan_writable_event``) splits main off first for\nexactly this reason: a write naming main by its id lands on main, and a\nphoto write on a main event is accepted, because both split main off before\nthey look at the status. Were the status read first, main's stored\n``merged`` would refuse them both with a 409 \u2014 which is what this field\nmeans for a WORKING branch and what it must never be allowed to mean here."
       },
       "BranchTransitionRequest": {
         "properties": {

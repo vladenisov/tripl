@@ -166,7 +166,9 @@ def register(mcp: FastMCP) -> None:
         description=(
             "WRITE: create an event (needs a tk_w_ key backed by an editor/owner). "
             "branch_id is REQUIRED so the draft lands on a working branch, never on "
-            "the live main plan by accident (list_branches to find one). When a scan "
+            "the live main plan by accident (list_branches to find one whose status "
+            "is draft, ready_for_review, changes_requested or approved; a merged or "
+            "closed branch is read-only and answers 409). When a scan "
             "naming rule governs the event type the server derives the name from field "
             "values and may ignore yours with a warning — adopt the returned name/id. "
             "Put the human-readable label in 'title', never in 'name': 'name' is the "
@@ -183,7 +185,9 @@ def register(mcp: FastMCP) -> None:
         description=(
             "WRITE: partially update an event (needs a tk_w_ key backed by an "
             "editor/owner). branch_id is REQUIRED to avoid accidental edits to the "
-            "live main plan. 'patch' takes any subset of: name, title, description, status, "
+            "live main plan, and must name an open working branch: a merged or closed "
+            "one is read-only and answers 409. "
+            "'patch' takes any subset of: name, title, description, status, "
             "sunset_at, owner_id, reviewed, metric_breakdown_columns, tags, "
             "field_values, meta_values. WARNING: 'field_values' and 'meta_values' "
             "are FULL-LIST REPLACEMENTS — sending a partial list deletes the missing "

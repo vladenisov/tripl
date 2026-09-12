@@ -973,11 +973,12 @@ export interface paths {
          * List Branches
          * @description List a project's branches.
          *
-         *     ``include_diff_counts`` fills each feature branch's ``ahead`` /
-         *     ``behind_base`` from a single shared main snapshot, so a branches list does
-         *     not need one ``/branches/{id}/diff`` call per row. It is opt-in because it
-         *     makes the response cost N+1 plan snapshots; leave it off when you only need
-         *     the branch rows.
+         *     ``include_diff_counts`` fills ``ahead`` / ``behind_base`` for each open
+         *     feature branch (draft, ready_for_review, changes_requested, approved) from a
+         *     single shared main snapshot, so a branches list does not need one
+         *     ``/branches/{id}/diff`` call per row. Merged and closed branches keep both
+         *     null, like main. It is opt-in because it costs one plan snapshot per open
+         *     branch plus one for main; leave it off when you only need the branch rows.
          */
         get: operations["list_branches_api_v1_projects__slug__branches_get"];
         put?: never;
@@ -1927,10 +1928,11 @@ export interface paths {
          * Download Event Photo
          * @description Stream the photo bytes through the API.
          *
-         *     Used for the local backend (where blobs aren't web-reachable) and as a
-         *     fallback if GCS URL generation ever fails. GCS-backed photos normally
-         *     redirect to a signed URL on the list response, so this endpoint is rarely
-         *     hit in production.
+         *     The serving path for every photo on the local backend, the default, whose
+         *     files are not reachable from the browser. On GCS a photo's `url` field is
+         *     a signed or public URL the browser fetches directly; when that URL cannot
+         *     be made, for instance with credentials that cannot sign, the `url` field
+         *     points here instead.
          */
         get: operations["download_event_photo_api_v1_projects__slug__events__event_id__photos__photo_id__file_get"];
         put?: never;
@@ -4939,8 +4941,18 @@ export interface components {
          * BranchStatus
          * @description Review workflow states for a working branch.
          *
-         *     The ``main`` branch carries ``draft`` here but its status is ignored — code
-         *     keys off ``kind == main``. Transitions between these states land in Phase 3.
+         *     The ``main`` branch is stored with ``merged`` here: the migration that added
+         *     branches, ``default_branch_id`` and
+         *     ``plan_branch_service.ensure_main_branch_id`` all write it so. That status
+         *     says nothing about main, so code must decide main-ness by ``kind == main``
+         *     BEFORE it reads the status. The read-only refusal of writes to a merged or
+         *     closed branch (``api.deps.get_branch_id_override``,
+         *     ``event_photo_service._get_plan_writable_event``) splits main off first for
+         *     exactly this reason: a write naming main by its id lands on main, and a
+         *     photo write on a main event is accepted, because both split main off before
+         *     they look at the status. Were the status read first, main's stored
+         *     ``merged`` would refuse them both with a 409 — which is what this field
+         *     means for a WORKING branch and what it must never be allowed to mean here.
          * @enum {string}
          */
         BranchStatus: "draft" | "ready_for_review" | "changes_requested" | "approved" | "merged" | "closed";

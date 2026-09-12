@@ -35,9 +35,15 @@ ENV PATH="/app/.venv/bin:$PATH"
 ENV UVICORN_WORKERS=4
 
 # Drop privileges: run as a non-root system user in the runtime image. The
-# venv and source were copied as root and stay read-only to this user.
+# venv and source were copied as root and stay read-only to this user. The one
+# directory it must write is the local photo backend's default root,
+# ./var/photos under WORKDIR — without it every photo upload died on mkdir with
+# a PermissionError (tripl-0zpq.211). A named volume mounted there starts out
+# with this ownership, which is what keeps the blobs across a redeploy.
 RUN groupadd --system --gid 1000 app \
-    && useradd --system --uid 1000 --gid 1000 --no-create-home app
+    && useradd --system --uid 1000 --gid 1000 --no-create-home app \
+    && mkdir -p /app/var/photos \
+    && chown -R app:app /app/var
 USER app
 
 EXPOSE 8000

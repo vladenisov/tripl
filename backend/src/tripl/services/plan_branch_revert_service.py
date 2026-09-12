@@ -36,7 +36,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -58,6 +58,7 @@ from tripl.schemas.plan_branch import BranchRevertRequest, PlanBranchDiff
 from tripl.schemas.plan_revision import PlanDiffEntry
 from tripl.services import plan_branch_service
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
+from tripl.services.plan_revision_service import with_snapshot_defaults
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.services.variable_service import rewrite_variable_token_references
 
@@ -160,20 +161,32 @@ async def _load_branch(session: AsyncSession, project: Project, branch_id: uuid.
         raise HTTPException(status_code=404, detail="Branch not found")
     if branch.kind == BranchKind.main:
         raise HTTPException(status_code=400, detail="The live plan has no branch changes to revert")
-    if branch.status in (BranchStatus.merged, BranchStatus.closed):
+    if branch.status == BranchStatus.merged:
+        # A merged branch cannot be reopened (reopen takes approved,
+        # changes_requested or closed), so do not tell the user to.
+        raise HTTPException(status_code=409, detail="Branch is merged, so its plan is read-only")
+    if branch.status == BranchStatus.closed:
         raise HTTPException(
-            status_code=409,
-            detail=f"Branch is {branch.status} — reopen it before reverting changes",
+            status_code=409, detail="Branch is closed — reopen it before reverting changes"
         )
     return branch
 
 
 async def _base_payload(session: AsyncSession, branch: PlanBranch) -> dict[str, Any]:
-    """The snapshot a revert restores to.
+    """The snapshot a revert restores to, in the shape the diff reads it.
 
     Legacy branches opened before base snapshots existed have nothing to restore
     to — their diff is computed against current main, which is a moving target,
     so reverting against it could silently pull in main-side edits.
+
+    Upgraded through ``with_snapshot_defaults``, as ``compute_plan_diff_entries``
+    and the merge both upgrade it. A base taken before a key joined v2 has no
+    such key — an event's ``title`` before 2026-09-08 — and the diff reads that
+    absence as the default, so it shows a titled branch event as ``'' → 'Tap on
+    a model card'``. The revert has to put back the same ``''``. Reading the raw
+    payload put back ``None`` instead: a NOT NULL violation on ``events.title``
+    that the handler in ``revert_change`` reported as a name clash, on every
+    try (tripl-0zpq.147).
     """
     revision = (
         await session.get(PlanRevision, branch.base_revision_id)
@@ -188,7 +201,7 @@ async def _base_payload(session: AsyncSession, branch: PlanBranch) -> dict[str, 
                 "Recreate it from current main."
             ),
         )
-    return revision.payload or {}
+    return with_snapshot_defaults(revision.payload or {})
 
 
 def _find_entry(diff: PlanBranchDiff, data: BranchRevertRequest) -> PlanDiffEntry:
@@ -203,61 +216,74 @@ def _find_entry(diff: PlanBranchDiff, data: BranchRevertRequest) -> PlanDiffEntr
 
 
 def _base_item(base_payload: dict[str, Any], data: BranchRevertRequest) -> dict[str, Any]:
-    """The entity's state in the base snapshot, keyed the way the diff keys it."""
-    match: dict[str, Any] | None = None
+    """The entity's state in the base snapshot, keyed the way the diff keys it.
+
+    Events and relations carry no uniqueness on that key, and a stored base is
+    a payload, not a schema, so several base rows can answer to it. Taking the
+    first, as this did, restored whichever namesake the payload happened to
+    list first: the fields of a row the reviewer never looked at, written onto
+    the survivor, or a rebuild of the wrong one of two deleted rows.
+
+    Nothing here can tell those rows apart. A branch copy does not record which
+    base row it came from, so neither the diff entry nor the request can name
+    one base row among several that share the key. Several are therefore
+    refused, the way ``_one`` refuses several branch rows: restoring from an
+    arbitrary namesake writes values nobody reviewed. Renaming on the branch
+    does not lift it, because the base is a frozen payload.
+    """
+    matches: list[dict[str, Any]]
     if data.entity_type == "event_type":
-        match = next(
-            (item for item in base_payload.get("event_types", []) if item["name"] == data.name),
-            None,
-        )
+        matches = [
+            item for item in base_payload.get("event_types", []) if item["name"] == data.name
+        ]
     elif data.entity_type == "field_definition":
-        for event_type in base_payload.get("event_types", []):
-            if event_type["name"] != data.parent:
-                continue
-            match = next(
-                (fd for fd in event_type.get("field_definitions", []) if fd["name"] == data.name),
-                None,
-            )
+        matches = [
+            fd
+            for event_type in base_payload.get("event_types", [])
+            if event_type["name"] == data.parent
+            for fd in event_type.get("field_definitions", [])
+            if fd["name"] == data.name
+        ]
     elif data.entity_type == "event":
-        match = next(
-            (
-                item
-                for item in base_payload.get("events", [])
-                if item["name"] == data.name and item["event_type_name"] == data.parent
-            ),
-            None,
-        )
+        matches = [
+            item
+            for item in base_payload.get("events", [])
+            if item["name"] == data.name and item["event_type_name"] == data.parent
+        ]
     elif data.entity_type == "variable":
-        match = next(
-            (item for item in base_payload.get("variables", []) if item["name"] == data.name),
-            None,
-        )
+        matches = [item for item in base_payload.get("variables", []) if item["name"] == data.name]
     elif data.entity_type == "meta_field":
-        match = next(
-            (item for item in base_payload.get("meta_fields", []) if item["name"] == data.name),
-            None,
-        )
+        matches = [
+            item for item in base_payload.get("meta_fields", []) if item["name"] == data.name
+        ]
     else:
-        match = next(
-            (
-                item
-                for item in base_payload.get("relations", [])
-                if _relation_name(
-                    item["source_event_type_name"],
-                    item["source_field_name"],
-                    item["target_event_type_name"],
-                    item["target_field_name"],
-                )
-                == data.name
-            ),
-            None,
-        )
-    if match is None:
+        matches = [
+            item
+            for item in base_payload.get("relations", [])
+            if _relation_name(
+                item["source_event_type_name"],
+                item["source_field_name"],
+                item["target_event_type_name"],
+                item["target_field_name"],
+            )
+            == data.name
+        ]
+    if not matches:
         raise HTTPException(
             status_code=409,
             detail="The base snapshot does not describe this entity, so it cannot be restored",
         )
-    return match
+    if len(matches) == 1:
+        return matches[0]
+    where = f" in {data.parent}" if data.parent else ""
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"More than one {data.entity_type.replace('_', ' ')} in this branch's base snapshot "
+            f"is called '{data.name}'{where}, so it is ambiguous which one this change belongs "
+            "to. Undo it by hand instead."
+        ),
+    )
 
 
 async def _doomed_event_ids(
@@ -726,6 +752,7 @@ async def _recreate_entity(
     branch_id: uuid.UUID,
     data: BranchRevertRequest,
     base_item: dict[str, Any],
+    base_payload: dict[str, Any],
 ) -> None:
     """Put back an entity the branch deleted, from its state in the base snapshot.
 
@@ -744,6 +771,11 @@ async def _recreate_entity(
     overrides). An event type's fields and events are separate entries, so they
     are restored by their own reverts — in that order, since a field cannot hang
     off an event type that is still missing.
+
+    An event's successor comes back too, resolved on this branch by
+    ``_restore_successor`` exactly as a field revert of ``superseded_by``
+    resolves it. The rebuild used to leave the pointer out, so a restored event
+    lost its successor and the diff went on showing that as a change.
 
     One gap is deliberate and visible: an event's photos are not restored. The
     snapshot redacts their storage keys, so the rows cannot be rebuilt — and the
@@ -823,6 +855,16 @@ async def _recreate_entity(
         )
         session.add(event)
         await session.flush()
+        await _restore_successor(
+            session,
+            project_id,
+            branch_id,
+            event,
+            base_item,
+            base_payload,
+            data,
+            by_hand="Recreate the event by hand instead.",
+        )
         for field in ("field_values", "meta_values", "tags"):
             await _restore_event_children(session, project_id, branch_id, event, base_item, field)
         return
@@ -855,9 +897,9 @@ async def _recreate_entity(
                 display_name=_required(base_item, "display_name"),
                 field_type=_required(base_item, "field_type"),
                 is_required=base_item.get("is_required", False),
-                # An older snapshot predates the key; with_snapshot_defaults
-                # fills it in on read, and the default here covers a payload
-                # that reached this call by another route.
+                # An older snapshot predates the key. ``_base_payload`` fills it
+                # in through with_snapshot_defaults (tripl-0zpq.147); the
+                # fallback only restates the column default.
                 allow_multiple=base_item.get("allow_multiple", False),
                 enum_options=list(base_item["enum_options"])
                 if base_item.get("enum_options")
@@ -918,6 +960,7 @@ async def _restore_field(
     branch_id: uuid.UUID,
     entity: Any,
     base_item: dict[str, Any],
+    base_payload: dict[str, Any],
     data: BranchRevertRequest,
     field: str,
 ) -> None:
@@ -928,6 +971,11 @@ async def _restore_field(
         return
 
     if data.entity_type == "event":
+        # No ``event_type_name`` arm, and none is missing. The diff keys events
+        # by (event_type_name, name), so an event under another type is a
+        # removal plus an addition and never a changed field. Nothing moves an
+        # event between types either. The arm that used to sit here could not
+        # be reached (tripl-0zpq.155).
         if field == "sunset_at":
             raw = base_item.get("sunset_at")
             entity.sunset_at = datetime.fromisoformat(raw) if raw else None
@@ -937,32 +985,16 @@ async def _restore_field(
             entity.owner_id = uuid.UUID(raw) if raw else None
             return
         if field == "superseded_by":
-            # Stored as "<event_type_name>.<name>", never a uuid — the snapshot
-            # keys it that way because ids are branch-local. Resolve it against
-            # THIS branch.
-            entity.superseded_by_event_id = await _event_id_by_dotted_key(
-                session, project_id, branch_id, base_item.get("superseded_by")
+            await _restore_successor(
+                session,
+                project_id,
+                branch_id,
+                entity,
+                base_item,
+                base_payload,
+                data,
+                by_hand="Set the successor by hand, then revert the rest.",
             )
-            return
-        if field == "event_type_name":
-            event_type = (
-                await session.execute(
-                    select(EventType).where(
-                        EventType.project_id == project_id,
-                        EventType.branch_id == branch_id,
-                        EventType.name == base_item["event_type_name"],
-                    )
-                )
-            ).scalar_one_or_none()
-            if event_type is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Cannot move the event back to '{base_item['event_type_name']}' — "
-                        "that event type no longer exists on this branch."
-                    ),
-                )
-            entity.event_type_id = event_type.id
             return
         if field in ("field_values", "meta_values", "tags"):
             await _restore_event_children(session, project_id, branch_id, entity, base_item, field)
@@ -1037,7 +1069,7 @@ async def _apply_revert(
                 )
             renamed.name = data.name
             return
-        await _recreate_entity(session, project_id, branch_id, data, base_item)
+        await _recreate_entity(session, project_id, branch_id, data, base_item, base_payload)
         return
 
     if entry.kind == "added":
@@ -1070,7 +1102,9 @@ async def _apply_revert(
     entity = await _find_entity(session, project_id, branch_id, data)
     base_item = _base_item(base_payload, data)
     for field in fields:
-        await _restore_field(session, project_id, branch_id, entity, base_item, data, field)
+        await _restore_field(
+            session, project_id, branch_id, entity, base_item, base_payload, data, field
+        )
 
 
 async def revert_change(
@@ -1131,33 +1165,153 @@ async def revert_change(
     return await plan_branch_service.diff_branch(session, slug, branch_id)
 
 
+async def _restore_successor(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    event: Event,
+    base_item: dict[str, Any],
+    base_payload: dict[str, Any],
+    data: BranchRevertRequest,
+    *,
+    by_hand: str,
+) -> None:
+    """Point *event* at the successor the base named, resolved on THIS branch.
+
+    Stored as ``"<event_type_name>.<name>"``, never a uuid — the snapshot keys
+    it that way because ids are branch-local. A key several base events spelled
+    is a 409 (``_base_successor_count``), and so is a key several branch events
+    answer to (``_event_id_by_dotted_key``); a successor that is gone is
+    cleared. *by_hand* finishes the base-side refusal with what the caller's
+    user can still do.
+
+    Shared by the field revert of ``superseded_by`` and the rebuild of a
+    deleted event. The rebuild used to leave the pointer out, so the event came
+    back without its successor and the diff went on showing the change
+    (review2#18).
+    """
+    dotted = base_item.get("superseded_by")
+    if dotted and _base_successor_count(base_payload, data, dotted) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"More than one event in this branch's base snapshot answers to "
+                f"'{dotted}', so it is ambiguous which one it named as the successor. "
+                f"{by_hand}"
+            ),
+        )
+    event.superseded_by_event_id = await _event_id_by_dotted_key(
+        session, project_id, branch_id, dotted, exclude_event_id=event.id
+    )
+
+
+def _base_successor_count(
+    base_payload: dict[str, Any], data: BranchRevertRequest, dotted: str
+) -> int:
+    """How many events in the BASE snapshot spell *dotted*, the reverted one aside.
+
+    ``_base_identity_count``'s question, asked of the successor key. The
+    lookup below refuses two BRANCH events answering to one key, and until
+    this nothing asked whether the base named one event to begin with — the
+    every-seam fix for tripl-0zpq.150 left that side open. Namesakes
+    ``track/checkout_v2`` (S1, S2) on main, ``checkout`` pointing at S1, S1
+    deleted on the branch: the delete clears the pointer, the key still reads
+    ``track.checkout_v2``, only S2 answers on the branch, and the revert
+    pointed ``checkout`` at S2 with a 200 — or, with ``app.core/checkout_v2``
+    and ``app/core.checkout_v2`` in the base, at an event under another type.
+    The diff then read level, so nothing showed the swap.
+
+    Refused with a 409 where ``_base_identity_count`` declines, because the two
+    have different things to fall back on. Declining a rename leaves the plain
+    rebuild, which restores exactly the row that went missing; declining here
+    could only clear the pointer — a 200 while the diff goes on showing the
+    change, the very symptom tripl-0zpq.150 was filed for.
+
+    The reverted event is left out of the count for the reason the lookup below
+    leaves it out: it can spell the key itself (``app`` / ``core.x`` spells
+    ``app.core.x``), and an event cannot supersede itself (``_resolve_successor``
+    refuses it). It is found by its own key, which ``_base_item`` has already
+    proven unique in the base.
+    """
+    return sum(
+        1
+        for item in base_payload.get("events", [])
+        if f"{item.get('event_type_name', '')}.{item.get('name', '')}" == dotted
+        and (item.get("event_type_name"), item.get("name")) != (data.parent, data.name)
+    )
+
+
 async def _event_id_by_dotted_key(
     session: AsyncSession,
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
     dotted: str | None,
+    *,
+    exclude_event_id: uuid.UUID,
 ) -> uuid.UUID | None:
     """``"<event_type_name>.<name>"`` → that event's id on this branch, or None.
 
+    The key is spelled by ``build_plan_snapshot`` and cannot be split back
+    apart. Neither an event type's name nor an event's forbids a dot, so
+    ``"app.core.checkout_v2"`` reads as ``app.core`` / ``checkout_v2`` just as
+    well as ``app`` / ``core.checkout_v2``. Cutting at the first dot found
+    nothing for the first reading and silently cleared the pointer, while the
+    diff went on showing the change (tripl-0zpq.150). So every dot is tried as
+    the seam, and an event matches when its type and name spell the whole key
+    back — the same string the snapshot builds.
+
+    More than one match is refused with a 409, the way ``_one`` refuses. Event
+    names carry no uniqueness and neither does the spelling, so two branch
+    events can answer to one key: namesakes under one type, or two seams that
+    spell the same string. Picking one would name a successor the reviewer
+    never chose. This used to escape as ``MultipleResultsFound``, a bare 500.
+
+    The event whose pointer this is never counts. It can spell the key itself —
+    ``app`` / ``core.x`` points at ``app.core`` / ``x``, and both read
+    ``app.core.x`` — yet ``_resolve_successor`` forbids an event superseding
+    itself, so it is never the answer. Counted, it made the revert a spurious
+    409 while the successor was still there, and once the successor was gone
+    it was the only match: the revert wrote a self-pointer the API refuses, and
+    the diff, spelling the base key again, read level over it.
+
     Deliberately NOT a 409 when the successor is missing, which is where this
-    diverges from the ``event_type_name`` arm above. Moving an event back to an
-    event type that no longer exists is structurally impossible and has to be
-    refused; naming a successor that has since been deleted is simply a fact
-    that stopped being true, on a column that is documentation. Clearing it is
-    the honest restore.
+    diverges from a missing event type or field elsewhere in this module
+    (``_event_type_by_name``, ``_restore_event_children``). A row cannot be
+    hung off a parent that no longer exists, so that has to be refused; naming
+    a successor that has since been deleted is simply a fact that stopped
+    being true, on a column that is documentation. Clearing it is the honest
+    restore.
     """
     if not dotted or "." not in dotted:
         return None
-    type_name, _, event_name = dotted.partition(".")
-    return (
-        await session.execute(
-            select(Event.id)
-            .join(EventType, EventType.id == Event.event_type_id)
-            .where(
-                Event.project_id == project_id,
-                Event.branch_id == branch_id,
-                Event.name == event_name,
-                EventType.name == type_name,
+    spellings = [
+        and_(EventType.name == dotted[:seam], Event.name == dotted[seam + 1 :])
+        for seam, char in enumerate(dotted)
+        if char == "."
+    ]
+    matches = list(
+        (
+            await session.execute(
+                select(Event.id)
+                .join(EventType, EventType.id == Event.event_type_id)
+                .where(
+                    Event.project_id == project_id,
+                    Event.branch_id == branch_id,
+                    Event.id != exclude_event_id,
+                    or_(*spellings),
+                )
             )
         )
-    ).scalar_one_or_none()
+        .scalars()
+        .all()
+    )
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"More than one event on this branch answers to '{dotted}', so it is "
+                "ambiguous which one the base snapshot named as the successor. "
+                "Rename one of them, then revert."
+            ),
+        )
+    return matches[0] if matches else None
