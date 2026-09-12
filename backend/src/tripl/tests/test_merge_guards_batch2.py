@@ -132,7 +132,11 @@ async def test_the_merge_releases_the_blobs_of_an_event_the_branch_deleted(
     branch_id = await _create_branch(client, slug)
 
     branch_event_id, _photo_id = await _copy_on(branch_id, storage_key)
-    dropped = await client.delete(f"/api/v1/projects/{slug}/events/{branch_event_id}")
+    # The event routes take their branch from ``?branch=``, unlike the photo
+    # routes, which address a branch's event by its own id.
+    dropped = await client.delete(
+        f"/api/v1/projects/{slug}/events/{branch_event_id}?branch={branch_id}"
+    )
     assert dropped.status_code == 204, dropped.text
     assert blob.read_bytes() == _PNG
 
