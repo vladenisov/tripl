@@ -290,7 +290,9 @@ async def _diff_counts_for_branches(
             mark_housekeeping(legacy_entries, main_payload=main_snapshot)
             counts[branch.id] = (len(reviewable(legacy_entries)), False)
             continue
-        ahead_entries = compute_plan_diff_entries(base_payload, branch_snapshot)
+        ahead_entries = compute_plan_diff_entries(
+            base_payload, branch_snapshot, key_collisions_from=main_snapshot
+        )
         behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
         mark_housekeeping(ahead_entries, behind_entries=behind_entries, main_payload=main_snapshot)
         counts[branch.id] = (len(reviewable(ahead_entries)), len(behind_entries) > 0)
@@ -1181,7 +1183,9 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
             base_payload = base_revision.payload or {}
             # Visible entries are changes authored on the branch, not changes
             # that landed on main after the branch was opened.
-            entries = compute_plan_diff_entries(base_payload, branch_snapshot)
+            entries = compute_plan_diff_entries(
+                base_payload, branch_snapshot, key_collisions_from=main_snapshot
+            )
             behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
             behind_base = len(behind_entries) > 0
             mark_housekeeping(entries, behind_entries=behind_entries, main_payload=main_snapshot)

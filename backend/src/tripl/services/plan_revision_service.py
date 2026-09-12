@@ -12,7 +12,7 @@ import hashlib
 import json
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from fastapi import HTTPException
@@ -954,14 +954,21 @@ def _diff_set(
     parent_of: Callable[[dict[str, Any]], str] | None = None,
     change_keys: Iterable[str],
     old_is_current_version: bool,
+    collision_items: Sequence[dict[str, Any]] = (),
 ) -> list[PlanDiffEntry]:
     old_by_key = {key_of(item): item for item in old_items}
     new_by_key = {key_of(item): item for item in new_items}
     entries: list[PlanDiffEntry] = []
 
+    # ``collision_items`` is a THIRD side read for nothing but this count: main
+    # as it stands now, which a base-to-branch diff never looks at. A key main
+    # alone holds twice is the case the warning most needs to reach — the merge
+    # matches the branch's row against main's, keeps one main row per key, and
+    # so writes the branch's change onto whichever of main's rows it kept. Read
+    # off the two sides alone, that diff called the key safe.
     shared_keys: set[object] = set()
     if entity_type in _SHARED_KEY_TYPES:
-        for items in (old_items, new_items):
+        for items in (old_items, new_items, collision_items):
             held = Counter(key_of(item) for item in items)
             shared_keys.update(key for key, count in held.items() if count > 1)
 
@@ -1028,10 +1035,22 @@ def _diff_set(
 
 
 def compute_plan_diff_entries(
-    old_payload: dict[str, Any], new_payload: dict[str, Any]
+    old_payload: dict[str, Any],
+    new_payload: dict[str, Any],
+    *,
+    key_collisions_from: dict[str, Any] | None = None,
 ) -> list[PlanDiffEntry]:
+    """The changes between two plan snapshots, one entry per entity.
+
+    ``key_collisions_from`` is a third snapshot read for one purpose: keys that
+    more than one of ITS rows holds join the ones the two diffed sides hold
+    twice, so the entry carries the shared-key warning. A branch diff passes
+    main as it stands now, which neither the frozen base nor the branch shows
+    and which the merge will nonetheless have to match rows against.
+    """
     old_payload = with_snapshot_defaults(old_payload)
     new_payload = with_snapshot_defaults(new_payload)
+    collisions = with_snapshot_defaults(key_collisions_from) if key_collisions_from else {}
     entries: list[PlanDiffEntry] = []
 
     # Only the OLD payload's version governs skip-absent-key tolerance: a v1
@@ -1086,6 +1105,7 @@ def compute_plan_diff_entries(
             parent_of=lambda item: item["event_type_name"],
             change_keys=_EVENT_CHANGE_KEYS,
             old_is_current_version=old_is_current_version,
+            collision_items=collisions.get("events", []),
         )
     )
 
@@ -1133,6 +1153,7 @@ def compute_plan_diff_entries(
             ),
             change_keys=_RELATION_CHANGE_KEYS,
             old_is_current_version=old_is_current_version,
+            collision_items=collisions.get("relations", []),
         )
     )
 

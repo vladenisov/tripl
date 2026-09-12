@@ -450,6 +450,32 @@ def test_an_entry_whose_key_more_than_one_row_holds_says_so(
 
 
 @pytest.mark.parametrize(("collection", "row", "warning"), _SHARED_KEY_KINDS)
+def test_a_key_only_main_holds_twice_still_warns(
+    collection: str, row: Callable[[str], dict[str, Any]], warning: str
+) -> None:
+    """Copilot on PR #164: the duplicate is on MAIN, where a branch diff never
+    looks — the base holds one row and so does the branch. That is the case the
+    warning most needs to reach, since the merge keeps one main row per key and
+    writes the branch's change onto whichever it kept."""
+    original = row("original")
+    base, branch = [original], [_copy(original, description="edited")]
+    main = [original, row("added on main after the cut")]
+
+    without_main = compute_plan_diff_entries(
+        _payload(**{collection: base}), _payload(**{collection: branch})
+    )
+    (blind,) = without_main
+    assert blind.warnings == []
+
+    (entry,) = compute_plan_diff_entries(
+        _payload(**{collection: base}),
+        _payload(**{collection: branch}),
+        key_collisions_from=_payload(**{collection: main}),
+    )
+    assert (entry.kind, entry.warnings) == ("changed", [warning])
+
+
+@pytest.mark.parametrize(("collection", "row", "warning"), _SHARED_KEY_KINDS)
 def test_an_entry_whose_key_one_row_holds_carries_no_such_warning(
     collection: str, row: Callable[[str], dict[str, Any]], warning: str
 ) -> None:
