@@ -198,10 +198,14 @@ def storage_for(backend: str) -> PhotoStorage:
     (tripl-0zpq.295). Writing still follows the setting — that is what
     ``get_photo_storage`` is for.
 
-    Raises :class:`UnknownPhotoBackend` for a name neither driver answers to,
-    which from a stored row means the row, not the configuration. Everything
-    else is left to fail where it always did: a ``gcs`` row on an instance whose
-    bucket setting is gone still builds a driver here and raises from the client.
+    Raises :class:`UnknownPhotoBackend` for a name neither driver answers to.
+    A stored row cannot carry one — ``EventPhoto.storage_backend`` is a database
+    enum of ``local`` and ``gcs`` — so that is for a bad setting, or a backend a
+    future build drops while its rows are still there. Everything else fails
+    where it always did: a ``gcs`` row on an instance whose bucket setting is
+    gone builds a driver here and raises from the client. Callers that serve a
+    photo treat every one of those the same way, so a store they cannot reach
+    costs that photo and not the page.
     """
     name = backend.lower().strip()
     cached = _BY_NAME.get(name)

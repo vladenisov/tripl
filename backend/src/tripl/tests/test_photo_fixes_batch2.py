@@ -424,7 +424,10 @@ async def test_a_url_that_cannot_be_signed_falls_back_to_the_api(
     signer: str | Exception,
 ) -> None:
     sign = _raising_signer(signer) if isinstance(signer, Exception) else _real_signer()
-    monkeypatch.setattr(photo_storage, "_INSTANCE", _private_gcs(sign))
+    # Registered under the backend's NAME: uploads follow the setting, and a
+    # row's reads follow the name it recorded (tripl-0zpq.295).
+    monkeypatch.setitem(photo_storage._BY_NAME, "gcs", _private_gcs(sign))
+    monkeypatch.setattr(settings, "photo_storage_backend", "gcs")
     monkeypatch.setattr(event_photo_service, "_PUBLIC_URL_FAILURES_LOGGED", set())
     slug = "photo-unsigned"
     await _seed_plan(client, slug)
@@ -805,20 +808,27 @@ async def test_a_photo_survives_a_switch_of_the_storage_backend(
 
 
 @pytest.mark.asyncio
-async def test_a_photo_naming_a_backend_this_build_cannot_read_says_so(
-    client: AsyncClient, local_photos: Path
+async def test_a_photo_whose_backend_is_no_longer_configured_says_so(
+    client: AsyncClient, local_photos: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Not a 404 blaming the photo: the row is there and the name is the
-    problem, so the answer names the backend and what to do about it."""
-    slug = "photo-backend-unknown"
+    """The other half of a switch: moved back to local and the bucket setting
+    dropped, so the rows written to GCS have no driver to read them through.
+    That is a 409 naming the backend, not a 404 blaming the photo — and the rest
+    of the page still loads, which is why building a driver never raises here."""
+    slug = "photo-backend-gone"
     await _seed_plan(client, slug)
     event_id, photo_id = await _main_photo(client, slug)
     async with TestSessionLocal() as session:
         row = await session.get(EventPhoto, uuid.UUID(photo_id))
         assert row is not None
-        row.storage_backend = "s3"
+        row.storage_backend = "gcs"
         await session.commit()
+    monkeypatch.setattr(settings, "gcs_photo_bucket", "")
+
+    listed = await client.get(f"/api/v1/projects/{slug}/events/{event_id}/photos")
+    assert listed.status_code == 200, listed.text
+    assert listed.json()[0]["url"].endswith("/file")
 
     served = await client.get(f"/api/v1/projects/{slug}/events/{event_id}/photos/{photo_id}/file")
     assert served.status_code == 409
-    assert "s3" in served.json()["detail"]
+    assert "gcs" in served.json()["detail"]
