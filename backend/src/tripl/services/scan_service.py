@@ -529,10 +529,18 @@ async def cancel_scan_job(
     Marks the job ``cancelled`` and best-effort revokes the Celery task. A
     running task is not killed; it stops cooperatively at its next checkpoint,
     and every scan task has one: a metrics collection or replay polls this status
-    at each chunk boundary and keeps what it already wrote, while a catalog run
-    or an event-group apply re-reads it before it commits and therefore writes
-    nothing at all. Either way the job stays ``cancelled`` and never turns itself
-    back into ``completed``.
+    at each chunk boundary and keeps the points it already wrote, while a catalog
+    run or an event-group apply looks once, immediately before the commit that
+    makes its work durable — stopped THERE it rolls the whole generation back and
+    writes nothing at all.
+
+    How much work survives therefore depends on when the stop lands; what does
+    not depend on it is the status. A catalog run stopped after that commit still
+    finishes its variable sweep and its reindex, and their output stays, but every
+    scan task re-reads the row through the database before its closing write and
+    leaves a terminal status alone. So the job stays ``cancelled`` — it never
+    turns itself back into ``completed``, and never overwrites the cancellation
+    with the ``failed`` of an error the cancel itself provoked.
     """
     job = await get_scan_job(session, slug, scan_id, job_id)
     if job.status not in (ScanJobStatus.pending.value, ScanJobStatus.running.value):

@@ -507,7 +507,13 @@ def _trailing_window(
 
 
 def _seasonal_factors(
-    counts: list[float], slots: Sequence[int], idx: int, period: int, level_window: int
+    counts: list[float],
+    slots: Sequence[int],
+    idx: int,
+    period: int,
+    level_window: int,
+    *,
+    signed: bool = False,
 ) -> tuple[list[float], float]:
     """Level-normalized seasonal factors for ``idx``'s phase, and the current level.
 
@@ -522,16 +528,23 @@ def _seasonal_factors(
     full phase period. Cycles whose level is 0 (all-zero history) contribute no
     factor.
 
-    ``level > 0`` is deliberately a SIGNED test even though the volume gates are
-    magnitude tests for a signed series (tripl-0zpq.102): dividing by a level
-    that can sit near zero or cross it manufactures exploding factors, so a
-    signed series keeps the documented degenerate fallback below — the raw
-    same-phase median, a correct if less adaptive baseline — and its sustained
-    level shifts are caught by the trend path instead.
+    ``signed`` short-circuits the whole normalization to the degenerate
+    fallback below — the raw same-phase median, a correct if less adaptive
+    baseline — and leaves sustained level shifts to the trend path
+    (tripl-0zpq.102). The per-cycle ``level > 0`` test cannot stand in for it: it
+    only excludes a partner whose trailing mean is non-POSITIVE, and a series
+    that straddles zero (small positive buckets plus one deep negative one) keeps
+    every trailing mean positive-but-tiny, so ``counts[j] / level`` explodes.
+    That produced an expectation of -726 on a series whose observed range was
+    [-220, +11], which the magnitude gate in :func:`_clears_volume_gate` then
+    admitted as a 6.4-sigma "spike". The divisor has to be far from zero, not
+    merely above it, and on a signed series nothing bounds it away.
 
     Both the partner selection and the two level windows are keyed on the grid
     slot (``_grid_slots``), so a missing bucket cannot rotate the phase.
     """
+    if signed:
+        return [], 0.0
     factors: list[float] = []
     for j in _same_phase_indices(slots, idx, period):
         cycle = _trailing_window(counts, slots, j, level_window)
@@ -569,12 +582,16 @@ def _phase_anomaly_at(
     cycle level and re-applying the median factor to the current level tracks the
     shift, while a genuine one-bucket spike still stands out (the current level,
     a trailing full short cycle, barely moves). Degenerate all-zero history falls
-    back to the raw same-phase median, so brand-new series behave as before."""
+    back to the raw same-phase median, so brand-new series behave as before — and
+    so does a SIGNED series, whose level is not a safe divisor at all (see
+    :func:`_seasonal_factors`)."""
     same_phase = [counts[j] for j in _same_phase_indices(slots, idx, period)]
     if not same_phase:
         return None
 
-    factors, current_level = _seasonal_factors(counts, slots, idx, period, level_window)
+    factors, current_level = _seasonal_factors(
+        counts, slots, idx, period, level_window, signed=signed
+    )
     if factors and current_level > 0:
         expected_count = median(factors) * current_level
         scale = _robust_scale(factors) * current_level

@@ -27,7 +27,82 @@ from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.worker.plan_scope import main_branch_id
 
+# ``worker.tasks._errors`` is a LEAF: it imports ``core.name_template`` and
+# nothing else, and ``worker/tasks/__init__.py`` is empty, so naming it here
+# imports no task module and the reasoning in the docstring above still holds.
+# The import earns its place — a plain ``ValueError`` is scrubbed to "Scan
+# failed due to an internal error." by ``user_facing_error``, which is exactly
+# the message this guard exists to replace.
+from tripl.worker.tasks._errors import ScanError
+
 logger = logging.getLogger(__name__)
+
+# What ``event_types.name`` can hold (``models.event_type``: ``String(100)``),
+# and the same bound the API already enforces on a hand-created event type
+# (``schemas.event_type.EventTypeCreate``: ``min_length=1, max_length=100``).
+# The catalog has ONE rule for what an event type may be called; a path that
+# auto-creates must not be allowed to write a row a person could not.
+EVENT_TYPE_NAME_MAX_LEN = 100
+
+# How much of an over-long value the refusal quotes back. Deliberately short:
+# ``user_facing_error`` caps a curated message at 500 chars from the RIGHT, and
+# the actionable tail ("pick a different Event type column") is what gets eaten
+# first. 40 chars survives even a value that is all backslashes and newlines,
+# whose ``repr`` is four times its length (tripl-3mmh's arithmetic, reused).
+_NAME_PREVIEW_LEN = 40
+
+
+def _elide(value: str) -> str:
+    if len(value) <= _NAME_PREVIEW_LEN:
+        return value
+    return value[: _NAME_PREVIEW_LEN - 3] + "..."
+
+
+def event_type_name_rejection(value: str) -> str | None:
+    """Why a warehouse group value cannot name an event type, or None if it can.
+
+    The policy is REJECT, and deliberately not truncate. An event type's name is
+    its IDENTITY, not display text:
+
+    * Truncating collides. Two 120-char values that agree on their first 100
+      characters become one event type, which then absorbs both groups' events
+      and dedups the second group's against the first's — silently, permanently,
+      and only on the values long enough to be hard to notice.
+    * Truncating with a disambiguating suffix avoids the collision but breaks a
+      different invariant: the name written here must equal the group value,
+      because other sites look the type up BY that raw value —
+      ``metrics.catalog_sync`` re-selects ``EventType.name == et_name`` for drift
+      and contract detection before calling this, and the dry run does the same
+      to label a type existing rather than new. A name this function reshaped
+      matches none of them, so every tick would rediscover the type as new.
+
+    So the value is validated and then stored VERBATIM — a padded ``" home "``
+    stays padded — and anything that cannot be stored verbatim is refused.
+
+    Returns the bare reason so both surfaces can use it: the run raises it as a
+    ``ScanError`` (``user_facing_error`` prefixes "Scan failed:"), and the dry
+    run appends it to ``errors`` unprefixed, the way it already reports a
+    ``NameFormatError`` it will not fail the preview over.
+    """
+    # ``analyze_cardinality_grouped`` maps a NULL group cell to ``""``, so the
+    # blank case is reachable on every warehouse, not hypothetical — and before
+    # this it created ONE nameless event type per project that quietly collected
+    # every NULL row. No screen in the product can render it and no user could
+    # have created it.
+    if not value.strip():
+        return (
+            "The Event type column produced a blank value, which cannot name an "
+            "event type. Exclude those rows in the scan's query, or pick a "
+            "different Event type column."
+        )
+    if len(value) > EVENT_TYPE_NAME_MAX_LEN:
+        return (
+            f"The Event type column produced a {len(value)}-character value, "
+            f"longer than the {EVENT_TYPE_NAME_MAX_LEN} characters an event "
+            f"type name can hold: {_elide(value)!r}. Shorten it in the scan's "
+            "query, or pick a different Event type column."
+        )
+    return None
 
 
 def ensure_event_type_with_fields(
@@ -38,6 +113,19 @@ def ensure_event_type_with_fields(
     skip_columns: set[str],
 ) -> EventType:
     """Find or auto-create an EventType with FieldDefinitions for all columns."""
+    # BEFORE the lookup, not after: a blank name would otherwise find the blank
+    # event type an earlier run created and keep feeding it.
+    #
+    # Refusing fails the whole grouped run, which is the honest verdict — on
+    # PostgreSQL an over-long value already killed it, just with "Scan failed due
+    # to an internal error." for a message. What changes is that the reason is
+    # now sayable, that SQLite and PostgreSQL agree, and that the dry run refuses
+    # the same values in advance (``tasks.scan_dry_run._dry_run_targets``) so the
+    # operator reads it there first instead of finding out from a failed job.
+    rejection = event_type_name_rejection(et_name)
+    if rejection is not None:
+        raise ScanError(rejection)
+
     # Scans and metrics collection target the main plan; a working branch
     # deep-copies event types under the same names, so the lookup must be
     # branch-scoped — and the created row must land on main, which it does

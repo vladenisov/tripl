@@ -32,6 +32,13 @@ from httpx import AsyncClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from tripl.alert_templates import (
+    NO_BASELINE_LABEL,
+    format_percent_delta,
+    has_baseline,
+    percent_delta_of,
+    percent_delta_or_none,
+)
 from tripl.alerting_matching import (
     SCOPE_METRIC,
     SCOPE_RELEASE_REGRESSION,
@@ -152,6 +159,8 @@ def _add_metric(
     aggregation: MetricAggregation | None = None,
     composition: MetricComposition | None = None,
     interval: str | None = "1h",
+    status: MetricStatus = MetricStatus.active,
+    anomaly_detection_enabled: bool = True,
 ) -> MetricDefinition:
     metric = MetricDefinition(
         id=uuid.uuid4(),
@@ -164,8 +173,8 @@ def _add_metric(
         config={},
         data_source_id=config.data_source_id,
         interval=interval,
-        status=MetricStatus.active.value,
-        anomaly_detection_enabled=True,
+        status=status.value,
+        anomaly_detection_enabled=anomaly_detection_enabled,
     )
     session.add(metric)
     session.commit()
@@ -381,6 +390,66 @@ def test_detect_metrics_disabled_leaves_another_projects_history_alone(
         assert _metric_anomaly_buckets(session, theirs.id) == {in_window}
 
 
+def test_detect_metrics_disabled_spares_metrics_the_enabled_pass_never_scores(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The purge population is the ENABLED pass's population, nothing wider.
+
+    ``_recalculate_project_metric_anomalies`` selects on
+    ``monitored_metric_criteria()`` — ``active`` AND ``anomaly_detection_enabled``
+    — so a metric that has left monitoring is never scored and never rewritten
+    with the box ticked. Sweeping it when the box is UNticked would erase rows
+    no pass ever re-derives (re-ticking does not bring them back: the metric is
+    still unmonitored), which is the promise ``tripl.metric_monitoring`` makes
+    for an archived metric's recorded history.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session, detect_metrics=False)
+        monitored = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="signups",
+        )
+        archived = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="archived_signups",
+            status=MetricStatus.archived,
+        )
+        detection_off = _add_metric(
+            session,
+            config,
+            kind=MetricKind.fact,
+            aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
+            name="unwatched_signups",
+            anomaly_detection_enabled=False,
+        )
+        in_window = _EVAL_TO - timedelta(hours=2)
+        for metric in (monitored, archived, detection_off):
+            _add_metric_anomaly(session, metric, in_window)
+
+        metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=_EVAL_FROM,
+            evaluation_end=_EVAL_TO,
+        )
+        session.commit()
+
+        # The monitored metric still loses its window — the purge must keep
+        # doing its job, or this test would pass on a purge that does nothing.
+        assert _metric_anomaly_buckets(session, monitored.id) == set()
+        assert _metric_anomaly_buckets(session, archived.id) == {in_window}
+        assert _metric_anomaly_buckets(session, detection_off.id) == {in_window}
+
+
 # ---------------------------------------------------------------------------
 # tripl-0zpq.102 — the signed volume floor
 # ---------------------------------------------------------------------------
@@ -506,6 +575,91 @@ def test_trend_shift_reports_a_signed_expectation() -> None:
     assert trend_rows(signed=False) == []
 
 
+def test_trend_shift_emits_an_empty_bucket_against_a_negative_expectation() -> None:
+    """The degenerate-pair guard is ``expected_count == 0.0``, not ``<= 0.0``.
+
+    The guard exists to stop "spike, 0 actual vs 0 expected" rows (tripl-wkwv.8).
+    Once the trend reconstruction stopped being clamped to 0.0 for a signed
+    series (tripl-0zpq.102), ``<=`` also swallowed a REAL move: an empty bucket
+    against an expectation of -100 is a drop to nothing, not an absence of
+    movement. Nothing else in the suite reaches that combination — every other
+    signed fixture has a non-zero anchor — so reverting the spelling would leave
+    the suite green.
+    """
+    hours = 24 * 22  # three full hour-of-week cycles, so period 168 is selectable
+    anchor = hours - 1
+    points = [SeriesPoint(bucket=_bucket(hour), count=-100.0) for hour in range(hours)]
+    points[anchor] = SeriesPoint(bucket=_bucket(anchor), count=0.0)
+    trend = [-100.0] * hours
+    trend[anchor] = -160.0
+    components = (tuple(trend), tuple([0.0] * hours), tuple([0.0] * hours))
+
+    def trend_rows(*, signed: bool) -> list[tuple[str, float, float]]:
+        result = _detect_trend_shift(
+            points,
+            components,
+            evaluation_start=_bucket(anchor - 1),
+            settings=_FRACTIONAL_SETTINGS,
+            interval=_HOUR,
+            signed=signed,
+        )
+        return [(row.direction, row.actual_count, row.expected_count) for row in result.anomalies]
+
+    assert trend_rows(signed=True) == [("spike", 0.0, -100.0)]
+    # The count lane never reaches the guard at all — the volume gate rejects a
+    # negative deseasonalized trend first — so the two spellings still agree
+    # everywhere a non-negative series can go.
+    assert trend_rows(signed=False) == []
+
+
+def test_signed_phase_baseline_never_normalizes_by_a_near_zero_level() -> None:
+    """A signed series takes the raw same-phase median, not a level-normalized one.
+
+    ``_seasonal_factors`` divides each same-phase count by its own trailing mean.
+    On a series that STRADDLES zero that divisor is positive-but-tiny — it passes
+    the per-cycle ``level > 0`` test while sitting near zero — so the factors
+    explode and the expectation lands far outside anything the series has ever
+    reached. The magnitude gate added for signed series (tripl-0zpq.102) then
+    admits the product instead of rejecting it for its sign.
+
+    A quiet level of +10/+11 with a deep settlement dip at 03:00 emitted 21 rows,
+    the loudest reading "spike, actual -220 vs expected -286" on a bucket
+    identical to every prior 03:00. The divisor has to be far from zero, not
+    merely above it, so the signed lane keeps the degenerate fallback.
+    """
+    hours = 24 * 6
+    dip_hour = 24 * 5 + 3
+
+    def rows(dip: float) -> list[tuple[int, str, float, float]]:
+        counts = [
+            -220.0 if hour % 24 == 3 else (11.0 if hour >= 24 * 5 else 10.0)
+            for hour in range(hours)
+        ]
+        counts[dip_hour] = dip
+        points = [
+            SeriesPoint(bucket=_bucket(hour), count=count) for hour, count in enumerate(counts)
+        ]
+        result = detect_anomalies(
+            points,
+            interval=_HOUR,
+            evaluation_start=_bucket(hours - 24),
+            evaluation_end=_bucket(hours),
+            settings=_FRACTIONAL_SETTINGS,
+            fill_gaps=False,
+        )
+        return [
+            (row.bucket.hour, row.direction, row.actual_count, row.expected_count)
+            for row in result.anomalies
+        ]
+
+    # The settlement hour repeats exactly as it always has: nothing moved.
+    assert rows(-220.0) == []
+    # ...and the fallback is a real baseline, not silence: a settlement hour that
+    # comes back at a tenth of its usual depth is still caught, against an
+    # expectation inside the series' own observed range.
+    assert rows(-20.0) == [(3, "spike", -20.0, -220.0)]
+
+
 def test_negative_level_fractional_metric_is_scored_end_to_end(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
@@ -545,6 +699,80 @@ def test_negative_level_fractional_metric_is_scored_end_to_end(
     assert anomalies[0].direction == "drop"
     assert anomalies[0].actual_count == -9.0
     assert anomalies[0].expected_count < 0
+
+
+def test_delivery_records_a_measured_percent_delta_for_a_negative_baseline(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """``percent_delta`` is a placeholder only when there is NO baseline.
+
+    The matcher reads a signed expectation as a magnitude (``abs(expected)``
+    against ``min_expected_count``, ``absolute_delta / abs(expected)`` against
+    ``min_percent_delta``), so a rule fires on -3 -> -9 precisely BECAUSE the
+    move is 200%. The payload builder still asked ``expected_count > 0`` and
+    stored the 0.0 placeholder for it — the tripl-l429.24 misreport, reproduced
+    against a REAL baseline — and that column is frozen history: the renderers
+    read it back, so nothing later can recover the number.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        metric = _add_metric(session, config, kind=MetricKind.sql, name="net_margin")
+        _seed_values_at(
+            session,
+            metric,
+            {
+                _BASE + timedelta(hours=hour): (-9.0 if hour == _SPIKE_HOUR else -3.0)
+                for hour in range(_SPIKE_HOUR + 1)
+            },
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            type="slack",
+            name="Main Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+            delivery_schedule_cron=None,
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Metrics only",
+            enabled=True,
+            include_project_total=False,
+            include_event_types=False,
+            include_events=False,
+            include_metrics=True,
+            notify_on_spike=True,
+            notify_on_drop=True,
+            min_percent_delta=100.0,
+            min_absolute_delta=0,
+            min_expected_count=1.0,
+            cooldown_minutes=1440,
+        )
+        destination.rules = [rule]
+        session.add_all([destination, rule])
+        session.commit()
+
+        metrics_detect._recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=_EVAL_FROM,
+            evaluation_end=_EVAL_TO,
+        )
+        session.commit()
+        metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+        session.commit()
+
+        items = list(session.execute(select(AlertDeliveryItem)).scalars())
+
+    assert len(items) == 1
+    assert items[0].scope_type == SCOPE_METRIC
+    assert items[0].expected_count == pytest.approx(-3.0)
+    assert items[0].actual_count == pytest.approx(-9.0)
+    assert items[0].absolute_delta == pytest.approx(6.0)
+    # The size of the move, not its sign: 6 against a baseline of magnitude 3.
+    assert items[0].percent_delta == pytest.approx(200.0)
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +886,88 @@ def test_metric_rule_keeps_matching_a_positive_expectation() -> None:
     assert rule_matches_anomaly(rule, _metric_candidate(expected=100.0, actual=300.0)) is True
     assert rule_matches_anomaly(rule, _metric_candidate(expected=100.0, actual=101.0)) is False
     assert rule_matches_anomaly(rule, _metric_candidate(expected=10.0, actual=300.0)) is False
+
+
+# ---------------------------------------------------------------------------
+# tripl-0zpq.102 — every reader of a baseline has to answer the same way
+#
+# The gate moved to MAGNITUDE in the detector, the matcher and the payload
+# builder. The readers did not: they kept asking ``expected_count > 0`` and so
+# reported "no baseline" over the very number that made the rule fire. These pin
+# the single definition every backend surface now routes through
+# (``alert_templates.has_baseline`` / ``percent_delta_of``), so a fifth copy of
+# the expression cannot drift back in unnoticed.
+# ---------------------------------------------------------------------------
+
+_BASELINE_GRID = (-1000.0, -100.0, -3.0, -0.5, 0.0, 0.5, 3.0, 100.0, 1000.0)
+
+
+def _matcher_reads_a_baseline(expected: float) -> bool:
+    """Whether the MATCHER divided by ``expected``, observed through its effect.
+
+    Not asserted about directly, because the matcher exposes no predicate: a
+    move of 1% of the magnitude sits far below the rule's 100% floor, so the
+    percent gate rejects the candidate exactly when the matcher treats the
+    expectation as a baseline. When it does not, the candidate falls into the
+    no-baseline branch — which only rejects a candidate that did not move at all
+    — and matches. A zero expectation moved by 1.0 therefore reads False here,
+    which is the case the placeholder exists for.
+    """
+    rule = _build_rule(include_metrics=True, min_percent_delta=100.0, min_expected_count=0.0)
+    move = abs(expected) * 0.01 or 1.0
+    return not rule_matches_anomaly(
+        rule, _metric_candidate(expected=expected, actual=expected + move)
+    )
+
+
+@pytest.mark.parametrize("expected", _BASELINE_GRID)
+def test_every_baseline_reader_agrees_with_the_matcher(expected: float) -> None:
+    """Matcher, both outbound encodings and the stored number, pinned equal.
+
+    They are separate functions in separate modules and only a test can hold
+    them together. Regress any one of them to ``expected_count > 0`` and it
+    starts calling every negative row "no baseline" while the matcher keeps
+    firing on it — the renderer contradicting the gate that admitted the signal
+    — and this goes red on the first negative value in the grid.
+    """
+    matcher = _matcher_reads_a_baseline(expected)
+
+    assert has_baseline(expected) is matcher
+    # The two outbound encodings, both routed through ``has_baseline``: the
+    # words for a human, ``null`` for a program.
+    assert (format_percent_delta(200.0, expected) != NO_BASELINE_LABEL) is matcher
+    assert (percent_delta_or_none(200.0, expected) is not None) is matcher
+    # And the number live dispatch stores and the simulator replays: a measured
+    # ratio where there is a baseline, the frozen 0.0 placeholder where not.
+    assert (percent_delta_of(expected * 3.0, expected) != 0.0) is matcher
+
+
+def test_percent_delta_of_measures_a_negative_baseline_as_a_size() -> None:
+    """-3 -> -9 is a 200% move, exactly as 3 -> 9 is.
+
+    Numerator and divisor are both magnitudes, so the ratio cannot flip sign
+    with the level; direction is carried by ``direction``/``actual_count`` and
+    never by this field.
+    """
+    assert percent_delta_of(-9.0, -3.0) == pytest.approx(200.0)
+    assert percent_delta_of(9.0, 3.0) == pytest.approx(200.0)
+    assert percent_delta_of(-1.0, -3.0) == pytest.approx(200.0 / 3.0)
+    # A move THROUGH zero is still a size: -3 -> +3 is a 200% move.
+    assert percent_delta_of(3.0, -3.0) == pytest.approx(200.0)
+    # No baseline keeps the frozen placeholder — the column is NOT NULL.
+    assert percent_delta_of(7.0, 0.0) == 0.0
+
+
+def test_alert_renderers_report_a_measured_negative_baseline() -> None:
+    """The label and the number may never disagree about whether there was one."""
+    assert format_percent_delta(200.0, -3.0) == "200.0%"
+    assert percent_delta_or_none(200.0, -3.0) == pytest.approx(200.0)
+    # The genuine no-baseline class is unchanged: named, never printed as 0%.
+    assert format_percent_delta(0.0, 0.0) == NO_BASELINE_LABEL
+    assert percent_delta_or_none(0.0, 0.0) is None
+    # And the ordinary positive case is untouched.
+    assert format_percent_delta(200.0, 3.0) == "200.0%"
+    assert percent_delta_or_none(200.0, 3.0) == pytest.approx(200.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1040,3 +1350,145 @@ async def test_simulator_applies_the_event_type_filter_like_live_dispatch(
     assert included["anomalies_considered"] == 1
     assert included["matched_before_cooldown"] == 1
     assert [firing["scope_type"] for firing in included["firings"]] == [SCOPE_EVENT]
+
+
+async def test_simulator_reports_the_percent_delta_live_dispatch_would_store(
+    client: AsyncClient,
+) -> None:
+    """The rule simulator and the send path must agree on the same anomaly.
+
+    ``test_delivery_records_a_measured_percent_delta_for_a_negative_baseline``
+    pins what live dispatch stores for -3 -> -9 on a signed catalog metric:
+    200.0, because ``abs(expected)`` is what the matcher divided by when it
+    admitted the row. The replay held its OWN copy of that expression, still
+    asking ``expected_count > 0``, so it reported 0.0% for the identical
+    anomaly under the identical rule — a simulator disagreeing with the thing it
+    simulates, which is worse than no simulator. Both now read the one
+    ``alert_templates.percent_delta_of``.
+    """
+    slug = "a2-sim-signed"
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "A2 Sim Signed", "slug": slug, "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    now = datetime.now(UTC)
+    async with TestSessionLocal() as session, session.begin():
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"ds-signed-{uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="h",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        session.add(data_source)
+        await session.flush()
+        # A scan exists but owns nothing here: a catalog metric anomaly is
+        # project-global, so it reaches the replay through the project's metric
+        # definitions rather than through the scan join.
+        session.add(
+            ScanConfig(
+                id=uuid.uuid4(),
+                data_source_id=data_source.id,
+                project_id=project_id,
+                name="sc-signed",
+                base_query="SELECT 1",
+                cardinality_threshold=100,
+                interval="1h",
+            )
+        )
+        metric = MetricDefinition(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            name="net_margin",
+            display_name="Net margin",
+            kind=MetricKind.sql.value,
+            aggregation=None,
+            composition=None,
+            config={},
+            data_source_id=data_source.id,
+            interval="1h",
+            status=MetricStatus.active.value,
+            anomaly_detection_enabled=True,
+        )
+        session.add(metric)
+        await session.flush()
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                # Catalog metric anomalies are project-global: NULL scan config,
+                # scope_ref is the metric definition id.
+                scan_config_id=None,
+                scope_type=SCOPE_METRIC,
+                scope_ref=str(metric.id),
+                event_id=None,
+                event_type_id=None,
+                bucket=now - timedelta(days=1),
+                actual_count=-9.0,
+                expected_count=-3.0,
+                stddev=1.0,
+                z_score=-6.0,
+                direction="drop",
+            )
+        )
+
+    destination_resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Sim Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/a2signed",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules",
+        json={
+            "name": "Metrics only",
+            "enabled": True,
+            "include_project_total": False,
+            "include_event_types": False,
+            "include_events": False,
+            "include_metrics": True,
+            "notify_on_spike": True,
+            "notify_on_drop": True,
+            # The rule admits this row BECAUSE the move is 200% of a baseline of
+            # magnitude 3. A reader that then calls it "no baseline" contradicts
+            # the gate that let it through.
+            "min_percent_delta": 100,
+            "min_absolute_delta": 0,
+            "min_expected_count": 1,
+            "cooldown_minutes": 60,
+        },
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules/{rule_id}/simulate"
+        "?days=7"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["anomalies_considered"] == 1
+    assert body["matched_before_cooldown"] == 1
+    assert len(body["firings"]) == 1
+    firing = body["firings"][0]
+    assert firing["expected_count"] == pytest.approx(-3.0)
+    assert firing["actual_count"] == pytest.approx(-9.0)
+    assert firing["absolute_delta"] == pytest.approx(6.0)
+    # The exact number ``dispatch._create_deliveries`` stores for this anomaly.
+    assert firing["percent_delta"] == pytest.approx(200.0)
+    # ...and the rendered preview quotes it rather than the no-baseline label,
+    # which is the half of the divergence an operator actually reads.
+    assert "200.0%" in firing["rendered_item"]
+    assert NO_BASELINE_LABEL not in firing["rendered_item"]

@@ -58,6 +58,21 @@ DEFAULT_CARDINALITY_THRESHOLD = 100
 # rather than reorder the shared table (tripl-0zpq.84).
 _RETIRED_STATUSES = frozenset({_ES.deprecated.value, _ES.archived.value})
 
+# The other half of that partition, derived from the model instead of listed so
+# a status added to ``EventStatus`` cannot land outside both bands: every status
+# the model defines is either retired or somewhere on the progression axis, and
+# ``event_status_rank`` totally orders THAT half — draft 0 < in_review 1 <
+# ready_for_dev 2 < implemented 3 < live 4. "Furthest along" means the maximum
+# over that total order, and a maximum is commutative: a family merges to the
+# same survivor status whichever member the loop reaches first, because a
+# retired member folds in as a no-op and every other one folds in as a max.
+# ``test_batch3_f1`` pins the partition, the order, and the commutativity.
+_PROGRESSION_STATUSES = frozenset(status.value for status in _ES) - _RETIRED_STATUSES
+
+# Where an auto-generated group row starts: the same place ``generate_events``
+# starts every scan-minted event, and the floor under the fold above.
+_MINTED_GROUP_STATUS = _ES.in_review
+
 
 @dataclass(frozen=True)
 class EventGroupMatch:
@@ -392,13 +407,27 @@ def _create_group_event_from_source(
             description="Auto-generated event group from data source scan",
             order=order,
             # The group row is auto-generated under a name the user never
-            # retired, so minting it retired asserts a retirement nobody made —
-            # and, since any matched member can be the one that mints it, makes
-            # the family's outcome depend on which row the loop reaches first.
-            # It starts where every other scan-minted event starts instead.
+            # retired, so minting it retired asserts a retirement nobody made.
+            # It starts where every other scan-minted event starts instead
+            # (``generate_events`` mints ``in_review`` too), and it starts there
+            # UNCONDITIONALLY rather than at the status of whichever member
+            # happened to mint it.
+            #
+            # That member is merged into this row moments later like any other,
+            # so a non-retired member's status reaches the survivor through the
+            # fold in ``_merge_event_into_group`` regardless. Copying it here
+            # only ever mattered when every non-retired member of the family sat
+            # BELOW this floor — all of them ``draft`` — where the fold cannot
+            # lift the row back up: the group was then born ``draft`` and
+            # silently skipped the review queue the scan's own rows start in,
+            # or, with a retired member in the family, born ``draft`` or
+            # ``in_review`` depending on which row the walk reached first — the
+            # walk being ordered by ``last_seen_at`` and nothing else
+            # (tripl-0zpq.84). A constant floor over a commutative fold is the
+            # whole of the determinism.
             # ``sunset_at`` and ``superseded_by_event_id`` are deliberately not
             # copied over for the same reason ``_RETIRED_STATUSES`` exists.
-            status=(_ES.in_review.value if source.status in _RETIRED_STATUSES else source.status),
+            status=_MINTED_GROUP_STATUS.value,
             last_seen_at=source.last_seen_at,
             metric_breakdown_columns=list(source.metric_breakdown_columns or []),
         ),
@@ -437,10 +466,13 @@ def _merge_event_into_group(
         target.last_seen_at = source.last_seen_at
     s_status = _ES(source.status) if source.status in _ES._value2member_map_ else _ES.draft
     t_status = _ES(target.status) if target.status in _ES._value2member_map_ else _ES.draft
-    if s_status.value not in _RETIRED_STATUSES and t_status.value not in _RETIRED_STATUSES:
+    if s_status.value in _PROGRESSION_STATUSES and t_status.value in _PROGRESSION_STATUSES:
         # Both sides on the progression axis: the survivor takes the furthest
-        # along. Either side retired: the target's status is left exactly as it
-        # is — see ``_RETIRED_STATUSES`` for why the rank table cannot decide it.
+        # along, by ``event_status_rank`` over the band the two sets partition.
+        # Either side retired: the target's status is left exactly as it is —
+        # see ``_RETIRED_STATUSES`` for why the rank table cannot decide it. That
+        # "leave it" is also what keeps the fold order-independent, because a
+        # retired member then contributes nothing from any position in the walk.
         target.status = s_status if _rank(s_status) > _rank(t_status) else t_status
     target.metric_breakdown_columns = sorted(
         set(target.metric_breakdown_columns or []) | set(source.metric_breakdown_columns or [])

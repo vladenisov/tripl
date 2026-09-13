@@ -32,6 +32,7 @@ from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks.metrics.chunk_processing import _build_shadow_candidate_rows
 from tripl.worker.tasks.metrics.metric_rows import (
+    _collect_app_version_breakdown_rows,
     _collect_distribution_drift_rows,
     _collect_metric_breakdown_rows,
     _is_supported_configured_breakdown_column,
@@ -275,6 +276,34 @@ _BREAKDOWN_ROWS: list[tuple[object, ...]] = [
     (datetime(2026, 1, 1, 10), "country", "us", False, "login", "2.2.0", "ios", "us", 17),
 ]
 
+# The SAME source rows at the primary grain — (bucket, *regular columns, count),
+# what ``get_time_bucketed_counts`` returns — which is where the app-version
+# series is derived from instead of a second warehouse query. 10 + 4 + 3 = the
+# 17 the country row above reports for the bucket.
+_METRIC_ROWS: list[tuple[object, ...]] = [
+    (datetime(2026, 1, 1, 10), "login", "2.2.0", "ios", "us", 10),
+    (datetime(2026, 1, 1, 10), "login", "2.1.0", "ios", "us", 4),
+    (datetime(2026, 1, 1, 10), "login", "1.0.0", "ios", "us", 3),
+]
+
+
+def _collect_version_breakdowns(
+    config: ScanConfig, single_result: GenerationResult
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """The OTHER path into ``event_metric_breakdown``, called as chunk 1 calls it."""
+    return _collect_app_version_breakdown_rows(
+        config=config,
+        regular_cols=_REGULAR_COLS,
+        rows=_METRIC_ROWS,
+        json_value_names=[],
+        reg_index=_REG_INDEX,
+        json_index={},
+        n_reg=len(_REGULAR_COLS),
+        gen_results={},
+        single_result=single_result,
+        et_by_name={},
+    )
+
 
 def test_an_event_breakdown_column_that_is_the_version_column_is_never_queried() -> None:
     config = _breakdown_scan_config()
@@ -290,15 +319,38 @@ def test_an_event_breakdown_column_that_is_the_version_column_is_never_queried()
     assert not truncated
     assert {row["breakdown_column"] for row in event_rows} == {"country"}
     assert all(row["event_id"] == login.id for row in event_rows)
-    # The duplicate-conflict-key assertion, stated directly. On Postgres the two
-    # ('app_version', ...) rows the two paths produced for one bucket aborted the
-    # whole INSERT; SQLite merges them, so only this can see it.
-    keys = [
-        (row["event_id"], row["bucket"], row["breakdown_column"], row["breakdown_value"])
-        for row in event_rows
-    ]
-    assert len(keys) == len(set(keys))
     assert type_rows == []
+
+    # The duplicate-conflict-key assertion, made where the duplicate can exist.
+    # Inside ``_collect_metric_breakdown_rows`` it cannot: those rows are built
+    # from a dict keyed on the conflict key itself, so uniqueness there is a
+    # property of the dict and holds on the defective code too. The two rows that
+    # carry one key meet in ``process_chunk``, which extends the generic list
+    # with the app-version list before the single multi-row upsert — so the
+    # assertion has to span that concatenation, exactly as filed.
+    version_event_rows, _version_type_rows = _collect_version_breakdowns(config, single_result)
+    # Not vacuous: the version path really does emit rows for this bucket.
+    assert {row["breakdown_column"] for row in version_event_rows} == {"app_version"}
+
+    merged = [*event_rows, *version_event_rows]
+    keys = [
+        (
+            row["event_id"],
+            row["bucket"],
+            row["breakdown_column"],
+            row["breakdown_value"],
+            row["is_other"],
+        )
+        for row in merged
+    ]
+    # ``uq_event_metric_breakdown_config_event_bucket_value``, spelled in full.
+    # On Postgres the two ('app_version', bucket, '2.2.0', False) rows the two
+    # paths used to produce aborted the whole INSERT with a cardinality
+    # violation; SQLite merges them last-write-wins, so this list-level check is
+    # what sees the defect here. The end-to-end proof, which persists the rows,
+    # is ``test_collect_metrics_never_collects_the_version_column_as_a_generic_breakdown``
+    # in test_metrics_tasks.py.
+    assert len(keys) == len(set(keys))
 
 
 def test_the_version_column_is_skipped_in_a_scan_level_breakdown_list_too() -> None:

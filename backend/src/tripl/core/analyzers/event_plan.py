@@ -136,6 +136,28 @@ def unnamed_skip_detail(count: int) -> str:
     return f"Skipped {count} {noun} whose derived event name was empty"
 
 
+def absent_json_path_detail(keys: Sequence[str]) -> str:
+    """What ``plan_events`` says about a dotted placeholder no row carried.
+
+    The disclosure half of ``json_name_format_keys``' seed. Seeding ``""`` keeps
+    a quiet window collecting (tripl-0zpq.92), but a path that NO row carried is
+    also what a producer-side rename or a typo in the format looks like, and
+    that renders every affected event name with an empty segment — a different
+    identity, silently, for as long as nobody notices. The run cannot tell the
+    two apart, so it reports rather than guesses: the operator reads the line and
+    decides whether the path is gone or the window was simply quiet.
+
+    Pluralised in one place for the same reason as ``unnamed_skip_detail``:
+    "1 paths" is the defect tripl-3y7z fixed on the other side of the wire.
+    """
+    noun = "path" if len(keys) == 1 else "paths"
+    segments = "an empty segment" if len(keys) == 1 else "empty segments"
+    return (
+        f"Event name format JSON {noun} not present on any row, "
+        f"rendered as {segments}: {', '.join(keys)}"
+    )
+
+
 def event_name_format_columns(event_name_format: str | None) -> set[str]:
     """Columns an ``event_name_format`` builds the event name from.
 
@@ -186,10 +208,34 @@ def json_name_format_keys(
     absent JSON path behave exactly like a NULL regular column instead of
     killing the whole scan on "references unknown keys" (tripl-0zpq.92).
 
-    Deliberately narrow. A dotted key whose BASE column is missing from
-    ``col_meta`` — its FieldDefinition was deleted, or the column was reserved
-    away — or that is not JSON is not seeded and still raises: that failure is
-    what tripl-3mmh and tripl-lpin exist for.
+    Deliberately narrow at the COLUMN level. A dotted key whose BASE column is
+    missing from ``col_meta`` — its FieldDefinition was deleted, or the column
+    was reserved away — or that is not JSON is not seeded and still raises: that
+    failure is what tripl-3mmh and tripl-lpin exist for.
+
+    Deliberately NOT narrowed at the PATH level, which is the question a reader
+    asks next. Nothing here checks that ``col.path`` is a path the scan collects
+    or that any row carried it, so a placeholder whose path the producer renamed
+    away — or simply mistyped — seeds ``""`` and renders as an empty segment
+    instead of raising. That is a considered trade, not an oversight:
+
+    * a path absent from the whole window is indistinguishable from a path
+      renamed away, and raising on it would stop all collection for a quiet
+      window — the outage class of tripl-0zpq.92;
+    * the obvious narrowing, "require the key to be in
+      ``meta['json_passthrough_paths']``", is wrong twice over. In the planner
+      that list is declared INTERSECT observed (see ``plan_column_meta``), so it
+      excludes a path the row does carry but the scan does not KEEP — rendered
+      as the ``${col.path}`` variable template, a supported configuration — and
+      the seed would go back to aborting the run for it. And the replay rebuild
+      in ``worker.tasks.metrics.generation`` fills the same key from the declared
+      map alone, so the planner and the collector would disagree about which
+      keys may be seeded, which is precisely how a row's volume becomes a shadow
+      candidate (tripl-0zpq.90).
+
+    The silence is what is fixed instead: ``plan_events`` reports every dotted
+    placeholder that NO row of the analysis carried as a ``details`` line, so an
+    operator sees "rendered as an empty segment" rather than nothing at all.
 
     Reads ``is_json`` with ``.get`` because the same helper runs against the
     planner's ``col_meta`` and against the replay rebuild in
@@ -518,6 +564,10 @@ def plan_events(
     json_format_keys = json_name_format_keys(event_name_format, col_meta)
     distinct_names: set[str] = set()
     unnamed_rows = 0
+    rows_examined = 0
+    # Which of ``json_format_keys`` some row of this analysis actually carried.
+    # The complement is reported below; see ``absent_json_path_detail``.
+    carried_json_keys: set[str] = set()
 
     for row in analysis.rows:
         if max_events is not None and len(distinct_names) >= max_events:
@@ -525,15 +575,24 @@ def plan_events(
             plan.details.append(f"Reached max_events limit ({max_events})")
             break
 
+        rows_examined += 1
         field_values: list[tuple[uuid.UUID, str, str]] = []
-        raw_values_by_field = raw_values_from_row(
-            row,
-            reg_index=reg_index,
-            json_index=json_index,
-            n_reg=n_reg,
-            json_value_names=analysis.json_value_names,
-            event_type_column=event_type_column,
-            time_column=time_column,
+        # ``apply_event_group_rules`` returns on an empty rule list without
+        # reading this dict, and nothing else consumes it, so a scan with no
+        # group rules skips a whole-row scan per row rather than building a dict
+        # it will not open.
+        raw_values_by_field: dict[str, str] = (
+            raw_values_from_row(
+                row,
+                reg_index=reg_index,
+                json_index=json_index,
+                n_reg=n_reg,
+                json_value_names=analysis.json_value_names,
+                event_type_column=event_type_column,
+                time_column=time_column,
+            )
+            if event_group_rules
+            else {}
         )
 
         for col_name, meta in col_meta.items():
@@ -608,10 +667,15 @@ def plan_events(
                         )
                     else:
                         fmt_kwargs[full_path] = f"${{{full_path}}}"
-            # ``setdefault`` so a path the row DOES carry keeps its real value:
-            # this only rescues the rows that would otherwise abort the run.
+            # A path the row DOES carry keeps its real value: this only rescues
+            # the rows that would otherwise abort the run. Recording which keys
+            # got that far is what lets the plan report a path no row carried at
+            # all — the rename and the typo, which the seed alone would swallow.
             for key in json_format_keys:
-                fmt_kwargs.setdefault(key, "")
+                if key in fmt_kwargs:
+                    carried_json_keys.add(key)
+                else:
+                    fmt_kwargs[key] = ""
             event_name = _apply_name_format(event_name_format, fmt_kwargs)
         else:
             event_name = render_default_event_name(
@@ -677,6 +741,14 @@ def plan_events(
         plan.events_unnamed = unnamed_rows
         plan.details.append(unnamed_skip_detail(unnamed_rows))
 
+    # Only when the whole analysis was read: a run that stopped at ``max_events``
+    # has rows it never looked at, and a path those rows carry is not absent.
+    # An analysis with no rows at all says nothing about any path either.
+    if json_format_keys and rows_examined and not plan.truncated:
+        absent_keys = [key for key in json_format_keys if key not in carried_json_keys]
+        if absent_keys:
+            plan.details.append(absent_json_path_detail(absent_keys))
+
     return plan
 
 
@@ -734,11 +806,23 @@ def raw_values_from_row(
 
     Keyed off index maps rather than a :class:`BreakdownAnalysis` so the sync
     worker, which never has one, calls the same code.
+
+    EVERY declared path is written, including the ones this row does not carry —
+    those come back from ``toJSONString`` as the literal string ``"null"`` and
+    are kept as ``"null"``. Skipping them would make the collector's dict differ
+    from the planner's, which is the divergence tripl-0zpq.90 is about, so the
+    absent paths are cheap here rather than absent.
+
+    Cost matters: the metric collector calls this once per row, three times per
+    chunk, with ``metrics_row_limit`` (100k) rows per chunk and a replay-widened
+    path map that reaches hundreds of entries. So the declared paths are walked
+    ONCE per row — not once per JSON column over all of them — and the ``"null"``
+    of an uncarried path short-circuits ``json.loads``. Splitting the path on its
+    FIRST dot to find the column is the convention everywhere else
+    (``group_json_value_paths``, ``name_format_base_columns``): a warehouse
+    column whose own name contains a dot is not addressable by this pipeline.
     """
     values: dict[str, str] = {}
-    json_value_index = {
-        name: n_reg + len(json_index) + idx for idx, name in enumerate(json_value_names)
-    }
 
     for col_name, idx in reg_index.items():
         # A no-op on the collector side (the metric query strips the time column
@@ -755,9 +839,19 @@ def raw_values_from_row(
             values[col_name] = ",".join(sorted(str(path) for path in paths))
         elif paths:
             values[col_name] = str(paths)
-        for full_path, value_idx in json_value_index.items():
-            if full_path.startswith(f"{col_name}."):
-                values[full_path] = format_json_path_value(row[value_idx])
+
+    value_offset = n_reg + len(json_index)
+    for idx, full_path in enumerate(json_value_names):
+        base_col = full_path.partition(".")[0]
+        if base_col not in json_index or base_col in (event_type_column, time_column):
+            continue
+        raw_value = row[value_offset + idx]
+        # ``format_json_path_value`` renders a JSON null as "null", and so does a
+        # JSON string "null"; short-circuiting the parse is byte-identical.
+        if isinstance(raw_value, str) and raw_value == "null":
+            values[full_path] = "null"
+        else:
+            values[full_path] = format_json_path_value(raw_value)
 
     return values
 

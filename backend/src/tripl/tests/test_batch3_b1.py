@@ -13,7 +13,9 @@ Four such divergences are pinned here, one section each:
 * tripl-0zpq.91 — with no name format the collector appended a ``col.path=``
   segment per JSON path and the planner appended none;
 * tripl-0zpq.92 — a dotted placeholder the row did not carry killed the run
-  instead of contributing an empty segment, the way a NULL column does;
+  instead of contributing an empty segment, the way a NULL column does; the same
+  section pins the other edge of that seed, a path NO row carries, which renames
+  every affected identity and must therefore be reported rather than swallowed;
 * tripl-0zpq.93 — a format naming the ``event_type_column`` could never resolve,
   even though ``reserved_catalog_columns`` un-reserves that column for it.
 
@@ -27,7 +29,11 @@ import pytest
 
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
-from tripl.core.analyzers.event_plan import plan_events, unnamed_skip_detail
+from tripl.core.analyzers.event_plan import (
+    absent_json_path_detail,
+    plan_events,
+    unnamed_skip_detail,
+)
 from tripl.core.name_template import NameFormatError
 from tripl.models.scan_config import ScanConfig
 from tripl.worker.tasks.metrics.metric_rows import _build_event_name_from_row
@@ -387,6 +393,57 @@ def test_a_row_whose_whole_json_name_resolves_to_empty_is_not_planned() -> None:
     assert plan.events == []
     assert plan.events_unnamed == 1
     assert unnamed_skip_detail(1) in plan.details
+
+
+def test_a_dotted_placeholder_no_row_carries_is_reported_not_swallowed() -> None:
+    """The seed's blind spot, disclosed instead of silently re-minting identities.
+
+    ``json_name_format_keys`` tests the BASE column only, so a path the producer
+    renamed away — or a typo in the format — seeds ``""`` exactly like a quiet
+    window and renders every name with an empty segment. The two are genuinely
+    indistinguishable from one scan, so the run must not raise (that is the
+    tripl-0zpq.92 outage) and must not stay silent either: an identity changing
+    under the operator is not something to find out from a flat chart.
+
+    Red on revert of the report: the names below are correct with or without it.
+    """
+    plan = plan_events(
+        _split_paths_analysis(),
+        {"screen": uuid.uuid4(), "event": uuid.uuid4()},
+        # "catgeory": the typo, and the rename, look identical from here.
+        event_name_format="{screen} / {event.catgeory}",
+    )
+
+    assert sorted(event.name for event in plan.events) == ["/about / ", "/home / "]
+    assert plan.events_unnamed == 0
+    assert absent_json_path_detail(["event.catgeory"]) in plan.details
+    assert (
+        absent_json_path_detail(["event.catgeory"])
+        == "Event name format JSON path not present on any row, "
+        "rendered as an empty segment: event.catgeory"
+    )
+    # Pluralised in the helper, for the same reason ``unnamed_skip_detail`` is:
+    # this is copy an operator reads, and "1 paths" is a defect this repo has
+    # already shipped once (tripl-3y7z).
+    assert absent_json_path_detail(["a.b", "c.d"]) == (
+        "Event name format JSON paths not present on any row, rendered as empty segments: a.b, c.d"
+    )
+
+
+def test_a_path_one_row_carries_is_not_reported_absent() -> None:
+    """The boundary: tripl-0zpq.92's rescued row must not look like a rename.
+
+    One of the two rows carries ``event.category`` and the other does not, which
+    is the ordinary ``GROUP BY ALL`` shape the seed exists for. Reporting that
+    would put a line on every scan whose JSON payload has optional keys.
+    """
+    plan = plan_events(
+        _split_paths_analysis(),
+        {"screen": uuid.uuid4(), "event": uuid.uuid4()},
+        event_name_format="{screen} / {event.category}",
+    )
+
+    assert plan.details == []
 
 
 # --------------------------------------------------------------------------

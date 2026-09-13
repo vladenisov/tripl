@@ -1017,10 +1017,17 @@ governance numbers are not read as contradictory. The **shadow events inbox** (t
 `dismissed`) lists events seen in data but missing from the plan — **Accept**
 creates the event on the active branch (you pick an event type when none is
 inferred), or **Dismiss** it. In a scan grouped by an event type column one
-generated identity can turn up under more than one event type — the identity
-does not carry the type — and such an identity is a single inbox row carrying
-the combined volume across those types, attributed to the event type that
-contributed most of it. **Dead events** (in plan, not seen recently over a
+generated identity can turn up under more than one event type, and such an
+identity is a single inbox row carrying the combined volume across those types,
+attributed to the event type that contributed most of it. That happens because
+the identity is built from the row's own column values and the event type column
+is normally reserved out of that set, so two types collide whenever the values
+the name *is* built from coincide. Naming the **Event type column** in the
+**Event name format** is the one route that puts the type into the identity (see
+[What the scan form asks](#what-the-scan-form-asks)), and it usually separates
+them — but it is not a guarantee, because an event group rule that rewrites both
+names to one folds them back together anyway.
+**Dead events** (in plan, not seen recently over a
 14-day window) can be selected and archived; archiving targets the project's
 `main` branch.
 
@@ -1098,11 +1105,17 @@ so a merge does not quietly undo work you did:
   → `implemented` → `live` progression. Retirement is never inferred in either
   direction: folding a `deprecated` member into a live group does not retire the
   group, and folding a live member into a group you deprecated does not
-  un-retire it. Where the merge has to create the group event itself and the
-  member it was minted from was already `deprecated` or `archived`, the new
-  group event starts at `in_review` — it arrives in the review queue rather than
-  retired with no sunset date, and neither the sunset date nor **Replaced by**
-  is carried across.
+  un-retire it. Where the merge has to create the group event itself, the new
+  group event always starts at `in_review` — the same place every event a scan
+  mints starts — whatever status the member it was minted from carried, and
+  neither the sunset date nor **Replaced by** is carried across. Its members
+  then fold in exactly as above, so anything further along still lifts it. What
+  that fixed starting point settles is the two cases the fold cannot reach: a
+  group minted from a `deprecated` or `archived` member is never born retired
+  with no sunset date, and a group whose members are **all `draft`** arrives in
+  the review queue rather than as another draft — folding `draft` into
+  `in_review` leaves `in_review` standing, so the group is one you are asked to
+  look at even though nothing it absorbed had been.
 
 Variable data moves too — see
 [Variables and templates](./variables-and-templates.md#when-a-scan-merges-events-into-a-group).
@@ -1368,7 +1381,14 @@ run that goes on to finish the chunk it was in does not flip the row back to
 and an event-group apply each look once, at the last point before they commit:
 stopped there they write nothing at all and the plan is exactly as it was.
 Stopped after that — while the run is retiring variables or rebuilding the search
-index — their work is already durable and the run finishes as *Succeeded*.
+index — their work is already durable and it stays: the catalog a scan wrote and
+the variables it retired, the merge an apply performed, and the rebuilt index in
+either case. A stop cannot un-write a committed transaction. The **run** still
+ends **Cancelled** even so. Before it stamps *Succeeded* it re-reads its own row,
+and a stop that landed while those tails were running owns the verdict — so the
+two halves come apart: the work survives, the run does not claim to have
+succeeded. The **run report** is recorded either way, so you can still read what
+the run managed to do before you stopped it.
 
 **What period a replay may cover.** A replay period must end **at or before the
 last completed interval**: the interval that is still filling holds no complete

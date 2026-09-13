@@ -52,8 +52,12 @@ from tripl.worker.tasks import metrics
 from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.tasks.metrics import schedule as metrics_schedule
 from tripl.worker.tasks.metrics import tasks as metrics_tasks
+from tripl.worker.tasks.metrics._helpers import (
+    TERMINAL_SCAN_JOB_STATUSES as _HELPERS_TERMINAL_SCAN_JOB_STATUSES,
+)
 from tripl.worker.tasks.metrics._helpers import _ceil_to_interval, _floor_to_interval
 from tripl.worker.tasks.metrics.generation import _iter_window_chunks
+from tripl.worker.utils import job_status
 
 GENERIC_FAILURE = "Scan failed due to an internal error."
 
@@ -380,6 +384,25 @@ def test_collect_metrics_skips_a_job_that_is_already_finished(
         assert reloaded.error_message == error_message
 
 
+def test_the_two_terminal_status_tuples_have_not_drifted_apart() -> None:
+    """One definition is live; the other is a leftover that must not diverge.
+
+    ``worker.utils.job_status`` is the tuple the scan tasks and ``collect_metrics``
+    both import — it lives there so ``worker.tasks.scan`` can guard its job rows
+    without importing a metrics task module and dragging the whole
+    ``collect_metrics`` graph into its import path.
+    ``worker.tasks.metrics._helpers`` still declares the name because it sits in
+    that module's published ``__all__`` and removing it is a wider change than
+    the one that moved the definition. It has no production consumer left, so
+    nothing but this assertion would notice it being edited into disagreement
+    with the tuple the tasks actually enforce.
+    """
+    assert set(_HELPERS_TERMINAL_SCAN_JOB_STATUSES) == set(job_status.TERMINAL_SCAN_JOB_STATUSES)
+    # ``running`` stays out of both: an ``acks_late`` redelivery legitimately
+    # re-enters its own running job.
+    assert ScanJobStatus.running.value not in job_status.TERMINAL_SCAN_JOB_STATUSES
+
+
 def test_collect_metrics_does_not_unfail_a_job_reaped_mid_run(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
@@ -537,11 +560,16 @@ def _seed_completed_collection(
     session.commit()
 
 
-def _scheduled_window(session: Session, config: ScanConfig) -> tuple[datetime, datetime, bool]:
+def _scheduled_window(
+    session: Session,
+    config: ScanConfig,
+    *,
+    delta: timedelta = timedelta(hours=1),
+) -> tuple[datetime, datetime, bool]:
     return metrics_tasks._resolve_collection_window(
         session,
         config=config,
-        delta=timedelta(hours=1),
+        delta=delta,
         manual_time_from=None,
         manual_time_to=None,
     )
@@ -631,6 +659,80 @@ def test_a_never_collected_config_still_backfills_thirty_buckets(
         time_from, time_to, _is_replay = _scheduled_window(session, config)
 
     assert time_to - time_from == timedelta(hours=metrics_tasks.SCHEDULED_BACKFILL_BUCKETS)
+
+
+# ── .10 meets .26: the resume point is progress, so it has to be floored ─────
+#
+# Both inputs to ``collection_progress_to`` can sit OFF the config's current
+# grid, and neither is rewritten when the grid moves under it:
+#
+# * a watermark recorded before .10 moved the weekly origin to Monday is a
+#   Saturday (the old 2000-01-01 anchor), and
+# * ``last_bucket + delta`` is any weekday once a config is edited from ``1d``
+#   to ``1w``, because the edit purges no ``EventMetric`` row.
+#
+# An off-grid ``time_from`` makes the warehouse's own ``GROUP BY`` key the
+# leading partial bucket BELOW the window: the window's delete
+# (``bucket >= time_from``) misses it and the upsert then overwrites a complete
+# bucket's count with the two-day tail of it. The bound must satisfy the
+# invariant ``_floor_to_interval`` states in its own docstring.
+
+
+_WEEK = timedelta(weeks=1)
+
+
+def test_a_saturday_watermark_still_opens_the_window_on_a_monday(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A pre-.10 weekly watermark must not re-phase the window it resumes."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, interval="1w")
+        monday = _floor_to_interval(datetime.now(UTC), _WEEK)
+        # The Saturday a pre-deploy run recorded as the grid it collected up to.
+        saturday = monday - timedelta(days=9)
+        assert saturday.weekday() == 5
+        # Older than the watermark, so the watermark wins ``collection_progress_to``
+        # — the lagging case, which is the only one that can be off grid.
+        _add_bucket(session, config, monday - 3 * _WEEK)
+        _seed_completed_collection(session, config.id, window_to=saturday)
+
+        time_from, time_to, _is_replay = _scheduled_window(session, config, delta=_WEEK)
+
+    assert time_to == monday
+    # Floored onto the Monday grid first, THEN backed off two buckets.
+    assert time_from == monday - 4 * _WEEK
+    assert time_from.weekday() == 0
+    assert _floor_to_interval(time_from, _WEEK) == time_from
+    # The bound and the warehouse agree, which is the whole point of the floor:
+    # nothing the ``GROUP BY`` returns can be keyed below the window.
+    assert floor_to_bucket(time_from, "1w") == time_from
+    # Flooring may only widen the window, never skip grid the old start covered.
+    assert time_from <= saturday - 2 * _WEEK
+
+
+def test_stale_daily_buckets_do_not_open_a_weekly_window_mid_week(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The same floor covers an interval edited from ``1d`` to ``1w``.
+
+    ``update_scan_config`` purges no ``EventMetric`` row, so ``last_bucket`` is
+    still a daily boundary and ``last_bucket + 1w`` lands on a Wednesday.
+    """
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, interval="1w")
+        monday = _floor_to_interval(datetime.now(UTC), _WEEK)
+        wednesday = monday - timedelta(days=12)
+        assert wednesday.weekday() == 2
+        _add_bucket(session, config, wednesday)
+
+        time_from, time_to, _is_replay = _scheduled_window(session, config, delta=_WEEK)
+
+    assert time_to == monday
+    # ``last_bucket + 1w`` is ``monday - 5d`` (a Wednesday); its Monday is
+    # ``monday - 1w``, and two buckets back from that is ``monday - 3w``.
+    assert time_from == monday - 3 * _WEEK
+    assert _floor_to_interval(time_from, _WEEK) == time_from
+    assert floor_to_bucket(time_from, "1w") == time_from
 
 
 # ── tripl-0zpq.24: the demo cooldown counts only the dispatcher's own jobs ────

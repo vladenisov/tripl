@@ -54,7 +54,6 @@ from tripl.core.adapters.measure_validator import (
     coerce_aggregation,
     dialect_for_db_type,
     requires_measure,
-    validate_measure_column,
     validate_select_sql,
 )
 from tripl.core.bucketing import floor_to_bucket, to_utc
@@ -98,7 +97,9 @@ from tripl.worker.tasks.metrics._fact_conditions import (
     _operand_from_config,
     _resolve_batch_operand,
     _resolve_fact_operand_query,
+    _validate_breakdown_columns,
     _validate_condition_columns,
+    _validated_measure_column,
 )
 from tripl.worker.tasks.metrics._helpers import (
     _build_adapter,
@@ -453,18 +454,24 @@ def _read_event_metric_series(
     return series
 
 
-def _composition_stored_max_by_grid(
+def _composition_stored_bounds_by_grid(
     session: Session, *, metric_definition_id: uuid.UUID
-) -> dict[uuid.UUID, datetime]:
-    """The last bucket this composition metric has stored, per source scan grid.
+) -> dict[uuid.UUID, tuple[datetime, datetime]]:
+    """The ``(oldest, newest)`` bucket this composition metric has stored, per grid.
 
     One grouped query rather than a lookup per grid. This is the composition
     path's equivalent of ``_resolve_value_window``'s ``max(MetricValue.bucket)``:
     an event_composition metric has no interval and no watermark of its own, so
-    its own stored rows are the only record of how far it has got.
+    its own stored rows are the only record of how far it has got. The MIN is the
+    other half of that record — the backward frontier
+    ``_composition_backfill_region`` walks down from.
     """
     rows = session.execute(
-        select(MetricValue.scan_config_id, sa_func.max(MetricValue.bucket))
+        select(
+            MetricValue.scan_config_id,
+            sa_func.min(MetricValue.bucket),
+            sa_func.max(MetricValue.bucket),
+        )
         .where(
             MetricValue.metric_definition_id == metric_definition_id,
             MetricValue.scan_config_id.is_not(None),
@@ -472,16 +479,16 @@ def _composition_stored_max_by_grid(
         .group_by(MetricValue.scan_config_id)
     ).all()
     return {
-        scan_config_id: to_utc(stored_max)
-        for scan_config_id, stored_max in rows
-        if scan_config_id is not None and stored_max is not None
+        scan_config_id: (to_utc(stored_min), to_utc(stored_max))
+        for scan_config_id, stored_min, stored_max in rows
+        if scan_config_id is not None and stored_min is not None and stored_max is not None
     }
 
 
 def _composition_series_floor(
     *, stored_max: datetime | None, head_bucket: datetime, delta: timedelta
 ) -> datetime:
-    """Oldest bucket one event_composition run may revisit on a given grid.
+    """Oldest bucket one event_composition run's RESUME region may reach on a grid.
 
     Resumes two buckets before the metric's own last stored bucket — the same
     overlap ``_resolve_value_window`` keeps for late data and for recomputing the
@@ -493,10 +500,62 @@ def _composition_series_floor(
     Clamped to ``head_bucket`` so the newest source bucket is always inside the
     region: a grid whose stored values run AHEAD of its source — history pruned
     behind them — would otherwise trim its whole series away and do nothing.
+
+    This bound alone is a ONE-WAY RATCHET: once a value is stored, ``stored_max``
+    only ever moves forward, so the region never widens and pre-history the first
+    run did not reach would be out of reach for good.
+    ``_composition_backfill_region`` is what un-ratchets it.
     """
     cap = head_bucket - delta * EVENT_COMPOSITION_BACKFILL_BUCKETS
     floor = cap if stored_max is None else max(stored_max - delta * 2, cap)
     return min(floor, head_bucket)
+
+
+def _composition_backfill_region(
+    *,
+    stored_min: datetime | None,
+    resume_floor: datetime,
+    oldest_source: datetime,
+    delta: timedelta,
+) -> tuple[datetime, datetime] | None:
+    """One bounded chunk of un-composed pre-history, as ``[floor, ceiling)``.
+
+    ``None`` when there is nothing to do. Why this exists: the resume region is
+    anchored on ``max(MetricValue.bucket)``, which only moves forward, so a grid
+    carrying more history than ``EVENT_COMPOSITION_BACKFILL_BUCKETS`` intervals
+    would be permanently truncated at whatever the first run happened to reach —
+    and because ``_clear_collected_metric_data`` wipes every stored value on any
+    material definition edit, editing such a metric would DESTROY the part of its
+    chart the next run could not re-derive.
+
+    So each run also walks the frontier backwards by one bounded step: at most
+    ``EVENT_COMPOSITION_BACKFILL_BUCKETS`` intervals below the metric's own oldest
+    stored bucket, and never below the oldest bucket the source series actually
+    has. A long history is filled in over successive dispatches instead of being
+    unreachable, while the work per run stays bounded by the same constant that
+    bounds the first run — two bounded regions, never an unbounded re-query.
+
+    The ceiling is clamped to ``resume_floor`` so the chunk cannot overlap the
+    resume region and compose the same buckets twice in one run. Buckets BETWEEN
+    the frontier and the resume floor are already composed and are still not
+    revisited: this fills gaps, it does not repair a stored value whose source
+    changed underneath it.
+
+    One honest limit: the frontier is the stored MIN, and a bucket whose composed
+    value is ``None`` (divide-by-zero) stores no row. A chunk in which every
+    bucket divides by zero therefore leaves the frontier where it was and is
+    retried on the next dispatch. That costs one bounded pass per run and cannot
+    error; it is not a permanent failure.
+    """
+    if stored_min is None:
+        # Nothing stored on this grid yet — the first-run cap in
+        # ``_composition_series_floor`` owns the reach, not this.
+        return None
+    ceiling = min(stored_min, resume_floor)
+    if oldest_source >= ceiling:
+        return None
+    floor = max(oldest_source, ceiling - delta * EVENT_COMPOSITION_BACKFILL_BUCKETS)
+    return floor, ceiling
 
 
 def _dialect_for_data_source(ds: DataSource) -> SqlDialect:
@@ -568,23 +627,10 @@ def _aggregate_fact_window(
                 "measure_column / distinct_column"
             )
             raise ScanError(msg)
-        if not allowed_columns:
-            # An empty allowlist would make ``validate_measure_column`` skip its
-            # membership check (it short-circuits on a falsy allowlist), silently
-            # bypassing the only column guard. Fail loudly instead.
-            msg = "fact table query returned no columns; cannot validate measure column"
-            raise ScanError(msg)
-        try:
-            measure = validate_measure_column(measure, allowed_columns)
-        except ValueError as exc:
-            # ``validate_measure_column`` lives in ``core`` and raises a plain
-            # ``ValueError``, which ``user_facing_error`` refuses to surface
-            # verbatim — so a measure column missing from the fact table reached
-            # the user as "Scan failed due to an internal error.". Re-raise as
-            # ``ScanError``: the text names only the column, which is already
-            # identifier-constrained, and is safe to show. Same move as
-            # ``_dialect_for_data_source`` and ``_reject_truncated_rows``.
-            raise ScanError(str(exc)) from exc
+        # Empty-allowlist rejection and the ValueError -> ScanError translation
+        # both live in the shared helper, so this path and the batched
+        # ``_resolve_batch_operand`` report the same named failure.
+        measure = _validated_measure_column(measure, allowed_columns=allowed_columns)
     # Condition columns cleared ``validate_identifier`` when the metric was saved
     # and were checked against the fact table's columns AS THEY WERE THEN;
     # nothing rechecked them here, so a column dropped or renamed in the
@@ -705,22 +751,15 @@ def _collect_fact_breakdown_rows(
     window-deleted then UPSERTed so re-runs do not duplicate. Returns the number
     of breakdown rows written.
 
-    The breakdown dimensions are held to the caller's ``allowed_columns`` for the
-    same reason a measure column is: they are validated against the fact table's
-    columns when the metric is saved and never rechecked, and a ``count`` metric
-    needs no measure, so nothing on this path had ever introspected the table.
+    The breakdown dimensions are held to the caller's ``allowed_columns``. Nothing
+    validates them against the fact table when the metric is SAVED — see
+    ``_validate_breakdown_columns`` — and a ``count`` metric needs no measure, so
+    nothing on this path had ever introspected the table at all.
     """
     breakdown_columns = _metric_breakdown_columns(definition)
     if not breakdown_columns:
         return 0
-    if not allowed_columns:
-        msg = "fact table query returned no columns; cannot validate breakdown columns"
-        raise ScanError(msg)
-    unknown = sorted({column for column in breakdown_columns if column not in allowed_columns})
-    if unknown:
-        listed = ", ".join(repr(column) for column in unknown)
-        msg = f"breakdown column(s) {listed} are not columns of the fact table"
-        raise ScanError(msg)
+    _validate_breakdown_columns(breakdown_columns, allowed_columns=allowed_columns)
 
     rows_out: list[dict[str, object]] = []
     for column in breakdown_columns:
@@ -787,12 +826,18 @@ def _collect_fact_ratio_breakdown_rows(
     chunk_from: datetime,
     chunk_to: datetime,
 ) -> int:
-    """Collect same-table ratio breakdown values for one fact-metric chunk."""
+    """Collect same-table ratio breakdown values for one fact-metric chunk.
+
+    Holds the breakdown dimensions to the fact table's columns for the same reason
+    ``_collect_fact_breakdown_rows`` does; the guard belongs on every path that turns
+    a configured dimension into a warehouse query, not just the SINGLE one.
+    """
     breakdown_columns = _metric_breakdown_columns(definition)
     if not breakdown_columns:
         return 0
 
     allowed_columns = {column.name for column in adapter.get_columns(fact_table.sql)}
+    _validate_breakdown_columns(breakdown_columns, allowed_columns=allowed_columns)
     numerator_measure, numerator_filter = _resolve_batch_operand(
         numerator_op,
         fact_table=fact_table,
@@ -1445,10 +1490,11 @@ def _plan_single_metric(
         filter_sql=_config_str(config, "filter_sql"),
         conditions=_conditions_from_config(config),
     )
+    allowed_columns = context.allowed_columns(fact_table, adapter)
     measure, filter_sql = _resolve_batch_operand(
         operand,
         fact_table=fact_table,
-        allowed_columns=context.allowed_columns(fact_table, adapter),
+        allowed_columns=allowed_columns,
         dialect=context.dialect_for(fact_table),
     )
     registry = ft_registries.setdefault(fact_table.id, _SpecRegistry())
@@ -1459,6 +1505,12 @@ def _plan_single_metric(
     )
 
     breakdown_columns = _metric_breakdown_columns(definition)
+    # This is the LIVE fact path (``collect_fact_metrics_batch``); the per-metric
+    # collectors are kept only as the conformance oracle. Without this the unknown
+    # dimension is caught by the adapter's ``_validate_column`` as a bare
+    # ``ValueError``, which ``_stamp_metric_error`` persists as the generic
+    # "Scan failed due to an internal error." and the metric card names nothing.
+    _validate_breakdown_columns(breakdown_columns, allowed_columns=allowed_columns)
     breakdowns: list[_BreakdownPlan] = []
     for column in breakdown_columns:
         scan_key: _BreakdownScanKey = (
@@ -1506,15 +1558,18 @@ def _plan_ratio_metric(
         raise ScanError(msg)
     keys: list[tuple[uuid.UUID, str]] = []
     operand_plans: list[tuple[_FactOperand, uuid.UUID, str | None, str | None]] = []
+    allowed_by_fact_table: dict[uuid.UUID, set[str]] = {}
     for raw in (numerator_raw, denominator_raw):
         operand = _operand_from_config(raw)
         fact_table, adapter = context.resolve(
             operand.fact_table_id, project_id=definition.project_id
         )
+        allowed_columns = context.allowed_columns(fact_table, adapter)
+        allowed_by_fact_table[fact_table.id] = allowed_columns
         measure, filter_sql = _resolve_batch_operand(
             operand,
             fact_table=fact_table,
-            allowed_columns=context.allowed_columns(fact_table, adapter),
+            allowed_columns=allowed_columns,
             dialect=context.dialect_for(fact_table),
         )
         registry = ft_registries.setdefault(fact_table.id, _SpecRegistry())
@@ -1536,6 +1591,12 @@ def _plan_ratio_metric(
                 "to use the same fact table"
             )
             raise ScanError(msg)
+        # Same guard as ``_plan_single_metric``: a dimension the shared fact table
+        # does not project must fail by name here, not as a bare adapter
+        # ``ValueError`` that reaches the operator as an internal error.
+        _validate_breakdown_columns(
+            breakdown_columns, allowed_columns=allowed_by_fact_table[numerator_ft_id]
+        )
         numerator_op, _num_ft_id, numerator_measure, numerator_filter = operand_plans[0]
         denominator_op, _den_ft_id, denominator_measure, denominator_filter = operand_plans[1]
         for column in breakdown_columns:
@@ -2161,6 +2222,93 @@ def _collect_distinct_user_series(
     return {_coerce_bucket(row[0], interval_spec.code): _coerce_value(row[-1]) for row in rows}
 
 
+def _compose_grid_region(
+    session: Session,
+    *,
+    definition: MetricDefinition,
+    composition: MetricComposition,
+    scan_config: ScanConfig,
+    delta: timedelta,
+    numerator: Mapping[datetime, float],
+    denominator: Mapping[datetime, float],
+    user_id_column: str,
+    floor: datetime,
+    ceiling: datetime | None,
+) -> tuple[int, bool]:
+    """Evaluate and store ONE bounded ``[floor, ceiling)`` region of one source grid.
+
+    Returns ``(rows_written, evaluated)``; ``evaluated`` says whether the region
+    produced any composed bucket at all, which is what makes the grid count toward
+    the task's ``grids`` total even when every bucket divided by zero.
+
+    Trim BOTH operand series to the region before anything reads their bounds.
+    Everything downstream is bounded by that alone: the warehouse distinct-user
+    query spans min(numerator)..max(numerator), and the window-delete spans the
+    union of the evaluated buckets. Trimming the denominator matters as much as the
+    numerator — ``_divide_over_buckets`` densifies onto the UNION, so an untrimmed
+    denominator would drag every historical bucket straight back into both.
+    """
+
+    def _inside(bucket: datetime) -> bool:
+        stamped = to_utc(bucket)
+        return stamped >= floor and (ceiling is None or stamped < ceiling)
+
+    numerator = {bucket: value for bucket, value in numerator.items() if _inside(bucket)}
+    denominator = {bucket: value for bucket, value in denominator.items() if _inside(bucket)}
+    if not numerator and not denominator:
+        return 0, False
+
+    if composition is MetricComposition.single:
+        values = evaluate_composition(composition, numerator=numerator)
+    elif composition is MetricComposition.ratio:
+        values = evaluate_composition(
+            composition,
+            numerator=numerator,
+            denominator=denominator,
+        )
+    else:
+        if not numerator:  # pragma: no cover - per_distinct_user has no denominator series
+            return 0, False
+        # Bound the warehouse distinct-user query to the numerator range so its
+        # densified union with the numerator can never exceed that range.
+        distinct = _collect_distinct_user_series(
+            session,
+            scan_config=scan_config,
+            user_id_column=user_id_column,
+            time_from=min(numerator),
+            time_to=max(numerator) + delta,
+        )
+        values = evaluate_composition(composition, numerator=numerator, denominator=distinct)
+
+    if not values:
+        return 0, False
+    # Derive the delete window from the UNION of both series -- i.e. every
+    # evaluated bucket, including divide-by-zero buckets mapped to None -- not
+    # the numerator alone. A ``ratio`` denominator can carry buckets that
+    # precede min(numerator) or follow max(numerator); ``evaluate_composition``
+    # densifies value rows onto those buckets, so the window cleared before the
+    # UPSERT must cover the full union. A numerator-only window would leave such
+    # a row stranded once its denominator later drops to zero (value -> None,
+    # no UPSERT row), because no future window-delete would ever reach it.
+    window_from = min(values)
+    window_to = max(values) + delta
+
+    value_rows = _build_metric_value_rows(
+        metric_definition_id=definition.id,
+        scan_config_id=scan_config.id,
+        values=values,
+    )
+    _delete_metric_values_window(
+        session,
+        metric_definition_id=definition.id,
+        time_from=window_from,
+        time_to=window_to,
+        scan_config_id=scan_config.id,
+    )
+    _upsert_metric_values_rows(session, rows=value_rows)
+    return len(value_rows), True
+
+
 def _collect_event_composition(
     session: Session,
     *,
@@ -2175,20 +2323,34 @@ def _collect_event_composition(
     ``MetricValue`` rows keyed by that ``scan_config_id``. ``per_distinct_user``
     additionally fetches a warehouse distinct-user denominator per grid.
 
-    Each grid is bounded to a RESUME REGION: two buckets before the metric's own
-    last stored bucket on that grid, and at most
-    ``EVENT_COMPOSITION_BACKFILL_BUCKETS`` back from the head of the source
-    series when it has stored none. Source buckets older than that region are not
-    revisited — a historical event-metric bucket that changes after its composed
-    value has scrolled out of the region is no longer picked up. That is the
-    price of bounding the work: the previous full-history re-derivation meant a
-    ``per_distinct_user`` metric re-queried the warehouse over its entire
-    retained history on EVERY dispatch, and died permanently once that history
-    exceeded ``METRIC_QUERY_ROW_LIMIT`` buckets.
+    Each grid is composed in at most TWO bounded regions per run, never over its
+    full retained history:
+
+    * the RESUME region (``_composition_series_floor``) — two buckets before the
+      metric's own last stored bucket on that grid plus everything newer, or at
+      most ``EVENT_COMPOSITION_BACKFILL_BUCKETS`` back from the head of the source
+      series when it has stored none;
+    * one BACKFILL chunk (``_composition_backfill_region``) — up to
+      ``EVENT_COMPOSITION_BACKFILL_BUCKETS`` intervals below the metric's own
+      OLDEST stored bucket, so pre-history the first run could not reach is filled
+      in over successive dispatches rather than being stranded for good.
+
+    That bound is why: the previous full-history re-derivation meant a
+    ``per_distinct_user`` metric re-queried the warehouse over its entire retained
+    history on EVERY dispatch, and died permanently once that history exceeded
+    ``METRIC_QUERY_ROW_LIMIT`` buckets. Two bounded regions keep that fixed while
+    still reaching the whole series eventually.
+
+    What is still given up: buckets the metric has ALREADY composed, between its
+    oldest stored bucket and the resume floor, are not revisited. A historical
+    event-metric bucket that changes after its composed value has scrolled out of
+    the resume region is therefore not recomputed — the backfill fills gaps, it
+    does not repair a stored value whose source changed underneath it.
 
     ``window`` and ``manual_backfill`` are accepted for a uniform collector
     signature but ignored: an event_composition metric has no interval of its
-    own, so there is no grid for the service to compute a window against.
+    own, so there is no grid for the service to compute a window against, and
+    ``trigger_metric_collection`` dispatches it with neither.
     """
     binding_error = event_composition_binding_error(definition)
     if binding_error is not None:
@@ -2224,7 +2386,7 @@ def _collect_event_composition(
 
     config = definition.config or {}
     user_id_column = _config_str(config, "user_id_column") or DEFAULT_USER_ID_COLUMN
-    stored_max_by_grid = _composition_stored_max_by_grid(
+    stored_bounds_by_grid = _composition_stored_bounds_by_grid(
         session, metric_definition_id=definition.id
     )
 
@@ -2237,77 +2399,49 @@ def _collect_event_composition(
             continue
         delta = get_interval(scan_config.interval).delta
 
-        # Trim BOTH operand series to this grid's resume region before anything
-        # reads their bounds. Everything downstream is bounded by that alone: the
-        # warehouse distinct-user query spans min(numerator)..max(numerator), and
-        # the window-delete spans the union of the evaluated buckets. Trimming the
-        # denominator matters as much as the numerator — ``_divide_over_buckets``
-        # densifies onto the UNION, so an untrimmed denominator would drag every
-        # historical bucket straight back into both.
         denominator = denominator_by_grid.get(scan_config_id, {})
-        head_bucket = max(to_utc(bucket) for bucket in (*numerator, *denominator))
-        floor = _composition_series_floor(
-            stored_max=stored_max_by_grid.get(scan_config_id),
+        source_buckets = [to_utc(bucket) for bucket in (*numerator, *denominator)]
+        head_bucket = max(source_buckets)
+        oldest_source = min(source_buckets)
+        stored_bounds = stored_bounds_by_grid.get(scan_config_id)
+        stored_min, stored_max = stored_bounds if stored_bounds is not None else (None, None)
+
+        resume_floor = _composition_series_floor(
+            stored_max=stored_max,
             head_bucket=head_bucket,
             delta=delta,
         )
-        numerator = {
-            bucket: value for bucket, value in numerator.items() if to_utc(bucket) >= floor
-        }
-        denominator = {
-            bucket: value for bucket, value in denominator.items() if to_utc(bucket) >= floor
-        }
-        if not numerator and not denominator:
-            continue
+        regions: list[tuple[datetime, datetime | None]] = [(resume_floor, None)]
+        # One bounded step of the backward frontier, so a grid whose history is
+        # longer than the first run's reach is filled in over successive runs
+        # instead of being truncated for good.
+        backfill = _composition_backfill_region(
+            stored_min=stored_min,
+            resume_floor=resume_floor,
+            oldest_source=oldest_source,
+            delta=delta,
+        )
+        if backfill is not None:
+            regions.append(backfill)
 
-        if composition is MetricComposition.single:
-            values = evaluate_composition(composition, numerator=numerator)
-        elif composition is MetricComposition.ratio:
-            values = evaluate_composition(
-                composition,
+        touched = False
+        for floor, ceiling in regions:
+            rows_written, evaluated = _compose_grid_region(
+                session,
+                definition=definition,
+                composition=composition,
+                scan_config=scan_config,
+                delta=delta,
                 numerator=numerator,
                 denominator=denominator,
-            )
-        else:
-            # Bound the warehouse distinct-user query to the numerator range so its
-            # densified union with the numerator can never exceed that range.
-            distinct = _collect_distinct_user_series(
-                session,
-                scan_config=scan_config,
                 user_id_column=user_id_column,
-                time_from=min(numerator),
-                time_to=max(numerator) + delta,
+                floor=floor,
+                ceiling=ceiling,
             )
-            values = evaluate_composition(composition, numerator=numerator, denominator=distinct)
-
-        if not values:
-            continue
-        # Derive the delete window from the UNION of both series -- i.e. every
-        # evaluated bucket, including divide-by-zero buckets mapped to None -- not
-        # the numerator alone. A ``ratio`` denominator can carry buckets that
-        # precede min(numerator) or follow max(numerator); ``evaluate_composition``
-        # densifies value rows onto those buckets, so the window cleared before the
-        # UPSERT must cover the full union. A numerator-only window would leave such
-        # a row stranded once its denominator later drops to zero (value -> None,
-        # no UPSERT row), because no future window-delete would ever reach it.
-        window_from = min(values)
-        window_to = max(values) + delta
-
-        value_rows = _build_metric_value_rows(
-            metric_definition_id=definition.id,
-            scan_config_id=scan_config_id,
-            values=values,
-        )
-        _delete_metric_values_window(
-            session,
-            metric_definition_id=definition.id,
-            time_from=window_from,
-            time_to=window_to,
-            scan_config_id=scan_config_id,
-        )
-        _upsert_metric_values_rows(session, rows=value_rows)
-        total_values += len(value_rows)
-        grids += 1
+            total_values += rows_written
+            touched = touched or evaluated
+        if touched:
+            grids += 1
 
     session.commit()
     return {"values": total_values, "grids": grids}

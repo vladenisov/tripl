@@ -122,14 +122,18 @@ def _build_shadow_candidate_rows(
 
     ``shadow_agg`` is keyed per event type because the collector has to know
     which type contributed what, but ``shadow_event_candidates`` is unique on
-    (scan_config_id, event_name) alone. The generated identity never carries the
-    event type column — ``event_plan`` skips it when it builds the name — so in
-    a grouped scan two event types produce the SAME identity whenever their
-    name-bearing values coincide. Emitting a row per type then put two rows with
-    one conflict key into a single multi-row ON CONFLICT DO UPDATE, which
-    Postgres refuses outright (cardinality violation) and which aborted the
-    whole collection run, every run, until a plan event absorbed one of the two
-    identities (tripl-0zpq.14).
+    (scan_config_id, event_name) alone. The generated identity carries the event
+    type column only when ``event_name_format`` names it — that placeholder is
+    the documented exception both name builders honour (tripl-0zpq.93); no other
+    route puts the type into the name, because the column gets no ``col_meta``
+    entry. So in a grouped scan whose format does NOT name the type, two event
+    types produce the SAME identity whenever their name-bearing values coincide.
+    Emitting a row per type then put two rows with one conflict key into a single
+    multi-row ON CONFLICT DO UPDATE, which Postgres refuses outright (cardinality
+    violation) and which aborted the whole collection run, every run, until a
+    plan event absorbed one of the two identities (tripl-0zpq.14). A format that
+    does name the type is not exempt from the fold either — two types can still
+    collide through a group rule that rewrites both names to one.
 
     One row per identity, carrying the combined volume and the widest observed
     window. ``event_type_id`` is the type that contributed most of that volume —

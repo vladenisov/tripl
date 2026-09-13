@@ -14,7 +14,11 @@ Five defects on the scan-job seam — what a run is allowed to touch, and what
   ``cancel_scan_job``'s revoke branch unreachable for both.
 * tripl-0zpq.45 — a manual grouped run only LOOKED UP its event types by name
   and skipped the group when one was missing, while the dry run promised the
-  type "would be added" and the scheduled catalog sync actually created it.
+  type "would be added" and the scheduled catalog sync actually created it. Its
+  review follow-up is here too: once a raw warehouse value is CREATED from, it
+  has to obey the catalog's own name rule (``event_types.name`` is
+  ``String(100)``, and a NULL group cell arrives as ``""``), and the dry run
+  needs the matching filter so the preview refuses what the run refuses.
 * tripl-0zpq.19 — ``_load_latest_generation_snapshot`` took the newest completed
   ScanJob with any summary, but only ``run_scan`` writes ``generation_snapshot``,
   so from the first collection tick after a scan every replay silently fell
@@ -57,8 +61,15 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.services import scan_service
 from tripl.worker.tasks import scan as scan_tasks
+from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.tasks.metrics.generation import _load_latest_generation_snapshot
 from tripl.worker.tasks.metrics.regression import _recalculate_release_regressions
+from tripl.worker.tasks.scan_dry_run import _MAX_REFUSAL_ERRORS, build_dry_run_payload
+from tripl.worker.utils.event_types import (
+    EVENT_TYPE_NAME_MAX_LEN,
+    ensure_event_type_with_fields,
+    event_type_name_rejection,
+)
 
 CLICK_RULE = [
     {
@@ -280,6 +291,10 @@ def test_apply_event_groups_leaves_working_branch_events_untouched(
 
 # ── tripl-0zpq.44: Stop run is honoured by every scan task ───────────────────
 
+# Far enough from ``datetime.now`` that a close-out stamping its own
+# ``completed_at`` over the closer's is unmistakable.
+CANCELLED_AT = datetime(2026, 9, 12, tzinfo=UTC)
+
 
 def _seed_single_type_scan(
     session: Session,
@@ -344,6 +359,7 @@ def _stub_run_scan_pipeline(
     adapter: _CatalogAdapter,
     swept: list[object],
     reindexed: list[object],
+    on_reindex: Any = None,
 ) -> None:
     def _sweep(session: Session, **kwargs: object) -> int:
         swept.append(kwargs)
@@ -351,6 +367,8 @@ def _stub_run_scan_pipeline(
 
     def _reindex(session: Session, project_id: uuid.UUID) -> None:
         reindexed.append(project_id)
+        if on_reindex is not None:
+            on_reindex()
 
     for name, value in (
         ("_get_sync_session", sync_session_factory),
@@ -420,7 +438,7 @@ def test_run_scan_cancelled_mid_run_writes_nothing_and_stays_cancelled(
     no write lock, which is both the realistic moment and the only one pysqlite
     will let a test reproduce.
 
-    DISABLE-THE-FIX: remove the ``_job_is_cancelled`` block from ``run_scan`` and
+    DISABLE-THE-FIX: remove the ``job_is_cancelled`` block from ``run_scan`` and
     the job comes back ``completed`` with both recorders fired.
     """
     with sync_session_factory() as session:
@@ -456,6 +474,227 @@ def test_run_scan_cancelled_mid_run_writes_nothing_and_stays_cancelled(
         assert job is not None
         assert job.status == ScanJobStatus.cancelled.value
         assert job.result_summary is None
+        assert job.error_message == "Cancelled by user"
+
+
+def test_run_scan_skips_a_job_whose_completed_ack_was_lost(
+    sync_session_factory: sessionmaker[Session], monkeypatch: MonkeyPatch
+) -> None:
+    """``completed`` is terminal here too, exactly as it is for ``collect_metrics``.
+
+    ``task_acks_late`` plus ``task_reject_on_worker_lost`` redeliver a message
+    whose ack never landed, so a job that already finished can be handed back to
+    the worker. Re-running it re-queries the warehouse and rewrites the plan, but
+    the user-visible half is worse: the row goes back to ``running`` while still
+    carrying the first run's ``completed_at``, which is precisely what
+    ``_reject_if_already_running`` selects on, so every Run the user presses on
+    this config 409s for as long as the duplicate lasts.
+
+    DISABLE-THE-FIX: drop ``completed`` from ``TERMINAL_SCAN_JOB_STATUSES`` and
+    the adapter is built, the row is re-opened and this goes red three times.
+    """
+    finished_at = datetime(2026, 9, 12, tzinfo=UTC)
+    with sync_session_factory() as session:
+        _, config_id, job_id = _seed_single_type_scan(session)
+        job = session.get(ScanJob, job_id)
+        assert job is not None
+        job.status = ScanJobStatus.completed.value
+        job.completed_at = finished_at
+        job.result_summary = {"events_created": 3}
+        session.commit()
+
+    def _explode(ds: object) -> None:
+        raise AssertionError("adapter must not be built for an already-completed job")
+
+    monkeypatch.setitem(
+        scan_tasks.run_scan.run.__globals__, "_get_sync_session", sync_session_factory
+    )
+    monkeypatch.setitem(scan_tasks.run_scan.run.__globals__, "_build_adapter", _explode)
+
+    result = scan_tasks.run_scan.run(str(config_id), str(job_id))
+
+    # ``skipped``, not ``cancelled``: nobody stopped this run, its ack was lost.
+    assert result == {
+        "skipped": True,
+        "job_status": ScanJobStatus.completed.value,
+        "scan_config_id": str(config_id),
+    }
+
+    with sync_session_factory() as session:
+        job = session.get(ScanJob, job_id)
+        assert job is not None
+        assert job.status == ScanJobStatus.completed.value
+        assert job.started_at is None
+        assert job.result_summary == {"events_created": 3}
+
+
+def _cancel_job_from_another_session(
+    sync_session_factory: sessionmaker[Session], job_id: uuid.UUID
+) -> None:
+    """What ``cancel_scan_job`` writes, issued on a second connection.
+
+    The request session is a different one from the worker's, which is the whole
+    reason the worker has to re-read rather than trust its own instance.
+    """
+    with sync_session_factory() as other:
+        job = other.get(ScanJob, job_id)
+        assert job is not None
+        job.status = ScanJobStatus.cancelled.value
+        job.completed_at = CANCELLED_AT
+        job.error_message = "Cancelled by user"
+        other.commit()
+
+
+def test_run_scan_cancelled_during_the_reindex_keeps_the_cancelled_verdict(
+    sync_session_factory: sessionmaker[Session], monkeypatch: MonkeyPatch
+) -> None:
+    """Stop pressed AFTER the generation commit, while the reindex runs.
+
+    The mid-run checkpoint cannot help here — the catalog rewrite is already
+    durable and stays, which is what the docs promise. What must not happen is
+    the close-out reopening the row: that left a run reading *Succeeded* while
+    carrying "Cancelled by user", with the user's own ``completed_at`` replaced
+    by this run's.
+
+    On a project large enough for a full main-branch reindex this window is
+    seconds wide, and ``ScanJob`` has no ``version_id_col``, so the close-out
+    UPDATE is ``WHERE id`` only and wins by default.
+
+    DISABLE-THE-FIX: make the ``job.status = completed`` write unconditional
+    again and the status, the message and the timestamp all go red.
+    """
+    with sync_session_factory() as session:
+        _, config_id, job_id = _seed_single_type_scan(session)
+
+    swept: list[object] = []
+    reindexed: list[object] = []
+    _stub_run_scan_pipeline(
+        monkeypatch,
+        sync_session_factory,
+        adapter=_CatalogAdapter(),
+        swept=swept,
+        reindexed=reindexed,
+        on_reindex=lambda: _cancel_job_from_another_session(sync_session_factory, job_id),
+    )
+
+    summary = scan_tasks.run_scan.run(str(config_id), str(job_id))
+
+    # The run really did finish: this is the post-commit window, not the
+    # checkpoint one, so the sweep and the reindex both ran.
+    assert swept and reindexed
+    assert summary["columns_analyzed"] == 1
+
+    with sync_session_factory() as session:
+        job = session.get(ScanJob, job_id)
+        assert job is not None
+        assert job.status == ScanJobStatus.cancelled.value
+        assert job.error_message == "Cancelled by user"
+        assert job.completed_at is not None
+        # The closer's timestamp, not one this run stamped on top of it.
+        assert job.completed_at.replace(tzinfo=None) == CANCELLED_AT.replace(tzinfo=None)
+        # The run report is still recorded — only the verdict belongs to the closer.
+        assert job.result_summary is not None
+        assert job.result_summary["columns_analyzed"] == 1
+
+
+def test_run_scan_failing_after_a_cancel_keeps_the_cancellation(
+    sync_session_factory: sessionmaker[Session], monkeypatch: MonkeyPatch
+) -> None:
+    """The failure path is a closing write too, and obeys the same rule.
+
+    Stopping a run commonly makes it die — the revoke, a dropped warehouse
+    connection, a driver error on the way down — and the sanitiser turns
+    whatever that was into "Scan failed due to an internal error." Writing that
+    over the user's own cancellation replaces an explanation they recognise with
+    one that reads like a product fault.
+
+    DISABLE-THE-FIX: restore the unconditional ``failed`` write in ``run_scan``'s
+    ``except`` branch and both assertions below go red.
+    """
+    with sync_session_factory() as session:
+        _, config_id, job_id = _seed_single_type_scan(session)
+
+    def _cancel_then_die() -> None:
+        _cancel_job_from_another_session(sync_session_factory, job_id)
+        raise RuntimeError("warehouse connection reset")
+
+    swept: list[object] = []
+    reindexed: list[object] = []
+    _stub_run_scan_pipeline(
+        monkeypatch,
+        sync_session_factory,
+        adapter=_CatalogAdapter(on_get_columns=_cancel_then_die),
+        swept=swept,
+        reindexed=reindexed,
+    )
+
+    with pytest.raises(RuntimeError):
+        scan_tasks.run_scan.run(str(config_id), str(job_id))
+
+    with sync_session_factory() as session:
+        job = session.get(ScanJob, job_id)
+        assert job is not None
+        assert job.status == ScanJobStatus.cancelled.value
+        assert job.error_message == "Cancelled by user"
+
+
+def test_apply_event_groups_cancelled_during_the_reindex_keeps_the_verdict(
+    sync_session_factory: sessionmaker[Session], monkeypatch: MonkeyPatch
+) -> None:
+    """The event-group apply has the same tail window, and the same rule.
+
+    Its post-commit tail is the main-branch reindex the fold needs so the
+    surviving group event carries a search document. A Stop landing there cannot
+    bring the deleted sources back, but it still owns the row.
+
+    DISABLE-THE-FIX: make ``apply_event_groups``' ``completed`` write
+    unconditional again and both assertions go red.
+    """
+    config_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+    with sync_session_factory() as session:
+        project_id, data_source_id = _seed_project(session)
+        main_id, _working_id = _seed_branches(session, project_id)
+        session.add_all(
+            [
+                ScanConfig(
+                    id=config_id,
+                    project_id=project_id,
+                    data_source_id=data_source_id,
+                    name="Daily",
+                    base_query="SELECT * FROM events",
+                    event_group_rules=CLICK_RULE,
+                ),
+                ScanJob(id=job_id, scan_config_id=config_id, status="pending"),
+            ]
+        )
+        session.flush()
+        _seed_event_type_with_clicks(session, project_id=project_id, branch_id=main_id)
+        session.commit()
+
+    monkeypatch.setitem(
+        scan_tasks.apply_event_groups.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+
+    def _reindex_then_cancel(session: Session, project_id: uuid.UUID) -> None:
+        _cancel_job_from_another_session(sync_session_factory, job_id)
+
+    monkeypatch.setitem(
+        scan_tasks.apply_event_groups.run.__globals__,
+        "reindex_main_branch_from_worker",
+        _reindex_then_cancel,
+    )
+
+    summary = scan_tasks.apply_event_groups.run(str(config_id), str(job_id))
+
+    assert summary["mode"] == "event_groups_apply"
+
+    with sync_session_factory() as session:
+        job = session.get(ScanJob, job_id)
+        assert job is not None
+        assert job.status == ScanJobStatus.cancelled.value
         assert job.error_message == "Cancelled by user"
 
 
@@ -773,6 +1012,361 @@ def test_manual_grouped_scan_declares_a_new_warehouse_column(
         assert not [line for line in result.details if "Skipped column 'locale'" in line]
 
 
+# ── tripl-0zpq.45 (review): the catalog's name rule, enforced on both sides ──
+#
+# Making the manual run CREATE what the dry run promised put a warehouse value
+# straight into ``EventType(name=...)`` with no emptiness and no length check,
+# while ``models.event_type`` declares ``name`` as ``String(100)``. Both grouped
+# runners reach that one resolver, so this was never a manual-run-only path: the
+# SCHEDULED ``catalog_sync`` calls it too.
+#
+# Two reachable values broke it. ``analyze_cardinality_grouped`` maps a NULL
+# group cell to ``""``, so a blank name needs no exotic data at all — it created
+# one nameless event type per project, which no screen can render and no user
+# could have created, quietly collecting every NULL row. And an over-long value
+# raised mid-flush on PostgreSQL, killing the whole run under "Scan failed due to
+# an internal error."
+#
+# The policy is REJECT — see ``event_type_name_rejection``'s docstring for why
+# truncating is worse than refusing. These tests pin both halves of it: the
+# resolver refuses, and the dry run refuses the SAME values so the preview never
+# promises a type the run will not accept.
+
+_A_VALID_NAME = "a" * EVENT_TYPE_NAME_MAX_LEN
+_TOO_LONG = "b" * (EVENT_TYPE_NAME_MAX_LEN + 1)
+
+
+class _DryRunAdapter:
+    """``screen``/``locale``, and whatever breakdown rows the test hands it.
+
+    Row layout is ``BaseAdapter.get_full_breakdown``'s: the regular values, then
+    the JSON path arrays, then the kept JSON values, then ``_cnt`` last.
+    """
+
+    def __init__(self, rows: list[tuple[object, ...]]) -> None:
+        self._rows = rows
+
+    def test_connection(self) -> bool:
+        return True
+
+    def get_columns(self, base_query: str) -> list[ColumnInfo]:
+        return list(_GROUP_COLUMNS)
+
+    def get_full_breakdown(
+        self,
+        base_query: str,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None = None,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
+        limit: int = 50000,
+    ) -> tuple[list[str], list[str], list[str], list[tuple[object, ...]]]:
+        return ([column.name for column in _GROUP_COLUMNS], [], [], self._rows[:limit])
+
+    def close(self) -> None:
+        return None
+
+
+def test_auto_created_event_type_refuses_a_blank_name(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A NULL in the grouping column is not an event type called "".
+
+    ``analyze_cardinality_grouped`` turns a NULL group cell into ``""``, so this
+    is the ordinary shape of a nullable column, not a corner case — and the
+    resolver used to INSERT it, producing one unnamed row per project that
+    absorbed every NULL group and could not be renamed from any screen.
+
+    Refused before the lookup on purpose: checking afterwards would find the
+    blank event type an earlier run created and keep feeding it.
+
+    DISABLE-THE-FIX: drop the guard and the raise never happens — SQLite stores
+    "" happily, which is exactly why this defect survived the suite.
+    """
+    with sync_session_factory() as session:
+        project_id, _config = _grouped_config(session)
+
+        for blank in ("", "   ", "\t\n"):
+            with pytest.raises(ScanError) as excinfo:
+                ensure_event_type_with_fields(
+                    session, project_id, blank, _GROUP_COLUMNS, {"screen"}
+                )
+            assert "blank value" in str(excinfo.value)
+            # A ScanError is surfaced verbatim; anything else would reach the
+            # operator as the generic "Scan failed due to an internal error."
+            # banner this message exists to replace.
+            assert user_facing_error(excinfo.value) == f"Scan failed: {excinfo.value}"
+
+        assert (
+            session.execute(select(EventType).where(EventType.project_id == project_id))
+            .scalars()
+            .all()
+            == []
+        )
+
+
+def test_auto_created_event_type_refuses_a_name_longer_than_the_column(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """``event_types.name`` is ``String(100)``; PostgreSQL already enforced it.
+
+    What changes is that the refusal is now sayable and that both backends agree:
+    the suite runs on SQLite, which stores an over-long string without complaint,
+    so the failure only ever appeared in production.
+
+    The boundary is asserted in both directions — exactly 100 characters is a
+    legal name, and a guard that rejected it would refuse data the API accepts
+    from a person (``schemas.event_type.EventTypeCreate``).
+
+    DISABLE-THE-FIX: drop the guard and the over-long value is stored instead of
+    raising.
+    """
+    with sync_session_factory() as session:
+        project_id, _config = _grouped_config(session)
+
+        with pytest.raises(ScanError) as excinfo:
+            ensure_event_type_with_fields(
+                session, project_id, _TOO_LONG, _GROUP_COLUMNS, {"screen"}
+            )
+        message = str(excinfo.value)
+        assert f"{EVENT_TYPE_NAME_MAX_LEN + 1}-character value" in message
+        # Quoted back ELIDED, and the actionable tail survives the 500-char
+        # right-truncation ``user_facing_error`` applies to a curated message
+        # (tripl-3mmh): an un-elided value would push it off the end.
+        assert _TOO_LONG not in message
+        assert user_facing_error(excinfo.value).endswith("pick a different Event type column.")
+
+        # The limit itself is legal.
+        at_the_limit = ensure_event_type_with_fields(
+            session, project_id, _A_VALID_NAME, _GROUP_COLUMNS, {"screen"}
+        )
+        assert at_the_limit.name == _A_VALID_NAME
+
+        assert [
+            et.name
+            for et in session.execute(
+                select(EventType).where(EventType.project_id == project_id)
+            ).scalars()
+        ] == [_A_VALID_NAME]
+
+
+def test_a_refused_name_is_never_reshaped_into_the_catalog(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Reject, not truncate — and an accepted value is stored character for character.
+
+    ``truncate_event_name`` guards ``Event.name`` and was the obvious thing to
+    reuse here. It is the wrong tool, because an event type's name is its
+    IDENTITY rather than display text:
+
+    * Truncating COLLIDES. The two values below agree on their first 100
+      characters, so a truncating resolver returns one event type for both —
+      which then absorbs both groups' events and dedups the second group's
+      against the first's, silently and permanently.
+    * Truncating with a disambiguating suffix does not collide, but the written
+      name then stops equalling the group value — and ``metrics.catalog_sync``
+      re-selects ``EventType.name == et_name`` by the RAW value for drift and
+      contract detection before it calls this resolver, as does the dry run to
+      label a type existing rather than new. Every tick would rediscover the
+      type as new.
+
+    So the value is validated and stored VERBATIM, padding included.
+
+    DISABLE-THE-FIX: swap the raise for ``et_name[:100]`` and both halves go red
+    — the two long values collapse onto one row, and the padded name loses its
+    padding.
+    """
+    shared = "c" * (EVENT_TYPE_NAME_MAX_LEN + 20)
+    with sync_session_factory() as session:
+        project_id, _config = _grouped_config(session)
+
+        for value in (f"{shared}-one", f"{shared}-two"):
+            with pytest.raises(ScanError):
+                ensure_event_type_with_fields(
+                    session, project_id, value, _GROUP_COLUMNS, {"screen"}
+                )
+        assert (
+            session.execute(select(EventType).where(EventType.project_id == project_id))
+            .scalars()
+            .all()
+            == []
+        )
+
+        padded = ensure_event_type_with_fields(
+            session, project_id, "  home  ", _GROUP_COLUMNS, {"screen"}
+        )
+        assert padded.name == "  home  "
+        # The round trip the other call sites depend on: looked up by the raw
+        # group value, the created row is found.
+        found = session.execute(
+            select(EventType).where(
+                EventType.project_id == project_id, EventType.name == "  home  "
+            )
+        ).scalar_one()
+        assert found.id == padded.id
+
+
+def test_manual_grouped_run_refuses_an_unusable_group_value(
+    sync_session_factory: sessionmaker[Session], monkeypatch: MonkeyPatch
+) -> None:
+    """The guard is reached from the runner, not only from the resolver's unit.
+
+    ``_scan_with_grouping`` is the manual half; the scheduled ``catalog_sync``
+    calls the same function object, which is why the fix lives in the resolver
+    and not in either runner.
+
+    DISABLE-THE-FIX: without the guard the run completes and leaves an event type
+    named "" behind.
+    """
+    with sync_session_factory() as session:
+        project_id, config = _grouped_config(session)
+        analysis = _grouped_analysis(columns=_GROUP_COLUMNS)
+        monkeypatch.setattr(
+            scan_tasks,
+            "analyze_cardinality_grouped",
+            lambda *a, **k: (["home", ""], {"home": analysis, "": analysis}),
+        )
+
+        with pytest.raises(ScanError) as excinfo:
+            scan_tasks._scan_with_grouping(
+                session,
+                project_id,
+                config,
+                adapter=object(),  # type: ignore[arg-type]
+                columns=_GROUP_COLUMNS,
+                scan_window=None,
+                row_limit=50_000,
+            )
+        assert "blank value" in str(excinfo.value)
+
+
+def test_dry_run_promises_only_the_group_values_a_run_would_accept(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Preview and run reach the same verdict for every group value.
+
+    This is tripl-0zpq.45's defect pointing the other way. There the dry run
+    promised a type the manual run skipped; here it promised types the run
+    REFUSES — a blank one and one too long for ``event_types.name`` — and the
+    job then failed on values the preview had called fine, after listing their
+    events and offering to add their fields.
+
+    A refused value is dropped from the targets outright, so it raises no "would
+    be added" warning and contributes no events, no sampled rows and no
+    breakdown combinations. It is reported under ``errors`` rather than
+    ``warnings`` because it is not a partiality in the preview: it is a run that
+    will not finish.
+
+    DISABLE-THE-FIX: remove the filter and the blank and over-long groups come
+    back as two more "would be added" warnings with an empty ``errors`` list.
+    """
+    with sync_session_factory() as session:
+        project_id, config = _grouped_config(session)
+        adapter = _DryRunAdapter(
+            [
+                ("home", "en", 10),
+                (None, "en", 5),
+                (_TOO_LONG, "fr", 3),
+            ]
+        )
+
+        payload: dict[str, Any] = build_dry_run_payload(
+            session,
+            adapter,  # type: ignore[arg-type]
+            config,
+            sample_row_limit=5_000,
+        )
+
+        assert {event["event_type"] for event in payload["events"]} == {"home"}
+        assert payload["sampled_rows"] == 10
+        assert payload["breakdown_combinations"] == 1
+        assert [warning for warning in payload["warnings"] if "would be added" in warning] == [
+            "Event type 'home' is not in your plan yet and would be added"
+        ]
+        assert payload["errors"] == [
+            event_type_name_rejection(""),
+            event_type_name_rejection(_TOO_LONG),
+        ]
+
+        # Group order is the same on both sides, so the run raises on the FIRST
+        # refused value — and the sentence it persists is the one the preview
+        # already showed, word for word.
+        with pytest.raises(ScanError) as excinfo:
+            ensure_event_type_with_fields(session, project_id, "", _GROUP_COLUMNS, {"screen"})
+        assert payload["errors"][0] == str(excinfo.value)
+
+        # A dry run writes nothing, refusals included.
+        assert (
+            session.execute(select(EventType).where(EventType.project_id == project_id))
+            .scalars()
+            .all()
+            == []
+        )
+
+
+def test_dry_run_stays_non_fatal_when_every_group_value_is_refused(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Reporting is the dry run's whole job; it must not adopt the run's verdict.
+
+    With no target left, nothing was analysed — so ``unmapped_columns`` says
+    nothing rather than naming every column, which would tell the operator a run
+    skips columns it would in fact create.
+    """
+    with sync_session_factory() as session:
+        _project_id, config = _grouped_config(session)
+        adapter = _DryRunAdapter([(None, "en", 5), (_TOO_LONG, "fr", 3)])
+
+        payload: dict[str, Any] = build_dry_run_payload(
+            session,
+            adapter,  # type: ignore[arg-type]
+            config,
+            sample_row_limit=5_000,
+        )
+
+        assert payload["events"] == []
+        assert payload["sampled_rows"] == 0
+        assert payload["unmapped_columns"] == []
+        assert len(payload["errors"]) == 2
+
+
+def test_dry_run_totals_the_refusals_it_does_not_spell_out(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A grouping column pointed at a URL refuses hundreds, not two.
+
+    Three spelled out and the rest totalled: an ``errors`` panel a thousand
+    lines long says less than one that names three. The first is the one that
+    matters — group order is identical on both sides, so it is the value the run
+    raises on.
+
+    Pluralised rather than "1 values", the defect tripl-3y7z fixed on the other
+    side of the wire and the reason ``unnamed_skip_detail`` keeps its copy in one
+    place.
+    """
+    with sync_session_factory() as session:
+        _project_id, config = _grouped_config(session)
+
+        for extra, tail in ((1, "value"), (2, "values")):
+            adapter = _DryRunAdapter(
+                [(f"{_TOO_LONG}{i}", "en", 1) for i in range(_MAX_REFUSAL_ERRORS + extra)]
+            )
+            payload: dict[str, Any] = build_dry_run_payload(
+                session,
+                adapter,  # type: ignore[arg-type]
+                config,
+                sample_row_limit=5_000,
+            )
+
+            assert len(payload["errors"]) == _MAX_REFUSAL_ERRORS + 1
+            assert payload["errors"][0] == event_type_name_rejection(f"{_TOO_LONG}0")
+            assert payload["errors"][-1] == (
+                f"{extra} further Event type column {tail} cannot name an event type either."
+            )
+
+
 # ── tripl-0zpq.19: the replay snapshot survives later collection jobs ────────
 
 
@@ -871,7 +1465,15 @@ def test_generation_snapshot_survives_newer_collection_jobs(
     DISABLE-THE-FIX: this also pins the SQLite trap. Under the bare indexed form
     ``result_summary["generation_snapshot"].isnot(None)`` the predicate compiles
     to ``JSON_QUOTE(JSON_EXTRACT(...))``, and ``json_quote(NULL)`` is the TEXT
-    ``'null'`` — so the filter is a silent no-op here and this test goes red.
+    ``'null'`` — so on SQLite the filter is a silent no-op. That is only visible
+    once the shadow rows outnumber ``_SNAPSHOT_JOB_SCAN_LIMIT``, which is why six
+    are seeded and not the three the defect itself needs: with five or fewer the
+    unfiltered query still returns the snapshot inside its LIMIT and the Python
+    walk below finds it, so the test would pass either way. ``.as_string()`` is
+    load-bearing for this SQLite fixture, NOT for production — on PostgreSQL the
+    bare form compiles to ``(result_summary -> 'generation_snapshot') IS NOT
+    NULL`` and ``->`` on a missing key yields SQL NULL, so it filters correctly
+    there. What is pinned here is the coverage, not a live Postgres defect.
     """
     with sync_session_factory() as session:
         config, event_type_id = _seed_snapshot_config(session)
@@ -882,7 +1484,7 @@ def test_generation_snapshot_survives_newer_collection_jobs(
             completed_at=base,
             result_summary=_snapshot_summary(event_type_id=event_type_id),
         )
-        for hours in (1, 2, 3):
+        for hours in range(1, 7):
             _add_completed_job(
                 session,
                 config,

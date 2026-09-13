@@ -53,7 +53,6 @@ from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.tasks.alerts import send_alert_delivery
 from tripl.worker.tasks.metrics._helpers import (
-    TERMINAL_SCAN_JOB_STATUSES,
     _build_adapter,
     _ceil_to_interval,
     _floor_to_interval,
@@ -84,6 +83,10 @@ from tripl.worker.tasks.metrics.metric_rows import (
 from tripl.worker.tasks.metrics.regression import _recalculate_release_regressions
 from tripl.worker.tasks.metrics.signals import (
     _get_visible_signal_scope_keys,
+)
+from tripl.worker.utils.job_status import (
+    TERMINAL_SCAN_JOB_STATUSES,
+    closed_by_someone_else,
 )
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
@@ -197,6 +200,13 @@ def _last_collected_window_to(session: Session, scan_config_id: uuid.UUID) -> da
     recorded in ``result_summary["time_to"]`` — which a scheduled collection sets
     to ``floor(now)``, the grid boundary it collected up to.
 
+    It is the grid boundary *that job* collected up to, which is not necessarily
+    a boundary of the config's grid TODAY: a weekly row written before the week
+    origin moved to Monday carries a Saturday, and an interval edited from ``1d``
+    to ``1w`` leaves daily boundaries behind. Nothing rewrites those rows. Read
+    this as progress, never as a window bound — ``_resolve_collection_window``
+    floors it onto the current grid before using it as one.
+
     Without it, a collection that COMPLETES but writes no ``EventMetric`` row (a
     fresh config whose warehouse window is still empty, or a stream that has gone
     silent) leaves ``max(EventMetric.bucket)`` untouched and is due again on the
@@ -234,23 +244,6 @@ def _last_collected_window_to(session: Session, scan_config_id: uuid.UUID) -> da
             return _parse_task_datetime(raw_to)
         except ValueError:
             continue
-    return None
-
-
-def _closed_by_someone_else(session: Session, job: ScanJob) -> str | None:
-    """The terminal status another writer stamped on ``job``, or ``None``.
-
-    Re-reads the row's status rather than trusting the instance: the worker's
-    session does not expire on commit, so the in-memory ``running`` it wrote at
-    start-up survives a stale-job reap or a user cancel that landed in another
-    session meanwhile. Deliberately reads only the status column and assigns
-    nothing back — the closing writer owns ``status``, ``completed_at`` and
-    ``error_message``, and a re-assignment here would flush this run's stale
-    copies over theirs.
-    """
-    current = session.execute(select(ScanJob.status).where(ScanJob.id == job.id)).scalar()
-    if current is not None and current in TERMINAL_SCAN_JOB_STATUSES:
-        return str(current)
     return None
 
 
@@ -449,7 +442,22 @@ def _resolve_collection_window(
     else:
         # ``min`` so a future-dated bucket (clock skew on the source) cannot push
         # the start past the end and invert the window.
-        time_from = min(progress_to, time_to) - delta * SCHEDULED_RESUME_OVERLAP_BUCKETS
+        #
+        # ``_floor_to_interval`` because neither input is guaranteed to sit on
+        # THIS config's grid, and every bound handed to the warehouse must:
+        # ``_floor_to_interval(bound, delta) == bound`` is the invariant the
+        # helper's own docstring states and ``generation`` relies on. Two ways it
+        # is broken without the floor. A watermark recorded before the weekly
+        # origin moved to Monday is a Saturday, and wins the ``max`` whenever
+        # collection is LAGGING (``watermark > last_bucket + delta``). A config
+        # edited from ``1d`` to ``1w`` keeps its daily buckets, so ``last_bucket
+        # + delta`` is any weekday. Either start makes the warehouse's own
+        # ``GROUP BY`` return a leading bucket keyed BELOW ``time_from`` — one
+        # the window's delete does not reach but the upsert still overwrites,
+        # replacing a complete bucket's count with the tail of it. Flooring can
+        # only move the start earlier, so no data is ever skipped.
+        resume_from = _floor_to_interval(min(progress_to, time_to), delta)
+        time_from = resume_from - delta * SCHEDULED_RESUME_OVERLAP_BUCKETS
     return time_from, time_to, False
 
 
@@ -1191,7 +1199,7 @@ def collect_metrics(
 
         if job:
             job.result_summary = result_summary
-            closed_status = _closed_by_someone_else(session, job)
+            closed_status = closed_by_someone_else(session, job.id)
             if closed_status is not None:
                 # Somebody already closed this row — the stale reaper stamped it
                 # failed while the run was still alive, or the user cancelled it
@@ -1251,7 +1259,7 @@ def collect_metrics(
         if job:
             try:
                 session.rollback()
-                closed_status = _closed_by_someone_else(session, job)
+                closed_status = closed_by_someone_else(session, job.id)
                 if closed_status is not None:
                     # Same rule as the success path: a cancelled or already-reaped
                     # row keeps the status and message whoever closed it wrote.

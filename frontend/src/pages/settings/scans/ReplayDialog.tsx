@@ -12,6 +12,25 @@ import { getErrorMessage } from '@/lib/utils'
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /**
+ * How far past a bucket boundary this machine's clock must already be before the
+ * seed will end the period on that boundary.
+ *
+ * The backend accepts `time_to <= floor_to_bucket(SERVER now, interval)` with a
+ * strict comparison and no tolerance. The seed is computed from the BROWSER's
+ * clock, so a browser running fast can floor onto a boundary the server has not
+ * reached yet and the dialog's own untouched default is refused with a 400. That
+ * happens exactly while `browserNow - boundary < skew`, so waiting out this much
+ * of the bucket before using it is the whole guard.
+ *
+ * Two minutes is ordinary drift on a laptop that is not running NTP. The cost is
+ * paid only inside that window and only there: for the first two minutes of a
+ * bucket the default ends one bucket earlier, and the user can still type the
+ * newer one in. (A hypothetical interval shorter than the margin would always
+ * step back one bucket; the shortest the backend supports is `15m`.)
+ */
+export const CLOCK_SKEW_MARGIN_MS = 2 * 60 * 1000
+
+/**
  * The chart granularity that bins on the same grid as each collection interval,
  * so the seeded period can be floored through `getBucketStart` — the frontend
  * half of the bucket contract in backend/src/tripl/core/bucketing.py — instead
@@ -32,7 +51,8 @@ function toDatetimeLocalValue(date: Date): string {
 
 /**
  * A period the backend will accept: it ends on the last COMPLETE bucket of this
- * scan's own interval.
+ * scan's own interval — or, for the first `CLOCK_SKEW_MARGIN_MS` of that bucket,
+ * on the one before it.
  *
  * The seed used to be "the current local hour", which reaches into the interval
  * still filling for every config coarser than an hour — and for an hourly one in
@@ -42,11 +62,20 @@ function toDatetimeLocalValue(date: Date): string {
  */
 function defaultReplayWindow(interval: IntervalCode | null): { from: string; to: string } {
   const granularity = GRANULARITY_FOR_INTERVAL[interval ?? '1h']
-  const to = new Date(getBucketStart(new Date().toISOString(), granularity))
+  const now = Date.now()
+  const latest = new Date(getBucketStart(new Date(now).toISOString(), granularity))
   // The bucket width, read off the same grid rather than tabulated a second
-  // time: flooring the instant just before `to` lands on the previous boundary.
-  const previous = new Date(getBucketStart(new Date(to.getTime() - 1).toISOString(), granularity))
-  const from = new Date(to.getTime() - Math.max(DAY_MS, to.getTime() - previous.getTime()))
+  // time: flooring the instant just before `latest` lands on the previous boundary.
+  const previous = new Date(
+    getBucketStart(new Date(latest.getTime() - 1).toISOString(), granularity),
+  )
+  const width = latest.getTime() - previous.getTime()
+  // Only claim the newest boundary once this clock is far enough past it that a
+  // server clock trailing by up to CLOCK_SKEW_MARGIN_MS has crossed it too —
+  // see that constant. Below the margin the previous boundary is the newest one
+  // the backend is certain to accept.
+  const to = now - latest.getTime() < CLOCK_SKEW_MARGIN_MS ? previous : latest
+  const from = new Date(to.getTime() - Math.max(DAY_MS, width))
   return { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(to) }
 }
 
@@ -63,10 +92,11 @@ export function ReplayDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const qc = useQueryClient()
-  // Seeded once, at least 24h wide and ending on this scan's last complete
-  // bucket; the user can adjust before replaying. Resolved in ONE call so both
-  // ends come off the same instant — two calls either side of a bucket boundary
-  // would seed a period one bucket wider than it looks.
+  // Seeded once, at least 24h wide and ending on the last complete bucket of
+  // this scan's interval that the backend is certain to accept; the user can
+  // adjust before replaying. Resolved in ONE call so both ends come off the same
+  // instant — two calls either side of a bucket boundary would seed a period one
+  // bucket wider than it looks.
   const [seed] = useState(() => defaultReplayWindow(scanConfig.interval))
   const [from, setFrom] = useState(seed.from)
   const [to, setTo] = useState(seed.to)

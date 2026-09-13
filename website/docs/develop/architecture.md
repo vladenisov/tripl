@@ -210,15 +210,35 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   derive from event series already collected on the shared scan grid: `single`
   and `ratio` need no warehouse query, while `per_distinct_user` additionally
   issues one bucketed `count(DISTINCT user_id)` against the source scan's data
-  source for its denominator. Each run is bounded to a **resume region** per
-  grid — the two buckets before the metric's own last stored bucket on that
-  grid, plus everything newer — and a grid the metric has never stored a value
-  for is capped to `EVENT_COMPOSITION_BACKFILL_BUCKETS` (5,000) of that grid's
-  intervals, so a metric that can never compose a value (a `per_distinct_user`
-  whose denominator is always zero, say) cannot grow an unbounded query. The
-  consequence worth knowing: a historical event-metric bucket that changes after
-  its composed value has scrolled out of the resume region is no longer
-  recomputed.
+  source for its denominator. Each run composes each grid in at most **two
+  bounded regions**, never over the grid's full retained history:
+  - the **resume region** — the two buckets before the metric's own last stored
+    bucket on that grid, plus everything newer. A grid the metric has never
+    stored a value for has no such anchor and is capped instead to
+    `EVENT_COMPOSITION_BACKFILL_BUCKETS` (5,000) of that grid's intervals back
+    from the head of the source series, so a metric that can never compose a
+    value (a `per_distinct_user` whose denominator is always zero, say) cannot
+    grow an unbounded query;
+  - one **backfill chunk** — up to the same 5,000 intervals below the metric's
+    own *oldest* stored bucket, clamped to the oldest bucket the source series
+    actually has and to the resume floor so the two regions cannot overlap. The
+    resume region alone is a one-way ratchet on `max(bucket)`, so without this a
+    grid with more history than the first run's reach would be truncated at
+    whatever that run happened to cover — and since a material definition edit
+    clears every stored value, editing such a metric would destroy the part of
+    its chart nothing could re-derive. Pre-history is instead filled in one
+    bounded step per dispatch until the frontier meets the start of the series.
+
+  What is still given up is the middle: buckets the metric has **already**
+  composed, between its oldest stored bucket and the resume floor, are not
+  revisited, so a historical event-metric bucket that changes after its composed
+  value has scrolled out of the resume region is not recomputed. The backfill
+  fills gaps; it does not repair a stored value whose source moved underneath
+  it. One narrow stall: the frontier is the stored `min(bucket)` and a
+  divide-by-zero bucket stores no row, so a chunk in which every bucket divides
+  by zero leaves the frontier where it was and is retried on the next dispatch —
+  one bounded pass wasted, not a permanent failure.
+
   A metric whose last collection **errored** is not retried before its own
   interval has elapsed (an hour for `event_composition`, which has no interval of
   its own): a failed run advances neither a value nor the completed-window

@@ -498,8 +498,14 @@ def test_collect_fact_names_the_missing_measure_column(
     """A measure column the fact table does not have is named, not swallowed.
 
     ``validate_measure_column`` lives in ``core`` and raises ``ValueError``, which
-    is not in ``_CURATED_ERRORS`` — so the user read "Scan failed due to an
+    is not in ``_CURATED_ERRORS`` — so the message read "Scan failed due to an
     internal error." with nothing pointing at the column.
+
+    This is the PER-METRIC collector, which production no longer dispatches (every
+    fact metric goes through ``collect_fact_metrics_batch``); it survives as the
+    conformance oracle. The operator-visible half is
+    ``test_batch_fact_collection_names_the_missing_measure_column`` below — both
+    now answer to the one ``_validated_measure_column`` helper.
     """
     with sync_session_factory() as session:
         project, data_source = _seed_project_and_ds(session)
@@ -911,3 +917,242 @@ def test_per_distinct_user_first_collection_is_capped(
     metric_collect.collect_metric_definitions.run(def_id)
 
     assert adapter.windows == [(to_utc(_b(6)), to_utc(_b(10)))]
+
+
+# ── the LIVE fact path answers to the same column guards ─────────────────────
+
+
+class _RefusingBatchAdapter(_FactAdapter):
+    """Fails the test if the BATCHED collector reaches the warehouse at all.
+
+    The batch path's own scans are ``get_time_bucketed_multi_aggregate`` and its
+    breakdown sibling; a column guard that fires only after one of those has run
+    is no guard, and a guard that lets the query run and reports the adapter's
+    bare ``ValueError`` is the generic internal-error message again.
+    """
+
+    def get_time_bucketed_multi_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        interval: str,
+        specs: list[object],
+        time_from: datetime,
+        time_to: datetime,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        msg = "the batched multi-aggregate must not run once a column guard has failed"
+        raise AssertionError(msg)
+
+    def get_time_bucketed_multi_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        interval: str,
+        breakdown_column: str,
+        specs: list[object],
+        time_from: datetime,
+        time_to: datetime,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        msg = "the batched breakdown scan must not run once a column guard has failed"
+        raise AssertionError(msg)
+
+
+def test_batch_fact_collection_names_the_missing_measure_column(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The path an operator actually hits must name the column too.
+
+    Every fact metric is dispatched through ``collect_fact_metrics_batch`` — both
+    by the scheduler and by "collect now" — so a fix that only reached
+    ``_aggregate_fact_window`` fixed nothing anyone sees. ``_resolve_batch_operand``
+    raised the bare ``ValueError`` straight into ``_stamp_metric_error``, which
+    persisted "Scan failed due to an internal error." on the metric card.
+    """
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        def_id = str(
+            _make_fact_metric(session, project, fact_table, config={"measure_column": "revenue"}).id
+        )
+
+    adapter = _RefusingBatchAdapter([])
+    _patch_fact_collector(monkeypatch, session_factory=sync_session_factory, adapter=adapter)
+
+    result = metric_collect.collect_fact_metrics_batch.run([def_id])
+
+    assert result["errors"] == 1
+    message = _collection_error(sync_session_factory, def_id)
+    assert "revenue" in message
+    assert "internal error" not in message
+
+
+def test_batch_fact_collection_names_an_unknown_breakdown_column(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A breakdown dimension the fact table does not project is named, not scanned.
+
+    Nothing validates ``breakdown_columns`` against the fact table when the metric
+    is SAVED — ``_verify_fact_operand`` covers the measure, distinct, condition and
+    row-filter columns only — so this needs no schema drift to reach: the metric can
+    be created this way. Before the guard the planner registered the dimension
+    unchecked and the failure surfaced from inside the adapter as a bare
+    ``ValueError``, i.e. as the generic internal-error summary.
+    """
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        def_id = str(
+            _make_fact_metric(
+                session,
+                project,
+                fact_table,
+                breakdown_columns=["country"],
+            ).id
+        )
+
+    # ``country`` is absent from the fact table's projection.
+    adapter = _RefusingBatchAdapter([], columns=["ts", "amount", "user_id"])
+    _patch_fact_collector(monkeypatch, session_factory=sync_session_factory, adapter=adapter)
+
+    result = metric_collect.collect_fact_metrics_batch.run([def_id])
+
+    assert result["errors"] == 1
+    message = _collection_error(sync_session_factory, def_id)
+    assert "country" in message
+    assert "internal error" not in message
+
+
+def test_batch_ratio_breakdown_names_an_unknown_breakdown_column(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """``_plan_ratio_metric`` carries the same guard as ``_plan_single_metric``.
+
+    A ratio metric reaches the breakdown registry through a different planner; the
+    guard has to be on both or the asymmetry simply moves.
+    """
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        operand = {
+            "fact_table_id": str(fact_table.id),
+            "aggregation": MetricAggregation.sum.value,
+            "measure_column": "amount",
+        }
+        def_id = str(
+            _make_fact_metric(
+                session,
+                project,
+                fact_table,
+                composition=MetricComposition.ratio,
+                aggregation=None,
+                config={"numerator": operand, "denominator": dict(operand)},
+                breakdown_columns=["country"],
+            ).id
+        )
+
+    adapter = _RefusingBatchAdapter([], columns=["ts", "amount", "user_id"])
+    _patch_fact_collector(monkeypatch, session_factory=sync_session_factory, adapter=adapter)
+
+    result = metric_collect.collect_fact_metrics_batch.run([def_id])
+
+    assert result["errors"] == 1
+    message = _collection_error(sync_session_factory, def_id)
+    assert "country" in message
+    assert "internal error" not in message
+
+
+# ── the resume floor is not a one-way ratchet ────────────────────────────────
+
+
+def _stored_buckets(session_factory: sessionmaker[Session], def_id: str) -> set[datetime]:
+    with session_factory() as session:
+        return {
+            to_utc(bucket)
+            for bucket in session.execute(
+                select(MetricValue.bucket).where(
+                    MetricValue.metric_definition_id == uuid.UUID(def_id)
+                )
+            )
+            .scalars()
+            .all()
+        }
+
+
+def test_composition_backfill_region_is_none_before_anything_is_stored() -> None:
+    """The first run's cap owns the reach; the backward frontier starts after it."""
+    assert (
+        metric_collect._composition_backfill_region(
+            stored_min=None,
+            resume_floor=_b(6),
+            oldest_source=_b(0),
+            delta=HOUR,
+        )
+        is None
+    )
+
+
+def test_composition_backfill_region_stops_at_the_oldest_source_bucket() -> None:
+    """Nothing older than the source series exists, so the walk terminates there."""
+    assert (
+        metric_collect._composition_backfill_region(
+            stored_min=_b(0),
+            resume_floor=_b(6),
+            oldest_source=_b(0),
+            delta=HOUR,
+        )
+        is None
+    )
+
+
+def test_event_composition_backfills_pre_history_over_successive_runs(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """History the first run could not reach must not be stranded for good.
+
+    ``_composition_series_floor`` is anchored on ``max(MetricValue.bucket)``, which
+    only ever moves forward — so the resume region alone is a one-way ratchet: a
+    grid holding more history than ``EVENT_COMPOSITION_BACKFILL_BUCKETS`` intervals
+    would be truncated at whatever the first run happened to reach, permanently.
+    That also made a definition edit destructive, because
+    ``_clear_collected_metric_data`` deletes every stored value on any material
+    change and only the capped tail would come back.
+
+    ``_composition_backfill_region`` walks the frontier down ONE bounded step per
+    run instead, so the work per run stays bounded by the same constant while the
+    whole series is reached eventually.
+    """
+    def_id, numerator_event_id, scan_config = _seed_per_user_grid(sync_session_factory, buckets=10)
+
+    adapter = _DistinctUserAdapter()
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(metric_collect, "EVENT_COMPOSITION_BACKFILL_BUCKETS", 3)
+
+    metric_collect.collect_metric_definitions.run(def_id)
+    # Run 1 is capped three buckets back from the head: b06..b09 and nothing else.
+    assert _stored_buckets(sync_session_factory, def_id) == {_b(hour) for hour in range(6, 10)}
+
+    for hour in (10, 11):
+        _append_numerator_bucket(sync_session_factory, scan_config, numerator_event_id, hour)
+        metric_collect.collect_metric_definitions.run(def_id)
+
+    # Two further runs, each taking one bounded step backwards, and the whole
+    # retained history is composed -- b00 included.
+    assert _stored_buckets(sync_session_factory, def_id) == {_b(hour) for hour in range(12)}
+    # ...without any single run asking the warehouse for more than the bound.
+    assert adapter.windows, "the denominator query never ran"
+    assert all(window_to - window_from <= HOUR * 4 for window_from, window_to in adapter.windows)
+
+    # Once the frontier reaches the oldest source bucket the extra pass stops:
+    # the next run issues the resume query and nothing else.
+    before = len(adapter.windows)
+    _append_numerator_bucket(sync_session_factory, scan_config, numerator_event_id, 12)
+    metric_collect.collect_metric_definitions.run(def_id)
+    assert len(adapter.windows) == before + 1

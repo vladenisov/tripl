@@ -15,6 +15,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.alert_templates import percent_delta_of
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
     SCOPE_METRIC,
@@ -567,13 +568,19 @@ async def simulate_rule(
     firings: list[SimulatedRuleFiring] = []
     for anomaly in fired:
         absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
-        # Same placeholder-at-zero-baseline rule as the live send path — see the
-        # comment in ``dispatch._prepare_alert_deliveries``. Readers of this
-        # number go through ``alert_templates.format_percent_delta`` (rendered
+        # Through the SHARED definition, never restated here. This replay is the
+        # rule simulator: whatever the live send path would have stored is the
+        # only answer it may give, and the two drifted the moment
+        # ``dispatch._create_deliveries`` learned that a negative expectation is
+        # a real baseline and this copy did not — the simulator reported 0.0% on
+        # a signed catalog metric where dispatch reported 200%, for the same
+        # anomaly and the same rule (tripl-0zpq.102). A simulator that disagrees
+        # with the thing it simulates is worse than no simulator, which is the
+        # whole reason ``tripl.alerting_matching`` exists for the predicates;
+        # ``alert_templates.percent_delta_of`` is the same guarantee for the
+        # number. Readers of it go through ``format_percent_delta`` (rendered
         # preview) or the frontend's ``lib/percentDelta`` (replay table).
-        percent_delta = (
-            absolute_delta / anomaly.expected_count * 100 if anomaly.expected_count > 0 else 0.0
-        )
+        percent_delta = percent_delta_of(anomaly.actual_count, anomaly.expected_count)
         scope_name = scope_names.get(
             (anomaly.scope_type, anomaly.scope_ref),
             anomaly.scope_ref,

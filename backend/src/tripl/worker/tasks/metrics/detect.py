@@ -84,6 +84,18 @@ ANOMALY_TRAILING_REEVAL_BUCKETS = 30
 # already-settled window (replays, tests, conformance harnesses) get the
 # historical behavior of scoring every bucket they asked for.
 NO_INGESTION_SETTLING = timedelta(0)
+# ``ScanJob.created_at`` is only an approximation of the window the job went on
+# to record: a job that sat queued stamps a created_at earlier than the window it
+# eventually wrote. One day of slack absorbs that, so a coverage horizon can be
+# used as a ``created_at`` floor without dropping a job whose window reaches back
+# past it. BOTH callers of ``covered_buckets_from_scan_jobs`` apply it — the
+# running scan's horizon in ``coverage_history_start`` and the per-metric horizon
+# in ``_metric_covered_buckets`` — because a job dropped from either read costs
+# the same thing: every genuinely-zero bucket it covered is EXCLUDED from the
+# series rather than zero-filled. It lives up here with the other module
+# constants because the per-metric caller is defined well above the horizon
+# helper.
+COVERAGE_HORIZON_SLACK = timedelta(days=1)
 
 
 def _build_anomaly_settings(
@@ -859,13 +871,41 @@ def _resolve_metric_grid(session: Session, metric: MetricDefinition) -> MetricGr
     ``event_composition`` leaves it NULL and inherits the grid of the
     most-recent value's ``scan_config_id``.
 
-    The whole entry is returned rather than just the interval because the SOURCE
-    config decides WHOSE scan-job coverage describes the series (see
-    :func:`_metric_covered_buckets`), not only which delta it is scored on.
+    The whole entry is returned rather than just the interval because
+    :func:`_metric_covered_buckets` also has to know whether the RUNNING scan's
+    grid is one of the metric's grids, which is an (interval, config) pair. It
+    does NOT decide whose coverage describes the series: that is the union over
+    every source config the values were summed from, read separately.
     """
     return metric_grids(
         session.execute(metric_grid_stmt(MetricDefinition.id == metric.id)).all()
     ).get(metric.id)
+
+
+def _metric_source_config_ids(
+    session: Session,
+    *,
+    metric_definition_id: uuid.UUID,
+    history_from: datetime,
+    time_to: datetime,
+) -> list[uuid.UUID]:
+    """Every scan config that contributed a value to the series being scored.
+
+    The population :func:`_load_metric_value_points` SUMS over, read back over
+    the same window and the same metric so the two cannot describe different
+    things. Ordered so the coverage union below is byte-stable run to run.
+    """
+    rows = session.execute(
+        select(MetricValue.scan_config_id)
+        .where(
+            MetricValue.metric_definition_id == metric_definition_id,
+            MetricValue.scan_config_id.is_not(None),
+            MetricValue.bucket >= history_from,
+            MetricValue.bucket < time_to,
+        )
+        .distinct()
+    ).scalars()
+    return sorted(row for row in rows if row is not None)
 
 
 def _metric_covered_buckets(
@@ -889,16 +929,31 @@ def _metric_covered_buckets(
       schedule, and store ``scan_config_id = NULL``. No scan job ever recorded a
       window for them, so no scan's coverage describes them at all; ``None``
       keeps the documented unconditional zero-fill.
-    * an ``event_composition`` metric reading THIS scan on THIS scan's grid
-      inherits the running scan's set verbatim. It is already enumerated on the
-      right delta, and it uniquely carries the window this run just wrote.
-    * anything else — a metric sourced from a DIFFERENT scan config, or from this
-      one but pinned to its own interval — gets its SOURCE config's coverage,
-      re-enumerated on the metric's own delta. Handing it the running scan's set
-      instead decimates the series (a 1h metric under a 1d scan keeps one bucket
-      in twenty-four, and ``_replace_scope_anomalies`` then rewrites its whole
-      trailing window from what survived) or blames it for another config's
-      outages.
+    * an ``event_composition`` metric gets the UNION of its source configs'
+      coverage, each re-enumerated on the metric's own delta. The source reading
+      THIS scan on THIS scan's grid contributes the running scan's set verbatim:
+      it is already on the right delta, and it uniquely carries the window this
+      run just wrote. Every other source is read from its own completed jobs and
+      stored buckets.
+
+    The union — rather than the newest value's single ``scan_config_id`` — is
+    what keeps coverage describing the SAME population the series is summed
+    from. ``_load_metric_value_points`` sums across every source grid with no
+    config filter, because one event type can legitimately be collected by two
+    live scans (``EventMetric`` is keyed on (scan_config_id, event_id, bucket)
+    and ``_collect_event_composition`` writes one ``MetricValue`` row per source
+    grid). Masking that summed series with ONE source's coverage drops every
+    bucket only the other source contributed — ``expand_series`` EXCLUDES an
+    uncovered bucket rather than zero-filling it, even when a real value is
+    sitting there — and which source that was is an arbitrary
+    ``ORDER BY bucket DESC`` tie-break between two equally-current configs
+    (:func:`tripl.metric_grid.metric_grid_stmt`), so the truncation could also
+    flap between runs. A union has no tie to break.
+
+    ``None`` still means "no coverage gating, zero-fill unconditionally", and a
+    source whose set is unknown forces it: the running scan contributing a
+    ``None`` set would otherwise let the other sources' coverage silently
+    exclude buckets nobody vouched against.
 
     ``memo`` keys on (source config, delta), which is enough: ``history_from``
     is a pure function of the delta and the run's evaluation window, so two
@@ -906,27 +961,45 @@ def _metric_covered_buckets(
     """
     if metric.kind != MetricKind.event_composition:
         return None
-    if grid.scan_config_id is None:
-        # An event_composition metric that has never stored a value: no source
-        # scan is known, so there is no coverage to apply.
+    source_ids = _metric_source_config_ids(
+        session,
+        metric_definition_id=metric.id,
+        history_from=history_from,
+        time_to=evaluation_end,
+    )
+    if not source_ids:
+        # An event_composition metric with no stored value in this window: no
+        # source scan is known, so there is no coverage to apply.
         return None
-    if grid.scan_config_id == config.id and grid.interval == config.interval:
-        return scan_covered_buckets
-    key = (grid.scan_config_id, delta)
-    cached = memo.get(key)
-    if cached is None:
-        cached = covered_buckets_from_scan_jobs(
-            session,
-            scan_config_id=grid.scan_config_id,
-            delta=delta,
-            history_from=history_from,
-            # This run wrote nothing for that config, so it has no current
-            # window to vouch for; the stored-bucket read is bounded by the
-            # metric's own evaluation end instead.
-            presence_before=evaluation_end,
-        )
-        memo[key] = cached
-    return cached
+    covered: set[datetime] = set()
+    for source_id in source_ids:
+        if source_id == config.id and grid.interval == config.interval:
+            if scan_covered_buckets is None:
+                return None
+            covered |= scan_covered_buckets
+            continue
+        key = (source_id, delta)
+        cached = memo.get(key)
+        if cached is None:
+            cached = covered_buckets_from_scan_jobs(
+                session,
+                scan_config_id=source_id,
+                delta=delta,
+                # ``ScanJob.created_at`` is only an approximation of the window
+                # the job recorded, so the floor needs the same day of slack the
+                # running scan's horizon gets (``coverage_history_start``).
+                # Without it a job that sat queued across the horizon is dropped
+                # from the read and every genuinely-zero bucket it covered leaves
+                # the baseline instead of being zero-filled.
+                history_from=history_from - COVERAGE_HORIZON_SLACK,
+                # This run wrote nothing for that config, so it has no current
+                # window to vouch for; the stored-bucket read is bounded by the
+                # metric's own evaluation end instead.
+                presence_before=evaluation_end,
+            )
+            memo[key] = cached
+        covered |= cached
+    return covered
 
 
 def _project_metric_scope_refs(session: Session, project_id: uuid.UUID) -> list[str]:
@@ -991,12 +1064,24 @@ def _purge_disabled_metric_scope(
     instead, one DELETE per distinct start — the interval vocabulary is small,
     so a project with hundreds of metrics still issues a handful of statements.
 
-    Grids resolve in ONE query rather than per metric, and a metric with no
-    resolvable grid is skipped exactly as detection skips it, so neither side
-    ever touches its rows.
+    Grids resolve in ONE query rather than per metric, and the POPULATION is the
+    enabled side's population — ``monitored_metric_criteria()`` on top of the
+    project, exactly as :func:`_recalculate_project_metric_anomalies` selects,
+    plus the same skip for a metric with no resolvable grid. A metric that has
+    left monitoring (archived, or its own **Anomaly detection** switch off) is
+    never scored by the enabled pass and never rewritten by it, so this must not
+    delete its rows either; ``tripl.metric_monitoring`` states that promise, and
+    without the predicate one untick of the project-level **Metrics** box would
+    erase up to ``ANOMALY_TRAILING_REEVAL_BUCKETS`` grid intervals of history no
+    later run can re-derive.
     """
     grids = metric_grids(
-        session.execute(metric_grid_stmt(MetricDefinition.project_id == config.project_id)).all()
+        session.execute(
+            metric_grid_stmt(
+                MetricDefinition.project_id == config.project_id,
+                *monitored_metric_criteria(),
+            )
+        ).all()
     )
     refs_by_start: dict[datetime, list[str]] = {}
     for metric_id, grid in grids.items():
@@ -1055,10 +1140,11 @@ def _recalculate_project_metric_anomalies(
 
     ``scan_covered_buckets`` is the RUNNING scan's coverage, enumerated on the
     RUNNING scan's grid from that config's own jobs and stored buckets. It is
-    inherited only by a metric whose resolved grid IS that grid; every other
-    metric resolves its own (:func:`_metric_covered_buckets`), because the same
-    set applied to a different grid or a different source silently decimates the
-    series it is scored from.
+    contributed only for a metric one of whose source grids IS that grid; every
+    other source is read on the metric's own grid and horizon, and the metric
+    gets the UNION (:func:`_metric_covered_buckets`), because the same set
+    applied to a different grid silently decimates the series it is scored from
+    and a single source's set does not describe a series summed over several.
     """
     metrics = list(
         session.execute(
@@ -1156,12 +1242,6 @@ def _age_out_config_anomalies(
     )
 
 
-# ``ScanJob.created_at`` is only an approximation of the window the job went on
-# to record: a job that sat queued stamps a created_at earlier than the window it
-# eventually wrote. One day of slack absorbs that, so the horizon below can be
-# used as a ``created_at`` floor without dropping a job whose window reaches back
-# past it.
-COVERAGE_HORIZON_SLACK = timedelta(days=1)
 # Column defaults on ``ProjectAnomalySettings`` fire at INSERT, so a transient
 # row reads them back as ``None`` and cannot be used to build settings for a
 # project that has no row yet. Only the baseline width feeds history depth, so

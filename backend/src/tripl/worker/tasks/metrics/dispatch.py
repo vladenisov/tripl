@@ -711,8 +711,34 @@ def _create_deliveries(
             # The one deliberate exception is the raw ${percent_delta}
             # template variable, whose documented contract is a bare
             # number; see ``alerts_messages._build_item_template_context``.
+            #
+            # ZERO is the placeholder condition, not "not positive". A
+            # signed catalog metric has a real baseline at -100 and a real
+            # 200% move to -300, and the matcher already reads it that way
+            # (``alerting_matching.rule_matches_anomaly``: ``abs(expected)``
+            # against min_expected_count, ``absolute_delta / abs(expected)``
+            # against min_percent_delta, tripl-0zpq.102) — so a rule fires
+            # BECAUSE the move is 200% and storing 0.0 for it reproduced
+            # exactly the tripl-l429.24 misreport against a real baseline.
+            # The divisor is the MAGNITUDE so the ratio stays a size rather
+            # than flipping sign with the level; direction is carried by
+            # ``direction``/``actual_count`` and never by this field.
+            #
+            # The five READERS listed above still ask ``expected_count > 0``
+            # and so still say "no baseline" for a negative one
+            # (``alert_templates.format_percent_delta`` / ``percent_delta_or_none``,
+            # ``services._alerting_deliveries._build_inbox_group``,
+            # ``services.alerting_service.simulate_rule``, and the frontend's
+            # ``lib/percentDelta``); they have to move to ``!= 0`` too. Writing
+            # the measured number here first is what makes that possible: the
+            # column is frozen history and every one of those surfaces renders
+            # it back at read time, so a row stored as 0.0 today can never be
+            # recovered, while a row stored as 200.0 renders correctly the
+            # moment the readers agree.
             percent_delta = (
-                absolute_delta / anomaly.expected_count * 100 if anomaly.expected_count > 0 else 0.0
+                absolute_delta / abs(anomaly.expected_count) * 100
+                if anomaly.expected_count != 0
+                else 0.0
             )
             details_path, monitoring_path = _build_item_paths(
                 project_slug,

@@ -598,3 +598,131 @@ def test_coverage_history_start_survives_a_project_without_settings(
         )
 
     assert horizon < evaluation_start
+
+
+# --------------------------------------------------------------------------
+# tripl-0zpq.6 follow-up — coverage describes the WHOLE population the series
+# is summed from, and the foreign read gets the same created_at slack the
+# running scan's horizon gets
+# --------------------------------------------------------------------------
+
+
+def test_multi_grid_metric_unions_every_source_configs_coverage(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """``_load_metric_value_points`` SUMS a metric's values across every source
+    grid with no ``scan_config_id`` filter, so coverage has to describe the same
+    population. Resolving it from one source alone excluded every bucket only
+    the other source contributed — ``expand_series`` drops an uncovered bucket
+    even when a real value is sitting in it.
+
+    Two live scans collect the same event type. The YOUNGER one holds the newest
+    stored bucket, so ``metric_grid_stmt``'s ``ORDER BY bucket DESC`` resolves
+    the metric to it, and its coverage spans only its own short lifetime. The
+    older source's seven buckets are the metric's entire baseline; without them
+    the series is three buckets long and the spike can never clear
+    ``min_history_buckets``.
+    """
+    with sync_session_factory() as session:
+        running = _seed_project(session)
+        older = _add_sibling_config(session, running)
+        younger = _add_sibling_config(session, running)
+        metric = _add_metric(
+            session,
+            running,
+            kind=MetricKind.event_composition,
+            composition=MetricComposition.single,
+            name="checkouts",
+            interval=None,
+        )
+        old_hours = list(range(7))
+        young_hours = [7, 8, _SPIKE_HOUR]
+        baseline = {hour: 10.0 for hour in old_hours}
+        recent = {hour: 10.0 for hour in young_hours}
+        recent[_SPIKE_HOUR] = 100.0
+        _seed_values(session, metric, baseline, scan_config_id=older.id)
+        _seed_values(session, metric, recent, scan_config_id=younger.id)
+        # Each source vouches only for the buckets it actually collected.
+        _seed_event_metrics(session, older.id, old_hours)
+        _seed_event_metrics(session, younger.id, young_hours)
+
+        metrics_detect._recalculate_metric_anomalies(
+            session,
+            running,
+            evaluation_start=_EVAL_FROM,
+            evaluation_end=_EVAL_TO,
+            # The running scan is neither source, so this set must never reach
+            # the metric — it is here to prove the union is not inheriting it.
+            covered_buckets={_BASE + _HOUR * hour for hour in range(10)},
+        )
+        session.commit()
+
+        anomalies = _metric_anomalies(session, metric.id)
+
+    assert [(a.bucket, a.direction) for a in anomalies] == [(_BASE + _HOUR * _SPIKE_HOUR, "spike")]
+
+
+def test_metric_coverage_keeps_a_job_that_sat_queued_across_the_horizon(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """``ScanJob.created_at`` is only an approximation of the window the job
+    recorded, which is why the running scan's horizon carries
+    ``COVERAGE_HORIZON_SLACK``. The per-metric read needs the same day: a job
+    queued before the metric's ``history_from`` and executed after it records a
+    window that straddles the horizon, and dropping it costs every
+    genuinely-zero bucket of that window — those are EXCLUDED from the series
+    rather than zero-filled.
+    """
+    history_from = _JOB_BASE
+    window_from = _JOB_BASE - timedelta(hours=6)
+    with sync_session_factory() as session:
+        running = _seed_project(session)
+        source = _add_sibling_config(session, running)
+        metric = _add_metric(
+            session,
+            running,
+            kind=MetricKind.event_composition,
+            composition=MetricComposition.single,
+            name="checkouts",
+            interval=None,
+        )
+        for step in range(4):
+            session.add(
+                MetricValue(
+                    id=uuid.uuid4(),
+                    metric_definition_id=metric.id,
+                    scan_config_id=source.id,
+                    bucket=_JOB_BASE + _HOUR * step,
+                    value=10.0,
+                )
+            )
+        session.commit()
+        # Created a quarter-day before the horizon, executed after it.
+        _add_completed_job(
+            session,
+            source.id,
+            created_at=window_from,
+            window=(window_from, _JOB_BASE + _HOUR * 4),
+        )
+        grid = metrics_detect._resolve_metric_grid(session, metric)
+        assert grid is not None
+
+        covered = metrics_detect._metric_covered_buckets(
+            session,
+            running,
+            metric=metric,
+            grid=grid,
+            delta=_HOUR,
+            history_from=history_from,
+            evaluation_end=_JOB_BASE + _HOUR * 10,
+            scan_covered_buckets=None,
+            memo={},
+        )
+
+    assert covered is not None
+    # Nothing else vouches for these: no EventMetric row was stored, so the
+    # presence half cannot rescue them.
+    assert {_JOB_BASE + _HOUR * step for step in range(4)} <= covered
+    # The slack widens the created_at floor, not the recorded window, so the
+    # whole window is still honoured and nothing below it is invented.
+    assert min(covered) == window_from
