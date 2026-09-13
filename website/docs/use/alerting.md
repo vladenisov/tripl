@@ -576,13 +576,36 @@ Alerting tab until you re-aim and re-enable it.
 operators `eq` / `ne` / `in` / `not_in`. Multiple filters are ANDed; a signal
 that doesn't carry the filtered field passes through.
 
-An `event_type` filter narrows **any** signal anchored to an event — event
-scope, variable-value drift and event-scope release regression alike — by that
-event's type, looked up when the rule is matched rather than read off the stored
-row, which deliberately keeps no type of its own. What passes through is only
-what genuinely carries no such field: for an `event_type` filter that is the
-project-total rollups and catalog metrics; for an `event` filter it is those
-plus the event-type rollups.
+An `event_type` filter narrows **any** signal that carries an event type. For
+most of them the type is stored on the signal's own row; for the ones anchored to
+an event — event scope, variable-value drift and event-scope release regression —
+it is looked up when the rule is matched, because those rows deliberately keep no
+type of their own. An `event` filter is narrower still: it reaches only the
+signals that name one event. **Passes through** below means the filter has
+nothing to say about that signal, so the signal is still delivered.
+
+| Signal | `event_type` filter | `event` filter |
+| --- | --- | --- |
+| Event-scope anomaly | Narrows, by the event's type | Narrows |
+| Variable-value drift | Narrows, by the event's type | Narrows |
+| Release regression found on an **event** | Narrows, by the event's type | Narrows |
+| Event-type rollup | Narrows | Passes through |
+| Schema drift | Narrows | Passes through |
+| Distribution drift on one event type | Narrows | Passes through |
+| Release regression found on an **event type** | Narrows | Passes through |
+| Distribution drift across the whole scan | Passes through | Passes through |
+| Project-total rollup | Passes through | Passes through |
+| Catalog metric anomaly | Passes through | Passes through |
+
+The scan-wide distribution drift row is the one that catches people out. A scan
+watching a column for distribution drift always produces a row for that column
+across the whole scan — the one an alert names **All events.`column`** — as well
+as one row per event type where the scan can tell which type each warehouse row
+belongs to. The scan-wide row is about every event at once, so it has no type to
+be narrowed by, and no `event_type` filter can exclude it: a rule filtered
+`event_type not_in ['Screen View']` still delivers it. Silence it at the source
+instead, by taking that column off the scan's **Distribution drift** list, or
+take distribution drift off the rule's scopes.
 
 The `event` value picker searches the catalog server-side and shows one page of
 matches at a time, so type to reach an event that isn't in the first page — the

@@ -366,10 +366,15 @@ def test_collect_fact_condition_column_missing_from_the_fact_table_fails_with_it
     column dropped or renamed in the warehouse afterwards used to compile into a
     query that died deep inside the worker. The batched path already refuses it by
     name (``_resolve_batch_operand`` -> ``_validate_condition_columns``).
+
+    This is also the input that discriminates RAW fact SQL from the operand's
+    filtered wrapper, so the allowlist's source is pinned here rather than on an
+    unfiltered metric where the two strings are identical.
     """
     with sync_session_factory() as session:
         project, data_source = _seed_project_and_ds(session)
         fact_table = _seed_fact_table(session, project, data_source)
+        fact_sql = fact_table.sql
         def_id = str(
             _make_fact_metric(
                 session,
@@ -391,6 +396,17 @@ def test_collect_fact_condition_column_missing_from_the_fact_table_fails_with_it
     message = _collection_error(sync_session_factory, def_id)
     assert "'country'" in message
     assert "not columns of the fact table" in message
+    # The allowlist is taken from the RAW fact SQL, never the operand's filtered
+    # wrapper — and THIS metric is what makes that a testable claim: its condition
+    # compiles INTO the wrapper, which ``_resolve_fact_operand_query`` renders as
+    # ``SELECT * FROM (<fact sql>) AS _filtered WHERE (<quoted country> = 'US')``
+    # — a different string from ``fact_table.sql``. Probing the wrapper would hand
+    # the warehouse the unknown column inside the probe itself and die there,
+    # before ``_validate_condition_columns`` could name it, which is the entire
+    # reason the call was moved off the wrapper. The message assertions above
+    # cannot see that: the adapter answers ``get_columns`` with the same column
+    # list for any query, so only the recorded query distinguishes the two.
+    assert adapter.column_queries == [fact_sql]
 
 
 def test_collect_fact_count_breakdown_rejects_an_unknown_breakdown_column(
@@ -435,9 +451,16 @@ def test_collect_fact_count_breakdown_rejects_an_unknown_breakdown_column(
     message = _collection_error(sync_session_factory, def_id)
     assert "'country'" in message
     assert "not columns of the fact table" in message
-    # The allowlist is taken from the RAW fact SQL, never the operand's filtered
-    # wrapper: a condition column is compiled INTO that wrapper's WHERE clause.
+    # Exactly ONE introspection, and it happened at all: ``requires_measure`` is
+    # False for ``count``, and the call this path used to make sat inside that
+    # branch, so before the fix this list was EMPTY. It says nothing about the
+    # allowlist's SOURCE — this metric has no conditions, no ``filter_sql`` and no
+    # row filters, so ``_resolve_fact_operand_query`` returns the fact SQL
+    # verbatim and the raw form and the filtered wrapper are the same string here.
+    # Raw-vs-wrapper is pinned where it can differ, in
+    # ``test_collect_fact_condition_column_missing_from_the_fact_table_fails_with_its_name``.
     assert adapter.column_queries == [fact_sql]
+    # No breakdown query ran: a column guard that fires after the query is no guard.
     assert adapter.breakdown_calls == []
 
 
@@ -454,6 +477,7 @@ def test_collect_fact_ratio_validates_the_denominator_operand_columns(
     with sync_session_factory() as session:
         project, data_source = _seed_project_and_ds(session)
         fact_table = _seed_fact_table(session, project, data_source)
+        fact_sql = fact_table.sql
         def_id = str(
             _make_fact_metric(
                 session,
@@ -486,6 +510,14 @@ def test_collect_fact_ratio_validates_the_denominator_operand_columns(
     message = _collection_error(sync_session_factory, def_id)
     assert "'subscription'" in message
     assert "not columns of the fact table" in message
+    # ONE introspection PER OPERAND — the two adapters are separate instances even
+    # for a same-table ratio, so each needs its own ``_allowed_columns`` armed —
+    # and both taken from the RAW fact SQL. The denominator is what makes the
+    # second half testable: it carries the condition, so probing its filtered
+    # wrapper would record ``SELECT * FROM (...) AS _filtered WHERE (...)`` here
+    # instead. ``_patch_fact_collector`` hands the same adapter object to both
+    # operands, so one list holds both queries, numerator first.
+    assert adapter.column_queries == [fact_sql, fact_sql]
 
 
 # ── tripl-0zpq.3: the fact path's missing measure column is named ─────────────

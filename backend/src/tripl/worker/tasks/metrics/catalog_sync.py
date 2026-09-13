@@ -532,6 +532,15 @@ def sync_catalog(
             session,
             config=config,
         )
+        # "No snapshot at all", never "the snapshot came back thinner than it
+        # went in". ``_load_latest_generation_snapshot`` drops the events whose
+        # catalog rows have since been deleted — replaying them would aim an
+        # INSERT at a missing foreign-key parent — and a result that loses an
+        # entry that way is still the right result: its ``col_meta`` holds the
+        # historical name templates, which is the whole reason tripl-0zpq.19
+        # made this path reachable. Widening the condition to "or the events are
+        # empty" would hand every such replay back to the heuristic rebuild and
+        # undo that fix for the surviving events too.
         if out.single_result is None and not out.gen_results:
             out.gen_results, out.single_result = _load_existing_generation_results(
                 session,

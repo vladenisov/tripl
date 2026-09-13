@@ -16,8 +16,8 @@ import uuid
 from datetime import datetime, timedelta
 from typing import cast
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import or_, select
+from sqlalchemy.orm import InstrumentedAttribute, Session, selectinload
 
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers._event_generator_variables import (
@@ -53,6 +53,13 @@ _JSON_PATH_PART_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 # this bound exists only so a malformed or future-version payload at the head
 # of that list cannot cost the caller a good snapshot sitting one row behind it.
 _SNAPSHOT_JOB_SCAN_LIMIT = 5
+# Bind-parameter budget per identity-resolution batch. PostgreSQL caps a
+# statement at 65,535 binds; 500 leaves a wide margin even when the two ``IN``
+# clauses of the identity lookup are both full alongside the event-type list.
+_SNAPSHOT_IDENTITY_CHUNK = 500
+# How many dropped identities the warning names before it stops. Enough to act
+# on, bounded so a mass deletion cannot write a megabyte into the worker log.
+_SNAPSHOT_LOGGED_IDENTITIES = 10
 
 
 def _iter_window_chunks(
@@ -667,6 +674,240 @@ def _archived_identities_by_event_type(
     return by_event_type
 
 
+def _live_ids(
+    session: Session,
+    column: InstrumentedAttribute[uuid.UUID],
+    candidates: set[uuid.UUID],
+) -> set[uuid.UUID]:
+    """Which of ``candidates`` still have a row, asked in bounded batches.
+
+    Primary-key ``IN`` lookups, so the cost is the batch count and not the
+    catalog size. Chunked because a snapshot's event list is unbounded and
+    PostgreSQL caps a statement at 65,535 bind parameters.
+    """
+    ordered = sorted(candidates)
+    found: set[uuid.UUID] = set()
+    for start in range(0, len(ordered), _SNAPSHOT_IDENTITY_CHUNK):
+        found.update(
+            session.execute(
+                select(column).where(column.in_(ordered[start : start + _SNAPSHOT_IDENTITY_CHUNK]))
+            ).scalars()
+        )
+    return found
+
+
+def _resolve_snapshot_event_identities(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    results: list[GenerationResult],
+) -> list[str]:
+    """Re-point every snapshot event at an ``events`` row that still exists.
+
+    ``_generation_result_from_snapshot`` rebuilds TRANSIENT ``Event`` objects
+    straight from JSON, historical ``event_id`` and all, and every consumer of
+    ``events_by_name`` writes that id into a foreign key:
+    ``event_metrics.event_id`` and ``event_metric_breakdowns.event_id`` (both
+    ``ondelete="SET NULL"``, which governs the PARENT's deletion and licenses
+    nothing on INSERT) and ``variable_values.event_id`` (``NOT NULL``,
+    ``ondelete="CASCADE"``). An event deleted after the snapshot was written
+    therefore aims a replay's INSERT at a parent that is gone, and PostgreSQL
+    refuses the statement — killing the replay mid-window, because
+    ``process_chunk`` commits per chunk and the chunk loop has no per-chunk
+    handler, and reporting it as "Scan failed due to an internal error" because
+    an ``IntegrityError`` is not one of ``user_facing_error``'s curated cases.
+
+    Nothing else on the path checks. ``_archived_identities_by_event_type`` only
+    ADDS identities, and ``drop_dangling_event_references`` — which every
+    deliberate delete door calls — does not reach ``ScanJob.result_summary``, so
+    the snapshot keeps naming a dead uuid for as long as it is the newest
+    ``run_scan`` row. The flaw is as old as the snapshot format; what made it
+    reachable is tripl-0zpq.19 moving this path from "the gap between a scan and
+    its first collection tick" to every replay, however old the snapshot.
+
+    Three outcomes, in this order, and the order IS the product decision:
+
+    RESOLVE — the id is still live: keep the snapshot's event untouched. The
+    common case, and the whole point of the snapshot: its ``col_meta``
+    templates are the historical ones, which is what makes a replay of an old
+    window attribute rows the way that window's own scan did.
+
+    RE-POINT — the id is gone but a live row still holds the same scan identity:
+    adopt that row's id. ``uq_event_scan_identity`` makes
+    ``(event_type_id, source_name)`` unique, and an event type lives on exactly
+    one branch of one project, so the lookup is exact and cannot pull in a
+    working branch's deep copy. This is the case a plan-branch merge or revert
+    creates — both DELETE the main row and INSERT a replacement under the same
+    identity — and discarding there would punch a silent hole in the replayed
+    series of an event that plainly still exists. It is also the rule this
+    codebase already applies to the same question elsewhere:
+    ``_merge_event_into_group`` re-points ``event_metrics`` at the survivor
+    rather than dropping the history.
+
+    DISCARD — neither the id nor the identity survives: drop the entry. Not a
+    choice to lose data, the absence of anywhere to put it: a per-event row
+    needs an ``events.id`` and there is none. The volume is NOT lost — the
+    identity falls through to the shadow-candidate branch in
+    ``chunk_processing`` and its rows still land in the event-type and
+    project-total series, which is exactly what the heuristic
+    ``_load_existing_generation_results`` rebuild produced for a deleted event
+    before tripl-0zpq.19 made this path reachable. Logged, because an operator
+    staring at a hole in one event's replayed series deserves to find the reason
+    in the worker log rather than infer it.
+
+    What this deliberately does NOT do is abandon the snapshot and fall back to
+    the live catalog when one event has died. That would throw away the
+    historical ``col_meta`` of every surviving event to accommodate one dead
+    one — the heuristic rebuild is the thing tripl-0zpq.19 exists to stop
+    reaching for.
+
+    Returns the identities that were dropped.
+    """
+    snapshot_ids = {event.id for result in results for event in result.events_by_name.values()}
+    if not snapshot_ids:
+        return []
+
+    live = _live_ids(session, Event.id, snapshot_ids)
+    if live == snapshot_ids:
+        return []
+
+    # Second hop only for what the first one missed, and scoped to it: the
+    # identities and event types of the stale entries alone, never a catalog
+    # sweep. Strictly cheaper than the fallback it exists to avoid, which reads
+    # every event of every type WITH its field values.
+    stale = [
+        (identity, event)
+        for result in results
+        for identity, event in result.events_by_name.items()
+        if event.id not in live
+    ]
+    stale_event_type_ids = {
+        event.event_type_id for _identity, event in stale if event.event_type_id is not None
+    }
+    stale_identities = sorted({identity for identity, _event in stale})
+
+    live_id_by_identity: dict[tuple[uuid.UUID, str], uuid.UUID] = {}
+    if stale_event_type_ids and stale_identities:
+        for start in range(0, len(stale_identities), _SNAPSHOT_IDENTITY_CHUNK):
+            chunk = stale_identities[start : start + _SNAPSHOT_IDENTITY_CHUNK]
+            rows = session.execute(
+                select(Event.id, Event.event_type_id, Event.source_name, Event.name).where(
+                    Event.project_id == project_id,
+                    Event.event_type_id.in_(stale_event_type_ids),
+                    or_(Event.source_name.in_(chunk), Event.name.in_(chunk)),
+                )
+            ).all()
+            for row_id, row_event_type_id, source_name, name in rows:
+                # ``source_name or name`` is the identity key both the snapshot
+                # and ``_load_existing_generation_result`` build, but only
+                # ``source_name`` carries the unique constraint — so a row
+                # matched by its display name must never displace one matched by
+                # its scan identity.
+                if source_name:
+                    live_id_by_identity[(row_event_type_id, source_name)] = row_id
+                else:
+                    live_id_by_identity.setdefault((row_event_type_id, name), row_id)
+
+    dropped: list[str] = []
+    for result in results:
+        resolved: dict[str, Event] = {}
+        for identity, event in result.events_by_name.items():
+            if event.id in live:
+                resolved[identity] = event
+                continue
+            successor = (
+                live_id_by_identity.get((event.event_type_id, identity))
+                if event.event_type_id is not None
+                else None
+            )
+            if successor is None:
+                dropped.append(identity)
+                continue
+            event.id = successor
+            for field_value in event.field_values:
+                field_value.event_id = successor
+            resolved[identity] = event
+        # A NEW mapping rather than one mutated in place: the dict this replaces
+        # is the only record of what the payload said.
+        result.events_by_name = resolved
+
+    if dropped:
+        logger.warning(
+            "Replay snapshot: %s event identit%s no longer in the catalog (%s); no "
+            "per-event metrics are written for them this run, and their volume lands "
+            "in the event-type and project totals instead",
+            len(dropped),
+            "y" if len(dropped) == 1 else "ies",
+            ", ".join(sorted(dropped)[:_SNAPSHOT_LOGGED_IDENTITIES]),
+        )
+    return dropped
+
+
+def _prune_snapshot_field_values(
+    session: Session,
+    *,
+    results: list[GenerationResult],
+) -> int:
+    """Drop reconstructed field values whose ``FieldDefinition`` is gone.
+
+    The sibling of the event check above, on the second column of the same
+    INSERT: ``_accumulate_replay_variable_samples`` keys on
+    ``(variable.id, event.id, field_value.field_definition_id)`` and
+    ``_merge_replay_variable_samples`` writes that triple into
+    ``variable_values``, where ``field_definition_id`` is ``NOT NULL`` with a
+    foreign key of its own. Deleting a field definition does not delete its
+    events, so a snapshot can carry a live event whose field value names a
+    definition that no longer exists — a replay-killing INSERT that the event
+    check alone would let through.
+
+    Dropping is the only outcome available here: the identity of a field
+    definition is its row, there is no stable natural key to re-point at, and a
+    variable context anchored to a deleted definition could not be displayed
+    even if it were written (``VariableValue.field_name`` dereferences it).
+    Returns the number of field values dropped.
+    """
+    field_ids = {
+        field_value.field_definition_id
+        for result in results
+        for event in result.events_by_name.values()
+        for field_value in event.field_values
+    }
+    if not field_ids:
+        return 0
+
+    live = _live_ids(session, FieldDefinition.id, field_ids)
+    if live == field_ids:
+        return 0
+
+    pruned = 0
+    for result in results:
+        for event in result.events_by_name.values():
+            kept = [fv for fv in event.field_values if fv.field_definition_id in live]
+            if len(kept) != len(event.field_values):
+                pruned += len(event.field_values) - len(kept)
+                event.field_values = kept
+
+    if pruned:
+        logger.warning(
+            "Replay snapshot: dropped %s reconstructed field value(s) whose field "
+            "definition no longer exists; variables bound to them collect no sample "
+            "values this run",
+            pruned,
+        )
+    return pruned
+
+
+def _resolve_snapshot_identities(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    results: list[GenerationResult],
+) -> None:
+    """Make every id a snapshot hands the writers point at a row that exists."""
+    _resolve_snapshot_event_identities(session, project_id=project_id, results=results)
+    _prune_snapshot_field_values(session, results=results)
+
+
 def _load_latest_generation_snapshot(
     session: Session,
     *,
@@ -749,6 +990,11 @@ def _load_latest_generation_snapshot(
             group_results[str(group_name)] = result
             if replay_branch_id is None:
                 replay_branch_id = branch_id
+        _resolve_snapshot_identities(
+            session,
+            project_id=config.project_id,
+            results=list(group_results.values()),
+        )
         return group_results, None, replay_branch_id
 
     single_payload = snapshot.get("single_result")
@@ -762,6 +1008,7 @@ def _load_latest_generation_snapshot(
     )
     if result.event_type_id is not None:
         result.archived_identities = archived_by_event_type.get(result.event_type_id, set())
+    _resolve_snapshot_identities(session, project_id=config.project_id, results=[result])
     return {}, result, branch_id
 
 

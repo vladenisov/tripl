@@ -43,6 +43,7 @@ from typing import Any
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo
@@ -59,10 +60,15 @@ from tripl.models.project import Project
 from tripl.models.release_regression import ReleaseComparability, ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.models.variable import Variable
 from tripl.services import scan_service
+from tripl.tests._sqlite import enable_sqlite_foreign_keys
 from tripl.worker.tasks import scan as scan_tasks
 from tripl.worker.tasks._errors import ScanError, user_facing_error
-from tripl.worker.tasks.metrics.generation import _load_latest_generation_snapshot
+from tripl.worker.tasks.metrics.generation import (
+    _load_latest_generation_snapshot,
+    _merge_replay_variable_samples,
+)
 from tripl.worker.tasks.metrics.regression import _recalculate_release_regressions
 from tripl.worker.tasks.scan_dry_run import _MAX_REFUSAL_ERRORS, build_dry_run_payload
 from tripl.worker.utils.event_types import (
@@ -83,6 +89,14 @@ CLICK_RULE = [
 @pytest.fixture
 def sync_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
     engine = create_engine(f"sqlite:///{tmp_path / 'batch3_a4.db'}")
+    # Before ``create_all``, as the helper's docstring requires. This module
+    # tests a replay path whose whole failure mode IS a foreign key — a snapshot
+    # naming an event that no longer exists — so a fixture that leaves SQLite's
+    # enforcement off (the default) is a fixture in which that class of bug
+    # cannot be written down. It still cannot fully stand in for Postgres, but
+    # it is the difference between an assertion that could fail and one that
+    # could not.
+    enable_sqlite_foreign_keys(engine)
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     try:
@@ -1370,7 +1384,36 @@ def test_dry_run_totals_the_refusals_it_does_not_spell_out(
 # ── tripl-0zpq.19: the replay snapshot survives later collection jobs ────────
 
 
-def _snapshot_summary(*, event_type_id: uuid.UUID, version: int = 1) -> dict[str, object]:
+LOGIN_IDENTITY = "event_name=Login|user_id=${user_id}"
+CHECKOUT_IDENTITY = "event_name=Checkout|user_id=${user_id}"
+
+
+def _snapshot_event(
+    *,
+    event_id: uuid.UUID,
+    identity: str = LOGIN_IDENTITY,
+    name: str = "Login",
+    field_values: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    """One entry of the snapshot's ``events`` list, as ``run_scan`` serializes it."""
+    return {
+        "identity": identity,
+        "event_id": str(event_id),
+        "name": name,
+        "source_name": identity,
+        "branch_id": None,
+        "status": "implemented",
+        "metric_breakdown_columns": [],
+        "field_values": field_values or [],
+    }
+
+
+def _snapshot_summary(
+    *,
+    event_type_id: uuid.UUID,
+    version: int = 1,
+    events: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     return {
         "events_created": 1,
         "generation_snapshot": {
@@ -1381,18 +1424,33 @@ def _snapshot_summary(*, event_type_id: uuid.UUID, version: int = 1) -> dict[str
                 "event_type_id": str(event_type_id),
                 "branch_id": None,
                 "col_meta": {"user_id": {"is_low": False, "template": "${user_id}"}},
-                "events": [
-                    {
-                        "identity": "event_name=Login|user_id=${user_id}",
-                        "event_id": str(uuid.uuid4()),
-                        "name": "Login",
-                        "source_name": "event_name=Login|user_id=${user_id}",
-                        "branch_id": None,
-                        "status": "implemented",
-                        "metric_breakdown_columns": [],
-                        "field_values": [],
-                    }
-                ],
+                "events": (
+                    events if events is not None else [_snapshot_event(event_id=uuid.uuid4())]
+                ),
+            },
+        },
+    }
+
+
+def _grouped_snapshot_summary(
+    *,
+    event_type_id: uuid.UUID,
+    group_name: str,
+    events: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "events_created": 1,
+        "generation_snapshot": {
+            "version": 1,
+            "group_results": {
+                group_name: {
+                    "columns_analyzed": 2,
+                    "details": [],
+                    "event_type_id": str(event_type_id),
+                    "branch_id": None,
+                    "col_meta": {"user_id": {"is_low": False, "template": "${user_id}"}},
+                    "events": events,
+                }
             },
         },
     }
@@ -1405,7 +1463,15 @@ _COLLECTION_SUMMARY = {
 }
 
 
-def _seed_snapshot_config(session: Session) -> tuple[ScanConfig, uuid.UUID]:
+def _seed_snapshot_config(
+    session: Session, *, event_type_column: str | None = None
+) -> tuple[ScanConfig, uuid.UUID, uuid.UUID]:
+    """A replay-capable config plus the live ``Login`` event a snapshot names.
+
+    The live event is the point: a snapshot entry is only replayable while the
+    ``events`` row it names still exists, so a fixture that seeds none tests the
+    deleted-event path by accident rather than the ordinary one.
+    """
     project_id, data_source_id = _seed_project(session)
     event_type = EventType(
         id=uuid.uuid4(),
@@ -1416,18 +1482,28 @@ def _seed_snapshot_config(session: Session) -> tuple[ScanConfig, uuid.UUID]:
     )
     session.add(event_type)
     session.flush()
+    login = Event(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        event_type_id=event_type.id,
+        name="Login",
+        source_name=LOGIN_IDENTITY,
+        description="",
+        status="implemented",
+    )
     config = ScanConfig(
         id=uuid.uuid4(),
         project_id=project_id,
         data_source_id=data_source_id,
         event_type_id=event_type.id,
+        event_type_column=event_type_column,
         name="Hourly",
         base_query="SELECT * FROM events",
         interval="1h",
     )
-    session.add(config)
+    session.add_all([login, config])
     session.commit()
-    return config, event_type.id
+    return config, event_type.id, login.id
 
 
 def _add_completed_job(
@@ -1476,13 +1552,16 @@ def test_generation_snapshot_survives_newer_collection_jobs(
     there. What is pinned here is the coverage, not a live Postgres defect.
     """
     with sync_session_factory() as session:
-        config, event_type_id = _seed_snapshot_config(session)
+        config, event_type_id, login_id = _seed_snapshot_config(session)
         base = datetime(2026, 1, 1, tzinfo=UTC)
         _add_completed_job(
             session,
             config,
             completed_at=base,
-            result_summary=_snapshot_summary(event_type_id=event_type_id),
+            result_summary=_snapshot_summary(
+                event_type_id=event_type_id,
+                events=[_snapshot_event(event_id=login_id)],
+            ),
         )
         for hours in range(1, 7):
             _add_completed_job(
@@ -1510,19 +1589,26 @@ def test_generation_snapshot_walk_skips_a_malformed_head_row(
 ) -> None:
     """A future-version payload at the head must not cost the good one behind it."""
     with sync_session_factory() as session:
-        config, event_type_id = _seed_snapshot_config(session)
+        config, event_type_id, login_id = _seed_snapshot_config(session)
         base = datetime(2026, 1, 1, tzinfo=UTC)
         _add_completed_job(
             session,
             config,
             completed_at=base,
-            result_summary=_snapshot_summary(event_type_id=event_type_id),
+            result_summary=_snapshot_summary(
+                event_type_id=event_type_id,
+                events=[_snapshot_event(event_id=login_id)],
+            ),
         )
         _add_completed_job(
             session,
             config,
             completed_at=base + timedelta(hours=1),
-            result_summary=_snapshot_summary(event_type_id=event_type_id, version=2),
+            result_summary=_snapshot_summary(
+                event_type_id=event_type_id,
+                version=2,
+                events=[_snapshot_event(event_id=login_id)],
+            ),
         )
         session.commit()
 
@@ -1532,6 +1618,360 @@ def test_generation_snapshot_walk_skips_a_malformed_head_row(
 
         assert single_result is not None
         assert single_result.col_meta["user_id"]["template"] == "${user_id}"
+
+
+# ── tripl-0zpq.19 follow-up: a snapshot never names an event that is gone ────
+#
+# WHAT THESE TESTS CAN AND CANNOT DO. The defect is a foreign-key violation:
+# ``event_metrics.event_id``, ``event_metric_breakdowns.event_id`` and
+# ``variable_values.event_id`` all reference ``events.id``, so a replay that
+# rebuilds an event from a snapshot and writes its historical id after the row
+# has been deleted is refused by PostgreSQL and takes the whole replay down
+# mid-window. This suite runs on SQLite, which parses foreign keys and then
+# ignores them, and this module's engine does not even set
+# ``PRAGMA foreign_keys=ON`` — so no test written here can make that INSERT
+# fail, and none of these pretends to.
+#
+# What they pin instead is the invariant one step upstream, which is where the
+# fix lives and is the thing that is actually worth protecting: EVERY event id
+# ``_load_latest_generation_snapshot`` hands downstream addresses a row that
+# exists. ``events_by_name`` is the single chokepoint — ``chunk_processing``,
+# ``metric_rows`` and ``catalog_sync``'s ``replay_events`` all read their ids
+# from it and from nowhere else — so asserting on the mapping it returns is
+# equivalent to asserting on what the writers receive, and it fails for the
+# right reason on any database.
+
+
+def _live_event_ids(session: Session) -> set[uuid.UUID]:
+    return set(session.execute(select(Event.id)).scalars())
+
+
+def _assert_every_identity_is_live(session: Session, result: GenerationResult) -> None:
+    """The writer-facing invariant, stated once."""
+    handed_out = {event.id for event in result.events_by_name.values()}
+    assert handed_out <= _live_event_ids(session), (
+        "the snapshot handed the metric writers an event id with no catalog row; "
+        "on PostgreSQL that INSERT is a foreign-key violation"
+    )
+
+
+def test_snapshot_event_deleted_since_the_scan_is_not_handed_to_the_writers(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """An identity with no live row is dropped; the rest of the snapshot stands.
+
+    Checkout was in the plan when the scan ran and has been deleted since — by
+    an analyst, a plan-branch merge, or the event fold in ``generate_events``,
+    none of which rewrite ``ScanJob.result_summary``. Its replayed per-event
+    history has nowhere to go: the row it would need to reference is gone. So
+    it is dropped, its volume falls through to the event-type and project-total
+    series exactly as it did before tripl-0zpq.19 made this path reachable, and
+    Login — which still exists — keeps both its id and the snapshot's historical
+    ``col_meta``. Dropping the one dead entry, NOT abandoning the snapshot.
+    """
+    with sync_session_factory() as session:
+        config, event_type_id, login_id = _seed_snapshot_config(session)
+        deleted_id = uuid.uuid4()
+        _add_completed_job(
+            session,
+            config,
+            completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+            result_summary=_snapshot_summary(
+                event_type_id=event_type_id,
+                events=[
+                    _snapshot_event(event_id=login_id),
+                    _snapshot_event(
+                        event_id=deleted_id,
+                        identity=CHECKOUT_IDENTITY,
+                        name="Checkout",
+                    ),
+                ],
+            ),
+        )
+        session.commit()
+
+        _group_results, single_result, _branch_id = _load_latest_generation_snapshot(
+            session, config=config
+        )
+
+        assert single_result is not None
+        _assert_every_identity_is_live(session, single_result)
+        assert set(single_result.events_by_name) == {LOGIN_IDENTITY}
+        assert single_result.events_by_name[LOGIN_IDENTITY].id == login_id
+        assert deleted_id not in {event.id for event in single_result.events_by_name.values()}
+        # The snapshot was not abandoned for the live catalog: its historical
+        # template is still what a replay matches identities on.
+        assert single_result.col_meta["user_id"]["template"] == "${user_id}"
+
+
+def test_snapshot_event_replaced_under_the_same_identity_is_repointed(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A new row holding the old scan identity inherits the replayed history.
+
+    A plan-branch merge or revert DELETES the main event and INSERTS a
+    replacement carrying the same ``source_name``, so the id in a snapshot
+    written before the merge is dead while the event itself plainly still
+    exists. Discarding here would punch a silent hole in that event's replayed
+    series; re-pointing hands the history to the row that holds the identity
+    today, which is the same rule ``_merge_event_into_group`` applies when it
+    moves ``event_metrics`` to the surviving event rather than dropping them.
+
+    ``uq_event_scan_identity`` is what makes the lookup safe:
+    ``(event_type_id, source_name)`` is unique and an event type lives on one
+    branch of one project, so a working branch's deep copy cannot answer here.
+    """
+    with sync_session_factory() as session:
+        config, event_type_id, login_id = _seed_snapshot_config(session)
+        superseded_id = uuid.uuid4()
+        field_definition_id = uuid.uuid4()
+        session.add(
+            FieldDefinition(
+                id=field_definition_id,
+                event_type_id=event_type_id,
+                name="user_id",
+                display_name="User",
+                field_type="string",
+                order=0,
+            )
+        )
+        _add_completed_job(
+            session,
+            config,
+            completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+            result_summary=_snapshot_summary(
+                event_type_id=event_type_id,
+                events=[
+                    _snapshot_event(
+                        event_id=superseded_id,
+                        field_values=[
+                            {
+                                "field_definition_id": str(field_definition_id),
+                                "value": "${user_id}",
+                            }
+                        ],
+                    )
+                ],
+            ),
+        )
+        session.commit()
+
+        _group_results, single_result, _branch_id = _load_latest_generation_snapshot(
+            session, config=config
+        )
+
+        assert single_result is not None
+        _assert_every_identity_is_live(session, single_result)
+        replayed = single_result.events_by_name[LOGIN_IDENTITY]
+        assert replayed.id == login_id
+        # The reconstructed field values follow the event, because
+        # ``_accumulate_replay_variable_samples`` reads them off it and
+        # ``variable_values.event_id`` is NOT NULL with a key of its own.
+        assert [fv.event_id for fv in replayed.field_values] == [login_id]
+        # Still the snapshot's own metadata, not a live-catalog rebuild.
+        assert single_result.col_meta["user_id"]["template"] == "${user_id}"
+
+
+def test_snapshot_event_that_still_exists_keeps_its_recorded_id(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The ordinary case must cost nothing and change nothing.
+
+    Guards the fix against over-reach in the other direction: resolution is
+    allowed to drop and re-point what is dead, never to rewrite what is alive.
+    """
+    with sync_session_factory() as session:
+        config, event_type_id, login_id = _seed_snapshot_config(session)
+        _add_completed_job(
+            session,
+            config,
+            completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+            result_summary=_snapshot_summary(
+                event_type_id=event_type_id,
+                events=[_snapshot_event(event_id=login_id)],
+            ),
+        )
+        session.commit()
+
+        _group_results, single_result, _branch_id = _load_latest_generation_snapshot(
+            session, config=config
+        )
+
+        assert single_result is not None
+        _assert_every_identity_is_live(session, single_result)
+        assert {identity: event.id for identity, event in single_result.events_by_name.items()} == {
+            LOGIN_IDENTITY: login_id
+        }
+
+
+def test_snapshot_field_value_whose_definition_is_gone_is_dropped(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The second column of the same INSERT, and the second way to kill a replay.
+
+    ``_merge_replay_variable_samples`` writes
+    ``(variable_id, event_id, field_definition_id)`` into ``variable_values``,
+    where ``field_definition_id`` is NOT NULL with its own foreign key. Deleting
+    a field definition does NOT delete its events, so a snapshot can carry a
+    perfectly live event whose reconstructed field value names a definition that
+    no longer exists — a replay-killing row the event check alone would let
+    through. There is no natural key to re-point a field definition by, so the
+    only outcome available is to drop the field value; the variable bound to it
+    simply collects no sample this run.
+    """
+    with sync_session_factory() as session:
+        config, event_type_id, login_id = _seed_snapshot_config(session)
+        live_field_id = uuid.uuid4()
+        dropped_field_id = uuid.uuid4()
+        session.add(
+            FieldDefinition(
+                id=live_field_id,
+                event_type_id=event_type_id,
+                name="user_id",
+                display_name="User",
+                field_type="string",
+                order=0,
+            )
+        )
+        _add_completed_job(
+            session,
+            config,
+            completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+            result_summary=_snapshot_summary(
+                event_type_id=event_type_id,
+                events=[
+                    _snapshot_event(
+                        event_id=login_id,
+                        field_values=[
+                            {
+                                "field_definition_id": str(live_field_id),
+                                "value": "${user_id}",
+                            },
+                            {
+                                "field_definition_id": str(dropped_field_id),
+                                "value": "${campaign}",
+                            },
+                        ],
+                    )
+                ],
+            ),
+        )
+        session.commit()
+
+        _group_results, single_result, _branch_id = _load_latest_generation_snapshot(
+            session, config=config
+        )
+
+        assert single_result is not None
+        replayed = single_result.events_by_name[LOGIN_IDENTITY]
+        assert [fv.field_definition_id for fv in replayed.field_values] == [live_field_id]
+        # The event itself is untouched — a dead field definition is not a
+        # reason to stop replaying the event that referenced it.
+        assert replayed.id == login_id
+
+
+def test_grouped_snapshot_resolves_identities_on_its_own_return_path(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The grouped branch returns before the single one and needs the same check.
+
+    ``_load_latest_generation_snapshot`` has two exits — ``group_results`` for a
+    config with an ``event_type_column`` and ``single_result`` for one without —
+    and a fix applied to only the second would leave every grouped replay
+    writing dead ids.
+    """
+    with sync_session_factory() as session:
+        config, event_type_id, login_id = _seed_snapshot_config(
+            session, event_type_column="event_name"
+        )
+        _add_completed_job(
+            session,
+            config,
+            completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+            result_summary=_grouped_snapshot_summary(
+                event_type_id=event_type_id,
+                group_name="pv",
+                events=[
+                    _snapshot_event(event_id=login_id),
+                    _snapshot_event(
+                        event_id=uuid.uuid4(),
+                        identity=CHECKOUT_IDENTITY,
+                        name="Checkout",
+                    ),
+                ],
+            ),
+        )
+        session.commit()
+
+        group_results, single_result, _branch_id = _load_latest_generation_snapshot(
+            session, config=config
+        )
+
+        assert single_result is None
+        assert set(group_results) == {"pv"}
+        _assert_every_identity_is_live(session, group_results["pv"])
+        assert set(group_results["pv"].events_by_name) == {LOGIN_IDENTITY}
+
+
+def test_replay_variable_sample_at_a_dead_event_id_is_refused_by_the_database(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The hazard itself, on the one replay writer this database CAN police.
+
+    ``event_metrics`` and ``event_metric_breakdowns`` are written through
+    ``pg_insert(...).on_conflict_do_update(...)``, a PostgreSQL construct that
+    never compiles here, so the foreign-key refusal those two take is out of
+    reach of any test in this suite — the tests above assert the identities
+    instead. ``_merge_replay_variable_samples`` is different: it writes through
+    the ORM, and ``variable_values.event_id`` is NOT NULL with
+    ``ForeignKey("events.id")``. With the fixture's ``PRAGMA foreign_keys=ON``
+    that INSERT is refused here exactly as PostgreSQL refuses it in production.
+
+    So this is the consequence spelled out: hand any replay writer an event id
+    whose row has been deleted and the statement raises, the replay dies
+    mid-window, and because ``process_chunk`` commits per chunk the window is
+    left half-rewritten. It is why ``_load_latest_generation_snapshot`` resolves
+    its identities before anything downstream can reach this line.
+    """
+    with sync_session_factory() as session:
+        config, event_type_id, _login_id = _seed_snapshot_config(session)
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            name="user_id",
+            source_name="user_id",
+        )
+        field_definition = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=event_type_id,
+            name="user_id",
+            display_name="User",
+            field_type="string",
+            order=0,
+        )
+        session.add_all([variable, field_definition])
+        session.commit()
+
+        deleted_event_id = uuid.uuid4()
+        _merge_replay_variable_samples(
+            session,
+            project_id=config.project_id,
+            branch_id=None,
+            cardinality_threshold=10,
+            accumulated={
+                (variable.id, deleted_event_id, field_definition.id): {
+                    "variable_id": variable.id,
+                    "event_id": deleted_event_id,
+                    "field_definition_id": field_definition.id,
+                    "source_column": "user_id",
+                    "values": ["u1"],
+                }
+            },
+        )
+
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
 
 
 # ── tripl-0zpq.18: the release verdict describes the CURRENT rollout ─────────

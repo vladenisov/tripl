@@ -16,13 +16,16 @@ Two defects on the same seam:
 Sync sqlite fixtures mirror ``test_metric_anomaly_scope.py``.
 """
 
+import contextlib
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import Engine, create_engine, select
+from sqlalchemy import event as sa_event
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.analyzers.anomaly_detector import required_history_buckets
@@ -88,6 +91,44 @@ def sync_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
         Base.metadata.drop_all(engine)
     finally:
         engine.dispose()
+
+
+@contextlib.contextmanager
+def _captured_reads(engine: Engine) -> Iterator[list[tuple[str, Any]]]:
+    """Every statement ``engine`` executes inside the block, with its parameters.
+
+    Keeping the bound parameters alongside the SQL is the point: it makes a
+    captured SELECT RE-RUNNABLE, so a test can count the rows the module's own
+    read returned instead of asserting on the shape of its SQL. Same
+    ``before_cursor_execute`` hook ``test_batch3_e1`` uses to pin statement
+    counts.
+    """
+    executed: list[tuple[str, Any]] = []
+
+    def _record(
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        parameters: Any,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        executed.append((statement, parameters))
+
+    sa_event.listen(engine, "before_cursor_execute", _record)
+    try:
+        yield executed
+    finally:
+        sa_event.remove(engine, "before_cursor_execute", _record)
+
+
+def _scan_job_reads(executed: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
+    """The captured statements that read ``scan_jobs``."""
+    return [
+        (statement, parameters)
+        for statement, parameters in executed
+        if statement.lstrip().upper().startswith("SELECT") and "scan_jobs" in statement
+    ]
 
 
 def _seed_project(
@@ -414,7 +455,24 @@ def test_covered_buckets_drops_jobs_older_than_the_history_horizon(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
     """A completed job from two years ago is below every pass's ``history_from``
-    and must not be read at all."""
+    and must not be READ — so the claim is asserted on the READ.
+
+    No assertion on the returned set can substantiate it. The enumeration clamp
+    advances every recorded window up to ``history_from`` before the loop body
+    runs, so a two-year-old window contributes no bucket whether its row was
+    fetched or not: delete ``ScanJob.created_at >= history_from`` from
+    ``covered_buckets_from_scan_jobs`` and the five output assertions below still
+    hold against a byte-identical set (measured, not reasoned about). What that
+    deletion costs is the job half of tripl-0zpq.25 — an hourly config a year old
+    re-reads ~8,800 completed ``result_summary`` blobs on every scheduled
+    collection — and it is invisible to output, because widening the row set can
+    only ADD windows that the clamp then bounds from below.
+
+    So the load-bearing assertion re-runs the statement the module actually
+    emitted and counts its rows. That also pins the bound's VALUE, not just its
+    presence: a filter weakened to any horizon below ``ancient`` fetches two
+    rows and fails here.
+    """
     with sync_session_factory() as session:
         config = _seed_project(session)
         ancient = _JOB_BASE - timedelta(days=730)
@@ -431,14 +489,28 @@ def test_covered_buckets_drops_jobs_older_than_the_history_horizon(
             window=(_JOB_BASE + _HOUR, _JOB_BASE + _HOUR * 4),
         )
 
-        covered = covered_buckets_from_scan_jobs(
-            session,
-            scan_config_id=config.id,
-            delta=_HOUR,
-            history_from=_JOB_BASE,
-            current_window=(_JOB_BASE + _HOUR * 10, _JOB_BASE + _HOUR * 11),
-        )
+        engine = session.get_bind()
+        assert isinstance(engine, Engine)
+        with _captured_reads(engine) as executed:
+            covered = covered_buckets_from_scan_jobs(
+                session,
+                scan_config_id=config.id,
+                delta=_HOUR,
+                history_from=_JOB_BASE,
+                current_window=(_JOB_BASE + _HOUR * 10, _JOB_BASE + _HOUR * 11),
+            )
 
+        reads = _scan_job_reads(executed)
+        assert len(reads) == 1, reads
+        statement, parameters = reads[0]
+        # Re-running the emitted read is what makes "must not be read at all"
+        # falsifiable: two completed jobs exist for this config and only the one
+        # at or above the horizon may come back.
+        rows = session.connection().exec_driver_sql(statement, parameters).fetchall()
+        assert len(rows) == 1, rows
+
+    # The output half, unchanged and still true — it pins the clamp, not the row
+    # filter (see ``test_covered_buckets_does_not_enumerate_below_the_horizon``).
     assert _JOB_BASE + _HOUR in covered
     assert _JOB_BASE + _HOUR * 3 in covered
     assert _JOB_BASE + _HOUR * 10 in covered  # the current run's window
