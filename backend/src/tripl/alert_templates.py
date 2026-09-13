@@ -458,14 +458,15 @@ def has_baseline(expected_count: float) -> bool:
 def percent_delta_of(actual_count: float, expected_count: float) -> float:
     """The ``percent_delta`` stored for one signal: the SIZE of the move.
 
-    The definition behind the simulator's ``SimulatedRuleFiring``
-    (``alerting_service.simulate_rule``), which must report what the live send
-    path would have stored or the rule simulator disagrees with the thing it
-    simulates. ``dispatch._create_deliveries`` still writes
-    ``AlertDeliveryItem.percent_delta`` from its own copy of this expression and
-    ``worker/tasks/metrics/alert_payload.py`` from a THIRD, still signed-blind,
-    copy; both belong here, and until they are, this function is the definition
-    they have to match.
+    THE definition, and the only one. ``dispatch._create_deliveries`` writes
+    ``AlertDeliveryItem.percent_delta`` from it, ``alert_payload`` freezes the
+    same number into ``AlertDelivery.payload_snapshot``, the simulator's
+    ``SimulatedRuleFiring`` (``alerting_service.simulate_rule``) replays it, and
+    the demo builder seeds it — so the simulator cannot disagree with the thing
+    it simulates and one delivery cannot disagree with itself. Each of those was
+    once a separate copy of this expression, which is how the signed fix
+    (tripl-0zpq.102) reached some of them and not others; add a writer, call
+    this, do not re-derive the ratio.
 
     Both numerator and divisor are MAGNITUDES, so the ratio stays a size instead
     of flipping sign with the level: -3 -> -9 is a 200% move, the same as
@@ -484,9 +485,9 @@ def format_percent_delta(percent_delta: float, expected_count: float, *, spec: s
     """The percent parenthetical for one alert item, unit included.
 
     :func:`has_baseline` is the exact condition under which the stored number was
-    computed (:func:`percent_delta_of`, and the same test in
-    ``dispatch._create_deliveries``), so the label and the number can never
-    disagree about whether there was a baseline. Without a baseline the absolute
+    computed (:func:`percent_delta_of`, which is what ``dispatch`` and
+    ``alert_payload`` call), so the label and the number can never disagree
+    about whether there was a baseline. Without a baseline the absolute
     delta stands on its own for that class, and the default item templates
     already print it.
 

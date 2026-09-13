@@ -31,6 +31,7 @@ from tripl.alert_templates import (
     get_default_message_template,
     get_digest_items_template,
     get_digest_message_template,
+    has_baseline,
     normalize_message_template,
     percent_delta_or_none,
     render_alert_template,
@@ -252,10 +253,13 @@ def _release_regression_basis(item: AlertDeliveryItem) -> str:
     span = _format_window_span(item)
     window_clause = f" over the {span} rollout overlap" if span else ""
     line = f"{kind_label} in {version} vs {previous}{window_clause}"
-    if item.expected_count <= 0:
+    if not has_baseline(item.expected_count):
         # No baseline: there is no ratio to explain and ${percent_delta_label}
         # already says "no baseline". Adding the formula here would quote a
-        # zero as if it were an expectation.
+        # zero as if it were an expectation. Through ``has_baseline`` so that it
+        # is the SAME question ``format_percent_delta`` answers four lines down:
+        # a signed expectation renders a real percentage there, and this sentence
+        # has to explain the ratio rather than deny there is one (tripl-0zpq.102).
         return line
     return (
         f"{line}; {_plain_number(item.expected_count)} is {previous}'s share "
@@ -364,7 +368,7 @@ def _build_item_template_context(
         # after it. Empty for every scope whose expectation IS a baseline.
         "expected_basis": escape_alert_value(
             _ADOPTION_ADJUSTED_LABEL
-            if item.scope_type == SCOPE_RELEASE_REGRESSION and item.expected_count > 0
+            if item.scope_type == SCOPE_RELEASE_REGRESSION and has_baseline(item.expected_count)
             else "",
             message_format,
         ),
@@ -423,9 +427,13 @@ def _digest_headline(items: list[AlertDeliveryItem], total: int) -> str:
     """
     if not items:
         return f"{total} alerts"
-    downs = [i for i in items if i.direction != "spike" and i.expected_count > 0]
-    ups = [i for i in items if i.direction == "spike" and i.expected_count > 0]
-    new = [i for i in items if i.expected_count <= 0]
+    # ``has_baseline`` decides "new", never a sign test: a signed catalog
+    # metric at a baseline of -100 is an ordinary drop or spike with a real
+    # percent, and filing it under "new" both miscounted the headline and made
+    # it ineligible to be named the worst mover (tripl-0zpq.102).
+    downs = [i for i in items if i.direction != "spike" and has_baseline(i.expected_count)]
+    ups = [i for i in items if i.direction == "spike" and has_baseline(i.expected_count)]
+    new = [i for i in items if not has_baseline(i.expected_count)]
     parts = [f"{total} alerts"]
     counts = [
         f"{len(downs)} down" if downs else "",
@@ -501,7 +509,10 @@ def _digest_groups(
     """
     drops, spikes, unbaselined = [], [], []
     for item in items:
-        if item.expected_count <= 0:
+        # Same predicate as ``_digest_headline`` above, from the same function:
+        # the heading says "3 new" and this builds the group under it, so the
+        # two cannot be allowed to bucket one item differently.
+        if not has_baseline(item.expected_count):
             unbaselined.append(item)
         elif item.direction == "spike":
             spikes.append(item)

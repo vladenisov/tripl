@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from tripl.alert_templates import percent_delta_of
 from tripl.alerting_matching import AlertMatchCandidate, rule_matches_anomaly
 from tripl.core.analyzers.anomaly_detector import SCOPE_METRIC
 from tripl.models.alert_correlation_state import AlertCorrelationState
@@ -724,22 +725,28 @@ def _create_deliveries(
             # than flipping sign with the level; direction is carried by
             # ``direction``/``actual_count`` and never by this field.
             #
-            # The five READERS listed above still ask ``expected_count > 0``
-            # and so still say "no baseline" for a negative one
-            # (``alert_templates.format_percent_delta`` / ``percent_delta_or_none``,
-            # ``services._alerting_deliveries._build_inbox_group``,
-            # ``services.alerting_service.simulate_rule``, and the frontend's
-            # ``lib/percentDelta``); they have to move to ``!= 0`` too. Writing
-            # the measured number here first is what makes that possible: the
-            # column is frozen history and every one of those surfaces renders
-            # it back at read time, so a row stored as 0.0 today can never be
-            # recovered, while a row stored as 200.0 renders correctly the
-            # moment the readers agree.
-            percent_delta = (
-                absolute_delta / abs(anomaly.expected_count) * 100
-                if anomaly.expected_count != 0
-                else 0.0
-            )
+            # Writing the measured number here is what made the readers
+            # fixable at all: the column is frozen history and every surface
+            # renders it back at read time, so a row stored as 0.0 could never
+            # be recovered, while a row stored as 200.0 renders correctly.
+            #
+            # There is no per-reader copy of this test left to enumerate. The
+            # definition is ``alert_templates.has_baseline`` /
+            # ``percent_delta_of`` — a leaf module importing only
+            # ``tripl.models.*``, so every backend surface can and does route
+            # through it: this writer, the audit snapshot
+            # (``alert_payload._build_delivery_snapshot``), the message and
+            # digest renderers in ``worker/tasks/alerts_messages``,
+            # ``services._alerting_deliveries``, ``schemas/alerting``'s response
+            # validators, ``services.alerting_service.simulate_rule`` and the
+            # demo builder. Only the frontend restates it, in
+            # ``lib/percentDelta.hasBaseline``, because it cannot import Python;
+            # both sides are pinned against the same grid of baselines
+            # (``tests/test_batch3_a2.py``, ``lib/percentDelta.test.ts``).
+            #
+            # Add a reader, route it through the helper — do not re-derive the
+            # ratio here or anywhere else.
+            percent_delta = percent_delta_of(anomaly.actual_count, anomaly.expected_count)
             details_path, monitoring_path = _build_item_paths(
                 project_slug,
                 scope_type=anomaly.scope_type,

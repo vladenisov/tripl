@@ -21,6 +21,9 @@ in-memory fixtures from ``conftest``.
 
 from __future__ import annotations
 
+import ast
+import importlib
+import inspect
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -76,7 +79,9 @@ from tripl.models.metric_value import MetricValue
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
+from tripl.services._alerting_deliveries import _build_inbox_group_response
 from tripl.tests.conftest import TestSessionLocal
+from tripl.worker.tasks.alerts_messages import _digest_groups, _digest_headline
 from tripl.worker.tasks.metrics import detect as metrics_detect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
 
@@ -765,6 +770,7 @@ def test_delivery_records_a_measured_percent_delta_for_a_negative_baseline(
         session.commit()
 
         items = list(session.execute(select(AlertDeliveryItem)).scalars())
+        deliveries = list(session.execute(select(AlertDelivery)).scalars())
 
     assert len(items) == 1
     assert items[0].scope_type == SCOPE_METRIC
@@ -773,6 +779,20 @@ def test_delivery_records_a_measured_percent_delta_for_a_negative_baseline(
     assert items[0].absolute_delta == pytest.approx(6.0)
     # The size of the move, not its sign: 6 against a baseline of magnitude 3.
     assert items[0].percent_delta == pytest.approx(200.0)
+
+    # ...and the FROZEN SNAPSHOT of the same delivery says the same number.
+    # ``payload_snapshot`` is built by ``alert_payload`` from its own read of the
+    # anomaly, so it is a second answer to one question: the audit API and the
+    # Inbox read this blob while the typed ``items[]`` beside it reads the rows
+    # above. Computed with an ``expected > 0`` divisor it collapsed to 0.0 here
+    # while the row kept 200.0 — one delivery contradicting itself, which is
+    # strictly worse than both halves being wrong the same way.
+    assert len(deliveries) == 1
+    snapshot_items = deliveries[0].payload_snapshot["items"]
+    assert len(snapshot_items) == 1
+    assert snapshot_items[0]["expected_count"] == pytest.approx(-3.0)
+    assert snapshot_items[0]["percent_delta"] == pytest.approx(items[0].percent_delta)
+    assert snapshot_items[0]["percent_delta"] == pytest.approx(200.0)
 
 
 # ---------------------------------------------------------------------------
@@ -968,6 +988,258 @@ def test_alert_renderers_report_a_measured_negative_baseline() -> None:
     # And the ordinary positive case is untouched.
     assert format_percent_delta(200.0, 3.0) == "200.0%"
     assert percent_delta_or_none(200.0, 3.0) == pytest.approx(200.0)
+
+
+# ── Every READER of a baseline, not just the writers ─────────────────────────
+#
+# The writers moved first (``dispatch._create_deliveries``, the matcher, the
+# detector) because the column is frozen history and a row stored as 0.0 can
+# never be recovered. The readers each carried their OWN copy of the test, and a
+# half-applied semantic change is worse than an unapplied one: the same anomaly
+# answered differently depending on which surface was looking at it. These pin
+# the readers to the writers.
+
+_SIGNED_BASELINE = -3.0
+_SIGNED_ACTUAL = -9.0
+
+
+def _delivery_item(
+    *,
+    expected_count: float,
+    actual_count: float,
+    percent_delta: float,
+    direction: str = "drop",
+    scope_name: str = "net_margin",
+) -> AlertDeliveryItem:
+    """An unsaved delivery row carrying only what the readers under test read."""
+    return AlertDeliveryItem(
+        id=uuid.uuid4(),
+        delivery_id=uuid.uuid4(),
+        scope_type=SCOPE_METRIC,
+        scope_ref=str(uuid.uuid4()),
+        scope_name=scope_name,
+        bucket=_CANDIDATE_BUCKET,
+        direction=direction,
+        actual_count=actual_count,
+        expected_count=expected_count,
+        absolute_delta=abs(actual_count - expected_count),
+        percent_delta=percent_delta,
+    )
+
+
+def test_digest_files_a_signed_metric_as_a_drop_not_as_unbaselined() -> None:
+    """A negative baseline is a baseline, in the headline and in the groups.
+
+    ``_digest_headline`` and ``_digest_groups`` bucket the same list and must
+    bucket it the SAME way — the heading says "1 down" and the group under it
+    holds the item. Asking ``expected_count > 0`` filed the signed row under
+    "new", which is the group for a counter that fired from nothing: it is sorted
+    by absolute delta because an undefined ratio has no magnitude to rank, so the
+    one item here whose 200% move IS its story lost the ranking that would have
+    surfaced it, and the headline lost the worst-drop clause entirely.
+    """
+    signed = _delivery_item(
+        expected_count=_SIGNED_BASELINE,
+        actual_count=_SIGNED_ACTUAL,
+        percent_delta=200.0,
+    )
+    unbaselined = _delivery_item(
+        expected_count=0.0,
+        actual_count=12.0,
+        percent_delta=0.0,
+        direction="spike",
+        scope_name="first_sighting",
+    )
+
+    headline = _digest_headline([signed, unbaselined], 2)
+    assert "1 down" in headline
+    assert "1 new" in headline
+    # Named as the worst mover, which the "new" bucket is never eligible for.
+    assert "worst net_margin down 200%" in headline
+
+    labels = [label for label, _ in _digest_groups([signed, unbaselined])]
+    assert labels == ["1 down", "1 new"]
+    groups = dict(_digest_groups([signed, unbaselined]))
+    assert groups["1 down"] == [signed]
+    assert groups["1 new"] == [unbaselined]
+
+
+def test_inbox_group_reports_a_measured_negative_baseline_as_its_worst_move() -> None:
+    """One response may not answer the same question two ways.
+
+    ``percent_delta`` (the newest item, through ``percent_delta_or_none``) and
+    ``max_abs_percent_delta`` (the largest MEASURED deviation in the group)
+    describe the same rows. The first already read a signed baseline correctly
+    while the second filtered on ``expected_count > 0`` and dropped every signed
+    row, so a group whose card said "200.0%" reported no worst move at all.
+    """
+    now = datetime.now(UTC)
+    signed = _delivery_item(
+        expected_count=_SIGNED_BASELINE,
+        actual_count=_SIGNED_ACTUAL,
+        percent_delta=200.0,
+    )
+    delivery = AlertDelivery(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
+        destination_id=uuid.uuid4(),
+        rule_id=uuid.uuid4(),
+        status="sent",
+        matched_count=1,
+        created_at=now,
+    )
+    destination = AlertDestination(id=uuid.uuid4(), name="Main Slack", type="slack")
+    rule = AlertRule(id=uuid.uuid4(), name="Metrics only")
+    scan_config = ScanConfig(id=uuid.uuid4(), name="sc-signed")
+
+    group = _build_inbox_group_response(
+        correlation_group_id=uuid.uuid4(),
+        state=None,
+        rows=[(signed, delivery, destination, rule, scan_config)],
+        now=now,
+        acted_by_name=None,
+    )
+
+    assert group.expected_count == pytest.approx(_SIGNED_BASELINE)
+    assert group.percent_delta == pytest.approx(200.0)
+    assert group.max_abs_percent_delta == pytest.approx(200.0)
+
+
+def test_inbox_group_still_reports_no_worst_move_without_a_baseline() -> None:
+    """The class the filter exists for is untouched: 0.0 is a placeholder.
+
+    Folding it in made a zero-baseline group — the loudest class there is — sort
+    as the smallest deviation in the inbox (tripl-l429.24), so widening the test
+    to ``!= 0`` must not widen it to "everything".
+    """
+    now = datetime.now(UTC)
+    item = _delivery_item(
+        expected_count=0.0,
+        actual_count=12.0,
+        percent_delta=0.0,
+        direction="spike",
+        scope_name="first_sighting",
+    )
+    delivery = AlertDelivery(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
+        destination_id=uuid.uuid4(),
+        rule_id=uuid.uuid4(),
+        status="sent",
+        matched_count=1,
+        created_at=now,
+    )
+
+    group = _build_inbox_group_response(
+        correlation_group_id=uuid.uuid4(),
+        state=None,
+        rows=[
+            (
+                item,
+                delivery,
+                AlertDestination(id=uuid.uuid4(), name="Main Slack", type="slack"),
+                AlertRule(id=uuid.uuid4(), name="Metrics only"),
+                ScanConfig(id=uuid.uuid4(), name="sc-new"),
+            )
+        ],
+        now=now,
+        acted_by_name=None,
+    )
+
+    assert group.percent_delta is None
+    assert group.max_abs_percent_delta is None
+
+
+# ── The drift guard ──────────────────────────────────────────────────────────
+#
+# Six copies of one expression is how the change got half-applied. The copies are
+# gone — every surface below calls ``alert_templates.has_baseline`` /
+# ``percent_delta_of``, a leaf module importing only ``tripl.models.*`` — and
+# this is what stops a seventh appearing. The behavioural tests above catch a
+# regression in the readers they cover; this catches one ANYWHERE in the module,
+# including a reader added tomorrow, and it names the line.
+
+_BASELINE_MODULES = (
+    "tripl.alert_templates",
+    "tripl.schemas.alerting",
+    "tripl.services._alerting_deliveries",
+    "tripl.services.demo.builders.alerts",
+    "tripl.worker.tasks.alerts_messages",
+    "tripl.worker.tasks.metrics.alert_payload",
+    "tripl.worker.tasks.metrics.dispatch",
+)
+
+_ORDERING_OPS = (ast.Gt, ast.GtE, ast.Lt, ast.LtE)
+_BASELINE_OPERANDS = frozenset({"expected", "expected_count"})
+
+
+def _operand_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
+
+
+def _is_zero_literal(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, int | float)
+        and not isinstance(node.value, bool)
+        and node.value == 0
+    )
+
+
+def _ordering_tests_against_zero(source_path: Path) -> list[str]:
+    """Every ``expected [<|<=|>|>=] 0`` in one module, as ``file:line`` strings.
+
+    Parsed, not grepped: these modules DISCUSS ``expected_count > 0`` at length in
+    their comments and docstrings, because the history is the reason the helper
+    exists. An AST walk sees the code and nothing else, so the explanation can
+    stay.
+    """
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        # ``a < b <= c`` is ONE Compare node with two ops and three operands, so
+        # the ops pair up with adjacent operands: ``operands[:-1]`` and
+        # ``operands[1:]`` are both ``len(ops)`` long, which is what makes
+        # ``strict`` meaningful here rather than an exception.
+        for op, left, right in zip(node.ops, operands[:-1], operands[1:], strict=True):
+            if not isinstance(op, _ORDERING_OPS):
+                continue
+            names = {_operand_name(left), _operand_name(right)}
+            if not names & _BASELINE_OPERANDS:
+                continue
+            if _is_zero_literal(left) or _is_zero_literal(right):
+                hits.append(f"{source_path.name}:{node.lineno}")
+    return hits
+
+
+@pytest.mark.parametrize("module_name", _BASELINE_MODULES)
+def test_no_alerting_surface_re_derives_the_baseline_test(module_name: str) -> None:
+    """Being ABOVE zero is not the same question as having a baseline.
+
+    ZERO is the no-baseline condition and the only one. An ordering test against
+    zero answers a DIFFERENT question — "is the level positive" — and a signed
+    catalog metric, a signed ``fact`` sum/avg, or a ``sql`` level below zero is a
+    real baseline the detector scores and the matcher fires on
+    (tripl-0zpq.102). Any surface asking the ordering question prints "no
+    baseline" over the very number that made the rule fire.
+
+    Fails with the offending ``file:line``. If a genuinely different question
+    about the sign of an expectation ever belongs in one of these modules, say so
+    with a named predicate rather than by loosening this list.
+    """
+    module = importlib.import_module(module_name)
+    source = inspect.getsourcefile(module)
+    assert source is not None
+    assert _ordering_tests_against_zero(Path(source)) == []
 
 
 # ---------------------------------------------------------------------------
