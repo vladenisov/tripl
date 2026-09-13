@@ -28,6 +28,7 @@ from statistics import median
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.alert_templates import percent_delta_of
 from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -464,9 +465,13 @@ async def _build_firings(
             metric_names=metric_names,
         )
         absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
-        percent_delta = (
-            absolute_delta / anomaly.expected_count * 100 if anomaly.expected_count > 0 else 0.0
-        )
+        # The same definition live dispatch stores and the real simulator
+        # replays (``alert_templates.percent_delta_of``), not a local copy of
+        # it. Demo data only, but the demo is the first alerting surface a new
+        # user reads, and a fourth copy of this expression is precisely how the
+        # signed-baseline fix (tripl-0zpq.102) reached some readers and not
+        # others.
+        percent_delta = percent_delta_of(anomaly.actual_count, anomaly.expected_count)
         # SQLite drops tz on round-trip while freshly-built rows stay tz-aware;
         # normalise so every firing bucket is comparable (max/last_seen_at).
         bucket = anomaly.bucket if anomaly.bucket.tzinfo else anomaly.bucket.replace(tzinfo=UTC)

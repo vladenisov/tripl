@@ -49,11 +49,11 @@ generated-SQL surface.
 A note on the fixture's NULL measures
 -------------------------------------
 Every ``view`` row carries ``amount = NULL``, so SUM/AVG must skip it while COUNT(*)
-must not. But no breakdown GROUP is left ALL-null: ``_collect_fact_breakdown_rows``
-does ``float(row[-1])`` on the aggregate cell with no ``None`` guard, so an all-NULL
-group would raise ``TypeError`` inside the collector rather than record an absent
-value. That is a production defect, filed separately — this gate does not construct
-it, and must not be "simplified" into constructing it by accident.
+must not. An all-NULL breakdown GROUP is now safe to construct: both the per-metric
+pass (``_collect_fact_breakdown_rows``) and the batched one (``_assemble_single_metric``)
+skip a NULL aggregate cell and record the group as ABSENT, where the per-metric pass
+used to do ``float(row[-1])`` unguarded and raise ``TypeError`` inside the collector.
+The fixture may therefore grow one; it no longer has to be kept out by hand.
 """
 
 from __future__ import annotations
@@ -803,11 +803,12 @@ class _BigQueryCapture:
         adapter._maximum_bytes_billed = None
         adapter._dataset_allowlist = None
         # The rest of ``__init__``'s state, EMPTY — exactly as a freshly built adapter
-        # has it. It matters that these start empty rather than pre-seeded: the worker
-        # builds an adapter and jumps straight to a read (``_aggregate_fact_window``
-        # only introspects when the aggregation needs a measure column), so the
-        # adapter's own lazy ``_ensure_column_types`` probe is part of what this gate
-        # is here to analyze. Hand-seeding them would skip it.
+        # has it. It matters that these start empty rather than pre-seeded: the first
+        # thing the worker does with a fresh adapter is the schema probe
+        # (``_collect_fact_single`` / ``_collect_fact_ratio`` call ``get_columns`` once
+        # per metric/operand, whatever the aggregation needs), so that probe and the
+        # adapter's own lazy ``_ensure_column_types`` are part of what this gate is
+        # here to analyze. Hand-seeding them would skip it.
         adapter._allowed_columns = set()
         adapter._column_types = {}
         adapter._struct_paths = {}

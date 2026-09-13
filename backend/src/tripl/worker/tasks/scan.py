@@ -42,6 +42,12 @@ from tripl.worker.db import _build_adapter, _get_sync_session
 from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError, user_facing_error
+from tripl.worker.utils.event_types import ensure_event_type_with_fields
+from tripl.worker.utils.job_status import (
+    TERMINAL_SCAN_JOB_STATUSES,
+    closed_by_someone_else,
+    job_is_cancelled,
+)
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
 from tripl.worker.variable_sweep import retire_unused_variables, retired_details_line
@@ -76,6 +82,34 @@ def _publish_scan_job_event(
         realtime.EVENT_SCAN_JOB_UPDATED,
         {"scan_config_id": scan_config_id, "job_id": job_id, "status": status},
     )
+
+
+def _skip_terminal_job(
+    task_name: str, job_id: str, status: str, scan_config_id: str
+) -> dict[str, object]:
+    """The return value for a job somebody else already closed before start.
+
+    Same shape and same split as ``collect_metrics``: a user cancel is an
+    expected outcome and reports ``cancelled``; a ``failed`` the stale reaper
+    stamped, or a ``completed`` whose ack was lost under ``task_acks_late``, is a
+    redelivery worth a warning and reports ``skipped``.
+    """
+    if status == ScanJobStatus.cancelled.value:
+        logger.info("%s %s was cancelled before start; skipping", task_name, job_id)
+        return {"cancelled": True, "job_status": status, "scan_config_id": scan_config_id}
+    logger.warning("%s %s is already %s before start; skipping", task_name, job_id, status)
+    return {"skipped": True, "job_status": status, "scan_config_id": scan_config_id}
+
+
+def _task_id(task: object) -> str | None:
+    """The Celery task id of the running request, or None outside a worker.
+
+    Recorded on the job so ``cancel_scan_job`` can best-effort revoke a message
+    that is still queued — the invariant ``ScanJob.celery_task_id`` documents and
+    which, before tripl-0zpq.44, only ``collect_metrics`` honoured, leaving the
+    revoke branch unreachable for every catalog run and event-group apply.
+    """
+    return getattr(getattr(task, "request", None), "id", None)
 
 
 def _serialize_generation_result(result: GenerationResult) -> dict[str, object]:
@@ -155,6 +189,20 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             msg = f"ScanJob {job_id} not found"
             raise ValueError(msg)
 
+        # Trustworthy without a re-read: this is the session's first look at the
+        # row and nothing has been committed yet. A job can reach a terminal
+        # state while its message sits queued — the user stopped it, the stale
+        # reaper stamped it failed, or its ``completed`` ack was lost — and
+        # ``task_acks_late`` makes redelivery routine rather than a race. A
+        # redelivered ``completed`` job matters here for the same reason it does
+        # in ``collect_metrics``: re-running it re-queries the warehouse, rewrites
+        # the plan, overwrites the first run's delta counters, and leaves the row
+        # ``running`` while it still carries the first run's ``completed_at`` —
+        # which ``_reject_if_already_running`` then reads as "a scan is already
+        # running", 409-ing every user-triggered scan for the duration.
+        if job.status in TERMINAL_SCAN_JOB_STATUSES:
+            return _skip_terminal_job("run_scan", job_id, job.status, scan_config_id)
+
         config = session.get(ScanConfig, uuid.UUID(scan_config_id))
         if config is None:
             msg = f"ScanConfig {scan_config_id} not found"
@@ -168,6 +216,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
         # Mark job as running
         job.status = ScanJobStatus.running.value
         job.started_at = datetime.now(UTC)
+        job.celery_task_id = _task_id(self)
         session.commit()
         _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.running.value)
 
@@ -254,6 +303,24 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
         else:
             raise ScanError(NO_EVENT_NAMING_MSG)
 
+        # The LAST moment at which a stop is still FREE. Everything the run
+        # generated is pending in this session, so the rollback is a real undo;
+        # one line later it is durable and the sweep and the reindex follow. A
+        # stop landing after this point is still honoured on the job row — the
+        # close-out below re-reads the status and leaves a terminal one alone
+        # (tripl-0zpq.44) — but it cannot un-write the catalog, which is why the
+        # checkpoint is here and not next to the ``completed`` stamp.
+        #
+        # This is only a true undo because neither ``generate_events`` nor
+        # ``merge_existing_events_for_group_rules`` commits internally. A
+        # generator that starts committing would turn this guard into a partial
+        # catalog.
+        if job_is_cancelled(session, job.id):
+            session.rollback()
+            logger.info("run_scan for %s cancelled mid-run; discarding generation", scan_config_id)
+            scan_runs_total.labels(status="cancelled").inc()
+            return {"cancelled": True, "scan_config_id": scan_config_id}
+
         session.commit()
         # Scans mint variables and, before this, never retired one, so a project
         # whose warehouse holds a JSON column keyed by user-typed text grew a
@@ -275,9 +342,24 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             result.details.append(retired_details_line(variables_retired))
         reindex_main_branch_from_worker(session, config.project_id)
 
-        # Mark job as completed
-        job.status = ScanJobStatus.completed.value
-        job.completed_at = datetime.now(UTC)
+        # Mark job as completed — unless somebody closed it while the sweep and
+        # the reindex above were running. The stop that landed there could not
+        # undo the commit at the checkpoint, but the verdict on the ROW is the
+        # closer's: re-opening it as ``completed`` would leave a Succeeded run
+        # carrying "Cancelled by user" (tripl-0zpq.44). Only ``status`` and
+        # ``completed_at`` are withheld; ``result_summary`` is still recorded
+        # below so the run report survives. Same rule, same helper, as
+        # ``collect_metrics``.
+        closed_status = closed_by_someone_else(session, job.id)
+        if closed_status is None:
+            job.status = ScanJobStatus.completed.value
+            job.completed_at = datetime.now(UTC)
+        else:
+            logger.warning(
+                "run_scan %s finished but the job is already %s; leaving that status in place",
+                job_id,
+                closed_status,
+            )
         if scan_truncated:
             result.details.append(
                 "Scan output may be truncated by row limit; "
@@ -322,24 +404,45 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             f"Scan completed: {result.events_created} events created, "
             f"{result.events_skipped} skipped, {result.variables_created} variables created"
         )
-        scan_runs_total.labels(status="completed").inc()
-        _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.completed.value)
+        # Labelled and published with what the row actually SAYS, not with what
+        # this task set out to write: a stop honoured above must not show up as
+        # a completed run on the dashboard or push a ``completed`` event to a UI
+        # that is already rendering the job as cancelled.
+        final_status = closed_status or ScanJobStatus.completed.value
+        scan_runs_total.labels(status=final_status).inc()
+        _publish_scan_job_event(session, scan_config_id, job_id, final_status)
         return job.result_summary
 
     except Exception as e:
         logger.exception(f"Scan failed: {e}")
         session.rollback()
+        failure_status = ScanJobStatus.failed.value
         try:
             job = session.get(ScanJob, uuid.UUID(job_id))
             if job:
-                job.status = ScanJobStatus.failed.value
-                job.completed_at = datetime.now(UTC)
-                job.error_message = user_facing_error(e)
+                # The same rule as the success path: a row somebody already
+                # closed keeps the status, ``completed_at`` and message its
+                # closer wrote. A user who pressed Stop and then watched the run
+                # die of the cancel must not be shown "Scan failed due to an
+                # internal error" in place of their own cancellation.
+                closed_status = closed_by_someone_else(session, job.id)
+                if closed_status is None:
+                    job.status = ScanJobStatus.failed.value
+                    job.completed_at = datetime.now(UTC)
+                    job.error_message = user_facing_error(e)
+                else:
+                    failure_status = closed_status
+                    logger.warning(
+                        "run_scan %s failed but the job is already %s; "
+                        "leaving that status in place",
+                        job_id,
+                        closed_status,
+                    )
                 session.commit()
-                _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.failed.value)
+                _publish_scan_job_event(session, scan_config_id, job_id, failure_status)
         except Exception:
             logger.exception("Failed to update job status after error")
-        scan_runs_total.labels(status="failed").inc()
+        scan_runs_total.labels(status=failure_status).inc()
         raise
     finally:
         if adapter is not None:
@@ -392,23 +495,26 @@ def _scan_with_grouping(
     combined = GenerationResult()
     per_group_results: dict[str, GenerationResult] = {}
 
-    # Scans operate on the main plan; a working branch deep-copies event types
-    # under the same names, so the by-name lookup must be branch-scoped.
-    plan_branch = main_branch_id(session, project_id)
+    # The SAME resolver the scheduled catalog sync uses (``catalog_sync`` ->
+    # ``ensure_event_type_with_fields``), and it creates rather than skips. A
+    # manual run used to only LOOK UP the event type by name and drop the whole
+    # group when it was missing, which made a Catalog-only config — the mode
+    # whose entire promise is "adds events and fields to your tracking plan when
+    # you run it", and which by definition never reaches the scheduler — create
+    # zero events forever, while the dry run promised the type "would be added"
+    # (tripl-0zpq.45). It also handed ``generate_events`` only the
+    # already-declared fields, so a new warehouse column stayed dropped from
+    # event identities until the next scheduled tick declared it.
+    #
+    # ``skip_cols`` is the same set this function already passes to
+    # ``generate_events`` as ``reserved_columns``, which reproduces the sync's
+    # invariant exactly: a column denied a FieldDefinition is the same column the
+    # generator stays quiet about. The resolver scopes to the main plan itself,
+    # so no branch lookup is needed here.
+    skip_cols = reserved_catalog_columns(config)
 
     for et_value in group_values:
-        # Find or skip event type by name
-        et = session.execute(
-            select(EventType).where(
-                EventType.project_id == project_id,
-                EventType.branch_id == plan_branch,
-                EventType.name == et_value,
-            )
-        ).scalar_one_or_none()
-
-        if et is None:
-            combined.details.append(f"Skipped event type {et_value!r}: not found in project")
-            continue
+        et = ensure_event_type_with_fields(session, project_id, et_value, columns, skip_cols)
 
         field_defs = {fd.name: fd for fd in et.field_definitions}
         # Use per-group cardinality results for this event type
@@ -424,7 +530,7 @@ def _scan_with_grouping(
             time_column=config.time_column,
             event_name_format=config.event_name_format,
             event_group_rules=config.event_group_rules,
-            reserved_columns=reserved_catalog_columns(config),
+            reserved_columns=skip_cols,
             scan_config_id=config.id,
         )
         combined.events_created += result.events_created
@@ -453,6 +559,12 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             msg = f"ScanJob {job_id} not found"
             raise ValueError(msg)
 
+        # See ``run_scan``: a stopped, reaped or already-``completed`` job must
+        # not be resurrected by an ``acks_late`` redelivery, and this pass
+        # DELETES the events it folds.
+        if job.status in TERMINAL_SCAN_JOB_STATUSES:
+            return _skip_terminal_job("apply_event_groups", job_id, job.status, scan_config_id)
+
         config = session.get(ScanConfig, uuid.UUID(scan_config_id))
         if config is None:
             msg = f"ScanConfig {scan_config_id} not found"
@@ -463,15 +575,38 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
 
         job.status = ScanJobStatus.running.value
         job.started_at = datetime.now(UTC)
+        job.celery_task_id = _task_id(self)
         session.commit()
 
+        # Apply-groups MUTATES the catalog — it rewrites rows and DELETES the
+        # sources it folds — so like every other scan path it stays on the main
+        # plan. A working branch deep-copies every EventType, FieldDefinition and
+        # Event under fresh ids, so a DISTINCT over ``Event.event_type_id`` alone
+        # returned each open branch's private copies too, and the merge then
+        # deleted the branch author's events, analyst edits included, minting a
+        # group event there that only main's reindex would ever have indexed
+        # (tripl-0zpq.43). ``Event.branch_id`` states the intent;
+        # ``EventType.branch_id`` is the column the downstream load actually keys
+        # on, since the merge re-selects by ``event_type_id``.
+        #
+        # NOT narrowed by this: on main the pass still folds every event type
+        # that has any event, regardless of which scan config produced it.
+        # ``Event`` carries no ``scan_config_id`` and this task has no warehouse
+        # adapter, so there is no honest way to learn which event types are this
+        # config's; that needs a product decision, not a query change.
+        plan_branch = main_branch_id(session, config.project_id)
         if config.event_type_id is not None:
             event_type_ids = [config.event_type_id]
         else:
             event_type_ids = list(
                 session.execute(
                     select(Event.event_type_id)
-                    .where(Event.project_id == config.project_id)
+                    .join(EventType, EventType.id == Event.event_type_id)
+                    .where(
+                        Event.project_id == config.project_id,
+                        Event.branch_id == plan_branch,
+                        EventType.branch_id == plan_branch,
+                    )
                     .distinct()
                 ).scalars()
             )
@@ -487,6 +622,20 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             # never moved it and wrong for everyone who did (tripl-3rex).
             cardinality_threshold=config.cardinality_threshold,
         )
+
+        # Same placement and same reasoning as ``run_scan``: the fold is still
+        # pending in this session, so a stop here discards it whole. One line
+        # later the deletes are durable and the reindex has run — a stop landing
+        # then is still honoured on the job row by the close-out below, but it
+        # cannot bring the folded sources back.
+        if job_is_cancelled(session, job.id):
+            session.rollback()
+            logger.info(
+                "apply_event_groups for %s cancelled mid-run; discarding the merge",
+                scan_config_id,
+            )
+            return {"cancelled": True, "scan_config_id": scan_config_id}
+
         session.commit()
         # AFTER the commit, exactly as run_scan does and for the same reason:
         # the reindex opens its own connection and cannot see this session's
@@ -498,8 +647,20 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
         # it is the survivor's missing row this repairs.
         reindex_main_branch_from_worker(session, config.project_id)
 
-        job.status = ScanJobStatus.completed.value
-        job.completed_at = datetime.now(UTC)
+        # Same guard, same helper and same reason as ``run_scan``'s close-out:
+        # the reindex above can take seconds, and a Stop that lands in that
+        # window owns the row's verdict even though the fold is already durable.
+        closed_status = closed_by_someone_else(session, job.id)
+        if closed_status is None:
+            job.status = ScanJobStatus.completed.value
+            job.completed_at = datetime.now(UTC)
+        else:
+            logger.warning(
+                "apply_event_groups %s finished but the job is already %s; "
+                "leaving that status in place",
+                job_id,
+                closed_status,
+            )
         job.result_summary = {
             "mode": "event_groups_apply",
             "events_merged": events_merged,
@@ -513,7 +674,12 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             ],
         }
         session.commit()
-        _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.completed.value)
+        _publish_scan_job_event(
+            session,
+            scan_config_id,
+            job_id,
+            closed_status or ScanJobStatus.completed.value,
+        )
         return job.result_summary
     except Exception as e:
         logger.exception(f"Apply event groups failed: {e}")
@@ -521,11 +687,25 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
         try:
             job = session.get(ScanJob, uuid.UUID(job_id))
             if job:
-                job.status = ScanJobStatus.failed.value
-                job.completed_at = datetime.now(UTC)
-                job.error_message = user_facing_error(e)
+                closed_status = closed_by_someone_else(session, job.id)
+                if closed_status is None:
+                    job.status = ScanJobStatus.failed.value
+                    job.completed_at = datetime.now(UTC)
+                    job.error_message = user_facing_error(e)
+                else:
+                    logger.warning(
+                        "apply_event_groups %s failed but the job is already %s; "
+                        "leaving that status in place",
+                        job_id,
+                        closed_status,
+                    )
                 session.commit()
-                _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.failed.value)
+                _publish_scan_job_event(
+                    session,
+                    scan_config_id,
+                    job_id,
+                    closed_status or ScanJobStatus.failed.value,
+                )
         except Exception:
             logger.exception("Failed to update event group apply job status after error")
         raise

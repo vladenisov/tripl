@@ -28,6 +28,7 @@ from tripl.models.event_metric import EventMetric
 from tripl.models.event_tag import EventTag
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
+from tripl.models.scan_config import ScanConfig
 from tripl.models.user import User
 from tripl.models.variable import Variable
 from tripl.schemas.event import (
@@ -979,6 +980,107 @@ async def _resolved_event_identity(
     return generated_name
 
 
+async def _reserved_breakdown_columns_by_type(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    event_type_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, set[str]]:
+    """Columns an event may not list as a breakdown, per event type.
+
+    Today that is exactly the ``app_version_column`` of every scan that collects
+    the type: app versions are collected on their own path, into the same table
+    and the same row shape, so listing the column here made the collector write
+    one breakdown key twice per bucket (tripl-0zpq.15). The scan-level list is
+    already guarded the same way by ``check_scalar_columns_unreserved``; this is
+    the event-level door.
+
+    One query for any number of types — the bulk create asks about a whole paste
+    at once. A scan with no bound event type is a grouped scan: it discovers its
+    types from the data, so it collects every type in the project and its version
+    column is reserved for all of them.
+
+    Deliberately NOT reserved: ``platform_column``. The collector adds it
+    scan-wide and dedupes it, so an event listing it produces one key, and the
+    demo project ships an event that lists it.
+    """
+    wanted = list(dict.fromkeys(event_type_ids))
+    if not wanted:
+        return {}
+    rows = (
+        await session.execute(
+            select(ScanConfig.event_type_id, ScanConfig.app_version_column).where(
+                ScanConfig.project_id == project_id,
+                ScanConfig.app_version_column.is_not(None),
+                or_(
+                    ScanConfig.event_type_id.in_(wanted),
+                    ScanConfig.event_type_id.is_(None),
+                ),
+            )
+        )
+    ).all()
+    reserved: dict[uuid.UUID, set[str]] = {event_type_id: set() for event_type_id in wanted}
+    for bound_event_type_id, column in rows:
+        name = (column or "").strip()
+        if not name:
+            continue
+        if bound_event_type_id is None:
+            for columns in reserved.values():
+                columns.add(name)
+        elif bound_event_type_id in reserved:
+            reserved[bound_event_type_id].add(name)
+    return reserved
+
+
+def _breakdown_column_conflict_detail(clashing: Sequence[str]) -> str:
+    """The 422 body for an event breakdown column a scan has already claimed.
+
+    Says "scan", not "scan config", and spells the plurals out rather than
+    writing "(s)" — the same rule ``name_format_conflict_detail`` holds this
+    side of the wire to, for the same reason: the web UI renders this string
+    verbatim.
+    """
+    named = ", ".join(f"'{column}'" for column in clashing)
+    one = len(clashing) == 1
+    noun = "Metric breakdown column" if one else "Metric breakdown columns"
+    subject = "is the app version column" if one else "are the app version columns"
+    pronoun = "it" if one else "them"
+    return (
+        f"{noun} {named} {subject} of a scan that collects this event type. App "
+        "versions are collected as their own series already, so listing the "
+        f"column here would collect it twice. Remove {pronoun} — the version "
+        "breakdown stays available without it."
+    )
+
+
+def _clashing_breakdown_columns(columns: Sequence[str] | None, reserved: set[str]) -> list[str]:
+    """The listed columns that are reserved, in the order the caller listed them."""
+    if not columns or not reserved:
+        return []
+    return [column for column in dict.fromkeys(columns) if column in reserved]
+
+
+async def _guard_event_breakdown_columns(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    event_type_id: uuid.UUID,
+    columns: Sequence[str] | None,
+) -> None:
+    """Refuse a breakdown column the collector would have to skip. See tripl-0zpq.15."""
+    if not columns:
+        return
+    reserved = await _reserved_breakdown_columns_by_type(
+        session, project_id=project_id, event_type_ids=[event_type_id]
+    )
+    clashing = _clashing_breakdown_columns(columns, reserved.get(event_type_id, set()))
+    if clashing:
+        raise HTTPException(
+            status_code=422,
+            detail=_breakdown_column_conflict_detail(clashing),
+        )
+
+
 async def create_event(
     session: AsyncSession,
     slug: str,
@@ -1002,6 +1104,12 @@ async def create_event(
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
     field_values = await _validate_field_values(session, data.event_type_id, data.field_values)
+    await _guard_event_breakdown_columns(
+        session,
+        project_id=project_id,
+        event_type_id=data.event_type_id,
+        columns=data.metric_breakdown_columns,
+    )
     if scan_identity is None:
         generated_name = await _resolved_event_identity(
             session,
@@ -1149,6 +1257,27 @@ async def update_event(
 
     # Snapshot tracked fields before mutation for change history
     old_values = {f: getattr(event, f) for f in _TRACKED_FIELDS if f in update_data}
+
+    if "metric_breakdown_columns" in update_data:
+        # Checked before anything is mutated, and only for columns being ADDED.
+        # The event form re-sends the whole list on every save and it used to
+        # OFFER the version column, so checking the whole list would block an
+        # unrelated edit until the user removed a column the product itself put
+        # there. A stored one is inert either way — the collector skips it
+        # (``_is_supported_configured_breakdown_column``) — so grandfathering
+        # costs nothing and closing the door on new ones is the point
+        # (tripl-0zpq.15).
+        held_columns = set(event.metric_breakdown_columns or [])
+        await _guard_event_breakdown_columns(
+            session,
+            project_id=event.project_id,
+            event_type_id=event.event_type_id,
+            columns=[
+                column
+                for column in update_data["metric_breakdown_columns"] or []
+                if column not in held_columns
+            ],
+        )
 
     if "name" in update_data:
         event.name = update_data["name"]
@@ -1577,6 +1706,16 @@ async def bulk_create_events(
         for event_type_id in unique_event_type_ids
     }
 
+    # One query for the whole paste, same shape as the identity probe below, and
+    # only when the paste configures breakdowns at all.
+    reserved_breakdown_columns = (
+        await _reserved_breakdown_columns_by_type(
+            session, project_id=project_id, event_type_ids=list(unique_event_type_ids)
+        )
+        if any(data.metric_breakdown_columns for data in events_data)
+        else {}
+    )
+
     normalized_values: list[list[EventFieldValueIn]] = []
     identities: list[str | None] = []
     claimed_in_batch: dict[tuple[uuid.UUID, str], int] = {}
@@ -1584,6 +1723,17 @@ async def bulk_create_events(
         defs = field_defs_by_type[data.event_type_id]
         name_format = name_formats[data.event_type_id]
         try:
+            # Raised inside the try on purpose: the arm below is what puts
+            # "Event N of M" in front of every refusal this loop makes.
+            clashing_columns = _clashing_breakdown_columns(
+                data.metric_breakdown_columns,
+                reserved_breakdown_columns.get(data.event_type_id, set()),
+            )
+            if clashing_columns:
+                raise HTTPException(
+                    status_code=422,
+                    detail=_breakdown_column_conflict_detail(clashing_columns),
+                )
             values = _check_and_normalize_field_values(defs, data.field_values)
             identity = (
                 apply_scan_name_format(

@@ -271,10 +271,32 @@ def _effective_stddev(
     floor turned into a 4-sigma "spike". It is NOT applied to the averaged
     trend path, which has its own relative effect-size gate.
     """
-    relative_floor = max(expected_count * ratio, absolute_floor)
+    relative_floor = max(abs(expected_count) * ratio, absolute_floor)
     if poisson and expected_count > 0:
         relative_floor = max(relative_floor, sqrt(expected_count))
     return max(stddev, relative_floor)
+
+
+def _clears_volume_gate(
+    expected: float,
+    settings: AnomalyDetectionSettings,
+    *,
+    signed: bool,
+) -> bool:
+    """Whether an expectation is substantial enough for this series to be scored.
+
+    ``min_expected_count`` is a floor on VOLUME, and for a series that can go
+    negative volume is the MAGNITUDE: a level of -100 is exactly as substantial
+    as one of +100. Comparing the signed value against a non-negative floor
+    rejected that whole class on every scoring path, so a ``fact`` sum/avg/min/max
+    over a signed column, or any ``sql`` metric sitting below zero, stayed listed
+    as monitored and could never signal (tripl-0zpq.102).
+
+    A series that never goes negative keeps the historical signed comparison
+    verbatim, so no count-shaped behaviour moves — which is why ``signed`` is
+    decided once, from the series itself, in :func:`detect_anomalies`.
+    """
+    return (abs(expected) if signed else expected) >= settings.min_expected_count
 
 
 def _continues_monotonic_trend(counts: Sequence[float], idx: int) -> bool:
@@ -418,6 +440,7 @@ def _rolling_anomaly_at(
     *,
     stddev_absolute_floor: float = 1.0,
     poisson: bool = False,
+    signed: bool = False,
     kind: str = "rolling",
 ) -> DetectedAnomaly | None:
     """Seasonality-blind rolling-mean z-score. Fallback for series too short to
@@ -428,7 +451,7 @@ def _rolling_anomaly_at(
         return None
 
     expected_count, stddev = _rolling_stats(baseline)
-    if expected_count < settings.min_expected_count:
+    if not _clears_volume_gate(expected_count, settings, signed=signed):
         return None
 
     effective_stddev = _effective_stddev(
@@ -484,7 +507,13 @@ def _trailing_window(
 
 
 def _seasonal_factors(
-    counts: list[float], slots: Sequence[int], idx: int, period: int, level_window: int
+    counts: list[float],
+    slots: Sequence[int],
+    idx: int,
+    period: int,
+    level_window: int,
+    *,
+    signed: bool = False,
 ) -> tuple[list[float], float]:
     """Level-normalized seasonal factors for ``idx``'s phase, and the current level.
 
@@ -499,9 +528,23 @@ def _seasonal_factors(
     full phase period. Cycles whose level is 0 (all-zero history) contribute no
     factor.
 
+    ``signed`` short-circuits the whole normalization to the degenerate
+    fallback below — the raw same-phase median, a correct if less adaptive
+    baseline — and leaves sustained level shifts to the trend path
+    (tripl-0zpq.102). The per-cycle ``level > 0`` test cannot stand in for it: it
+    only excludes a partner whose trailing mean is non-POSITIVE, and a series
+    that straddles zero (small positive buckets plus one deep negative one) keeps
+    every trailing mean positive-but-tiny, so ``counts[j] / level`` explodes.
+    That produced an expectation of -726 on a series whose observed range was
+    [-220, +11], which the magnitude gate in :func:`_clears_volume_gate` then
+    admitted as a 6.4-sigma "spike". The divisor has to be far from zero, not
+    merely above it, and on a signed series nothing bounds it away.
+
     Both the partner selection and the two level windows are keyed on the grid
     slot (``_grid_slots``), so a missing bucket cannot rotate the phase.
     """
+    if signed:
+        return [], 0.0
     factors: list[float] = []
     for j in _same_phase_indices(slots, idx, period):
         cycle = _trailing_window(counts, slots, j, level_window)
@@ -524,6 +567,7 @@ def _phase_anomaly_at(
     level_window: int,
     stddev_absolute_floor: float = 1.0,
     poisson: bool = False,
+    signed: bool = False,
     kind: str = "phase",
 ) -> DetectedAnomaly | None:
     """Compare a bucket to the robust distribution of the same phase (e.g. same
@@ -538,12 +582,16 @@ def _phase_anomaly_at(
     cycle level and re-applying the median factor to the current level tracks the
     shift, while a genuine one-bucket spike still stands out (the current level,
     a trailing full short cycle, barely moves). Degenerate all-zero history falls
-    back to the raw same-phase median, so brand-new series behave as before."""
+    back to the raw same-phase median, so brand-new series behave as before — and
+    so does a SIGNED series, whose level is not a safe divisor at all (see
+    :func:`_seasonal_factors`)."""
     same_phase = [counts[j] for j in _same_phase_indices(slots, idx, period)]
     if not same_phase:
         return None
 
-    factors, current_level = _seasonal_factors(counts, slots, idx, period, level_window)
+    factors, current_level = _seasonal_factors(
+        counts, slots, idx, period, level_window, signed=signed
+    )
     if factors and current_level > 0:
         expected_count = median(factors) * current_level
         scale = _robust_scale(factors) * current_level
@@ -551,7 +599,7 @@ def _phase_anomaly_at(
         expected_count = median(same_phase)
         scale = _robust_scale(same_phase)
 
-    if expected_count < settings.min_expected_count:
+    if not _clears_volume_gate(expected_count, settings, signed=signed):
         return None
 
     effective_stddev = _effective_stddev(
@@ -599,6 +647,7 @@ def _detect_trend_shift(
     settings: AnomalyDetectionSettings,
     interval: timedelta,
     stddev_absolute_floor: float = 1.0,
+    signed: bool = False,
     emission_end: datetime | None = None,
 ) -> TrendShiftResult:
     """Catch slow/sustained level drifts the per-bucket phase baseline absorbs.
@@ -637,7 +686,7 @@ def _detect_trend_shift(
             continue
 
         pre_shift_level = trend[previous_idx]
-        if trend[idx] < settings.min_expected_count:
+        if not _clears_volume_gate(trend[idx], settings, signed=signed):
             run_start_idx = None
             continue
 
@@ -675,13 +724,18 @@ def _detect_trend_shift(
 
         # Reconstruct what this bucket would have been without the level shift so
         # the surfaced expected_count stays interpretable per bucket.
-        expected_count = max(pre_shift_level + seasonal[idx], 0.0)
+        reconstructed = pre_shift_level + seasonal[idx]
+        # The clamp exists only because a negative reconstruction is meaningless
+        # for a non-negative series. On a signed series it IS the answer, so
+        # clamping it to 0.0 would both hide the real expectation and hand the
+        # gate below a value the floor rejects (tripl-0zpq.102).
+        expected_count = reconstructed if signed else max(reconstructed, 0.0)
         # The volume gate above tests the deseasonalized trend, but the quantity
         # we PERSIST as expected_count is this per-bucket reconstruction — a
         # different number that can sit below the floor the project configured,
         # so a signal could surface claiming an expectation under the user's
         # min_expected_count (tripl-jfm3.48). Gate the reported value too.
-        if expected_count < settings.min_expected_count:
+        if not _clears_volume_gate(expected_count, settings, signed=signed):
             continue
         # ...and a reconstruction that lands AT zero says something else again.
         # The clamp above turns a negative reconstruction into exactly 0.0 and the
@@ -700,12 +754,13 @@ def _detect_trend_shift(
         # series is platform parity, and its value is a breakdown count over a
         # scope total — two event counts, so it lands in [0, 1]. The fractional
         # series that CAN go negative (a catalog ``fact`` sum/avg/min/max or a
-        # ``sql`` metric, i.e. a level over a possibly-signed column) never get
-        # here: ``detect.py`` pins them to ``_FRACTIONAL_MIN_EXPECTED_COUNT``, so
-        # the gate above rejects their clamped-zero reconstruction first. Keep
-        # ``==`` so that if such a series ever does get a zero floor, a negative
-        # actual against a zero expectation still reads as the drop it is.
-        if expected_count <= 0.0 and point.count == 0.0:
+        # ``sql`` metric, i.e. a level over a possibly-signed column) DO reach
+        # this line now that the gates above measure magnitude (tripl-0zpq.102),
+        # and they are exactly why the expectation half is ``== 0.0`` rather than
+        # ``<= 0.0``: an empty bucket against an expectation of -100 is a real
+        # move, and ``<=`` would swallow it. The two spellings agree for every
+        # non-negative series, so nothing on the count path changes.
+        if expected_count == 0.0 and point.count == 0.0:
             continue
         # Direction is derived from the ACTUAL point vs the reconstructed
         # expected level, not from the sign of the trend z-score (tripl-dmch.11).
@@ -1052,6 +1107,12 @@ def detect_anomalies(
     )
     is_count_shaped = fill_gaps
     counts = [point.count for point in expanded]
+    # Only a fractional lane can carry negative values (a catalog ``fact``
+    # sum/avg/min/max or a ``sql`` level over a signed column). A count series is
+    # non-negative by construction and a parity ratio lands in [0, 1], so this is
+    # False for every count-shaped scope and the volume gates below keep their
+    # historical signed comparison there (tripl-0zpq.102).
+    signed = min(counts) < 0.0
     slots = _grid_slots(expanded, interval)
 
     # Silent-series early exit (tripl-h353): when no gate can realistically be
@@ -1106,6 +1167,7 @@ def detect_anomalies(
                 level_window=_phase_level_window(interval, period),
                 stddev_absolute_floor=stddev_absolute_floor,
                 poisson=is_count_shaped,
+                signed=signed,
                 kind=per_bucket_kind,
             )
         else:
@@ -1116,6 +1178,7 @@ def detect_anomalies(
                 settings,
                 stddev_absolute_floor=stddev_absolute_floor,
                 poisson=is_count_shaped,
+                signed=signed,
                 kind=rolling_kind,
             )
 
@@ -1133,6 +1196,7 @@ def detect_anomalies(
             settings=settings,
             interval=interval,
             stddev_absolute_floor=stddev_absolute_floor,
+            signed=signed,
             emission_end=emission_end,
         )
         # Every bucket inside a shifted run describes the SAME incident as the

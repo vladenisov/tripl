@@ -295,9 +295,15 @@ def test_daily_metric_is_evaluated_on_its_own_grid(
     assert _DAY_END - _DAY not in flagged
 
 
-def test_detect_metrics_disabled_skips_metric_scope(
+def test_detect_metrics_disabled_emits_nothing_new(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
+    """A pass with the Metrics scope unticked writes no metric-scope row.
+
+    Only that. Nothing is seeded beforehand, so this says nothing about which
+    EXISTING rows the disabled pass may delete — that bound is pinned by
+    ``test_batch3_a2.test_detect_metrics_disabled_keeps_history_older_than_the_reeval_window``.
+    """
     with sync_session_factory() as session:
         config = _seed_project(session, detect_metrics=False)
         metric = _add_metric(
@@ -995,8 +1001,11 @@ def test_a_metric_that_left_active_stops_being_an_alert_candidate(
     Detection has always required ``status == active`` AND the flag; alert
     candidacy required only the flag, so the consumer was WIDER than its own
     producer. That is not harmless dead code, because leaving ``active`` deletes
-    nothing: ``_purge_project_metric_anomalies`` runs only when PROJECT-level
-    detection is off, ``_age_out_config_anomalies`` matches on ``scan_config_id``
+    nothing: ``_purge_project_metric_anomalies`` runs only when the project
+    MASTER switch ``anomaly_detection_enabled`` is off (unticking the Metrics
+    scope box runs ``_purge_disabled_metric_scope`` instead, which clears only
+    each metric's own re-evaluation window and leaves older rows as history),
+    ``_age_out_config_anomalies`` matches on ``scan_config_id``
     and metric-scope rows are NULL there, and the catalog's bulk archive is a
     bare ``UPDATE ... SET status``. Collection stops as well, so the metric's
     newest value bucket freezes and its last anomaly keeps testing as the settled

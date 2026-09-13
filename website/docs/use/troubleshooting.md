@@ -88,6 +88,22 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
 5. **The worker can't reach the warehouse.** `collect_metrics` connects to your
    data source the same way a scan does; a broken connection fails the run (see
    [A scan run fails](#a-scan-run-fails--a-data-source-connection-test-fails)).
+6. **A catalog metric's value is NULL for that bucket.** An `avg` over a column
+   that is all NULL for the window, a `sum(x) / nullif(count(*), 0)`, or an
+   unmatched `LEFT JOIN` all project NULL. That bucket is recorded as *absent* —
+   a gap in the chart, not a `0` — and the run still succeeds, on a `sql` metric
+   and a `fact` metric alike; the SQL metric preview draws the same gap. If you
+   meant zero, wrap the measure in `coalesce(…, 0)`. A value cell that is not
+   NULL but is not a number either — a value column projected as text — is still
+   an error.
+7. **The source backfilled buckets older than the window a scheduled run
+   reads.** Scheduled collection does not re-read history: it resumes two
+   intervals back from wherever collection actually got to and runs to the
+   latest complete bucket — three intervals wide in steady state, thirty on a
+   scan's very first run. A source that stopped for a while and later wrote rows
+   into *old* buckets has put them behind that trailing slice, so no scheduled
+   run will ever pick them up. Fill them with **Run a one-off replay** over the
+   period they belong to.
 
 **Fix.**
 
@@ -120,6 +136,13 @@ Each scan runs at most one active collection at a time. If a previous run is
 genuinely stuck (worker OOM/redeploy with no heartbeat), the dispatcher marks it
 failed after **75 minutes** without progress and lets the next run proceed — so a
 wedged run self-heals within that window rather than blocking collection forever.
+
+A reaped collection run **stays failed**. If its queued message arrives late, or
+the original task was alive all along and finishes after the reap, it does not
+re-open the row: the replacement run owns that window, and a late success would
+otherwise erase a failure the dispatcher's backoff had already counted. Nothing
+it managed to do is discarded — the metric points it wrote are kept and its run
+report is still filled in — only the verdict stands as *failed*.
 :::
 
 ---
@@ -359,8 +382,9 @@ a real answer, not a broken panel. Six causes, in the order worth checking:
    event fields, and their absence from the plan is intentional.
 
 6. **The derived name came out empty.** Where the **Event name format** resolves
-   to nothing — every column it names was NULL for those rows — the row is
-   skipped rather than turned into a nameless event, and the panel warns
+   to nothing — every placeholder it names came out empty for those rows,
+   whether from a NULL column or from a JSON path those rows do not carry — the
+   row is skipped rather than turned into a nameless event, and the panel warns
    *Skipped N rows whose derived event name was empty* (singular *row* when N is
    1). A real run does the same, so this is not a preview artefact. Fix it in the
    format (name a column those rows actually populate, or add a literal segment)
@@ -477,7 +501,20 @@ to every curated message rather than leaving each raise site to remember it:
   accepting a `missing_field` schema drift. Fix it by editing the Event name
   format so it only references columns the query returns, or by re-declaring the
   field on the event type. tripl now refuses the drift accept that causes this
-  (see [Schema drift](./feature-reference.md#schema-drift)).
+  (see [Schema drift](./feature-reference.md#schema-drift)). A missing JSON
+  *path* no longer produces this error — a row that does not carry the key
+  contributes an empty segment instead — so the message now really does mean the
+  query stopped supplying a **base column**. Naming the **Event type column** in
+  the format is supported as well, and no longer produces it either.
+- **A replay period that reaches into the interval still filling.** *"Scan
+  failed: the replay end 2026-09-12 14:00 UTC falls inside the current `6h`
+  interval, which is still filling. Choose an end at or before 2026-09-12 12:00
+  UTC."* This is now refused **at submit** rather than becoming a failed run: the
+  replay call answers `400` before any run is created, naming the same latest
+  acceptable end, and **Run a one-off replay** shows that message in the dialog.
+  A replay started from the UI or the API therefore no longer reaches the failure
+  above; it survives for a run that was already queued when the instance was
+  upgraded.
 
 **Likely causes & fixes for connection failures.**
 
@@ -534,7 +571,9 @@ window, so the config is tried again at its own interval instead of every five
 minutes. And a **catalog metric** whose last collection errored waits one
 interval before the scheduler retries it (an hour for an event-composition
 metric, which has no interval of its own). **Collect now** on the metric ignores
-the wait.
+the wait, and it reaches back to wherever the metric actually left off rather
+than only over the recent window — the buckets it missed while it was failing
+are collected, not skipped.
 
 That wait is measured from the failure itself, so **editing the metric does not
 restart it** — you can fix the SQL, save, and still be collected at the moment

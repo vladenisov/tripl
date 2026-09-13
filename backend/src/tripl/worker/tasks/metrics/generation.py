@@ -40,6 +40,7 @@ from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.tasks.metrics.metric_rows import _get_scan_json_value_path_map
+from tripl.worker.utils.event_types import ensure_event_type_with_fields
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ _VARIABLE_TEMPLATE_PATTERN = re.compile(r"\$\{[^}]+\}")
 # non-capturing sibling above answers a different question and stays local.
 _VARIABLE_NAME_PATTERN = VARIABLE_TOKEN_PATTERN
 _JSON_PATH_PART_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# The key filter already restricts the candidate set to ``run_scan`` rows, so
+# this bound exists only so a malformed or future-version payload at the head
+# of that list cannot cost the caller a good snapshot sitting one row behind it.
+_SNAPSHOT_JOB_SCAN_LIMIT = 5
 
 
 def _iter_window_chunks(
@@ -63,9 +68,14 @@ def _iter_window_chunks(
     a whole number of buckets (never below one bucket). This bounds the per-query
     range so a long replay runs several queries instead of one that times out.
     ``chunk_interval_code`` of ``None`` keeps the legacy single-query behavior.
-    Boundaries stay interval-aligned because ``time_from``/``time_to`` are already
-    floored/ceiled to the interval and the step is a whole multiple of it, so no
-    bucket is ever split across two chunks.
+    Boundaries stay interval-aligned because ``time_from``/``time_to`` come from
+    ``_floor_to_interval``/``_ceil_to_interval`` — which bin on
+    ``core.bucketing.floor_to_bucket``'s grid, weeks from Monday included — and
+    the step is a whole multiple of the interval, so no bucket is ever split
+    across two chunks. That last claim only became true once the window helpers
+    stopped anchoring weeks at 2000-01-01, a Saturday (tripl-0zpq.10): a
+    Saturday-bounded weekly replay wrote a full Monday bucket from one chunk and
+    then overwrote it with the two-day tail from the next.
     """
     if chunk_interval_code is None or time_from >= time_to:
         return [(time_from, time_to)]
@@ -83,56 +93,12 @@ def _iter_window_chunks(
     return chunks
 
 
-def _ensure_event_type_with_fields(
-    session: Session,
-    project_id: uuid.UUID,
-    et_name: str,
-    columns: list[ColumnInfo],
-    skip_columns: set[str],
-) -> EventType:
-    """Find or auto-create an EventType with FieldDefinitions for all columns."""
-    # Metrics collection targets the main plan; a working branch deep-copies
-    # event types under the same names, so the lookup must be branch-scoped.
-    et = session.execute(
-        select(EventType).where(
-            EventType.project_id == project_id,
-            EventType.branch_id == main_branch_id(session, project_id),
-            EventType.name == et_name,
-        )
-    ).scalar_one_or_none()
-
-    if et is None:
-        et = EventType(
-            id=uuid.uuid4(),
-            project_id=project_id,
-            name=et_name,
-            display_name=et_name,
-            description="Auto-created from metrics collection",
-        )
-        session.add(et)
-        session.flush()
-        logger.info(f"Auto-created event type {et_name!r}")
-
-    existing_fds = {fd.name for fd in et.field_definitions}
-    for col in columns:
-        if col.name in skip_columns:
-            continue
-        if col.name in existing_fds:
-            continue
-        fd = FieldDefinition(
-            id=uuid.uuid4(),
-            event_type_id=et.id,
-            name=col.name,
-            display_name=col.name,
-            field_type="json" if _is_json_type(col.type_name) else "string",
-            is_required=False,
-            description=f"Auto-created ({col.type_name})",
-        )
-        session.add(fd)
-
-    session.flush()
-    session.refresh(et)
-    return et
+# The body moved to ``worker.utils.event_types`` in tripl-0zpq.45 so the scan
+# task can create the same rows without importing this package (that import
+# would pull the whole ``collect_metrics`` task graph into ``worker.tasks.scan``).
+# The private name stays bound here because ``catalog_sync`` and the metrics
+# tests reach for it by this path, and moving them is churn for no benefit.
+_ensure_event_type_with_fields = ensure_event_type_with_fields
 
 
 def _field_template(values: list[str]) -> str | None:
@@ -706,27 +672,53 @@ def _load_latest_generation_snapshot(
     *,
     config: ScanConfig,
 ) -> tuple[dict[str, GenerationResult], GenerationResult | None, uuid.UUID | None]:
-    latest_job = (
+    # Filter on the KEY, not merely on "the newest completed job with a summary".
+    # Only ``run_scan`` writes ``generation_snapshot``; ``collect_metrics``
+    # (collection AND replay), ``apply_event_groups`` and the demo runtime tick
+    # all complete ScanJobs on the SAME ``scan_config_id`` with summaries that
+    # lack it. Taking the newest completed row therefore made the snapshot
+    # reachable only in the gap between a scan and its first collection tick —
+    # from the tick after that, forever, every replay silently fell through to
+    # the heuristic ``_load_existing_generation_results`` rebuild (tripl-0zpq.19).
+    #
+    # ``.as_string()`` is load-bearing and must not be "simplified" to bare
+    # indexed access: ``result_summary`` is ``sa.JSON``, not JSONB, so ``has_key``
+    # is unavailable, and ``result_summary["generation_snapshot"]`` compiles to
+    # ``JSON_QUOTE(JSON_EXTRACT(...))`` on SQLite — where ``json_quote(NULL)`` is
+    # the TEXT ``'null'``, so the predicate is true for every row and the whole
+    # filter a no-op under the test database. ``.as_string()`` gives ``->>`` on
+    # Postgres and bare ``JSON_EXTRACT`` on SQLite; both are SQL NULL when the key
+    # is absent. ``nullslast()`` because Postgres orders DESC NULLS FIRST.
+    summaries = (
         session.execute(
-            select(ScanJob)
+            select(ScanJob.result_summary)
             .where(
                 ScanJob.scan_config_id == config.id,
                 ScanJob.status == ScanJobStatus.completed.value,
-                ScanJob.result_summary.isnot(None),
+                ScanJob.result_summary["generation_snapshot"].as_string().isnot(None),
             )
-            .order_by(ScanJob.completed_at.desc())
-            .limit(1)
+            .order_by(ScanJob.completed_at.desc().nullslast())
+            .limit(_SNAPSHOT_JOB_SCAN_LIMIT)
         )
         .scalars()
-        .first()
+        .all()
     )
-    if latest_job is None or latest_job.result_summary is None:
-        return {}, None, None
 
-    snapshot = latest_job.result_summary.get("generation_snapshot")
-    if not isinstance(snapshot, dict):
-        return {}, None, None
-    if int(snapshot.get("version") or 0) != 1:
+    snapshot: dict[str, object] | None = None
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        candidate = summary.get("generation_snapshot")
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            version = int(candidate.get("version") or 0)
+        except ValueError, TypeError:
+            continue
+        if version == 1:
+            snapshot = candidate
+            break
+    if snapshot is None:
         return {}, None, None
 
     # The snapshot only serializes ``events_by_name``, which archived events are

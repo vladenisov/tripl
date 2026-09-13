@@ -1350,6 +1350,9 @@ class TestCollectNow:
         # force=True is always passed by the manual trigger so a draft metric is
         # not skipped on status by the worker.
         assert sql_calls[0][3] is True
+        # manual_backfill=True: the worker widens its resume window to reach this
+        # one rather than replacing it, so a lagging metric keeps its backlog.
+        assert sql_calls[0][4] is True
         assert dispatch_recorder["fact"].calls == []
 
     async def test_fact_metric_dispatches_batch_with_window(

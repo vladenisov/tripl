@@ -14,7 +14,7 @@ cycle.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypeGuard
 
@@ -536,6 +536,64 @@ def _resolve_fact_operand_filter(
     )
 
 
+def _validated_measure_column(measure: str, *, allowed_columns: set[str]) -> str:
+    """Hold a measure column to the fact table's allowlist, failing as a ``ScanError``.
+
+    The single owner of that check for BOTH collection paths — the batched
+    ``_resolve_batch_operand`` below and the per-metric ``_aggregate_fact_window`` —
+    so the two cannot drift apart again.
+
+    Two things this adds over calling ``validate_measure_column`` directly:
+
+    * An empty allowlist raises instead of passing. ``validate_measure_column``
+      short-circuits its membership check on a falsy allowlist, so an allowlist that
+      never got filled silently bypasses the only column guard there is.
+    * A missing column is reported as a ``ScanError``, not a ``ValueError``.
+      ``validate_measure_column`` lives in ``core`` and raises a plain ``ValueError``,
+      which ``user_facing_error`` refuses to surface verbatim — so a measure column
+      renamed in the warehouse reached the operator as "Scan failed due to an
+      internal error." with nothing to act on. The text names only the column, which
+      is already identifier-constrained, and is safe to show. Same move as
+      ``_dialect_for_data_source`` and ``_reject_truncated_rows``.
+    """
+    if not allowed_columns:
+        msg = "fact table query returned no columns; cannot validate measure column"
+        raise ScanError(msg)
+    try:
+        return validate_measure_column(measure, allowed_columns)
+    except ValueError as exc:
+        raise ScanError(str(exc)) from exc
+
+
+def _validate_breakdown_columns(
+    breakdown_columns: Sequence[str], *, allowed_columns: set[str]
+) -> None:
+    """Hold breakdown dimensions to the same allowlist a measure column answers to.
+
+    Breakdown columns are never checked against the fact table when the metric is
+    saved: ``_verify_fact_operand`` covers the measure, distinct, condition and
+    row-filter columns only, and the schema layer applies nothing but
+    ``validate_identifier``'s bare-identifier regex. A metric can therefore be
+    CREATED naming a dimension the fact table has never had, and a dimension that was
+    valid at save time can be dropped from the warehouse afterwards.
+
+    Without this the column is caught by the adapter's own ``_validate_column``, which
+    raises a bare ``ValueError`` — the generic internal-error summary again. Fail here
+    instead, naming the column, the way an unknown measure column already does. Used
+    by both the batched planners and the per-metric breakdown collectors.
+    """
+    if not breakdown_columns:
+        return
+    if not allowed_columns:
+        msg = "fact table query returned no columns; cannot validate breakdown columns"
+        raise ScanError(msg)
+    unknown = sorted({column for column in breakdown_columns if column not in allowed_columns})
+    if unknown:
+        listed = ", ".join(repr(column) for column in unknown)
+        msg = f"breakdown column(s) {listed} are not columns of the fact table"
+        raise ScanError(msg)
+
+
 def _resolve_batch_operand(
     operand: _FactOperand,
     *,
@@ -545,11 +603,11 @@ def _resolve_batch_operand(
 ) -> tuple[str | None, str | None]:
     """Validate one operand's measure column and resolve its row filter fragment.
 
-    Returns ``(validated_measure, filter_sql)``. Mirrors ``_aggregate_fact_window``'s
-    measure validation (empty allowlist -> ``ScanError``) so the batched path
-    enforces the same column guard as the per-metric path — and compiles the filter
-    for the SAME ``dialect``, so the conditional aggregate and the bounded-subquery
-    path stay value-identical.
+    Returns ``(validated_measure, filter_sql)``. Shares ``_validated_measure_column``
+    with ``_aggregate_fact_window`` so the batched path enforces the same column guard
+    — and reports the same named, user-facing failure — as the per-metric path, and
+    compiles the filter for the SAME ``dialect``, so the conditional aggregate and the
+    bounded-subquery path stay value-identical.
     """
     measure = _fact_operand_measure(operand)
     if requires_measure(operand.aggregation):
@@ -559,10 +617,7 @@ def _resolve_batch_operand(
                 "measure_column / distinct_column"
             )
             raise ScanError(msg)
-        if not allowed_columns:
-            msg = "fact table query returned no columns; cannot validate measure column"
-            raise ScanError(msg)
-        measure = validate_measure_column(measure, allowed_columns)
+        measure = _validated_measure_column(measure, allowed_columns=allowed_columns)
     _validate_condition_columns(operand, allowed_columns=allowed_columns)
     filter_sql = _resolve_fact_operand_filter(operand, fact_table=fact_table, dialect=dialect)
     return measure, filter_sql

@@ -4,6 +4,10 @@ Loads the per-version series stored in ``EventMetricBreakdown`` for a scan's
 ``app_version_column``, runs the pure release-regression model, and replaces the
 scan's ``ReleaseRegression`` rows. Inert (and clears any stale rows) when the
 scan has no version column configured.
+
+The pass is anchored on the newest STORED bucket, not on the caller's collection
+window, so a one-off replay of a past window refreshes the current release's
+verdict instead of replacing it with whichever release was newest back then.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
+from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
 from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT, SCOPE_EVENT_TYPE
@@ -51,13 +56,24 @@ def _build_regression_settings(session: Session, config: ScanConfig) -> Regressi
     )
 
 
-def _recalculate_release_regressions(
-    session: Session,
-    config: ScanConfig,
-    *,
-    evaluation_start: datetime,
-    evaluation_end: datetime,
-) -> int:
+def _recalculate_release_regressions(session: Session, config: ScanConfig) -> int:
+    """Recompute the scan's release-regression verdict for its CURRENT release.
+
+    Takes no window on purpose. The anchor is the newest bucket this scan has
+    STORED for its version column, never the window the caller happened to
+    collect: a one-off replay states an arbitrary past window (the window
+    resolver refuses only a window reaching into the current incomplete
+    interval), and anchoring on it made the analyzer judge whichever
+    release was newest *inside that window* — then persisted that verdict over
+    the live one, which ``_get_active_release_regression_candidates`` reads as
+    "current" one call later and turns into alerts attributed to a months-old
+    release (tripl-0zpq.18). Replay's own chunk deletes are window-bounded, so
+    ``max(bucket)`` for the scan is still the true latest even mid-replay.
+
+    A replay that backfills buckets INSIDE the live comparison window must still
+    refresh the current verdict, which is why this is anchored rather than
+    skipped on the replay path.
+    """
     # Regressions describe the current latest release, so we always recompute
     # from scratch. Clearing first also makes the no-op paths self-healing. The
     # comparability verdicts go with them: a stale "not comparable yet" outliving
@@ -72,7 +88,16 @@ def _recalculate_release_regressions(
         return 0
 
     settings = _build_regression_settings(session, config)
-    load_from = evaluation_end - timedelta(days=settings.window_days * 2)
+    latest_bucket = session.execute(
+        select(sa_func.max(EventMetricBreakdown.bucket)).where(
+            EventMetricBreakdown.scan_config_id == config.id,
+            EventMetricBreakdown.breakdown_column == config.app_version_column,
+        )
+    ).scalar()
+    if latest_bucket is None:
+        session.flush()
+        return 0
+    load_from = latest_bucket - timedelta(days=settings.window_days * 2)
 
     rows = session.execute(
         select(
@@ -86,7 +111,10 @@ def _recalculate_release_regressions(
             EventMetricBreakdown.scan_config_id == config.id,
             EventMetricBreakdown.breakdown_column == config.app_version_column,
             EventMetricBreakdown.bucket >= load_from,
-            EventMetricBreakdown.bucket < evaluation_end,
+            # A no-op by construction — ``latest_bucket`` is the max of this very
+            # predicate's rows — kept so the loaded slice reads as what it is:
+            # ``[anchor - 2 * window_days, anchor]``.
+            EventMetricBreakdown.bucket <= latest_bucket,
         )
     ).all()
     if not rows:
@@ -101,13 +129,9 @@ def _recalculate_release_regressions(
     type_counts: dict[str, dict[str, dict[datetime, int]]] = {}
     event_id_by_ref: dict[str, uuid.UUID] = {}
     type_id_by_ref: dict[str, uuid.UUID] = {}
-    latest_bucket: datetime | None = None
 
     for event_id, event_type_id, version, is_other, bucket, count in rows:
         count = int(count)
-        if latest_bucket is None or bucket > latest_bucket:
-            latest_bucket = bucket
-
         if event_id is not None:
             all_traffic_by_bucket[bucket] = all_traffic_by_bucket.get(bucket, 0) + count
             if not is_other:
@@ -122,10 +146,6 @@ def _recalculate_release_regressions(
             type_id_by_ref[ref] = event_type_id
             scope_buckets = type_counts.setdefault(ref, {}).setdefault(version, {})
             scope_buckets[bucket] = scope_buckets.get(bucket, 0) + count
-
-    if latest_bucket is None:
-        session.flush()
-        return 0
 
     def _persist(results: list[ReleaseRegressionResult], *, scope_type: str) -> int:
         for result in results:

@@ -543,6 +543,16 @@ def test_collect_fact_ratio_writes_breakdown_values(
 
 
 class _FactBreakdownAdapter(_FactAdapter):
+    def get_columns(self, base_query: str) -> list[ColumnInfo]:
+        # ``country`` on top of the base fact columns: the collector now
+        # rejects a breakdown dimension the fact table does not project.
+        return [
+            ColumnInfo(name="ts", type_name="DateTime"),
+            ColumnInfo(name="amount", type_name="Float64"),
+            ColumnInfo(name="user_id", type_name="String"),
+            ColumnInfo(name="country", type_name="String"),
+        ]
+
     def get_time_bucketed_aggregate_breakdown(
         self,
         base_query: str,
@@ -1151,6 +1161,15 @@ class _DistinctUserAdapter:
 
     def test_connection(self) -> bool:
         return True
+
+    def get_columns(self, base_query: str) -> list[ColumnInfo]:
+        # The columns the source scan's base_query projects: the collector
+        # introspects them to arm the adapter allowlist before it can hand
+        # the distinct-user column to the aggregate.
+        return [
+            ColumnInfo(name="ts", type_name="DateTime"),
+            ColumnInfo(name="user_id", type_name="String"),
+        ]
 
     def get_time_bucketed_aggregate(
         self,

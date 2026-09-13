@@ -205,7 +205,11 @@ Breakdowns tab and stay separate from count-based volume markers. Breakdown
 parity rows are not yet dispatched by alert rules; they are currently a
 monitoring-detail signal.
 
-For a categorical field (platform, country, app version, …) the detector compares the **composition** over a baseline window against the current window using the **Population Stability Index (PSI)**. PSI sums, across every category value, `(current_share − baseline_share) × ln(current_share / baseline_share)`. A larger PSI means the two distributions diverged more. The result is bucketed into interpretive bands:
+For a categorical field (platform, country, app version, …) the detector compares the **composition** over a baseline window against the current window using the **Population Stability Index (PSI)**. PSI sums, across every category value, `(current_share − baseline_share) × ln(current_share / baseline_share)`. A larger PSI means the two distributions diverged more.
+
+A raw PSI is partly an artefact of how much data the two windows hold: a field with many distinct values measured over a handful of events scores a sizeable PSI from sampling noise alone, with no real change in the mix. So before a band is assigned, Tripl subtracts the score a window of that size with that many distinct values produces on its own, and floors the result at zero. A category missing from one window is treated as "fewer than one event in this window" rather than as a fixed rate, so its weight scales with the window too. The PSI shown on the monitor detail and carried on the alert is that corrected score, so the number and the band always agree. A sparse scope is therefore no longer called *significant* for having drawn a small sample, while a genuine shift on a small window still is — a field that really went 50/50 to 90/10 over 50 events lands well above 0.25. At production volumes the correction is negligible (below 0.01 for a two-value field over 1000 events per window), so the published bands keep the meaning they had.
+
+The corrected result is bucketed into interpretive bands:
 
 | PSI | Band |
 |---|---|
@@ -213,7 +217,7 @@ For a categorical field (platform, country, app version, …) the detector compa
 | 0.10 – 0.25 | minor |
 | 0.25 and above | **significant** |
 
-Only the **significant** band (PSI ≥ 0.25) is surfaced as a drift signal that alert rules can subscribe to. Alongside the score, the detector reports the handful of category values that moved the most (their before/after shares), so you can see *what* shifted, not just *that* it shifted.
+Only the **significant** band (PSI ≥ 0.25) is surfaced as a drift signal that alert rules can subscribe to. Alongside the score, the detector reports the handful of category values that moved the most (their before/after shares), so you can see *what* shifted, not just *that* it shifted. The sparse-window correction has no dial of its own — it is derived from the two window sizes and the number of distinct values — so the false-positive ratchet and `min_expected_count` still tune nothing on a drift scope.
 
 ## Variable value drift
 
@@ -282,8 +286,13 @@ Two surfaces, and they answer different questions.
 **The By version tab** on an event's or event type's monitoring page shows the
 check for the **current latest release**: every regressed scope in the scan,
 with the comparability verdict and the reason when a comparison is withheld.
-These rows are recomputed from scratch on every scan, so the tab always
-describes the newest rollout and never keeps a history. A release-regression
+These rows are recomputed from scratch on every scan and keep no history, so the
+tab always describes the newest rollout — and it does so whatever window the run
+that recomputed them covered. The check is anchored on the **newest version
+bucket this scan has stored**, not on the window being collected, so **Run a
+one-off replay** of a past period refreshes the verdict for the release that is
+current *now* rather than replacing the tab with whichever release was newest
+inside that period. A release-regression
 incident in the Alerting Inbox links to the monitoring page of whatever it was
 found on — **view event volume** for an event, **view event type volume** for an
 event type — so this tab is one click from there, with the same caveat that it
@@ -308,18 +317,31 @@ a release-regression alert.
 User-defined **metrics** are watched by the very same detector, at a dedicated **metric scope**. The one twist is the *shape* of the series. Each metric is classified as either **count-shaped** (a count or sum — it behaves just like an event volume) or **fractional** (a ratio, an average, or a free-form SQL value).
 
 - **Count-shaped** metrics keep the standard treatment and the
-  `min_expected_count` gate. A missing bucket is zero-filled only when scan-job
-  coverage proves the warehouse interval was actually collected; uncovered
-  collection gaps are omitted so an outage in collection does not become a fake
-  traffic drop.
-- **Fractional** metrics drop both. A gap means "no data for this bucket" rather than zero — a ratio whose denominator was zero produces *no value at all* — and the minimum-count gate is lifted, so a ratio that naturally sits below 1, or a sparse average, is neither silenced nor constantly flagged as "too low".
+  `min_expected_count` gate. For a metric derived from already-collected events,
+  a missing bucket is zero-filled only when scan-job coverage proves the interval
+  was actually collected — coverage read from the scan *that metric reads*, on
+  that scan's own grid, not from whichever scan happens to be running — so
+  uncovered collection gaps are omitted and an outage in collection does not
+  become a fake traffic drop. A metric that collects on its own `interval` (a
+  fact or SQL metric) is produced by no scan job at all, so it has no scan-job
+  coverage to consult and its missing buckets are zero-filled unconditionally.
+- **Fractional** metrics drop the zero-fill: a gap means "no data for this bucket" rather than zero — a ratio whose denominator was zero produces *no value at all*. The minimum-count gate is not so much lifted as re-read, against the **size** of the expected value rather than its sign. A ratio that naturally sits below 1, or a sparse average, is neither silenced nor constantly flagged as "too low"; and a metric that legitimately sits below zero — a signed sum, an average over a signed column, a free-form SQL level — is watched exactly like the same shape above zero. Only an expectation sitting at zero is gated out. An alert rule's own `min_expected_count` and percentage thresholds read the same magnitude, so a signed metric can reach a rule rather than being filtered out for its sign.
 
 Per project, **`detect_metrics`** turns the metric scope on or off (the
 **Metrics** box in Detection settings); per alert rule, **`include_metrics`**
 decides whether metric anomalies are actually delivered — the **Metrics** box in
-the rule editor, off by default (see [Alerting](./alerting.md)). Everything else — the seasonal baseline, the robust
-spread and its floor, the z-score, and false-positive self-tuning — works exactly
-as it does for events.
+the rule editor, off by default (see [Alerting](./alerting.md)).
+
+Turning the metric scope off stops those series being scored and clears only the
+anomalies inside the re-evaluation window — for a catalog metric that is at
+least the last 30 buckets of the metric's **own** interval, not the running
+scan's. Anything older stays on the chart as history, the same promise the
+per-metric anomaly toggle makes. **Reset anomalies** (**Workspace settings →
+Project → General**) remains the only action that deletes recorded history,
+together with switching the project's master **Anomaly detection** off.
+
+Everything else — the seasonal baseline, the robust spread and its floor, the
+z-score, and false-positive self-tuning — works exactly as it does for events.
 
 ## From a detected anomaly to a signal
 

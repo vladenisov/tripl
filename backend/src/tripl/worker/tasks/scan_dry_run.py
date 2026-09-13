@@ -52,10 +52,19 @@ from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _build_adapter, _get_sync_session
 from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.tasks._errors import NO_EVENT_NAMING_MSG, ScanError, user_facing_error
+from tripl.worker.utils.event_types import event_type_name_rejection
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 from tripl.worker.utils.reserved_columns import reserved_catalog_columns
 
 logger = logging.getLogger(__name__)
+
+# How many refused group values are spelled out before the rest are counted. A
+# grouping column pointed at a URL or a free-text label can refuse hundreds, and
+# a preview whose ``errors`` panel is a thousand lines long says less than one
+# that names three and totals the rest. The FIRST is always spelled out, and
+# that is the load-bearing one: group order is identical on both sides, so the
+# run raises on exactly that value and persists exactly that sentence.
+_MAX_REFUSAL_ERRORS = 3
 
 
 @dataclass
@@ -65,11 +74,18 @@ class _DryRunTarget:
     name: str
     event_type: EventType | None
     analysis: BreakdownAnalysis
-    # True on the grouped path only: ``catalog_sync`` auto-creates the event type
-    # and a FieldDefinition per unreserved column there, so those fields WOULD
-    # exist by the time events are generated. The single-event-type path creates
-    # nothing, so a column with no field definition really is dropped and must be
-    # reported as unmapped instead of quietly folded into an event name.
+    # True on the grouped path only: BOTH grouped runners — the manual
+    # ``_scan_with_grouping`` and the scheduled ``catalog_sync`` — go through
+    # ``ensure_event_type_with_fields``, which auto-creates the event type and a
+    # FieldDefinition per unreserved column, so those fields WOULD exist by the
+    # time events are generated. The single-event-type path creates nothing, so a
+    # column with no field definition really is dropped and must be reported as
+    # unmapped instead of quietly folded into an event name.
+    #
+    # This flag was right before the manual path was (tripl-0zpq.45): the dry run
+    # promised a missing event type "would be added" while a real manual run
+    # skipped the group outright. Nothing here changed to close that gap — the
+    # runner did.
     may_create_fields: bool
 
 
@@ -81,8 +97,15 @@ def _dry_run_targets(
     *,
     scan_window: TimeWindow | None,
     row_limit: int,
-) -> list[_DryRunTarget]:
-    """Resolve the event type(s) exactly the way a real run resolves them."""
+) -> tuple[list[_DryRunTarget], list[str]]:
+    """Resolve the event type(s) exactly the way a real run resolves them.
+
+    Returns the targets a run would write into, plus the reason for each group
+    value it would REFUSE — see ``event_type_name_rejection``. The refusals are
+    returned rather than raised because a dry run's job is to report, not to
+    fail; ``build_dry_run_payload`` files them under ``errors`` exactly as it
+    already files a ``NameFormatError``.
+    """
     json_value_paths = group_json_value_paths(config.json_value_paths)
     common = {
         "threshold": config.cardinality_threshold,
@@ -99,14 +122,19 @@ def _dry_run_targets(
         if event_type is None:
             msg = f"EventType {config.event_type_id} not found"
             raise ValueError(msg)
-        return [
-            _DryRunTarget(
-                name=event_type.name,
-                event_type=event_type,
-                analysis=analysis,
-                may_create_fields=False,
-            )
-        ]
+        # No refusal on this path: the event type already exists and was named
+        # by a person through the API, which enforces the same bound.
+        return (
+            [
+                _DryRunTarget(
+                    name=event_type.name,
+                    event_type=event_type,
+                    analysis=analysis,
+                    may_create_fields=False,
+                )
+            ],
+            [],
+        )
 
     if not config.event_type_column:
         raise ScanError(NO_EVENT_NAMING_MSG)
@@ -120,7 +148,23 @@ def _dry_run_targets(
     )
     plan_branch = main_branch_id(session, config.project_id)
     targets: list[_DryRunTarget] = []
+    refusals: list[str] = []
     for value in group_values:
+        # The SAME predicate ``ensure_event_type_with_fields`` guards on, so the
+        # preview and the run reach the same verdict for every group value. The
+        # gap this closes is the mirror of tripl-0zpq.45's: there the dry run
+        # promised a type the manual run skipped; here it would promise a type
+        # the run REFUSES — a blank one, or one too long for ``event_types.name``
+        # — and then the whole job fails on a value the preview called fine.
+        #
+        # Refused values are dropped from ``targets`` outright, so they raise no
+        # "would be added" warning, contribute no events, and count toward
+        # neither ``sampled_rows`` nor ``breakdown_combinations``. Nothing about
+        # them would be created, so nothing about them is promised.
+        rejection = event_type_name_rejection(value)
+        if rejection is not None:
+            refusals.append(rejection)
+            continue
         event_type = session.execute(
             select(EventType).where(
                 EventType.project_id == config.project_id,
@@ -136,7 +180,7 @@ def _dry_run_targets(
                 may_create_fields=True,
             )
         )
-    return targets
+    return targets, refusals
 
 
 def _existing_event_identities(
@@ -187,7 +231,7 @@ def build_dry_run_payload(
     # down for 200 consecutive runs (tripl-lpin).
     skip_cols = reserved_catalog_columns(config)
 
-    targets = _dry_run_targets(
+    targets, refusals = _dry_run_targets(
         session,
         config,
         adapter,
@@ -214,6 +258,14 @@ def build_dry_run_payload(
     known_field_names: set[str] = set()
     max_events_reached = False
     unnamed_total = 0
+
+    # First, and as errors rather than warnings: a refused value is not a
+    # partiality in the preview, it is a run that will not finish.
+    errors.extend(refusals[:_MAX_REFUSAL_ERRORS])
+    if len(refusals) > _MAX_REFUSAL_ERRORS:
+        extra = len(refusals) - _MAX_REFUSAL_ERRORS
+        noun = "value" if extra == 1 else "values"
+        errors.append(f"{extra} further Event type column {noun} cannot name an event type either.")
 
     for target in targets:
         existing_fds = (
@@ -348,11 +400,13 @@ def build_dry_run_payload(
         "reserved_columns": sorted(skip_cols),
         # "Unmapped" is a claim about ANALYSED columns: this one was looked at and
         # no field definition covers it. With no targets nothing was analysed at
-        # all — an empty window yields no group values, so `_dry_run_targets`
-        # returns nothing and `known_field_names` stays empty. Reporting every
-        # column as unmapped there tells the user a run skips columns it would in
-        # fact create, and sends the panel down its explicit-event-type branch on
-        # a path that has no event type. Say nothing rather than something false.
+        # all — an empty window yields no group values, and a grouping column
+        # whose every value is refused yields no targets either, so
+        # `_dry_run_targets` returns nothing and `known_field_names` stays empty
+        # on both. Reporting every column as unmapped there tells the user a run
+        # skips columns it would in fact create, and sends the panel down its
+        # explicit-event-type branch on a path that has no event type. Say
+        # nothing rather than something false.
         "unmapped_columns": sorted(
             c.name for c in columns if c.name not in skip_cols and c.name not in known_field_names
         )

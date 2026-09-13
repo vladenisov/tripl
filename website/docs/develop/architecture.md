@@ -175,8 +175,10 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Metric anomalies** run the same detector at a dedicated **metric scope**.
   Metrics are classified **count-shaped** (counts/sums) or **fractional** (ratios,
   averages, raw SQL): count-shaped series keep zero-fill and the
-  `min_expected_count` gate, while fractional series drop both (a missing bucket
-  means "no data", not zero) so sub-unit ratios don't false-fire. Per-project
+  `min_expected_count` gate, while fractional series drop the zero-fill (a
+  missing bucket means "no data", not zero) and read the gate against the
+  *magnitude* of the expectation, so sub-unit ratios don't false-fire and a level
+  that legitimately sits below zero is not rejected for its sign. Per-project
   `detect_metrics` enables the scope; per-rule `include_metrics` opts metric
   anomalies into alerting (off by default).
 
@@ -205,7 +207,38 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   fact metric discovers the other active metrics that reference either of its
   operands and sends the same dependency set through that batch path. Metrics on
   different interval grids remain separate groups. `event_composition` metrics
-  read existing event series on the shared scan grid (no warehouse query).
+  derive from event series already collected on the shared scan grid: `single`
+  and `ratio` need no warehouse query, while `per_distinct_user` additionally
+  issues one bucketed `count(DISTINCT user_id)` against the source scan's data
+  source for its denominator. Each run composes each grid in at most **two
+  bounded regions**, never over the grid's full retained history:
+  - the **resume region** — the two buckets before the metric's own last stored
+    bucket on that grid, plus everything newer. A grid the metric has never
+    stored a value for has no such anchor and is capped instead to
+    `EVENT_COMPOSITION_BACKFILL_BUCKETS` (5,000) of that grid's intervals back
+    from the head of the source series, so a metric that can never compose a
+    value (a `per_distinct_user` whose denominator is always zero, say) cannot
+    grow an unbounded query;
+  - one **backfill chunk** — up to the same 5,000 intervals below the metric's
+    own *oldest* stored bucket, clamped to the oldest bucket the source series
+    actually has and to the resume floor so the two regions cannot overlap. The
+    resume region alone is a one-way ratchet on `max(bucket)`, so without this a
+    grid with more history than the first run's reach would be truncated at
+    whatever that run happened to cover — and since a material definition edit
+    clears every stored value, editing such a metric would destroy the part of
+    its chart nothing could re-derive. Pre-history is instead filled in one
+    bounded step per dispatch until the frontier meets the start of the series.
+
+  What is still given up is the middle: buckets the metric has **already**
+  composed, between its oldest stored bucket and the resume floor, are not
+  revisited, so a historical event-metric bucket that changes after its composed
+  value has scrolled out of the resume region is not recomputed. The backfill
+  fills gaps; it does not repair a stored value whose source moved underneath
+  it. One narrow stall: the frontier is the stored `min(bucket)` and a
+  divide-by-zero bucket stores no row, so a chunk in which every bucket divides
+  by zero leaves the frontier where it was and is retried on the next dispatch —
+  one bounded pass wasted, not a permanent failure.
+
   A metric whose last collection **errored** is not retried before its own
   interval has elapsed (an hour for `event_composition`, which has no interval of
   its own): a failed run advances neither a value nor the completed-window
@@ -323,7 +356,16 @@ photos, comments) and merge back via a
 1. The api creates or updates a `ScanConfig`.
 2. Running it creates a `ScanJob`.
 3. A Celery task executes the query against the warehouse via the adapter.
-4. Cardinality analysis shapes each column: a low-cardinality scalar column is
+4. A **grouped** run resolves each distinct value of the event type column to an
+   `EventType` through the shared resolver
+   (`worker.utils.event_types.ensure_event_type_with_fields`), creating the type
+   and a `FieldDefinition` per unreserved column when it is absent — the same
+   call, on the same main-plan lookup, that Phase 1 of metrics collection makes.
+   The reserved set it skips is the one the run already passes to
+   `generate_events` as `reserved_columns`, so a column denied a field is the
+   same column the generator stays quiet about. A run with a single configured
+   event type resolves that one instead and creates nothing.
+5. Cardinality analysis shapes each column: a low-cardinality scalar column is
    enumerated into event identities, a high-cardinality one collapses into a
    `${token}` template whose placeholders become variables. It does **not** gate
    variable creation on a JSON column — every discovered path that is not a
@@ -331,7 +373,7 @@ photos, comments) and merge back via a
    as-is*) becomes a variable whatever its cardinality, which is why a JSON map
    keyed by user-typed text mints one variable per key. Bindings adopt existing
    variables and naming/group rules produce stable event identities.
-5. Events and variables are created or updated in PostgreSQL. Scan writes do
+6. Events and variables are created or updated in PostgreSQL. Scan writes do
    not overwrite user-authored field values or recreate excluded variables.
    One event per scan identity per event type is a unique key,
    `uq_event_scan_identity` on `(event_type_id, source_name)` — an event type
@@ -348,7 +390,7 @@ photos, comments) and merge back via a
    `generate_events` already uses) and left every other row in place with its
    identity suffixed ` #duplicate-<event id>` and a `duplicate-identity` tag.
    It deleted and merged nothing.
-6. The run retires the scan-created variables nothing refers to any more
+7. The run retires the scan-created variables nothing refers to any more
    (`worker/variable_sweep`), after the commit and before the search reindex, so
    the reindex sees the retired set and a later failure cannot roll the
    deletions back. `run_scan` does this unconditionally. `collect_metrics`,
@@ -430,7 +472,7 @@ Two invariants the split must preserve:
   type it is asked for, so a `set` would make the stored type depend on hash
   order.
 
-Step 6's predicate lives in `core/variable_retirement` and is shared verbatim
+Step 7's predicate lives in `core/variable_retirement` and is shared verbatim
 with the owner-only `POST /projects/{slug}/danger/retire-unused-variables`
 service; the worker runs it on the sync `Session`, the endpoint on the
 `AsyncSession`, and only the queries differ. A variable is retirable only when a
@@ -489,7 +531,7 @@ session — so `reserved_catalog_columns` can be reused verbatim on it.
 3. Phase 1 syncs the event catalog through the scan pipeline, so a scheduled
    collection creates events and variables exactly as a manual scan does — and
    for that reason closes the phase with the variable sweep of the scan flow's
-   step 6 (on every run that is not a replay; a declared catalog window widens
+   step 7 (on every run that is not a replay; a declared catalog window widens
    it from the JSON-derived variables to the scalar-derived ones too), then the
    reindex. A replay skips this whole phase and both of its tails; an undeclared
    window narrows only the sweep, never the reindex.

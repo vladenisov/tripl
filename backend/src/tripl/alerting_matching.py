@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -83,9 +84,30 @@ def distribution_drift_scope_ref(owner_id: uuid.UUID, field_name: str) -> str:
     return f"{owner_id.hex}:{field_hash}"
 
 
-def filter_matches_anomaly(filter_row: AlertRuleFilter, anomaly: AlertMatchCandidate) -> bool:
+def filter_matches_anomaly(
+    filter_row: AlertRuleFilter,
+    anomaly: AlertMatchCandidate,
+    *,
+    event_type_by_event_id: Mapping[uuid.UUID, uuid.UUID] | None = None,
+) -> bool:
+    """Does this one filter admit this candidate?
+
+    ``event_type_by_event_id`` resolves the type of an EVENT-ANCHORED candidate
+    that carries no ``event_type_id`` of its own — event-scope anomalies,
+    variable-value drifts and event-scope release regressions all store NULL
+    there on purpose (stamping the column would leak those rows into the
+    event-TYPE series several read paths select by it alone). Without the map
+    their type reads as "field absent" and the ``actual is None`` passthrough
+    below admits every signal an ``event_type`` filter was written to narrow, in
+    both directions (tripl-0zpq.7). BOTH production call sites must supply it —
+    ``dispatch._prepare_alert_deliveries`` and ``alerting_service.simulate_rule``
+    — or that bypass comes straight back.
+    """
     if filter_row.field == "event_type":
-        actual = str(anomaly.event_type_id) if anomaly.event_type_id is not None else None
+        event_type_id = anomaly.event_type_id
+        if event_type_id is None and anomaly.event_id is not None and event_type_by_event_id:
+            event_type_id = event_type_by_event_id.get(anomaly.event_id)
+        actual = str(event_type_id) if event_type_id is not None else None
     elif filter_row.field == "event":
         actual = str(anomaly.event_id) if anomaly.event_id is not None else None
     elif filter_row.field == "direction":
@@ -93,6 +115,8 @@ def filter_matches_anomaly(filter_row: AlertRuleFilter, anomaly: AlertMatchCandi
     else:
         return True
 
+    # A genuinely event-less signal (the project-total / event-type rollups, a
+    # catalog metric) carries no such field at all and still passes through.
     if actual is None:
         return True
 
@@ -110,6 +134,7 @@ def rule_matches_anomaly(
     *,
     min_percent_delta_override: float | None = None,
     min_expected_count_override: float | None = None,
+    event_type_by_event_id: Mapping[uuid.UUID, uuid.UUID] | None = None,
 ) -> bool:
     """Would this rule deliver this signal?
 
@@ -119,6 +144,11 @@ def rule_matches_anomaly(
     same reason it exists: answering "would min_percent_delta 300 have cut these
     incidents" must not require SAVING 300 onto a rule that is live-routing to a
     real channel and waiting to find out (tripl-oxkt.17).
+
+    ``event_type_by_event_id`` is forwarded whole to
+    :func:`filter_matches_anomaly`; every PRODUCTION caller must supply it, and
+    omitting it restores the pre-fix ``event_type``-filter passthrough for
+    event-anchored signals.
     """
     # Scan gate. NULL on the rule means the whole project — the behaviour every
     # rule had before the column existed, so the migration is a no-op.
@@ -170,7 +200,12 @@ def rule_matches_anomaly(
         SCOPE_RELEASE_REGRESSION,
         SCOPE_VARIABLE_VALUE_DRIFT,
     }:
-        return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
+        return all(
+            filter_matches_anomaly(
+                filter_row, anomaly, event_type_by_event_id=event_type_by_event_id
+            )
+            for filter_row in rule.filters
+        )
 
     # Numeric thresholds. The effective values, so a replay can ask a what-if
     # without the rule being edited underneath a live channel.
@@ -182,7 +217,11 @@ def rule_matches_anomaly(
     min_percent_delta = (
         rule.min_percent_delta if min_percent_delta_override is None else min_percent_delta_override
     )
-    if anomaly.expected_count < min_expected_count:
+    # Magnitude, not sign: a catalog metric whose level legitimately sits below
+    # zero is as substantial as the same level above it, and the rule's floor is
+    # ``ge=0`` by schema, so a signed expectation failed every rule there was
+    # (tripl-0zpq.102). Identity for every non-negative expectation.
+    if abs(anomaly.expected_count) < min_expected_count:
         return False
     absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
     if absolute_delta < rule.min_absolute_delta:
@@ -201,14 +240,23 @@ def rule_matches_anomaly(
     # here with fractional values gated only at 1e-6: a ratio expected 0.2 and
     # observed 0.9 scores 350% today and would score 70% under a floor of one,
     # dropping below the very threshold this is about.
-    if anomaly.expected_count > 0:
-        if absolute_delta / anomaly.expected_count * 100 < min_percent_delta:
+    #
+    # The divisor is the MAGNITUDE for the same reason the gate above is: a
+    # negative expectation is a real baseline, and keeping the old
+    # ``expected_count > 0`` test would have dropped the whole signed class
+    # through to the no-baseline branch, skipping the percent gate entirely — a
+    # second hole opened by closing the first.
+    if anomaly.expected_count != 0:
+        if absolute_delta / abs(anomaly.expected_count) * 100 < min_percent_delta:
             return False
     elif absolute_delta <= 0:
         # No baseline and no movement: nothing to report.
         return False
 
-    return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
+    return all(
+        filter_matches_anomaly(filter_row, anomaly, event_type_by_event_id=event_type_by_event_id)
+        for filter_row in rule.filters
+    )
 
 
 def rule_covers_event(
@@ -257,6 +305,7 @@ def simulate_rule_firings(
     cooldown_minutes_override: int | None = None,
     min_percent_delta_override: float | None = None,
     min_expected_count_override: float | None = None,
+    event_type_by_event_id: Mapping[uuid.UUID, uuid.UUID] | None = None,
 ) -> list[AlertMatchCandidate]:
     """Replay anomalies through a rule with in-memory cooldown gating.
 
@@ -270,6 +319,8 @@ def simulate_rule_firings(
     forwarded whole to ``rule_matches_anomaly`` — the gate has to move INSIDE the
     replay, not after it, because a signal the stricter rule would never have
     matched must not consume the cooldown slot that then hides the next one.
+    ``event_type_by_event_id`` is forwarded for exactly that reason too: a
+    candidate the ``event_type`` filter rejects must not burn the cooldown slot.
     """
     effective_cooldown = (
         cooldown_minutes_override
@@ -287,6 +338,7 @@ def simulate_rule_firings(
             anomaly,
             min_percent_delta_override=min_percent_delta_override,
             min_expected_count_override=min_expected_count_override,
+            event_type_by_event_id=event_type_by_event_id,
         ):
             continue
         key = (anomaly.scope_type, anomaly.scope_ref)

@@ -425,24 +425,76 @@ def format_metric_alert_value(value: float, unit: str | None) -> str | float:
     return f"{_stringify_alert_value(scaled)}%"
 
 
+def has_baseline(expected_count: float) -> bool:
+    """Was there an expectation to divide by?
+
+    ZERO is the no-baseline condition, and it is the ONLY one. The percent gate
+    deliberately admits anomalies with no baseline at all (tripl-l429.12) — a
+    scope resuming after an outage, an event firing for the first time, a schema
+    drift — and every one of those arrives with ``expected_count`` exactly 0. The
+    stored ``percent_delta`` is a 0.0 placeholder for them, because the ratio is
+    undefined and the column is NOT NULL; emitting it reported the largest
+    possible relative move as the smallest (tripl-l429.24/.27).
+
+    A NEGATIVE expectation is a REAL baseline. A ``fact`` sum/avg/min/max over a
+    signed column, or a ``sql`` level that legitimately sits below zero, has a
+    level of -100 that is exactly as substantial as one of +100; the detector
+    scores that series on magnitude
+    (``anomaly_detector._clears_volume_gate``) and the matcher fires on it the
+    same way (``alerting_matching.rule_matches_anomaly``: ``abs(expected)``
+    against ``min_expected_count``, ``absolute_delta / abs(expected)`` against
+    ``min_percent_delta``, tripl-0zpq.102). A reader still asking
+    ``expected_count > 0`` therefore prints "no baseline" over the very number
+    that made the rule fire — the renderer contradicting the matcher.
+
+    It is one function rather than the same expression repeated per reader
+    because the repetition is exactly how the signed fix reached the matcher and
+    the payload builder and left the renderers behind. Every backend surface that
+    decides "was there a baseline" must route through here.
+    """
+    return expected_count != 0
+
+
+def percent_delta_of(actual_count: float, expected_count: float) -> float:
+    """The ``percent_delta`` stored for one signal: the SIZE of the move.
+
+    THE definition, and the only one. ``dispatch._create_deliveries`` writes
+    ``AlertDeliveryItem.percent_delta`` from it, ``alert_payload`` freezes the
+    same number into ``AlertDelivery.payload_snapshot``, the simulator's
+    ``SimulatedRuleFiring`` (``alerting_service.simulate_rule``) replays it, and
+    the demo builder seeds it — so the simulator cannot disagree with the thing
+    it simulates and one delivery cannot disagree with itself. Each of those was
+    once a separate copy of this expression, which is how the signed fix
+    (tripl-0zpq.102) reached some of them and not others; add a writer, call
+    this, do not re-derive the ratio.
+
+    Both numerator and divisor are MAGNITUDES, so the ratio stays a size instead
+    of flipping sign with the level: -3 -> -9 is a 200% move, the same as
+    3 -> 9. Direction is carried by ``direction``/``actual_count`` and never by
+    this field. With no baseline (:func:`has_baseline`) the ratio is undefined
+    and the frozen 0.0 placeholder is returned; every OUTBOUND encoding of it
+    goes through :func:`format_percent_delta` or :func:`percent_delta_or_none`,
+    which name the placeholder rather than print it.
+    """
+    if not has_baseline(expected_count):
+        return 0.0
+    return abs(actual_count - expected_count) / abs(expected_count) * 100
+
+
 def format_percent_delta(percent_delta: float, expected_count: float, *, spec: str = ".1f") -> str:
     """The percent parenthetical for one alert item, unit included.
 
-    The percent gate deliberately admits anomalies with no baseline at all
-    (tripl-l429.12) — a scope resuming after an outage, an event firing for the
-    first time, a schema drift, which all arrive with ``expected_count`` 0. The
-    stored ``percent_delta`` is 0.0 for those, because the ratio is undefined and
-    the column is NOT NULL; printing it reported the largest possible relative
-    move as the smallest (tripl-l429.24). The absolute delta stands on its own
-    for that class, and the default item templates already print it.
+    :func:`has_baseline` is the exact condition under which the stored number was
+    computed (:func:`percent_delta_of`, which is what ``dispatch`` and
+    ``alert_payload`` call), so the label and the number can never disagree
+    about whether there was a baseline. Without a baseline the absolute
+    delta stands on its own for that class, and the default item templates
+    already print it.
 
-    ``expected_count > 0`` is the exact condition under which the stored number
-    was computed (``dispatch._prepare_alert_deliveries``,
-    ``alerting_service.simulate_rule``), so the label and the number can never
-    disagree about whether there was a baseline. ``spec`` is the float format the
-    caller wants around it: the item templates use ".1f", the AI prompt "+.0f".
+    ``spec`` is the float format the caller wants around it: the item templates
+    use ".1f", the AI prompt "+.0f".
     """
-    if expected_count > 0:
+    if has_baseline(expected_count):
         return f"{percent_delta:{spec}}%"
     return NO_BASELINE_LABEL
 
@@ -463,6 +515,6 @@ def percent_delta_or_none(percent_delta: float, expected_count: float) -> float 
     is NOT NULL and holds frozen history, so the placeholder stays there and only
     the outbound encodings change.
     """
-    if expected_count > 0:
+    if has_baseline(expected_count):
         return percent_delta
     return None

@@ -1016,8 +1016,12 @@ async def _dispatch_metric_collection(
     ``event_composition`` through ``collect_metric_definitions``. Imported lazily
     to avoid importing the Celery worker stack at module import time (mirrors
     ``scan_service``). ``force=True`` keeps the clicked draft/archived metric in
-    the fact batch; the service only adds active siblings. The fifth task flag
-    tells the worker to compute a bounded manual window per interval group.
+    the fact batch; the service only adds active siblings. The fifth task flag is
+    the manual-backfill marker on both tasks: on the batch it tells the worker to
+    compute a bounded manual window per interval group, and on the single-metric
+    task it tells the worker that the window it was handed is a floor to widen
+    from, not a replacement for a lagging metric's own resume window. It is False
+    for ``event_composition``, which is dispatched without a window at all.
     """
     # Imported here to avoid circular imports at module level.
     from tripl.worker.tasks.metrics.metric_collect import (
@@ -1040,7 +1044,12 @@ async def _dispatch_metric_collection(
         )
     else:
         async_result = await dispatch(
-            collect_metric_definitions.delay, str(metric_id), window_from, window_to, True
+            collect_metric_definitions.delay,
+            str(metric_id),
+            window_from,
+            window_to,
+            True,
+            window is not None,
         )
     return getattr(async_result, "id", None)
 
@@ -1173,9 +1182,11 @@ async def trigger_metric_collection(
     query runs in the Celery worker, never in this request handler. A fact click
     expands to the active metric closure of every operand fact table, then one
     batch shares compatible source scans; different interval grids receive their
-    own bounded manual window. ``event_composition`` has no interval and
-    recomputes from the full event-metric series. Collection is idempotent
-    (window-delete then upsert), so re-triggering never duplicates rows.
+    own bounded manual window. ``event_composition`` has no interval, so it gets
+    no window: it resumes from its own last stored bucket on each source grid
+    (with the usual two-bucket overlap), capped to a bounded backfill on a grid it
+    has never stored a value for. Collection is idempotent (window-delete then
+    upsert), so re-triggering never duplicates rows.
     """
     # Imported here to avoid importing the Celery worker stack at module load.
     from tripl.worker.tasks.metrics.metric_collect import (

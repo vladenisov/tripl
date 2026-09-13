@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.alert_templates import percent_delta_or_none
+from tripl.alert_templates import has_baseline, percent_delta_or_none
 from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -557,7 +557,15 @@ def _build_inbox_group_response(
     # placeholder, and folding it in made a zero-baseline group — the loudest
     # class there is — sort as the smallest deviation in the inbox
     # (tripl-l429.24).
-    baselined_deltas = [abs(row[0].percent_delta) for row in rows if row[0].expected_count > 0]
+    #
+    # ``has_baseline``, not ``> 0``: a signed catalog metric has a real baseline
+    # below zero and a real measured percent beside it (tripl-0zpq.102). Asking
+    # ``> 0`` here dropped exactly those rows, so ``max_abs_percent_delta`` came
+    # back null on a group whose ``percent_delta`` field — built from the SAME
+    # item, in the SAME response object below — reported its 200.0%.
+    baselined_deltas = [
+        abs(row[0].percent_delta) for row in rows if has_baseline(row[0].expected_count)
+    ]
     return AlertInboxGroupResponse(
         correlation_group_id=correlation_group_id,
         status=status,

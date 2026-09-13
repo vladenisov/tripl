@@ -15,6 +15,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.alert_templates import percent_delta_of
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
     SCOPE_METRIC,
@@ -130,6 +131,34 @@ __all__ = [
     "update_rule",
     "validate_filters",
 ]
+
+
+async def _build_event_type_by_event_id(
+    session: AsyncSession,
+    anomalies: list[AlertMatchCandidate],
+) -> dict[uuid.UUID, uuid.UUID]:
+    """Event -> event type for candidates carrying an event but no type.
+
+    The async twin of ``worker.tasks.metrics.alert_payload
+    ._build_event_type_by_event_id``; same predicate, same query, so the in-UI
+    replay narrows an ``event_type`` filter exactly as live dispatch does
+    (tripl-0zpq.7).
+    """
+    from sqlalchemy import select
+
+    from tripl.models.event import Event
+
+    event_ids = {
+        anomaly.event_id
+        for anomaly in anomalies
+        if anomaly.event_id is not None and anomaly.event_type_id is None
+    }
+    if not event_ids:
+        return {}
+    rows = await session.execute(
+        select(Event.id, Event.event_type_id).where(Event.id.in_(event_ids))
+    )
+    return {event_id: event_type_id for event_id, event_type_id in rows.all()}
 
 
 async def _build_scope_name_map(
@@ -504,6 +533,15 @@ async def simulate_rule(
             anomaly for anomaly in anomalies if _clears_sigma(anomaly, sigma_threshold_override)
         ]
 
+    # Event-anchored candidates (event scope, and the drift/regression families
+    # once they are loaded here) store a NULL ``event_type_id`` on purpose, so an
+    # ``event_type`` filter can only narrow them through this lookup. Built with
+    # the same predicate the live path uses in
+    # ``dispatch._prepare_alert_deliveries`` — the replay and the pipeline have to
+    # answer the same question, which is the whole point of
+    # ``tripl.alerting_matching`` (tripl-0zpq.7).
+    event_type_by_event_id = await _build_event_type_by_event_id(session, anomalies)
+
     matched_before_cooldown = sum(
         1
         for anomaly in anomalies
@@ -512,6 +550,7 @@ async def simulate_rule(
             anomaly,
             min_percent_delta_override=min_percent_delta_override,
             min_expected_count_override=min_expected_count_override,
+            event_type_by_event_id=event_type_by_event_id,
         )
     )
     fired = simulate_rule_firings(
@@ -520,6 +559,7 @@ async def simulate_rule(
         cooldown_minutes_override=cooldown_minutes_override,
         min_percent_delta_override=min_percent_delta_override,
         min_expected_count_override=min_expected_count_override,
+        event_type_by_event_id=event_type_by_event_id,
     )
 
     scope_names = await _build_scope_name_map(session, fired)
@@ -528,13 +568,19 @@ async def simulate_rule(
     firings: list[SimulatedRuleFiring] = []
     for anomaly in fired:
         absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
-        # Same placeholder-at-zero-baseline rule as the live send path — see the
-        # comment in ``dispatch._prepare_alert_deliveries``. Readers of this
-        # number go through ``alert_templates.format_percent_delta`` (rendered
+        # Through the SHARED definition, never restated here. This replay is the
+        # rule simulator: whatever the live send path would have stored is the
+        # only answer it may give, and the two drifted the moment
+        # ``dispatch._create_deliveries`` learned that a negative expectation is
+        # a real baseline and this copy did not — the simulator reported 0.0% on
+        # a signed catalog metric where dispatch reported 200%, for the same
+        # anomaly and the same rule (tripl-0zpq.102). A simulator that disagrees
+        # with the thing it simulates is worse than no simulator, which is the
+        # whole reason ``tripl.alerting_matching`` exists for the predicates;
+        # ``alert_templates.percent_delta_of`` is the same guarantee for the
+        # number. Readers of it go through ``format_percent_delta`` (rendered
         # preview) or the frontend's ``lib/percentDelta`` (replay table).
-        percent_delta = (
-            absolute_delta / anomaly.expected_count * 100 if anomaly.expected_count > 0 else 0.0
-        )
+        percent_delta = percent_delta_of(anomaly.actual_count, anomaly.expected_count)
         scope_name = scope_names.get(
             (anomaly.scope_type, anomaly.scope_ref),
             anomaly.scope_ref,

@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from tripl.alert_templates import percent_delta_of
 from tripl.alerting_matching import AlertMatchCandidate, rule_matches_anomaly
 from tripl.core.analyzers.anomaly_detector import SCOPE_METRIC
 from tripl.models.alert_correlation_state import AlertCorrelationState
@@ -23,6 +24,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.worker.tasks.metrics.alert_payload import (
     _build_alert_scope_names,
     _build_delivery_snapshot,
+    _build_event_type_by_event_id,
     _load_enabled_alert_destinations,
 )
 from tripl.worker.tasks.metrics.signals import (
@@ -367,6 +369,12 @@ def _prepare_alert_deliveries(
     # canonical config so cooldown is shared across every config's dispatch run.
     metric_state_config_id = _project_metric_state_config_id(session, config)
     scope_names = _build_alert_scope_names(session, list(active_candidates.values()))
+    # Event-anchored candidates store a NULL event_type_id on purpose; without
+    # this map an ``event_type`` filter is silently inert for every one of them
+    # (tripl-0zpq.7).
+    event_type_by_event_id = _build_event_type_by_event_id(
+        session, list(active_candidates.values())
+    )
     delivery_ids: list[uuid.UUID] = []
     buffered_count = 0
     suppressed_group_ids = _suppressed_correlation_group_ids(
@@ -425,7 +433,9 @@ def _prepare_alert_deliveries(
             matched_anomalies = [
                 candidate
                 for candidate in active_candidates.values()
-                if _rule_matches_anomaly(rule, candidate)
+                if _rule_matches_anomaly(
+                    rule, candidate, event_type_by_event_id=event_type_by_event_id
+                )
             ]
             matched_keys = {
                 (anomaly.scope_type, anomaly.scope_ref) for anomaly in matched_anomalies
@@ -702,9 +712,41 @@ def _create_deliveries(
             # The one deliberate exception is the raw ${percent_delta}
             # template variable, whose documented contract is a bare
             # number; see ``alerts_messages._build_item_template_context``.
-            percent_delta = (
-                absolute_delta / anomaly.expected_count * 100 if anomaly.expected_count > 0 else 0.0
-            )
+            #
+            # ZERO is the placeholder condition, not "not positive". A
+            # signed catalog metric has a real baseline at -100 and a real
+            # 200% move to -300, and the matcher already reads it that way
+            # (``alerting_matching.rule_matches_anomaly``: ``abs(expected)``
+            # against min_expected_count, ``absolute_delta / abs(expected)``
+            # against min_percent_delta, tripl-0zpq.102) — so a rule fires
+            # BECAUSE the move is 200% and storing 0.0 for it reproduced
+            # exactly the tripl-l429.24 misreport against a real baseline.
+            # The divisor is the MAGNITUDE so the ratio stays a size rather
+            # than flipping sign with the level; direction is carried by
+            # ``direction``/``actual_count`` and never by this field.
+            #
+            # Writing the measured number here is what made the readers
+            # fixable at all: the column is frozen history and every surface
+            # renders it back at read time, so a row stored as 0.0 could never
+            # be recovered, while a row stored as 200.0 renders correctly.
+            #
+            # There is no per-reader copy of this test left to enumerate. The
+            # definition is ``alert_templates.has_baseline`` /
+            # ``percent_delta_of`` — a leaf module importing only
+            # ``tripl.models.*``, so every backend surface can and does route
+            # through it: this writer, the audit snapshot
+            # (``alert_payload._build_delivery_snapshot``), the message and
+            # digest renderers in ``worker/tasks/alerts_messages``,
+            # ``services._alerting_deliveries``, ``schemas/alerting``'s response
+            # validators, ``services.alerting_service.simulate_rule`` and the
+            # demo builder. Only the frontend restates it, in
+            # ``lib/percentDelta.hasBaseline``, because it cannot import Python;
+            # both sides are pinned against the same grid of baselines
+            # (``tests/test_batch3_a2.py``, ``lib/percentDelta.test.ts``).
+            #
+            # Add a reader, route it through the helper — do not re-derive the
+            # ratio here or anywhere else.
+            percent_delta = percent_delta_of(anomaly.actual_count, anomaly.expected_count)
             details_path, monitoring_path = _build_item_paths(
                 project_slug,
                 scope_type=anomaly.scope_type,

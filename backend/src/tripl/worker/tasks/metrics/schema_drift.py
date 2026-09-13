@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -25,6 +26,13 @@ from tripl.observability.metrics import schema_drifts_detected_total
 # choosing them is an intentional schema decision, not drift.
 _AUTO_FIELD_TYPES = {"string", "json"}
 _SAMPLE_VALUE_MAX_LEN = 255
+# `schema_drifts.observed_type` is String(128), but a warehouse type name has no
+# length contract: a labelled ClickHouse `Enum8('checkout_started' = 1, ...)` or a
+# nested `Map(String, Tuple(...))` renders well past 128 characters. Postgres
+# rejects the over-long value and the DataError unwinds the whole catalog sync, so
+# the value is bounded on its way into the row rather than at each producer. Keep
+# in step with the model column — test_batch3_d1 asserts the two still agree.
+_OBSERVED_TYPE_MAX_LEN = 128
 _CONTRACT_DECLARED_TYPES = {
     "required_null_violation": "required",
     "enum_violation": "enum",
@@ -59,6 +67,22 @@ def _truncate_sample_value(value: object | None) -> str | None:
     text = str(value)
     if len(text) > _SAMPLE_VALUE_MAX_LEN:
         return text[: _SAMPLE_VALUE_MAX_LEN - 1] + "…"
+    return text
+
+
+def _truncate_observed_type(value: object | None) -> str | None:
+    """Fit a warehouse type name into `schema_drifts.observed_type`.
+
+    Truncate from the tail: the head carries the outer constructor (`Nullable(`,
+    `Map(`, `Tuple(`, `Enum8(`), which is exactly what
+    `schema_drift_service._logical_type_from_observed` substring-matches when a
+    user accepts the drift into a FieldDefinition.
+    """
+    if value is None:
+        return None
+    text = str(value)
+    if len(text) > _OBSERVED_TYPE_MAX_LEN:
+        return text[: _OBSERVED_TYPE_MAX_LEN - 1] + "…"
     return text
 
 
@@ -259,7 +283,7 @@ def _upsert_schema_drifts(
     session: Session,
     *,
     event_type_id: uuid.UUID,
-    scan_config_id: uuid.UUID | None,
+    scan_config_id: uuid.UUID,
     drift_items: list[dict[str, object]],
 ) -> None:
     if not drift_items:
@@ -273,7 +297,7 @@ def _upsert_schema_drifts(
             "scan_config_id": scan_config_id,
             "field_name": item["field_name"],
             "drift_type": item["drift_type"],
-            "observed_type": item["observed_type"],
+            "observed_type": _truncate_observed_type(item["observed_type"]),
             "declared_type": item["declared_type"],
             "sample_value": item.get("sample_value"),
             "detected_at": now,
@@ -285,8 +309,15 @@ def _upsert_schema_drifts(
         sqlite_stmt = sqlite_insert(SchemaDrift).values(rows)
         sqlite_stmt = sqlite_stmt.on_conflict_do_update(
             index_elements=["event_type_id", "field_name", "drift_type"],
+            # coalesce(new, old): a re-upsert must never blank the provenance that
+            # signals.py (alerting), detection_reset_service.py (reset) and
+            # demo_runtime.py (pruning) all filter on — a NULL scan_config_id makes
+            # the drift invisible to every one of them. Direction matters: a real id
+            # still wins over a row whose FK was nulled by ondelete="SET NULL".
             set_={
-                "scan_config_id": sqlite_stmt.excluded.scan_config_id,
+                "scan_config_id": func.coalesce(
+                    sqlite_stmt.excluded.scan_config_id, SchemaDrift.scan_config_id
+                ),
                 "observed_type": sqlite_stmt.excluded.observed_type,
                 "declared_type": sqlite_stmt.excluded.declared_type,
                 "sample_value": sqlite_stmt.excluded.sample_value,
@@ -301,7 +332,9 @@ def _upsert_schema_drifts(
     pg_stmt = pg_stmt.on_conflict_do_update(
         constraint="uq_schema_drift_event_type_field_kind",
         set_={
-            "scan_config_id": pg_stmt.excluded.scan_config_id,
+            "scan_config_id": func.coalesce(
+                pg_stmt.excluded.scan_config_id, SchemaDrift.scan_config_id
+            ),
             "observed_type": pg_stmt.excluded.observed_type,
             "declared_type": pg_stmt.excluded.declared_type,
             "sample_value": pg_stmt.excluded.sample_value,

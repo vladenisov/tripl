@@ -36,7 +36,6 @@ from tripl.worker.tasks.metrics._helpers import (
     _get_active_scan_jobs,
     _get_sync_session,
     _normalize_job_timestamp,
-    _parse_task_datetime,
 )
 from tripl.worker.tasks.metrics.metric_collect import (
     COLLECTION_STATUS_ERROR,
@@ -46,7 +45,13 @@ from tripl.worker.tasks.metrics.metric_collect import (
     event_composition_binding_error,
     mark_collection_error,
 )
-from tripl.worker.tasks.metrics.tasks import METRICS_COLLECTION_MODE, collect_metrics
+from tripl.worker.tasks.metrics.tasks import (
+    _RECENT_JOB_SCAN_LIMIT,
+    METRICS_COLLECTION_MODE,
+    _is_dispatcher_collection_job,
+    _last_collected_window_to,
+    collect_metrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,28 +75,31 @@ logger = logging.getLogger(__name__)
 # hourly buckets, 23 days of history) is built on it being 1h.
 DEMO_COLLECTION_COOLDOWN_HOURS = 6
 
-# Bound on how many recent jobs to inspect when finding the last SCHEDULED
-# collection. ``advance_demos`` also writes a ScanJob per hourly tick, so a few
-# of those sit between two scheduled runs; 40 covers the cooldown with room to
-# spare and keeps this a cheap indexed read.
-_RECENT_JOB_SCAN_LIMIT = 40
-
-
-def _is_scheduled_collection_job(result_summary: object) -> bool:
-    """Whether a ScanJob came from the dispatcher rather than the demo tick.
-
-    ``demo_runtime._record_scan_job`` writes a completed job per tick with
-    ``demo_runtime_tick: True`` so the demo's scan history keeps growing. Those
-    must not be mistaken for scheduled collections, or the cooldown below would
-    see a fresh job every hour and defer the real collection forever.
-    """
-    return not (isinstance(result_summary, dict) and result_summary.get("demo_runtime_tick"))
-
 
 def _hours_since_last_scheduled_collection(
     session: Session, scan_config_id: uuid.UUID, *, now: datetime
 ) -> float | None:
-    """Age of the newest dispatcher-created job, or None if there is none."""
+    """Age of the newest job THIS dispatcher created for metrics collection.
+
+    ``None`` when the recent history holds none. Manual catalog scans, metrics
+    replays, event-group applies and the demo's hourly runtime tick all share
+    ``scan_config_id`` with a scheduled collection and must not restart the
+    cooldown — only the ``mode`` stamp, written at job creation, identifies one.
+    Identified by that stamp rather than by excluding the tick: exclusion counted
+    every foreign job, so exercising Run scan or Replay on a demo deferred the
+    scheduled collection — the only producer of breakdown anomalies and
+    distribution drift — for up to six hours.
+
+    Status is deliberately not filtered: a dispatcher job that failed still
+    consumed the slot this cooldown rations, and repeated failure is the failure
+    backoff's job, not this one's.
+
+    ``_RECENT_JOB_SCAN_LIMIT`` bounds ROWS, and the stricter filter skips more of
+    them, so a demo with a long run of manual scans can bury its dispatcher job
+    and read as "no recent collection". That errs toward collecting, which is the
+    safe direction and the same one the CLI's ``scan_history_window_full``
+    finding reports.
+    """
     rows = session.execute(
         select(ScanJob.created_at, ScanJob.result_summary)
         .where(ScanJob.scan_config_id == scan_config_id)
@@ -99,7 +107,7 @@ def _hours_since_last_scheduled_collection(
         .limit(_RECENT_JOB_SCAN_LIMIT)
     ).all()
     for created_at, result_summary in rows:
-        if not _is_scheduled_collection_job(result_summary):
+        if not _is_dispatcher_collection_job(result_summary):
             continue
         created = _normalize_job_timestamp(created_at)
         if created is None:
@@ -149,24 +157,6 @@ FAILURE_BACKOFF_CEILING = timedelta(hours=24)
 # scans sit between two dispatcher jobs, so a tight bound would fill with rows
 # the streak then skips and never reach the failures underneath.
 _FAILURE_STREAK_SCAN_LIMIT = _RECENT_JOB_SCAN_LIMIT
-
-
-def _is_dispatcher_collection_job(result_summary: object) -> bool:
-    """Whether a ScanJob is one THIS dispatcher created for metrics collection.
-
-    Positive identification, not exclusion: ``scan_jobs`` is keyed on
-    ``scan_config_id`` and shared with manual catalog scans (``run_scan``),
-    metrics replays, event-group applies and the demo runtime tick. Only the
-    ``mode`` stamp distinguishes them, and the dispatcher writes it at job
-    creation so a failure that never reached its summary still carries it.
-
-    Rows written before this stamp existed have no ``mode`` and simply do not
-    count — the streak restarts, which is the safe direction (it can only delay
-    the backoff, never make it fire on someone else's failure).
-    """
-    return isinstance(result_summary, dict) and result_summary.get("mode") == (
-        METRICS_COLLECTION_MODE
-    )
 
 
 def _consecutive_failure_streak(
@@ -221,52 +211,6 @@ def _failure_backoff_delay(streak: int, interval_delta: timedelta) -> timedelta 
     # float for a negative exponent); this exponent is >= 0 by the guard above.
     multiplier: int = 2 ** (streak - FAILURE_BACKOFF_AFTER)
     return min(interval_delta * multiplier, ceiling)
-
-
-def _last_collected_window_to(session: Session, scan_config_id: uuid.UUID) -> datetime | None:
-    """Exclusive end of the source grid the newest COMPLETED collection covered.
-
-    The catalog-metric path stores this as a column
-    (``MetricDefinition.last_collection_window_to``); a scan config has no such
-    column, so the same fact is read back from the window the finished job
-    recorded in ``result_summary["time_to"]`` — which a scheduled collection sets
-    to ``floor(now)``, the grid boundary it collected up to.
-
-    Without it, a collection that COMPLETES but writes no ``EventMetric`` row (a
-    fresh config whose warehouse window is still empty, or a stream that has gone
-    silent) leaves ``max(EventMetric.bucket)`` untouched and is due again on the
-    very next 300 s tick — the same unbounded loop the failure backoff above
-    fixes, minus the failures that would trigger it (tripl-wopq).
-
-    Only ``metrics_collection`` jobs count. A replay carries its own explicit
-    historical window and must not be read as progress on the live grid; a demo
-    runtime tick and a catalog scan never collected metrics at all. Manual
-    collections DO count and should: they resolve the same window and cover the
-    same grid, unlike the failure streak, which is about blame rather than
-    coverage. A row with no parseable ``time_to`` (written before the stamp
-    existed) simply does not count, which can only make a config look due
-    earlier — the safe direction.
-    """
-    summaries = session.execute(
-        select(ScanJob.result_summary)
-        .where(
-            ScanJob.scan_config_id == scan_config_id,
-            ScanJob.status == ScanJobStatus.completed.value,
-        )
-        .order_by(ScanJob.created_at.desc())
-        .limit(_RECENT_JOB_SCAN_LIMIT)
-    ).scalars()
-    for summary in summaries:
-        if summary is None or not _is_dispatcher_collection_job(summary):
-            continue
-        raw_to = summary.get("time_to")
-        if not isinstance(raw_to, str):
-            continue
-        try:
-            return _parse_task_datetime(raw_to)
-        except ValueError:
-            continue
-    return None
 
 
 def _scan_config_collection_due(

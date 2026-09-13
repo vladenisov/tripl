@@ -305,19 +305,37 @@ read individual fields instead of scraping the rendered `message`:
 ```
 
 :::warning `percent_delta` is `null` when there is no baseline
-`"percent_delta"` is **`null`**, not `0`, whenever `"expected_count"` is `0` —
-a scope resuming after an outage, an event firing for the first time, a schema
-drift. There is no ratio to report for those, and reporting `0` would tell a
-consumer testing `percent_delta > threshold` that nothing changed about the
-anomalies that changed the most. Use `"absolute_delta"` for that class; it is
-the number that means something. The same rule applies to the item list inside a
-delivery's `payload_snapshot` and to the typed `items[]` array of
+`"percent_delta"` is **`null`**, not `0`, whenever `"expected_count"` is
+**exactly `0`** — a scope resuming after an outage, an event firing for the
+first time, a schema drift. `null` means *there was no baseline to divide by*,
+so the ratio is undefined; it never means "no change". Reporting `0` there would
+tell a consumer testing `percent_delta > threshold` that nothing changed about
+the anomalies that changed the most. Use `"absolute_delta"` for that class; it
+is the number that means something.
+
+**Zero is the whole of the condition.** A **negative** expected count is a real
+baseline — catalog metrics may be signed, and `-100` expects `-100` — so an
+anomaly against one carries a real `percent_delta`, not `null`. It is computed
+from the **magnitude** of the expectation, `|actual − expected| / |expected| ×
+100`, which is the same divisor `min_percent_delta` is scored against, so the
+number a rule fired on and the number the payload reports are the same number.
+That makes `percent_delta` a **size and never a direction**: an actual of `-300`
+against an expected of `-100` reports `200.0`, not `-200.0`. Read `"direction"`
+(and `"actual_count"` against `"expected_count"`) for which way it moved.
+
+The same rule applies to the item list inside a delivery's `payload_snapshot`
+and to the typed `items[]` array of
 `GET /projects/{slug}/alert-deliveries/{id}` — one delivery cannot answer the
 same question two ways.
 
 Deliveries recorded **before this behaviour shipped** still carry `0.0` in their
 stored `payload_snapshot` — a delivery is a frozen record and is not rewritten.
-Read `expected_count == 0` to disambiguate historical rows.
+Read `expected_count == 0` to disambiguate historical zero-baseline rows. A
+delivery recorded against a **negative** baseline before the magnitude rule
+landed is the one case reading `expected_count` cannot rescue: its stored `0.0`
+is a placeholder, but the expectation is non-zero, so it now renders as a
+genuine-looking `0.0` rather than as `null`. Only deliveries from that window are
+affected, and only on signed metrics.
 :::
 
 #### The test POST is a different body
@@ -557,6 +575,14 @@ Alerting tab until you re-aim and re-enable it.
 **Filters** narrow further by `event_type`, `event`, or `direction`, with
 operators `eq` / `ne` / `in` / `not_in`. Multiple filters are ANDed; a signal
 that doesn't carry the filtered field passes through.
+
+An `event_type` filter narrows **any** signal anchored to an event — event
+scope, variable-value drift and event-scope release regression alike — by that
+event's type, looked up when the rule is matched rather than read off the stored
+row, which deliberately keeps no type of its own. What passes through is only
+what genuinely carries no such field: for an `event_type` filter that is the
+project-total rollups and catalog metrics; for an `event` filter it is those
+plus the event-type rollups.
 
 The `event` value picker searches the catalog server-side and shows one page of
 matches at a time, so type to reach an event that isn't in the first page — the
@@ -901,7 +927,7 @@ Which lever fits which intent:
 | Do not tell me before *T*, whatever the signal does | **Mute 1h / 24h / 7d** | Exactly that long | The only decision that outlives the incident |
 | Do not tell me until I say so | **Mute indefinitely** (Inbox only) | Until you press **Reopen** | Outlives everything except Reopen |
 | The detector is wrong about this scope | **False positive** | Until this incident ends | **Permanently** raises that scope's `sigma_threshold` (+0.5, capped at 10) and `min_expected_count` (+5, capped at 1000), compounding on repeat clicks. It never decays; it is listed and removable under **Settings → Monitoring → Scope overrides**. Volume scopes only — on a schema drift, distribution drift or release regression it suppresses like an acknowledge and tunes nothing, because those are not scored by these two knobs, and the confirmation says how many scopes it actually tightened |
-| This event must never reach this channel again | A rule **filter**, `event` `not_in` […] | Permanent, per rule, no expiry | Excludes that event's *own* signals only. The project-total and event-type rollups it feeds carry no `event_id`, and a filter on a field a signal does not carry passes through — so those keep alerting |
+| This event must never reach this channel again | A rule **filter**, `event` `not_in` […] | Permanent, per rule, no expiry | Excludes that event's *own* signals only. The project-total and event-type rollups it feeds carry no `event_id`, and a filter on a field a signal does not carry passes through — so those keep alerting. An `event_type` filter reaches the same rows from the other side: an event-anchored signal is narrowed by its event's type, resolved at match time, even though the stored row's own `event_type_id` is NULL |
 | This event should not be monitored at all | **Archive** the event | Until you un-archive it | Takes it out of detection entirely: no metric points scored, no signals raised, so there is nothing left to alert on |
 
 Read that table as "how permanent do you want this to be". The common mistake is
@@ -1182,11 +1208,15 @@ the true first — one of the reasons that route exists.
 **`percent_delta` is `null`, not `0`, when `expected_count` is `0`** — the same
 encoding [the delivery's `items[]` already uses](#what-a-webhook-destination-posts),
 enforced the same way, because one incident may not answer the same question two
-ways depending on which payload you read it from. `max_abs_percent_delta` is
-computed over the rows that **have** a baseline only, and is `null` when no row in
-the incident does: a group made entirely of zero-baseline firings has no measured
-deviation to be the largest, and reporting `0.0` there sorted the loudest
-incidents last. Use `absolute_delta` on the items for that class.
+ways depending on which payload you read it from. That includes the negative
+case: a signed metric's non-zero baseline is a baseline here too, and its
+`percent_delta` is the same magnitude-based size. `max_abs_percent_delta` is
+computed over the rows that **have** a baseline — a non-zero `expected_count`,
+negative included — and is `null` when no row in the incident does: a group made
+entirely of zero-baseline firings has no measured deviation to be the largest,
+and reporting `0.0` there sorted the loudest incidents last. It is already an
+absolute value, so it too states a size and not a direction. Use
+`absolute_delta` on the items for the no-baseline class.
 
 **`scope_types` exists because `scope_type` is the newest item's alone.** An older
 incident can mix kinds, so one value cannot label the row — nor tell a client what

@@ -11,7 +11,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.alert_templates import percent_delta_or_none
+from tripl.alert_templates import percent_delta_of, percent_delta_or_none
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
     SCOPE_METRIC,
@@ -129,6 +129,39 @@ def _build_alert_scope_names(
     return scope_names
 
 
+def _build_event_type_by_event_id(
+    session: Session,
+    anomalies: list[AlertMatchCandidate],
+) -> dict[uuid.UUID, uuid.UUID]:
+    """Event -> event type, for the candidates that carry an event but no type.
+
+    Event-scope anomalies, variable-value drifts and event-scope release
+    regressions are all anchored to a real ``event_id`` and deliberately store
+    ``event_type_id = NULL`` (stamping it would leak them into the event-TYPE
+    series that ``metrics_service`` / ``project_service`` / ``activity_service``
+    select by that column alone). ``alerting_matching.filter_matches_anomaly``
+    resolves the type through this map instead, so an ``event_type`` filter
+    narrows them the same way ``rule_covers_event`` already does for the
+    catalog's Monitor column (tripl-0zpq.7).
+
+    One query per dispatch run, covering all three candidate families at once,
+    and none at all when no such candidate is present.
+    """
+    event_ids = {
+        anomaly.event_id
+        for anomaly in anomalies
+        if anomaly.event_id is not None and anomaly.event_type_id is None
+    }
+    if not event_ids:
+        return {}
+    return {
+        event_id: event_type_id
+        for event_id, event_type_id in session.execute(
+            select(Event.id, Event.event_type_id).where(Event.id.in_(event_ids))
+        ).all()
+    }
+
+
 def _load_enabled_alert_destinations(
     session: Session,
     project_id: uuid.UUID,
@@ -209,8 +242,18 @@ def _build_delivery_snapshot(
                 # (tripl-l429.27). Rows written before that change still carry
                 # 0.0 — a frozen record is not rewritten — so a consumer reading
                 # historical deliveries disambiguates on ``expected_count == 0``.
+                #
+                # The RATIO comes from ``alert_templates.percent_delta_of`` —
+                # the same definition ``dispatch._create_deliveries`` stores and
+                # the simulator replays — rather than a local copy. A local copy
+                # is what let this line keep an ``expected > 0`` divisor after
+                # the outer encoding had already moved to ``!= 0``
+                # (tripl-0zpq.102): a signed catalog metric at a baseline of
+                # -3 moving to -9 got ``percent_delta: 0.0`` frozen into the
+                # snapshot while the typed ``items[]`` beside it rendered the
+                # true 200.0%, so one delivery disagreed with itself.
                 "percent_delta": percent_delta_or_none(
-                    absolute_delta / expected * 100 if expected > 0 else 0.0,
+                    percent_delta_of(anomaly.actual_count, expected),
                     expected,
                 ),
                 "details_path": details_path,
