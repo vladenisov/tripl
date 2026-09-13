@@ -26,6 +26,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.analyzers.anomaly_detector import required_history_buckets
+from tripl.core.bucketing import to_utc
 from tripl.models import Base
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import (
@@ -58,9 +59,10 @@ _SPIKE_HOUR = 9
 _EVAL_FROM = _BASE + _HOUR * 8
 _EVAL_TO = _BASE + _HOUR * 10
 
-# Fixed, tz-AWARE anchor for the direct ``covered_buckets_from_scan_jobs`` tests:
-# recorded job windows are parsed back to aware UTC, so those assertions must be
-# aware to compare at all.
+# Fixed, tz-AWARE anchor for the direct ``covered_buckets_from_scan_jobs`` tests.
+# EVERY bucket that function returns is aware UTC — recorded job windows, the
+# caller's own window and the stored-bucket read alike — so an assertion on the
+# returned set has to be aware to compare at all.
 _JOB_BASE = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
 
 
@@ -494,8 +496,13 @@ def test_covered_buckets_bounds_stored_buckets_by_the_horizon(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
     """The stored-bucket DISTINCT is the larger of the two reads (one row per
-    event per bucket) and was bounded above only. Naive buckets throughout,
-    because sqlite hands ``EventMetric.bucket`` back without tzinfo.
+    event per bucket) and was bounded above only.
+
+    The seeded column IS naive here, because sqlite hands ``EventMetric.bucket``
+    back without tzinfo — and the expectation is aware anyway, because
+    ``covered_buckets_from_scan_jobs`` stamps that read onto the subsystem's one
+    comparison convention (aware UTC) on the way in. That is the whole point of
+    the convention: the caller does not have to know which backend answered.
     """
     with sync_session_factory() as session:
         config = _seed_project(session)
@@ -511,7 +518,7 @@ def test_covered_buckets_bounds_stored_buckets_by_the_horizon(
             presence_before=_BASE + _HOUR * 10,
         )
 
-    assert covered == {_BASE + _HOUR * 2}
+    assert covered == {to_utc(_BASE + _HOUR * 2)}
 
 
 def test_covered_buckets_requires_a_window_or_a_presence_bound(

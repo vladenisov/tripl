@@ -32,6 +32,7 @@ from tripl.core.analyzers.cardinality import (
     analyze_cardinality_grouped,
 )
 from tripl.core.analyzers.event_generator import generate_events
+from tripl.core.bucketing import to_utc
 from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import get_interval
 from tripl.models.data_source import DataSource
@@ -58,6 +59,9 @@ from tripl.worker.tasks.metrics._helpers import (
     _floor_to_interval,
     _get_sync_session,
     _parse_task_datetime,
+)
+from tripl.worker.tasks.metrics._helpers import (
+    _floor_to_interval as _floor_to_grid,
 )
 from tripl.worker.tasks.metrics.catalog_sync import sync_catalog
 from tripl.worker.tasks.metrics.chunk_processing import process_chunk
@@ -381,13 +385,24 @@ def _resolve_collection_window(
     manual_time_to: str | None,
 ) -> tuple[datetime, datetime, bool]:
     """Window resolution lives here (not in _helpers) so tests can monkey-patch
-    `metrics._floor_to_interval` and have this function pick up the override."""
+    `metrics._floor_to_interval` and have this function pick up the override.
+
+    Both returned bounds are TZ-AWARE UTC — the one convention every bucket
+    comparison in this subsystem uses (see ``metrics.coverage`` and
+    ``metrics.detect``). This is the boundary that mints them, and the three
+    sources it mints them from do NOT agree on their own: ``datetime.now(UTC)``
+    is aware, ``collection_progress_to`` forces aware, and a bucket read back
+    from ``event_metrics`` is aware on PostgreSQL but naive on a backend without
+    timezone support. Stamping here is what keeps ``min(progress_to, time_to)``
+    below — and every consumer of the window, up to ``covered_buckets`` and the
+    detector's evaluation bounds — from comparing the two kinds.
+    """
     if (manual_time_from is None) != (manual_time_to is None):
         msg = "Both time_from and time_to are required for metrics replay"
         raise ValueError(msg)
 
     now = datetime.now(UTC)
-    time_to = _floor_to_interval(now, delta)
+    time_to = to_utc(_floor_to_interval(now, delta))
     if manual_time_from is not None and manual_time_to is not None:
         requested_from = _parse_task_datetime(manual_time_from)
         requested_to = _parse_task_datetime(manual_time_to)
@@ -395,9 +410,9 @@ def _resolve_collection_window(
             msg = "time_from must be earlier than time_to"
             raise ValueError(msg)
 
-        effective_from = _floor_to_interval(requested_from, delta)
-        effective_to = _ceil_to_interval(requested_to, delta)
-        latest_complete_boundary = _floor_to_interval(now, delta)
+        effective_from = to_utc(_floor_to_interval(requested_from, delta))
+        effective_to = to_utc(_ceil_to_interval(requested_to, delta))
+        latest_complete_boundary = to_utc(_floor_to_interval(now, delta))
         if effective_to > latest_complete_boundary:
             # ``ScanError``, not ``ValueError``: this is the one refusal in here
             # a user can actually provoke (the Replay dialog's own defaults used
@@ -456,7 +471,20 @@ def _resolve_collection_window(
         # the window's delete does not reach but the upsert still overwrites,
         # replacing a complete bucket's count with the tail of it. Flooring can
         # only move the start earlier, so no data is ever skipped.
-        resume_from = _floor_to_interval(min(progress_to, time_to), delta)
+        #
+        # ``_floor_to_grid``, NOT the module-global ``_floor_to_interval``. They
+        # are the same function; the difference is that the global is a declared
+        # TEST SEAM (see this function's docstring) whose one documented job is
+        # to pin the CLOCK — ``_floor_to_interval(now, delta)`` above. A double
+        # that answers a fixed boundary for "what time is it" must not also be
+        # asked "which grid slot does this watermark sit in": it returns the same
+        # constant, and the resume point jumps forward to the head of the window
+        # instead of two buckets behind the progress end. The bucket that lost
+        # its coverage that way is then EXCLUDED from the series rather than
+        # zero-filled, so a real drop stops being detectable. Production is
+        # unaffected either way — it is one function — which is precisely why the
+        # split is safe.
+        resume_from = to_utc(_floor_to_grid(min(progress_to, time_to), delta))
         time_from = resume_from - delta * SCHEDULED_RESUME_OVERLAP_BUCKETS
     return time_from, time_to, False
 

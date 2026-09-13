@@ -8,34 +8,53 @@ running scan belongs to (see
 
 Pure leaf (models + the timestamp helper) so both the orchestrator and the
 detector import it without a cycle.
+
+Bucket convention
+-----------------
+**Every bucket this module returns is TZ-AWARE UTC**, and so is every bound it
+compares one against. That is the same convention
+``worker.analyzers.metric_composition.normalize_series`` already imposes where
+two independently sourced series meet (tripl-ju0d), and the one
+``core.bucketing`` states for the whole pipeline: a naive datetime IS UTC, it
+just has not said so.
+
+It has to be stated, because this set is built from halves that disagree by
+nature:
+
+* the job-window half parses ``result_summary`` through ``_parse_task_datetime``
+  and is aware UTC no matter what;
+* the presence half is a raw ``event_metrics.bucket`` read, which yields AWARE
+  values on PostgreSQL (``timestamptz``) and NAIVE ones on SQLite;
+* the caller's ``current_window``/``history_from`` are whatever the orchestrator
+  minted, which the same split reaches through ``max(EventMetric.bucket)``.
+
+A set mixing the two is broken on BOTH backends rather than one: the consumer
+(``anomaly_detector.expand_series``) does a plain ``bucket not in covered``
+membership test, and ``datetime(t)`` and ``datetime(t, tzinfo=UTC)`` are neither
+equal nor equal-hashing. Half the set silently stops matching, coverage
+under-reports, and an uncovered bucket is EXCLUDED from the series rather than
+zero-filled — so genuinely-zero buckets vanish from every baseline with no error
+anywhere.
+
+**A new producer conforms by calling ``to_utc`` at the point its value ENTERS
+this module** — never at the membership test, which is a set lookup and cannot
+convert. The matching obligation on the consumer side lives in
+``detect._load_scope_points`` / ``_load_metric_value_points`` /
+``_load_breakdown_scope_points``, which stamp the series buckets the same way.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from tripl.core.bucketing import to_utc
 from tripl.models.event_metric import EventMetric
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.worker.tasks.metrics._helpers import _parse_task_datetime
-
-
-def _aligned_with(value: datetime, like: datetime) -> datetime:
-    """``value`` re-expressed with the same tz-awareness as ``like``.
-
-    Recorded job windows are parsed to aware UTC, while a window or horizon
-    derived from a stored bucket arrives naive on a backend without timezone
-    support (SQLite). The two cannot be compared directly, and the floor below
-    has to compare against both.
-    """
-    if (value.tzinfo is None) == (like.tzinfo is None):
-        return value
-    if like.tzinfo is None:
-        return value.astimezone(UTC).replace(tzinfo=None)
-    return value.replace(tzinfo=UTC)
 
 
 def covered_buckets_from_scan_jobs(
@@ -80,18 +99,25 @@ def covered_buckets_from_scan_jobs(
     completed job summary yet. It is absent when the caller is asking about a
     FOREIGN config, which this run wrote nothing for; ``presence_before`` then
     supplies the upper bound for the stored-bucket read.
+
+    Every returned bucket is tz-aware UTC regardless of what the caller passed in
+    or what the database column yielded — see the module docstring for why that
+    is a contract and not an implementation detail.
     """
+    # The three values that ENTER from the caller, stamped once here so nothing
+    # below this line has to ask what backend or clock they came from.
+    history_from = to_utc(history_from)
     if presence_before is not None:
-        present_before = presence_before
+        present_before = to_utc(presence_before)
     elif current_window is not None:
-        present_before = current_window[1]
+        present_before = to_utc(current_window[1])
     else:
         msg = "covered_buckets_from_scan_jobs needs current_window or presence_before"
         raise ValueError(msg)
 
     windows: list[tuple[datetime, datetime]] = []
     if current_window is not None:
-        windows.append(current_window)
+        windows.append((to_utc(current_window[0]), to_utc(current_window[1])))
     summaries = session.execute(
         select(ScanJob.result_summary).where(
             ScanJob.scan_config_id == scan_config_id,
@@ -125,10 +151,9 @@ def covered_buckets_from_scan_jobs(
         # grid the unbounded loop produced; the horizon itself need not sit on
         # that grid (the slack is a flat day, a weekly grid is not), so round the
         # step count UP rather than letting floor division land below it.
-        floor = _aligned_with(history_from, bucket)
-        if bucket < floor:
-            steps = (floor - bucket) // delta
-            if bucket + delta * steps < floor:
+        if bucket < history_from:
+            steps = (history_from - bucket) // delta
+            if bucket + delta * steps < history_from:
                 steps += 1
             bucket += delta * steps
         while bucket < window_to:
@@ -144,5 +169,8 @@ def covered_buckets_from_scan_jobs(
         )
         .distinct()
     ).scalars()
-    covered.update(bucket for bucket in present_buckets if bucket is not None)
+    # The one read whose awareness is decided by the BACKEND rather than by this
+    # process: timestamptz on PostgreSQL, naive on SQLite. Stamped on the way in
+    # so the union is homogeneous on both.
+    covered.update(to_utc(bucket) for bucket in present_buckets if bucket is not None)
     return covered

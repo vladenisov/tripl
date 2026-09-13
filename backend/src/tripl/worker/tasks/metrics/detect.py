@@ -28,6 +28,7 @@ from tripl.core.analyzers.anomaly_detector import (
     required_history_buckets,
     settling_buckets_for,
 )
+from tripl.core.bucketing import to_utc
 from tripl.core.intervals import get_interval
 from tripl.metric_grid import MetricGrid, metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import monitored_metric_criteria
@@ -96,6 +97,48 @@ NO_INGESTION_SETTLING = timedelta(0)
 # constants because the per-metric caller is defined well above the horizon
 # helper.
 COVERAGE_HORIZON_SLACK = timedelta(days=1)
+
+
+# ── the subsystem's ONE bucket convention ────────────────────────────────────
+# Every bucket compared, hashed or set-tested inside detection is TZ-AWARE UTC.
+# It is a real decision, not an accident of the first value that arrived:
+#
+#  * ``core.bucketing`` already declares it for the whole pipeline ("a naive
+#    datetime is ASSUMED to be UTC"), and ``metric_composition.normalize_series``
+#    already enforces it at the other junction where two series meet (tripl-ju0d);
+#  * PostgreSQL — what production runs on — hands back aware values from every
+#    ``timestamptz`` bucket column, so aware is the majority convention already;
+#  * the alternative (strip to naive) would have to UNDO a correct annotation on
+#    the production backend and would still leave ``datetime.now(UTC)`` and every
+#    parsed ``result_summary`` bound to convert at each use.
+#
+# Naive values still ENTER, from two places and two only: a bucket column read on
+# a backend without timezone support (SQLite, in tests), and a window handed in by
+# a caller. Both are stamped at the boundary — the loaders below, the entrypoints
+# below that, and ``coverage.covered_buckets_from_scan_jobs`` — so nothing
+# downstream converts. In particular ``anomaly_detector.expand_series`` tests
+# ``bucket not in covered_buckets``: a set lookup CANNOT normalize, a mismatch
+# there raises nothing, and the silent result is that coverage under-reports and
+# genuinely-zero buckets are dropped from the baseline instead of zero-filled.
+#
+# A new producer conforms by calling ``to_utc`` where its value enters, never at
+# the comparison.
+def _canonical_window(
+    evaluation_start: datetime, evaluation_end: datetime
+) -> tuple[datetime, datetime]:
+    """An evaluation window as the detection passes compare it: aware UTC."""
+    return to_utc(evaluation_start), to_utc(evaluation_end)
+
+
+def _canonical_covered(covered_buckets: set[datetime] | None) -> set[datetime] | None:
+    """A caller-supplied coverage set re-keyed onto the comparison convention.
+
+    ``None`` (no coverage gating) is preserved; it is not the same as an empty
+    set, which excludes every bucket.
+    """
+    if covered_buckets is None:
+        return None
+    return {to_utc(bucket) for bucket in covered_buckets}
 
 
 def _build_anomaly_settings(
@@ -211,7 +254,7 @@ def _load_scope_points(
             .group_by(EventMetric.bucket)
             .order_by(EventMetric.bucket)
         ).all()
-        return [SeriesPoint(bucket=bucket, count=int(count)) for bucket, count in rows]
+        return [SeriesPoint(bucket=to_utc(bucket), count=int(count)) for bucket, count in rows]
 
     if scope_type == SCOPE_EVENT_TYPE:
         event_type_id = uuid.UUID(scope_ref)
@@ -226,7 +269,7 @@ def _load_scope_points(
             )
             .order_by(EventMetric.bucket)
         ).all()
-        return [SeriesPoint(bucket=bucket, count=count) for bucket, count in rows]
+        return [SeriesPoint(bucket=to_utc(bucket), count=count) for bucket, count in rows]
 
     event_id = uuid.UUID(scope_ref)
     rows = session.execute(
@@ -239,7 +282,7 @@ def _load_scope_points(
         )
         .order_by(EventMetric.bucket)
     ).all()
-    return [SeriesPoint(bucket=bucket, count=count) for bucket, count in rows]
+    return [SeriesPoint(bucket=to_utc(bucket), count=count) for bucket, count in rows]
 
 
 def _replace_scope_anomalies(
@@ -409,7 +452,7 @@ def _load_breakdown_scope_points(
         query = query.where(EventMetricBreakdown.event_id == uuid.UUID(scope_ref))
 
     rows = session.execute(query).all()
-    return [SeriesPoint(bucket=bucket, count=int(count)) for bucket, count in rows]
+    return [SeriesPoint(bucket=to_utc(bucket), count=int(count)) for bucket, count in rows]
 
 
 def _load_platform_ratio_points(
@@ -861,7 +904,7 @@ def _load_metric_value_points(
         .group_by(MetricValue.bucket)
         .order_by(MetricValue.bucket)
     ).all()
-    return [SeriesPoint(bucket=bucket, count=float(value)) for bucket, value in rows]
+    return [SeriesPoint(bucket=to_utc(bucket), count=float(value)) for bucket, value in rows]
 
 
 def _resolve_metric_grid(session: Session, metric: MetricDefinition) -> MetricGrid | None:
@@ -1145,7 +1188,13 @@ def _recalculate_project_metric_anomalies(
     gets the UNION (:func:`_metric_covered_buckets`), because the same set
     applied to a different grid silently decimates the series it is scored from
     and a single source's set does not describe a series summed over several.
+
+    Both the window and ``scan_covered_buckets`` are stamped onto the aware-UTC
+    comparison convention on entry; this pass is reachable directly, not only
+    through :func:`_recalculate_metric_anomalies`.
     """
+    evaluation_start, evaluation_end = _canonical_window(evaluation_start, evaluation_end)
+    scan_covered_buckets = _canonical_covered(scan_covered_buckets)
     metrics = list(
         session.execute(
             select(MetricDefinition).where(
@@ -1285,7 +1334,11 @@ def coverage_history_start(
     uncovered bucket rather than zero-filling it, so a genuinely-zero bucket
     below the horizon would quietly leave every baseline. Hence the derivation,
     and hence ``COVERAGE_HORIZON_SLACK`` on top of it.
+
+    Returned on the aware-UTC comparison convention, because it is fed straight
+    back in as ``covered_buckets_from_scan_jobs(history_from=...)``.
     """
+    evaluation_start, evaluation_end = _canonical_window(evaluation_start, evaluation_end)
     if not config.interval:
         return evaluation_start - COVERAGE_HORIZON_SLACK
     try:
@@ -1322,6 +1375,10 @@ def _recalculate_metric_anomalies(
     covered_buckets: set[datetime] | None = None,
     settling_delay: timedelta = NO_INGESTION_SETTLING,
 ) -> int:
+    # Entry boundary: a replay, a conformance harness or a test may hand in a
+    # naive window and a hand-built naive coverage set. Stamp both once here.
+    evaluation_start, evaluation_end = _canonical_window(evaluation_start, evaluation_end)
+    covered_buckets = _canonical_covered(covered_buckets)
     project_settings = _get_project_anomaly_settings(session, config.project_id)
     if project_settings is None or not project_settings.anomaly_detection_enabled:
         session.execute(delete(MetricAnomaly).where(MetricAnomaly.scan_config_id == config.id))
@@ -1582,6 +1639,9 @@ def _recalculate_platform_parity_anomalies(
     covered_buckets: set[datetime] | None = None,
     settling_delay: timedelta = NO_INGESTION_SETTLING,
 ) -> int:
+    # Entry boundary; see ``_recalculate_metric_anomalies``.
+    evaluation_start, evaluation_end = _canonical_window(evaluation_start, evaluation_end)
+    covered_buckets = _canonical_covered(covered_buckets)
     platform_column = config.platform_column
     if not platform_column or not config.interval:
         session.execute(
@@ -1729,6 +1789,9 @@ def _recalculate_metric_breakdown_anomalies(
     covered_buckets: set[datetime] | None = None,
     settling_delay: timedelta = NO_INGESTION_SETTLING,
 ) -> int:
+    # Entry boundary; see ``_recalculate_metric_anomalies``.
+    evaluation_start, evaluation_end = _canonical_window(evaluation_start, evaluation_end)
+    covered_buckets = _canonical_covered(covered_buckets)
     project_settings = _get_project_anomaly_settings(session, config.project_id)
     if project_settings is None or not project_settings.anomaly_detection_enabled:
         session.execute(

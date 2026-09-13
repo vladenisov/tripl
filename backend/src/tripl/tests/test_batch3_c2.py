@@ -1071,6 +1071,14 @@ def test_batch_ratio_breakdown_names_an_unknown_breakdown_column(
 
 
 def _stored_buckets(session_factory: sessionmaker[Session], def_id: str) -> set[datetime]:
+    """Every bucket this metric has stored, on the canonical comparison footing.
+
+    ``to_utc`` because ``MetricValue.bucket`` reads back naive on sqlite and aware
+    on PostgreSQL, and the composed values that went in were aware either way
+    (``metric_composition.normalize_series``). The EXPECTATION therefore has to be
+    stamped as well — ``_b()`` is the file's naive fixture anchor, and an aware set
+    never equals a naive one even bucket for bucket.
+    """
     with session_factory() as session:
         return {
             to_utc(bucket)
@@ -1137,7 +1145,9 @@ def test_event_composition_backfills_pre_history_over_successive_runs(
 
     metric_collect.collect_metric_definitions.run(def_id)
     # Run 1 is capped three buckets back from the head: b06..b09 and nothing else.
-    assert _stored_buckets(sync_session_factory, def_id) == {_b(hour) for hour in range(6, 10)}
+    assert _stored_buckets(sync_session_factory, def_id) == {
+        to_utc(_b(hour)) for hour in range(6, 10)
+    }
 
     for hour in (10, 11):
         _append_numerator_bucket(sync_session_factory, scan_config, numerator_event_id, hour)
@@ -1145,7 +1155,7 @@ def test_event_composition_backfills_pre_history_over_successive_runs(
 
     # Two further runs, each taking one bounded step backwards, and the whole
     # retained history is composed -- b00 included.
-    assert _stored_buckets(sync_session_factory, def_id) == {_b(hour) for hour in range(12)}
+    assert _stored_buckets(sync_session_factory, def_id) == {to_utc(_b(hour)) for hour in range(12)}
     # ...without any single run asking the warehouse for more than the bound.
     assert adapter.windows, "the denominator query never ran"
     assert all(window_to - window_from <= HOUR * 4 for window_from, window_to in adapter.windows)
