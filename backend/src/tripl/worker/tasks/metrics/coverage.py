@@ -28,12 +28,21 @@ nature:
 * the caller's ``current_window``/``history_from`` are whatever the orchestrator
   minted, which the same split reaches through ``max(EventMetric.bucket)``.
 
-A set mixing the two is broken on BOTH backends rather than one: the consumer
-(``anomaly_detector.expand_series``) does a plain ``bucket not in covered``
-membership test, and ``datetime(t)`` and ``datetime(t, tzinfo=UTC)`` are neither
-equal nor equal-hashing. Half the set silently stops matching, coverage
+Scope of the defect this convention closes, stated exactly: the set was only ever
+mixed on SQLITE. On PostgreSQL every half was already aware — ``timestamptz``
+columns, ``_parse_task_datetime``, and an orchestrator window minted from an
+aware clock — and Python compares and hashes aware datetimes BY INSTANT, so even
+a set holding two different offsets keys alike. Production was NOT under-reporting
+coverage. On SQLite the series buckets the detector loads come back naive too, so
+only the stored-bucket half of the union could ever match them.
+
+The warning that survives is about the consumer and applies to any producer on
+any backend: ``anomaly_detector.expand_series`` does a plain
+``bucket not in covered`` membership test, and ``datetime(t)`` and
+``datetime(t, tzinfo=UTC)`` are neither equal nor equal-hashing. A producer that
+skips the boundary silently contributes dead entries — nothing raises, coverage
 under-reports, and an uncovered bucket is EXCLUDED from the series rather than
-zero-filled — so genuinely-zero buckets vanish from every baseline with no error
+zero-filled, so genuinely-zero buckets vanish from every baseline with no error
 anywhere.
 
 **A new producer conforms by calling ``to_utc`` at the point its value ENTERS

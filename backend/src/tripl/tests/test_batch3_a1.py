@@ -18,7 +18,7 @@ Sync sqlite fixtures mirror ``test_metric_anomaly_scope.py``.
 
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -64,6 +64,18 @@ _EVAL_TO = _BASE + _HOUR * 10
 # caller's own window and the stored-bucket read alike — so an assertion on the
 # returned set has to be aware to compare at all.
 _JOB_BASE = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+# The same instant as ``_JOB_BASE``, spelled the way a naive producer spells it:
+# a bucket column read on a backend without timezone support, or a window a
+# caller minted off a naive clock. It is NOT equal to ``_JOB_BASE`` — that
+# inequality is the whole defect — so it exists to be passed IN, never to appear
+# in an expectation.
+_JOB_BASE_NAIVE = _JOB_BASE.replace(tzinfo=None)
+# The third spelling a caller can arrive in: aware, but not UTC. It is equal
+# to its UTC twin and hashes alike (Python keys aware datetimes by INSTANT), so
+# it is harmless at a comparison — and NOT harmless at a boundary, because a
+# bound handed to a backend without timezone support is stored and compared by
+# its PRINTED FIELDS, which read two hours off.
+_PLUS_TWO = timezone(timedelta(hours=2))
 
 
 @pytest.fixture
@@ -196,20 +208,27 @@ def _seed_values(
     session.commit()
 
 
-def _seed_event_metrics(session: Session, scan_config_id: uuid.UUID, hours: list[int]) -> None:
+def _seed_event_metric_buckets(
+    session: Session, scan_config_id: uuid.UUID, buckets: list[datetime]
+) -> None:
     """Stored buckets for a config — the presence half of its coverage."""
-    for hour in hours:
+    for bucket in buckets:
         session.add(
             EventMetric(
                 id=uuid.uuid4(),
                 scan_config_id=scan_config_id,
                 event_id=None,
                 event_type_id=None,
-                bucket=_BASE + _HOUR * hour,
+                bucket=bucket,
                 count=10,
             )
         )
     session.commit()
+
+
+def _seed_event_metrics(session: Session, scan_config_id: uuid.UUID, hours: list[int]) -> None:
+    """Stored buckets on the ``_BASE`` grid the detection fixtures share."""
+    _seed_event_metric_buckets(session, scan_config_id, [_BASE + _HOUR * hour for hour in hours])
 
 
 def _add_completed_job(
@@ -733,3 +752,226 @@ def test_metric_coverage_keeps_a_job_that_sat_queued_across_the_horizon(
     # The slack widens the created_at floor, not the recorded window, so the
     # whole window is still honoured and nothing below it is invented.
     assert min(covered) == window_from
+
+
+# --------------------------------------------------------------------------
+# The bucket convention — every datetime this seam compares is tz-aware UTC,
+# stamped at the boundary where a value ENTERS rather than at a comparison.
+#
+# Naive and aware datetimes are neither equal nor equal-hashing, and the
+# consumer (``anomaly_detector.expand_series``) does a ``bucket not in covered``
+# set-membership test, which cannot convert. A half that skips the boundary
+# therefore contributes entries that can never match, and NOTHING RAISES: the
+# only symptom is coverage under-reporting, and an uncovered bucket is excluded
+# from the series rather than zero-filled. That silence is why the convention
+# needs assertions rather than a runtime guard.
+# --------------------------------------------------------------------------
+
+
+def _assert_uniformly_aware_utc(buckets: set[datetime]) -> None:
+    """Every member is tz-aware and at zero offset — no mixed set, no naive."""
+    assert buckets, "an empty set would satisfy the convention vacuously"
+    assert all(bucket.tzinfo is not None for bucket in buckets)
+    assert all(bucket.utcoffset() == timedelta(0) for bucket in buckets)
+
+
+def _seed_both_coverage_halves(session: Session, scan_config_id: uuid.UUID) -> None:
+    """Populate BOTH halves of the union that ``covered_buckets_from_scan_jobs``
+    builds, because the defect was that the two disagreed — a test that seeds
+    one half alone passes with the stamping removed.
+
+    * the job-window half: a COMPLETED job whose ``result_summary`` records
+      ``[_JOB_BASE, +3h)``, parsed back through ``_parse_task_datetime``;
+    * the presence half: stored ``EventMetric`` rows at +3h and +4h, seeded in
+      the NAIVE spelling because that is what sqlite hands back regardless of
+      what was written (and what PostgreSQL never does).
+    """
+    _add_completed_job(
+        session,
+        scan_config_id,
+        created_at=_JOB_BASE,
+        window=(_JOB_BASE, _JOB_BASE + _HOUR * 3),
+    )
+    _seed_event_metric_buckets(
+        session,
+        scan_config_id,
+        [_JOB_BASE_NAIVE + _HOUR * 3, _JOB_BASE_NAIVE + _HOUR * 4],
+    )
+
+
+def test_covered_buckets_are_uniformly_aware_across_both_halves(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The returned set is homogeneous even though it is unioned from sources
+    whose awareness is decided in three different places: the recorded job
+    window (aware by parse), the caller's own window (aware by stamp), and the
+    stored-bucket read (decided by the BACKEND — naive here, ``timestamptz`` on
+    PostgreSQL).
+
+    The equality below is the load-bearing half of the assertion: a set holding
+    a naive +3h next to an aware +3h has six members too, but it is not this
+    set, and downstream it is a set in which half the buckets can never match.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        _seed_both_coverage_halves(session, config.id)
+
+        covered = covered_buckets_from_scan_jobs(
+            session,
+            scan_config_id=config.id,
+            delta=_HOUR,
+            history_from=_JOB_BASE,
+            current_window=(_JOB_BASE + _HOUR * 5, _JOB_BASE + _HOUR * 6),
+        )
+
+    # 0,1,2 from the recorded window; 3,4 from the stored buckets; 5 from the
+    # window this run just wrote. One flat run only because all three key alike.
+    assert covered == {_JOB_BASE + _HOUR * step for step in range(6)}
+    _assert_uniformly_aware_utc(covered)
+
+
+def test_covered_buckets_stamp_a_naive_current_window(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The boundary-stamping contract at the caller's entry point: hand in a
+    naive ``history_from`` and a naive ``current_window`` — what a caller off a
+    naive clock mints — and the output is still uniformly aware, identical to
+    the aware-input call above.
+
+    A caller is not required to know the convention; the module is required to
+    impose it. Nothing downstream converts, because the membership test cannot.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        _seed_both_coverage_halves(session, config.id)
+
+        covered = covered_buckets_from_scan_jobs(
+            session,
+            scan_config_id=config.id,
+            delta=_HOUR,
+            history_from=_JOB_BASE_NAIVE,
+            current_window=(_JOB_BASE_NAIVE + _HOUR * 5, _JOB_BASE_NAIVE + _HOUR * 6),
+        )
+
+    assert covered == {_JOB_BASE + _HOUR * step for step in range(6)}
+    _assert_uniformly_aware_utc(covered)
+
+
+def test_covered_buckets_stamp_a_naive_presence_bound(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The other entry point, taken when the caller is asking about a FOREIGN
+    config it wrote nothing for: no ``current_window``, a naive
+    ``presence_before`` supplying the upper bound instead.
+
+    Both halves are still seeded — the foreign-config path is exactly where the
+    two disagreed, since the presence half is the only one the caller can see.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        _seed_both_coverage_halves(session, config.id)
+
+        covered = covered_buckets_from_scan_jobs(
+            session,
+            scan_config_id=config.id,
+            delta=_HOUR,
+            history_from=_JOB_BASE_NAIVE,
+            presence_before=_JOB_BASE_NAIVE + _HOUR * 6,
+        )
+
+    # No current window to contribute +5h this time.
+    assert covered == {_JOB_BASE + _HOUR * step for step in range(5)}
+    _assert_uniformly_aware_utc(covered)
+
+
+def test_covered_buckets_bound_a_non_utc_presence_bound_at_the_same_instant(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The upper bound is stamped too, and the stamp is what makes it an INSTANT
+    rather than a wall-clock reading.
+
+    ``presence_before`` reaches the database as a bind parameter, and a backend
+    without timezone support stores and compares a datetime by its printed
+    fields — so an unstamped ``08:00+02:00`` bounds the stored-bucket read at
+    08:00 instead of at the 06:00 instant the caller meant. The decoy bucket at
+    +7h sits in exactly that two-hour gap: it is outside the caller's window and
+    must not be vouched for.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        _seed_both_coverage_halves(session, config.id)
+        # Above the real bound, inside the drift an unstamped bound would open.
+        _seed_event_metric_buckets(session, config.id, [_JOB_BASE_NAIVE + _HOUR * 7])
+
+        covered = covered_buckets_from_scan_jobs(
+            session,
+            scan_config_id=config.id,
+            delta=_HOUR,
+            history_from=_JOB_BASE,
+            presence_before=(_JOB_BASE + _HOUR * 6).astimezone(_PLUS_TWO),
+        )
+
+    assert covered == {_JOB_BASE + _HOUR * step for step in range(5)}
+    _assert_uniformly_aware_utc(covered)
+
+
+def test_covered_buckets_stamp_a_non_utc_current_window(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The same, through the other entry point — and one step further, because
+    ``current_window`` is not only a bound but a source of buckets.
+
+    Unstamped, its ``+02:00`` buckets still EQUAL their UTC twins and still hash
+    alike, so the union stays correct by instant; what breaks is the stated
+    convention that every member is UTC, which is what lets a reader trust a
+    ``min()``/``max()`` or a printed bucket without re-deriving the offset.
+    """
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        _seed_both_coverage_halves(session, config.id)
+        _seed_event_metric_buckets(session, config.id, [_JOB_BASE_NAIVE + _HOUR * 7])
+
+        covered = covered_buckets_from_scan_jobs(
+            session,
+            scan_config_id=config.id,
+            delta=_HOUR,
+            history_from=_JOB_BASE,
+            current_window=(
+                (_JOB_BASE + _HOUR * 5).astimezone(_PLUS_TWO),
+                (_JOB_BASE + _HOUR * 6).astimezone(_PLUS_TWO),
+            ),
+        )
+
+    assert covered == {_JOB_BASE + _HOUR * step for step in range(6)}
+    _assert_uniformly_aware_utc(covered)
+
+
+def test_canonical_covered_preserves_none_and_stamps_a_naive_set() -> None:
+    """``None`` means NO coverage gating and must survive as ``None``.
+
+    It is not interchangeable with the empty set: ``expand_series`` reads an
+    empty set as 'nothing is covered' and drops every bucket of every series,
+    which is silent — no anomaly is scored and no error is raised. Collapsing
+    one into the other in either direction blanks or un-gates every pass, so
+    both directions are pinned here alongside the stamping itself.
+    """
+    assert metrics_detect._canonical_covered(None) is None
+
+    empty = metrics_detect._canonical_covered(set())
+    assert empty is not None
+    assert empty == set()
+
+    stamped = metrics_detect._canonical_covered({_JOB_BASE_NAIVE, _JOB_BASE_NAIVE + _HOUR})
+    assert stamped is not None
+    assert stamped == {_JOB_BASE, _JOB_BASE + _HOUR}
+    _assert_uniformly_aware_utc(stamped)
+
+
+def test_canonical_window_stamps_a_naive_pair() -> None:
+    """Every detection entrypoint runs its evaluation window through this, so a
+    naive pair from a caller is converted once, here, and never compared against
+    an aware bucket downstream."""
+    start, end = metrics_detect._canonical_window(_JOB_BASE_NAIVE, _JOB_BASE_NAIVE + _HOUR)
+
+    assert (start, end) == (_JOB_BASE, _JOB_BASE + _HOUR)
+    _assert_uniformly_aware_utc({start, end})
