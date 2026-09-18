@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, object_session, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from tripl import realtime
 from tripl.alert_templates import (
@@ -436,23 +437,43 @@ def _assert_destination_still_enabled(destination: AlertDestination) -> None:
     nothing between the two calls expires the row, so calling
     :func:`_assert_destination_enabled` a second time on the same instance
     would hand back the value the first call already saw and could never
-    disagree with it — a guard that cannot fail. ``session.refresh`` with one
-    attribute name is a primary-key SELECT of one column against a row already
-    in the identity map: one query per delivery (or per digest group), not one
-    per item, and not a second load of the destination's secrets.
+    disagree with it — a guard that cannot fail. So this reads the column
+    itself: one primary-key SELECT of one column per delivery (or per digest
+    group), not one per item, and not a second load of the destination's
+    secrets.
+
+    NOT ``session.refresh``, and not an ordinary ``session.execute`` either.
+    Both FLUSH first, and a flush in the middle of the send is not harmless
+    here: it freezes ``delivery.payload_snapshot``'s committed state on the very
+    dict the branches below go on to mutate in place, after which re-assigning
+    that same object is no longer a change the unit of work can see — and
+    ``delivery_mode`` for a demo sink, or ``external_issue_key`` for a ticket,
+    never reaches the row. Hence ``no_autoflush`` around the read, and
+    ``set_committed_value`` to land the answer on the instance without marking
+    it dirty (the idiom ``services/_branch_counterparts.py`` uses for the same
+    reason: a read that must not become a write).
 
     A destination with no session — one a caller built or detached itself —
     keeps the value it was loaded with rather than raising, because the only
     honest answer available is the one already in hand.
 
-    A destination DELETED mid-flight raises ``ObjectDeletedError`` here instead
-    of the ``ValueError`` above. That is the same refusal under a different
-    name and lands in the same ``failed`` row: a row pointing at a destination
-    that no longer exists is not one to send to either.
+    A destination DELETED mid-flight reads back as no row at all. That is
+    refused too, by the same ``ValueError`` and into the same ``failed`` row: a
+    delivery pointing at a destination that no longer exists is not one to send
+    to either, and saying so in the error the operator reads beats an
+    ``ObjectDeletedError`` from the ORM.
     """
     session = object_session(destination)
     if session is not None:
-        session.refresh(destination, ["enabled"])
+        with session.no_autoflush:
+            still_enabled = session.execute(
+                select(AlertDestination.enabled).where(AlertDestination.id == destination.id)
+            ).scalar_one_or_none()
+        if still_enabled is None:
+            raise ValueError(
+                f"Alert destination {destination.name!r} no longer exists; nothing was sent."
+            )
+        set_committed_value(destination, "enabled", still_enabled)
     _assert_destination_enabled(destination)
 
 
