@@ -1699,34 +1699,38 @@ class BigQueryAdapter(BaseAdapter):
                 # skipped rather than reused because its only special case is
                 # the REPEATED column, and `_string_value_expression` has
                 # already refused a REPEATED breakdown a few lines above.
-                # Two BigQuery-only spellings are needed here, and the ZetaSQL
-                # gate had to teach us both — every fake-client test in this
-                # repo passes either way, because a fake answers any string.
+                # The breakdown's slot is grouped BY ITS OWN ALIAS, and the alias
+                # is deliberately not the column's name. Both halves were
+                # settled against Google's ZetaSQL analyzer, because every
+                # fake-client test in this repo passes either way — a fake
+                # answers any string, so nothing here can tell you the warehouse
+                # would have refused the statement.
                 #
-                # First, the expression is repeated and ALSO added to the
-                # grouping. GoogleSQL does not expose a SELECT alias to the same
-                # SELECT list, and ZetaSQL will not match the repeated
-                # expression against the grouping key `_breakdown_value` is
-                # bound to; without its own grouping term it answers `SELECT
-                # list expression references column <name> which is neither
-                # grouped nor aggregated` and refuses to analyze the statement.
-                # Grouping by that value twice forms no new groups — it IS the
-                # value `_breakdown_value` holds.
+                # ZetaSQL does NOT match a repeated expression against an
+                # identical one in GROUP BY. Projecting the fold a second time
+                # and adding that same expression to the grouping is rejected
+                # with `SELECT list expression references column <name> which is
+                # neither grouped nor aggregated` — measured, not reasoned:
+                # grouping by the expression fails, grouping by the alias bound
+                # to it passes. So the grouping names the alias.
                 #
-                # Second, the slot is NOT aliased to the column's own name. That
-                # alias shadows the source column, and GoogleSQL resolves GROUP
-                # BY names against SELECT aliases before FROM columns, so the
-                # grouping term above would bind to this very slot rather than
-                # to the column — leaving the column ungrouped and the statement
-                # rejected exactly as before. The alias is cosmetic here: every
-                # consumer reads these rows positionally and takes its names
-                # from `col_names`, which still carries the real column name.
+                # The alias avoids the column's own name because that name would
+                # then mean two things at once — the source column and this
+                # slot. GoogleSQL accepts the ambiguity and resolves it, but its
+                # two readings differ in VALUE, not just in spelling: the alias
+                # is the folded value, the column is the raw one, and grouping
+                # by the raw one is the defect tripl-0zpq.58 exists to remove. A
+                # name that can only mean one of them cannot regress quietly.
+                # Nothing downstream is affected — rows are read positionally
+                # and their names come from `col_names`, which still carries the
+                # real column name.
                 #
-                # Neither spelling is needed by the sibling engines — ClickHouse
-                # groups with GROUP BY ALL, PostgreSQL resolves the output name
-                # to the same expression tree — so both stay local to BigQuery.
-                select_parts.append(f"{breakdown_expr} AS `_bd_col{len(col_names)}`")
-                group_parts.append(breakdown_expr)
+                # Neither spelling is needed by the siblings: ClickHouse groups
+                # with GROUP BY ALL and PostgreSQL resolves the output name to
+                # the same expression tree, so both stay local to BigQuery.
+                slot_alias = f"_bd_col{len(col_names)}"
+                select_parts.append(f"{breakdown_expr} AS `{slot_alias}`")
+                group_parts.append(f"`{slot_alias}`")
             else:
                 select_sql, group_sql = self._regular_column_sql(c)
                 select_parts.append(select_sql)

@@ -537,9 +537,26 @@ def _grouping_groups(engine: str, sql: str) -> frozenset[str]:
     a dialect made us spell it — which is the property these tests are about.
     """
     folded = _folded_expression(sql)
-    return frozenset(
-        "_breakdown_value" if key == folded else key for key in _grouping_keys(engine, sql)
-    )
+    # alias -> the expression it is bound to, so a key naming an alias can be
+    # resolved instead of compared as text. BigQuery groups the breakdown slot
+    # by its ALIAS: ZetaSQL will not match a repeated expression against an
+    # identical one in GROUP BY, measured against the real analyzer, so naming
+    # the alias is the only spelling it accepts.
+    bound: dict[str, str] = {}
+    for term in _select_terms(sql):
+        expr = _TRAILING_ALIAS.sub("", term)
+        alias = term[len(expr) :].strip()
+        if alias.upper().startswith("AS "):
+            bound[alias[3:].strip().strip('`"')] = expr
+
+    def _resolve(key: str) -> str:
+        if key == folded:
+            return "_breakdown_value"
+        if bound.get(key.strip('`"')) == folded:
+            return "_breakdown_value"
+        return key
+
+    return frozenset(_resolve(key) for key in _grouping_keys(engine, sql))
 
 
 # The raw breakdown column as a bare grouping term would be spelled exactly this.
