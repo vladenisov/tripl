@@ -62,6 +62,33 @@ interface RowFilterDraft extends FactTableRowFilter {
   id: string
 }
 
+/**
+ * The first row-filter name that appears twice, or `null`.
+ *
+ * A fact metric stores the NAME of the filter it applies, and the collector
+ * resolves it to the FIRST stored filter with that name, so a repeat makes one
+ * of the two SQL fragments permanently unreachable while both keep showing up in
+ * the metric form's picker. The backend refuses such a payload outright
+ * (`schemas/fact_table._reject_duplicate_filter_names`); this is only the
+ * affordance that says so before a filled-in form round-trips to a 422.
+ *
+ * Fed the `cleanRowFilters()` output rather than the drafts so it judges exactly
+ * what the request will carry — names trimmed, incomplete rows already dropped —
+ * and cannot disagree with the validator it is mirroring. Returning the first
+ * repeat rather than a count is what lets the message name the offending filter,
+ * which matters because a fact table whose STORED filters already collide (the
+ * backend validates input only, and never backfilled) will now fail a save the
+ * user did not break.
+ */
+function firstRepeatedFilterName(filters: FactTableRowFilter[]): string | null {
+  const seen = new Set<string>()
+  for (const filter of filters) {
+    if (seen.has(filter.name)) return filter.name
+    seen.add(filter.name)
+  }
+  return null
+}
+
 interface FactTableFormProps {
   slug: string
   factTable: FactTable | null
@@ -159,6 +186,15 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     if (!dataSourceId) errs.push('A data source is required.')
     if (!sql.trim()) errs.push('The fact table SQL is required.')
     if (!timestampColumn.trim()) errs.push('A timestamp column is required.')
+    // Last, because the messages render in this order and Row filters is the
+    // bottom card — the reader scans down to the field the first error names.
+    const repeated = firstRepeatedFilterName(cleanRowFilters())
+    if (repeated !== null) {
+      errs.push(
+        `Two row filters are named "${repeated}". Metrics reference a filter by name, ` +
+          'so each name can only be used once.',
+      )
+    }
     return errs
   }
 

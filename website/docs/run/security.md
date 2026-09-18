@@ -350,7 +350,18 @@ Two further surfaces carry a stricter gate than the role table alone implies:
 
 `base_query` is additionally validated by the shared read-only-SELECT gate
 (`validate_select_sql_safety`, the same one `metric_sql` uses): single statement,
-no stacked `;`, no comment markers, no DDL/DML/`UNION`.
+no stacked `;`, no comment markers, no DDL/DML/`UNION` — each of those three
+checked **outside** string and quoted-identifier literals, so a value such as
+`'Delete Account'` is data rather than a rejected keyword. A keyword or `;` after
+a literal that closed is still caught, and an unterminated literal is scanned as
+if it were code.
+
+The gate is an accident guard, not the write barrier. It is a keyword blocklist,
+so it stops only writes spelled with one of those words — not a write reached
+through a function call (`setval`, `lo_create`), a lock clause (`FOR SHARE`) or
+session mutation (`set_config`). The barrier is the warehouse credential's own
+privileges (and, on PostgreSQL, `default_transaction_read_only=on` pinned on the
+connection).
 
 Additional guards:
 

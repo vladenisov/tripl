@@ -136,12 +136,22 @@ def test_multi_aggregate_conditional_filter_folds_into_case() -> None:
     sql = client.sql[0]
     # BigQuery has no FILTER (WHERE ...); conditions fold into CASE / IF forms.
     assert "FILTER (WHERE" not in sql
-    # count / count_distinct return 0 (not NULL) for an empty group, so they are
-    # NULLIF-wrapped to read as absent — matching the per-metric path. sum (and
-    # avg/min/max) over CASE WHEN already return NULL, so they stay unwrapped.
+    # count / count_distinct return 0 (not NULL) for an empty group, so a bucket
+    # nothing matched has to be turned into a gap explicitly — matching the
+    # per-metric path. sum (and avg/min/max) over CASE WHEN already return NULL,
+    # so they stay unwrapped.
     assert "NULLIF(count(CASE WHEN `amount` > 10 THEN 1 END), 0) AS `k_cnt_f`" in sql
     assert "sum(CASE WHEN `event_name` = 'buy' THEN `amount` END) AS `k_sum_f`" in sql
-    assert ("NULLIF(count(DISTINCT IF(`amount` > 0, `user_id`, NULL)), 0) AS `k_dist_f`") in sql
+    # count_distinct cannot use NULLIF(..., 0): its own value is 0 both for a bucket
+    # nothing matched AND for a bucket whose matching rows all have a NULL measure,
+    # so NULLIF reported real rows with an all-NULL measure as a gap — where
+    # ClickHouse, gating on countIf(cond), kept the bucket and stored the 0. The
+    # COUNTIF probe asks the question the value cannot answer about itself. `count`
+    # above needs no probe, because there its value IS the count of matching rows.
+    assert (
+        "CASE WHEN COUNTIF(`amount` > 0) = 0 THEN NULL "
+        "ELSE count(DISTINCT IF(`amount` > 0, `user_id`, NULL)) END AS `k_dist_f`"
+    ) in sql
 
 
 @pytest.mark.parametrize(

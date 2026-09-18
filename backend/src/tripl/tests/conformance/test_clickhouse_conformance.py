@@ -244,3 +244,67 @@ def test_field_contracts_find_exactly_the_drift_that_is_there(ch: ClickHouseAdap
     actual = {(v.field_name, v.drift_type): (v.bad_count, v.total_count) for v in violations}
     assert actual == expected_contract_violations()
     assert ("user_id", "regex_violation") not in actual
+
+
+# --- the other two nested families: Map and Tuple ------------------------------
+
+
+def test_map_and_tuple_columns_do_not_break_a_scan(ch: ClickHouseAdapter) -> None:
+    """A Map and a Tuple column in the source must not kill the whole scan.
+
+    Before tripl-0zpq.55 the adapter emitted ``JSONAllPaths`` for every column the
+    caller classified as nested, and ClickHouse answers that with
+    ``Code: 43 ... requires argument with type JSON`` for a Map or a Tuple. One such
+    column anywhere in the query took down every scan and every metrics collection
+    for the config. This is the assertion that would have caught it: on revert the
+    server raises and the test ERRORS, where a fake-client SQL-string comparison
+    would only have pinned the adapter's own opinion of the right function name.
+    """
+    ch.get_columns(BASE)
+    reg, nested, _values, rows = ch.get_full_breakdown(
+        BASE,
+        ["event_name"],
+        ["doc", "props", "tup"],
+        None,
+        time_column="ts",
+        time_from=FROM_TIME,
+        time_to=TO_TIME,
+    )
+    assert rows
+    # The name lists come back unchanged: cardinality.py indexes row[n_reg + j]
+    # off them, so a fix that reshuffled a column between buckets would break it.
+    assert reg == ["event_name"]
+    assert nested == ["doc", "props", "tup"]
+
+    n_reg = len(reg)
+    props_shapes = {tuple(row[n_reg + 1]) for row in rows}  # type: ignore[arg-type]
+    tup_shapes = {tuple(row[n_reg + 2]) for row in rows}  # type: ignore[arg-type]
+    # The Map reports the row's key set, sorted as strings.
+    assert props_shapes == {("odd", "shared"), ("shared",)}
+    # A Tuple's shape cannot vary: the declared field names, every row.
+    assert tup_shapes == {("a", "b")}
+
+
+def test_map_and_tuple_columns_survive_a_bucketed_scan(ch: ClickHouseAdapter) -> None:
+    """Same guarantee on the bucketed path, which is what metrics collection runs."""
+    ch.get_columns(BASE)
+    col_names, _values, rows = ch.get_time_bucketed_counts(
+        BASE, "ts", "1d", ["event_name"], ["doc", "props", "tup"], None, FROM_TIME, TO_TIME
+    )
+    assert rows
+    assert col_names == ["event_name", "doc", "props", "tup"]
+
+
+def test_json_path_discovery_ignores_map_and_tuple_columns(ch: ClickHouseAdapter) -> None:
+    """Discovery is JSON-only and must not fail the JSON column it CAN enumerate.
+
+    Both enumerators reject a Map/Tuple argument, so before the fix a single such
+    column in the request failed discovery for every column in the same call.
+    """
+    ch.get_columns(BASE)
+    samples = ch.get_json_path_samples(
+        BASE, ["doc", "props", "tup"], time_column="ts", time_from=FROM_TIME, time_to=TO_TIME
+    )
+    assert samples["props"] == {}
+    assert samples["tup"] == {}
+    assert samples["doc"], "the JSON column must still be enumerated"

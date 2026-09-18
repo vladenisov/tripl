@@ -209,8 +209,13 @@ detector for volume anomalies, and records a scan job, so a demo always looks
 live. The full scheduled collection — which additionally produces breakdown
 anomalies and distribution drift — runs at most **every 6 hours** per demo
 instead of hourly, because it costs 67–141 s against the in-memory dataset and
-every demo on a deployment used to pay that every hour. Real projects are
-unaffected and keep their configured `interval`.
+every demo on a deployment used to pay that every hour. Both paths additionally
+stop for a demo nobody has opened for **6 hours** and resume on the next visit;
+they share one idleness rule rather than testing it separately, because a
+collection dispatched while the tick is paused opens a window reaching back past
+the synthetic warehouse's full-volume hours and overwrites the demo's history
+with near-zero counts. Real projects are unaffected and keep their configured
+`interval`.
 :::
 
 :::note Reset is a provisioning path — delete is not

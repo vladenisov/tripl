@@ -18,6 +18,9 @@ from tripl.core.adapters.base import (
     FieldContractViolation,
     SchemaColumn,
     SchemaTable,
+    clamp_field_contract_threshold,
+    contract_bound_literal,
+    field_contract_is_inert,
 )
 from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.measure_validator import (
@@ -1097,6 +1100,26 @@ class BigQueryAdapter(BaseAdapter):
             return ""
         return " WHERE " + " AND ".join(conditions)
 
+    @override
+    def _probe_contract_regex(self, pattern: str) -> None:
+        """Have BigQuery compile the pattern with RE2, scanning nothing.
+
+        A statement with no FROM processes no bytes, so the probe costs a job and
+        no billed data — which is the only reason a round trip is affordable on
+        the engine that bills by the byte. It goes through ``_run_query`` like
+        every other statement this adapter issues, so it inherits the deadline
+        and the cancel-on-timeout that method exists for.
+
+        One job per DISTINCT pattern per adapter, memoized by
+        ``contract_regex_is_compilable``: a config with no regex contract issues
+        none at all, and the one that has a regex contract on ten event-type
+        groups still issues one. The alternative — compiling the pattern into the
+        contract statement and letting a rejection fail the job — is what
+        ``validate_field_contracts`` below is built to avoid, since that job is
+        the one that reads the whole window.
+        """
+        self._run_query(f"SELECT REGEXP_CONTAINS('', {self._quote_string(pattern)})")
+
     def _contract_fragments(
         self,
         expectation: FieldContractExpectation,
@@ -1105,9 +1128,12 @@ class BigQueryAdapter(BaseAdapter):
     ) -> tuple[str, str] | None:
         """Compile one expectation to ``(aggregate_sql, struct_sql)``, or None if inert.
 
-        Semantics are matched to ``ClickHouseAdapter._contract_select_sql`` term for term
-        — the canonical warehouse-side contract — and, through it, to the Python fallback
-        in ``BaseAdapter``:
+        What counts as a BAD row is matched term for term to
+        ``ClickHouseAdapter._contract_aggregates`` and
+        ``PostgresAdapter._contract_bad_condition``, and through them to the Python
+        fallback in ``BaseAdapter``. What counts as a VIOLATION is not decided here at
+        all — see the field contract section of ``BaseAdapter`` for where that lives and
+        why this method is the one place still allowed to apply it warehouse-side:
 
         * **required_null_violation** — the NULL *is* the violation, so NULLs are counted
           in the denominator: ``total`` is ``COUNT(*)``, not the non-NULL count. Its sample
@@ -1131,10 +1157,44 @@ class BigQueryAdapter(BaseAdapter):
         The sample is ``MIN(IF(bad, value, NULL))`` rather than an ``ANY_VALUE``: MIN
         ignores NULL inputs, so it can only ever return a value from a row that actually
         violated, and it is deterministic, where ClickHouse's ``anyIf`` is not.
+
+        "Inert" here is the shared list plus what THIS dialect declines — a REPEATED
+        column, and a pattern RE2 will not compile — and that split is the whole
+        point: what an expectation MEANS is shared, what an engine can compile is
+        not. See the field contract section of ``BaseAdapter``, where both
+        divergences are declared.
         """
+        if field_contract_is_inert(expectation):
+            return None
+
         column = self._validate_column(expectation.field_name)
         present = f"`{column}` IS NOT NULL"
-        threshold = max(0.0, min(1.0, expectation.threshold))
+        threshold = clamp_field_contract_threshold(expectation.threshold)
+
+        if expectation.drift_type != "required_null_violation" and column in self._repeated_columns:
+            # Every branch below but required_null needs the scalar STRING rendering,
+            # and there is none for an ARRAY — so `_string_value_expression` raises,
+            # and it must keep raising for `role="breakdown column"`, where the caller
+            # is still choosing a column and a loud failure is the right answer.
+            #
+            # Here the caller is a worker replaying contracts a user declared long ago,
+            # so the same raise ended the entire collection: `schema_drift` called
+            # `validate_field_contracts` bare and `catalog_sync` calls that once per
+            # event-type group. `schema_drift` now contains a raise and counts it, but
+            # that is a backstop and not a licence to raise from here: it costs the
+            # event type every other contract it declared, where declining costs one.
+            # An explicit pre-check, rather than wrapping the call in
+            # try/except ValueError, is what keeps the two roles' answers separate —
+            # and it mirrors the `_allowed_columns` skip in `validate_field_contracts`
+            # line for line, which exists for the identical reason (a stale contract).
+            logger.warning(
+                "BQ field contract skipped: column %r is REPEATED (an ARRAY) and has no "
+                "scalar STRING rendering, so its %s contract cannot be compiled. The "
+                "other contracts in this scan still run.",
+                column,
+                expectation.drift_type,
+            )
+            return None
 
         if expectation.drift_type == "required_null_violation":
             # Deliberately does NOT build the STRING rendering: a required-ness check is
@@ -1144,31 +1204,39 @@ class BigQueryAdapter(BaseAdapter):
             total = "COUNT(*)"
             sample = f"MIN(IF({bad}, '<NULL>', NULL))"
         elif expectation.drift_type == "enum_violation":
-            if not expectation.enum_options:
-                return None
             value_expr = self._string_value_expression(column, role="field-contract column")
             options = ", ".join(self._quote_string(option) for option in expectation.enum_options)
             bad = f"{present} AND {value_expr} NOT IN ({options})"
             total = f"COUNTIF({present})"
             sample = f"MIN(IF({bad}, {value_expr}, NULL))"
         elif expectation.drift_type == "regex_violation":
-            if not expectation.regex:
-                return None
             value_expr = self._string_value_expression(column, role="field-contract column")
+            # The assert narrows the type; a pattern-less regex is inert above.
+            assert expectation.regex is not None
+            # The second reason this engine can decline an expectation the other
+            # two would compile, and the mirror of the one above: RE2 has no
+            # lookaround and no backreferences, all of which the Python `re` the
+            # save gate screens with accepts. Offered to the engine before it
+            # rides into the job that reads the window.
+            if not self.contract_regex_is_compilable(expectation.regex):
+                return None
             pattern = self._quote_string(expectation.regex)
             bad = f"{present} AND NOT REGEXP_CONTAINS({value_expr}, {pattern})"
             total = f"COUNTIF({present})"
             sample = f"MIN(IF({bad}, {value_expr}, NULL))"
         elif expectation.drift_type == "range_violation":
-            if expectation.min_value is None and expectation.max_value is None:
-                return None
             value_expr = self._string_value_expression(column, role="field-contract column")
             numeric = f"SAFE_CAST({value_expr} AS FLOAT64)"
             checks = [f"{numeric} IS NULL"]
+            # Rendered through the shared helper rather than an f-string of the float.
+            # GoogleSQL has no literal for infinity or NaN, so `< -inf` is a parse
+            # error the fake client in a unit test happily accepts and a worker only
+            # discovers against the real service — and it would take the sibling
+            # contracts in the same statement with it.
             if expectation.min_value is not None:
-                checks.append(f"{numeric} < {float(expectation.min_value)}")
+                checks.append(f"{numeric} < {contract_bound_literal(expectation.min_value)}")
             if expectation.max_value is not None:
-                checks.append(f"{numeric} > {float(expectation.max_value)}")
+                checks.append(f"{numeric} > {contract_bound_literal(expectation.max_value)}")
             bad = f"{present} AND ({' OR '.join(checks)})"
             total = f"COUNTIF({present})"
             sample = f"MIN(IF({bad}, {value_expr}, NULL))"
@@ -1183,15 +1251,24 @@ class BigQueryAdapter(BaseAdapter):
         # bad_rate goes through SAFE_DIVIDE, not `/`. GoogleSQL's `/` raises on a zero
         # denominator ("zero divided error" — verified against the emulator), and SQL does
         # not promise that the `total_count > 0` guard in the outer WHERE is evaluated
-        # first. ClickHouse can get away with a bare division because it yields nan there;
-        # BigQuery would fail the whole scan.
+        # first. That zero is why the other two engines stopped judging in SQL at all;
+        # BigQuery keeps doing it because its STRUCT array already gives it a row per
+        # expectation to filter, and SAFE_DIVIDE makes the empty window a NULL rate
+        # rather than a failed scan.
+        #
+        # The threshold is spelled with repr(), not `%.12g`. This literal is the ONLY
+        # copy of the threshold that is compared anywhere but inside
+        # field_contract_verdict, so it has to be the same double that function would
+        # have used: repr of a float round-trips exactly, while %.12g silently rounds
+        # one with more digits than that — enough for a contract set to 1/3 to fire
+        # here and not on the engines that compare in Python.
         struct_sql = (
             "STRUCT("
             f"{self._quote_string(expectation.field_name)} AS field_name, "
             f"{self._quote_string(expectation.drift_type)} AS drift_type, "
             f"_agg._bad_{index} AS bad_count, "
             f"_agg._total_{index} AS total_count, "
-            f"CAST({threshold:.12g} AS FLOAT64) AS threshold, "
+            f"CAST({threshold!r} AS FLOAT64) AS threshold, "
             f"IFNULL(SAFE_DIVIDE(_agg._bad_{index}, _agg._total_{index}), 0.0) AS bad_rate, "
             f"_agg._sample_{index} AS sample_value"
             ")"
@@ -1219,14 +1296,16 @@ class BigQueryAdapter(BaseAdapter):
         sample, not the data — so a contract could be badly violated and the scan would
         either miss it or under-report it straight past its threshold.
 
-        ONE job covers every expectation. The naive port of ClickHouse's shape is a
-        ``UNION ALL`` of one aggregate subquery per expectation, which is one job but N
-        SCANS of ``base_query`` — and BigQuery bills by bytes scanned, so a table with ten
-        contracts would be billed ten times over on every scan. Instead the per-expectation
-        aggregates are computed side by side in a SINGLE pass, assembled into an array of
-        STRUCTs, and unnested into the one-row-per-violation shape the caller wants. The
-        threshold/nonzero filtering happens on the unnested rows, so — exactly as on
-        ClickHouse — a passing contract never crosses the wire.
+        ONE job AND one scan covers every expectation. The shape both other SQL engines
+        started with — a ``UNION ALL`` of one aggregate subquery per expectation — is one
+        job but N SCANS of ``base_query``, and BigQuery bills by bytes scanned, so a table
+        with ten contracts would be billed ten times over on every scan. Instead the
+        per-expectation aggregates are computed side by side in a SINGLE pass, assembled
+        into an array of STRUCTs, and unnested into the one-row-per-violation shape the
+        caller wants. The threshold/nonzero filtering happens on the unnested rows, so a
+        passing contract never crosses the wire; PostgreSQL and ClickHouse reach the same
+        single pass but stop at the counts and decide in Python, which the field contract
+        section of ``BaseAdapter`` states as the rule and this method as its exception.
 
         ``limit`` no longer bounds what is *evaluated* (that is the whole point); it stays
         as the bound on how many violation ROWS come back, matching ClickHouse.
@@ -1433,12 +1512,26 @@ class BigQueryAdapter(BaseAdapter):
         ``agg(CASE WHEN cond THEN col END)``. ``filter_sql`` is a pre-validated
         boolean fragment injected as-is, matching the row-filter trust model.
 
-        ``count`` / ``count_distinct`` return 0 (not NULL) for a bucket whose
-        rows never match ``cond``; ``avg`` / ``sum`` / ``min`` / ``max`` over the
-        ``CASE WHEN`` form already return NULL there. The zero-returning counts
-        are wrapped in ``NULLIF(..., 0)`` so such a bucket reads as absent,
-        matching the per-metric path whose filtered scan emits no row at all for
-        it (a 0 would otherwise render as a spurious data point instead of a gap).
+        The NULL-means-gap rule this implements is stated once, on
+        :class:`~tripl.core.adapters.base.BaseAdapter`: a bucket is absent for a
+        spec when NO row in it matched ``cond``, and a bucket that does have
+        matching rows is a data point even when the aggregate over them is 0.
+        Each aggregate spells the row-presence test as cheaply as it can:
+
+        * ``avg`` / ``sum`` / ``min`` / ``max`` over the ``CASE WHEN`` form need
+          no test at all — they already return NULL over zero matching rows.
+        * ``count`` uses ``NULLIF(count(CASE WHEN cond THEN 1 END), 0)``,
+          because that value IS the count of matching rows: 0 and "nothing
+          matched" are the same statement. Spelling it as the CASE below was
+          rejected — it emits the same verdict from twice the text and a second
+          copy of ``cond``.
+        * ``count_distinct`` needs an explicit ``COUNTIF(cond)`` probe:
+          ``count(DISTINCT IF(cond, m, NULL))`` returns 0 both for a bucket
+          nothing matched AND for a bucket whose matching rows all have ``m IS
+          NULL``, so its own value cannot answer the question. It used to be
+          ``NULLIF(..., 0)`` too, which reported an all-NULL measure over real
+          rows as a gap, while ClickHouse — gating on ``countIf(cond)``, a row
+          count — kept the bucket and stored the 0.
         """
         measure_sql: str | None = None
         if spec.column is not None:
@@ -1453,7 +1546,8 @@ class BigQueryAdapter(BaseAdapter):
             msg = f"Aggregation {agg.value!r} requires a measure column"
             raise ValueError(msg)
         if agg is MetricAggregation.count_distinct:
-            return f"NULLIF(count(DISTINCT IF({cond}, {measure_sql}, NULL)), 0)"
+            distinct = f"count(DISTINCT IF({cond}, {measure_sql}, NULL))"
+            return f"CASE WHEN COUNTIF({cond}) = 0 THEN NULL ELSE {distinct} END"
         return f"{agg.value}(CASE WHEN {cond} THEN {measure_sql} END)"
 
     def get_time_bucketed_aggregate(
@@ -1596,9 +1690,28 @@ class BigQueryAdapter(BaseAdapter):
         group_parts: list[str] = ["_bucket", "_breakdown_value", "_is_other"]
         col_names: list[str] = []
         for c in reg_cols:
-            select_sql, group_sql = self._regular_column_sql(c)
-            select_parts.append(select_sql)
-            group_parts.append(group_sql)
+            if c == breakdown:
+                # The breakdown keeps its regular-column slot but carries the
+                # FOLDED value there, and is deliberately NOT added to
+                # group_parts: see
+                # BaseAdapter.get_time_bucketed_aggregate_breakdown for why the
+                # raw column may not be a grouping key. `_regular_column_sql` is
+                # skipped rather than reused because its only special case is
+                # the REPEATED column, and `_string_value_expression` has
+                # already refused a REPEATED breakdown a few lines above.
+                # The expression is spelled out a second time rather than the
+                # `_breakdown_value` alias reused, because GoogleSQL does not
+                # expose a SELECT alias to the same SELECT list; ZetaSQL then
+                # matches it against the grouping key that alias is bound to.
+                # That matching is what `_regular_column_sql` already relies on
+                # for TO_JSON_STRING, and unlike the nested columns in
+                # `_nested_source` a CASE over a scalar carries no correlated
+                # reference, which is the thing ZetaSQL refuses to match.
+                select_parts.append(f"{breakdown_expr} AS `{c}`")
+            else:
+                select_sql, group_sql = self._regular_column_sql(c)
+                select_parts.append(select_sql)
+                group_parts.append(group_sql)
             col_names.append(c)
         nested_select, nested_group = self._nested_select_group(json_cols, alias_by_name)
         select_parts.extend(nested_select)
@@ -1810,7 +1923,14 @@ class BigQueryAdapter(BaseAdapter):
         sql = (
             "SELECT _breakdown_column, _breakdown_value FROM ("
             "SELECT _breakdown_column, _breakdown_value, "
-            "ROW_NUMBER() OVER (PARTITION BY _breakdown_column ORDER BY _cnt DESC) AS rn "
+            # _breakdown_value is the tie-break the BaseAdapter top-N contract
+            # requires: ranked by count alone, two equally-counted values at the
+            # `rn <= limit` cut could swap places between runs over the same
+            # window. GoogleSQL's default collation for STRING is binary, so a
+            # bare ascending sort already IS the code-point order the contract
+            # names; BigQuery has no "C" collation to spell it with.
+            "ROW_NUMBER() OVER (PARTITION BY _breakdown_column "
+            "ORDER BY _cnt DESC, _breakdown_value) AS rn "
             "FROM ("
             "SELECT "
             f"CASE {label_branches} ELSE '' END AS _breakdown_column, "

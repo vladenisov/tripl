@@ -29,6 +29,7 @@ import pytest
 
 from tripl.core.adapters.bigquery import BigQueryAdapter
 from tripl.core.adapters.clickhouse import ClickHouseAdapter
+from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.postgres import PostgresAdapter
 from tripl.core.adapters.synthetic import SyntheticAdapter
 from tripl.core.bucketing import (
@@ -559,9 +560,15 @@ def test_bigquery_date_column_bucket_sql(code: str, expected: str) -> None:
 
 @pytest.mark.parametrize("code", ["15m", "1h", "6h"])
 def test_bigquery_date_column_rejects_sub_day_intervals(code: str) -> None:
-    """A DATE column has no time-of-day, so a sub-day bucket is a configuration error
-    raised at configure/preview time — not silently rounded inside a worker."""
-    with pytest.raises(ValueError, match="no time-of-day"):
+    """A DATE column has no time-of-day, so a sub-day bucket is refused rather than
+    silently rounded. Nothing configuration-time catches it — neither scan-config save
+    path compares the interval against the column's declared type, they run only
+    ``check_scalar_columns_unreserved`` and ``check_replay_chunk_against_interval`` —
+    so the first thing to run the combination is a collection tick. Hence
+    ``WarehouseCapabilityError``: one of the three classes the worker's sanitiser
+    surfaces verbatim instead of flattening to "Scan failed due to an internal
+    error." (``worker.tasks._errors._CURATED_ERRORS``, tripl-0zpq.66)."""
+    with pytest.raises(WarehouseCapabilityError, match="no time-of-day"):
         _bigquery(time_type="DATE")._bucket_expression(_COL, code)
 
 

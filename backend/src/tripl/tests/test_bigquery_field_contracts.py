@@ -113,9 +113,20 @@ def _adapter(
     return adapter, client
 
 
+def _is_probe(sql: str) -> bool:
+    """Statements that are not the contract query.
+
+    The ``LIMIT 0`` schema probe, and the regex probe a ``regex_violation``
+    expectation runs first: that one offers the pattern to RE2 over no table, so a
+    pattern this engine refuses costs its own expectation instead of the whole
+    scan. Neither reads a row of the source.
+    """
+    return sql.endswith("LIMIT 0") or sql.startswith("SELECT REGEXP_CONTAINS('', ")
+
+
 def _contract_sql(client: _Client) -> str:
-    """The contract statement — i.e. the one that is not the LIMIT 0 schema probe."""
-    statements = [sql for sql in client.sql if not sql.endswith("LIMIT 0")]
+    """The contract statement — i.e. the one that is not a probe."""
+    statements = [sql for sql in client.sql if not _is_probe(sql)]
     assert len(statements) == 1, f"expected exactly one contract query, got {len(statements)}"
     return statements[0]
 
@@ -488,22 +499,47 @@ def test_a_contract_on_a_dropped_column_is_skipped_not_fatal() -> None:
 
 
 def test_enum_on_a_repeated_column_is_refused_before_it_becomes_sql() -> None:
-    # CAST(<array> AS STRING) is not a legal GoogleSQL cast, so this would compile to SQL
-    # that only fails once a worker runs it.
+    """Still refused before it becomes SQL — but it now costs one expectation.
+
+    ``CAST(<array> AS STRING)`` is not a legal GoogleSQL cast, so this would compile
+    to SQL that only fails once a worker runs it. That has not changed. What changed
+    is the blast radius: this used to RAISE out of ``validate_field_contracts``, and
+    the caller is a worker replaying contracts a user declared long ago —
+    ``schema_drift`` calls it bare and ``catalog_sync`` once per event-type group —
+    so one stale contract on a column that has since become an ARRAY ended the whole
+    collection. The refusal is per-expectation now, and the contracts beside it still
+    run.
+
+    ``_string_value_expression`` keeps raising for a breakdown column, where the
+    caller is still CHOOSING the column and a loud failure is the right answer; that
+    half is pinned in test_bigquery_nested_grouping.py. The cross-engine statement of
+    the skip rule, and the warning it has to leave behind, are in test_batch5_parity.py.
+    """
     adapter, client = _adapter()
-    with pytest.raises(ValueError, match="REPEATED"):
-        adapter.validate_field_contracts(
-            BASE,
-            [
-                FieldContractExpectation(
-                    field_name="labels",
-                    drift_type="enum_violation",
-                    threshold=0.0,
-                    enum_options=("a",),
-                )
-            ],
-        )
-    assert [sql for sql in client.sql if not sql.endswith("LIMIT 0")] == []
+    adapter.validate_field_contracts(
+        BASE,
+        [
+            FieldContractExpectation(
+                field_name="labels",
+                drift_type="enum_violation",
+                threshold=0.0,
+                enum_options=("a",),
+            ),
+            FieldContractExpectation(
+                field_name="event_name", drift_type="required_null_violation", threshold=0.0
+            ),
+        ],
+    )
+    sql = _contract_sql(client)
+    assert "labels" not in sql
+    assert sql.count("AS _bad_") == 1
+    # The survivor keeps its ORIGINAL position (``_bad_1``): a declined expectation
+    # contributes no columns, it does not renumber the ones beside it. Harmless on
+    # this engine — BigQuery names the field and drift type inside the STRUCT it
+    # emits, so nothing decodes by position — and asserting the index rather than
+    # just the COUNTIF is what would catch a "tidy" renumbering that moved the
+    # alias scheme away from the one PostgreSQL and ClickHouse decode positionally.
+    assert "COUNTIF(`event_name` IS NULL) AS _bad_1" in sql
 
 
 def test_required_null_on_a_repeated_column_still_works() -> None:

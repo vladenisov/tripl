@@ -10,6 +10,7 @@ from typing import Any, override
 import clickhouse_connect
 
 from tripl.core.adapters.base import (
+    FIELD_CONTRACT_EXPECTATIONS_PER_QUERY,
     AggregateSpec,
     BaseAdapter,
     ColumnInfo,
@@ -17,6 +18,9 @@ from tripl.core.adapters.base import (
     FieldContractViolation,
     SchemaColumn,
     SchemaTable,
+    contract_bound_literal,
+    field_contract_is_inert,
+    field_contract_verdict,
 )
 from tripl.core.adapters.measure_validator import (
     build_aggregate_sql,
@@ -516,77 +520,99 @@ class ClickHouseAdapter(BaseAdapter):
             return ""
         return " WHERE " + " AND ".join(conditions)
 
-    def _contract_select_sql(
+    @override
+    def _probe_contract_regex(self, pattern: str) -> None:
+        """Have ClickHouse compile the pattern with RE2, over no rows at all.
+
+        ``match()`` against a constant empty haystack still has to build the
+        regex, so a pattern RE2 rejects raises here — the same exception it would
+        otherwise raise from inside the contract statement, except that here it
+        costs one expectation instead of every contract in the scan. The
+        statement reads no table, so it is not a scan of anything.
+
+        The pattern goes through ``_quote_string`` exactly as the contract
+        statement does it, and that is load-bearing rather than tidy: this
+        adapter escapes a backslash on the way in, so quoting the probe any other
+        way would compile a DIFFERENT pattern from the one it authorizes.
+        """
+        self._client.query(f"SELECT match('', {self._quote_string(pattern)})")
+
+    def _contract_aggregates(
         self,
         expectation: FieldContractExpectation,
-        *,
-        base_query: str,
-        where_clause: str,
-        index: int,
-    ) -> str | None:
+    ) -> tuple[str, str, str] | None:
+        """The (bad, total, sample) aggregates for one expectation, or ``None``.
+
+        Unaliased on purpose: the caller numbers them ``_bad_{i}`` / ``_total_{i}``
+        / ``_sample_{i}`` by their position in the shared scan, which is the
+        layout ``PostgresAdapter._contract_aggregate_sql`` and
+        ``BigQueryAdapter._contract_fragments`` also emit, so all three engines
+        hand the row to the same positional decode.
+
+        An expectation this engine cannot evaluate yields ``None`` and is dropped,
+        so it cannot manufacture a violation out of a contract that says nothing,
+        nor end the scan the other expectations are riding in. Which ones those
+        are is ``field_contract_is_inert``'s to say — this branch used to decide
+        it locally and the three engines had drifted apart on it. Neither the
+        threshold nor the comparison appears here either: see the field contract
+        section of ``BaseAdapter`` for both rules.
+        """
+        if field_contract_is_inert(expectation):
+            return None
+
         column = self._validate_column(expectation.field_name)
         value_expr = f"ifNull(toString(`{column}`), '')"
-        threshold = max(0.0, min(1.0, expectation.threshold))
-        drift_type = self._quote_string(expectation.drift_type)
-        field_name = self._quote_string(expectation.field_name)
 
         if expectation.drift_type == "required_null_violation":
             bad_condition = f"isNull(`{column}`)"
             total_expr = "count()"
             sample_expr = f"anyIf('<NULL>', {bad_condition})"
         elif expectation.drift_type == "enum_violation":
-            if not expectation.enum_options:
-                return None
             options = ", ".join(self._quote_string(option) for option in expectation.enum_options)
             present_condition = f"NOT isNull(`{column}`)"
             bad_condition = f"{present_condition} AND {value_expr} NOT IN ({options})"
             total_expr = f"countIf({present_condition})"
             sample_expr = f"anyIf({value_expr}, {bad_condition})"
         elif expectation.drift_type == "regex_violation":
-            if not expectation.regex:
-                return None
             present_condition = f"NOT isNull(`{column}`)"
+            # The assert narrows the type; a pattern-less regex is inert above.
+            assert expectation.regex is not None
+            # RE2 is stricter than the Python `re` the save gate screens with —
+            # it has no lookaround and no backreferences — so the pattern is
+            # offered to this engine before it is compiled into a statement every
+            # other contract in the scan is riding in.
+            if not self.contract_regex_is_compilable(expectation.regex):
+                return None
             pattern = self._quote_string(expectation.regex)
             bad_condition = f"{present_condition} AND NOT match({value_expr}, {pattern})"
             total_expr = f"countIf({present_condition})"
             sample_expr = f"anyIf({value_expr}, {bad_condition})"
         elif expectation.drift_type == "range_violation":
-            if expectation.min_value is None and expectation.max_value is None:
-                return None
             present_condition = f"NOT isNull(`{column}`)"
             numeric_expr = f"toFloat64OrNull({value_expr})"
             range_conditions = [f"isNull({numeric_expr})"]
+            # Rendered through the shared helper rather than an f-string of the
+            # float. ClickHouse is the one engine that HAS `inf` and `nan`
+            # literals, so a non-finite bound used to compile here and compare
+            # perfectly quietly — against a bound no row can be below — while the
+            # same contract raised on PostgreSQL and produced unparseable SQL on
+            # BigQuery. The helper refuses to render one at all, which is what
+            # keeps this branch from being the odd one out again.
             if expectation.min_value is not None:
-                range_conditions.append(f"{numeric_expr} < {float(expectation.min_value)}")
+                range_conditions.append(
+                    f"{numeric_expr} < {contract_bound_literal(expectation.min_value)}"
+                )
             if expectation.max_value is not None:
-                range_conditions.append(f"{numeric_expr} > {float(expectation.max_value)}")
+                range_conditions.append(
+                    f"{numeric_expr} > {contract_bound_literal(expectation.max_value)}"
+                )
             bad_condition = f"{present_condition} AND ({' OR '.join(range_conditions)})"
             total_expr = f"countIf({present_condition})"
             sample_expr = f"anyIf({value_expr}, {bad_condition})"
         else:
             return None
 
-        alias = f"_contract_{index}"
-        return (
-            "SELECT "
-            f"{field_name} AS field_name, "
-            f"{drift_type} AS drift_type, "
-            "bad_count, "
-            "total_count, "
-            f"{threshold:.12g} AS threshold, "
-            "if(total_count = 0, 0., bad_count / total_count) AS bad_rate, "
-            "sample_value "
-            "FROM ("
-            "SELECT "
-            f"countIf({bad_condition}) AS bad_count, "
-            f"{total_expr} AS total_count, "
-            f"{sample_expr} AS sample_value "
-            f"FROM ({base_query}) AS _src{where_clause}"
-            f") AS {alias} "
-            "WHERE total_count > 0 "
-            "AND bad_count > 0 "
-            f"AND (bad_count / total_count) > {threshold:.12g}"
-        )
+        return f"countIf({bad_condition})", total_expr, sample_expr
 
     @override
     def validate_field_contracts(
@@ -601,6 +627,21 @@ class ClickHouseAdapter(BaseAdapter):
         group_value: str | None = None,
         limit: int = 50000,
     ) -> list[FieldContractViolation]:
+        """Count every field contract in one pass over the window.
+
+        The expectations' aggregates are columns of a single flat SELECT over one
+        ``FROM (base_query)``. What this replaced was a UNION ALL of one aggregate
+        subquery per expectation: ClickHouse does not deduplicate an identical
+        inline subquery across the arms, so a config with ten contracts read the
+        whole window ten times, and ``catalog_sync`` repeats the call once per
+        event-type group.
+
+        Only counts come back — the threshold comparison is
+        ``field_contract_verdict``'s, per the contract on ``BaseAdapter`` — so the
+        caller's expectation order is preserved by walking it, and
+        ``if(total_count = 0, ...)``, which existed only to keep the in-SQL rate
+        from dividing by zero on an empty window, is gone with it.
+        """
         if not expectations:
             return []
 
@@ -611,40 +652,44 @@ class ClickHouseAdapter(BaseAdapter):
             group_column,
             group_value,
         )
-        selects = [
-            sql
-            for index, expectation in enumerate(expectations)
-            if (
-                sql := self._contract_select_sql(
-                    expectation,
-                    base_query=base_query,
-                    where_clause=where_clause,
-                    index=index,
-                )
-            )
-            is not None
+        # Compiled before any statement is built: expectations that check nothing
+        # contribute no columns, and a set that is entirely inert must leave the
+        # warehouse untouched.
+        compiled = [
+            (expectation, aggregates)
+            for expectation in expectations
+            if (aggregates := self._contract_aggregates(expectation)) is not None
         ]
-        if not selects:
+        if not compiled:
             return []
 
-        sql = " UNION ALL ".join(selects) + f" LIMIT {int(limit)}"
-        logger.info("CH field contract query: %s", sql)
-        result = self._client.query(sql)
-
         violations: list[FieldContractViolation] = []
-        for row in result.result_rows:
-            violations.append(
-                FieldContractViolation(
-                    field_name=str(row[0]),
-                    drift_type=str(row[1]),
-                    bad_count=int(row[2]),
-                    total_count=int(row[3]),
-                    threshold=float(row[4]),
-                    bad_rate=float(row[5]),
-                    sample_value=None if row[6] is None else str(row[6]),
-                )
+        for start in range(0, len(compiled), FIELD_CONTRACT_EXPECTATIONS_PER_QUERY):
+            chunk = compiled[start : start + FIELD_CONTRACT_EXPECTATIONS_PER_QUERY]
+            selects = ", ".join(
+                f"{bad} AS _bad_{index}, {total} AS _total_{index}, {sample} AS _sample_{index}"
+                for index, (_expectation, (bad, total, sample)) in enumerate(chunk)
             )
-        return violations
+            sql = f"SELECT {selects} FROM ({base_query}) AS _src{where_clause}"
+            logger.info("CH field contract query: %s", sql)
+            rows = self._client.query(sql).result_rows
+            if not rows:
+                continue
+            row = rows[0]
+            for index, (expectation, _aggregates) in enumerate(chunk):
+                sample = row[index * 3 + 2]
+                violation = field_contract_verdict(
+                    expectation,
+                    bad_count=int(row[index * 3]),
+                    total_count=int(row[index * 3 + 1]),
+                    sample_value=None if sample is None else str(sample),
+                )
+                if violation is not None:
+                    violations.append(violation)
+
+        # ``limit`` bounds the violation ROWS handed back, never the rows scanned,
+        # which is what the LIMIT clause it replaces did.
+        return violations[: max(0, int(limit))]
 
     def _top_breakdown_values_multi(
         self,
@@ -687,7 +732,14 @@ class ClickHouseAdapter(BaseAdapter):
             ") AS _prepared "
             f"GROUP BY GROUPING SETS ({grouping_sets})"
             ") "
-            "ORDER BY _breakdown_column, _cnt DESC "
+            # The third key is the tie-break the BaseAdapter top-N contract
+            # requires. LIMIT BY cuts each column's list at n, and ordered by
+            # count alone the engine was free to hand back either of two
+            # equally-counted values at that cut, so the same window ranked
+            # twice could keep a different set. ClickHouse compares String
+            # byte-wise, which over UTF-8 is the code-point order the contract
+            # names, so no explicit collation is needed here.
+            "ORDER BY _breakdown_column, _cnt DESC, _breakdown_value "
             f"LIMIT {int(limit)} BY _breakdown_column"
         )
         logger.info("CH breakdown top-values GROUPING SETS query: %s", sql)
@@ -932,7 +984,21 @@ class ClickHouseAdapter(BaseAdapter):
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
-            select_parts.append(f"`{c}`")
+            if c == breakdown:
+                # The breakdown keeps its regular-column slot but carries the
+                # FOLDED value there: see
+                # BaseAdapter.get_time_bucketed_aggregate_breakdown for why the
+                # raw column may not be a grouping key. Here the projection IS
+                # the grouping — `GROUP BY ALL` groups by every non-aggregate
+                # SELECT term — so emitting the fold leaves ALL with two terms
+                # that always hold the same value, hence one group. Replacing
+                # ALL with an explicit grouping list would work too and was
+                # rejected: it means restating the whole projection a second
+                # time and keeping the two copies in step by hand, for a query
+                # that has never needed one.
+                select_parts.append(f"{breakdown_expr} AS `{c}`")
+            else:
+                select_parts.append(f"`{c}`")
             col_names.append(c)
         for c in json_cols:
             select_parts.append(self._json_paths_expression(c))
@@ -1017,7 +1083,15 @@ class ClickHouseAdapter(BaseAdapter):
         (``countIf``/``sumIf`` -> 0) or a type extreme/NaN (``minIf``/``maxIf``/
         ``avgIf``) for empty groups, none of which is NULL. The count sentinel
         also preserves a genuine aggregate of 0 (e.g. ``sumIf`` over rows that
-        net to zero) because the bucket still has matching rows.
+        net to zero, or ``uniqExactIf`` over matching rows whose measure is NULL
+        throughout) because the bucket still has matching rows.
+
+        That last clause is the shared rule, not a ClickHouse detail: the gate
+        counts ROWS, never the aggregate. It is stated once on
+        :class:`~tripl.core.adapters.base.BaseAdapter`, and the other three
+        adapters now gate the same way — PostgreSQL and BigQuery used to test a
+        filtered ``count(DISTINCT m)`` for 0, which is also what an all-NULL
+        measure over real rows returns.
         """
         agg = coerce_aggregation(spec.aggregation)
         measure_sql: str | None = None
@@ -1127,9 +1201,15 @@ class ClickHouseAdapter(BaseAdapter):
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         """Many bucketed aggregates grouped by one breakdown column, ONE scan.
 
-        Reuses ``_breakdown_value_exprs`` so the top-N "Other" folding matches
-        get_time_bucketed_aggregate_breakdown exactly, then emits one aggregate
-        column per spec.
+        Reuses ``_breakdown_value_exprs``, so both the folding expression and
+        the grouping match get_time_bucketed_aggregate_breakdown: one row per
+        (bucket, folded value), never one per raw value behind ``'Other'``.
+        Then one aggregate column per spec.
+
+        "Matches exactly" was written here while that other method still also
+        grouped by the raw breakdown column, so the two did not in fact agree —
+        which is why the claim now names the property it is claiming instead of
+        asserting sameness.
         """
         tc = self._validate_column(time_column)
         bucket_sql = self._bucket_expression(tc, interval)

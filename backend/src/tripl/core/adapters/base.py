@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import abc
+import logging
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
 
 from tripl.models.domain_enums import MetricAggregation
+
+logger = logging.getLogger(__name__)
 
 # float() raises ValueError on malformed strings and TypeError on non-coercible
 # inputs; catch both when coercing a sampled field value to a number.
@@ -33,6 +37,9 @@ class AggregateSpec:
     turns the aggregate into a conditional one (e.g. ``sumIf`` / ``... FILTER
     (WHERE ...)``), so specs with different filters can share one scan. It is
     trusted and injected as-is, exactly like the single-metric row-filter path.
+    When a bucket makes the resulting cell NULL, and when it must make it 0, is
+    the conditional-aggregate contract on :class:`BaseAdapter`; every adapter
+    owes the same answer there.
     """
 
     key: str
@@ -75,7 +82,315 @@ class FieldContractViolation:
     sample_value: str | None = None
 
 
+#: The pattern a regex probe falls back to when it needs a control answer. One
+#: literal character is valid in Python ``re``, in RE2 and in POSIX ARE alike, so
+#: an engine refusing to compile THIS cannot be refusing a pattern — it is an
+#: engine that cannot answer the question at all. See
+#: :meth:`BaseAdapter.contract_regex_is_compilable`.
+_CONTRACT_REGEX_CONTROL_PATTERN = "a"
+
+#: How many expectations one field-contract statement may carry. Each one
+#: contributes three columns to a single flat aggregate, and PostgreSQL refuses
+#: a target list of more than 1664 entries, so an event type with contracts on
+#: every column of a very wide table could otherwise build a statement the
+#: server rejects outright — failing a whole collection rather than the one
+#: contract. At 256 the widest statement projects 768 columns, comfortably under
+#: that, while leaving every realistic configuration in a single scan. The limit
+#: that binds is PostgreSQL's; ClickHouse chunks by the same number anyway, so
+#: the two engines issue the same statements for the same expectations instead
+#: of diverging for no reason a reader could name.
+FIELD_CONTRACT_EXPECTATIONS_PER_QUERY = 256
+
+
+def clamp_field_contract_threshold(threshold: float) -> float:
+    """The threshold a contract is actually judged against: clamped to [0, 1].
+
+    Clamping cannot change a verdict, because a bad rate lives in [0, 1] too: a
+    threshold of 9.0 and a threshold of 1.0 both answer "no violation", and -1.0
+    and 0.0 both answer "violation" for the ``bad_count > 0`` rows that reach the
+    comparison. What it changes is the number REPORTED on the violation, which
+    should be the bound that was applied rather than whatever a misconfigured
+    contract happens to hold.
+    """
+    return max(0.0, min(1.0, float(threshold)))
+
+
+def contract_bound_literal(value: float) -> str:
+    """Render a range contract's bound as a numeric literal every dialect parses.
+
+    ``repr`` of a float round-trips exactly and always carries a ``.`` or an
+    ``e``, which is what keeps PostgreSQL from resolving the comparison as
+    ``numeric >= int8`` (see ``PostgresAdapter._contract_bad_condition``) and
+    what stops a bound from reaching a warehouse as a rounded second copy of
+    itself — the same reason BigQuery spells its threshold with ``repr``.
+
+    The raise is a last line, not the guard: every caller asks
+    :func:`field_contract_is_inert` first and never reaches here with a
+    non-finite bound. It stays because the alternative is emitting ``< -inf``
+    into a statement — GoogleSQL has no such literal, so the whole contract
+    scan would fail in a worker — and a rendering helper that can emit invalid
+    SQL is a worse thing to leave lying around than one that refuses.
+    """
+    number = float(value)
+    if not math.isfinite(number):
+        msg = f"Contract bound must be a finite number, got {value!r}"
+        raise ValueError(msg)
+    return repr(number)
+
+
+def field_contract_is_inert(expectation: FieldContractExpectation) -> bool:
+    """True when this expectation cannot be evaluated by ANY engine.
+
+    The shared half of the "what do we do with a contract we cannot compile"
+    rule; see the field contract section of :class:`BaseAdapter` for the whole
+    of it. All four implementations consult this rather than re-deriving the
+    cases, because the three SQL adapters and the Python fallback had derived
+    them differently: the SQL adapters dropped an enum with no options, while
+    the fallback asked ``text not in ()`` — true of every row — and reported a
+    contract that constrains nothing as total drift.
+
+    The "says nothing" cases (an empty enum, a pattern-less regex, a range with
+    neither bound, a drift type nothing implements) are ordinary configuration
+    states and stay silent. A non-finite bound is not: the save schema rejects
+    one, so it can only reach here from a row that predates that rule or from a
+    branch operation copying such a row forward. It is logged.
+    """
+    drift_type = expectation.drift_type
+    if drift_type == "required_null_violation":
+        # Pure NULL logic: no options, no pattern, no bounds and no rendering of
+        # the value, so there is nothing an engine could fail to compile.
+        return False
+    if drift_type == "enum_violation":
+        return not expectation.enum_options
+    if drift_type == "regex_violation":
+        return not expectation.regex
+    if drift_type == "range_violation":
+        bounds = (expectation.min_value, expectation.max_value)
+        if all(bound is None for bound in bounds):
+            return True
+        if any(bound is not None and not math.isfinite(float(bound)) for bound in bounds):
+            logger.warning(
+                "Field contract skipped: %r has range bounds %r/%r, and a bound that is "
+                "not a finite number is a comparison no warehouse can be asked to make. "
+                "The other contracts in this scan still run.",
+                expectation.field_name,
+                *bounds,
+            )
+            return True
+        return False
+    return True
+
+
+def field_contract_verdict(
+    expectation: FieldContractExpectation,
+    *,
+    bad_count: int,
+    total_count: int,
+    sample_value: str | None,
+) -> FieldContractViolation | None:
+    """Judge one expectation from its counted rows: a violation, or ``None``.
+
+    The single definition of what a field-contract violation IS. See the field
+    contract section of :class:`BaseAdapter` for why it lives in Python rather
+    than once per dialect.
+
+    Returning before the division is not a stylistic guard: ``total_count`` is 0
+    for a window with no rows at all, which is a perfectly ordinary scan of a
+    quiet event type, and every SQL spelling of this rule needed its own defence
+    against that same zero (``SAFE_DIVIDE``, ``if(total_count = 0, ...)``, or —
+    on PostgreSQL — the hope that the planner tests ``total_count > 0`` before it
+    evaluates the division sitting next to it in the same ``AND``).
+    """
+    if total_count <= 0 or bad_count <= 0:
+        return None
+    threshold = clamp_field_contract_threshold(expectation.threshold)
+    bad_rate = bad_count / total_count
+    # Strict: a rate that exactly MEETS its threshold has not exceeded it.
+    if bad_rate <= threshold:
+        return None
+    return FieldContractViolation(
+        field_name=expectation.field_name,
+        drift_type=expectation.drift_type,
+        bad_count=bad_count,
+        total_count=total_count,
+        bad_rate=bad_rate,
+        threshold=threshold,
+        sample_value=sample_value,
+    )
+
+
 class BaseAdapter(abc.ABC):
+    """What every warehouse adapter must implement, and what callers may assume.
+
+    Four implementations exist: ClickHouse, PostgreSQL and BigQuery emit SQL,
+    while the in-memory synthetic adapter answers from Python lists. These
+    docstrings are the entire specification an adapter author reads, so a wrong
+    one here is a defect rather than a typo.
+
+    Top-N breakdown folding (``values_limit``)
+    ------------------------------------------
+    Every method below that takes ``values_limit`` collapses the tail of a
+    breakdown column into a single ``'Other'`` row, and all four
+    implementations do it identically. The rule is stated here once on purpose:
+    it used to be restated per method, and two of those copies disagreed about
+    the ``- 1``.
+
+    * ``values_limit is None`` keeps every distinct value and marks none of
+      them as ``Other``.
+    * Otherwise the top ``values_limit - 1`` values survive and everything else
+      collapses into one ``'Other'`` row. The ``- 1`` is deliberate rather than
+      an off-by-one: ``'Other'`` occupies one of the ``values_limit`` slots, so
+      a caller asking for N series gets N-1 real values plus the rollup and
+      never renders N+1 of them.
+    * Values are ranked by ROW COUNT over the requested window, descending,
+      with ties broken by the breakdown value itself ascending in code-point
+      order. Row count stays the ranking key even on the aggregate methods:
+      ranking by the aggregate was rejected because the multi-aggregate methods
+      carry several specs with different filters in one scan, so there is no
+      single number to rank by, and one shared rule keeps a count series and an
+      aggregate series over the same column showing the same values.
+    * The tie-break is load-bearing rather than cosmetic. The surviving set
+      comes from a separate pre-query, and callers make one adapter call per
+      chunk of the window (the chunk loops in ``worker/tasks/metrics/``), so
+      that pre-query runs many times per collection. Ranked by count alone —
+      the original shape — an engine may return either of two equally-counted
+      values at the cutoff, so ranking the same window twice, as a retried
+      chunk or a replay does, can keep a different set than the first pass did
+      and silently reshape the stored series.
+    * ``_is_other`` / ``is_other`` is the integer 1 on the rollup row and 0
+      elsewhere in all four implementations, not a boolean.
+
+    Conditional aggregates (``AggregateSpec.filter_sql``)
+    -----------------------------------------------------
+    Every method below that takes ``specs`` returns one cell per spec per
+    bucket, and the engines must agree on when that cell is NULL, because NULL
+    is not a value on this path: ``_index_multi_aggregate``
+    (``worker/tasks/metrics/metric_collect.py``) skips NULL cells, so a NULL
+    leaves a GAP in the stored series rather than a zero.
+
+    * A bucket with NO row matching ``filter_sql`` is that gap. This is what
+      makes the batched path agree with the per-metric path, whose separately
+      filtered scan returns no row at all for such a bucket.
+    * A bucket that HAS matching rows is a data point, even when the aggregate
+      over them computes to 0. The presence test is therefore a count of
+      matching ROWS and never the aggregate's own value: ClickHouse
+      ``countIf(cond)``, PostgreSQL ``count(*) FILTER (WHERE cond)``, BigQuery
+      ``COUNTIF(cond)``, and, in the in-memory adapter, "did any row match".
+    * ``count_distinct`` is why this has to be written down rather than left to
+      each adapter. ``count(DISTINCT m)`` is 0 BOTH for a bucket nothing
+      matched and for a bucket whose matching rows all have ``m IS NULL``, so
+      an adapter that tests the aggregate for 0 — the shape PostgreSQL and
+      BigQuery carried, against ClickHouse's row-count gate — reports the
+      second as a gap on two engines and as 0 on the third. Plain ``count`` is
+      the one aggregate whose filtered value IS the row-presence count, so
+      testing it for 0 asks the same question and stays spelled that way.
+    * Nothing here overrides what an aggregate returns over rows it DID match:
+      ``sum`` / ``avg`` / ``min`` / ``max`` over matching rows whose measure is
+      NULL throughout are NULL because that is what the aggregate returns, not
+      because the bucket was empty.
+    * A spec with no ``filter_sql`` is unconditional and none of this applies.
+
+    Field contracts (``validate_field_contracts``)
+    ----------------------------------------------
+    ``validate_field_contracts`` below is the reference implementation, from
+    sampled rows; the three SQL adapters override it and count in the
+    warehouse. Whichever runs, three things are fixed.
+
+    * ONE scan of the window per statement. Every expectation's aggregates ride
+      side by side over a single ``FROM (base_query)``. A UNION ALL of one
+      aggregate subquery per expectation — the shape PostgreSQL and ClickHouse
+      both started with — is one statement but N scans of the same window, and
+      the caller multiplies it: ``catalog_sync`` calls this once per event-type
+      group, so N scans of the window become N x G reads of the same rows for a
+      single collection. PostgreSQL and ClickHouse therefore hold at most
+      ``FIELD_CONTRACT_EXPECTATIONS_PER_QUERY`` expectations per statement and
+      issue another statement (another single scan) beyond that, rather than
+      letting the target list grow with the contract count.
+    * The warehouse COUNTS; the verdict is decided in Python. Each engine
+      produces ``bad_count``, ``total_count`` and one ``sample_value`` per
+      expectation and nothing else, and :func:`field_contract_verdict` turns
+      those three numbers into a violation or into nothing. That rule —
+      ``total_count > 0`` and ``bad_count > 0`` and ``bad_count / total_count``
+      strictly greater than the threshold, the threshold clamped into
+      ``[0, 1]`` — is stated once, there.
+    * An expectation that cannot be compiled is INERT, never fatal. It
+      contributes no columns to the statement, produces no violation, and — the
+      half that was not shared — does not take the expectations beside it, or
+      the collection around them, down with it. Neither call site used to defend
+      against a raise: ``schema_drift._detect_field_contract_violations`` called
+      this bare, and ``catalog_sync`` calls that once per event-type group
+      inside a loop, so a single stale contract ended every group after it too.
+      That call is now wrapped (the failure is counted and reported, never
+      swallowed silently), which makes the wrap the second line and this rule
+      still the first: an adapter that raises where it could decline costs the
+      event type every OTHER contract it declared.
+      :func:`field_contract_is_inert` holds the cases every engine agrees on and
+      all four implementations ask it rather than re-deriving them.
+
+    A bound that is not a finite number is in that list because it is the one
+    input the four engines could not have been made to agree on by rendering it
+    more carefully. GoogleSQL has no literal for infinity or NaN at all, so
+    ``< -inf`` is a parse error rather than a comparison; PostgreSQL's
+    ``numeric`` takes ``'Infinity'`` but orders NaN ABOVE every number;
+    ClickHouse has both literals and compares them as Python does; and the
+    fallback is Python. Declaring the expectation inert is the only verdict all
+    four can give. Rendering just the finite bound and dropping the other was
+    rejected: it reads correctly for a ``-inf`` minimum, which does mean
+    "unbounded below", and inverts the contract for a ``+inf`` one, where every
+    row is below the bound and the honest reading is "everything is bad".
+
+    What an engine can compile is NOT itself shared, and the two known
+    divergences are declared rather than accidental.
+
+    The first is the regex dialect. A ``contract_regex`` is screened at save time
+    by Python's ``re`` (``schemas/field_definition``) and then compiled by
+    whichever engine holds the data: RE2 on ClickHouse and BigQuery, POSIX ARE on
+    PostgreSQL, ``re`` again in the fallback. No two of those accept quite the
+    same language — RE2 rejects the lookaround that ``re`` and ARE both accept,
+    ARE rejects ``re``'s ``(?P<name>...)`` — so a pattern that saved cleanly can
+    be one THIS engine refuses, and it used to refuse it from inside the contract
+    statement, which took every other expectation riding in that statement, and
+    the collection around it, down with it. :meth:`contract_regex_is_compilable`
+    asks the engine itself, once per distinct pattern per adapter, BEFORE the
+    pattern reaches a statement; a refusal makes that one expectation inert here
+    and says so in the log. The divergence itself is not fixable and is not worth
+    faking: see that method for why a portable-subset screen was rejected, and
+    ``PostgresAdapter``'s class docstring for the cases where all three dialects
+    compile a pattern and disagree about what it MEANS, which no probe can catch.
+
+    The second is BigQuery's. It refuses enum/regex/range on a REPEATED
+    (ARRAY) column because GoogleSQL cannot cast an ARRAY to a single STRING to
+    compare; ClickHouse's ``toString`` and PostgreSQL's ``::text`` both render
+    one, and neither adapter reads column types on this path at all. Forcing
+    the three to agree would mean spending a catalog round-trip per contract
+    scan on two engines in order to DELETE a check that works there — and the
+    two that work already disagree about the text they check it against
+    (``['a','b']`` against ``{a,b}``), so there is no shared answer to converge
+    on. The failure MODE is shared instead, which is the part that was broken:
+    BigQuery raised out of ``validate_field_contracts`` before any SQL existed,
+    and now skips that one expectation, logs it, and runs the rest.
+    ``required_null_violation`` stays legal on such a column everywhere — it is
+    pure NULL logic and needs no rendering.
+
+    Deciding in Python rather than in each dialect is what keeps the engines
+    from disagreeing about a borderline rate: the comparison used to be written
+    four times, once per dialect plus the fallback's own
+    ``bad_rate <= expectation.threshold``, and each of the three SQL spellings
+    had to defend its division against a zero denominator as well.
+
+    BigQuery is the documented exception to the second rule and only to the
+    second: it evaluates the identical expression warehouse-side, inside the
+    same single pass, because its array-of-STRUCTs shape already carries one
+    row per expectation and filtering there keeps a passing contract off the
+    wire. That is only safe while the expression really is identical, which is
+    why the threshold it interpolates has to round-trip the double exactly.
+
+    For the three SQL engines ``limit`` bounds only how many violation rows come
+    back, never what is evaluated — evaluating everything is the point of
+    counting in the warehouse. The fallback is the exception it cannot help
+    being: it counts the rows it sampled, so there ``limit`` bounds both.
+    """
+
     @abc.abstractmethod
     def test_connection(self) -> bool: ...
 
@@ -163,6 +478,107 @@ class BaseAdapter(abc.ABC):
 
         return samples_by_column
 
+    #: Memo for :meth:`contract_regex_is_compilable`, created on first use.
+    #: ``None`` at class level rather than a dict, for two reasons: an adapter is
+    #: built per task and never runs ``BaseAdapter.__init__`` (the unit tests
+    #: build one with ``object.__new__``, which is why
+    #: ``PostgresAdapter._tls_dir`` carries a class-level default too), and a
+    #: dict declared here would be ONE dict shared by every instance of the
+    #: class — it would answer for a server this adapter never connected to, and
+    #: outlive the connection whose version decided the answer.
+    _contract_regex_support: dict[str, bool] | None = None
+
+    def contract_regex_is_compilable(self, pattern: str) -> bool:
+        """Whether THIS engine's regex library accepts ``pattern``.
+
+        The gate every implementation puts in front of a ``regex_violation``
+        expectation, so that a pattern this engine refuses is inert here instead
+        of fatal to the whole scan — the third fixed rule in the field contract
+        section of this class. Which patterns those are is the first of the two
+        declared divergences documented there.
+
+        Asking the engine is the whole design. The alternative was a static
+        screen for a "portable subset", either here or at the save boundary, and
+        it is wrong in both directions: it would have to reject the lookahead a
+        PostgreSQL-only project is entitled to use, and it would still be
+        guessing at the grammar of a library that can simply be asked.
+
+        Answers are memoized per adapter, so the cost is one tiny statement per
+        DISTINCT pattern per task no matter how many event-type groups
+        ``catalog_sync`` runs, and nothing at all for a config with no regex
+        contract. A refusal is NOT retried within the run; a probe that could not
+        RUN is not cached at all, because the next call may be past whatever was
+        wrong with the connection.
+
+        The two failure modes are told apart by asking the same question about a
+        pattern that cannot be the problem, rather than by reading driver
+        exception types — each engine spells those differently, and a taxonomy
+        written here would be three claims about three libraries that only a live
+        warehouse could check. If the control pattern compiles, the engine is
+        answering questions and its refusal was about the pattern. If it does
+        not, we learned nothing, and the honest answer is to leave the contract
+        in the scan: the real statement will fail moments later and the caller
+        contains that (``worker/tasks/metrics/schema_drift``), which is a far
+        better outcome than silently retiring a working contract because a
+        connection blinked.
+        """
+        cache = self._contract_regex_support
+        if cache is None:
+            cache = {}
+            self._contract_regex_support = cache
+        remembered = cache.get(pattern)
+        if remembered is not None:
+            return remembered
+
+        engine = type(self).__name__
+        try:
+            self._probe_contract_regex(pattern)
+        except Exception:
+            try:
+                self._probe_contract_regex(_CONTRACT_REGEX_CONTROL_PATTERN)
+            except Exception:
+                logger.warning(
+                    "%s could not probe the contract pattern %r, so it is left in this "
+                    "scan unjudged: the probe itself failed, which says nothing about "
+                    "the pattern.",
+                    engine,
+                    pattern,
+                    exc_info=True,
+                )
+                return True
+            # Logged with the engine's own message: "invalid perl operator: (?!"
+            # names the construct, which is the only thing that tells an operator
+            # what to change. Nothing else reports this — the contract simply
+            # stops being checked on this engine — so it is a warning and it
+            # carries the pattern.
+            logger.warning(
+                "Field contract skipped: %s cannot compile the pattern %r, so its "
+                "regex contract is not evaluated here. The other contracts in this "
+                "scan still run.",
+                engine,
+                pattern,
+                exc_info=True,
+            )
+            cache[pattern] = False
+            return False
+        cache[pattern] = True
+        return True
+
+    def _probe_contract_regex(self, pattern: str) -> None:
+        """Ask this engine to compile ``pattern``; raise if it will not.
+
+        The default is Python's ``re``, and that is an answer rather than a stub:
+        the fallback below matches with ``re.search``, so ``re`` IS the regex
+        engine of every adapter that does not override this. It also closes the
+        fallback's own copy of the bug — ``re.compile`` of a stored pattern used
+        to run unguarded inside the row loop, where it raises for a row that
+        predates the save-time screen or was copied in by a branch operation.
+
+        SQL adapters override it with a table-less statement over the same
+        function their contract SQL uses.
+        """
+        re.compile(pattern)
+
     def validate_field_contracts(
         self,
         base_query: str,
@@ -179,7 +595,22 @@ class BaseAdapter(abc.ABC):
 
         Native adapters should override this with aggregate warehouse queries.
         The fallback preserves behavior for adapters without a custom
-        implementation and is intentionally bounded by ``limit``.
+        implementation and is intentionally bounded by ``limit``: it counts only
+        the rows it pulled back, so it is the one implementation for which
+        ``limit`` bounds what is EVALUATED rather than what is returned.
+
+        It counts differently from the SQL adapters — row by row in Python — but
+        it judges identically: the counting ends at
+        :func:`field_contract_verdict`, the same function the warehouse-side
+        adapters hand their aggregates to. The conformance gate asserts native
+        == fallback over a fixture built from every case that has ever diverged
+        between engines, and a second copy of the comparison here is exactly how
+        that assertion would come to compare two rules instead of one.
+
+        It skips the same inert expectations for the same reason: the loop below
+        has no branch that could decline one, so an empty enum would reach
+        ``text not in ()`` and report every row it counted as drift, where the
+        three SQL adapters compile no column for it at all.
         """
         if not expectations:
             return []
@@ -199,13 +630,26 @@ class BaseAdapter(abc.ABC):
 
         violations: list[FieldContractViolation] = []
         for expectation in expectations:
+            if field_contract_is_inert(expectation):
+                continue
             field_index = index_by_name.get(expectation.field_name)
             if field_index is None:
                 continue
             bad_count = 0
             total_count = 0
             sample_value: str | None = None
-            regex = re.compile(expectation.regex) if expectation.regex else None
+            regex: re.Pattern[str] | None = None
+            if expectation.drift_type == "regex_violation":
+                # The assert narrows the type; a pattern-less regex is inert above.
+                assert expectation.regex is not None
+                # The same gate the three SQL adapters apply, for the same reason
+                # and with the same blast radius: a pattern this engine cannot
+                # compile drops its own expectation and nothing else. Here the
+                # engine is Python, so the probe IS the compile that used to sit
+                # unguarded on this line.
+                if not self.contract_regex_is_compilable(expectation.regex):
+                    continue
+                regex = re.compile(expectation.regex)
 
             for row in rows:
                 if group_index is not None:
@@ -246,22 +690,14 @@ class BaseAdapter(abc.ABC):
                     if sample_value is None:
                         sample_value = "<NULL>" if raw_value is None else str(raw_value)
 
-            if total_count <= 0 or bad_count <= 0:
-                continue
-            bad_rate = bad_count / total_count
-            if bad_rate <= expectation.threshold:
-                continue
-            violations.append(
-                FieldContractViolation(
-                    field_name=expectation.field_name,
-                    drift_type=expectation.drift_type,
-                    bad_count=bad_count,
-                    total_count=total_count,
-                    bad_rate=bad_rate,
-                    threshold=expectation.threshold,
-                    sample_value=sample_value,
-                )
+            violation = field_contract_verdict(
+                expectation,
+                bad_count=bad_count,
+                total_count=total_count,
+                sample_value=sample_value,
             )
+            if violation is not None:
+                violations.append(violation)
 
         return violations
 
@@ -331,6 +767,9 @@ class BaseAdapter(abc.ABC):
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         """Time-bucketed counts grouped by one breakdown column in the database.
 
+        ``values_limit`` folds the tail into ``'Other'`` under the top-N contract
+        on :class:`BaseAdapter`.
+
         Returns (column_names, json_value_names, rows).
         Row layout: (
             _bucket, _breakdown_value, _is_other,
@@ -358,6 +797,8 @@ class BaseAdapter(abc.ABC):
 
         Implementations should aggregate in the database. For ClickHouse this
         uses GROUPING SETS so selected breakdown dimensions share one source scan.
+        ``values_limit`` folds each column's tail into ``'Other'`` independently,
+        under the top-N contract on :class:`BaseAdapter`.
 
         Returns (column_names, json_value_names, rows).
         Row layout: (
@@ -393,9 +834,13 @@ class BaseAdapter(abc.ABC):
 
         Returns (column_names, json_value_names, rows) — the SAME bucketed shape
         the count methods return, so downstream parsing stays uniform.
-        Row layout: (_bucket, col1_val, ..., json_paths1, ..., aggregate_value),
-        where the final positional column is the aggregate value (the slot the
-        count methods fill with ``count``).
+        Row layout: (
+            _bucket, col1_val, ..., json_paths1, ..., keep_json_value1, ...,
+            aggregate_value
+        ), where the final positional column is the aggregate value (the slot
+        the count methods fill with ``count``). The ``keep_json_value`` block is
+        one column per entry of the returned ``json_value_names``, in that
+        order, exactly as on get_time_bucketed_counts.
         """
         ...
 
@@ -419,15 +864,43 @@ class BaseAdapter(abc.ABC):
         """Time-bucketed aggregate grouped by one breakdown column.
 
         Mirrors get_time_bucketed_breakdown_counts but emits ``agg_fn`` over
-        ``measure_column`` instead of ``count()``. When ``values_limit`` is set,
-        breakdown values beyond the top ``values_limit - 1`` are folded into an
-        ``'Other'`` bucket (``_is_other = 1``), exactly like the count path.
+        ``measure_column`` instead of ``count()``. ``values_limit`` folds the
+        tail into an ``'Other'`` bucket under the top-N contract on
+        :class:`BaseAdapter`, exactly like the count path.
+
+        The breakdown column is grouped by its FOLDED value ONLY. It also
+        occupies its own slot in the regular-column block — ClickHouse,
+        PostgreSQL and BigQuery all reject a ``breakdown_column`` that is not
+        also in ``regular_columns``, and the in-memory adapter accepts either —
+        and that slot repeats the folded value rather than the raw one. Grouping
+        by the raw column as well would give one ``'Other'`` row per raw value
+        that fell into it, which is the one thing the rollup exists to prevent,
+        and would likewise split a nullable column's NULL and ``''`` rows even
+        though both render to ``''``. The sibling
+        get_time_bucketed_multi_aggregate_breakdown never had the problem
+        because it carries no regular columns at all.
+
+        This is therefore the ONE place the "mirrors the count path" sentence
+        above stops holding: get_time_bucketed_breakdown_counts(_multi) still
+        groups every regular column raw, breakdown included, in all four
+        implementations. That is a different situation rather than the same
+        defect left unfixed — the count path's consumer in
+        ``worker/tasks/metrics/`` re-aggregates its rows in Python under a key
+        that never carries the raw value, so a fan-out there costs rows fetched
+        and nothing else, while THIS method's rows go straight into an upsert
+        whose conflict target is the folded key.
+
+        Repeating the folded value was chosen over dropping the breakdown
+        column from the projection: dropping it would shorten every row and
+        shift the JSON blocks left, and callers read this layout positionally.
 
         Returns (column_names, json_value_names, rows).
         Row layout: (
             _bucket, _breakdown_value, _is_other,
-            col1_val, ..., json_paths1, ..., aggregate_value
-        ).
+            col1_val, ..., json_paths1, ..., keep_json_value1, ...,
+            aggregate_value
+        ), where the ``col_val`` for ``breakdown_column`` equals
+        ``_breakdown_value``.
         """
         ...
 
@@ -503,11 +976,13 @@ class BaseAdapter(abc.ABC):
         """Many bucketed aggregates grouped by one breakdown column, ONE scan.
 
         Like get_time_bucketed_multi_aggregate but additionally groups by
-        ``breakdown_column``. When ``values_limit`` is set, breakdown values
-        beyond the top ``values_limit`` (ranked deterministically by total row
-        count in the window) are folded into an ``'Other'`` rollup row
-        (``is_other = True``), matching the top-N semantics of the single
-        breakdown method get_time_bucketed_aggregate_breakdown.
+        ``breakdown_column``. ``values_limit`` folds the tail into an ``'Other'``
+        rollup row (``is_other = 1``) under the top-N contract on
+        :class:`BaseAdapter`, identically to the single breakdown method
+        get_time_bucketed_aggregate_breakdown. This docstring used to restate
+        that cut and restated it wrongly — it promised the top ``values_limit``
+        while every implementation kept one fewer — which is why the number now
+        lives in exactly one place and each method only points at it.
 
         Returns (column_names, rows) where ``column_names`` is
         ``["bucket", "breakdown_value", "is_other", spec1.key, spec2.key, ...]``

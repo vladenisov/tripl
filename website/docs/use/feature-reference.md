@@ -854,6 +854,16 @@ A ratio can combine two fact
 operands, including operands from different fact tables. Fact tables and metrics
 are indexed by global search and are not copied into plan branches.
 
+A fact table that metrics still read cannot be pulled out from under them.
+**Deleting** it, **unbinding its data source**, and **removing or renaming a named
+row filter a metric uses** are each refused with a conflict naming the metrics in
+the way (up to ten, then a count of the rest). Every metric that references the
+table counts, whatever its status — a `draft` or `archived` metric hits the same
+dangling reference the moment it collects again — and so does a ratio operand,
+whose reference lives inside another metric's config rather than in a column of
+its own. Change or delete those metrics first. Every other edit to the fact
+table, including adding a filter, is unaffected.
+
 ### Metric detail
 
 **Where:** open a metric from the catalog. The drilldown **reuses the monitoring

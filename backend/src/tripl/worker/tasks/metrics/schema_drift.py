@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import func
@@ -18,6 +20,9 @@ from tripl.core.analyzers.cardinality import CardinalityResult, _is_json_type
 from tripl.models.event_type import EventType
 from tripl.models.schema_drift import SchemaDrift
 from tripl.observability.metrics import schema_drifts_detected_total
+from tripl.worker.tasks._errors import _CURATED_ERRORS
+
+logger = logging.getLogger(__name__)
 
 # Logical FieldDefinition.field_type values that `_ensure_event_type_with_fields`
 # can create automatically. type_changed drift only fires when the previously
@@ -371,6 +376,21 @@ def _detect_event_type_drift(
     )
 
 
+@dataclass(frozen=True)
+class FieldContractOutcome:
+    """What one event type's contract check produced — including whether it ran.
+
+    Two numbers rather than one because "checked, found nothing" and "could not
+    check" are different answers that both used to report 0 violations, and the
+    second one is the one an operator has to be told about: a contract that
+    silently stops being evaluated looks exactly like a contract that is being
+    met.
+    """
+
+    violations_detected: int = 0
+    checks_failed: int = 0
+
+
 def _detect_field_contract_violations(
     session: Session,
     *,
@@ -386,25 +406,75 @@ def _detect_field_contract_violations(
     group_column: str | None = None,
     group_value: str | None = None,
     limit: int = 50000,
-) -> int:
-    """Validate declared field contracts against warehouse data, write drifts."""
+) -> FieldContractOutcome:
+    """Validate declared field contracts against warehouse data, write drifts.
+
+    A failure here costs this run its contract check and nothing more. That is a
+    deliberate swallow, and it is the narrowest one that fixes what it has to:
+    contract evaluation is ONE part of a catalog sync, this function is called
+    once per event-type group inside ``catalog_sync``'s loop, and neither it nor
+    the loop caught anything — so a single expectation the warehouse would not
+    accept ended the whole collection, the config stayed due, and it failed again
+    on every retry with ``"Scan failed due to an internal error."`` The
+    expectations are replayed from contracts a user declared long ago and a
+    column can change type or a pattern can stop compiling under them, so a
+    permanently-wedged config was reachable without anyone touching the config.
+
+    An ``except Exception`` is the thing to distrust in a change like this, so it
+    carries all three of the guarantees that make it legible rather than
+    convenient:
+
+    * curated errors are re-raised. ``ScanError`` / ``NameFormatError`` /
+      ``WarehouseCapabilityError`` carry an author-written sentence naming the
+      setting to change, and ``user_facing_error`` surfaces it verbatim. Those
+      the operator can act on; hiding one behind a counter would trade a
+      diagnosable failure for an undiagnosable success.
+    * the traceback is logged (``logger.exception``, not a message), because the
+      class of thing being swallowed includes genuine adapter bugs and the log is
+      then the only record of one.
+    * the failure is COUNTED and reaches the job summary as
+      ``contract_checks_failed`` (see ``CatalogSyncResult`` and the summary in
+      ``tasks``). A swallow that reports nothing is the anti-pattern; this one
+      reports every time it fires.
+
+    The ``try`` wraps the warehouse call ONLY. A failure writing the drift rows
+    belongs to the session, and the task's rollback has to see it: swallowing
+    that would report violations the database does not hold.
+
+    What a failed check leaves behind is what a passing one would have: nothing
+    on this path ever resolves a drift row — ``_upsert_schema_drifts`` only
+    inserts and refreshes — so an open contract drift stays open either way. That
+    is the right reading: "we could not check" must not become "it is clean now".
+    """
     if event_type is None:
-        return 0
+        return FieldContractOutcome()
 
     expectations = _field_contract_expectations(event_type, columns, skip_columns)
     if not expectations:
-        return 0
+        return FieldContractOutcome()
 
-    violations = adapter.validate_field_contracts(
-        base_query,
-        expectations,
-        time_column=time_column,
-        time_from=time_from,
-        time_to=time_to,
-        group_column=group_column,
-        group_value=group_value,
-        limit=limit,
-    )
+    try:
+        violations = adapter.validate_field_contracts(
+            base_query,
+            expectations,
+            time_column=time_column,
+            time_from=time_from,
+            time_to=time_to,
+            group_column=group_column,
+            group_value=group_value,
+            limit=limit,
+        )
+    except _CURATED_ERRORS:
+        raise
+    except Exception:
+        logger.exception(
+            "Field contract evaluation failed for event type %s (%s expectations); "
+            "skipping contracts for it this run",
+            event_type.id,
+            len(expectations),
+        )
+        return FieldContractOutcome(checks_failed=1)
+
     drift_items = _contract_violation_drift_items(violations)
     _upsert_schema_drifts(
         session,
@@ -412,4 +482,4 @@ def _detect_field_contract_violations(
         scan_config_id=scan_config_id,
         drift_items=drift_items,
     )
-    return len(drift_items)
+    return FieldContractOutcome(violations_detected=len(drift_items))

@@ -1120,7 +1120,19 @@ class SyntheticAdapter(BaseAdapter):
         for row in windowed:
             bucket = self._bucket_start(row[time_column], interval)
             value, is_other = self._fold(top, _bval(row.get(breakdown)))
-            key = (bucket, value, is_other, *tuple(row.get(column) for column in reg))
+            # The breakdown's own regular-column slot carries the FOLDED value,
+            # so it adds nothing to the group key: see
+            # BaseAdapter.get_time_bucketed_aggregate_breakdown for why the raw
+            # value may not be part of it. The three SQL adapters make the same
+            # substitution and are guaranteed to make it, because they reject a
+            # breakdown that is not also in ``regular_columns``; this adapter
+            # does not, so here ``reg`` may simply never contain it.
+            key = (
+                bucket,
+                value,
+                is_other,
+                *tuple(value if column == breakdown else row.get(column) for column in reg),
+            )
             groups.setdefault(key, []).append(row)
         out: list[tuple[object, ...]] = []
         for key, members in self._sorted_breakdown_items(groups):
@@ -1391,7 +1403,12 @@ class SyntheticAdapter(BaseAdapter):
         """Top ``values_limit - 1`` breakdown values by row count, or ``None``.
 
         ``None`` (no limit) means every value is kept and folds to ``is_other=0``.
-        Mirrors the ClickHouse adapter's top-N selection exactly.
+        The tie-break in ``(-count, value)`` below is the BaseAdapter top-N
+        contract rather than a local convenience: the three SQL adapters rank on
+        the same key pair — count descending, then the value ascending — in
+        their top-values pre-query, so the demo warehouse and a real one keep
+        the same values when counts tie. Python compares ``str`` by code point,
+        which is what each engine's value sort resolves to.
         """
         if values_limit is None:
             return None
@@ -1440,8 +1457,14 @@ class SyntheticAdapter(BaseAdapter):
                 row for row in members if self._row_matches_filter(table, row, spec.filter_sql)
             ]
             if not matching:
-                # Mirror ClickHouse's ``if(countIf(cond) = 0, NULL, ...)`` sentinel:
-                # a bucket with rows but none matching reads as absent (NULL).
+                # The row-presence gate every adapter owes (the conditional-aggregate
+                # contract on BaseAdapter), spelled here as the question the SQL
+                # engines have to ask with a second aggregate — ClickHouse
+                # ``countIf(cond)``, PostgreSQL ``count(*) FILTER (WHERE cond)``,
+                # BigQuery ``COUNTIF(cond)``: a bucket with rows but none matching
+                # reads as absent (NULL). Below it, a matching set whose measure is
+                # NULL throughout still aggregates — to 0 for a distinct count — and
+                # that 0 is a data point rather than a gap.
                 return None
             return self._aggregate(matching, spec.aggregation, measure)
         return self._aggregate(members, spec.aggregation, measure)

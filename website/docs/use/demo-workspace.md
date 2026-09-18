@@ -49,8 +49,11 @@ synthetic source:
   shadow / dead‑event candidates are coherent with the data.
 - **A continuous runtime clock** — a bounded, idempotent background tick keeps an
   active demo fresh over time (new buckets, jobs and signals), with retention caps
-  so it never grows without bound. Inactive demos pause and resume on your next
-  visit. An operator can turn this tick off with
+  so it never grows without bound. A demo nobody has opened for **six hours**
+  pauses, and resumes on your next visit; its scheduled metric collection pauses
+  with it, on the same rule, because collecting while the tick is stopped would
+  rewrite the demo's own history with the sparse rows the synthetic warehouse
+  keeps outside its newest hours. An operator can turn this tick off with
   [`DEMO_RUNTIME_ENABLED=false`](../run/configuration.md#demo-workspace); a demo
   then keeps the data it already has.
 - **The audit log** — the actions *you* take in the demo (edits, collections,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import os
 import re
 import shutil
@@ -14,6 +13,7 @@ from typing import override
 import psycopg
 
 from tripl.core.adapters.base import (
+    FIELD_CONTRACT_EXPECTATIONS_PER_QUERY,
     AggregateSpec,
     BaseAdapter,
     ColumnInfo,
@@ -21,6 +21,9 @@ from tripl.core.adapters.base import (
     FieldContractViolation,
     SchemaColumn,
     SchemaTable,
+    contract_bound_literal,
+    field_contract_is_inert,
+    field_contract_verdict,
 )
 from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.measure_validator import (
@@ -277,14 +280,6 @@ _NEGATIVE_INF_RE = r"^[-]inf(inity)?$"
 _NAN_RE = r"^[+-]?nan$"
 
 
-def _float_literal(value: float) -> str:
-    number = float(value)
-    if not math.isfinite(number):
-        msg = f"Contract bound must be a finite number, got {value!r}"
-        raise ValueError(msg)
-    return repr(number)
-
-
 def _jsonb_object(value_sql: str) -> str:
     """Coerce a json/jsonb expression to a jsonb *object*, or an empty object.
 
@@ -349,15 +344,19 @@ class PostgresAdapter(BaseAdapter):
     * ``$`` in Python also matches just before a trailing newline; in POSIX ARE it
       only matches at the very end of the string.
     * Python-style named groups (``(?P<name>...)``, ``(?<name>...)``) are not valid
-      ARE, and an invalid pattern makes the *statement* fail — one bad regex takes
-      down the whole contract query rather than just its own expectation. That is
-      the hazard to remember: a rejected pattern is not a per-expectation problem.
+      ARE. A pattern this server will not compile no longer reaches a statement at
+      all: ``_probe_contract_regex`` offers it to the server first and the
+      expectation is dropped if it is refused, which is the shared rule stated in
+      the field contract section of ``BaseAdapter``. Before that, a rejected
+      pattern failed the whole contract statement — every other expectation with
+      it, and the collection around it — so this bullet used to end "a rejected
+      pattern is not a per-expectation problem". It is one now.
     * Lookaround (``(?=``, ``(?!``, ``(?<=``, ``(?<!``) and backreferences are valid
       here — Postgres has had lookbehind constraints since 9.6 and this adapter
       requires 14+ — and valid in Python, but RE2 rejects all of them, so ClickHouse
-      ``match()`` and BigQuery ``REGEXP_CONTAINS`` are the ones that fail on such a
-      pattern. The divergences do not all point the same way; this one is the
-      other engines'.
+      ``match()`` and BigQuery ``REGEXP_CONTAINS`` are the ones that refuse such a
+      pattern, and refuse it through the same per-expectation probe. The
+      divergences do not all point the same way; this one is the other engines'.
 
     A contract that sticks to portable regex syntax gets identical answers from all
     three warehouses; that is what the conformance gate pins.
@@ -849,11 +848,35 @@ class PostgresAdapter(BaseAdapter):
             return ""
         return " WHERE " + " AND ".join(conditions)
 
+    @override
+    def _probe_contract_regex(self, pattern: str) -> None:
+        """Have PostgreSQL compile the pattern as a POSIX ARE, over no rows.
+
+        ``'' ~ pattern`` reads no table and still has to build the regex, so a
+        pattern ARE rejects raises here, where it costs one expectation, instead
+        of from inside the contract statement, where it took every contract in
+        the scan with it (this class's docstring named that hazard for the whole
+        time nothing defended against it).
+
+        Safe to run mid-scan only because the connection is autocommit (see
+        ``__init__``): each statement is its own transaction, so a rejected
+        pattern leaves nothing aborted behind it. Inside an open transaction this
+        probe would poison every statement that followed — the cure would be
+        worse than the disease.
+
+        The pattern is quoted with the same helper the contract statement uses,
+        so what is offered to the engine is exactly what would be compiled;
+        ``standard_conforming_strings`` is pinned on the session, which is what
+        makes doubling the quote and nothing else sufficient for both.
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(f"SELECT '' ~ {self._quote_string(pattern)}")
+
     def _contract_bad_condition(self, expectation: FieldContractExpectation) -> str | None:
         """The predicate that makes one row BAD, or ``None`` if the contract is a no-op.
 
-        Mirrors ``ClickHouseAdapter._contract_select_sql`` clause for clause, because
-        the two must agree on every row of every fixture:
+        Mirrors ``ClickHouseAdapter._contract_aggregates`` clause for clause,
+        because the two must agree on every row of every fixture:
 
         * ``required_null_violation`` — a NULL *is* the violation.
         * everything else — a NULL row is neither bad nor counted; it is skipped.
@@ -861,10 +884,16 @@ class PostgresAdapter(BaseAdapter):
           same verdict ``float(text)`` raising gives the Python fallback and
           ``toFloat64OrNull`` returning NULL gives ClickHouse.
 
-        An expectation with nothing to check (an enum with no options, a regex with
-        no pattern, a range with neither bound) yields ``None`` and is dropped, so it
-        cannot manufacture a violation out of a contract that says nothing.
+        An expectation this engine cannot evaluate yields ``None`` and contributes
+        no columns, so it cannot manufacture a violation out of a contract that
+        says nothing, and — the part that is not local to this adapter — cannot
+        end the scan the expectations beside it are riding in. Which ones those
+        are is ``field_contract_is_inert``'s to say, not this branch's; see the
+        field contract section of ``BaseAdapter``.
         """
+        if field_contract_is_inert(expectation):
+            return None
+
         quoted = _quote_ident(self._validate_column(expectation.field_name))
         value_expr = f"COALESCE({quoted}::text, '')"
         present = f"{quoted} IS NOT NULL"
@@ -872,21 +901,23 @@ class PostgresAdapter(BaseAdapter):
         if expectation.drift_type == "required_null_violation":
             return f"{quoted} IS NULL"
         if expectation.drift_type == "enum_violation":
-            if not expectation.enum_options:
-                return None
             options = ", ".join(self._quote_string(option) for option in expectation.enum_options)
             return f"{present} AND {value_expr} NOT IN ({options})"
         if expectation.drift_type == "regex_violation":
-            if not expectation.regex:
-                return None
             # `~` is an unanchored POSIX match, so it accepts exactly what the
             # fallback's re.search accepts — for the patterns the two dialects
             # share. POSIX ARE is NOT Python `re`: see the class docstring.
+            # The assert narrows the type; a pattern-less regex is inert above.
+            assert expectation.regex is not None
+            # And where the two dialects do NOT share a construct, ARE says so by
+            # refusing to compile — from inside the statement, which is the
+            # hazard this class has documented all along. Ask first, and a
+            # pattern this server will not take drops only its own expectation.
+            if not self.contract_regex_is_compilable(expectation.regex):
+                return None
             pattern = self._quote_string(expectation.regex)
             return f"{present} AND NOT ({value_expr} ~ {pattern})"
         if expectation.drift_type == "range_violation":
-            if expectation.min_value is None and expectation.max_value is None:
-                return None
             # Cast only what already looks like a number AND is small enough to
             # hold (see _FINITE_NUMBER_RE): a bare cast on 'twelve' RAISES and
             # takes the whole contract query down with it. Anything unmatched
@@ -897,8 +928,9 @@ class PostgresAdapter(BaseAdapter):
             # function raises 22003 on BOTH overflow and underflow-to-zero, so
             # '1e400' and '1e-400' cleared the old syntax-only guard and then
             # aborted the statement — and every expectation shares one statement
-            # (see the UNION ALL in validate_field_contracts), so one event row
-            # could take down a whole config's contract check. The other two
+            # (they are columns of one aggregate in validate_field_contracts), so
+            # one event row could take down a whole config's contract check. The
+            # other two
             # engines never raise: base.py's fallback reads those as inf and 0.0,
             # ClickHouse's toFloat64OrNull the same. numeric compares exact
             # decimals and has no float range to leave, so it agrees with them on
@@ -915,16 +947,23 @@ class PostgresAdapter(BaseAdapter):
             bounds: list[str] = []
             # The bound is cast too. An unadorned decimal constant is already
             # `numeric` to PostgreSQL — only an integer-looking one starts life as
-            # int4/int8 — and `_float_literal` is `repr(float)`, which always emits
-            # a '.' or an 'e'. So this cast changes no type today; it is here to
-            # state the comparison domain where a reader checks it, and so that a
-            # later change to `_float_literal`'s spelling cannot quietly resolve
-            # the operator as `numeric >= double precision` and reintroduce the
-            # overflow this branch exists to avoid.
+            # int4/int8 — and `contract_bound_literal` is `repr(float)`, which
+            # always emits a '.' or an 'e'. So this cast changes no type today; it
+            # is here to state the comparison domain where a reader checks it, and
+            # so that a later change to that helper's spelling cannot quietly
+            # resolve the operator as `numeric >= double precision` and reintroduce
+            # the overflow this branch exists to avoid.
+            #
+            # The helper lives in base.py now rather than here: it used to be this
+            # file's private `_float_literal`, which made PostgreSQL the only engine
+            # that refused a non-finite bound — by RAISING, which ended the whole
+            # collection, while ClickHouse compared against `-inf` and BigQuery
+            # emitted a literal GoogleSQL cannot parse. One helper, one rule, and
+            # the decision to skip such an expectation now precedes the call.
             if expectation.min_value is not None:
-                bounds.append(f">= {_float_literal(expectation.min_value)}::numeric")
+                bounds.append(f">= {contract_bound_literal(expectation.min_value)}::numeric")
             if expectation.max_value is not None:
-                bounds.append(f"<= {_float_literal(expectation.max_value)}::numeric")
+                bounds.append(f"<= {contract_bound_literal(expectation.max_value)}::numeric")
             in_range = " AND ".join(f"({numeric_expr}) {bound}" for bound in bounds)
             # COALESCE(..., TRUE) is what turns "did not parse" into BAD: an
             # unparseable value leaves the comparison NULL, and NULL would
@@ -938,18 +977,23 @@ class PostgresAdapter(BaseAdapter):
             )
         return None
 
-    def _contract_select_sql(
+    def _contract_aggregate_sql(
         self,
         expectation: FieldContractExpectation,
+        bad_condition: str,
         *,
-        base_query: str,
-        where_clause: str,
         index: int,
-    ) -> str | None:
-        bad_condition = self._contract_bad_condition(expectation)
-        if bad_condition is None:
-            return None
+    ) -> str:
+        """The three columns one expectation contributes to the shared scan.
 
+        ``_bad_{i}``, ``_total_{i}``, ``_sample_{i}`` — the same three aliases in
+        the same order that ``BigQueryAdapter._contract_fragments`` emits and
+        that ``ClickHouseAdapter.validate_field_contracts`` numbers its own
+        aggregates with, so the row a reader has to index by position is laid
+        out identically on all three engines.
+        Nothing else about the expectation reaches the warehouse: the threshold
+        and the comparison are ``field_contract_verdict``'s job.
+        """
         quoted = _quote_ident(self._validate_column(expectation.field_name))
         value_expr = f"COALESCE({quoted}::text, '')"
         is_required = expectation.drift_type == "required_null_violation"
@@ -960,30 +1004,10 @@ class PostgresAdapter(BaseAdapter):
         # pick so the sample is deterministic, and because it needs O(1) memory even
         # when millions of rows are bad (array_agg would materialize all of them).
         sample_source = "'<NULL>'::text" if is_required else value_expr
-        sample_expr = f"min({sample_source}) FILTER (WHERE {bad_condition})"
-
-        threshold = max(0.0, min(1.0, expectation.threshold))
-        rate_expr = "bad_count::double precision / total_count"
         return (
-            "SELECT "
-            f"{self._quote_string(expectation.field_name)}::text AS field_name, "
-            f"{self._quote_string(expectation.drift_type)}::text AS drift_type, "
-            "bad_count, "
-            "total_count, "
-            f"{threshold:.12g}::double precision AS threshold, "
-            f"{rate_expr} AS bad_rate, "
-            "sample_value, "
-            f"{int(index)} AS _ord "
-            "FROM ("
-            "SELECT "
-            f"count(*) FILTER (WHERE {bad_condition}) AS bad_count, "
-            f"{total_expr} AS total_count, "
-            f"{sample_expr} AS sample_value "
-            f"FROM ({base_query}) AS _src{where_clause}"
-            f") AS _contract_{int(index)} "
-            "WHERE total_count > 0 "
-            "AND bad_count > 0 "
-            f"AND {rate_expr} > {threshold:.12g}"
+            f"count(*) FILTER (WHERE {bad_condition}) AS _bad_{int(index)}, "
+            f"{total_expr} AS _total_{int(index)}, "
+            f"min({sample_source}) FILTER (WHERE {bad_condition}) AS _sample_{int(index)}"
         )
 
     @override
@@ -1007,9 +1031,18 @@ class PostgresAdapter(BaseAdapter):
         than the data. Here the counting happens in Postgres over every row the
         window selects, so both numbers are exact whatever the table's size.
 
-        One query for all expectations: each contributes a UNION ALL branch that
-        already applies its own threshold, so only actual violations travel back.
-        ``ORDER BY _ord`` keeps them in the order the caller listed them.
+        One statement AND one scan for all expectations: their aggregates sit side
+        by side in one flat SELECT over a single ``FROM (base_query)``. The shape
+        this replaced was a UNION ALL of one aggregate subquery per expectation —
+        still one statement, but Postgres does not deduplicate an identical inline
+        subquery across UNION arms, so it re-read the whole window once per
+        contract, and ``catalog_sync`` calls this once per event-type group.
+
+        Only the counts come back; the threshold comparison is
+        ``field_contract_verdict``'s, per the contract on ``BaseAdapter``. That is
+        also what retires the ``ORDER BY _ord`` this used to need: the violations
+        are built by walking the expectations, so they are in the caller's order by
+        construction.
         """
         if not expectations:
             return []
@@ -1021,48 +1054,53 @@ class PostgresAdapter(BaseAdapter):
             group_column,
             group_value,
         )
-        selects = [
-            sql
-            for index, expectation in enumerate(expectations)
-            if (
-                sql := self._contract_select_sql(
-                    expectation,
-                    base_query=base_query,
-                    where_clause=where_clause,
-                    index=index,
-                )
-            )
-            is not None
+        # Compiled up front, before any statement is built: an expectation with
+        # nothing to check contributes no columns, and a set of expectations that
+        # are ALL inert must still touch the warehouse not at all.
+        compiled = [
+            (expectation, condition)
+            for expectation in expectations
+            if (condition := self._contract_bad_condition(expectation)) is not None
         ]
-        if not selects:
+        if not compiled:
             return []
 
-        sql = (
-            "SELECT field_name, drift_type, bad_count, total_count, threshold, "
-            "bad_rate, sample_value FROM ("
-            + " UNION ALL ".join(selects)
-            + f") AS _contracts ORDER BY _ord LIMIT {int(limit)}"
-        )
-        logger.debug("PG field contract query: %s", _truncate_sql(sql))
+        violations: list[FieldContractViolation] = []
         t0 = time.monotonic()
-        with self._conn.cursor() as cur:
-            cur.execute(sql)
-            rows = cur.fetchall()
-        elapsed = time.monotonic() - t0
-        logger.info("PG field contracts done in %.2fs, %s violations", elapsed, len(rows))
-
-        return [
-            FieldContractViolation(
-                field_name=str(row[0]),
-                drift_type=str(row[1]),
-                bad_count=int(row[2]),
-                total_count=int(row[3]),
-                threshold=float(row[4]),
-                bad_rate=float(row[5]),
-                sample_value=None if row[6] is None else str(row[6]),
+        for start in range(0, len(compiled), FIELD_CONTRACT_EXPECTATIONS_PER_QUERY):
+            chunk = compiled[start : start + FIELD_CONTRACT_EXPECTATIONS_PER_QUERY]
+            selects = ", ".join(
+                self._contract_aggregate_sql(expectation, condition, index=index)
+                for index, (expectation, condition) in enumerate(chunk)
             )
-            for row in rows
-        ]
+            sql = f"SELECT {selects} FROM ({base_query}) AS _src{where_clause}"
+            logger.debug("PG field contract query: %s", _truncate_sql(sql))
+            with self._conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+            # An ungrouped aggregate returns exactly one row even over an empty
+            # window, so this only fires for a driver (or a test double) that hands
+            # back nothing — better than an IndexError inside the loop below.
+            if not rows:
+                continue
+            row = rows[0]
+            for index, (expectation, _condition) in enumerate(chunk):
+                sample = row[index * 3 + 2]
+                violation = field_contract_verdict(
+                    expectation,
+                    bad_count=int(row[index * 3]),
+                    total_count=int(row[index * 3 + 1]),
+                    sample_value=None if sample is None else str(sample),
+                )
+                if violation is not None:
+                    violations.append(violation)
+        elapsed = time.monotonic() - t0
+        logger.info("PG field contracts done in %.2fs, %s violations", elapsed, len(violations))
+
+        # ``limit`` bounds the violation ROWS handed back, never the rows scanned —
+        # the LIMIT clause it used to be did the same, and the caller stores one
+        # drift row per violation.
+        return violations[: max(0, int(limit))]
 
     def get_full_breakdown(
         self,
@@ -1330,8 +1368,20 @@ class PostgresAdapter(BaseAdapter):
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
-            select_parts.append(_quote_ident(c))
-            group_parts.append(_quote_ident(c))
+            if c == breakdown:
+                # The breakdown keeps its regular-column slot but carries the
+                # FOLDED value there, and is deliberately NOT added to
+                # group_parts: see
+                # BaseAdapter.get_time_bucketed_aggregate_breakdown for why the
+                # raw column may not be a grouping key. The expression is
+                # repeated rather than the alias reused, because an output alias
+                # is not visible to the SELECT list in Postgres; `GROUP BY
+                # _breakdown_value` resolves to this same expression, so the
+                # planner sees the projection as grouped.
+                select_parts.append(f"{breakdown_expr} AS {_quote_ident(c)}")
+            else:
+                select_parts.append(_quote_ident(c))
+                group_parts.append(_quote_ident(c))
             col_names.append(c)
         for c in json_cols:
             expr = self._json_paths_expression(c)
@@ -1377,27 +1427,43 @@ class PostgresAdapter(BaseAdapter):
         and, when ``filter_sql`` is set, wraps the aggregate as a Postgres
         ``FILTER (WHERE ...)`` conditional so specs with different filters can
         share one scan. Postgres supports ``FILTER`` on ``count(*)`` and
-        ``count(DISTINCT col)`` alike, so no CASE fallback is needed.
-        ``filter_sql`` is a pre-validated boolean fragment injected as-is, the
-        same trust model as the single-metric row-filter path.
+        ``count(DISTINCT col)`` alike, so the conditional aggregate itself never
+        needs a CASE fallback the way BigQuery's does (no ``FILTER`` there, so
+        the condition folds into ``CASE`` / ``IF`` instead). ``filter_sql`` is a
+        pre-validated boolean fragment injected as-is, the same trust model as
+        the single-metric row-filter path.
 
-        ``count`` / ``count_distinct`` with a ``FILTER`` return 0 (not NULL) for
-        a bucket whose rows never match ``cond``; the remaining aggregates
-        (``avg`` / ``sum`` / ``min`` / ``max``) already return NULL there. The
-        zero-returning counts are wrapped in ``NULLIF(..., 0)`` so such a bucket
-        reads as absent, matching the per-metric path whose filtered scan emits
-        no row at all for it (a 0 would otherwise render as a spurious data
-        point instead of a gap).
+        The NULL-means-gap rule this implements is stated once, on
+        :class:`~tripl.core.adapters.base.BaseAdapter`: a bucket is absent for a
+        spec when NO row in it matched ``cond``, and a bucket that does have
+        matching rows is a data point even when the aggregate over them is 0.
+        Each aggregate spells the row-presence test as cheaply as it can:
+
+        * ``avg`` / ``sum`` / ``min`` / ``max`` need no test at all — over zero
+          matching rows they already return NULL.
+        * ``count`` uses ``NULLIF(count(*) FILTER (WHERE cond), 0)``, because
+          its filtered value IS the count of matching rows: 0 and "nothing
+          matched" are the same statement. Spelling it as the CASE below was
+          rejected — it emits the same verdict from twice the text and a second
+          copy of ``cond``.
+        * ``count_distinct`` needs an explicit ``count(*) FILTER`` probe:
+          ``count(DISTINCT m) FILTER`` returns 0 both for a bucket nothing
+          matched AND for a bucket whose matching rows all have ``m IS NULL``,
+          so its own value cannot answer the question. It used to be
+          ``NULLIF(..., 0)`` too, which reported an all-NULL measure over real
+          rows as a gap, while ClickHouse — gating on ``countIf(cond)``, a row
+          count — kept the bucket and stored the 0.
         """
         base = self._aggregate_value_sql(spec.aggregation, spec.column)
         if not spec.filter_sql:
             return base
         filtered = f"{base} FILTER (WHERE {spec.filter_sql})"
-        if coerce_aggregation(spec.aggregation) in (
-            MetricAggregation.count,
-            MetricAggregation.count_distinct,
-        ):
+        agg = coerce_aggregation(spec.aggregation)
+        if agg is MetricAggregation.count:
             return f"NULLIF({filtered}, 0)"
+        if agg is MetricAggregation.count_distinct:
+            matching_rows = f"count(*) FILTER (WHERE {spec.filter_sql})"
+            return f"CASE WHEN {matching_rows} = 0 THEN NULL ELSE {filtered} END"
         return filtered
 
     def build_time_bucketed_multi_aggregate_sql(
@@ -1589,7 +1655,17 @@ class PostgresAdapter(BaseAdapter):
         sql = (
             "SELECT _breakdown_column, _breakdown_value FROM ("
             "SELECT _breakdown_column, _breakdown_value, "
-            "ROW_NUMBER() OVER (PARTITION BY _breakdown_column ORDER BY _cnt DESC) AS rn "
+            # _breakdown_value is the tie-break the BaseAdapter top-N contract
+            # requires: ranked by count alone, two equally-counted values at the
+            # `rn <= limit` cut could swap places between runs over the same
+            # window. COLLATE "C" rather than a bare sort on the value, because
+            # an unqualified text sort follows the database collation: the same
+            # tie breaks one way under C and another under en_US.UTF-8, and a
+            # PG12+ nondeterministic ICU collation would leave it a tie. "C" is
+            # byte order, which over UTF-8 is the code-point order the other
+            # three adapters rank by, and it ships with every server.
+            "ROW_NUMBER() OVER (PARTITION BY _breakdown_column "
+            'ORDER BY _cnt DESC, _breakdown_value COLLATE "C") AS rn '
             "FROM ("
             "SELECT "
             f"CASE {label_branches} ELSE '' END AS _breakdown_column, "

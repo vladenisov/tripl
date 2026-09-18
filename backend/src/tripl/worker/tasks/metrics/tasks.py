@@ -679,6 +679,7 @@ def collect_metrics(
         gen_results = catalog.gen_results
         single_result = catalog.single_result
         contract_violations_detected = catalog.contract_violations_detected
+        contract_checks_failed = catalog.contract_checks_failed
         replay_branch_id = catalog.replay_branch_id
         replay_variables_by_token = catalog.replay_variables_by_token
         replay_events = catalog.replay_events
@@ -1139,6 +1140,13 @@ def collect_metrics(
             "significant_distribution_drifts": significant_distribution_drifts,
             "distribution_drifts_deleted": distribution_drifts_deleted,
             "contract_violations_detected": contract_violations_detected,
+            # Event-type groups whose contracts could not be evaluated at all.
+            # It rides next to the line above because it is what that line's 0
+            # means: "no violations" and "no check" are the same number
+            # otherwise, and the swallow in
+            # ``schema_drift._detect_field_contract_violations`` is only
+            # acceptable while this number is reported (tripl-0zpq.54).
+            "contract_checks_failed": contract_checks_failed,
             "anomalies_detected": anomalies_detected,
             "breakdown_anomalies_detected": breakdown_anomalies_detected,
             "release_regressions_detected": release_regressions_detected,

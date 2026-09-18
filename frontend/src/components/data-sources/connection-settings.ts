@@ -50,6 +50,17 @@ export const SSL_MODE_OPTIONS: { value: PostgresSslMode | ''; label: string }[] 
 // ~100 GiB, mirroring DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED on the backend.
 export const DEFAULT_MAX_BILLED_BYTES_LABEL = '107374182400'
 
+// A BigQuery schema browse costs one job per dataset, so it is hard-capped;
+// the connection's own default dataset always takes the first slot, which is
+// why the allowlist accepts one fewer. Mirrors MAX_SCHEMA_DATASETS /
+// _MAX_DATASET_ALLOWLIST in backend/src/tripl/schemas/data_source.py. Derived
+// from one number here as it is there, rather than two literals in the help
+// text: the backend split them once and the write path went on accepting 50
+// datasets that the browse silently truncated to 20, which is the same drift
+// this help text would reintroduce if it hardcoded a bound of its own.
+export const MAX_SCHEMA_DATASETS = 20
+export const MAX_DATASET_ALLOWLIST = MAX_SCHEMA_DATASETS - 1
+
 export const SELECT_CLASS =
   'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm ' +
   'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'

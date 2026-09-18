@@ -229,6 +229,13 @@ def _prepare_demo_dispatch(
     assert project is not None
     project.is_demo = True
     now = datetime.now(UTC)
+    # An ACTIVE demo. The dispatcher skips a PAUSED one outright (tripl-0zpq.72),
+    # and these tests are about the cooldown, so the pause gate must not be what
+    # holds them back. A demo with both stamps NULL reads as paused, which would
+    # leave `test_demo_collection_is_deferred_by_the_cooldown` passing for the
+    # wrong reason.
+    project.demo_seeded_at = now - timedelta(days=3)
+    project.demo_last_accessed_at = now
     if recent_scheduled_job:
         session.add(
             ScanJob(

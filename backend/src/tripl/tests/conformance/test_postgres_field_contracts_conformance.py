@@ -15,8 +15,12 @@ Needs a PostgreSQL. Unreachable => SKIP, so a laptop without Docker stays green:
 
     docker run --rm -d --name pgcap -p 55440:5432 \
       -e POSTGRES_PASSWORD=x -e POSTGRES_USER=tripl -e POSTGRES_DB=t postgres:18
-    TRIPL_LIVE_PG_PORT=55440 TRIPL_LIVE_PG_DB=t TRIPL_LIVE_PG_PASSWORD=x \
-      uv run pytest src/tripl/tests/test_postgres_field_contracts_live.py
+    TRIPL_CONF_PG_PORT=55440 TRIPL_CONF_PG_DB=t TRIPL_CONF_PG_PASSWORD=x \
+      uv run pytest src/tripl/tests/conformance/test_postgres_field_contracts_conformance.py
+
+The variable names above are ``TRIPL_CONF_PG_*`` and the path is this file's own,
+because the ``TRIPL_LIVE_PG_*`` block and the ``..._live.py`` name they belonged to
+are gone — see the import comment below for why they had to be.
 """
 
 from __future__ import annotations
@@ -90,6 +94,27 @@ ROWS: tuple[tuple[int, datetime, str | None, str | None, str, str], ...] = (
     # NULL amount: bad for required_null, and skipped entirely by the other three.
     (10, _IN, "click", None, "u10", "checkout"),
     (11, _IN, None, "2.5", "u11", "checkout"),
+    # float8 OVERFLOW: '1e400' cleared the old syntax-only guard and then raised
+    # 22003 on the cast, aborting every expectation in the UNION. In numeric it is
+    # 10^400 -> over max -> BAD, which is what float('1e400') == inf says too.
+    (13, _IN, "click", "1e400", "u13", "checkout"),
+    # float8 UNDERFLOW-to-zero: '1e-400' raised for the same reason. 10^-400 is
+    # >= 0 and <= 50 -> GOOD, which is what float('1e-400') == 0.0 says too, and it
+    # is the half that proves numeric did not simply swallow everything as bad.
+    (14, _IN, "view", "1e-400", "u14", "checkout"),
+    # Beyond the guard's bounded magnitude: no arm matches, so it stays NULL and is
+    # reported BAD -- never raised. float() reads inf, which is also over max.
+    (15, _IN, "click", "9" * 310, "u15", "checkout"),
+    # The fourth of this block, and it is here to hold amount's bad_rate at exactly
+    # 0.5: the three above are two bad and one good, and
+    # `test_a_threshold_the_bad_rate_does_not_clear_is_not_a_violation` needs a rate
+    # a threshold can equal EXACTLY to show the comparison is strict. Re-deriving
+    # that test around 7/13 would have made it turn on PostgreSQL's division
+    # agreeing with Python's to the last bit, which is a worse thing to pin than one
+    # fixture row. It earns its keep anyway: '5e1' is the guard's exponent arm on a
+    # value the cast then has to handle, and 50 is exactly what the inclusive max
+    # accepts -- the positive control the three magnitude rows above lack.
+    (16, _IN, "view", "5e1", "u16", "checkout"),
     # Outside the window. Every count must ignore it — its amount is wildly bad and
     # its event_name is not in the enum, so a window bug shows up as a count bug.
     (12, _OUT, "explode", "9999", "nope", "checkout"),
@@ -215,8 +240,10 @@ def test_the_native_sql_returns_exactly_what_the_python_fallback_does(
     """Two unrelated implementations, one required answer.
 
     The fixture holds every case that has ever diverged between engines: NULLs in
-    both denominators, a malformed number, an empty string, a NaN, an infinity, an
-    enum miss, a regex miss, and a clean contract that must stay silent.
+    both denominators, a malformed number, an empty string, a NaN, an infinity, a
+    float8 overflow, a float8 underflow-to-zero, a magnitude past what the guard
+    will cast at all, an enum miss, a regex miss, and a clean contract that must
+    stay silent.
     """
     contracts_pg.get_columns(BASE)
     window = {"time_column": "ts", "time_from": FROM_TIME, "time_to": TO_TIME}
@@ -226,15 +253,17 @@ def test_the_native_sql_returns_exactly_what_the_python_fallback_does(
 
     assert _comparable(native) == _comparable(fallback)
     # ...and the answer is the RIGHT one, not merely a shared one.
+    # Fifteen rows are in the window: ids 1-11 and 13-16. Id 12 is outside it.
     assert _comparable(native) == {
-        # 'buy' x2 and NULL-excluded; 10 non-null event_names in the window.
-        ("event_name", "enum_violation"): (2, 10, 0.2, 0.0),
-        ("event_name", "required_null_violation"): (1, 11, 1 / 11, 0.0),
-        # 99, -3, 'twelve', '', 'inf' are bad. 'nan' is NOT. NULL is not counted.
-        ("amount", "range_violation"): (5, 10, 0.5, 0.0),
-        ("amount", "required_null_violation"): (1, 11, 1 / 11, 0.0),
+        # 'buy' x2 and NULL-excluded; 14 non-null event_names in the window.
+        ("event_name", "enum_violation"): (2, 14, 2 / 14, 0.0),
+        ("event_name", "required_null_violation"): (1, 15, 1 / 15, 0.0),
+        # 99, -3, 'twelve', '', 'inf', '1e400' and the 310-digit value are bad.
+        # 'nan', '1e-400' and '5e1' are NOT. NULL is not counted.
+        ("amount", "range_violation"): (7, 14, 0.5, 0.0),
+        ("amount", "required_null_violation"): (1, 15, 1 / 15, 0.0),
         # 'user_7' misses ^u[0-9]+$.
-        ("user_id", "regex_violation"): (1, 11, 1 / 11, 0.0),
+        ("user_id", "regex_violation"): (1, 15, 1 / 15, 0.0),
     }
     # The clean contract stayed silent in both.
     assert ("group_key", "enum_violation") not in _comparable(native)
@@ -247,7 +276,15 @@ def test_the_sample_value_is_one_of_the_offending_values(contracts_pg: PostgresA
         for v in _native(contracts_pg, time_column="ts", time_from=FROM_TIME, time_to=TO_TIME)
     }
     assert violations[("event_name", "enum_violation")] == "buy"
-    assert violations[("amount", "range_violation")] in {"-3", "", "99", "inf", "twelve"}
+    assert violations[("amount", "range_violation")] in {
+        "-3",
+        "",
+        "1e400",
+        "9" * 310,
+        "99",
+        "inf",
+        "twelve",
+    }
     assert violations[("user_id", "regex_violation")] == "user_7"
     # A NULL has no value to show, so it shows that it is one.
     assert violations[("amount", "required_null_violation")] == "<NULL>"
@@ -271,7 +308,10 @@ def test_a_malformed_number_does_not_abort_the_query(contracts_pg: PostgresAdapt
     }
     # And the malformed value was counted BAD, not skipped.
     amount = next(v for v in violations if v.drift_type == "range_violation")
-    assert amount.bad_count == 5
+    # 99, -3, 'twelve', '', 'inf' as before, plus '1e400' and the 310-digit value.
+    # '1e-400' is GOOD, which is the half that proves numeric did not just swallow
+    # everything.
+    assert amount.bad_count == 7
 
 
 def test_the_group_filter_and_the_window_are_honored(contracts_pg: PostgresAdapter) -> None:
@@ -412,3 +452,42 @@ def test_certificate_pems_are_materialized_0600_and_cleaned_up_on_close() -> Non
     adapter.close()
     assert not os.path.exists(directory), "the private material outlived the connection"
     assert adapter._tls_dir is None  # noqa: SLF001
+
+
+# --- the regex dialect claim, asked of the engine ------------------------------
+
+
+def test_a_lookbehind_pattern_is_compiled_rather_than_declined(
+    contracts_pg: PostgresAdapter,
+) -> None:
+    """PostgreSQL's ARE really does accept lookbehind — asked of the server itself.
+
+    ``PostgresAdapter``'s class docstring says so, and since the per-expectation
+    regex probe landed that sentence is load-bearing rather than trivia: a pattern
+    the engine declines is now DROPPED, silently for the contract that named it.
+    RE2 rejects lookaround, so ClickHouse and BigQuery decline this very pattern
+    (the divergence "points the other way" for once); PostgreSQL must not, and no
+    unit test can settle it — only the engine's own regex compiler can.
+    """
+    contracts_pg.get_columns(BASE)
+    # A digit run preceded by a 'u'. 'user_7' HAS a digit, but it is preceded by
+    # '_', so it is the one in-window row that misses — the same row the anchored
+    # '^u[0-9]+$' contract catches, reached through a construct RE2 has no answer
+    # for. Agreement with the fallback therefore says more than "it compiled".
+    pattern = "(?<=u)[0-9]+"
+    assert contracts_pg.contract_regex_is_compilable(pattern)
+
+    lookbehind = [
+        FieldContractExpectation(
+            field_name="user_id",
+            drift_type="regex_violation",
+            threshold=0.0,
+            regex=pattern,
+        )
+    ]
+    window = {"time_column": "ts", "time_from": FROM_TIME, "time_to": TO_TIME}
+    native = contracts_pg.validate_field_contracts(BASE, lookbehind, **window)  # type: ignore[arg-type]
+    fallback = BaseAdapter.validate_field_contracts(contracts_pg, BASE, lookbehind, **window)  # type: ignore[arg-type]
+
+    assert _comparable(native) == _comparable(fallback)
+    assert _comparable(native) == {("user_id", "regex_violation"): (1, 15, 1 / 15, 0.0)}

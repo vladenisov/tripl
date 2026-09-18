@@ -8,7 +8,7 @@ from httpx import AsyncClient
 from pydantic import ValidationError
 
 from tripl.models.scan_config import ScanConfig
-from tripl.schemas.fact_table import FactTableCreate
+from tripl.schemas.fact_table import NATIVE_TYPE_MAX_LEN, FactTableCreate
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -336,3 +336,61 @@ class TestPreview:
         ]
         assert body["identifier_candidates"] == ["user_id"]
         assert body["sample_rows"] == [{"amount": 1, "user_id": "u1"}]
+
+    async def test_preview_survives_an_over_long_native_type(
+        self, monkeypatch: pytest.MonkeyPatch, client: AsyncClient, project: dict
+    ):
+        """One unusable type name must not 500 the whole preview (tripl-0zpq.269).
+
+        ``native_type`` is descriptive and every consumer matches on its HEAD
+        (``core.warehouse_types`` classify_time/classify_complex are startswith-based),
+        so ``schemas.fact_table`` bounds it on the way in instead of rejecting it — a
+        ``max_length`` with no before-validator turns one irrelevant column into a
+        blanket 500 for every column beside it. Reverting the before-validator gives
+        a 500 here.
+
+        A separate canned result rather than an extra column on the shared one: the
+        test above asserts ``body["columns"]`` by exact equality and is about the
+        happy-path mapping.
+        """
+        introspection_mod = pytest.importorskip("tripl.services.fact_table_introspection_service")
+
+        # 6 + 9*40 + 1 = 367 characters, and a real shape: a wide ClickHouse enum is
+        # how this arrives in practice.
+        long_native_type = "Enum8(" + "'x' = 1, " * 40 + ")"
+        assert len(long_native_type) > NATIVE_TYPE_MAX_LEN
+        canned = SimpleNamespace(
+            columns=[
+                SimpleNamespace(name="status", type="string", native_type=long_native_type),
+                SimpleNamespace(name="amount", type="number", native_type="Float64"),
+            ],
+            identifier_candidates=[],
+            sample_rows=[{"status": "x", "amount": 1}],
+        )
+
+        async def fake_introspect(
+            session: object,
+            *,
+            project_id: object,
+            data_source_id: object,
+            sql: str,
+            timestamp_column: object,
+        ) -> SimpleNamespace:
+            return canned
+
+        monkeypatch.setattr(introspection_mod, "introspect_fact_table", fake_introspect)
+
+        resp = await client.post(
+            f"{_fact_tables_url(project['slug'])}/preview",
+            json={"sql": "SELECT status, amount FROM orders", "timestamp_column": None},
+        )
+
+        assert resp.status_code == 200, resp.text
+        columns = resp.json()["columns"]
+        long_column = next(column for column in columns if column["name"] == "status")
+        assert len(long_column["native_type"]) == NATIVE_TYPE_MAX_LEN
+        # The head survives, because the head is the part anything reads.
+        assert long_column["native_type"].startswith("Enum8(")
+        assert long_column["native_type"].endswith("…")
+        # ...and the column that had nothing wrong with it is untouched.
+        assert columns[1] == {"name": "amount", "type": "number", "native_type": "Float64"}

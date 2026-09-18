@@ -127,7 +127,18 @@ def _seed_postgres(adapter: PostgresAdapter) -> None:
             "event_name text NOT NULL, "
             "amount double precision, "
             "user_id text NOT NULL, "
-            "doc jsonb"
+            "doc jsonb, "
+            # An ARRAY of a JSON type and an ARRAY of a scalar. psycopg's type
+            # registry returns the ELEMENT's TypeInfo for both a type's own oid and
+            # its array oid, so before tripl-0zpq.56 `docs` was reported as plain
+            # `jsonb` — which routed it into the JSON path walk, whose
+            # `"docs"::jsonb` PostgreSQL refuses ("cannot cast type jsonb[] to
+            # jsonb"), failing the whole scan rather than one column. `counts` is
+            # the control: same bug, an element type nothing would have walked.
+            # Filled by the UPDATE below rather than by the INSERT, so the
+            # parameter adaptation of the shared executemany stays untouched.
+            "docs jsonb[], "
+            "counts integer[]"
             ")"
         )
         cur.executemany(
@@ -146,6 +157,13 @@ def _seed_postgres(adapter: PostgresAdapter) -> None:
                 for row in ROWS
             ],
         )
+        # Built from the columns already there, so the array values need no
+        # client-side adaptation and no cast: `ARRAY[doc]` is a jsonb[] because
+        # `doc` is a jsonb, and `ARRAY[id, id * 2]` is an int4[] for the same
+        # reason. Every row is filled — a column that were NULL everywhere would
+        # still carry the right oid, but it would not prove the scan can GROUP BY
+        # the value.
+        cur.execute(f"UPDATE {TABLE} SET docs = ARRAY[doc], counts = ARRAY[id, id * 2]")
 
 
 #: Timezone names this fixture is allowed to set. `ALTER ROLE ... SET` is a utility
@@ -220,6 +238,13 @@ def _seed_clickhouse(adapter: ClickHouseAdapter) -> None:
     client = adapter._client  # noqa: SLF001
     settings = {"allow_experimental_json_type": 1}
     client.command(f"DROP TABLE IF EXISTS {TABLE}")
+    # `props` and `tup` are ClickHouse-only and deliberately absent from dataset.py:
+    # a Map and a Tuple are the two nested families JSONAllPaths rejects, and before
+    # tripl-0zpq.55 either one made every scan on this table fail with
+    # ILLEGAL_TYPE_OF_ARGUMENT. Putting them in the shared `FixtureRow` instead would
+    # force the PostgreSQL and BigQuery gates to invent an equivalent for a shape
+    # neither engine has. `props` varies its key set per row so the shape column has
+    # more than one distinct value to group.
     client.command(
         f"CREATE TABLE {TABLE} ("
         "id UInt32, "
@@ -227,7 +252,9 @@ def _seed_clickhouse(adapter: ClickHouseAdapter) -> None:
         "event_name String, "
         "amount Nullable(Float64), "
         "user_id String, "
-        "doc JSON"
+        "doc JSON, "
+        "props Map(String, String), "
+        "tup Tuple(`a` Int32, `b` String)"
         ") ENGINE = MergeTree ORDER BY id",
         settings=settings,
     )
@@ -239,9 +266,16 @@ def _seed_clickhouse(adapter: ClickHouseAdapter) -> None:
         ts = row.ts.strftime("%Y-%m-%d %H:%M:%S.%f+00:00")
         amount = "NULL" if row.amount is None else repr(row.amount)
         doc = json.dumps(row.doc).replace("\\", "\\\\").replace("'", "\\'")
+        # Odd ids carry one extra key, so the Map's shape array is not constant.
+        props = (
+            f"map('shared', 'v{row.id}', 'odd', 'v{row.id}')"
+            if row.id % 2
+            else f"map('shared', 'v{row.id}')"
+        )
         return (
             f"({row.id}, parseDateTime64BestEffort('{ts}', 6, 'UTC'), "
-            f"'{row.event_name}', {amount}, '{row.user_id}', '{doc}')"
+            f"'{row.event_name}', {amount}, '{row.user_id}', '{doc}', "
+            f"{props}, ({row.id}, '{row.event_name}'))"
         )
 
     values = ", ".join(_row_literal(row) for row in ROWS)

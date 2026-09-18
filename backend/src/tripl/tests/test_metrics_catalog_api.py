@@ -33,7 +33,17 @@ async def project(client: AsyncClient) -> dict:
 
 
 @pytest.fixture
-async def data_source(client: AsyncClient) -> dict:
+async def data_source(client: AsyncClient, project: dict) -> dict:
+    """A data source THIS PROJECT is allowed to use.
+
+    A data source is global; a project owns it only through a ``ScanConfig``
+    binding, and the sql-metric save and preview paths enforce that now for the
+    same multi-tenant reason the fact-table paths always did — an editor in one
+    project must not be able to run, or schedule, SQL against another project's
+    warehouse credential. Seeded here so every sql-metric fixture below keeps
+    working; ``bound_fact_table`` adds its own binding on the same source under a
+    different name, because the unique constraint is (data_source_id, name).
+    """
     resp = await client.post(
         "/api/v1/data-sources",
         json={
@@ -45,7 +55,18 @@ async def data_source(client: AsyncClient) -> dict:
         },
     )
     assert resp.status_code == 201
-    return resp.json()
+    created = resp.json()
+    async with TestSessionLocal() as session:
+        session.add(
+            ScanConfig(
+                project_id=uuid.UUID(project["id"]),
+                data_source_id=uuid.UUID(created["id"]),
+                name="metrics-ds-binding",
+                base_query="SELECT 1",
+            )
+        )
+        await session.commit()
+    return created
 
 
 @pytest.fixture
@@ -1245,6 +1266,23 @@ class TestCrossProjectIsolation:
         assert proj_a.status_code == 201
         assert proj_b.status_code == 201
 
+        # Project B needs its own binding to the shared source: the `data_source`
+        # fixture binds it to the `project` fixture's project only, and the save
+        # path below refuses a source the saving project does not reach through a
+        # ScanConfig. This is setup for the save, not the subject of the test —
+        # the 404 asserted below is the metric read's own project scope, which
+        # does not consult the data source at all.
+        async with TestSessionLocal() as session:
+            session.add(
+                ScanConfig(
+                    project_id=uuid.UUID(proj_b.json()["id"]),
+                    data_source_id=uuid.UUID(data_source["id"]),
+                    name="proj-b-ds-binding",
+                    base_query="SELECT 1",
+                )
+            )
+            await session.commit()
+
         metric_b = await _create_sql_metric(client, "proj-b", data_source["id"], "b_metric")
 
         # A valid metric_id from project B, fetched under project A's slug, must 404.
@@ -1339,9 +1377,18 @@ class TestCollectNow:
         assert window_to - window_from == timedelta(days=30)
 
         # The single-metric collector is dispatched with (metric_id, from, to);
-        # the fact batch task is NOT used for a sql metric. The dispatched ISO
-        # strings encode the SAME instants as the response window (string form
-        # may differ: "+00:00" vs "Z"), so compare parsed datetimes.
+        # the fact batch task is NOT used for a sql metric. Compare parsed
+        # datetimes, not strings: the ISO spelling may differ ("+00:00" vs "Z").
+        #
+        # The DISPATCHED window and the REPORTED one coincide here, and that is a
+        # property of this fixture rather than a rule. The response reports
+        # `effective_manual_window`, which widens the bounded manual window to the
+        # resume fallback when the fallback reaches further back; on a FRESH 1d
+        # metric the two rules land on the same instants (the helper's own
+        # docstring says so for 1d and 1h, "which is why nothing caught this").
+        # They are not equal in general: a 1w metric reports 210 days and
+        # dispatches 28, pinned in test_batch5_facttables as
+        # test_collect_now_reports_the_widened_window_but_dispatches_the_bounded_one.
         sql_calls = dispatch_recorder["sql"].calls
         assert len(sql_calls) == 1
         assert sql_calls[0][0] == metric["id"]
@@ -1390,6 +1437,8 @@ class TestCollectNow:
         assert window_to - window_from == timedelta(hours=48)
 
         # Fact metrics reuse the shared-scan batch task with a one-element list.
+        # Same caveat as the sql case above: the dispatched and reported windows
+        # coincide because this is a fresh 1h metric, not because they must.
         fact_calls = dispatch_recorder["fact"].calls
         assert len(fact_calls) == 1
         assert fact_calls[0][0] == [metric["id"]]

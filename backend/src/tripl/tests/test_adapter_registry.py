@@ -122,7 +122,16 @@ def test_postgres_wires_timeout_and_tls(monkeypatch: pytest.MonkeyPatch) -> None
     # statement_timeout. It is not cosmetic: an offset-less timestamp column is compared
     # and binned in the *session* timezone, so a server whose TimeZone is Europe/Berlin
     # would shift every window bound and bucket edge (see tripl.core.bucketing).
-    assert captured["options"] == "-c timezone=UTC -c statement_timeout=90000"
+    #
+    # standard_conforming_strings is pinned for the same reason: `_quote_string` escapes a
+    # warehouse-derived value by doubling the quote and nothing else, which is only sound
+    # while a backslash is an ordinary character. default_transaction_read_only is defence
+    # in depth behind the credential. Assert by EQUALITY, not `in` — the point is that no
+    # other GUC appears and no expected one is missing.
+    assert captured["options"] == (
+        "-c timezone=UTC -c standard_conforming_strings=on "
+        "-c default_transaction_read_only=on -c statement_timeout=90000"
+    )
     # A REMOTE host that pins no mode gets `require`, not `prefer`. `prefer` negotiates
     # TLS when the server offers it and silently accepts PLAINTEXT when it doesn't, so a
     # stripped connection is indistinguishable from a healthy one. The registry used to
@@ -164,5 +173,7 @@ def test_postgres_localhost_skips_tls_and_uses_default_timeout(
     assert captured["sslmode"] == "prefer"
     assert captured["connect_timeout"] == _DEFAULT_TIMEOUT_SECONDS
     assert captured["options"] == (
-        f"-c timezone=UTC -c statement_timeout={_DEFAULT_TIMEOUT_SECONDS * 1000}"
+        "-c timezone=UTC -c standard_conforming_strings=on "
+        "-c default_transaction_read_only=on "
+        f"-c statement_timeout={_DEFAULT_TIMEOUT_SECONDS * 1000}"
     )

@@ -61,11 +61,18 @@ def test_get_columns_selects_table_from_query() -> None:
     adapter = _adapter()
     orders_cols = [c.name for c in adapter.get_columns("SELECT * FROM orders")]
     assert orders_cols == ["created_at", "amount", "currency", "user_id", "country", "status"]
-    # get_columns records the allowlist for downstream measure validation.
-    assert adapter._allowed_columns == set(orders_cols)
 
     event_cols = [c.name for c in adapter.get_columns("SELECT * FROM events")]
     assert "session_id" in event_cols and "platform" in event_cols
+
+    # Column validation is keyed on the QUERY's table, and this adapter keeps no
+    # memory of the last introspection: `session_id` exists on `events`, was just
+    # returned by the call above, and is still refused for an `orders` query on the
+    # same instance. This replaces an assertion on a `_allowed_columns` attribute
+    # that `get_columns` wrote and nothing read — its comment claimed the allowlist
+    # fed "downstream measure validation", which `_validate_column` never consulted.
+    with pytest.raises(ValueError, match="not found in orders query result"):
+        adapter.get_preview_rows("SELECT * FROM orders", limit=1, time_column="session_id")
 
 
 def test_preview_rows_returns_scan_rows_within_window() -> None:
