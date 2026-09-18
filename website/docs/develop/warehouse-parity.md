@@ -864,9 +864,22 @@ directions:
   PostgreSQL's ARE and in Python but are rejected by **RE2**, so those patterns
   fail on ClickHouse and BigQuery instead.
 
-An invalid pattern is not a per-expectation problem: the expectations share one
-statement, so one pattern the engine refuses takes the whole contract check down.
-Keep contract patterns simple.
+A pattern the engine refuses costs exactly that one expectation. Before the
+statement is built, tripl offers the pattern to the engine itself (`SELECT
+match('', …)` on ClickHouse, `SELECT REGEXP_CONTAINS('', …)` on BigQuery); a
+refusal drops that expectation, and every other contract in the scan is still
+evaluated. The engine is asked rather than screened against a "portable subset",
+because a static screen would have to reject the lookahead a PostgreSQL-only
+project is entitled to write.
+
+The cost of a refusal is small but **quiet**: the only record is a worker warning
+naming the column — `Field contract skipped: … cannot compile the pattern …`. A
+contract that silently stops being evaluated looks exactly like a contract that
+is being met, so if a contract you rely on stops producing drifts on ClickHouse
+or BigQuery, read the worker log for that line before concluding the data is
+clean. Saving the pattern does not warn you either: the save-time check is a typo
+screen against Python's own `re` and deliberately not a portability guarantee, so
+a pattern can save here and still be one an engine refuses.
 
 ### BigQuery `DATETIME` is zone-less
 
