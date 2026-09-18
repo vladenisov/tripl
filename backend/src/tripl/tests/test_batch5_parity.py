@@ -555,7 +555,17 @@ def _grouping_groups(engine: str, sql: str) -> frozenset[str]:
         if alias.upper().startswith("AS "):
             bound[alias[3:].strip().strip('`"')] = expr
 
+    raw_term = _RAW_BREAKDOWN_TERM[engine]
+
     def _resolve(key: str) -> str:
+        if key == raw_term:
+            # Never resolved, whatever it is bound to. A key spelling the raw
+            # column is the thing these tests exist to catch, and on BigQuery an
+            # alias may legally carry that name — resolving it away would let
+            # "the raw column is not grouped" be satisfied BY the raw column,
+            # which is how a revert to the shadowing alias slipped past every
+            # test in this file.
+            return key
         if key == folded:
             return "_breakdown_value"
         if bound.get(key.strip('`"')) == folded:
@@ -740,7 +750,15 @@ def test_the_breakdown_columns_own_slot_repeats_the_folded_value(engine: str) ->
         term for term in terms if term.startswith(f"{folded} AS ") and "_breakdown" not in term
     )
     assert _TRAILING_ALIAS.sub("", slot) == folded, slot
-    if engine != "bigquery":
+    if engine == "bigquery":
+        # The one dialect where the alias is load-bearing rather than cosmetic,
+        # so it is asserted rather than skipped. Aliasing the slot to the
+        # column's own name analyzes perfectly well — measured — but then a
+        # grouping term naming it could mean the source column or this slot, and
+        # those hold DIFFERENT values (raw vs folded). Grouping by the raw one is
+        # the defect tripl-0zpq.58 removes, so the name must be unambiguous.
+        assert not slot.endswith(f"AS {_RAW_BREAKDOWN_TERM[engine]}"), slot
+    else:
         assert f"{folded} AS {_RAW_BREAKDOWN_TERM[engine]}" in terms, terms
 
 
