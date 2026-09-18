@@ -47,6 +47,7 @@ import tripl.core.adapters.registry as adapter_registry
 # order they all survive. Entering any other way hits a partially initialised
 # module.
 import tripl.worker.celery_app  # noqa: F401
+from tripl.models.data_source import DataSource
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.fact_table import (
@@ -793,3 +794,120 @@ def test_conflict_detail_bounds_how_many_metrics_it_spells_out() -> None:
     assert "metric_0" in detail
     assert "metric_24" not in detail
     assert "and 15 more" in detail
+
+
+async def test_a_shared_warehouse_no_project_scans_can_back_a_sql_metric(
+    client: AsyncClient,
+) -> None:
+    """The configuration a ScanConfig-binding rule would have locked out.
+
+    A ``sql`` metric needs no scan: ``check_metric_definitions_due`` selects
+    active metrics with no ``ScanConfig`` join, so a warehouse a project queries
+    ONLY for metrics collects forever without one. Creating a scan config is
+    owner-only, so requiring a binding would have meant an editor may use only
+    warehouses an owner had already bound — with no other way for an owner to
+    bless one. A workspace-global source (``project_id`` NULL) that nobody scans
+    is shared by definition, and this is the test that says so.
+
+    Red if the rule goes back to requiring a ScanConfig in this project: the save
+    404s with "Data source not found" on a source the owner created for exactly
+    this use.
+    """
+    project = await _create_project(client)
+    data_source = await _create_data_source(client)
+
+    resp = await client.post(
+        _metrics_url(project["slug"]),
+        json={
+            "kind": "sql",
+            "name": "metrics_only_warehouse",
+            "display_name": "Metrics-only warehouse",
+            "data_source_id": data_source["id"],
+            "interval": "1d",
+            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+        },
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["data_source_id"] == data_source["id"]
+
+
+async def test_editing_a_metric_on_a_shared_warehouse_is_not_refused_by_the_scope_check(
+    client: AsyncClient,
+) -> None:
+    """Editing must not be collateral damage of the scope rule.
+
+    The check runs on EVERY definition update, and the metric form resends the
+    stored ``definition`` whatever the user touched — so a rule this metric's own
+    data source cannot satisfy makes the metric permanently uneditable, including
+    a change of display name alone. That is a silent, total regression for the
+    install, which is why it is pinned separately from the create path.
+    """
+    project = await _create_project(client)
+    data_source = await _create_data_source(client)
+    created = (
+        await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "sql",
+                "name": "editable_on_shared",
+                "display_name": "Editable",
+                "data_source_id": data_source["id"],
+                "interval": "1d",
+                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            },
+        )
+    ).json()
+
+    resp = await client.patch(
+        f"{_metrics_url(project['slug'])}/{created['id']}",
+        json={
+            "display_name": "Renamed",
+            "definition": {
+                "kind": "sql",
+                "data_source_id": data_source["id"],
+                "interval": "1d",
+                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            },
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["display_name"] == "Renamed"
+
+
+async def test_a_data_source_owned_by_another_project_is_refused_even_if_nobody_scans_it(
+    client: AsyncClient,
+) -> None:
+    """Ownership is the rule, and ``project_id`` states it outright.
+
+    A non-NULL ``data_sources.project_id`` scopes a source to one project — the
+    column exists for generated demo workspaces, so their synthetic warehouse is
+    cleaned up with the project instead of leaking a workspace-wide orphan. Such
+    a source is another project's whether or not a scan config points at it, so
+    the absence of a scan must not make it borrowable.
+    """
+    project_a = await _create_project(client)
+    project_b = await _create_project(client, suffix="-owned")
+    data_source = await _create_data_source(client)
+
+    async with TestSessionLocal() as session:
+        row = await session.get(DataSource, uuid.UUID(data_source["id"]))
+        assert row is not None
+        row.project_id = uuid.UUID(project_b["id"])
+        await session.commit()
+
+    resp = await client.post(
+        _metrics_url(project_a["slug"]),
+        json={
+            "kind": "sql",
+            "name": "borrowed_owned_source",
+            "display_name": "Borrowed",
+            "data_source_id": data_source["id"],
+            "interval": "1d",
+            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+        },
+    )
+
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == "Data source not found"

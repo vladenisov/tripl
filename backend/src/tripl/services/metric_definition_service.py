@@ -101,46 +101,71 @@ async def load_project_data_source(
 ) -> DataSource:
     """Load a data source this project is allowed to point a metric at.
 
-    A data source is global in this schema; it "belongs to" a project when the
-    project has at least one ``ScanConfig`` bound to it. That is already the rule
-    on both fact-table doors (``fact_table_service._verify_data_source`` and
-    ``fact_table_introspection_service._load_project_data_source``) and it belongs
-    here for a sharper reason: a ``sql`` metric's ``data_source_id`` selects the
-    warehouse CREDENTIAL its free-text SELECT runs under. This check used to be a
-    bare existence test with no project term, so an editor in project A could SAVE
-    a metric against project B's credential by supplying its UUID — and the
-    catalog beat then ran that query every five minutes, unattended, with nobody
-    watching the result. Preview is a request the user sees; this is not.
-
-    One message for both "no such row" and "row exists but out of scope", copied
-    deliberately from the introspection path: two distinct messages let a project
-    member probe arbitrary UUIDs and tell a non-existent id apart from another
-    project's data source.
+    A ``sql`` metric's ``data_source_id`` selects the warehouse CREDENTIAL its
+    free-text SELECT runs under. This check used to be a bare existence test with
+    no project term, so an editor in project A could SAVE a metric against
+    project B's credential by supplying its UUID — and the catalog beat then ran
+    that query every five minutes, unattended, with nobody watching the result.
+    Preview is a request the user sees; this is not.
 
     Consistent with ``scan_service._verify_data_source``, which fences a synthetic
-    demo source to its own demo project, and strictly stronger than it: that
-    function guards the only API path that writes ``ScanConfig.data_source_id``
-    (``ScanConfigUpdate`` has no such field, so a config's binding is immutable
-    after create), so a ScanConfig binding in THIS project cannot exist for
-    another project's demo warehouse in the first place.
+    demo source to its own demo project.
+
+    WHAT IT REFUSES, and why it is not simply the fact-table rule. The fact-table
+    doors require a ``ScanConfig`` in this project, full stop. Applying that here
+    would have been wrong in a way worth writing down, because a ``sql`` metric
+    needs no scan at all: ``check_metric_definitions_due`` selects active metrics
+    with no ``ScanConfig`` join, so a warehouse a project uses ONLY for SQL
+    metrics collects forever without one. Creating a scan config is owner-only,
+    so "must be bound by a ScanConfig" would have meant an editor may use only
+    warehouses an owner already bound — and there is no other way for an owner to
+    bless one. A project that scans ClickHouse for events and queries Postgres
+    for metrics would have lost the ability to create OR EDIT those metrics: this
+    check runs on every definition update, so a PATCH that changed only a colour
+    would 404 too, because the client resends the stored data source with it.
+
+    So the rule is ownership, not binding. A data source is refused when it is
+    identifiably ANOTHER project's:
+
+    * ``project_id`` set to a different project — the demo case, where that
+      column exists precisely to scope a synthetic warehouse to one workspace;
+    * workspace-global but scanned by some other project and not by this one —
+      an owner pointed it at that project, and an editor here should not borrow
+      its credential.
+
+    A workspace-global source that no project scans is allowed, which is what
+    that NULL means: shared. This still closes the hole the check was added for —
+    an editor supplying another project's data source UUID so the catalog beat
+    runs their free-text SELECT under it every five minutes, unattended.
+
+    One message for every refusal, copied deliberately from the introspection
+    path: distinct messages let a project member probe arbitrary UUIDs and tell a
+    non-existent id apart from another project's data source.
 
     Returns the row so a caller that needs the credential does not re-query it.
     """
-    # Both branches raise the SAME message on purpose — see the docstring.
+    # Every branch raises the SAME message on purpose — see the docstring.
     not_available_msg = "Data source not found"
     data_source = await session.get(DataSource, data_source_id)
     if data_source is None:
         raise HTTPException(status_code=404, detail=not_available_msg)
-    in_project = await session.scalar(
-        select(ScanConfig.id)
-        .where(
-            ScanConfig.data_source_id == data_source_id,
-            ScanConfig.project_id == project_id,
-        )
-        .limit(1)
-    )
-    if in_project is None:
+    if data_source.project_id is not None and data_source.project_id != project_id:
         raise HTTPException(status_code=404, detail=not_available_msg)
+    if data_source.project_id is None:
+        # Claimed by another project's scan and not by this one? Then it is that
+        # project's warehouse in all but the column. One query answers both
+        # halves: ask which projects scan it, then look for ours among them.
+        scanning_projects = set(
+            (
+                await session.execute(
+                    select(ScanConfig.project_id).where(ScanConfig.data_source_id == data_source_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if scanning_projects and project_id not in scanning_projects:
+            raise HTTPException(status_code=404, detail=not_available_msg)
     return data_source
 
 
