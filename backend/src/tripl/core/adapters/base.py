@@ -286,8 +286,26 @@ class BaseAdapter(abc.ABC):
       testing it for 0 asks the same question and stays spelled that way.
     * Nothing here overrides what an aggregate returns over rows it DID match:
       ``sum`` / ``avg`` / ``min`` / ``max`` over matching rows whose measure is
-      NULL throughout are NULL because that is what the aggregate returns, not
-      because the bucket was empty.
+      NULL throughout are whatever the aggregate itself computes, not something
+      the presence gate decides. The three SQL adapters hand that answer back
+      untouched — ``sum(m) FILTER (WHERE cond)``, ``SUM(CASE WHEN cond THEN m
+      END)``, and ``sumIf`` under a sentinel that fires only when NOTHING
+      matched — so on them the cell is that engine's own ``sum`` over an input
+      holding no non-NULL value: NULL under standard SQL, and therefore a gap.
+    * The four do NOT agree on that last case, and the outlier is the in-memory
+      adapter. ``synthetic._aggregate`` answers ``0.0`` for ``sum`` over a
+      matching set with no non-NULL measure (``return 0.0 if agg is
+      MetricAggregation.sum else None``), so the demo warehouse STORES a zero
+      where the SQL engines leave a gap; ``avg`` / ``min`` / ``max`` return
+      ``None`` there and do agree, and ``count_distinct`` counts 0 on all four.
+      It is reachable: ``amount`` is in ``synthetic._EVENTS_NULLABLE`` and every
+      screen-view row carries NULL in it, so a filtered ``sum`` over a bucket of
+      those rows hits it. It is NOT fixed here — the behaviour predates this
+      section (it is on ``main``) and this batch left it alone — so it is
+      written down rather than claimed away. Nothing pins the SQL side of the
+      comparison either: the conformance fixture keeps all-NULL breakdown groups
+      out by construction (``tests/conformance/dataset.py``). A fifth adapter
+      should follow the SQL engines, not this one.
     * A spec with no ``filter_sql`` is unconditional and none of this applies.
 
     Field contracts (``validate_field_contracts``)
@@ -644,9 +662,23 @@ class BaseAdapter(abc.ABC):
                 assert expectation.regex is not None
                 # The same gate the three SQL adapters apply, for the same reason
                 # and with the same blast radius: a pattern this engine cannot
-                # compile drops its own expectation and nothing else. Here the
-                # engine is Python, so the probe IS the compile that used to sit
-                # unguarded on this line.
+                # compile drops its own expectation and nothing else.
+                #
+                # WHICH engine that is depends on ``self``, not on this module.
+                # For an adapter that does not override ``_probe_contract_regex``
+                # the probe is Python's ``re``, i.e. the compile that used to sit
+                # unguarded on this line. It is also called UNBOUND on a live SQL
+                # adapter — ``conformance/test_postgres_field_contracts_conformance``
+                # runs ``BaseAdapter.validate_field_contracts(adapter, ...)`` as
+                # its "Python fallback" — and there the compilability answer is
+                # the SERVER's while the matching below is still ``re.search``.
+                # So that gate is NOT an independent second opinion about which
+                # patterns compile: a Python-style named group (``(?P<name>...)``,
+                # which the PostgresAdapter docstring names as invalid POSIX ARE)
+                # is skipped on BOTH sides and the comparison passes over two
+                # empty results. The divergence class the gate exists to police
+                # is the one it can no longer fail on; closing that needs a
+                # reference whose probe is ``re`` — not a comment here.
                 if not self.contract_regex_is_compilable(expectation.regex):
                     continue
                 regex = re.compile(expectation.regex)

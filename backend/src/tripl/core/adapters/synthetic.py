@@ -13,12 +13,25 @@ Design
   scenario. Rows are generated deterministically from a fixed seed via SHA-256
   (never the salted builtin ``hash()``), and every digest is keyed on ABSOLUTE
   time (the UTC epoch hour / date ordinal of the row's bucket), so the same seed
-  yields the same rows for the same instant NO MATTER WHICH ANCHOR generated
-  them. That is stronger than "same seed and anchor are byte-for-byte identical"
-  and it has to be: ``registry._build_synthetic`` rebuilds the adapter on every
-  scan with ``anchor=None``, i.e. with a MOVING anchor, so anchor-relative keys
-  made the same absolute hour hold different rows on every scan (bd
-  tripl-0zpq.73). The total row count is capped.
+  yields the same rows for the same instant whichever anchor generated them —
+  AS LONG AS both anchors put that instant in the same regime (see the next
+  bullet). That is stronger than "same seed and anchor are byte-for-byte
+  identical" and it has to be: ``registry._build_synthetic`` rebuilds the adapter
+  on every scan with ``anchor=None``, i.e. with a MOVING anchor, so
+  anchor-relative keys made the same absolute hour hold different rows on every
+  scan (bd tripl-0zpq.73). The total row count is capped.
+* Cross-anchor identity is NOT guaranteed across the ongoing/sampled boundary,
+  and the gap is not a rounding error. Which hours are "ongoing" is measured back
+  from the anchor (``_generate_events``: ``ongoing_start_hour = total_hours -
+  SYNTHETIC_ONGOING_HOURS``), so an hour that has aged out of that window between
+  two scans is regenerated at the sampled scale — a different sample, not a
+  thinned copy of the earlier one. Measured at ``DEFAULT_SEED``: one hour held
+  ~7.8k rows while it was ongoing and 3 once it had aged out, and those 3 were
+  not a subset of the earlier rows (``test_batch5_synthetic`` pins both halves at
+  its own seed). Since the anchor moves on every scan, that boundary sweeps the
+  dataset continuously, and a re-collection whose window reaches further back
+  than ``SYNTHETIC_ONGOING_HOURS`` will not reproduce what an earlier read of the
+  same hours returned.
 * The most-recent ``SYNTHETIC_ONGOING_HOURS`` hours are generated at each event's
   seeded *base* volume (a believable daily/weekly shape with mild noise), so a
   live scan's current window continues the demo's seeded baseline instead of
@@ -193,10 +206,14 @@ class SyntheticEventDef(NamedTuple):
 # Exhaustiveness is the whole point: this used to list only the 7 highest-volume
 # identities, so an hourly metrics collection rewrote the window with counts for
 # 7 of 18 events and the detector read the other 11 as "dropped to zero" within
-# an hour of a demo's creation (bd tripl-jfm3.55 / .71). core/ cannot import
-# services/, so the values are duplicated here and
-# ``test_synthetic_event_defs_cover_every_seeded_event_spec`` pins the two
-# rosters together in BOTH directions.
+# an hour of a demo's creation (bd tripl-jfm3.55 / .71). The values are duplicated
+# rather than imported from the plan: ``core/`` importing ``services/`` is a
+# direction this repo takes once and deliberately
+# (``core/analyzers/release_regression.py``), not one Python or a lint rule
+# forbids, and a second exception here would pull the demo seeder's import graph
+# into every synthetic adapter build. So the copy stands and
+# ``test_synthetic_event_defs_cover_every_seeded_event_spec`` pins the two rosters
+# together in BOTH directions.
 _EVENT_DEFS: tuple[SyntheticEventDef, ...] = (
     # screen_view — the plan documents ``screen_name`` (+ ``${platform}``).
     SyntheticEventDef("screen_view", "Home Screen View", "home", None, None, None, None, 1800),

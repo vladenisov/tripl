@@ -862,7 +862,17 @@ table counts, whatever its status — a `draft` or `archived` metric hits the sa
 dangling reference the moment it collects again — and so does a ratio operand,
 whose reference lives inside another metric's config rather than in a column of
 its own. Change or delete those metrics first. Every other edit to the fact
-table, including adding a filter, is unaffected.
+table, including adding a filter, is unaffected — with one exception, which
+matters if you drive the API directly. The unbind refusal is decided by the
+`data_source_id` **in the request**, not by comparing it with the stored one, so a
+client that resubmits the whole object with `data_source_id: null` is refused even
+when the table already has no data source bound. That is exactly the state a
+*deleted* data source leaves behind — the fact table survives and its
+`data_source_id` is set to `NULL` — so the refusal lands on the edits made to
+repair such a table, and names metrics that are already failing for the unrelated
+reason that there is no source to read. Send a real `data_source_id` in the same
+request to get the edit through. The editor on this page never trips this: it
+refuses to save at all without a data source selected.
 
 ### Metric detail
 

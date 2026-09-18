@@ -57,8 +57,18 @@ from tripl.services.demo.scenario import DemoContext
 # adapter recognises the sql-metric statements it can compute by EXACT match
 # (``synthetic._ACTIVE_SESSIONS_STATEMENTS``) rather than by probing for
 # substrings, and ``test_batch5_synthetic`` imports this constant to pin the two
-# together. core/ cannot import services/, so the adapter carries its own copy;
-# naming it here is what makes the duplication testable instead of silent.
+# together. The adapter carries its own copy rather than importing this one, and
+# the reason is not that Python forbids it: ``core/`` importing ``services/`` is a
+# direction this repo allows exactly once and deliberately
+# (``core/analyzers/release_regression.py`` imports ``services.version_activation``);
+# nothing enforces a rule against it. What is true is that THIS module imports
+# ``core.adapters.registry`` at module level, so an import back would make
+# ``core.adapters`` and ``services.demo`` depend on each other, and it would pull
+# the demo seeder's import graph into every synthetic adapter build. (It would not
+# actually cycle at import time — ``registry`` imports each adapter inside a
+# function — so if the duplication is ever collapsed, that is the constraint to
+# check, not a blanket layering rule.) Naming the statement here is what makes the
+# duplication testable instead of silent.
 #
 # ``GROUP BY ts`` is not decoration. Without it real ClickHouse rejects the
 # statement ("not under aggregate function and not in GROUP BY"), so the demo —

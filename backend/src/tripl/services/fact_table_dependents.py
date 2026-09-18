@@ -49,10 +49,14 @@ __all__ = [
 ]
 
 # How many metric names one conflict sentence spells out before it summarises the
-# rest. A project can hold up to 1000 metric definitions
-# (``metric_definition_service._LIST_HARD_CAP``) and a name is up to 255
-# characters, so an uncapped list is a quarter-megabyte error body produced by a
-# single PATCH. Ten is enough to recognise what is in the way; the count that
+# rest. NOTHING bounds how many metric definitions a project may hold: creation
+# checks only that the name is unique in the project, and the model's only
+# constraint is ``uq_metric_def_project_name``. (``_LIST_HARD_CAP`` is not that
+# bound — it clamps the ``LIMIT`` of ``list_metric_definitions``, a page size on a
+# different query.) ``metrics_depending_on`` selects the project's fact metrics
+# with no limit and hands the whole list to the sentence, so without this cap one
+# PATCH produces an error body that grows with the project — a name is up to 255
+# characters. Ten is enough to recognise what is in the way; the count that
 # follows is enough to know how much more there is.
 _MAX_NAMED_METRICS = 10
 

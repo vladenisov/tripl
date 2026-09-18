@@ -68,11 +68,14 @@ def _as_rows(rows: Sequence[Sequence[Any]]) -> list[tuple[object, ...]]:
 class ClickHouseAdapter(BaseAdapter):
     #: Declared ClickHouse type per column, captured by :meth:`get_columns` and read
     #: by :meth:`_nested_kind` to pick the nested-shape SQL. The default deliberately
-    #: lives on the *class* rather than in ``__init__``: five call sites build an
-    #: adapter with ``object.__new__`` and never run ``__init__``
-    #: (``core/adapters/multi_aggregate_sql.py`` in production, plus the helpers in
-    #: ``tests/test_clickhouse_adapter.py``, ``tests/test_warehouse_bucketing.py``,
-    #: ``tests/test_schema_introspection.py`` and ``tests/test_adapter_aggregations.py``).
+    #: lives on the *class* rather than in ``__init__``: a site that builds an adapter
+    #: with ``object.__new__`` never runs ``__init__``, so an instance attribute set
+    #: there would simply not exist. ``core/adapters/multi_aggregate_sql.py`` does it
+    #: in production and the unit tests do it to build an adapter without a live
+    #: client; ``grep -rn "object.__new__(ClickHouseAdapter)"`` is the current set.
+    #: A count was spelled out here and was wrong in the commit that wrote it — the
+    #: same commit added two sites it does not name — so the invariant is stated
+    #: instead of a census that every new test file invalidates.
     #: BigQuery keeps the equivalent map in ``__init__`` and has to be primed by hand
     #: at every such site; a class-level default cannot be forgotten by a new one. It
     #: is only ever rebound, never mutated in place, so the shared empty dict is safe.

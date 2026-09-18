@@ -407,7 +407,7 @@ rejected at configuration time.** Every bucket query goes through `date_bin()`,
 added in PostgreSQL 14, so the connection test **refuses an older server up
 front** with a message naming the version and the required upgrade — verified
 against a real `postgres:13` container — rather than letting it fail deep inside a
-scan as an opaque "function date_bin(…) does not exist". Two things to know:
+scan as an opaque "function date_bin(…) does not exist". Three things to know:
 
 - That precise message **reaches the UI verbatim**, under a
   `Connection test failed:` prefix — `_friendly_test_error` surfaces
@@ -419,14 +419,22 @@ scan as an opaque "function date_bin(…) does not exist". Two things to know:
   only BigQuery is wired to *act* on that. A PostgreSQL (or ClickHouse) source
   configured with a time-of-day column still fails later, inside a worker, instead
   of at configuration time.
-- BigQuery's rejection is not reliably configuration-time either. It fires where
-  the column's time kind is first needed: the bucket expression, or the window
-  predicate — and a scan preview builds a window predicate only when the config
-  has a lookback window. Saved without one, a `TIME` column or a `DATE` column at
-  a sub-day interval surfaces on the first collection instead. Both are raised as
-  `WarehouseCapabilityError`, which the worker surfaces **verbatim**, so the
-  message names the column and the setting to change rather than reading "Scan
-  failed due to an internal error." on every tick.
+- BigQuery's rejection is not reliably configuration-time either, and the two
+  cases it covers do not behave alike. A **`TIME` column** is rejected wherever the
+  column's time *kind* is first read, and building a window predicate reads it, so
+  a scan preview does catch it — but only when the config carries a lookback
+  window: with no `scan_lookback_hours`, `resolve_lookback_window` returns `None`,
+  `worker.tasks.scan` then passes `time_column=None`, no predicate is built and the
+  kind is never asked for. A **`DATE` column at a sub-day interval** is caught by
+  **no** preview, lookback window or not: that rejection lives in
+  `_bucket_expression`, which only a `get_time_bucketed_*` call reaches, and
+  neither preview half nor the dry run makes one — a preview job carries no
+  interval at all (`ScanPreviewJob` has no such column). So it is always the first
+  collection that surfaces it, and catching it at save time would take a check
+  nothing performs today. Both are raised as `WarehouseCapabilityError`,
+  which the worker surfaces **verbatim**, so the message names the column and the
+  setting to change rather than reading "Scan failed due to an internal error." on
+  every tick.
 
 **[8] ClickHouse `Tuple`/`Map` are shape-enumerated, not value-extractable.**
 `classify_complex` recognizes them as complex kinds, and the scan now groups them
@@ -738,10 +746,15 @@ that is neither the default nor in the **Dataset allowlist** (caveat [1]).
 Both are deliberate rejections, and both now reach you verbatim in the job's
 error message rather than as "failed due to an internal error". `TIME` carries no
 date and cannot be windowed at all; a `DATE` column has no time-of-day and cannot
-take a sub-day interval. Neither is caught by *saving* the configuration: the
-check fires where the column's time kind is first needed, and a scan preview
-needs it only when the config carries a lookback window — so without one, the
-first run after the change is where you will see it. Pick a
+take a sub-day interval. Neither is caught by *saving* the configuration, and they
+do not surface at the same moment either. The `TIME` rejection fires wherever the
+column's time kind is first read, which a preview does when it builds its window
+predicate — so a preview catches it, but only when the config carries a lookback
+window; without one the preview never asks for the kind. The "cannot be bucketed"
+rejection fires only when the interval is compiled into a bucket expression, and
+only a collection compiles one: a preview job carries no interval, so **no
+preview catches a `DATE` column at a sub-day interval**, lookback window or not —
+the first run after the change is where you will see it. Pick a
 `TIMESTAMP`/`DATETIME` column, or a `1d`/`1w` interval.
 
 ### PostgreSQL: the connection test names a version requirement

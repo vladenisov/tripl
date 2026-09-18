@@ -76,9 +76,23 @@ def json_safe(value: object) -> object:
     Keys become ``str``. For int and finite float keys that is byte-identical
     to the coercion ``json.dumps`` already applied; what changes is their ORDER
     under ``sort_keys=True`` (``"1", "10", "2"`` rather than ``1, 2, 10``), and
-    that ordering only ever reaches display text and the dedup keys built from
-    it, never a stored value. In exchange ``sort_keys=True`` stops being a
-    second latent ``TypeError``: keys of mixed types are not orderable.
+    that ordering is NOT confined to display text. :func:`format_json_path_value`
+    below is what ``catalog_sync._formatted_samples`` renders into the strings a
+    variable context stores (``VariableValue.values``), what
+    ``event_plan.raw_values_from_row`` feeds into the kwargs an event name is
+    built from — and that name is the ``Event.source_name`` a series is filed
+    under — and what a preview payload keeps as a path's sample values in
+    ``ScanPreviewJob.result_summary``. A reordering here is therefore a change to
+    stored data, and through the name format a change to event identity.
+
+    No reachable input is known to move today: every container we have traced to
+    that renderer is decoded from JSON text (``decode_json_path_value``'s
+    ``json.loads``, or a ``toJSONString`` column), so its keys are strings
+    already and sorting them changes nothing. That is a precondition, not a
+    guarantee — nothing enforces it, and a driver-native mapping with non-string
+    keys (the ``Map(Date, String)`` above) reaching the renderer would re-order
+    one and mint a new identity from it. In exchange ``sort_keys=True`` stops
+    being a second latent ``TypeError``: keys of mixed types are not orderable.
     """
     if value is None or isinstance(value, (str, int, float, bool)):
         return value

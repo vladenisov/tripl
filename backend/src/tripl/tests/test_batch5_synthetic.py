@@ -361,6 +361,42 @@ def test_dataset_is_identical_for_any_anchor_over_the_overlapping_window() -> No
     assert orders_midnight == orders_afternoon
 
 
+def test_an_hour_that_ages_out_of_the_ongoing_window_is_a_different_sample() -> None:
+    """Absolute digest keys buy identity WITHIN a regime, not across the boundary.
+
+    ``_generate_events`` measures the ongoing window back from the anchor
+    (``ongoing_start_hour = total_hours - SYNTHETIC_ONGOING_HOURS``), so which
+    regime an absolute hour sits in depends on which anchor asked. Two anchors
+    that put it in the same regime agree row for row; two that do not return
+    different SAMPLES of the same hour, not a thinned copy of one. Since the
+    adapter is rebuilt with ``anchor=None`` on every scan, that boundary sweeps
+    the dataset continuously, so a re-collection whose window reaches further
+    back than ``SYNTHETIC_ONGOING_HOURS`` cannot reproduce the earlier read. The
+    module docstring states that limit instead of promising identity; this is
+    what holds it to it.
+    """
+    low = ANCHOR - timedelta(hours=1)
+    high = ANCHOR
+    inside = _adapter(anchor=ANCHOR)
+    still_inside = _adapter(anchor=ANCHOR + timedelta(hours=1))
+    outside = _adapter(anchor=ANCHOR + timedelta(hours=synth.SYNTHETIC_ONGOING_HOURS))
+
+    ongoing = [row for row in inside._events if low <= row["event_time"] < high]
+    ongoing_again = [row for row in still_inside._events if low <= row["event_time"] < high]
+    sampled = [row for row in outside._events if low <= row["event_time"] < high]
+
+    # Same regime, two anchors: byte for byte. That is the tripl-0zpq.73 property.
+    assert ongoing, "the hour before the anchor must not be empty"
+    assert ongoing == ongoing_again
+
+    # Past the boundary the same hour is regenerated at the sampled scale: orders
+    # of magnitude thinner, and NOT a subset, so rows an earlier read returned are
+    # gone rather than merely fewer.
+    assert sampled, "the aged-out hour must still hold rows"
+    assert len(sampled) * 100 < len(ongoing)
+    assert any(row not in ongoing for row in sampled)
+
+
 def test_active_sessions_pools_roll_at_utc_midnight() -> None:
     """A UTC day draws from ONE session pool, whatever hour generated it.
 

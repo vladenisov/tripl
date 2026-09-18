@@ -50,10 +50,18 @@ synthetic source:
 - **A continuous runtime clock** — a bounded, idempotent background tick keeps an
   active demo fresh over time (new buckets, jobs and signals), with retention caps
   so it never grows without bound. A demo nobody has opened for **six hours**
-  pauses, and resumes on your next visit; its scheduled metric collection pauses
+  pauses, and resumes on your next visit; the scheduled **scan** collection — the
+  event‑volume series and the breakdown and drift work that hangs off it — pauses
   with it, on the same rule, because collecting while the tick is stopped would
   rewrite the demo's own history with the sparse rows the synthetic warehouse
-  keeps outside its newest hours. An operator can turn this tick off with
+  keeps outside its newest hours. The **metrics catalog is dispatched by a second
+  scheduler that has no such rule**, so a paused demo does not stop collecting
+  altogether: its three interval-carrying catalog metrics — *Active Sessions*,
+  *Revenue (completed)* and *Average order value*, all daily — keep being
+  collected on schedule. (*Purchase conversion* stops too, but only as a
+  consequence, not by the pause rule: it re-derives from the event metrics the
+  stopped tick is no longer appending, so it runs out of new buckets to compose.)
+  An operator can turn this tick off with
   [`DEMO_RUNTIME_ENABLED=false`](../run/configuration.md#demo-workspace); a demo
   then keeps the data it already has.
 - **The audit log** — the actions *you* take in the demo (edits, collections,

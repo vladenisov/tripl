@@ -671,6 +671,69 @@ async def test_saving_a_sql_metric_against_another_projects_data_source_is_refus
     assert resp.json()["detail"] == "Data source not found"
 
 
+async def test_repointing_a_sql_metric_at_another_projects_data_source_is_refused(
+    client: AsyncClient,
+) -> None:
+    """The UPDATE arm's refusal, which nothing else asserts.
+
+    ``_apply_definition_update`` re-runs creation's checks, so a PATCH carrying a
+    ``definition`` block re-resolves ``data_source_id`` through
+    ``load_project_data_source``. Create and preview each had a refusal test; the
+    update path had only ``test_editing_a_metric_on_a_shared_warehouse_...``,
+    which drives the same PATCH in the ALLOW direction — so removing that call
+    from ``_apply_definition_update`` left every existing assertion satisfied.
+    The metrics form resubmits the whole ``definition`` on every edit, so this is
+    the path a repoint actually takes, and a metric that reached another
+    project's credential this way is then run by the catalog beat unattended.
+
+    The source the metric starts on is workspace-global and scanned by nobody,
+    which the rule permits: it refuses a source that is identifiably ANOTHER
+    project's, not one that lacks a ``ScanConfig`` in this one.
+    """
+    project_a = await _create_project(client)
+    project_b = await _create_project(client, suffix="-b")
+    own_source = await _create_data_source(client)
+    other_source = await _create_data_source(client, suffix="-b")
+    await _bind_data_source(project_b, other_source, suffix="-b")
+
+    created = await client.post(
+        _metrics_url(project_a["slug"]),
+        json={
+            "kind": "sql",
+            "name": "repoint_scope_sql",
+            "display_name": "Repoint scope SQL",
+            "data_source_id": own_source["id"],
+            "interval": "1d",
+            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    metric = created.json()
+    assert metric["data_source_id"] == own_source["id"]
+
+    resp = await client.patch(
+        f"{_metrics_url(project_a['slug'])}/{metric['id']}",
+        json={
+            "definition": {
+                "kind": "sql",
+                "data_source_id": other_source["id"],
+                "interval": "1d",
+                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            }
+        },
+    )
+
+    assert resp.status_code == 404, resp.text
+    # The same non-enumerable message every branch of the check raises.
+    assert resp.json()["detail"] == "Data source not found"
+
+    # And the refusal lands before anything is written: the check runs first in
+    # ``_apply_definition_update``, so the stored binding is untouched.
+    after = await client.get(f"{_metrics_url(project_a['slug'])}/{metric['id']}")
+    assert after.status_code == 200, after.text
+    assert after.json()["data_source_id"] == own_source["id"]
+
+
 async def test_previewing_against_another_projects_data_source_never_reaches_the_warehouse(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -782,7 +845,7 @@ def test_conflict_detail_agrees_with_its_own_count() -> None:
 
 
 def test_conflict_detail_bounds_how_many_metrics_it_spells_out() -> None:
-    """A project can hold a thousand metrics; the 409 body must not scale with it."""
+    """Nothing bounds a project's metric count; the 409 body must not scale with it."""
     metrics = [MetricDefinition(name=f"metric_{index}") for index in range(25)]
     detail = fact_table_conflict_detail(
         metrics=metrics,
