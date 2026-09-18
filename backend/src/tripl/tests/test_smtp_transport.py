@@ -310,11 +310,15 @@ async def test_the_smtp_test_names_the_missing_from_address(
 def test_a_display_name_sender_is_accepted_because_real_delivery_accepts_it() -> None:
     """A diagnostic must not fail a configuration that actually delivers.
 
-    ``validate_email_address`` refuses ``Tripl <no-reply@x>``, while every real
-    send path hands the configured string straight to ``EmailMessage``, which
-    takes it. The alert-destination test used the strict helper and therefore
-    reported failure for destinations that deliver on every fire (tripl-q9o6);
-    both test sends now share this one, which checks only the address part.
+    ``validate_email_address`` refuses ``Tripl <no-reply@x>``, while ``EmailMessage``
+    takes it, so the strict helper refused a From: that delivers on every fire. The
+    alert-destination test hit that first (tripl-q9o6); the alert and digest SEND
+    paths carried the same strictness until tripl-0zpq.29, which is the defect that
+    mattered — a diagnostic reporting success and the real send then failing.
+    Five callers now share this one helper, which checks only the address part:
+    the two send paths (worker/tasks/alerts.py, worker/tasks/alerts_channels.py),
+    the two test sends (services/_alerting_test_send.py, services/_email_test_send.py)
+    and the settings schema that saves the value (schemas/app_settings.py).
 
     The original string comes back, display name intact — normalising it away
     would silently drop what the operator configured.

@@ -21,6 +21,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.domain_enums import DistributionDriftBand
 from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SCHEMA_DRIFT_STATUS_OPEN, SCHEMA_DRIFT_STATUS_SNOOZED
@@ -165,18 +166,44 @@ async def load_scope_readiness(
         .exists()
     )
     # Rows on their own are enough, and this disjunct is NOT redundant: the
-    # candidate builder (worker/tasks/metrics/signals.py) reads DistributionDrift
-    # ROWS, not the scan's configured field list. The seeded demo is exactly that
-    # shape — drift rows collected against a config whose
-    # ``distribution_drift_fields`` is now empty — so dropping this would paint a
-    # warning across the demo the demo exists to disprove.
+    # candidate builder (``_get_active_distribution_drift_candidates`` in
+    # worker/tasks/metrics/signals.py) reads DistributionDrift ROWS, not the
+    # scan's configured field list. The seeded demo is exactly that shape — drift
+    # rows collected against a config whose ``distribution_drift_fields`` is
+    # empty (services/demo/builders/warehouse.py) — so dropping this would paint
+    # a warning across the demo the demo exists to disprove.
+    #
+    # Mirrors that builder's BAND filter for the same reason the value-drift
+    # probe above mirrors its own builder's filters: a row it could never select
+    # is not readiness. Every scored bucket is persisted, not just the alarming
+    # ones (worker/tasks/metrics/metric_rows.py bands each PSI and writes the
+    # stable and minor rows too), and nothing prunes them outside the demo
+    # reset — so a project that watched a column for months without ever
+    # crossing the significant threshold, then cleared the field list, would
+    # otherwise read as ready off a pile of rows no dispatch can ever turn into
+    # a candidate. The demo survives the filter: its ladder is built to climb
+    # stable -> minor -> significant (services/demo/noise.py), so its newest
+    # bucket is a significant row.
+    #
+    # The builder's ``bucket == latest_bucket`` clause is deliberately NOT
+    # mirrored, on the same reading that leaves the value-drift snooze expiry
+    # alone above: the question here is "ever", not "now". It would also have to
+    # be a per-scan_config correlated MAX — the builder takes the max per config,
+    # not per project — turning a cheap indexed EXISTS into a correlated
+    # aggregate on an endpoint the Alerting tab polls, against the "one small
+    # query" rule in this module's docstring. What that leaves is one narrow
+    # overclaim: a project whose only significant row sits behind a newer,
+    # all-stable bucket reads as ready. That errs toward saying nothing, the
+    # same direction ``_documents_values`` picks above, and it is the direction
+    # to be wrong in for an accusation.
     distribution_collected = (
         sa.select(sa.literal(1))
         .select_from(DistributionDrift)
         .where(
             DistributionDrift.scan_config_id.in_(
                 sa.select(ScanConfig.id).where(ScanConfig.project_id == project_id)
-            )
+            ),
+            DistributionDrift.band == DistributionDriftBand.significant.value,
         )
         .exists()
     )

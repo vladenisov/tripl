@@ -566,6 +566,14 @@ def _snapshot_items(expected_count: float) -> list[dict[str, object]]:
             interval="1h",
         ),
         project_slug="checkout",
+        # Required, and passed EMPTY on purpose (tripl-0zpq.109). The snapshot
+        # builder now takes the base URL from its caller instead of opening its
+        # own session to read the runtime config, which is what kept these
+        # otherwise-pure percentage tests reaching for a database. Every
+        # assertion below reads ``percent_delta`` / ``expected_count``; not one
+        # reads a link, so the base is deliberately the one value that cannot
+        # make a link look right by accident.
+        app_base_url="",
         rule=AlertRule(id=uuid.uuid4(), destination_id=uuid.uuid4(), name="Volume drops"),
         destination=AlertDestination(
             id=uuid.uuid4(),

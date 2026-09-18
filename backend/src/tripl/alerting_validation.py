@@ -260,18 +260,40 @@ def validate_email_address(value: str | None) -> str:
 def validate_sender_address(value: str) -> str:
     """Check a From: address the way the SEND PATH will use it, and return it intact.
 
-    Not ``validate_email_address``: that one refuses a display name, and every
-    real send path — the alert tasks, the digest tasks, the password-reset mail —
-    hands the configured string straight to ``EmailMessage``, which accepts
-    ``Tripl Alerts <no-reply@example.com>`` without complaint. Validating a
-    sender strictly therefore made the alert-destination test report a failure
-    for a destination that delivers on every fire (tripl-q9o6), which is worse
-    than not checking at all: it sends the operator hunting a fault that is not
-    there.
+    Not ``validate_email_address``: that one refuses a display name, while
+    ``EmailMessage`` accepts ``Tripl Alerts <no-reply@example.com>`` without
+    complaint — and every caller below hands the configured string to that
+    header untouched, so the only thing worth checking is the address part.
+
+    It is the SINGLE answer to that question, and it has to be. While the strict
+    helper guarded some of these callers and this one guarded the rest, the two
+    disagreed — in both directions, a year apart. First the destination Test
+    reported failure for a destination that delivers on every fire (tripl-q9o6).
+    Then, once the two diagnostics moved here and the send paths did not, the
+    inverse: Settings → Send test email and the destination Test both passed a
+    display-name Default From that afterwards failed every real alert, the
+    combined digest, the weekly plan digest and the sunset alert (tripl-0zpq.29).
+    Either way round the operator is misled about a configuration they cannot
+    otherwise inspect, which is worse than not checking at all.
+
+    The callers, so that claim stays checkable: ``EmailSettingsUpdate`` on the
+    way in (schemas/app_settings.py), ``alerts._resolve_email_context`` for the
+    immediate alert and the combined digest,
+    ``alerts_channels._send_digest_to_destination`` for the weekly plan digest
+    and the sunset alert, and the two test sends (``_email_test_send``,
+    ``_alerting_test_send``). Password-reset mail (``api/v1/auth.py``) reaches
+    the same end state by a shorter road: it validates nothing and passes the
+    configured string through.
+
+    The per-destination From: OVERRIDE is on that list too, as of tripl-v422:
+    ``schemas.alerting`` saves it through this same helper, so a display name a
+    destination's own send path would deliver can also be stored on it. It was
+    the last place where saving was stricter than sending.
 
     So the display name is parsed off and only the address is validated, and the
     ORIGINAL string comes back — normalising it away would silently drop the
-    name the operator configured.
+    name the operator configured, and none of the callers reads the normal form
+    back for anything.
 
     This is not a header-injection guard and must not be described as one.
     ``EmailMessage.__setitem__`` already raises on a linefeed or carriage
@@ -304,13 +326,6 @@ def validate_email_recipients(value: str | None) -> str:
     if not addresses:
         raise ValueError("Email recipients list must contain at least one address")
     return ", ".join(addresses)
-
-
-def validate_email_from_address(value: str | None) -> str | None:
-    """Optional override — None falls back to settings.smtp_from_address."""
-    if value is None or not value.strip():
-        return None
-    return validate_email_address(value)
 
 
 def validate_email_subject_template(value: str | None) -> str | None:

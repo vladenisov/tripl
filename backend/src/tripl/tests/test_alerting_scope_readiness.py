@@ -466,6 +466,13 @@ async def test_scope_readiness_true_when_distribution_rows_exist_without_configu
     DistributionDrift ROWS, not ``ScanConfig.distribution_drift_fields``, and the
     seeded demo has rows against a config whose field list is empty. A
     "no configured fields ⇒ inert" rule would put a false warning on it.
+
+    "Collected rows" means SIGNIFICANT ones, which is what ``_drift_row`` seeds
+    and what the readiness query selects: ``metric_rows`` bands every scored PSI
+    and persists the stable and minor buckets too, so a project that has only
+    ever scored stable has collected plenty and can still never fire
+    (tripl-0zpq.166). The band's own arm is pinned in test_batch4_readiness.py,
+    which parametrises the band; this test deliberately stays the one-shape case.
     """
     # Arrange
     await _make_project(client, "readiness-collected")

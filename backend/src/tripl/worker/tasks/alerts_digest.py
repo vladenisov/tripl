@@ -11,6 +11,7 @@ from tripl.models.project import Project
 from tripl.services import app_settings_service
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
+from tripl.worker.tasks.alerts_channels import DIGEST_SUBJECT_TITLE
 from tripl.worker.tasks.alerts_channels import (
     _post_json as _channel_post_json,
 )
@@ -29,6 +30,14 @@ from tripl.worker.tasks.alerts_messages import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The sunset alert's own email subject title; the channel helper pairs it with
+# the ``[project]`` prefix, exactly as it does the weekly digest's
+# ``DIGEST_SUBJECT_TITLE``. Worded as the weekly digest's own counter line
+# ("- Deprecated events still receiving data: N"), because this daily message
+# is that line expanded and a reader should be able to connect the two from the
+# subject alone.
+SUNSET_SUBJECT_TITLE = "Deprecated events still receiving data"
 
 
 def _post_json(
@@ -75,7 +84,40 @@ def _send_digest_to_destination(
     message: str,
     project: Project,
     email_config: app_settings_service.EmailConfig,
+    subject_title: str = DIGEST_SUBJECT_TITLE,
 ) -> None:
+    """Send one digest message, refusing egress from a demo project first.
+
+    ``subject_title`` is forwarded to the channel helper, which pairs it with
+    the ``[project]`` prefix to form the email subject; it defaults to the
+    weekly digest's own title, so only a caller that says otherwise moves it.
+
+    Both tasks below already leave demo projects out of their SELECT, so this
+    guard is not what stops the send in practice — it is what stops a THIRD
+    digest-shaped task added to this module from egressing by forgetting a
+    WHERE clause. These two are the only WORKER sends that resolve a
+    destination themselves instead of minting an ``AlertDelivery`` and handing
+    it to a send task, so before tripl-0zpq.33 they were the only alert sends
+    :func:`_assert_egress_allowed` never saw — which is why that guard's
+    docstring no longer claims every dispatch path funnels through a send task,
+    and names these two instead. The one other
+    destination send that bypasses the send tasks is the **Test** button
+    (``services/_alerting_test_send.send_destination_test``), and it stays
+    outside this guard on purpose: it answers a question ABOUT a destination
+    rather than delivering an alert, so it refuses a demo with an ``ok=False``
+    explanation the operator can read instead of raising.
+
+    Unlike the send tasks the guard runs AFTER the message is built rather than
+    before: these two messages are plain DB reads over the project's own rows,
+    so there is no AI round-trip to be saved by refusing any earlier.
+    """
+    # Deferred, for the cycle: ``alerts`` imports this module's two tasks at its
+    # own top (they carry ``tripl.worker.tasks.alerts.*`` task names), so a
+    # module-level import back into it is a hard cycle. Same workaround, for the
+    # same reason, as alert_digest_send.py's.
+    from tripl.worker.tasks.alerts import _assert_egress_allowed
+
+    _assert_egress_allowed(destination, project)
     _channel_send_digest_to_destination(
         destination=destination,
         message=message,
@@ -83,6 +125,7 @@ def _send_digest_to_destination(
         email_config=email_config,
         send_slack_message=_send_slack_message,
         send_email_message=_send_email_message,
+        subject_title=subject_title,
     )
 
 
@@ -97,6 +140,17 @@ def send_weekly_plan_digest() -> dict[str, int]:
             select(Project, AlertDestination)
             .join(AlertDestination, AlertDestination.project_id == Project.id)
             .where(
+                # A demo project is zero-egress by construction
+                # (website/docs/use/demo-workspace.md): the API refuses to
+                # create or enable an external destination on one. This task
+                # inherits none of that — it sends to whatever enabled rows
+                # exist, including any written before that API guard or by hand
+                # against the database. Excluding demos here rather than
+                # refusing them row by row also keeps them out of
+                # ``destinations_checked`` and off the weekly ``failed`` tally,
+                # which is the honest tally: nothing was attempted, and nothing
+                # is wrong (tripl-0zpq.33).
+                Project.is_demo.is_(False),
                 AlertDestination.enabled.is_(True),
                 AlertDestination.type.in_(
                     [AlertDestinationType.slack.value, AlertDestinationType.email.value]
@@ -129,7 +183,32 @@ def send_weekly_plan_digest() -> dict[str, int]:
 
 @celery_app.task(name="tripl.worker.tasks.alerts.check_deprecated_sunset_events")  # type: ignore[untyped-decorator]
 def check_deprecated_sunset_events() -> dict[str, int]:
-    """Alert on deprecated events that keep receiving data past their sunset_at."""
+    """Alert on deprecated events that keep receiving data past their sunset_at.
+
+    Runs daily from beat (``check-deprecated-sunset-events`` in celery_app.py,
+    where the cadence is argued). It keeps no per-event state, so a project
+    whose overdue list has not changed receives the same message every day
+    until someone edits the PLAN — intended, not an oversight: the list IS the
+    work item, and there is nothing else in the product that chases it.
+
+    Editing the plan is the only exit, because stopping the data is not one.
+    ``metrics.collect._bump_event_last_seen`` only ever moves ``last_seen_at``
+    forward (documented as monotonic, and enforced by its own
+    ``last_seen_at < bucket`` guard), so an event that was still receiving data
+    past its sunset stays past it forever after. What clears the row is moving
+    its ``status`` off ``deprecated``, clearing ``sunset_at``, or pushing
+    ``sunset_at`` out beyond the data already seen.
+
+    It reads only MAIN-branch events (:func:`_build_sunset_alert_message`), so
+    its "Count:" agrees with the ``sunset_overdue`` line of the weekly digest
+    above. This message is that line expanded: the count, then the first
+    ``_SUNSET_ALERT_MAX_EVENTS`` events by name, then a tail saying how many it
+    is not showing.
+
+    Its email carries its own subject (``subject_title`` above). Sharing the
+    send helper with the weekly digest used to mean sharing its subject too, so
+    a daily alert arrived titled "Weekly tripl digest".
+    """
     session = _get_sync_session()
     checked = 0
     sent = 0
@@ -140,6 +219,10 @@ def check_deprecated_sunset_events() -> dict[str, int]:
             select(Project, AlertDestination)
             .join(AlertDestination, AlertDestination.project_id == Project.id)
             .where(
+                # Same reasoning as the weekly digest above: this task resolves
+                # its destinations the same way and is equally outside the API's
+                # demo guard.
+                Project.is_demo.is_(False),
                 AlertDestination.enabled.is_(True),
                 AlertDestination.type.in_(
                     [AlertDestinationType.slack.value, AlertDestinationType.email.value]
@@ -159,6 +242,7 @@ def check_deprecated_sunset_events() -> dict[str, int]:
                     message=message,
                     project=project,
                     email_config=email_config,
+                    subject_title=SUNSET_SUBJECT_TITLE,
                 )
                 sent += 1
             except Exception:  # noqa: BLE001

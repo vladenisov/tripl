@@ -20,11 +20,21 @@ Two properties the rest of the system depends on:
   not monotonic: on the autumn DST fold a wall time occurs twice, so "is
   02:30 still in the future?" has no answer in local terms. Every candidate is
   converted to UTC and compared there. Getting this wrong silently skips one
-  digest per year.
+  digest per year. The flip side is deliberate: a cadence whose hour falls
+  inside the fold hour fires TWICE that day, because 02:30 CEST and 02:30 CET
+  are an hour apart and each opens a window of its own. Nothing downstream
+  collapses that pair — the flusher claims windows by UTC instant, so its
+  compare-and-set rejects a repeat of the same instant and has no way to
+  recognise, or any reason to reject, a repeated wall time.
 * **A nonexistent local time folds FORWARD.** On the spring gap, ``02:30``
-  simply does not happen; :class:`zoneinfo.ZoneInfo` resolves it to 03:30
-  local. That is deliberate — a skipped digest is a silent 24h outage, and
-  firing an hour late is the strictly better failure.
+  simply does not happen, and :class:`zoneinfo.ZoneInfo` will answer for it
+  two ways: ``fold=0`` resolves it to 03:30 local (an hour late) while
+  ``fold=1`` resolves it to 01:30 local (an hour EARLY). Only the forward
+  answer is kept, deliberately. A skipped digest is a silent 24h outage and
+  firing an hour late is the strictly better failure — but firing an hour
+  BEFORE the wall time an operator configured is not a better failure at
+  all: it ships a digest while the window it claims to summarise is still
+  open, and it does so at a time the schedule never named.
 """
 
 from __future__ import annotations
@@ -168,14 +178,38 @@ def _day_matches(spec: CronSpec, day: _dt.date) -> bool:
 def _utc_instants(day: _dt.date, hour: int, minute: int, tz: ZoneInfo) -> list[_dt.datetime]:
     """Every distinct UTC instant the given local wall time maps to.
 
-    Normally one. On the autumn fold a wall time is ambiguous and maps to two;
-    both are returned so the caller can pick by UTC ordering rather than by
-    the wall clock, which is not monotonic there.
+    Normally one. On the autumn fold a wall time is ambiguous and maps to two
+    real instants an hour apart; BOTH are returned and both are fire instants,
+    ordered by the caller in UTC because the wall clock is not monotonic there.
+    A cadence inside the fold hour therefore gets two windows that day, and the
+    flusher neither collapses them nor mistakes them for a double send: its
+    compare-and-set is keyed on the instant, and the two differ. Collapsing the
+    pair here is the tempting tidy-up and it is wrong — an hourly cadence has
+    25 real fires on that local day, and keeping only ``fold=0`` drops one.
+
+    On the spring gap it maps to NEITHER of ``fold``'s two answers, because it
+    does not occur: ``fold`` stops choosing between two real readings of one
+    instant and starts choosing which side of the jump to land on. ``fold=0``
+    keeps the pre-transition offset and lands 02:30 on 03:30 local; ``fold=1``
+    keeps the post-transition offset and lands it on 01:30 local, an hour
+    BEFORE the configured time. Returning the pair there would hand the
+    flusher two windows for a wall time that happened zero times, and the
+    earlier of the two ships the digest ahead of its own schedule
+    (tripl-0zpq.280) — so the gap keeps only the forward instant.
+
+    The gap is recognised by converting ``first`` back into the zone: a wall
+    time that exists always comes back as itself, and only a nonexistent one
+    comes back as a different wall time.
     """
     naive = _dt.datetime(day.year, day.month, day.day, hour, minute)
     first = naive.replace(tzinfo=tz, fold=0).astimezone(_dt.UTC)
     second = naive.replace(tzinfo=tz, fold=1).astimezone(_dt.UTC)
-    return [first] if first == second else [first, second]
+    if first == second:
+        return [first]
+    if first.astimezone(tz).replace(tzinfo=None) != naive:
+        # Spring gap, not autumn fold: ``second`` is the backwards resolution.
+        return [first]
+    return [first, second]
 
 
 def _matching_days(

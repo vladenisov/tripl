@@ -5,6 +5,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from tripl.alerting_validation import validate_sender_address
+
 # Mirrors app_settings_service.SettingSource. "default" means the value equals
 # the built-in default — either nothing was delivered for it, or what was
 # delivered matches it; the two are indistinguishable from here (tripl-wkwv.2).
@@ -121,6 +123,31 @@ class EmailSettingsUpdate(BaseModel):
     smtp_password: str | None = Field(default=None, max_length=4096)
     smtp_security: SmtpSecurity | None = None
     smtp_from_address: str | None = None
+
+    @field_validator("smtp_from_address")
+    @classmethod
+    def _check_smtp_from_address(cls, value: str | None) -> str | None:
+        # The global Default From every email destination without an override
+        # falls back to, and until now the only email setting nothing checked:
+        # ``app_settings_service.update_service_overrides`` writes whatever
+        # arrives. A typo was therefore reported at 10:00 the next morning by a
+        # failed alert rather than by the form that accepted it.
+        #
+        # Checked with the SEND PATH's own helper, so what this endpoint accepts
+        # is what the alert tasks accept. Deliberately NOT ``EmailStr`` or
+        # ``validate_email_address``: the strict form refuses
+        # ``Tripl Alerts <no-reply@example.com>``, which the From: header takes
+        # happily, and putting it here would rebuild tripl-0zpq.29 at the other
+        # end of the same pipe — a value the operator can never save, instead of
+        # one they can save but never deliver.
+        #
+        # None and "" pass through untouched: they are how the value is CLEARED
+        # (``update_service_overrides`` drops a None and stores an empty string),
+        # and "no Default From configured" is a supported state — the one
+        # Settings → Send test email reports on rather than refuses.
+        if value is None or not value.strip():
+            return value
+        return validate_sender_address(value)
 
 
 class AiSettings(BaseModel):

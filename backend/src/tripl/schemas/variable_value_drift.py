@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from tripl.models.domain_enums import SchemaDriftStatus
+from tripl.schemas.time_guards import require_future_instant
 
 VariableValueDriftAction = Literal["accept", "snooze", "false_positive", "reopen"]
 VariableValueDriftAcceptScope = Literal["global", "event"]
@@ -44,6 +45,16 @@ class VariableValueDriftActionRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_action(self) -> VariableValueDriftActionRequest:
-        if self.action == "snooze" and self.snoozed_until is None:
-            raise ValueError("snoozed_until is required when action is snooze")
+        if self.action == "snooze":
+            if self.snoozed_until is None:
+                raise ValueError("snoozed_until is required when action is snooze")
+            # Same pair of guards, same reasoning, as ``SchemaDriftActionRequest``
+            # — an end that has already passed hides this drift for no time at
+            # all, because ``variable_value_drift_service`` decides what is
+            # snoozed by reading the stored instant against now, and the frontend
+            # repeats that reading in ``lib/variableDrift.ts`` so the row is back
+            # among the open ones on the very next render (tripl-0zpq.273).
+            self.snoozed_until = require_future_instant(
+                self.snoozed_until, field_name="snoozed_until"
+            )
         return self

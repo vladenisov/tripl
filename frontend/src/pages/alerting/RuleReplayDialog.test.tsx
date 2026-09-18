@@ -79,6 +79,7 @@ const RESULT: AlertRuleSimulateResponse = {
       expected_count: 3529,
       absolute_delta: 2251,
       percent_delta: 63.8,
+      window_from: null,
       rendered_item: null,
     },
   ],

@@ -328,7 +328,12 @@ class DataSourceCreate(BaseModel):
     host: str = Field(min_length=1, max_length=500)
     port: int = Field(default=8123, ge=1, le=65535)
     database_name: str = Field(min_length=1, max_length=255)
-    username: str = ""
+    # Bounded like its neighbours, to the width of ``data_sources.username``
+    # (String(255)). It was the one connection field left unbounded, so an
+    # overlong username was a 500 out of the INSERT instead of a 422 naming the
+    # field (tripl-0zpq.275). ``password`` needs no bound: it is stored
+    # encrypted, in a Text column.
+    username: str = Field("", max_length=255)
     password: str = ""
     timeout_seconds: int | None = Field(None, ge=1)
     json_path_discovery: JsonPathDiscovery | None = None
@@ -348,7 +353,8 @@ class DataSourceUpdate(BaseModel):
     host: str | None = Field(None, min_length=1, max_length=500)
     port: int | None = Field(None, ge=1, le=65535)
     database_name: str | None = Field(None, min_length=1, max_length=255)
-    username: str | None = None
+    # Same bound as on create: the PATCH writes the same column.
+    username: str | None = Field(None, max_length=255)
     password: str | None = None
     timeout_seconds: int | None = Field(None, ge=1)
     json_path_discovery: JsonPathDiscovery | None = None

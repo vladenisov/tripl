@@ -24,6 +24,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT_TYPE,
     SCOPE_PROJECT_TOTAL,
 )
+from tripl.models.alert_delivery_item import trim_scope_name
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event
@@ -39,6 +40,12 @@ def _build_alert_scope_names(
     session: Session,
     anomalies: list[AlertMatchCandidate],
 ) -> dict[tuple[str, str], str]:
+    """``(scope_type, scope_ref)`` -> the label an alert shows for that scope.
+
+    Every candidate gets an entry, and every value fits the ``scope_name``
+    column — see ``trim_scope_name`` and the trim at the bottom of this
+    function.
+    """
     scope_names: dict[tuple[str, str], str] = {
         (SCOPE_PROJECT_TOTAL, anomaly.scope_ref): "All events"
         for anomaly in anomalies
@@ -126,7 +133,18 @@ def _build_alert_scope_names(
     for anomaly in anomalies:
         key = (anomaly.scope_type, anomaly.scope_ref)
         scope_names.setdefault(key, anomaly.scope_ref)
-    return scope_names
+    # Trimmed here, on the way out, rather than at each of the eight
+    # assignments above: this is the one loop every key already passes through,
+    # so a scope family added above it cannot reach a writer untrimmed. Both
+    # persisted writers of the label are downstream of this return — the typed
+    # ``AlertDeliveryItem`` rows and the ``AlertPendingItem`` digest buffer,
+    # whose ON CONFLICT arm rewrites ``scope_name`` on every collection — as is
+    # the frozen ``payload_snapshot`` that quotes the same dict. That is why
+    # ``dispatch.py`` needs no guard of its own (tripl-0zpq.253).
+    #
+    # The ``setdefault`` fallback needs no trim of its own but gets one anyway,
+    # for free: ``scope_ref`` is String(64) on the same rows.
+    return {key: trim_scope_name(name) for key, name in scope_names.items()}
 
 
 def _build_event_type_by_event_id(
@@ -185,6 +203,7 @@ def _build_delivery_snapshot(
     config: ScanConfig,
     *,
     project_slug: str,
+    app_base_url: str,
     rule: AlertRule,
     destination: AlertDestination,
     anomalies: list[AlertMatchCandidate],
@@ -197,11 +216,38 @@ def _build_delivery_snapshot(
     to this delivery's own audit row — the only surface that can show their
     numbers for one scope. Callers flush the delivery first so the id exists;
     ``None`` degrades to a link-less item rather than a wrong one.
+
+    ``app_base_url`` arrives the same way, and is required rather than
+    defaulted so that this snapshot and the typed ``AlertDeliveryItem`` rows
+    minted beside it come from ONE read of the setting rather than two.
+    ``app_settings_service.get_runtime_config_sync`` has no cache and swallows
+    a failed read, falling back to the env config whose ``app_base_url`` is
+    ``""`` — and every builder in ``urls.py`` returns ``None`` on an empty
+    base. Two independent reads could therefore hand this frozen blob a
+    different base from the rows it is frozen beside, or no links at all beside
+    rows that have them, with nothing but a ``logger.warning`` to say why.
+    ``dispatch._create_deliveries`` resolves the value once, before the chunk
+    loop, and hands that one string here and to the per-item
+    ``_build_item_paths`` call that mints the rows.
+
+    That buys agreement about the BASE, and deliberately nothing more. This is
+    the FIRST of the two ``_build_item_paths`` calls per item — the snapshot is
+    frozen right after the delivery flushes, before the loop that mints the
+    rows — and it passes no ``correlation_group_id``, which the row call does
+    pass (both mint paths fill that map for every anomaly). So for an ordinary
+    scope the two encodings carry different link SHAPES on purpose: the row
+    gets the incident-anchored audit URL and a ``None`` monitoring path, while
+    the frozen item keeps the pre-incident pair — event details plus a
+    monitoring page. Nothing renders a link out of this blob; the message, the
+    webhook body and the Inbox all read the typed rows (``alerts_messages``,
+    ``AlertDeliveryRow.tsx``), so re-shaping it would rewrite audit history for
+    no reader.
     """
     items: list[dict[str, object]] = []
     for anomaly in anomalies:
         details_path, monitoring_path = _build_item_paths(
             project_slug,
+            app_base_url=app_base_url,
             scope_type=anomaly.scope_type,
             scope_ref=anomaly.scope_ref,
             event_id=anomaly.event_id,

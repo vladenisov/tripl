@@ -15268,6 +15268,7 @@
           },
           "name": {
             "type": "string",
+            "maxLength": 255,
             "title": "Name"
           },
           "enabled": {
@@ -15311,7 +15312,8 @@
           "chat_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15333,7 +15335,8 @@
           "webhook_header_name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15366,7 +15369,8 @@
           "email_from_address": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15388,7 +15392,8 @@
           "jira_base_url": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15476,7 +15481,8 @@
           "linear_label_ids": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 1024
               },
               {
                 "type": "null"
@@ -15832,7 +15838,8 @@
           "name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15887,7 +15894,8 @@
           "chat_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15909,7 +15917,8 @@
           "webhook_header_name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15942,7 +15951,8 @@
           "email_from_address": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15964,7 +15974,8 @@
           "jira_base_url": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -16052,7 +16063,8 @@
           "linear_label_ids": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 1024
               },
               {
                 "type": "null"
@@ -16545,6 +16557,7 @@
         "properties": {
           "name": {
             "type": "string",
+            "maxLength": 255,
             "title": "Name"
           },
           "enabled": {
@@ -17101,7 +17114,8 @@
           "name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -19191,6 +19205,7 @@
           },
           "username": {
             "type": "string",
+            "maxLength": 255,
             "title": "Username",
             "default": ""
           },
@@ -19561,7 +19576,8 @@
           "username": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -27448,6 +27464,7 @@
         "properties": {
           "name": {
             "type": "string",
+            "maxLength": 255,
             "title": "Name"
           },
           "description": {
@@ -29388,6 +29405,7 @@
           },
           "relation_type": {
             "type": "string",
+            "maxLength": 50,
             "title": "Relation Type",
             "default": "belongs_to"
           },
@@ -29892,7 +29910,8 @@
           "event_name_format": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               {
                 "type": "null"
@@ -30471,7 +30490,8 @@
           "event_name_format": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               {
                 "type": "null"
@@ -30936,7 +30956,8 @@
           "event_name_format": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               {
                 "type": "null"
@@ -32583,6 +32604,18 @@
             "format": "date-time",
             "title": "Bucket"
           },
+          "window_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window From"
+          },
           "direction": {
             "$ref": "#/components/schemas/AnomalyDirection"
           },
@@ -32599,7 +32632,14 @@
             "title": "Absolute Delta"
           },
           "percent_delta": {
-            "type": "number",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Percent Delta"
           },
           "rendered_item": {

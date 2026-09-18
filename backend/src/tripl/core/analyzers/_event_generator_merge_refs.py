@@ -41,6 +41,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from tripl.core.event_references import replace_preserving_order
+from tripl.models.alert_delivery_item import trim_scope_name
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.anomaly_scope_override import AnomalyScopeOverride
@@ -182,13 +183,17 @@ def _move_anomaly_scope_overrides(session: Session, *, source: Event, target: Ev
         prior = existing.get(row.scan_config_id)
         if prior is None:
             row.scope_ref = target_ref
-            row.scope_name = target.name
+            # Both arms relabel from ``Event.name`` (String(500)) into a
+            # String(255) column, and this module may not raise: an override
+            # that could not be relabelled would fail the entire scan
+            # (tripl-0zpq.253).
+            row.scope_name = trim_scope_name(target.name)
             existing[row.scan_config_id] = row
             continue
         prior.sigma_threshold = max(prior.sigma_threshold, row.sigma_threshold)
         prior.min_expected_count = max(prior.min_expected_count, row.min_expected_count)
         prior.false_positive_count += row.false_positive_count
-        prior.scope_name = target.name
+        prior.scope_name = trim_scope_name(target.name)
         session.delete(row)
 
 

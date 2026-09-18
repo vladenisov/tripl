@@ -204,7 +204,11 @@ sends. A break anywhere in that chain produces silence.
    SMTP_USERNAME/SMTP_PASSWORD if your relay requires auth)."* Set `SMTP_HOST`,
    plus `SMTP_FROM_ADDRESS` or a per-destination From: address. The worker reads
    SMTP settings at send time, so a config change takes effect without
-   recreating the destination.
+   recreating the destination. The default From: may carry a display name
+   (`Tripl Alerts <no-reply@example.com>`), so a send that failed with *"From:
+   address is invalid"* means the value has no usable address in it — stripping
+   the name is not the fix. A per-destination override is checked the same
+   way and may carry a display name too.
 6. **The port and the security mode disagree.** The symptom is a ten-second
    pause followed by *"Connection unexpectedly closed: timed out"*, which looks
    like the relay is down when it is answering perfectly well. Port 465 is
@@ -229,7 +233,11 @@ sends. A break anywhere in that chain produces silence.
    picked up. While an attempt is queued the row shows `pending` but keeps its
    last error; a failed attempt returns it to `failed` with the fresh error,
    and a success flips it to `sent`. Jira and Linear deliveries and disabled
-   destinations are never auto-retried.
+   destinations are never auto-retried. A stranded delivery whose destination
+   has since been disabled is re-enqueued once and then marked `failed` with
+   *"Alert destination ... is disabled: alerts are not routed here. Nothing was
+   sent."* — it is not delivered. Re-enable the destination and press **Retry**
+   if you still want it.
    Any other failure (bad credentials, a rejected payload) is never retried
    automatically: fix the cause and press **Retry**, which also resets the
    attempt budget. A permanently failing delivery will eventually stop cycling
@@ -242,9 +250,11 @@ sends. A break anywhere in that chain produces silence.
    enough — which you supply under **Variables**, *or* a value drift already
    collected in the project (an open or snoozed row from the last 30 days);
    values documented on a working branch do not count until it merges. **Distribution drift** needs a scan that
-   names the columns to watch (**Scan settings → Distribution drift**), or drift
-   already collected in the project. The monitor's own screens now say this out
-   loud: the rule editor and the monitor detail mark such a scope inline and
+   names the columns to watch (**Scan settings → Distribution drift**), or a
+   **significant** drift already collected in the project — stable and minor
+   scores do not count, because no alert can ever be built from them. The
+   monitor's own screens now say this out loud: the rule editor and the monitor
+   detail mark such a scope inline and
    link to the screen that supplies the missing data. The check behind those
    notices is project-wide, so a rule bound to a single scan shows no warning as
    long as *some* scan watches a column — see

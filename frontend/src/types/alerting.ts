@@ -158,11 +158,30 @@ export interface SimulatedRuleFiring {
   drift_type: string | null
   sample_value: string | null
   bucket: string
+  // Start of the window the comparison was measured over; `bucket` is its end.
+  // Only release regressions carry one — their window is the rollout overlap
+  // rather than a scan bucket — so it is `null` for every other family. The
+  // table does not render it: the backend already folds it into the
+  // `release: … over the 51h rollout overlap` sentence inside `rendered_item`.
+  // It is on the wire because the preview and the delivered message only stay
+  // identical while both know the window (tripl-0zpq.158).
+  window_from: string | null
   direction: 'spike' | 'drop'
   actual_count: number
   expected_count: number
   absolute_delta: number
-  percent_delta: number
+  // `null` exactly when `expected_count` is 0: the ratio is undefined, and the
+  // replay sends null rather than the stored 0.0 placeholder a consumer cannot
+  // tell apart from a real "no change" (tripl-0zpq.272). The same encoding
+  // `AlertDeliveryItemResponse.percent_delta` and the inbox card already use, so
+  // one incident no longer answers the question two ways depending on whether
+  // you read the delivery it produced or the replay that predicted it.
+  //
+  // No component change came with this: `lib/percentDelta.formatPercentDelta`
+  // already takes `number | null` and is what the replay table renders it
+  // through, so both the null and the frozen 0.0 in older rows read
+  // `no baseline`.
+  percent_delta: number | null
   rendered_item: string | null
 }
 
@@ -180,7 +199,11 @@ export interface AlertRuleSimulateResponse {
   // the value this run applied, `_saved` the value stored on the rule. Without
   // both, a preview run and the rule's real behaviour are indistinguishable on
   // screen and "what would happen if I raised the threshold" cannot be answered
-  // (tripl-oxkt.15). sigma has no rule-level column yet, hence nullable.
+  // (tripl-oxkt.15). Sigma is the odd pair: it has no rule-level column at all,
+  // so its `_saved` is the PROJECT's Detection-settings threshold — the same
+  // number the detector scores with. It stays `number | null` only because that
+  // is the shipped wire shape; since tripl-0zpq.160 the server always sends a
+  // number, so a null here is a contract leftover and not a state to design for.
   cooldown_minutes_used: number
   cooldown_minutes_saved: number
   min_percent_delta_used: number

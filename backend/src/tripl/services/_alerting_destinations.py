@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
@@ -51,6 +52,42 @@ def _encrypt_secret(value: str | None) -> str | None:
     if value is None:
         return None
     return encrypt_value(value)
+
+
+async def _assert_public_destination_host(url: str | None, *, field: str) -> None:
+    """SSRF guard for a free-form destination URL, run OFF the event loop.
+
+    ``reject_private_host`` resolves the hostname with ``socket.getaddrinfo``,
+    which blocks for as long as the resolver takes and honours no timeout of
+    ours. It used to run inside the pydantic validators for ``target_url`` and
+    ``jira_base_url``, i.e. during FastAPI's body parsing for an ``async def``
+    route — on the event loop, where one degraded lookup stalls every other
+    request already in flight on the same uvicorn worker (tripl-0zpq.30). The
+    schema now settles the URL's SHAPE; this settles where it points.
+
+    Nothing is weakened by the move. This runs before the row is written on both
+    the create and the update path, so a URL the guard refuses is never stored,
+    and send time keeps its own independent re-check
+    (``alerts_channels._reject_private_target``) as the DNS-rebinding defence.
+
+    ``_reject_private_target`` is the same helper, reached the same way, as in
+    ``_alerting_test_send`` — the one place in this package that already had
+    this right. The import is deferred for the reason it is deferred there:
+    ``worker.tasks.alerts_channels`` drags in the whole outbound-channel stack
+    (urllib, smtplib, ``app_settings_service``), which the request path must not
+    pay for at module import.
+    """
+    if url is None:
+        return
+    from tripl.worker.tasks.alerts_channels import _reject_private_target
+
+    try:
+        await asyncio.to_thread(_reject_private_target, url, field=field)
+    except ValueError as exc:
+        # The guard signals refusal with ValueError. Raised bare inside a
+        # service nothing catches it but main.py's catch-all, which would turn
+        # "your webhook points at the metadata endpoint" into a 500.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 async def _refresh_main_search_index(
@@ -428,19 +465,47 @@ async def replace_rule_filters(
     rule: AlertRule,
     filters: list[AlertRuleFilterPayload],
 ) -> None:
-    await session.execute(delete(AlertRuleFilter).where(AlertRuleFilter.rule_id == rule.id))
-    await session.flush()
+    """Replace a rule's filter rows THROUGH the relationship, not around it.
 
-    for position, filter_payload in enumerate(filters):
-        session.add(
-            AlertRuleFilter(
-                rule_id=rule.id,
-                field=filter_payload.field,
-                operator=filter_payload.operator,
-                values=list(filter_payload.values),
-                position=position,
-            )
+    This used to bulk-DELETE the rows and ``session.add`` the replacements keyed
+    on ``rule_id``, never touching ``rule.filters`` — which is the collection the
+    200 response is rendered from (``rule_to_response``). Nothing put that right
+    afterwards: sessions are built with ``expire_on_commit=False`` (see
+    ``database``), so the commit left the deleted rows sitting on the instance,
+    and the ``selectinload`` in ``get_rule``'s re-read does not overwrite a
+    collection that is already loaded on an identity-mapped object. A PATCH that
+    changed the filters therefore answered 200 listing the PREVIOUS filters, and
+    a client reading its own write back concluded the update had not landed or
+    re-applied stale state (tripl-0zpq.159). The UI never saw it because it
+    invalidates and refetches instead of trusting the mutation body.
+
+    Assigning the collection makes the rule in memory and the rule in the
+    database the same rule again: ``cascade="all, delete-orphan"`` on
+    ``AlertRule.filters`` (see ``models.alert_rule``) deletes whatever the
+    assignment displaces, so the hand-rolled DELETE is not needed to do it.
+    """
+    # The collection must be LOADED before it can be replaced: the ORM reads the
+    # old one to decide which rows the assignment orphans. On the update path
+    # ``get_rule`` has already selectinloaded it, but on the create path the rule
+    # was INSERTed moments earlier and its filters were never touched — there the
+    # assignment lazy-loads, and a lazy load is IO from async code, which
+    # SQLAlchemy answers with MissingGreenlet (reproduced on the pinned
+    # interpreter). One SELECT is what it costs to have a helper that is correct
+    # whichever caller holds the rule, on routes that reindex the project anyway.
+    await session.refresh(rule, ["filters"])
+    rule.filters = [
+        AlertRuleFilter(
+            field=filter_payload.field,
+            operator=filter_payload.operator,
+            values=list(filter_payload.values),
+            position=position,
         )
+        for position, filter_payload in enumerate(filters)
+    ]
+    # One flush emits the new INSERTs before the orphan DELETEs. Positions may
+    # repeat across the two halves while that runs, which is fine: the only index
+    # on the table is the non-unique ``ix_alert_rule_filter_rule``.
+    await session.flush()
 
 
 async def disable_rules_bound_to_scan(session: AsyncSession, scan_id: uuid.UUID) -> None:
@@ -532,6 +597,15 @@ async def create_destination(
                 "Telegram, a webhook, email, Jira or Linear."
             ),
         )
+    # Where a free-form URL points is decided here rather than in the schema —
+    # see ``_assert_public_destination_host``. Only the field this destination
+    # type actually uses is resolved: ``validate_channel_config`` checks the
+    # channel fields on a per-type branch too, so resolving the others would buy
+    # a DNS lookup, and possibly a 422, for a value the model itself never read.
+    if data.type == AlertDestinationType.webhook:
+        await _assert_public_destination_host(data.target_url, field="Webhook target_url")
+    elif data.type == AlertDestinationType.jira:
+        await _assert_public_destination_host(data.jira_base_url, field="Jira base_url")
     destination = AlertDestination(
         project_id=project.id,
         type=data.type,
@@ -629,6 +703,20 @@ async def update_destination(
                     "disabled example: it cannot be enabled or given credentials."
                 ),
             )
+    # Before the first assignment, not next to the write below: a URL this guard
+    # refuses must leave the destination exactly as it was, rather than abandon
+    # a half-applied rename on an uncommitted session. Gated on the STORED type
+    # because that is what the write sites below are gated on — a ``target_url``
+    # sent to a Jira destination is ignored, and resolving an ignored field
+    # would 422 a request that succeeds today.
+    if destination.type == AlertDestinationType.webhook:
+        await _assert_public_destination_host(
+            update_dict.get("target_url"), field="Webhook target_url"
+        )
+    elif destination.type == AlertDestinationType.jira:
+        await _assert_public_destination_host(
+            update_dict.get("jira_base_url"), field="Jira base_url"
+        )
     if "name" in update_dict:
         destination.name = update_dict["name"]
     if "delivery_schedule_cron" in update_dict:
@@ -641,6 +729,107 @@ async def update_destination(
             # today's 09:00 already past and unflushed — dumping whatever is
             # buffered within the minute instead of waiting for tomorrow.
             destination.last_flushed_at = datetime.now(UTC) if cadence is not None else None
+            if cadence is None:
+                # Back to "Immediately": the hold is OVER, so the buffer is
+                # SETTLED HERE, in the transaction that clears the column.
+                #
+                # This is the handoff, and it exists to settle which of the two
+                # delivery paths ships each held incident — because both of them
+                # can, and the operator must receive each one exactly once
+                # (tripl-0zpq.38). The split is on the scope's
+                # ``AlertRuleState.last_notified_at``, because that column is
+                # precisely what dispatch's re-send gate reads:
+                #
+                # * NULL — nobody has ever been told about this scope. The gate
+                #   short-circuits on the NULL and fires REGARDLESS of the
+                #   cooldown, so the next collection delivers the scope on its
+                #   own. Leaving the row would have the flusher's drain arm mint
+                #   a digest of the same scope within the minute and the
+                #   operator would receive it twice, so the row is DISCARDED and
+                #   the immediate path owns it. That path re-reads the scope, so
+                #   what arrives is the CURRENT number rather than a reading up
+                #   to a whole cadence period old; a scope that fell quiet while
+                #   held is therefore not delivered at all, the same trade
+                #   ``alert_flush.PENDING_ITEM_MAX_AGE`` already makes over
+                #   these rows.
+                #
+                # * NOT NULL — a digest this destination already sent reported
+                #   this scope, and ``alerts._stamp_rule_state`` runs for a
+                #   digest send exactly as it does for an immediate one. The
+                #   gate then requires BOTH a strictly newer bucket and an
+                #   elapsed cooldown, and neither holds at the moment of the
+                #   switch: ``last_anomaly_bucket`` is advanced on buffered
+                #   collections too, and ``cooldown_minutes`` defaults to 1440.
+                #   The immediate path will NOT re-offer these rows, so they are
+                #   KEPT and the drain arm delivers them on its next tick — it
+                #   beats every 60s against a 300s collection, and it is the one
+                #   path that ships a buffered row as it was buffered.
+                #
+                # The second case is the common one, not a corner, because a
+                # state row carries no DIRECTION while a buffered row does: a
+                # held DROP sits on the state row an unrelated SPIKE stamped,
+                # carrying its own ``correlation_group_id`` and its own Inbox
+                # card, and nothing re-offers it. Discarding it destroys an
+                # incident that was never delivered and leaves the scope silent
+                # for up to ``cooldown_minutes`` — the undeliverable-sibling
+                # trap ``dispatch._buffer_pending_items`` argues in full, and
+                # the one the drain arm refuses to filter on this same column to
+                # avoid.
+                #
+                # Only on cadence -> NULL. A cadence CHANGE (daily -> hourly)
+                # still has a next window, and the watermark above starts its
+                # clock fresh, so what is held is delivered on the new schedule
+                # rather than settled here at all.
+                #
+                # Rule states are deliberately NOT cleared, which is the whole
+                # difference from the disable branch below. They carry
+                # ``last_notified_at``, and off a cadence that column IS the
+                # rate limiter (on a cadence, the cadence is) — so a scope the
+                # last digest already reported stays quiet until its cooldown
+                # lapses instead of being re-announced the moment someone saves.
+                # Clearing them to make the NULL case universal was the other
+                # candidate on the table and is not available for that same
+                # reason: the column is per SCOPE, so nulling it to release a
+                # held DROP would also re-announce the SPIKE the last digest
+                # just reported.
+                already_notified = (
+                    select(AlertRuleState.id)
+                    .where(
+                        AlertRuleState.rule_id == AlertPendingItem.rule_id,
+                        AlertRuleState.scope_type == AlertPendingItem.scope_type,
+                        AlertRuleState.scope_ref == AlertPendingItem.scope_ref,
+                        # A ``metric`` scope stores NULL here on BOTH tables, and
+                        # SQL reads NULL = NULL as unknown, so a plain equality
+                        # would match no metric row: every one of them would
+                        # read as never-notified and be discarded. Same shape,
+                        # and same reason, as the partial unique indexes that
+                        # key these two tables.
+                        or_(
+                            AlertRuleState.scan_config_id == AlertPendingItem.scan_config_id,
+                            and_(
+                                AlertRuleState.scan_config_id.is_(None),
+                                AlertPendingItem.scan_config_id.is_(None),
+                            ),
+                        ),
+                        AlertRuleState.last_notified_at.is_not(None),
+                    )
+                    .correlate(AlertPendingItem)
+                    .exists()
+                )
+                # NOT EXISTS rather than "the state row is NULL", so a buffered
+                # row with no state row AT ALL — the rule was disabled and
+                # re-enabled, which drops them — is discarded too. Dispatch
+                # rebuilds that state on the next collection and sends
+                # unconditionally, so the immediate path owns it exactly as it
+                # owns the NULL.
+                await session.execute(
+                    delete(AlertPendingItem)
+                    .where(
+                        AlertPendingItem.destination_id == destination.id,
+                        ~already_notified,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
     if "enabled" in update_dict:
         destination.enabled = update_dict["enabled"]
         if destination.enabled is False:
@@ -666,9 +855,28 @@ async def update_destination(
                     validate_telegram_bot_token(bot_token)
                 )
         if "chat_id" in update_dict:
-            destination.chat_id = validate_telegram_chat_id(update_dict["chat_id"])
+            chat_id = update_dict["chat_id"]
+            # An explicit null used to be handed straight to
+            # ``validate_telegram_chat_id``, whose "required" arm raises a bare
+            # ValueError — raised inside the service, where nothing catches it
+            # but the catch-all handler, so a body the schema had accepted came
+            # back as ``Internal server error``. Refuse it by name instead: a
+            # Telegram destination with no chat id has nowhere to send, so
+            # "clear the chat id" is not an operation this channel offers.
+            #
+            # This is ``bot_token``'s shape immediately above, minus the silent
+            # skip, and deliberately so: skipping a null bot_token leaves the
+            # destination working with the stored one, whereas skipping a null
+            # chat_id would look to the caller like the clear had happened.
+            if chat_id is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Telegram chat_id cannot be cleared; send a new chat id instead",
+                )
+            destination.chat_id = validate_telegram_chat_id(chat_id)
     if destination.type == AlertDestinationType.webhook:
-        # Field validators already normalized/validated these values.
+        # Field validators already normalized these values and settled their
+        # shape; the host they name was resolved above, off the event loop.
         if "target_url" in update_dict and update_dict["target_url"] is not None:
             destination.target_url_encrypted = _encrypt_secret(update_dict["target_url"])
         if "webhook_header_name" in update_dict:
@@ -845,6 +1053,28 @@ async def update_rule(
         ai_explanation_enabled=update_dict.get("ai_explanation_enabled"),
     )
 
+    # Re-check "at least one direction" against the MERGED row rather than
+    # against the body alone. ``AlertRuleBase.validate_direction`` only ever
+    # sees the fields the request mentioned, so PATCHing
+    # ``{"notify_on_spike": false}`` onto a rule whose ``notify_on_drop`` is
+    # already off sails past it: the validator reads the missing side as None,
+    # not as the false that is actually stored. Both columns then end up false,
+    # the direction gates in ``alerting_matching.rule_matches_anomaly`` reject
+    # every anomaly whatever its direction, and the result is a rule that is
+    # stored enabled, renders as enabled and can never fire again.
+    #
+    # This has to live here and not in the schema because only the service has
+    # the stored row. The create path needs no equivalent — both columns default
+    # to true, and a body that turns both off in one go is still caught by the
+    # schema validator, which is why that one stays.
+    notify_on_spike = update_dict.get("notify_on_spike", rule.notify_on_spike)
+    notify_on_drop = update_dict.get("notify_on_drop", rule.notify_on_drop)
+    if not notify_on_spike and not notify_on_drop:
+        raise HTTPException(
+            status_code=422,
+            detail="At least one alert direction must be enabled",
+        )
+
     filters_payload = data.filters if "filters" in update_dict else None
     update_dict.pop("filters", None)
     if filters_payload is not None:
@@ -906,7 +1136,16 @@ async def delete_rule(
     slug: str,
     destination_id: uuid.UUID,
     rule_id: uuid.UUID,
-) -> None:
+) -> str:
+    """Delete a rule and return the NAME it had, for the audit entry.
+
+    The twin of ``delete_destination`` above, returned for the twin reason: the
+    row is gone once this commits, so a route that wanted to name it had to find
+    it first — and the only lookup a router can reach without a project is a bare
+    ``AlertRule.id``/``destination_id`` select. That select answers BEFORE
+    ``get_rule`` has checked that ``slug`` owns the destination, which is how the
+    two 404s of one cross-project delete came to disagree (tripl-0zpq.242).
+    """
     project = await _get_project(session, slug)
     _destination, rule = await get_rule(
         session,
@@ -914,7 +1153,11 @@ async def delete_rule(
         destination_id=destination_id,
         rule_id=rule_id,
     )
+    # Read while the instance is still live: after the delete commits, touching
+    # an attribute would try to refresh a row that no longer exists.
+    name = rule.name
     await clear_rule_states(session, [rule.id])
     await session.delete(rule)
     await session.commit()
     await _refresh_main_search_index(session, project.id, slug)
+    return name

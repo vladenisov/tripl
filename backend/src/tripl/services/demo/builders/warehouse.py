@@ -6,7 +6,9 @@ platform split. Volumes come from the deterministic :mod:`demo.noise` helpers, s
 the shape is reproducible for a given ``(clock, seed)``.
 
 Shares series with the monitoring builder through the context (``home_series`` and
-``type_bucket_counts``) so the real detector runs over exactly the stored counts.
+``type_bucket_counts``) so the real detector runs over exactly the stored counts,
+and publishes ``spike_bucket`` so the alerts builder's spike marker names the
+bucket the spike was actually written into.
 """
 
 from __future__ import annotations
@@ -227,6 +229,13 @@ async def _build_event_metrics(session: AsyncSession, ctx: DemoContext) -> None:
 
     ctx.home_series = home_series
     ctx.type_bucket_counts = type_bucket_counts
+    # Published for the alerts builder's "Injected demo spike" chart marker. The
+    # marker used to be dated ``ctx.now``, which is one hour AFTER the newest row
+    # written above (``hour_buckets`` stops before the open hour), so on a fresh
+    # demo it labelled the chart's dashed forecast point instead of the spike,
+    # and once the demo runtime appended the ``now`` hour for real it labelled an
+    # ordinary hour sitting right after the spike (tripl-0zpq.249).
+    ctx.spike_bucket = spike_bucket
 
 
 async def _build_breakdown(session: AsyncSession, ctx: DemoContext) -> None:

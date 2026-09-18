@@ -257,6 +257,19 @@ async def mute_monitor(
         rule_id=rule_id,
     )
     now = datetime.now(UTC)
+    # A naive argument is READ AS UTC rather than blowing up the compare below.
+    # The route hands this a value ``MonitorMuteRequest.normalize_datetime`` has
+    # already normalized, so this guard is for the callers that never see that
+    # schema; without it an offset-less instant raises "can't compare
+    # offset-naive and offset-aware datetimes" and the catch-all in ``main.py``
+    # turns a mute into a 500 (tripl-0zpq.168). UTC is the only reading this
+    # codebase gives a bare instant: ``is_rule_muted`` above reaches the same
+    # answer from the other side by stripping tzinfo off ``now`` so a
+    # SQLite-naive column compares as UTC wall time. Coercing before the write
+    # also means the row stores the instant the check passed on, without
+    # depending on how the driver resolves a naive value into a ``timestamptz``.
+    if muted_until.tzinfo is None:
+        muted_until = muted_until.replace(tzinfo=UTC)
     if muted_until <= now:
         raise HTTPException(status_code=422, detail="muted_until must be in the future")
     rule.muted_until = muted_until

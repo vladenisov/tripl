@@ -14,7 +14,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from html import unescape
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from tripl.alert_templates import (
@@ -22,6 +22,9 @@ from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_TELEGRAM_HTML,
     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
     AlertTemplateContext,
+    DriftLineFacts,
+    alert_scope_label,
+    build_drift_line,
     escape_alert_value,
     format_alert_bold,
     format_alert_link,
@@ -34,12 +37,13 @@ from tripl.alert_templates import (
     has_baseline,
     normalize_message_template,
     percent_delta_or_none,
+    plain_alert_number,
+    release_regression_basis,
     render_alert_template,
 )
 from tripl.alerting_matching import (
     SCOPE_METRIC,
     SCOPE_RELEASE_REGRESSION,
-    SCOPE_VARIABLE_VALUE_DRIFT,
 )
 from tripl.anomaly_context import build_alert_item_context
 from tripl.core.alert_schedule import resolve_timezone
@@ -62,6 +66,29 @@ logger = logging.getLogger(__name__)
 
 DIGEST_WINDOW_DAYS = 7
 DEAD_EVENT_DAYS = 30
+
+# How many overdue events the daily sunset alert NAMES. Its "Count:" line is the
+# true total either way, resolved by its own COUNT(*) — the same split
+# _build_plan_digest_message makes between the counters it reports and the
+# ".limit(5)" its "Top anomalies" list is drawn from.
+#
+# Capped because that message is an outbound payload on a timer: beat's
+# "check-deprecated-sunset-events" entry sends it once a day to every enabled
+# Slack and email destination, and the list only grows — nothing takes an event
+# off it but retiring the event or clearing its sunset_at, since last_seen_at is
+# monotonic (metrics.collect._bump_event_last_seen only ever moves it forward).
+# Uncapped, the size of that daily payload is bounded by nothing except how many
+# deprecated events the project has left running.
+#
+# 50 and not the digest's 5, because naming the events is the whole reason this
+# message exists beside the count. 50 and not more, because ``events.name`` is
+# String(500): at 50 lines even all-maximum-width names render under 28k
+# characters and stay inside the 40,000 Slack accepts in a "text" field. Past
+# that ceiling the POST is REJECTED rather than truncated, and
+# check_deprecated_sunset_events turns the raise into a logger.warning and a
+# "failed" tally — so the alert would stop arriving and say so nowhere its
+# reader looks.
+_SUNSET_ALERT_MAX_EVENTS = 50
 
 _AI_EXPLANATION_MAX_ITEMS = 10
 
@@ -192,80 +219,32 @@ def _resolve_metric_units(
 # expectation is not a plain baseline. See DEFAULT_ALERT_ITEMS_TEMPLATES.
 _ADOPTION_ADJUSTED_LABEL = " (adoption-adjusted)"
 
-_RELEASE_KIND_LABELS = {"missing": "disappeared", "volume_drop": "dropped"}
 
+def _drift_facts(item: AlertDeliveryItem) -> DriftLineFacts:
+    """The delivered item's half of the ``${drift_line}`` contract.
 
-def _plain_number(value: float) -> str:
-    """Stringify a number exactly as ``${expected_count}`` does, unescaped.
+    The wording itself lives in ``alert_templates.build_drift_line``, because
+    the rule simulator renders the same firing from a ``SimulatedRuleFiring``
+    and the two builders had drifted apart (tripl-0zpq.165). This adapter and
+    its twin in ``services.alerting_rendering`` are the only production
+    constructors of the facts, which is what keeps the wording from splitting
+    again: a field one side forgets is a field neither side can render.
 
-    The basis clause is escaped as a whole by its caller, so escaping here too
-    would double-escape it under MarkdownV2. The plain format is the shared
-    stringifier's pass-through branch, which is all this needs.
+    Used by both readers of the line — the rendered message and the AI-note
+    prompt — so the note cannot quote a different basis from the line it
+    annotates.
     """
-    return escape_alert_value(value, ALERT_MESSAGE_FORMAT_PLAIN)
-
-
-def _release_scope_noun(item: AlertDeliveryItem) -> str:
-    """What the regressed scope IS, so the basis sentence can name it."""
-    if item.event_id is not None:
-        return "event"
-    if item.event_type_id is not None:
-        return "event type"
-    return "scope"
-
-
-def _format_window_span(item: AlertDeliveryItem) -> str | None:
-    """``"51h"`` for the window this item was measured over, or None.
-
-    ``bucket`` is the window's end and ``window_from`` its start. Items
-    delivered before window_from existed, and every scope whose window IS its
-    bucket, get None and simply lose the clause.
-    """
-    if item.window_from is None or item.bucket is None:
-        return None
-    hours = round((item.bucket - item.window_from).total_seconds() / 3600)
-    if hours < 1:
-        return None
-    return f"{hours}h"
-
-
-def _release_regression_basis(item: AlertDeliveryItem) -> str:
-    """The body of the "release:" line: which build, over what window, vs what.
-
-    Naming the build is not enough. ``expected`` for a release regression is
-    ``total_new * share_prev`` — the PREVIOUS release's share of this scope
-    applied to the NEW release's own volume over the rollout-overlap window —
-    so it is not a count of the same thing as ``actual`` and the ``%`` beside
-    it is already ``1 - share_new/share_prev``, i.e. the share-for-share drop.
-    Printed bare, the pair reads as "the count halved", and the first reply is
-    "so what, the release only just rolled out" — an objection the
-    normalization has already priced in, because a smaller adopting cohort
-    shrinks ``total_new`` and shrinks ``expected`` with it.
-
-    So the line states that the expectation was built FROM the new release's
-    own volume. That single fact is what kills the misreading; the window is
-    corroboration. Costs ~117 UTF-16 units over the old line, well inside the
-    per-item budget that keeps a full 8-item Telegram delivery in one message.
-    """
-    kind_label = _RELEASE_KIND_LABELS.get(item.drift_type or "", "regressed")
-    version = item.drift_field or "the new release"
-    previous = item.sample_value or "the previous release"
-    span = _format_window_span(item)
-    window_clause = f" over the {span} rollout overlap" if span else ""
-    line = f"{kind_label} in {version} vs {previous}{window_clause}"
-    if not has_baseline(item.expected_count):
-        # No baseline: there is no ratio to explain and ${percent_delta_label}
-        # already says "no baseline". Adding the formula here would quote a
-        # zero as if it were an expectation. Through ``has_baseline`` so that it
-        # is the SAME question ``format_percent_delta`` answers four lines down:
-        # a signed expectation renders a real percentage there, and this sentence
-        # has to explain the ratio rather than deny there is one (tripl-0zpq.102).
-        return line
-    return (
-        f"{line}; {_plain_number(item.expected_count)} is {previous}'s share "
-        f"of this {_release_scope_noun(item)} at {version}'s own volume, so "
-        f"{format_percent_delta(item.percent_delta, item.expected_count)} "
-        f"is share-for-share"
+    return DriftLineFacts(
+        scope_type=item.scope_type,
+        drift_type=item.drift_type,
+        drift_field=item.drift_field,
+        sample_value=item.sample_value,
+        expected_count=item.expected_count,
+        percent_delta=item.percent_delta,
+        bucket=item.bucket,
+        window_from=item.window_from,
+        event_id=item.event_id,
+        event_type_id=item.event_type_id,
     )
 
 
@@ -278,14 +257,7 @@ def _build_item_template_context(
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_unit: str | None = None,
 ) -> AlertTemplateContext:
-    scope_label = {
-        "project_total": "Project total",
-        "event_type": "Event type",
-        "event": "Event",
-        "schema": "Schema drift",
-        "distribution": "Distribution drift",
-        SCOPE_RELEASE_REGRESSION: "Release regression",
-    }.get(item.scope_type, item.scope_type)
+    scope_label = alert_scope_label(item.scope_type)
     # An event's catalog entry and its charts are one page: `/events/detail/<id>`
     # redirects to `/monitoring/event/<id>`, and that view carries the field
     # values, meta fields AND the charts. So for event-scoped rows both builders
@@ -301,24 +273,11 @@ def _build_item_template_context(
         if item.monitoring_path and item.monitoring_path != item.details_path
         else ""
     )
-    if item.scope_type == SCOPE_RELEASE_REGRESSION:
-        # Release regressions reuse the drift fields: version -> drift_field,
-        # kind -> drift_type, previous release -> sample_value. Render them as a
-        # readable "release:" line via the shared ${drift_line} placeholder.
-        drift_line = f"\n  release: {_release_regression_basis(item)}"
-    elif item.scope_type == SCOPE_VARIABLE_VALUE_DRIFT:
-        # Value drift rides the shared fields: variable -> drift_field, sampled
-        # novel values -> sample_value.
-        observed_clause = f" observed {item.sample_value}" if item.sample_value else ""
-        drift_line = f"\n  value drift: ${{{item.drift_field}}}{observed_clause}"
-    else:
-        drift_parts = [
-            item.drift_type or "",
-            item.drift_field or "",
-            f"sample={item.sample_value}" if item.sample_value else "",
-        ]
-        drift_text = " ".join(part for part in drift_parts if part)
-        drift_line = f"\n  drift: {drift_text}" if drift_text else ""
+    # Release regressions and value drifts reuse the same three drift columns to
+    # say different things (version/kind/previous release, variable/observed
+    # values), so the per-scope wording lives in one shared builder that the
+    # rule simulator's preview calls too.
+    drift_line = build_drift_line(_drift_facts(item))
 
     # Explainability context — sparkline + top movers. The (sparkline,
     # top_movers) pair is format-independent and the only DB-touching part of
@@ -758,12 +717,14 @@ def split_telegram_messages(
     message: str,
     message_format: str,
     items: list[AlertDeliveryItem] | None = None,
+    summary_items: list[AlertDeliveryItem] | None = None,
     session: Session | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
     metric_units_cache: dict[str, str | None] | None = None,
     ai_explanation: str | None = None,
     max_chars: int = TELEGRAM_MESSAGE_MAX_CHARS,
     digest: bool = False,
+    part_offset: int = 0,
     project_timezone: str | None = None,
 ) -> list[tuple[str, list[AlertDeliveryItem]]]:
     """``message`` as one or more messages that each clear Telegram's ceiling.
@@ -772,13 +733,14 @@ def split_telegram_messages(
     knows exactly what has gone out if a later message fails.
 
     ``message`` is the already-rendered whole — the caller needs it anyway for
-    the payload snapshot — so the common case costs one length check and no
-    re-render at all. Only when it does not fit are the items packed greedily
-    into messages, each one measured as the reader will receive it: header,
-    items and AI note assembled and counted in Telegram's UTF-16 units. That is
-    what the reserve-based budget it replaces could only estimate — the header
-    comes from a user-editable template and the AI note from a language model,
-    so both could exceed their reserve and no items budget could see it.
+    the payload snapshot — so the common case, which is every first attempt,
+    costs one length check and no re-render at all. Only when it does not fit
+    are the items packed greedily into messages, each one measured as the reader
+    will receive it: header, items and AI note assembled and counted in
+    Telegram's UTF-16 units. That is what the reserve-based budget it replaces
+    could only estimate — the header comes from a user-editable template and the
+    AI note from a language model, so both could exceed their reserve and no
+    items budget could see it.
 
     The AI note rides on the first message only. It summarises the whole
     delivery, and repeating it under every part would cost the reader nothing
@@ -787,6 +749,24 @@ def split_telegram_messages(
     A digest's HEADER, by contrast, is repeated on every part and describes the
     whole digest on each — the reader is holding one digest, not three — with a
     "2/3" marker on the window line saying which slice the body under it is.
+    ``items`` and ``summary_items`` are how those two halves differ: ``items``
+    is the set to PACK, ``summary_items`` the whole the header DESCRIBES. They
+    are the same set on a first attempt, so ``summary_items`` may be left None;
+    a Telegram RESUME packs only the undelivered remainder and has to hand in
+    the whole delivery, or every part of the retry summarises the remainder and
+    the reader gets "9 alerts" under two earlier messages that said 24
+    (tripl-0zpq.35). Deriving it from ``items`` here, as this did, silently
+    undid the answer the caller had already worked out for the unsplit render.
+
+    ``part_offset`` is how many messages of this delivery the reader ALREADY
+    has from earlier attempts, and it continues the marker across them. Without
+    it a resumed 24-item digest numbers its remainder "1/2", "2/2" under a "1/3"
+    and "2/3" still on the reader's screen, which reads as a second digest
+    rather than the rest of one. The denominator is a running total and may
+    exceed what an earlier message named: "3/4" after "1/3" says the digest took
+    one message more than first planned, which is true, and is the honest
+    version of a count that restarts. It also means a resumed digest cannot take
+    the no-re-render shortcut above — ``message`` arrived without a marker.
 
     Nothing is ever dropped: an item too long to share a message gets one of its
     own. A SINGLE item that alone exceeds the ceiling is the one thing this
@@ -794,8 +774,9 @@ def split_telegram_messages(
     the delivery fails visibly instead of quietly losing the item.
     """
     delivery_items = delivery.items if items is None else items
-    if len(delivery_items) <= 1 or telegram_visible_length(message, message_format) <= max_chars:
-        return [(message, list(delivery_items))]
+    # What every part's HEADER describes, which on a resume is not what it
+    # lists. None means the two are the same set, which is every first attempt.
+    summarised_items = delivery_items if summary_items is None else summary_items
 
     def render_part(
         part: list[AlertDeliveryItem], *, with_ai_note: bool, part_label: str = ""
@@ -814,7 +795,7 @@ def split_telegram_messages(
             # The header summarises the whole digest on EVERY part — see
             # _build_template_context. Only the digest layout has a header that
             # makes a claim about scope, so nothing else opts in.
-            summary_items=delivery_items if digest else None,
+            summary_items=summarised_items if digest else None,
             part_label=part_label,
             digest=digest,
             # A digest carries its note INSIDE the layout, above the list, so it
@@ -827,13 +808,31 @@ def split_telegram_messages(
             text = _append_ai_explanation(text, ai_explanation, part_format)
         return text
 
+    if len(delivery_items) <= 1 or telegram_visible_length(message, message_format) <= max_chars:
+        if not (digest and part_offset):
+            return [(message, list(delivery_items))]
+        # One message is still SOME message: a resumed digest has to say which,
+        # and this one is the last, which is the fact the reader most wants
+        # after a failure. ``message`` was rendered without a marker, so it is
+        # re-rendered with one and re-MEASURED — stamping it blind is the
+        # hazard the packing reserve below exists to prevent, and this path
+        # never packed and so has no reserve. If the marker is what pushes it
+        # over, fall through and let the packer split it under a budget that
+        # does reserve room.
+        final_label = f"{part_offset + 1}/{part_offset + 1}"
+        only_part = render_part(delivery_items, with_ai_note=True, part_label=final_label)
+        if telegram_visible_length(only_part, message_format) <= max_chars:
+            return [(only_part, list(delivery_items))]
+
     # The marker names a total that does not exist until packing has finished,
     # so it cannot be rendered while packing. Instead the packer works to a
     # budget short by the widest marker this delivery could ever carry — it
-    # cannot split into more parts than it has items — and the finished parts
-    # are re-rendered with the real one. Reserving is what stops that second
-    # render pushing a part back over the ceiling it was just measured against.
-    widest_part_label = f"{len(delivery_items)}/{len(delivery_items)}"
+    # cannot split into more parts than it has items, and ``part_offset`` adds
+    # to BOTH sides of the slash — and the finished parts are re-rendered with
+    # the real one. Reserving is what stops that second render pushing a part
+    # back over the ceiling it was just measured against.
+    widest_part = part_offset + len(delivery_items)
+    widest_part_label = f"{widest_part}/{widest_part}"
     budget = max_chars - (len(_WINDOW_LABEL_SEPARATOR) + len(widest_part_label) if digest else 0)
 
     parts: list[tuple[str, list[AlertDeliveryItem]]] = []
@@ -852,14 +851,17 @@ def split_telegram_messages(
         current = candidate
         current_text = candidate_text
     parts.append((current_text, current))
-    if not digest or len(parts) == 1:
+    # A lone part carries no marker — "1/1" is noise on the overwhelming
+    # majority of digests — UNLESS the reader already holds earlier ones, where
+    # the marker is the only thing telling them this is the last.
+    if not digest or (len(parts) == 1 and not part_offset):
         return parts
     return [
         (
             render_part(
                 part_items,
                 with_ai_note=index == 0,
-                part_label=f"{index + 1}/{len(parts)}",
+                part_label=f"{part_offset + index + 1}/{part_offset + len(parts)}",
             ),
             part_items,
         )
@@ -985,9 +987,9 @@ def _build_ai_explanation(
             # re-teaches the raw-count reading the message line just removed.
             lines.append(
                 f"- [release regression] {item.scope_name}: "
-                f"{_release_regression_basis(item)}; observed "
-                f"{_plain_number(item.actual_count)} vs adoption-adjusted "
-                f"expected {_plain_number(item.expected_count)}"
+                f"{release_regression_basis(_drift_facts(item))}; observed "
+                f"{plain_alert_number(item.actual_count)} vs adoption-adjusted "
+                f"expected {plain_alert_number(item.expected_count)}"
             )
             continue
         if item.scope_type in {"schema", "distribution"}:
@@ -1238,10 +1240,48 @@ def _build_plan_digest_message(
             | (SchemaDrift.snoozed_until <= now),
         )
     ).scalar_one()
+    # Catalog metric anomalies are project-global: ``metric``-scope rows carry a
+    # NULL ``scan_config_id`` by design (models/metric_anomaly.py) and are keyed
+    # purely by ``scope_ref`` = str(metric_definition_id), so an inner join on
+    # ScanConfig drops every one of them. That is how a week of nothing but
+    # catalog-metric anomalies used to read "Metric anomalies: 0" with no Top
+    # anomalies section at all (tripl-0zpq.34). Resolve the project's metrics once
+    # here, outside both statements below, and reuse the result for the count, the
+    # top-5 filter and the top-5 labels. ``display_name`` rather than ``name``
+    # because that is what alerting already calls a metric everywhere else
+    # (worker/tasks/metrics/alert_payload._build_alert_scope_names).
+    metric_display_names = {
+        str(metric_id): display_name
+        for metric_id, display_name in session.execute(
+            select(MetricDefinition.id, MetricDefinition.display_name).where(
+                MetricDefinition.project_id == project.id
+            )
+        ).all()
+    }
+    # Project scoping for anomalies, in the shape detection_reset_service already
+    # uses (and the rule simulator reaches with a second query): the scan config
+    # when there is one, the owning MetricDefinition when there is not. A
+    # metric-scope row's ScanConfig columns are all NULL under the outer join, so
+    # the first arm can never match one and the second arm can never admit a
+    # scan-backed row. A project with no catalog metrics keeps the original single
+    # predicate rather than an empty IN, and the left join then admits exactly the
+    # rows the inner join did, because a NULL scan_config_id satisfies neither.
+    anomaly_project_scope = (
+        or_(
+            ScanConfig.project_id == project.id,
+            and_(
+                MetricAnomaly.scan_config_id.is_(None),
+                MetricAnomaly.scope_type == SCOPE_METRIC,
+                MetricAnomaly.scope_ref.in_(list(metric_display_names)),
+            ),
+        )
+        if metric_display_names
+        else ScanConfig.project_id == project.id
+    )
     metric_anomalies = session.execute(
         select(func.count(MetricAnomaly.id))
-        .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
-        .where(ScanConfig.project_id == project.id, MetricAnomaly.created_at >= window_from)
+        .outerjoin(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
+        .where(anomaly_project_scope, MetricAnomaly.created_at >= window_from)
     ).scalar_one()
     distribution_drifts = session.execute(
         select(func.count(DistributionDrift.id))
@@ -1290,15 +1330,29 @@ def _build_plan_digest_message(
 
     top_rows = session.execute(
         select(MetricAnomaly, ScanConfig.name)
-        .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
-        .where(ScanConfig.project_id == project.id, MetricAnomaly.created_at >= window_from)
+        .outerjoin(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
+        .where(anomaly_project_scope, MetricAnomaly.created_at >= window_from)
         .order_by(MetricAnomaly.bucket.desc(), func.abs(MetricAnomaly.z_score).desc())
         .limit(5)
     ).all()
     top_lines = []
     for anomaly, scan_name in top_rows:
+        # The only rows the WHERE above admits without a scan config are the
+        # catalog-metric ones, and they have no scan whose name could open the
+        # line — the series belongs to the project, not to a scan. Without a
+        # substitution the outer join's NULL would print the literal "None"
+        # followed by a bare metric uuid. "catalog" reads with the scope type
+        # that follows it ("catalog metric:Signup conversion") and keeps the
+        # column shape every other line has. The lookup cannot miss, since the
+        # same mapping is what let the row through the filter.
+        source = "catalog" if scan_name is None else scan_name
+        scope_label = (
+            metric_display_names.get(anomaly.scope_ref, anomaly.scope_ref)
+            if scan_name is None
+            else anomaly.scope_ref
+        )
         top_lines.append(
-            f"- {scan_name} {anomaly.scope_type}:{anomaly.scope_ref} "
+            f"- {source} {anomaly.scope_type}:{scope_label} "
             f"{anomaly.direction} actual={anomaly.actual_count} "
             f"expected={anomaly.expected_count:.1f} z={anomaly.z_score:.1f}"
         )
@@ -1327,28 +1381,76 @@ def _build_sunset_alert_message(
     now: datetime,
 ) -> str | None:
     """Return a plaintext alert message when deprecated events are still
-    receiving data past their sunset_at, or None when there are none."""
+    receiving data past their sunset_at, or None when there are none.
+
+    Scoped to the MAIN plan branch, for the same reason and by the same
+    resolution as the event counts in :func:`_build_plan_digest_message` above:
+    an open working branch deep-copies every event row and carries ``status``,
+    ``sunset_at`` and ``last_seen_at`` across unchanged
+    (``plan_branch_service``), so an unscoped query returns one row per branch.
+    This message is the digest's "Deprecated events still receiving data" line
+    expanded into named events — the first ``_SUNSET_ALERT_MAX_EVENTS`` of them,
+    see below — and that line is already main-scoped, so without this predicate
+    the pair disagreed about one project: the digest said 1 while the alert said
+    "Count: 2" and listed the same event twice (tripl-0zpq.31).
+
+    A project with no main branch row resolves no id, the predicate becomes
+    ``branch_id IS NULL``, and ``Event.branch_id`` is NOT NULL — so the alert
+    stays silent instead of listing every branch's copy. That is the right way
+    to fail here: the message exists to be acted on, and one that repeats each
+    event once per open branch is worse than none.
+
+    The named list is capped and ``Count:`` is not. The count is its own
+    COUNT(*) over the same predicates, so it stays the true total and stays
+    equal to the digest's counter however long the list runs; the lines under it
+    are a capped page of what that counted, because this message goes out daily
+    to real destinations and the argument for its cap is with the constant. When
+    the cap bites, the message ends in an "… and N more not shown" tail: a
+    silently shortened list reads exactly like a complete one, and the list IS
+    the work item.
+    """
+    main_branch_id = session.scalar(
+        select(PlanBranch.id).where(
+            PlanBranch.project_id == project.id,
+            PlanBranch.kind == BranchKind.main.value,
+        )
+    )
+    # Named once and used by both queries below, so the total and the lines
+    # under it cannot come to disagree about what "overdue" means: the equality
+    # the digest is held to is asserted against the COUNT(*), and the rendered
+    # lines have to be a page of exactly what that counted.
+    overdue_scope = (
+        Event.project_id == project.id,
+        Event.branch_id == main_branch_id,
+        Event.status == EventStatus.deprecated,
+        Event.sunset_at.is_not(None),
+        Event.sunset_at < now,
+        Event.last_seen_at.is_not(None),
+        Event.last_seen_at > Event.sunset_at,
+    )
+    total = session.execute(select(func.count(Event.id)).where(*overdue_scope)).scalar_one()
+
+    if not total:
+        return None
+
     overdue_events = session.execute(
         select(Event.id, Event.name, Event.sunset_at, Event.last_seen_at)
-        .where(
-            Event.project_id == project.id,
-            Event.status == EventStatus.deprecated,
-            Event.sunset_at.is_not(None),
-            Event.sunset_at < now,
-            Event.last_seen_at.is_not(None),
-            Event.last_seen_at > Event.sunset_at,
-        )
+        .where(*overdue_scope)
         .order_by(Event.name)
+        .limit(_SUNSET_ALERT_MAX_EVENTS)
     ).all()
-
-    if not overdue_events:
-        return None
 
     lines = [
         f"Deprecated events still receiving data after sunset — {project.name}",
-        f"Count: {len(overdue_events)}",
+        f"Count: {total}",
         "",
     ]
     for _eid, name, sunset_at, last_seen_at in overdue_events:
         lines.append(f"- {name} (sunset {sunset_at:%Y-%m-%d}, last seen {last_seen_at:%Y-%m-%d})")
+    not_shown = total - len(overdue_events)
+    if not_shown:
+        lines.append(
+            f"… and {not_shown} more not shown "
+            f"(this list is the first {len(overdue_events)} by name)"
+        )
     return "\n".join(lines)

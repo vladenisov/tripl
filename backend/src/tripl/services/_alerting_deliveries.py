@@ -84,6 +84,19 @@ _NEVER_ACTED = datetime.min.replace(tzinfo=UTC)
 # that carried it and the three names the card renders.
 InboxGroupRow = tuple[AlertDeliveryItem, AlertDelivery, AlertDestination, AlertRule, ScanConfig]
 
+# COLUMNS ONLY, and that is load-bearing rather than incidental.
+# ``_build_inbox_group_response`` reads ``row[1].id``/``.created_at``,
+# ``row[2].name``, ``row[3].id``/``.name`` and ``row[4].name`` beside the item's
+# own columns, and nothing in this module dereferences a RELATIONSHIP off any of
+# the five. The select carries no loader options, so a collection one of those
+# models declares ``lazy="selectin"`` joins every execution of it — and there are
+# four (the list's source rows, the silenced-orphan rescue, the single-card
+# rebuild and the per-group unwindowed fallback), each once per request.
+# ``ScanConfig.scan_jobs`` was such a collection, and being unbounded it charged
+# every inbox request the entire scan history of every config on the page
+# (tripl-0zpq.157 — the reasoning now lives on the relationship in
+# models/scan_config.py). Want more than a column? Add it to the select, or take
+# a second query; do not reach through one of these entities.
 _INBOX_GROUP_SELECT = (
     select(AlertDeliveryItem, AlertDelivery, AlertDestination, AlertRule, ScanConfig)
     .join(AlertDelivery, AlertDelivery.id == AlertDeliveryItem.delivery_id)
@@ -321,6 +334,32 @@ async def retry_delivery(
     # Fresh manual attempt: hand the reaper a clean budget so it backstops this
     # retry if the enqueue below never reaches a worker.
     delivery.dispatch_attempts = 0
+    # The row is going back to a send task, so it has to be CLAIMABLE when it
+    # gets there: ``alerts._claim_delivery`` is a compare-and-set that refuses a
+    # row whose ``claimed_at`` is newer than ``STRANDED_DELIVERY_MINUTES``, and a
+    # live lease left on this row would make the ``.delay()`` below a silent
+    # no-op — the flip to `pending` and the enqueue both visible, the API
+    # answering 200, and nothing going out for fifteen minutes.
+    #
+    # The identical clear on the reaper's failed arm
+    # (``maintenance.requeue_stranded_alert_deliveries``) is the other half of
+    # this: the two are the only failed -> pending flips in the system and they
+    # must leave the row in the same state, or which arm happened to pick a row
+    # up decides whether its next send fires.
+    #
+    # Unreachable today rather than a live bug, and worth stating which: every
+    # send path releases its own lease when the attempt ends (``alerts.py`` on
+    # both the sent and failed branches, ``alert_digest_send.py`` on all three),
+    # and the one write that marks a row `failed` WITHOUT going through a send —
+    # the reaper's exhaustion relabel — can only ever see an already-expired
+    # lease, because ``claimed_at`` is set by the same UPDATE that bumps
+    # ``updated_at`` and that arm selects on ``updated_at < now - 15min``. So
+    # this is defence in depth against a `failed` row that holds a lease for any
+    # reason at all (a worker SIGKILLed between its claim and its terminal
+    # write, a release whose commit raised, a row written before the lease
+    # existed) — not dependent on that release having run, which is exactly the
+    # reason maintenance.py gives for its own copy.
+    delivery.claimed_at = None
     # Commit as pending BEFORE enqueueing: if dispatch raises (broker down) the
     # row is already pending and requeue_stranded_alert_deliveries will pick it
     # up, mirroring how deliveries are first dispatched.

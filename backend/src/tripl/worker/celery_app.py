@@ -92,6 +92,33 @@ celery_app.conf.beat_schedule = {
         "task": "tripl.worker.tasks.alerts.send_weekly_plan_digest",
         "schedule": 7 * 24 * 60 * 60.0,
     },
+    "check-deprecated-sunset-events": {
+        "task": "tripl.worker.tasks.alerts.check_deprecated_sunset_events",
+        # Scheduled rather than deleted, which was the live alternative: the
+        # task was registered but on nobody's timer, so its output could not
+        # reach a reader. Kept because the feature is already half-shipped —
+        # the weekly digest above renders the identical counter from the
+        # identical predicate to the identical set of destinations
+        # ("- Deprecated events still receiving data: N", built by
+        # alerts_messages._build_plan_digest_message). What a count cannot do is
+        # NAME the events, and "3" once a week is not something an operator can
+        # act on. This task is that line expanded.
+        #
+        # Daily, and not tighter, because both sides of the comparison move
+        # slowly: ``sunset_at`` is a date an owner typed into the plan, and
+        # ``last_seen_at`` is refreshed by a scan, so at most once per scan
+        # interval. A sub-daily tick could only re-send an unchanged list.
+        #
+        # Daily, and not weekly, because the task holds no per-event
+        # suppression state — every run re-sends the same true count and the
+        # same capped page of names under it — so this number IS the repeat
+        # rate, and repeating is the point: data still arriving for an event
+        # the plan retired is a standing condition that should nag until
+        # someone acts. At the digest's own cadence it would also arrive in the
+        # same week as the line it exists to expand, which is a duplicate
+        # rather than a follow-up.
+        "schedule": 24 * 60 * 60.0,
+    },
     "sync-implementation-tickets": {
         "task": "tripl.worker.tasks.implementation_tickets.sync_implementation_tickets",
         # Poll every 5 minutes — implementation tickets close on human timescales

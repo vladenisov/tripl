@@ -3,12 +3,10 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
 
 from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.alert_delivery import AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestinationType
-from tripl.models.alert_rule import AlertRule
 from tripl.models.anomaly_scope_override import RATCHET_SIGMA_CAP
 from tripl.models.domain_enums import AlertInboxStatus, AnomalyDirection, MetricScopeType
 from tripl.schemas.alerting import (
@@ -223,13 +221,15 @@ async def delete_alert_rule(
     rule_id: uuid.UUID,
     current_user: EditorUserDep,
 ) -> None:
-    rule = await session.scalar(
-        select(AlertRule).where(AlertRule.id == rule_id, AlertRule.destination_id == destination_id)
-    )
-    if rule is None:
-        raise HTTPException(status_code=404, detail="Alert rule not found")
-    name = rule.name
-    await alerting_service.delete_rule(session, slug, destination_id, rule_id)
+    # The name comes back from the delete itself, exactly as it does for a
+    # destination above. Reading it here meant a SELECT in the router that knew
+    # nothing about ``slug``, and it ran BEFORE the service's project-scoped
+    # lookup: a rule id absent from a destination in somebody else's project got
+    # this route's "Alert rule not found", while a rule id present under that
+    # same foreign destination fell through to the service's "Alert destination
+    # not found". Two 404s that, read together, answered "does this rule exist?"
+    # for a project the caller cannot see (tripl-0zpq.242).
+    name = await alerting_service.delete_rule(session, slug, destination_id, rule_id)
     await audit_service.record(
         session,
         user=current_user,

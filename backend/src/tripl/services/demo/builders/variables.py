@@ -5,11 +5,13 @@ pipeline would discover), one *authored* per-event override — a
 ``VariableEventValueOverride`` documenting the allowed values for a variable in
 one event's context — and one OPEN ``VariableValueDrift``: a value observed
 outside that documented list, so the variables drift UI (``list_value_drifts``,
-the open-drift counts, the event drift badge) has a real row to show. It does
-NOT feed the firing alert rule's replay: replay candidates come from
-``MetricAnomaly`` plus the schema/distribution drift loaders, and the live
-worker path filters on ``scan_config_id`` (``None`` here). All rows are
-reachable through the variables API.
+the open-drift counts, the event drift badge) has a real row to show. It still
+does NOT feed the firing alert rule's replay, but only because both paths
+require a non-NULL ``scan_config_id`` (``None`` here): the live worker matches
+``scan_config_id == config.id`` and the replay loader
+``alerting_service._load_variable_value_drift_candidates`` — one of FIVE
+candidate sources since tripl-0zpq.158, not three — requires ``is_not(None)``.
+All rows are reachable through the variables API.
 """
 
 from __future__ import annotations
@@ -150,11 +152,19 @@ async def _build_value_drift(session: AsyncSession, ctx: DemoContext) -> None:
     Mirrors what the scan upsert would write when it observes a value outside
     the documented override list above. ``scan_config_id`` stays NULL — the
     warehouse builder (and its ScanConfig) runs after this one, and the column
-    is nullable by design (``SET NULL`` on scan deletion). That NULL also means
-    the scan worker's drift-candidate loader (which filters on its own
-    ``scan_config_id``) never picks this row up, and rule replay builds its
-    candidates from ``MetricAnomaly`` + schema/distribution drifts only — so
-    the row surfaces exclusively in the variables drift UI, never in a firing.
+    is nullable by design (``SET NULL`` on scan deletion). That NULL is the ONLY
+    thing keeping this row out of a firing. Every other predicate both loaders
+    apply admits it — open status, ``detected_at`` six hours ago, the project
+    matches, and ``product_id`` is not excluded from scans — and the demo firing
+    rule carries ``include_variable_value_drifts=True`` (``builders/alerts.py``).
+    The scan worker matches ``scan_config_id == config.id`` and a NULL never
+    equals a config id; the replay twin
+    ``alerting_service._load_variable_value_drift_candidates`` requires
+    ``scan_config_id.is_not(None)`` for exactly that reason. Rule replay HAS read
+    this family since tripl-0zpq.158 — do not relax that clause on the assumption
+    the replay is blind to it
+    (``test_batch4_replay.py::test_a_value_drift_no_scan_can_reach_stays_out_of_the_replay``
+    pins it).
     """
     session.add(
         VariableValueDrift(

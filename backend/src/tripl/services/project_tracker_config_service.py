@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Callable
 
@@ -28,11 +29,15 @@ DEFAULT_TRACKER_TYPE = "jira"
 DEFAULT_ISSUE_TYPE = "Task"
 
 # Jira scalar fields validated on update when a non-null value is supplied. The
-# validators normalize (strip trailing slash, uppercase the key, ...) and raise
-# ValueError on bad input, which we surface as HTTP 422. ``api_token`` is handled
-# separately because it is encrypted at rest and never echoed back.
+# validators normalize (uppercase the key, ...) and raise ValueError on bad
+# input, which we surface as HTTP 422.
+#
+# Two fields are deliberately absent. ``api_token`` because it is encrypted at
+# rest and never echoed back, so it needs its own arm below. ``base_url``
+# because it is the only validator here that touches the NETWORK: everything in
+# this map is pure string work, and keeping the one blocking validator out of it
+# is what makes the loop below safe to run inline. See its branch for the rest.
 _JIRA_FIELD_VALIDATORS: dict[str, Callable[[str | None], str]] = {
-    "base_url": validate_jira_base_url,
     "auth_email": validate_jira_auth_email,
     "project_key": validate_jira_project_key,
     "issue_type": validate_jira_issue_type,
@@ -139,9 +144,20 @@ async def update_project_tracker_config(
             # An explicit JSON null is not a valid value for a NOT NULL column —
             # treat it the same as omitting the field.
             continue
-        validator = _JIRA_FIELD_VALIDATORS.get(key)
-        if validator is not None:
-            value = _validate(validator, value)
+        if key == "base_url":
+            # ``validate_jira_base_url`` ends in ``reject_private_host`` ->
+            # ``socket.getaddrinfo``, a blocking resolver call. This function is
+            # ``async`` and runs on the request's event loop, so calling it
+            # inline — as it was, through the map above — held the loop, and
+            # with it every other request on this uvicorn worker, for however
+            # long the lookup took (tripl-0zpq.30). The whole validator is
+            # offloaded rather than split: unlike the destination schemas, there
+            # is no pydantic layer here that wants the syntactic half earlier.
+            value = await _validate_async(validate_jira_base_url, value)
+        else:
+            validator = _JIRA_FIELD_VALIDATORS.get(key)
+            if validator is not None:
+                value = _validate(validator, value)
         setattr(config, key, value)
 
     await session.commit()
@@ -152,5 +168,19 @@ async def update_project_tracker_config(
 def _validate(validator: Callable[[str | None], str], value: str) -> str:
     try:
         return validator(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _validate_async(validator: Callable[[str | None], str], value: str) -> str:
+    """``_validate`` for a validator that does network IO.
+
+    ``asyncio.to_thread`` keeps a blocking resolver off the request's event
+    loop. The ValueError -> 422 translation is character-for-character the one
+    above, so moving a validator between the two changes where it runs and
+    nothing a caller can observe — including the normalization it returns.
+    """
+    try:
+        return await asyncio.to_thread(validator, value)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -722,12 +722,11 @@ def test_metric_scope_cooldown_shared_across_scan_configs(
 
     Metric-scope rows are project-global. Keying AlertRuleState on each config's
     id would give each config its own cooldown clock and re-deliver the same
-    anomaly N times. The shared canonical-config state makes the cooldown global.
+    anomaly N times. A NULL scan_config_id — the project-global key — makes the cooldown global.
     """
     with sync_session_factory() as session:
         config1, _metric = _seed_spiked_metric(session)
         config2 = _add_second_config(session, config1)
-        canonical = min(config1.id, config2.id)
         _add_rule(session, config1, include_metrics=True)
 
         first = metrics_dispatch._prepare_alert_deliveries(session, config1, scan_job_id=None)
@@ -739,7 +738,7 @@ def test_metric_scope_cooldown_shared_across_scan_configs(
             ).scalars()
         )
         assert len(metric_states) == 1
-        assert metric_states[0].scan_config_id == canonical
+        assert metric_states[0].scan_config_id is None
 
         # The send step would stamp last_notified_at; simulate it so cooldown applies.
         metric_states[0].last_notified_at = datetime.now(UTC)
@@ -754,10 +753,10 @@ def test_metric_scope_cooldown_shared_across_scan_configs(
             ).scalars()
         )
         assert len(states_after) == 1
-        assert states_after[0].scan_config_id == canonical
+        assert states_after[0].scan_config_id is None
 
 
-def test_sending_stamps_a_metric_state_anchored_on_another_config(
+def test_sending_stamps_the_project_global_metric_state(
     sync_session_factory: sessionmaker[Session],
     monkeypatch,
 ) -> None:
@@ -766,8 +765,8 @@ def test_sending_stamps_a_metric_state_anchored_on_another_config(
     Its sibling simulates the stamp — "the send step would stamp
     last_notified_at; simulate it so cooldown applies" — which is exactly why
     this went unnoticed. The real path looked the state up by the DELIVERY's
-    scan_config_id, while a metric-scope state is anchored on the project's
-    canonical config, so every config but that one stamped nothing.
+    scan_config_id, while a metric-scope state stores no scan config at all, so
+    matching on the delivery's own config found nothing.
     last_notified_at stayed NULL and the re-send gate reads NULL as "never told
     them", so the cooldown was permanently elapsed for metric scopes.
     """
@@ -776,10 +775,9 @@ def test_sending_stamps_a_metric_state_anchored_on_another_config(
     with sync_session_factory() as session:
         config1, _metric = _seed_spiked_metric(session)
         config2 = _add_second_config(session, config1)
-        canonical = min(config1.id, config2.id)
-        # Deliver from whichever config is NOT the anchor — the case the old
-        # lookup could not resolve.
-        sending_config = config2 if canonical == config1.id else config1
+        # Deliver from either config: a metric-scope state is anchored on
+        # neither, so the lookup has to find it without one.
+        sending_config = config2
         _add_rule(session, config1, include_metrics=True)
 
         delivery_ids = metrics_dispatch._prepare_alert_deliveries(
@@ -789,7 +787,7 @@ def test_sending_stamps_a_metric_state_anchored_on_another_config(
         state = session.execute(
             select(AlertRuleState).where(AlertRuleState.scope_type == "metric")
         ).scalar_one()
-        assert state.scan_config_id == canonical
+        assert state.scan_config_id is None
         assert state.last_notified_at is None
         session.commit()
 

@@ -78,8 +78,11 @@ def test_a_fire_time_dst_repeats_is_ordered_in_utc_not_wall_time() -> None:
 
     assert first == utc("2026-10-25 00:30:00")
     assert second == utc("2026-10-25 01:30:00")
-    # Distinct instants, so the flusher's compare-and-set lets exactly one of
-    # them through per window rather than collapsing them or firing twice.
+    # Distinct instants, so the flusher claims a window for each: its
+    # compare-and-set is keyed on the instant and rejects only a repeat of the
+    # SAME one. It does not collapse the repeated wall time, and does not need
+    # to — the fold hour is a real extra hour, and the buffer is claimed by
+    # deletion, so the second window carries only what arrived after the first.
     assert first < second
 
 
