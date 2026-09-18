@@ -514,6 +514,34 @@ def _grouping_keys(engine: str, sql: str) -> frozenset[str]:
     return frozenset(_split_terms(match.group(1)))
 
 
+def _folded_expression(sql: str) -> str:
+    """Whatever ``_breakdown_value`` is bound to, read out of the statement."""
+    term = next(t for t in _select_terms(sql) if t.endswith(" AS _breakdown_value"))
+    return _TRAILING_ALIAS.sub("", term)
+
+
+def _grouping_groups(engine: str, sql: str) -> frozenset[str]:
+    """The distinct groups the statement forms, with re-spellings collapsed.
+
+    A dialect may require the folded expression to appear in the grouping more
+    than once under different names. BigQuery does: ZetaSQL will not match a
+    repeated expression against the grouping key an alias is bound to, and
+    answers ``SELECT list expression references column <name> which is neither
+    grouped nor aggregated`` — it refuses to analyze the statement at all, which
+    is how the ZetaSQL gate caught it after the fake-client tests passed.
+
+    Those repeats are not extra groups. Two keys that always hold the same value
+    cut the rows exactly the same way, so a key that IS the folded expression is
+    read here as ``_breakdown_value``, the name it is bound to. What comes back
+    then describes how the rows are actually divided rather than how many times
+    a dialect made us spell it — which is the property these tests are about.
+    """
+    folded = _folded_expression(sql)
+    return frozenset(
+        "_breakdown_value" if key == folded else key for key in _grouping_keys(engine, sql)
+    )
+
+
 # The raw breakdown column as a bare grouping term would be spelled exactly this.
 _RAW_BREAKDOWN_TERM = {
     "clickhouse": "`event_name`",
@@ -635,21 +663,26 @@ def test_aggregate_breakdown_never_groups_the_raw_breakdown_column(
 ) -> None:
     """Three keys, none of them the raw column, on every engine and every fold.
 
-    Red on revert: the raw column goes back into the grouping — a fourth
-    Postgres/BigQuery GROUP BY term, and a fourth non-aggregate SELECT term
+    Red on revert: the raw column goes back into the grouping — a further
+    Postgres/BigQuery GROUP BY term, and a further non-aggregate SELECT term
     under ClickHouse's ``GROUP BY ALL`` — so both assertions fail. Reverting one
     adapter fails three of these nine cases.
+
+    Read through :func:`_grouping_groups`, so a dialect that has to spell the
+    folded expression twice still reports three GROUPS. The raw column is not
+    the folded expression in any dialect, so it never collapses and the absence
+    assertion keeps its teeth.
     """
     build, values_limit = _FOLD_SHAPES[fold_shape]
     adapter, sql = build(engine)
     _call_aggregate_breakdown(adapter, values_limit)
 
-    keys = _grouping_keys(engine, sql[-1])
-    assert _RAW_BREAKDOWN_TERM[engine] not in keys, keys
+    groups = _grouping_groups(engine, sql[-1])
+    assert _RAW_BREAKDOWN_TERM[engine] not in groups, groups
     # Exactly the bucket, the folded value and the is_other flag. Asserted as a
     # count as well as an absence, so a fix that renamed the raw term instead of
     # removing it would still be caught.
-    assert len(keys) == 3, keys
+    assert len(groups) == 3, groups
 
 
 @pytest.mark.parametrize("engine", sorted(_SQL_ENGINES))
@@ -687,20 +720,73 @@ def test_aggregate_breakdown_groups_exactly_like_its_batched_sibling(engine: str
     if a later change moves the sibling, this notices instead of quietly
     letting the pair drift apart again.
 
-    Red on revert: the single-aggregate side gains the raw column as a fourth
+    Red on revert: the single-aggregate side gains the raw column as a further
     key, the batched side has no regular columns and cannot, so the sets differ.
+
+    Compared as GROUPS rather than as literal keys: the single-aggregate side
+    also projects the breakdown column's own slot, which on BigQuery forces the
+    folded expression into the grouping a second time, and the batched side has
+    no such slot. That is a difference in spelling, not in how the rows divide,
+    and the equality being asserted here is about the latter.
     """
     adapter, sql = _seeded(engine)
     _call_aggregate_breakdown(adapter, 3)
-    single = _grouping_keys(engine, sql[-1])
+    single = _grouping_groups(engine, sql[-1])
 
     sibling_adapter, sibling_sql = _seeded(engine)
     sibling_adapter.get_time_bucketed_multi_aggregate_breakdown(
         _BASE, "time", "1d", "event_name", _SPECS, _FROM, _TO, values_limit=3
     )
-    batched = _grouping_keys(engine, sibling_sql[-1])
+    batched = _grouping_groups(engine, sibling_sql[-1])
 
     assert single == batched, (single, batched)
+
+
+def test_bigquery_groups_every_non_aggregate_it_projects() -> None:
+    """ZetaSQL's rule, checked without ZetaSQL.
+
+    BigQuery refuses to analyze a statement whose SELECT list holds a
+    non-aggregate expression the GROUP BY does not also hold. It does NOT accept
+    the expression the alias of an existing grouping key is bound to — which is
+    the mistake this file's first version shipped, and which every fake-client
+    test here passed straight over, because a fake client answers any string.
+
+    So the property is pinned here in the only way a fake can: every projected
+    non-aggregate expression must appear in the GROUP BY list, either literally
+    or as the alias it is bound to. That is the analyzer's rule restated, not
+    the current code restated, which is why it would also have caught the
+    original defect.
+
+    Red on revert: drop ``group_parts.append(breakdown_expr)`` from
+    ``get_time_bucketed_aggregate_breakdown`` and the breakdown column's own
+    projected slot is a non-aggregate that nothing groups, exactly as the
+    ZetaSQL gate reported. Without this test the revert is invisible to every
+    test that runs on a laptop.
+    """
+    adapter, sql = _seeded("bigquery")
+    _call_aggregate_breakdown(adapter, 3)
+    statement = sql[-1]
+
+    match = re.search(r" GROUP BY (.*?) ORDER BY ", statement)
+    assert match is not None, statement
+    grouped = set(_split_terms(match.group(1)))
+
+    ungrouped = []
+    for term in _select_terms(statement):
+        expr = _TRAILING_ALIAS.sub("", term)
+        # _TRAILING_ALIAS does not capture, so take the alias as what it strips.
+        alias = term[len(expr) :].strip()
+        alias = alias[3:].strip() if alias.upper().startswith("AS ") else ""
+        if expr.startswith(("sum(", "count(", "avg(", "min(", "max(")):
+            continue  # an aggregate needs no grouping key
+        if expr in grouped or (alias and alias in grouped):
+            continue
+        ungrouped.append(term)
+
+    assert not ungrouped, (
+        "BigQuery will refuse to analyze this statement: these projected "
+        f"non-aggregates are not grouped: {ungrouped}\nGROUP BY {sorted(grouped)}"
+    )
 
 
 # --- the same fix, executed: the in-memory warehouse is the only one that runs --

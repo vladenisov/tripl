@@ -20,8 +20,9 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -111,9 +112,34 @@ def _pg_adapter(**overrides: object) -> PostgresAdapter:
     )
 
 
+@contextmanager
+def seeding_cursor(adapter: PostgresAdapter) -> Iterator[Any]:
+    """A cursor on the adapter's OWN connection, with its read-only pin lifted.
+
+    These fixtures seed through the adapter's connection deliberately: the rows
+    have to be written under exactly the session the adapter reads them back
+    with, which is the whole reason the hostile-timezone tests mean anything.
+    Opening a second connection here would restate ``-c timezone=UTC`` by hand,
+    and a hand-copied session setting is free to drift from the adapter's.
+
+    The adapter pins ``default_transaction_read_only=on`` so a warehouse query
+    cannot write even where the credential could. That setting is USERSET on
+    purpose — it is defence in depth, not a privilege boundary, and
+    website/docs/run/security.md says so — which is what lets a session that
+    genuinely means to write turn it off. A fixture is such a session. No
+    ``base_query`` can be: the shared SQL gate admits a single statement, so
+    there is no room for a ``SET`` in front of a ``SELECT``.
+    """
+    with adapter._conn.cursor() as cur:  # noqa: SLF001 — seed on the adapter's own session
+        cur.execute("SET default_transaction_read_only = off")
+        try:
+            yield cur
+        finally:
+            cur.execute("SET default_transaction_read_only = on")
+
+
 def _seed_postgres(adapter: PostgresAdapter) -> None:
-    conn = adapter._conn  # noqa: SLF001 — the gate seeds through the adapter's own connection
-    with conn.cursor() as cur:
+    with seeding_cursor(adapter) as cur:
         cur.execute(f"DROP TABLE IF EXISTS {TABLE}")
         cur.execute(
             f"CREATE TABLE {TABLE} ("
@@ -176,7 +202,9 @@ _ALLOWED_TIMEZONES = frozenset({"UTC", PG_HOSTILE_TZ})
 def _set_pg_role_timezone(adapter: PostgresAdapter, zone: str) -> None:
     if zone not in _ALLOWED_TIMEZONES:
         raise ValueError(f"refusing to interpolate an unknown timezone: {zone!r}")
-    with adapter._conn.cursor() as cur:  # noqa: SLF001
+    # ALTER is a write, so it needs the read-only pin lifted exactly as seeding
+    # does — see ``seeding_cursor``.
+    with seeding_cursor(adapter) as cur:
         cur.execute(f"ALTER ROLE \"{_PG_USER}\" SET timezone TO '{zone}'")
         cur.execute(f"ALTER DATABASE \"{_PG_DB}\" SET timezone TO '{zone}'")
 
@@ -360,8 +388,7 @@ class PipelineWarehouse:
 
 
 def _seed_postgres_pipeline(adapter: PostgresAdapter) -> None:
-    conn = adapter._conn  # noqa: SLF001 — seed through the adapter's own connection
-    with conn.cursor() as cur:
+    with seeding_cursor(adapter) as cur:
         cur.execute(f"DROP TABLE IF EXISTS {PIPELINE_TABLE}")
         cur.execute(
             f"CREATE TABLE {PIPELINE_TABLE} ("

@@ -50,6 +50,7 @@ from tripl.tests.conformance.conftest import (  # noqa: E402
     _PG_PASSWORD,
     _PG_PORT,
     _PG_USER,
+    seeding_cursor,
     unavailable,
 )
 
@@ -169,7 +170,7 @@ def _adapter(**overrides: object) -> PostgresAdapter:
 
 
 def _seed(adapter: PostgresAdapter) -> None:
-    with adapter._conn.cursor() as cur:  # noqa: SLF001 — seed through the adapter's own connection
+    with seeding_cursor(adapter) as cur:
         cur.execute(f"DROP TABLE IF EXISTS {TABLE}")
         cur.execute(
             f"CREATE TABLE {TABLE} ("
