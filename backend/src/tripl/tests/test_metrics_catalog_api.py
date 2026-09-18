@@ -2111,7 +2111,12 @@ class TestUpdateDefinition:
     ):
         slug = project["slug"]
         metric = await _create_sql_metric(client, slug, data_source["id"], "edit_sql")
-        # A second data source the metric can be repointed at.
+        # A second data source the metric can be repointed at. It needs a scan
+        # config in THIS project, because a metric may only bind a data source
+        # its own project already uses — otherwise an editor on one project
+        # could point warehouse SQL at another project's credential, and the
+        # beat would then run it unattended. Binding it here keeps this test
+        # about re-pointing a metric; the refusal has its own tests.
         other_ds = (
             await client.post(
                 "/api/v1/data-sources",
@@ -2124,6 +2129,16 @@ class TestUpdateDefinition:
                 },
             )
         ).json()
+        async with TestSessionLocal() as session:
+            session.add(
+                ScanConfig(
+                    project_id=uuid.UUID(project["id"]),
+                    data_source_id=uuid.UUID(other_ds["id"]),
+                    name="metrics-other-ds-binding",
+                    base_query="SELECT 1",
+                )
+            )
+            await session.commit()
 
         resp = await client.patch(
             f"{_metrics_url(slug)}/{metric['id']}",
