@@ -86,7 +86,7 @@ def _send_digest_to_destination(
     email_config: app_settings_service.EmailConfig,
     subject_title: str = DIGEST_SUBJECT_TITLE,
 ) -> None:
-    """Send one digest message, refusing egress from a demo project first.
+    """Send one digest message, refusing a demo project and a disabled destination first.
 
     ``subject_title`` is forwarded to the channel helper, which pairs it with
     the ``[project]`` prefix to form the email subject; it defaults to the
@@ -107,17 +107,38 @@ def _send_digest_to_destination(
     rather than delivering an alert, so it refuses a demo with an ``ok=False``
     explanation the operator can read instead of raising.
 
-    Unlike the send tasks the guard runs AFTER the message is built rather than
-    before: these two messages are plain DB reads over the project's own rows,
-    so there is no AI round-trip to be saved by refusing any earlier.
+    The ENABLED toggle is re-read here too, and until tripl-0zpq.39's follow-up
+    it was not checked at all: both tasks filter on ``AlertDestination.enabled``
+    in their SELECT and that was taken for the guard. It is not one. Each task
+    SELECTs every destination in the database up front and then loops, and each
+    turn of that loop builds a message out of a dozen plan, drift and anomaly
+    queries before reaching this call — so the row a send acts on was last read
+    from the database as many message builds ago as there are projects ahead of
+    it in the loop. An operator who switches a channel off at 09:00:02, while
+    the 09:00 digest is still walking the estate, is not asking to be posted to
+    at 09:00:40. :func:`alerts._assert_destination_still_enabled` is what makes
+    that a re-read of the toggle rather than a re-check of the instance the
+    SELECT loaded, which is a distinction with a difference here: the worker's
+    sessions are ``expire_on_commit=False`` and this loop commits nothing.
+
+    Unlike the send tasks BOTH guards run AFTER the message is built rather
+    than before, and neither wants moving. These two messages are plain DB
+    reads over the project's own rows, so there is no AI round-trip to be saved
+    by refusing any earlier — and for the toggle, late is not a compromise but
+    the point: what it is looking for is a switch thrown while the message was
+    being built.
     """
     # Deferred, for the cycle: ``alerts`` imports this module's two tasks at its
     # own top (they carry ``tripl.worker.tasks.alerts.*`` task names), so a
     # module-level import back into it is a hard cycle. Same workaround, for the
     # same reason, as alert_digest_send.py's.
-    from tripl.worker.tasks.alerts import _assert_egress_allowed
+    from tripl.worker.tasks.alerts import (
+        _assert_destination_still_enabled,
+        _assert_egress_allowed,
+    )
 
     _assert_egress_allowed(destination, project)
+    _assert_destination_still_enabled(destination)
     _channel_send_digest_to_destination(
         destination=destination,
         message=message,

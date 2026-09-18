@@ -79,6 +79,7 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
     # ``from ...alerts import x`` at that moment raises.
     from tripl.worker.tasks.alerts import (
         _assert_destination_enabled,
+        _assert_destination_still_enabled,
         _assert_egress_allowed,
         _claim_delivery,
         _resolve_email_context,
@@ -170,6 +171,15 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                 # between. Inside the per-member try, so a destination switched
                 # off between the flush and pickup fails its own members with a
                 # truthful reason while the rest of the batch still ships.
+                #
+                # And, like the per-delivery task's, this one is the CHEAP
+                # half: what it saves is the AI round-trip and the sparkline
+                # queries below, not the message. The send is further from its
+                # check here than anywhere else in the pipeline — EVERY member
+                # of the batch is rendered and committed before the first
+                # outbound call, so a destination with four rules waits out
+                # four renders — which is why the group loop re-reads the
+                # toggle immediately before egress.
                 _assert_destination_enabled(destination)
 
                 # Every delivery this task is handed came out of the flush, so
@@ -260,6 +270,20 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                 continue
             body = _SECTION_SEPARATOR.join(text for _delivery, text in members)
             try:
+                # The toggle as of NOW, not as of the prepare loop that cleared
+                # this member (tripl-0zpq.39). Everything between the two is
+                # work: every member of the batch rendered, its AI note built,
+                # and the whole lot committed at the line above. A re-READ,
+                # because ``session.get`` hands back the very instance the
+                # prepare loop already checked — worker sessions are
+                # ``expire_on_commit=False`` (worker/db.py), so not even that
+                # commit expires it.
+                #
+                # Inside the try, so a destination switched off mid-flush fails
+                # its own group exactly the way a refused POST would: each of
+                # its members `failed` with the toggle named in the row the
+                # Inbox shows, every other group in the batch untouched.
+                _assert_destination_still_enabled(destination)
                 if destination.type == AlertDestinationType.slack:
                     _send_slack_message(
                         _resolve_slack_webhook(destination),

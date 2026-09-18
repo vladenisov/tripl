@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from tripl import realtime
 from tripl.alert_templates import (
@@ -393,6 +393,15 @@ def _assert_destination_enabled(destination: AlertDestination) -> None:
     deciding, which is what "route no alerts here"
     (website/docs/use/alerting.md) has to mean to be worth anything.
 
+    Called where the send tasks call it — at the top, before the render — this
+    is the CHEAP half of that and NOT yet the moment of sending: the render in
+    between is an AI round-trip and a set of sparkline/top-mover warehouse
+    reads, which on a 24-item digest is where the seconds are. The moment of
+    sending is :func:`_assert_destination_still_enabled` below, which both send
+    tasks run again immediately before their outbound call and which
+    ``alerts_digest._send_digest_to_destination`` — having no render of its own
+    to protect — runs instead of this one.
+
     It raises rather than returning quietly so the Inbox carries a failed
     delivery naming the cause, instead of an alert that simply never arrived.
     Nothing resurrects that row behind the operator's back either: the reaper's
@@ -409,6 +418,42 @@ def _assert_destination_enabled(destination: AlertDestination) -> None:
             f"Alert destination {destination.name!r} is disabled: alerts are not "
             "routed here. Nothing was sent."
         )
+
+
+def _assert_destination_still_enabled(destination: AlertDestination) -> None:
+    """:func:`_assert_destination_enabled`, re-READ, for the line before an egress.
+
+    The check above is placed where a refusal is cheapest; this one is placed
+    where a refusal is TRUE. Between them sits everything the send task does
+    before it touches the network — the AI round-trip, the sparkline and
+    top-mover warehouse reads, the template render, and in the digest sender an
+    entire batch of other members rendered and committed. That is the window an
+    operator actually flips a toggle in: the alert storm they are switching the
+    channel off because of is the same storm that made the render slow.
+
+    Re-READ rather than re-checked, and that is the whole of this function.
+    Worker sessions are built ``expire_on_commit=False`` (worker/db.py) and
+    nothing between the two calls expires the row, so calling
+    :func:`_assert_destination_enabled` a second time on the same instance
+    would hand back the value the first call already saw and could never
+    disagree with it — a guard that cannot fail. ``session.refresh`` with one
+    attribute name is a primary-key SELECT of one column against a row already
+    in the identity map: one query per delivery (or per digest group), not one
+    per item, and not a second load of the destination's secrets.
+
+    A destination with no session — one a caller built or detached itself —
+    keeps the value it was loaded with rather than raising, because the only
+    honest answer available is the one already in hand.
+
+    A destination DELETED mid-flight raises ``ObjectDeletedError`` here instead
+    of the ``ValueError`` above. That is the same refusal under a different
+    name and lands in the same ``failed`` row: a row pointing at a destination
+    that no longer exists is not one to send to either.
+    """
+    session = object_session(destination)
+    if session is not None:
+        session.refresh(destination, ["enabled"])
+    _assert_destination_enabled(destination)
 
 
 def _resolve_slack_webhook(destination: AlertDestination) -> str:
@@ -689,6 +734,11 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         # operator flipped the toggle (tripl-0zpq.39). Like the guard above it
         # runs BEFORE the render, so a destination that is off costs no AI
         # round-trip and no sparkline queries either.
+        #
+        # That saving is ALL this call buys. It is not what makes "a disabled
+        # destination is not sent to" true, because the send is still an AI
+        # round-trip and a set of warehouse reads away; the re-read immediately
+        # before the branch dispatch below is.
         _assert_destination_enabled(destination)
 
         # Built once and reused across re-renders (e.g. the MarkdownV2→plain
@@ -824,6 +874,20 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         if ai_explanation or digest_ai:
             payload_snapshot["ai_explanation"] = ai_explanation or digest_ai
         delivery.payload_snapshot = payload_snapshot
+
+        # The toggle again, with the render behind us and the next statement
+        # the outbound call itself (tripl-0zpq.39). The check at the top of the
+        # task bought the AI round-trip and the sparkline queries; this one
+        # buys the window between them and the egress — the only window long
+        # enough for an operator to reach the switch, and the one the check at
+        # the top cannot see into. It costs a single-column SELECT on a row
+        # already in the session, so it is not a second query per item.
+        #
+        # The render is deliberately NOT thrown away: ``rendered_message`` and
+        # ``message_format`` are already set, so the failure arm stamps the
+        # body this delivery would have carried onto the `failed` row and the
+        # Inbox can show the operator exactly what their toggle stopped.
+        _assert_destination_still_enabled(destination)
 
         if destination.type == AlertDestinationType.slack:
             _send_slack_message(

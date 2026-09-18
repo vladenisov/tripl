@@ -145,8 +145,31 @@ class EmailSettingsUpdate(BaseModel):
         # (``update_service_overrides`` drops a None and stores an empty string),
         # and "no Default From configured" is a supported state — the one
         # Settings → Send test email reports on rather than refuses.
-        if value is None or not value.strip():
+        #
+        # A value that is only whitespace is FOLDED INTO that empty string
+        # rather than refused. It is the same intent typed differently — an
+        # operator clearing the field with a space means "not configured" — and
+        # a 422 there would refuse a state the product supports while leaving
+        # the previous Default From in place, still sending.
+        #
+        # Folding is what keeps "not configured" a single FALSY value, which is
+        # the only form its readers recognise. All three ask the question with
+        # ``not``/``or``: ``alerts._resolve_email_context`` resolves
+        # ``destination.email_from_address or email_config.smtp_from_address``
+        # and names the unset setting only when that is falsy,
+        # ``_email_test_send.send_test_email`` refuses on ``not
+        # smtp_from_address`` with the sentence about dropped reset mail, and
+        # ``api/v1/auth.py`` computes ``email_configured`` — the flag deciding
+        # whether a reset token is minted at all — the same way. A stored "   "
+        # is truthy in all three, so it is not the cleared state but a fourth
+        # one nothing handles: with no per-destination override the alert fails
+        # at send with "From: address is invalid", the probe answers "Not a
+        # usable From: address: '   '" instead of naming the setting that is
+        # unset, and the reset flow mints a token and hands SMTP a blank From:.
+        if value is None:
             return value
+        if not value.strip():
+            return ""
         return validate_sender_address(value)
 
 
