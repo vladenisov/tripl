@@ -514,6 +514,12 @@ def _grouping_keys(engine: str, sql: str) -> frozenset[str]:
     return frozenset(_split_terms(match.group(1)))
 
 
+#: A bare, optionally-backticked column reference — the ONLY expression shape
+#: ZetaSQL will match against an identical GROUP BY term. Anything computed has
+#: to be grouped by its alias instead.
+_BARE_COLUMN = re.compile(r"`[^`]+`|[A-Za-z_]\w*")
+
+
 def _folded_expression(sql: str) -> str:
     """Whatever ``_breakdown_value`` is bound to, read out of the statement."""
     term = next(t for t in _select_terms(sql) if t.endswith(" AS _breakdown_value"))
@@ -808,8 +814,17 @@ def test_bigquery_groups_every_non_aggregate_it_projects() -> None:
         alias = alias[3:].strip() if alias.upper().startswith("AS ") else ""
         if expr.startswith(("sum(", "count(", "avg(", "min(", "max(")):
             continue  # an aggregate needs no grouping key
-        if expr in grouped or (alias and alias in grouped):
-            continue
+        if alias and alias.strip("`") in {key.strip("`") for key in grouped}:
+            continue  # grouped by the alias bound to it — always accepted
+        if _BARE_COLUMN.fullmatch(expr) and expr in grouped:
+            continue  # a bare column reference matches itself in GROUP BY
+        # Anything else is NOT grouped as far as ZetaSQL is concerned — in
+        # particular a COMPUTED expression repeated verbatim in GROUP BY, which
+        # reads as grouped to the eye and is rejected by the analyzer. Measured
+        # against the emulator CI runs: the same IFNULL(CAST(...)) in both lists
+        # is refused, the alias bound to it is accepted. Accepting the repeat
+        # here is what made an earlier version of this test wave through the
+        # exact defect it was written to catch.
         ungrouped.append(term)
 
     assert not ungrouped, (
