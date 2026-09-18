@@ -78,7 +78,10 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
     # partially-initialized ``tripl.worker.tasks.alerts``, and a module-level
     # ``from ...alerts import x`` at that moment raises.
     from tripl.worker.tasks.alerts import (
+        _assert_destination_enabled,
+        _assert_destination_still_enabled,
         _assert_egress_allowed,
+        _claim_delivery,
         _resolve_email_context,
         _resolve_slack_webhook,
         _send_email_message,
@@ -118,6 +121,26 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
         if not pending:
             return {"status": "already_sent", "messages": 0, "sent": 0, "failed": 0}
 
+        # Single flight, per member, for the same reason the per-delivery task
+        # claims (tripl-0zpq.37) — and here it is not optional, because these
+        # are ordinary `pending` AlertDelivery rows: the stranded-delivery
+        # reaper re-enqueues any of them through ``send_alert_delivery`` on age
+        # alone, which would put one rule's section in the channel twice, once
+        # inside this digest and once on its own. A member some other worker is
+        # already sending is DROPPED from the batch rather than failing it:
+        # that worker owns the member's outcome, and what is left is still
+        # exactly one message per (destination, format).
+        #
+        # The same compare-and-set is also what keeps a member ALREADY RECORDED
+        # AS FAILED out of the message: `pending` above only filters out `sent`,
+        # while the claim requires `pending`, so a row the reaper's failed arm
+        # has written a cause onto is dropped here rather than re-sent and
+        # stamped `sent` over the failure the Inbox is showing for it.
+        now = datetime.now(UTC)
+        claimed = [delivery for delivery in pending if _claim_delivery(session, delivery, now=now)]
+        if not claimed:
+            return {"status": "already_claimed", "messages": 0, "sent": 0, "failed": 0}
+
         # Rendering is shared across the whole batch: both caches key on item id
         # / metric ref rather than on a delivery, so the warehouse and DB reads
         # behind sparklines and units happen once for the digest instead of once
@@ -131,7 +154,7 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
         groups: dict[tuple[uuid.UUID, str], list[tuple[AlertDelivery, str]]] = defaultdict(list)
         prepare_failures: list[tuple[AlertDelivery, Exception]] = []
 
-        for delivery in pending:
+        for delivery in claimed:
             try:
                 destination = session.get(AlertDestination, delivery.destination_id)
                 rule = session.get(AlertRule, delivery.rule_id)
@@ -140,6 +163,24 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                 if destination is None or rule is None or scan_config is None:
                     raise ValueError(f"AlertDelivery {delivery.id} is missing related objects")
                 _assert_egress_allowed(destination, project)
+                # The same hole as the per-delivery task's, and a wider window
+                # than it looks (tripl-0zpq.39): the flush selects only enabled
+                # destinations, but its members are ordinary `pending` rows that
+                # this task picks up afterwards — a queue hop later, or fifteen
+                # minutes later through the reaper — and the toggle moves in
+                # between. Inside the per-member try, so a destination switched
+                # off between the flush and pickup fails its own members with a
+                # truthful reason while the rest of the batch still ships.
+                #
+                # And, like the per-delivery task's, this one is the CHEAP
+                # half: what it saves is the AI round-trip and the sparkline
+                # queries below, not the message. The send is further from its
+                # check here than anywhere else in the pipeline — EVERY member
+                # of the batch is rendered and committed before the first
+                # outbound call, so a destination with four rules waits out
+                # four renders — which is why the group loop re-reads the
+                # toggle immediately before egress.
+                _assert_destination_enabled(destination)
 
                 # Every delivery this task is handed came out of the flush, so
                 # it is a digest by construction — but the flag is still read
@@ -204,12 +245,45 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                 logger.exception("Failed to prepare digest member %s", delivery.id)
                 prepare_failures.append((delivery, exc))
 
+        # Every prepared body is made durable BEFORE the first outbound call
+        # (tripl-0zpq.32). Nothing above this line is committed, and the send
+        # loop's failure arm below opens with ``session.rollback()`` — which is
+        # not scoped to the group that failed. It threw away the rendered
+        # snapshot of every OTHER group still waiting its turn and expired those
+        # instances, so the next group, whose message went out fine, re-read the
+        # pre-render snapshot from the database and committed `sent` over it:
+        # the Inbox showed no body for a message the reader had received, and
+        # ``_recent_alert_history`` told the model no AI note accompanied a note
+        # it had in fact written.
+        #
+        # A rendered snapshot on a still-`pending` row is the established state
+        # in this codebase rather than a new one — the Telegram path commits one
+        # mid-send after each part it lands, and ``send_alert_delivery`` stamps
+        # one onto a row it is about to mark `failed`. The failure arm's own
+        # members get the same protection for free: a rollback can now only undo
+        # back to here, so they keep the body the Inbox and Retry need.
+        session.commit()
+
         for (destination_id, message_format), members in groups.items():
             destination = session.get(AlertDestination, destination_id)
             if destination is None:  # pragma: no cover - FK guarantees it
                 continue
             body = _SECTION_SEPARATOR.join(text for _delivery, text in members)
             try:
+                # The toggle as of NOW, not as of the prepare loop that cleared
+                # this member (tripl-0zpq.39). Everything between the two is
+                # work: every member of the batch rendered, its AI note built,
+                # and the whole lot committed at the line above. A re-READ,
+                # because ``session.get`` hands back the very instance the
+                # prepare loop already checked — worker sessions are
+                # ``expire_on_commit=False`` (worker/db.py), so not even that
+                # commit expires it.
+                #
+                # Inside the try, so a destination switched off mid-flush fails
+                # its own group exactly the way a refused POST would: each of
+                # its members `failed` with the toggle named in the row the
+                # Inbox shows, every other group in the batch untouched.
+                _assert_destination_still_enabled(destination)
                 if destination.type == AlertDestinationType.slack:
                     _send_slack_message(
                         _resolve_slack_webhook(destination),
@@ -265,6 +339,10 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                         continue
                     fresh.status = AlertDeliveryStatus.failed.value
                     fresh.error_message = str(exc)
+                    # Released with the attempt: each row carries its real
+                    # cause so the Inbox Retry button reaches it, and a lease
+                    # left behind would make that retry a silent no-op.
+                    fresh.claimed_at = None
                     failed_count += 1
                 session.commit()
                 continue
@@ -278,6 +356,8 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                 delivery.status = AlertDeliveryStatus.sent.value
                 delivery.sent_at = sent_at
                 delivery.error_message = None
+                # The attempt is over for this member, so its lease goes too.
+                delivery.claimed_at = None
                 _stamp_rule_state(session, delivery)
                 sent_count += 1
             session.commit()
@@ -292,6 +372,9 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                 continue
             fresh.status = AlertDeliveryStatus.failed.value
             fresh.error_message = str(failure)
+            # Same release as the send failure above: this member never got as
+            # far as a message, and Retry has to be able to claim it.
+            fresh.claimed_at = None
             session.commit()
             failed_count += 1
 

@@ -1,31 +1,30 @@
 import uuid
-from datetime import datetime
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
 from tripl.alert_templates import percent_delta_or_none
 from tripl.alerting_validation import (
+    _validate_https_url,
     normalize_optional_secret,
     normalize_required_text,
-    validate_email_from_address,
     validate_email_recipients,
     validate_email_subject_template,
     validate_jira_api_token,
     validate_jira_auth_email,
-    validate_jira_base_url,
     validate_jira_issue_type,
     validate_jira_project_key,
     validate_linear_api_key,
     validate_linear_label_ids,
     validate_linear_state_id,
     validate_linear_team_id,
+    validate_sender_address,
     validate_slack_webhook_url,
     validate_telegram_bot_token,
     validate_telegram_chat_id,
     validate_webhook_header_name,
     validate_webhook_header_value,
-    validate_webhook_target_url,
 )
 from tripl.core.alert_schedule import parse_cron
 from tripl.models.alert_delivery import AlertDeliveryStatus
@@ -40,6 +39,7 @@ from tripl.models.domain_enums import (
     AnomalyDirection,
     MetricScopeType,
 )
+from tripl.schemas.time_guards import require_future_instant
 
 # ``note`` is the only member that does NOT change the incident's status: it
 # documents one. Saving a note used to require taking an action, so writing down
@@ -82,7 +82,16 @@ class AlertRuleFilterResponse(AlertRuleFilterPayload):
 
 
 class AlertRuleBase(BaseModel):
-    name: str | None = None
+    # Bounded to the width of ``alert_rules.name`` (String(255)), and stripped by
+    # ``normalize_name`` below the way destination names already are. Unbounded,
+    # a 300-character name passed this layer and the INSERT failed underneath it
+    # with a Postgres StringDataRightTruncation, which nothing catches but the
+    # handler of last resort in ``main.py`` — a generic 500 for a body we had
+    # already accepted (tripl-0zpq.275). SQLite ignores VARCHAR widths, so this
+    # bound is all the unit suite can see of that contract; the column is what it
+    # stands in for, and ``tests/test_batch4_services.py`` asserts the two
+    # numbers are still the same one.
+    name: str | None = Field(None, max_length=255)
     enabled: bool | None = None
     # Narrow the rule to one scan config; null (the default) means every scan in
     # the project. On update, ``exclude_unset`` distinguishes "not mentioned"
@@ -108,6 +117,30 @@ class AlertRuleBase(BaseModel):
     message_format: AlertMessageFormat | None = None
     filters: list[AlertRuleFilterPayload] | None = None
 
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        """Strip the rule name and refuse one that is only whitespace.
+
+        Declared on the base so create and PATCH cannot disagree about what a
+        name is — the arrangement destination names have had all along (see
+        ``AlertDestinationCreate.normalize_name``, which calls the same helper).
+        Until this existed a rule could be created called ``""`` while a
+        destination on the same screen could not, and ``create_rule`` copied the
+        empty string onto the row unchanged.
+
+        ``None`` is returned untouched rather than rejected, and nothing sends it
+        today: pydantic never validates an unset default, and an explicit
+        ``null`` for ``name`` is already refused by
+        ``reject_null_for_required_fields``. The arm stays because this field is
+        declared ``str | None`` while that guard is a frozenset a hundred lines
+        below — covering the whole declared type here costs one line and cannot
+        fall out of step with a set it does not own.
+        """
+        if value is None:
+            return None
+        return normalize_required_text(value, field_name="Rule name")
+
     @model_validator(mode="after")
     def validate_direction(self) -> AlertRuleBase:
         notify_on_spike = self.notify_on_spike
@@ -118,7 +151,10 @@ class AlertRuleBase(BaseModel):
 
 
 class AlertRuleCreate(AlertRuleBase):
-    name: str
+    # Re-declared only to make it required. A re-declaration does not inherit the
+    # base's ``Field``, so the bound has to be repeated here; ``normalize_name``
+    # is registered per field NAME and keeps applying.
+    name: str = Field(max_length=255)
     enabled: bool = True
     include_project_total: bool = True
     include_event_types: bool = True
@@ -144,8 +180,87 @@ class AlertRuleCreate(AlertRuleBase):
     filters: list[AlertRuleFilterPayload] = Field(default_factory=list)
 
 
+def _reject_explicit_nulls(data: Any, *, not_nullable: frozenset[str]) -> Any:
+    """Refuse a PATCH body that spells a required field as ``null``.
+
+    Every field on the update schemas below is Optional-with-None, because
+    ``model_dump(exclude_unset=True)`` is the only thing that tells the service
+    "not mentioned" from "mentioned as null" — a distinction ``scan_config_id``
+    and the template fields genuinely need. The price is that a null and a real
+    value are indistinguishable field by field, and the update services then
+    assign whatever ``exclude_unset`` handed them.
+
+    For a field backed by a NOT NULL column that assignment is a real NULL: the
+    Python-side ``default=`` on the model applies on INSERT, not on UPDATE, so
+    the write reaches the database and fails there. An IntegrityError at commit
+    has no handler but the catch-all in ``main.py``, so the caller got
+    ``Internal server error`` for a body this layer had already accepted.
+    Refusing it here costs one dict walk and the answer names the field.
+    """
+    if not isinstance(data, dict):
+        # Pydantic routes model instances and arbitrary objects through a
+        # "before" validator too; only a mapping can carry an explicit null.
+        return data
+    nulled = sorted(
+        str(key) for key, value in data.items() if value is None and str(key) in not_nullable
+    )
+    if nulled:
+        raise ValueError(
+            f"Cannot be set to null: {', '.join(nulled)}. Omit a field to leave it unchanged."
+        )
+    return data
+
+
+# The ``AlertRuleBase`` fields a PATCH must not null out: every NOT NULL column
+# on ``alert_rules``, plus ``filters``.
+#
+# The three fields deliberately ABSENT are the three nullable columns, where a
+# null is the documented way to clear something and must keep working:
+# ``scan_config_id`` (widens the rule back to the whole project),
+# ``message_template`` and ``items_template`` (restore the built-in template).
+# A blanket "reject every explicit null" breaks all three.
+#
+# ``filters`` is here for a different reason — it is a relationship, not a
+# column, and ``update_rule`` treats a null as "not mentioned", so a caller who
+# meant to clear the filters got a 200 and kept every one of them. The way to
+# clear them is ``[]``, and the 422 says so.
+#
+# ``tests/test_batch4_services.py`` re-derives the column half of this set from
+# ``AlertRule.__table__`` and fails if the two disagree, so a NOT NULL column
+# added tomorrow cannot quietly fall out of it.
+_RULE_NOT_NULLABLE_ON_UPDATE = frozenset(
+    {
+        "name",
+        "enabled",
+        "include_project_total",
+        "include_event_types",
+        "include_events",
+        "include_schema_drifts",
+        "include_distribution_drifts",
+        "include_variable_value_drifts",
+        "include_release_regressions",
+        "include_metrics",
+        "notify_on_spike",
+        "notify_on_drop",
+        "ai_explanation_enabled",
+        "min_percent_delta",
+        "min_absolute_delta",
+        "min_expected_count",
+        "cooldown_minutes",
+        "message_format",
+        "filters",
+    }
+)
+
+
 class AlertRuleUpdate(AlertRuleBase):
-    pass
+    # No docstring: a model's docstring is emitted as the schema ``description``
+    # in backend/openapi.json, and this class carries none today. The reasoning
+    # lives on ``_reject_explicit_nulls`` and on the set above instead.
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_for_required_fields(cls, data: Any) -> Any:
+        return _reject_explicit_nulls(data, not_nullable=_RULE_NOT_NULLABLE_ON_UPDATE)
 
 
 class AlertRuleResponse(BaseModel):
@@ -210,9 +325,118 @@ class AlertRuleResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# --- destination URL guards: shape here, reachability in the service ---------
+#
+# The two free-form destination URLs — a webhook's ``target_url`` and a Jira
+# ``jira_base_url`` — are checked in TWO places, and the split is deliberate.
+# Their SHAPE (present, https, no whitespace or control characters, trailing
+# slash normalized) is a property of the string and is settled here, at parse
+# time, so a malformed URL comes back as an ordinary field-level 422 naming the
+# field. WHERE THEY POINT is settled in ``_alerting_destinations``, before the
+# row is written.
+#
+# The public ``validate_webhook_target_url`` / ``validate_jira_base_url`` are
+# these same two calls with ``block_private_hosts=True``, and that flag ends in
+# ``reject_private_host`` -> ``socket.getaddrinfo``: a BLOCKING resolver call
+# with no timeout of ours. A pydantic validator runs inside FastAPI's body
+# parsing, which for an ``async def`` route happens ON THE EVENT LOOP — so
+# saving a destination whose host resolved slowly stalled the entire uvicorn
+# worker, and every unrelated request already in flight on it, for however long
+# the resolver took (tripl-0zpq.30). That is why these wrappers exist and why
+# neither of them may grow a ``block_private_hosts=True``.
+#
+# The SSRF guard is NOT weakened by the move, only relocated: it still runs on
+# every create and every update before anything is stored, off the loop via
+# ``asyncio.to_thread`` — the same offload ``_alerting_test_send`` already uses
+# for the same guard. Send time keeps its own independent re-check
+# (``alerts_channels._reject_private_target``); that one is the DNS-rebinding
+# defence and belongs exactly where it is.
+#
+# Calling the private ``_validate_https_url`` is the point rather than an
+# accident. The alternative is restating the https / emptiness / whitespace
+# rules and their exact error sentences in this file, and two spellings of one
+# rule drift apart. The field labels below are the SAME strings the public
+# wrappers pass, so which half refused a URL cannot change the sentence the
+# operator reads — ``tests/test_batch4_services.py`` compares the two messages
+# and fails if they ever diverge.
+
+
+def _validate_webhook_target_url_format(value: str | None) -> str:
+    return _validate_https_url(value, field="Webhook target_url", block_private_hosts=False)
+
+
+def _validate_jira_base_url_format(value: str | None) -> str:
+    return _validate_https_url(
+        value, field="Jira base_url", strip_trailing_slash=True, block_private_hosts=False
+    )
+
+
+def _validate_email_from_override(value: str | None) -> str | None:
+    """The destination's optional From: override — None falls back to the global.
+
+    Checked with ``validate_sender_address``, the SEND PATH's own helper, and
+    NOT with the strict ``validate_email_address`` it used to reach through
+    ``validate_email_from_address`` — a helper this change DELETED, because this
+    was its last caller. Both places that resolve
+    a From: at send time read this exact column —
+    ``alerts._resolve_email_context`` for the immediate alert and the combined
+    digest, ``alerts_channels._send_digest_to_destination`` for the weekly plan
+    digest and the sunset alert — and both of them run the result through
+    ``validate_sender_address`` and hand the ORIGINAL string to ``msg["From"]``.
+    The destination's own Test button does the same (``_alerting_test_send``
+    reads ``destination.email_from_address`` straight into ``_TestTarget``).
+
+    So ``Tripl Alerts <no-reply@example.com>`` on a destination delivers, and
+    delivers with the display name intact — the strict helper here was refusing
+    a value every consumer of the column already accepts (tripl-v422). That is
+    the inverse of tripl-0zpq.29 at the other end of the same pipe: there the
+    diagnostics were more permissive than delivery, here the SAVE was stricter
+    than delivery. Both mislead the operator about a configuration they cannot
+    otherwise inspect, and both are fixed by the columns' readers and writers
+    answering the question the same way.
+
+    The global ``EmailSettingsUpdate.smtp_from_address`` — the value this one
+    overrides — has been checked this way since tripl-0zpq.29. A value whose
+    SHAPE was accepted globally and then refused on the destination that
+    overrides it was the last asymmetry of that kind left in the pair.
+
+    An asymmetry of a different kind remains, and it is about storage rather
+    than validation: the global lives in ``app_settings.value``, a JSON
+    document, so it genuinely has no width, while this override is a
+    ``String(255)`` column. That matters here because dropping the strict helper
+    dropped a length bound with it — ``validate_email_address`` normalises
+    through ``email_validator``, which refuses an address over 254 octets, while
+    ``validate_sender_address`` parses the address out of the value and hands
+    back the WHOLE original string, display name and surrounding whitespace
+    included. Neither of those is an address, so neither was ever capped. The
+    two fields that call this helper therefore carry an explicit
+    ``max_length=255`` of their own; without it a long organisation display name
+    is accepted here and then fails in the INSERT, the 500 naming no field that
+    ``AlertRuleBase.name`` describes (tripl-0zpq.275). The bound belongs on the
+    fields and not in this function: the send paths that share
+    ``validate_sender_address`` read a column this wide or wider, or none at all.
+
+    What is still refused is a string with no @-sign in it. ``validate_email_address``
+    behind ``parseaddr`` sees to that, and it is the one thing worth catching:
+    it serialises into the header happily and comes back from the relay hours
+    later as an error naming nothing.
+
+    None and whitespace stay None, exactly as before — that is how the override
+    is CLEARED, and an empty override is the supported state that falls back to
+    ``settings.smtp_from_address``.
+    """
+    if value is None or not value.strip():
+        return None
+    return validate_sender_address(value)
+
+
 class AlertDestinationCreate(BaseModel):
     type: AlertDestinationType
-    name: str
+    # Same width as ``alert_destinations.name`` (String(255)). ``normalize_name``
+    # below has always refused a blank destination name, but nothing capped its
+    # length, so an overlong one reached the INSERT exactly the way a rule name
+    # did — see ``AlertRuleBase.name`` for the 500 that produced (tripl-0zpq.275).
+    name: str = Field(max_length=255)
     enabled: bool = True
     # Hold this destination's alerts and deliver them on a cadence instead of
     # after every metrics collection. NULL/omitted means IMMEDIATE — today's
@@ -223,14 +447,41 @@ class AlertDestinationCreate(BaseModel):
     delivery_schedule_cron: str | None = None
     webhook_url: str | None = None
     bot_token: str | None = None
-    chat_id: str | None = None
+    # ``name`` above was not the only field here written into a bounded VARCHAR
+    # with nothing measuring it. ``chat_id``, ``webhook_header_name``,
+    # ``jira_base_url`` and ``linear_label_ids`` were the rest, and each now
+    # carries its own column's width verbatim, for the reason
+    # ``AlertRuleBase.name`` gives (tripl-0zpq.275). Every pair is asserted
+    # equal to that column in ``tests/test_batch4_services.py``.
+    #
+    # Bounding the INPUT is enough even though ``validate_channel_config``
+    # rewrites all four afterwards: the validators it calls only strip, dedupe
+    # or drop a trailing slash, so what reaches the column is never longer than
+    # the string pydantic measured here.
+    #
+    # The other bounded columns are left undeclared on purpose, each already
+    # held under its width by a check of its own: ``jira_auth_email`` (255) by
+    # ``email_validator``'s 254-octet address limit — the same accident
+    # ``email_from_address`` lost in tripl-v422, still intact here because this
+    # field is an address and nothing else; ``delivery_schedule_cron`` (120) by
+    # ``parse_cron``, whose ``MAX_CRON_EXPRESSION_LENGTH`` is that same 120;
+    # ``email_subject_template`` (500) and ``jira_issue_type`` (64) by
+    # ``_validate_single_line``; ``jira_project_key`` (64) and the two Linear id
+    # fields (64) by their regexes.
+    chat_id: str | None = Field(None, max_length=255)
     target_url: str | None = None
-    webhook_header_name: str | None = None
+    webhook_header_name: str | None = Field(None, max_length=255)
     webhook_header_value: str | None = None
     email_recipients: str | None = None
-    email_from_address: str | None = None
+    # Same width as ``alert_destinations.email_from_address`` (String(255)).
+    # ``_validate_email_from_override`` checks the SHAPE of this value and
+    # returns the original string, so nothing in it caps a length: only the
+    # address part goes through ``email_validator``, and the display name an
+    # override exists to carry is not the address part. See that helper for why
+    # the bound sits on the field rather than inside it.
+    email_from_address: str | None = Field(None, max_length=255)
     email_subject_template: str | None = None
-    jira_base_url: str | None = None
+    jira_base_url: str | None = Field(None, max_length=255)
     jira_auth_email: str | None = None
     jira_api_token: str | None = None
     jira_project_key: str | None = None
@@ -238,7 +489,15 @@ class AlertDestinationCreate(BaseModel):
     linear_api_key: str | None = None
     linear_team_id: str | None = None
     linear_state_id: str | None = None
-    linear_label_ids: str | None = None
+    # Same width as ``alert_destinations.linear_label_ids`` (String(1024)), and
+    # the entry-count limit does not imply it: ``_LINEAR_LABEL_LIMIT`` is 20 and
+    # ``_LINEAR_ID_RE`` allows 64 characters each, so the longest list
+    # ``validate_linear_label_ids`` documents as legal joins to 1299 characters,
+    # 275 wider than the column it feeds. Twenty ids of the shape Linear
+    # actually issues (UUIDs) come to 739 and are untouched by this bound; a
+    # list that does overflow is now a 422 naming this field instead of an
+    # INSERT the database refuses.
+    linear_label_ids: str | None = Field(None, max_length=1024)
 
     @field_validator("delivery_schedule_cron")
     @classmethod
@@ -299,19 +558,19 @@ class AlertDestinationCreate(BaseModel):
             self.bot_token = validate_telegram_bot_token(self.bot_token)
             self.chat_id = validate_telegram_chat_id(self.chat_id)
         elif self.type == "webhook":
-            self.target_url = validate_webhook_target_url(self.target_url)
+            self.target_url = _validate_webhook_target_url_format(self.target_url)
             self.webhook_header_name = validate_webhook_header_name(self.webhook_header_name)
             self.webhook_header_value = validate_webhook_header_value(self.webhook_header_value)
             if (self.webhook_header_name is None) != (self.webhook_header_value is None):
                 raise ValueError("Webhook header name and value must be provided together")
         elif self.type == "email":
             self.email_recipients = validate_email_recipients(self.email_recipients)
-            self.email_from_address = validate_email_from_address(self.email_from_address)
+            self.email_from_address = _validate_email_from_override(self.email_from_address)
             self.email_subject_template = validate_email_subject_template(
                 self.email_subject_template
             )
         elif self.type == "jira":
-            self.jira_base_url = validate_jira_base_url(self.jira_base_url)
+            self.jira_base_url = _validate_jira_base_url_format(self.jira_base_url)
             self.jira_auth_email = validate_jira_auth_email(self.jira_auth_email)
             self.jira_api_token = validate_jira_api_token(self.jira_api_token)
             self.jira_project_key = validate_jira_project_key(self.jira_project_key)
@@ -359,8 +618,19 @@ class AlertDestinationCreate(BaseModel):
         return self
 
 
+# The ``AlertDestinationUpdate`` fields a PATCH must not null out. Much smaller
+# than the rule's set because almost everything on a destination IS a nullable
+# column or an ignore-if-None secret: only ``name`` and ``enabled`` are NOT NULL
+# on ``alert_destinations``. In particular ``delivery_schedule_cron`` stays out
+# — null there means IMMEDIATE and is how a cadence is removed — as do
+# ``linear_label_ids``, ``linear_state_id`` and the rest of the optional channel
+# config, where null clears the stored value. Same guard test as the rule set.
+_DESTINATION_NOT_NULLABLE_ON_UPDATE = frozenset({"name", "enabled"})
+
+
 class AlertDestinationUpdate(BaseModel):
-    name: str | None = None
+    # Same bound as on create: renaming a destination writes the same column.
+    name: str | None = Field(None, max_length=255)
     enabled: bool | None = None
     # Hold this destination's alerts and deliver them on a cadence instead of
     # after every metrics collection. NULL/omitted means IMMEDIATE — today's
@@ -371,14 +641,22 @@ class AlertDestinationUpdate(BaseModel):
     delivery_schedule_cron: str | None = None
     webhook_url: str | None = None
     bot_token: str | None = None
-    chat_id: str | None = None
+    # Same bounds as on create: a PATCH writes these same four columns. See the
+    # create schema for why the input is what gets measured, and for the bounded
+    # columns that are deliberately left undeclared on both.
+    chat_id: str | None = Field(None, max_length=255)
     target_url: str | None = None
-    webhook_header_name: str | None = None
+    webhook_header_name: str | None = Field(None, max_length=255)
     webhook_header_value: str | None = None
     email_recipients: str | None = None
-    email_from_address: str | None = None
+    # Same bound as on create: a From: override writes the same column, and the
+    # field validator below shares the same shape-only helper.
+    email_from_address: str | None = Field(None, max_length=255)
     email_subject_template: str | None = None
-    jira_base_url: str | None = None
+    # Bounded as on create. The ``mode="before"`` validator below runs ahead of
+    # this bound, so a value that is over-long AND not an https URL is refused
+    # for its shape; the length is what refuses one that is a URL.
+    jira_base_url: str | None = Field(None, max_length=255)
     jira_auth_email: str | None = None
     jira_api_token: str | None = None
     jira_project_key: str | None = None
@@ -386,7 +664,7 @@ class AlertDestinationUpdate(BaseModel):
     linear_api_key: str | None = None
     linear_team_id: str | None = None
     linear_state_id: str | None = None
-    linear_label_ids: str | None = None
+    linear_label_ids: str | None = Field(None, max_length=1024)
 
     @field_validator("delivery_schedule_cron")
     @classmethod
@@ -411,6 +689,12 @@ class AlertDestinationUpdate(BaseModel):
     @field_validator("name")
     @classmethod
     def normalize_name(cls, value: str | None) -> str | None:
+        # The None arm is kept on purpose, for the reason spelled out on
+        # ``AlertRuleBase.normalize_name``: nothing reaches it today (an unset
+        # default is never validated, and an explicit null is refused by
+        # ``reject_null_for_required_fields``), but the field is declared
+        # ``str | None`` and this covers that declaration instead of trusting a
+        # frozenset defined elsewhere in the file.
         if value is None:
             return None
         return normalize_required_text(value, field_name="Destination name")
@@ -444,7 +728,7 @@ class AlertDestinationUpdate(BaseModel):
         normalized = normalize_optional_secret(value)
         if normalized is None:
             return None
-        return validate_webhook_target_url(normalized)
+        return _validate_webhook_target_url_format(normalized)
 
     @field_validator("webhook_header_value", mode="before")
     @classmethod
@@ -466,7 +750,7 @@ class AlertDestinationUpdate(BaseModel):
     @field_validator("email_from_address")
     @classmethod
     def validate_from(cls, value: str | None) -> str | None:
-        return validate_email_from_address(value)
+        return _validate_email_from_override(value)
 
     @field_validator("email_subject_template")
     @classmethod
@@ -479,7 +763,7 @@ class AlertDestinationUpdate(BaseModel):
         normalized = normalize_optional_secret(value)
         if normalized is None:
             return None
-        return validate_jira_base_url(normalized)
+        return _validate_jira_base_url_format(normalized)
 
     @field_validator("jira_auth_email")
     @classmethod
@@ -534,6 +818,14 @@ class AlertDestinationUpdate(BaseModel):
     @classmethod
     def validate_linear_label_ids_update(cls, value: str | None) -> str | None:
         return validate_linear_label_ids(value)
+
+    # Runs before every field validator above, so a null is named and refused
+    # before ``update_destination`` can assign it. See ``_reject_explicit_nulls``
+    # and ``_DESTINATION_NOT_NULLABLE_ON_UPDATE`` for which fields and why.
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_for_required_fields(cls, data: Any) -> Any:
+        return _reject_explicit_nulls(data, not_nullable=_DESTINATION_NOT_NULLABLE_ON_UPDATE)
 
 
 class AlertDestinationResponse(BaseModel):
@@ -891,13 +1183,32 @@ class AlertInboxActionRequest(BaseModel):
         # write below is conditional on ``note is not None``. Without this guard
         # a ``{"action": "note"}`` body was a silent 200 that changed nothing
         # while still inserting a correlation-state row — the request looked
-        # accepted and the note was never saved. It is now the ONLY guard here;
-        # the mute guard it used to mirror went away when a null ``muted_until``
-        # became the indefinite mute (tripl-a50u).
+        # accepted and the note was never saved. The mute guard this one used to
+        # mirror — "a mute needs an end" — is still gone, because a null
+        # ``muted_until`` became the indefinite mute (tripl-a50u); the mute guard
+        # below is a different one, about the value rather than its presence.
         # An EMPTY STRING stays valid: it is the documented way to clear a note
         # (``apply_alert_inbox_action`` stores ``strip() or None``).
         if self.action == "note" and self.note is None:
             raise ValueError("note is required when action is note")
+        # A mute that ends BEFORE IT BEGINS is the other body this docstring
+        # promises to refuse and never did (tripl-0zpq.273). Nothing sweeps an
+        # expired mute or writes it back: ``_effective_inbox_status`` decides
+        # whether a mute is in force when the row is READ, so storing one that
+        # has already lapsed leaves the card open and hands the operator a 200
+        # that moved nothing on screen. ``mute_monitor`` has answered 422 to the
+        # same input since it shipped, and that is the other Mute button on this
+        # same screen — the asymmetry, not the lapse logic, is the defect.
+        #
+        # ``is not None`` is load-bearing and is NOT a null check to be tidied
+        # away: a null ``muted_until`` is the INDEFINITE mute described above,
+        # the one silence that can never lapse, so it is the last body that
+        # should be refused for having lapsed.
+        if self.action == "mute" and self.muted_until is not None:
+            # Assigned back so that the instant the service stores, and the one
+            # the route audits through ``model_dump``, is the UTC value this
+            # check passed on rather than a floating wall time.
+            self.muted_until = require_future_instant(self.muted_until, field_name="muted_until")
         return self
 
 
@@ -979,12 +1290,13 @@ class AlertInboxBulkActionRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_action(self) -> AlertInboxBulkActionRequest:
-        """Reject the two bodies this route cannot honour.
+        """Reject the three bodies this route cannot honour.
 
-        Mirrors ``AlertInboxActionRequest.validate_action`` for ``note`` — a
-        ``note`` action whose entire effect is the note, sent without one, is a
-        silent 200 that changes nothing — and adds the refusal that is specific
-        to acting on MANY incidents at once.
+        Mirrors ``AlertInboxActionRequest.validate_action`` twice — a ``note``
+        action whose entire effect is the note, sent without one, and a ``mute``
+        whose end has already passed, both of which are 200s that change
+        nothing — and adds the refusal that is specific to acting on MANY
+        incidents at once.
         """
         # Same guard, same reason as the single-incident body: the note write is
         # conditional on ``note is not None``, so a ``{"action": "note"}`` with
@@ -992,6 +1304,14 @@ class AlertInboxBulkActionRequest(BaseModel):
         # An EMPTY STRING stays valid: it is the documented way to clear a note.
         if self.action == "note" and self.note is None:
             raise ValueError("note is required when action is note")
+        # Also the same guard and the same reasons as the single-incident body —
+        # read ``AlertInboxActionRequest.validate_action`` for why an expired
+        # instant is a silence no reader can honour, and why the null arm must
+        # stay. It matters MORE here: this route exists to silence a screenful at
+        # once, so one mistyped instant is up to 200 incidents reported as muted
+        # and not one of them actually silenced (tripl-0zpq.273).
+        if self.action == "mute" and self.muted_until is not None:
+            self.muted_until = require_future_instant(self.muted_until, field_name="muted_until")
         # ``false_positive`` is refused in bulk, and this is the ONLY action that
         # is. Direction is part of the correlation key (see
         # worker/tasks/metrics/dispatch.py), so ONE scope's spike and ONE scope's
@@ -1070,12 +1390,71 @@ class SimulatedRuleFiring(BaseModel):
     drift_type: AlertDriftType | None = None
     sample_value: str | None = None
     bucket: datetime
+    # The START of the window this comparison was measured over; ``bucket`` is
+    # its end. Only release regressions have one — their window is the
+    # activation-anchored rollout overlap rather than a scan bucket — and it is
+    # what lets the PREVIEW print the same "over the 51h rollout overlap" clause
+    # the delivered message prints, out of the one shared
+    # ``alert_templates.build_drift_line``. Before tripl-0zpq.158 the replay
+    # never loaded a release regression, so the field would have had nothing to
+    # hold; the delivered twin (``AlertDeliveryItem.window_from``) has carried
+    # it since the scope shipped.
+    #
+    # Defaulted, like the four drift fields above it and unlike the always-sent
+    # nullables on the response models in this module: ``SimulatedRuleFiring``
+    # is also hand-built where there is usually no window to give —
+    # ``demo.builders.alerts._build_firings``, and the rendering tests for every
+    # family except the release regression — and requiring an explicit ``None``
+    # at all of those buys nothing. FastAPI still emits the key on every firing.
+    window_from: datetime | None = None
     direction: AnomalyDirection
     actual_count: float
     expected_count: float
     absolute_delta: float
+    # The stored SIZE of the move, held as a plain float on the object and nulled
+    # on the way out — see ``encode_percent_delta`` for why the two differ here
+    # and nowhere else.
     percent_delta: float
     rendered_item: str | None = None
+
+    @field_serializer("percent_delta")
+    def encode_percent_delta(self, value: float) -> float | None:
+        """``null``, not the stored 0.0, when there was no baseline to divide by.
+
+        This was the last surface emitting the raw placeholder.
+        ``alert_templates.percent_delta_of`` answers 0.0 where
+        ``expected_count`` is 0 because the ratio is undefined and the column it
+        normally lands in is NOT NULL, and every other outbound encoding already
+        NAMES that rather than printing it: the delivery's typed ``items[]``
+        (``AlertDeliveryItemResponse``), the inbox card
+        (``AlertInboxGroupResponse``), ``payload_snapshot`` and the webhook body
+        all route through ``percent_delta_or_none``. The replay did not, so one
+        incident answered "how big was this move" with ``null`` on the delivery
+        it produced and with ``0.0`` on the simulate response that predicted it,
+        and a consumer testing ``percent_delta > threshold`` read "no change"
+        for the loudest class of firing there is — a scope firing from nothing,
+        or resuming after an outage (tripl-0zpq.272).
+
+        A SERIALIZER, not the ``@model_validator(mode="after")`` idiom the two
+        sibling responses use, and the difference is not stylistic. Those two are
+        response-only models. This one is ALSO the DTO two non-API consumers
+        read, and both need a real float:
+        ``alerting_rendering.render_firing_item`` formats it with
+        ``f"{firing.percent_delta:.1f}"`` to fill the documented bare-number
+        ``${percent_delta}`` template variable, and
+        ``demo.builders.alerts._delivery_item`` copies it into
+        ``AlertDeliveryItem.percent_delta``, which is NOT NULL. A validator fires
+        at CONSTRUCTION, so it would hand ``None`` to both — and the renderer
+        runs inside ``simulate_rule`` itself, meaning the preview would crash for
+        precisely the zero-baseline firings this fix exists for. Nulling the
+        ENCODING leaves the attribute alone: only the JSON changes.
+
+        The ``float | None`` return annotation is load-bearing, not decoration.
+        FastAPI builds a response model's OpenAPI from pydantic's SERIALIZATION
+        schema, which takes the field's type from here; drop it and the body goes
+        ``null`` while the published contract still promises a number.
+        """
+        return percent_delta_or_none(value, self.expected_count)
 
 
 class AlertRuleSimulateResponse(BaseModel):
@@ -1104,21 +1483,34 @@ class AlertRuleSimulateResponse(BaseModel):
     min_percent_delta_saved: float
     min_expected_count_used: float
     min_expected_count_saved: float
-    # The detector's sensitivity, not a rule field — which is why this pair is
-    # the only nullable one. It gates whether an anomaly was RECORDED at all, so
-    # the replay can only apply it as a stricter re-read of the rows the detector
-    # already wrote: raising it drops recorded anomalies whose |z| no longer
-    # clears the bar, while lowering it cannot resurrect anomalies that were
-    # never scored. Drift and release-regression signals carry no z-score and are
-    # untouched by it, exactly as they bypass the rule's numeric thresholds.
+    # The detector's sensitivity, not a rule field. It gates whether an anomaly
+    # was RECORDED at all, so the replay can only apply it as a stricter re-read
+    # of the rows the detector already wrote: raising it drops recorded anomalies
+    # whose |z| no longer clears the bar, while lowering it cannot resurrect
+    # anomalies that were never scored. Drift and release-regression signals
+    # carry no z-score and are untouched by it, exactly as they bypass the rule's
+    # numeric thresholds.
     #
-    # ``sigma_threshold_saved`` is the configured threshold of the scan(s) this
-    # rule reads, and is ``None`` when they do not agree on one — a rule left on
-    # "All scans" spans scans that each carry their own, so there is no single
-    # saved value to quote. Per-scope ratchet overrides (the false-positive
-    # button) can raise the effective threshold above it for individual scopes.
+    # ``sigma_threshold_saved`` is the PROJECT's configured threshold — the
+    # ``sigma_threshold`` of its Detection settings, and ``DEFAULT_SIGMA_THRESHOLD``
+    # for a project that has never opened that screen and so has no settings row.
+    # It was quoted off ``ScanConfig.sigma_threshold`` until tripl-0zpq.160: a
+    # per-scan copy of the same number that the detector never reads and no API
+    # writes, so a tuned project was told its replay was measured against a value
+    # nothing detects with. Per-scope ratchet overrides (the false-positive
+    # button) can raise the effective threshold above this for individual scopes,
+    # so it is the project-wide base rather than a promise about every scope.
     # ``sigma_threshold_used`` is the override, or the saved value when none was
     # passed.
+    #
+    # BOTH STAY NULLABLE THOUGH THE SERVER NO LONGER SENDS NULL. The null meant
+    # "the scans this rule spans disagree, so there is no one saved value to
+    # quote", which cannot arise against a single project-wide setting. Narrowing
+    # the pair to ``float`` would re-publish a shipped response contract —
+    # ``backend/openapi.json``, ``frontend/src/types/api.gen.ts`` and every
+    # generated client holding a nullable field — to describe behaviour no caller
+    # can observe, so the wire shape is left alone and the replay dialog keeps
+    # its null arm as a defensive one.
     sigma_threshold_used: float | None
     sigma_threshold_saved: float | None
     rendered_message: str | None = None
@@ -1262,3 +1654,32 @@ class MonitorMuteRequest(BaseModel):
     # created. Making this optional to match the inbox would mute the whole
     # fleet at once. A rule's permanent lever is ``enabled``.
     muted_until: datetime
+
+    @field_validator("muted_until")
+    @classmethod
+    def normalize_datetime(cls, value: datetime) -> datetime:
+        """Read an instant sent without an offset as UTC instead of 500ing on it.
+
+        ``{"muted_until": "2026-09-11T10:00:00"}`` is a contract-legal body —
+        the published schema says ``format: date-time`` and has never demanded
+        an offset — and pydantic keeps such a value NAIVE. ``mute_monitor``
+        then compares it against ``datetime.now(UTC)``, which raises "can't
+        compare offset-naive and offset-aware datetimes"; the only handler for
+        that is the catch-all in ``main.py``, so a client that omitted the
+        offset got a 500 instead of a mute or the 422 about a past instant
+        (tripl-0zpq.168). The browser is not affected — it sends aware ISO
+        strings — so this is an API/agent-client defect only.
+
+        Coercion rather than ``AwareDatetime``: rejecting the naive value would
+        turn today's 500 into a 422 and break every client that omits the
+        offset, while this keeps every currently-accepted body accepted and
+        leaves the past-instant 422 as the single refusal on this route. It
+        also normalizes what the route audits (``data.model_dump(mode="json")``
+        on ``mute_monitor``), which used to record a floating wall time that no
+        reader could place. Same rule and same name as
+        ``ScanMetricsReplayRequest.normalize_datetime`` — one idiom for this,
+        not a second one.
+        """
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)

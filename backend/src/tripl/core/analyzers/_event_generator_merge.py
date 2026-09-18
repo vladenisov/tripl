@@ -21,7 +21,7 @@ from tripl.core.analyzers._event_identity import (
     insert_event_claiming_identity,
     scan_identity_winner_order,
 )
-from tripl.models.alert_delivery_item import AlertDeliveryItem
+from tripl.models.alert_delivery_item import AlertDeliveryItem, trim_scope_name
 from tripl.models.event import Event
 from tripl.models.event import EventStatus as _ES
 from tripl.models.event import event_status_rank as _rank
@@ -519,7 +519,15 @@ def _merge_event_into_group(
     session.execute(
         update(AlertDeliveryItem)
         .where(AlertDeliveryItem.event_id == source.id)
-        .values(event_id=target.id, scope_ref=str(target.id), scope_name=target.name)
+        # ``scope_name`` is String(255) and ``Event.name`` is String(500), so
+        # merging into a long-named survivor used to fail this UPDATE on
+        # Postgres — and it runs inside ``run_scan``, whose handler marks the
+        # whole ScanJob failed (tripl-0zpq.253).
+        .values(
+            event_id=target.id,
+            scope_ref=str(target.id),
+            scope_name=trim_scope_name(target.name),
+        )
     )
     session.delete(source)
     session.flush()

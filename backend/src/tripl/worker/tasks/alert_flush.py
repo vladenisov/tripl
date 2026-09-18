@@ -24,10 +24,29 @@ a commit removes both. The window itself is claimed by a compare-and-set on
 ``last_flushed_at``, so a second tick — or a second worker — computing the same
 fire instant gets ``rowcount == 0`` and does nothing.
 
-**Everything up to the moment of sending.** The digest carries every scope that
-had committed at the instant of the flush's snapshot, each with the numbers
-from the most recent collection that committed by then, because the buffer is
-an upsert keyed on the scope.
+That last one is a claim about a ROW. The SCOPE-level version of it needs one
+more thing, because a scope can also be delivered by the IMMEDIATE path: where
+``AlertRuleState.last_notified_at`` is NULL, dispatch's re-send gate fires on
+the NULL regardless of cooldown, so that scope would arrive from both paths at
+once. Clearing a destination's cadence therefore SPLITS its buffer, in the
+transaction that clears the column
+(``services._alerting_destinations.update_destination``): a row whose scope
+carries that NULL is discarded there and the immediate path delivers it, while a
+row whose scope a digest has already STAMPED is left for the drain arm below —
+for that one the gate needs a strictly newer bucket AND an elapsed cooldown, so
+the immediate path would deliver nothing and discarding it would destroy an
+incident undelivered (tripl-0zpq.38).
+
+**Everything up to the moment of sending.** The digest carries every INCIDENT
+that had committed at the instant of the flush's snapshot, each with the
+numbers from the most recent collection that committed by then, because the
+buffer is an upsert keyed on the scope AND its direction — the five components
+``_correlation_group_id`` hashes. A scope that dropped and later spiked inside
+one window is two incidents and ships two lines; a scope that fired once and
+went quiet still ships its line, because nothing prunes a buffered row before
+its digest. "Up to the moment of sending" is a promise about the NUMBERS being
+current, not that the roster is a snapshot of what is broken right now
+(tripl-0zpq.108).
 
 The advisory lock is a coarse guard against overlapping runs, deliberately NOT
 the correctness argument: it is a no-op off Postgres, so the compare-and-set
@@ -74,8 +93,10 @@ _ALERT_FLUSH_ADVISORY_LOCK_KEY = 4_021_968_019
 # more — the cron may never fire again (``0 0 30 2 *``), or the destination may
 # have been left disabled. Dropping it is safe: a scope that is still firing
 # re-buffers within one collection, so the only thing lost is a measurement
-# nobody can act on. Disabling a destination clears its buffer outright
-# (``alerting_service``), so this is the backstop, not the main path.
+# nobody can act on. Disabling a destination clears its buffer outright, and
+# switching it back to "Immediately" clears the part of it the immediate path
+# re-delivers (``alerting_service``), so this is the backstop, not the main
+# path.
 PENDING_ITEM_MAX_AGE = timedelta(days=14)
 
 
@@ -174,35 +195,114 @@ def _build_digest(
     configs = {
         config.id: config
         for config in session.execute(
-            select(ScanConfig).where(ScanConfig.id.in_({row.scan_config_id for row in claimed}))
+            select(ScanConfig).where(
+                ScanConfig.id.in_(
+                    # A ``metric`` scope stores NULL, and NULL is not an id to
+                    # resolve — including it would only widen the IN list with a
+                    # value that can never match.
+                    {row.scan_config_id for row in claimed if row.scan_config_id is not None}
+                )
+            )
         ).scalars()
     }
+
+    # A ``metric`` scope is project-global and carries no scan config of its own
+    # (tripl-0zpq.28). The DELIVERY it produces still needs one:
+    # ``AlertDelivery.scan_config_id`` is NOT NULL, the inbox INNER JOINs
+    # ScanConfig on it, and the payload snapshot renders its name. So one is
+    # resolved here, deterministically — oldest, id as tie-break — so that the
+    # digest's scan name does not change under the reader between windows.
+    #
+    # It KEYS nothing, and identity for these rows is the NULL itself: the
+    # handle ``dispatch._correlation_group_id`` hashes goes through
+    # ``_PROJECT_GLOBAL_PARTITION``, and ``_alerting_deliveries`` normalises this
+    # attributed config back to NULL before keying a false-positive override.
+    # This is attribution of a message that really was sent, the same
+    # distinction ``AlertPendingItem.scan_config_id`` draws.
+    #
+    # It is NOT inert, though, and a reader must not take "attribution" for
+    # "decoration": the FK is ``ondelete="CASCADE"``, so the pick also decides
+    # WHOSE deletion destroys this delivery and every ``AlertDeliveryItem`` under
+    # it. Every project-global digest resolves to the same config, so where the
+    # incident has no other delivery — no immediate send under the firing config,
+    # no earlier pick — deleting that one scan takes every row carrying its
+    # ``correlation_group_id``, while its ``AlertCorrelationState`` (project FK
+    # only, never pruned) survives. An indefinite mute then outlives the only UI
+    # that could lift it: the list builds cards from items, the silenced-orphan
+    # rescue (tripl-zfr3) needs at least one delivery row to render one, and
+    # every inbox action re-checks the same item join and 404s without it.
+    #
+    # No pick avoids this — any config can be deleted, so there is no safe one to
+    # prefer — which is why the choice stays the deterministic oldest above.
+    # Releasing a state whose rows are gone is the inbox's job, not this
+    # attribution's.
+    #
+    # It is also the one place this change could LOSE DATA. Without it the
+    # project-global group falls through the ``config is None`` guard below and
+    # is skipped by every digest — while still being deleted as claimed at the
+    # end of this function. The alert would be destroyed, undelivered and
+    # unrecoverable, within a minute of the new worker booting.
+    project_global_config = None
+    if any(row.scan_config_id is None for row in claimed):
+        project_global_config = (
+            session.execute(
+                select(ScanConfig)
+                .where(ScanConfig.project_id == destination.project_id)
+                .order_by(ScanConfig.created_at, ScanConfig.id)
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
 
     # One delivery per (rule, scan config), exactly as the immediate path
     # produces — which is what keeps the per-rule message/items templates
     # meaningful. What changes is WHEN: they all go out together, on the
     # cadence, instead of trickling out after each collection.
-    grouped: dict[tuple[uuid.UUID, uuid.UUID], list[AlertPendingItem]] = defaultdict(list)
+    #
+    # A NULL config is a group in its own right: the project-global ``metric``
+    # scopes, which is ONE group per rule however many scans observed them —
+    # the whole point of keying them on NULL.
+    grouped: dict[tuple[uuid.UUID, uuid.UUID | None], list[AlertPendingItem]] = defaultdict(list)
     for row in claimed:
         grouped[(row.rule_id, row.scan_config_id)].append(row)
 
     delivery_ids: list[uuid.UUID] = []
     for (rule_id, scan_config_id), rows in grouped.items():
         rule = rules.get(rule_id)
-        config = configs.get(scan_config_id)
+        config = project_global_config if scan_config_id is None else configs.get(scan_config_id)
         if rule is None or config is None:
-            # The rule or scan was deleted while its alerts waited. The rows are
-            # still claimed and deleted below, so this cannot loop.
+            # Either the rule or the scan was deleted while these alerts waited,
+            # or this is the project-global metric group in a project with no
+            # scan config left at all to render it against. The rows are still
+            # claimed and deleted below, so this cannot loop.
             continue
         # Re-checked at flush, not only at buffer time: an operator who
         # disables or mutes a monitor during the hold window expects the digest
         # to honour that, and on a daily cadence that window is a whole day.
+        #
+        # Skipping here is a DROP, not a deferral: these rows are already in
+        # ``claimed``, so the delete at the end of this function takes them with
+        # the rest and a mute silences what it caught instead of releasing it in
+        # the first digest after the mute lapses.
+        #
+        # ``dispatch._prepare_alert_deliveries`` holds the immediate path's twin
+        # of the mute check; between them they are the worker's only readers of
+        # ``AlertRule.muted_until``.
         if not rule.enabled:
             continue
         muted_until = _as_utc(rule.muted_until)
         if muted_until is not None and muted_until > now:
             continue
 
+        # Filtered on the id the buffered ROW carries, never on one recomputed
+        # here. Since tripl-0zpq.27 that is also the id the immediate path
+        # computes for the same incident — both hash the partition the row
+        # stores — so a decision taken in the Inbox while a digest is being held
+        # silences it here, and a decision taken on a digest silences the
+        # immediate path too. For a ``metric`` scope on a multi-scan project the
+        # two used to disagree, which made a mute a coin-flip on which scan
+        # collected next.
         live = [row for row in rows if row.correlation_group_id not in suppressed]
         if not live:
             continue
@@ -297,11 +397,39 @@ def flush_due_alert_digests() -> dict[str, int]:
         swept = _sweep_aged_buffer(session, now=now)
         session.commit()
 
-        # DRAIN. A destination switched back to "immediate" still holds
-        # whatever accumulated under its old cadence, and the scheduled loop
-        # below will never look at it again — without this the alerts would sit
-        # until the 14-day sweep quietly dropped them. Ship them on the next
-        # tick instead, which is what "immediate" now means for that channel.
+        # DRAIN. A destination with no cadence has no window to wait for, and
+        # the scheduled loop below only looks at destinations that HAVE one, so
+        # anything buffered against this one would sit until the 14-day sweep
+        # quietly dropped it. Ship it on the next tick instead.
+        #
+        # This arm is not the handoff. Switching a destination back to
+        # "Immediately" SPLITS its buffer in the transaction that clears the
+        # column (``services._alerting_destinations.update_destination``): a row
+        # whose scope has never been notified is discarded there, because the
+        # IMMEDIATE path fires on that NULL ``AlertRuleState.last_notified_at``
+        # regardless of cooldown and would otherwise deliver the same scope this
+        # arm just did (tripl-0zpq.38).
+        #
+        # What the split leaves is ours to deliver, because nothing else will:
+        #
+        # * the rows it KEEPS — a scope a digest already reported carries a
+        #   stamp, and dispatch's re-send gate then needs a strictly newer
+        #   bucket AND an elapsed cooldown (1440 minutes by default), neither of
+        #   which holds at the moment of the switch. Those incidents arrive
+        #   HERE, once: the gate that blocks the immediate path for them is the
+        #   same column the split reads to leave them behind;
+        # * a ``collect_metrics`` that read the cadence BEFORE the switch and
+        #   committed its buffer rows after it;
+        # * rows left by an older worker or a hand-edit that never went through
+        #   the service.
+        #
+        # It deliberately does NOT filter on ``last_notified_at``. That
+        # predicate reads as "someone has already been told about this scope",
+        # but a state row carries no direction while a buffered row does, so it
+        # would destroy a buffered DROP the moment an unrelated SPIKE on the
+        # same scope was sent — the undeliverable-sibling trap
+        # ``dispatch._buffer_pending_items`` argues in full, and a stamped
+        # scope is now exactly what the split hands this arm.
         draining = (
             session.execute(
                 select(AlertDestination)
@@ -378,9 +506,21 @@ def flush_due_alert_digests() -> dict[str, int]:
                 continue
 
             # (A) Claim the WINDOW. The only guard against a second tick or a
-            # second worker shipping this same digest. Storing the fire instant
-            # rather than ``now`` is what makes a repeated DST wall-clock time
-            # recompute the same value and lose here instead of sending twice.
+            # second worker shipping this same digest: both recompute the same
+            # ``fire_at`` for the window they are in, so exactly one of them can
+            # move the watermark past it and the loser gets ``rowcount == 0``.
+            # Storing the fire instant rather than ``now`` is what makes that
+            # work — ``now`` is different on every tick, so the predicate would
+            # pass every time and reject nothing.
+            #
+            # What it does NOT do is collapse a repeated DST wall-clock time,
+            # and it is not trying to. On the autumn fold 02:30 happens twice
+            # and resolves to two instants an hour apart (``_utc_instants`` in
+            # ``core/alert_schedule``), so both pass this predicate and that day
+            # gets two windows — one per real hour, which is the cadence
+            # working rather than a double send. Nothing is delivered twice
+            # either way: the buffer is claimed by deletion in (B), so the
+            # second window carries only what arrived after the first.
             claimed_window = int(
                 getattr(
                     session.execute(

@@ -97,11 +97,19 @@ pre-existing projects are `UTC`). The zone is honoured across daylight-saving
 changes: "daily at 09:00" stays 09:00 local as the UTC offset shifts.
 
 **What "collected" means, exactly.** While a destination is on a cadence, each
-scope that matches a rule occupies **one line**, refreshed by every collection
-until the moment the digest is sent. A scope that has been broken all day is
-one line carrying its *latest* numbers, not twenty-four lines carrying its
-first. Nothing is dropped and nothing is sent twice: an alert that arrives
-while a digest is being assembled simply lands in the next one.
+scope that matches a rule occupies **one line per direction**, refreshed by
+every collection until the moment the digest is sent. A scope that has been
+dropping all day is one line carrying its *latest* numbers, not twenty-four
+lines carrying its first. A scope that **dropped in the morning and spiked in
+the afternoon is two lines**, one in each of the digest's two groups — two real
+movements are two incidents, and you can acknowledge them separately. Nothing is
+dropped and nothing is sent twice: an alert that arrives while a digest is being
+assembled simply lands in the next one.
+
+So a digest is every incident that fired inside the window, each carrying its
+own last reading — not a snapshot of what is still broken at the moment it goes
+out. A scope that fired at 03:00 and recovered is still in the morning's digest,
+showing the 03:00 numbers.
 
 An empty window sends nothing at all — a quiet day is silent, not a message
 saying there is nothing to report.
@@ -172,11 +180,23 @@ produce a *new* reading to be re-reported, so a digest never repeats a figure
 nothing has updated.
 :::
 
-Changing the cadence, or disabling the destination, starts the clock fresh —
-switching to "daily at 09:00" in the afternoon delivers tomorrow at 09:00, and
-never dumps a backlog the moment you save. Disabling a destination discards
-what it was holding, the same way it already clears the rest of its alerting
-state.
+Changing the cadence starts the clock fresh — switching to "daily at 09:00" in
+the afternoon delivers tomorrow at 09:00, and never dumps a backlog the moment
+you save. What was already held is carried into the new schedule rather than
+lost, and goes out in its first window.
+
+**Switching back to "Immediately" is the one case that does not carry it over.**
+The hold is over, so what was being held is discarded, and those scopes are
+reported again from the next collection instead — with their *current* numbers,
+which is what "Immediately" means. Nothing arrives the instant you save, and
+nothing arrives twice. A scope that fell quiet while it was held is simply not
+reported at all: the only thing lost is a measurement nobody can act on, and a
+scope that is still firing is back within one collection. Anything the last
+digest already reported stays quiet until its cooldown lapses, so saving the
+change is not a re-announcement of everything the destination knows about.
+
+Disabling a destination also starts the clock fresh and discards what it was
+holding, the same way it already clears the rest of its alerting state.
 
 Muting or acknowledging an incident during the window still works: the
 [Inbox](#the-inbox) keeps tracking it while it waits, and a monitor you mute
@@ -385,9 +405,24 @@ received it — a duplicate is preferable to believing an alert was delivered wh
 it was not.
 :::
 
-Enabled **Slack** and **Email** destinations also receive the scheduled weekly
-plan digest. The digest is destination-level and independent of routing rules;
-disable the destination if it should receive neither alerts nor the digest.
+Enabled **Slack** and **Email** destinations on a real project also receive two
+scheduled messages that no rule controls: the **weekly plan digest**, and a
+**daily notice naming deprecated events that are still receiving data** past the
+sunset date the plan gave them. A demo project's destinations receive neither,
+because a demo project is zero-egress — the worker leaves it out for the same
+reason the API refuses it a real destination.
+
+The sunset notice is the digest's "deprecated events still receiving data"
+count expanded into named events, each with its sunset date and the day it was
+last seen. Both read the **main** plan branch only, so the count and the list
+always agree, and an open working branch never makes an event appear twice. The
+notice keeps no memory of what it has already said: the same list arrives every
+day until someone retires the event or stops the data reaching it, which is the
+point — data still flowing into an event the plan retired is a standing
+condition, not a moment. A project with nothing overdue is sent nothing.
+
+Both messages are destination-level and independent of routing rules; disable
+the destination if it should receive neither alerts nor either of them.
 
 ## Rules — what fires an alert
 
@@ -481,10 +516,13 @@ so it no longer counts towards readiness either. A project whose only surviving
 value drift sits on excluded variables reads as a scope that cannot fire.
 
 **Distribution drift** needs a scan that names the columns to watch (**Scan
-settings → Metric breakdowns and drift → Distribution drift**), *or* drift
-already collected in this project. Either one is enough — candidates are built
-from the drift rows, so a project that has collected drift keeps the scope live
-even if the scan's field list is later emptied.
+settings → Metric breakdowns and drift → Distribution drift**), *or* a
+**significant** drift already collected in this project. Either one is enough —
+candidates are built from the drift rows, and only a significant one ever
+becomes a candidate, so a project that has collected a significant drift keeps
+the scope live even if the scan's field list is later emptied. A history of
+stable or minor scores does not count on its own: nothing can turn those rows
+into an alert.
 
 When neither source exists, the rule editor and the monitor detail say so
 inline, beside the box you just ticked:
@@ -620,7 +658,12 @@ snooze or dismiss the drift from there.
 
 **Cooldown** suppresses repeats. Default **1440 minutes (24h)**, tracked
 separately per *(rule, scan, scope)* and measured from the last message that was
-actually delivered. It applies to destinations that deliver **immediately**; on
+actually delivered. A **catalog metric** is the exception, because it is not a
+scan's series in the first place: it is measured once for the whole project, so
+it gets **one clock per *(rule, scope)*** that every scan shares. Tell someone
+about it once and it stays quiet for the cooldown however many scans the project
+runs, rather than once per scan. It applies to destinations that deliver
+**immediately**; on
 a destination with a [delivery schedule](#delivery-schedule) the cadence is the
 rate limit instead. A rule fires when the anomaly first opens, when it re-opens
 after recovering, or when a newer anomaly bucket appears — in every case only
@@ -655,18 +698,40 @@ Each comes back as a `*_used` / `*_saved` pair (`min_percent_delta_used`,
 `min_percent_delta_saved`, and so on), so the result can show *tried* beside
 *stored* without a second request. Omit an override and `used` equals `saved`.
 
+**Every scope a rule can fire on is replayed**, the opt-in ones included: volume
+anomalies, catalog metrics, schema drift, distribution drift, **variable-value
+drift** and **release regressions**. If you had switched those last two on and a
+replay kept coming back empty for them, that was the replay and not your rule —
+those two scopes were not being read at all, so a rule that pages on them daily
+replayed as perfectly quiet. They now count everywhere the other scopes do: in
+the anomalies considered, in the firings, in the noisy verdict, and in the
+previewed message.
+
+**A release regression makes the count a floor rather than an estimate.** Tripl
+keeps one regression per scope and release — the current verdict, not a record of
+every collection that saw it — so a replay can only place a standing regression
+once, at the window it was measured over. Live, the same regression is re-sent
+once per cooldown for as long as the release stays behind. Read a
+release-regression row in the firing table as *at least once*: it is the one
+scope where replay under-counts instead of predicting, and a rule that looks
+borderline on regressions alone will be louder than the number says.
+
 `sigma_threshold_override` is the odd one out, because sigma is not a rule
-control at all: it belongs to the scan, and it decides whether an anomaly was
-**recorded**. Replay reads anomalies that already exist, so a **higher** value
-re-reads them and drops the ones whose `|z|` no longer clears the bar — those
-disappear from `anomalies_considered` too, not just from the firings, because in
-the world you are asking about they were never written. A **lower** value cannot
-bring anything back: rows below the scan's own threshold were never stored.
-Drift and release-regression signals carry no z-score and are untouched by it,
-exactly as they bypass the rule thresholds. `sigma_threshold_saved` is the scan's
-configured value, and is `null` for a rule left on **All scans** when the
-project's scans do not agree on one — each carries its own, so there is no single
-saved number to quote.
+control at all: it is the **detector's** sensitivity — one value for the whole
+project, under **Settings → Monitoring → Detection settings** — and it decides
+whether an anomaly was **recorded**. Replay reads anomalies that already exist,
+so a **higher** value re-reads them and drops the ones whose `|z|` no longer
+clears the bar — those disappear from `anomalies_considered` too, not just from
+the firings, because in the world you are asking about they were never written. A
+**lower** value cannot bring anything back: rows below the project's threshold
+were never stored. Drift and release-regression signals carry no z-score and are
+untouched by it, exactly as they bypass the rule thresholds.
+`sigma_threshold_saved` is that Detection-settings value — the same number for
+every rule in the project, whether the rule is bound to one scan or left on **All
+scans** — and a project that has never opened that screen is quoted the **4.0**
+it would start with. A scope that a **false positive** has tightened is detected
+against a stricter threshold than this one; the replay quotes the project-wide
+base, which is the only figure a single field can honestly carry.
 
 ### Example
 
@@ -783,7 +848,10 @@ does not repeat them); a plain message channel can, in the rare case where the
 receiver accepted a send whose response then timed out, deliver twice — the
 trade the pipeline prefers over a silently lost alert. A background reaper
 requeues deliveries that get stuck (roughly every 5 minutes, up to a few
-attempts). The
+attempts); a delivery has to have sat unsent for fifteen minutes before it
+qualifies, which is exactly how long a send keeps its hold on the row — so the
+requeued attempt takes the delivery over rather than running beside one that is
+still going. The
 same reaper also retries a delivery that **failed on a transient network
 error** — destination unreachable, connection refused, a timeout — a few
 times, minutes apart, within that same attempt budget (only failures from the
@@ -797,6 +865,13 @@ means silence. Every other failure — bad credentials, a rejected payload — i
 never retried automatically either: fix the cause and press **Retry** in the
 UI, which also resets the attempt budget, so a delivery you retry by hand
 starts with a fresh set of attempts.
+
+**The toggle is read when the message goes out, not when the alert was
+decided.** A delivery created while a destination was enabled and sent after you
+switched it off is marked **failed**, naming the destination, rather than
+delivered — nothing is routed to a channel you have turned off, and nothing is
+quietly dropped either. Switch the destination back on and press **Retry** if you
+still want it.
 
 A Telegram delivery carrying more than **8 matched items** is split into several
 deliveries, because Telegram rejects a message over 4,096 characters outright.
@@ -886,7 +961,8 @@ the *current* latest release, with the comparability verdict; see
 ### The Inbox — one row per incident {#the-inbox}
 
 The **Inbox** is one row per **incident** — a rule firing in one direction on one
-scope of a scan — over the last 30 days, give or take the two exceptions under
+scope of a scan, or on a project-wide catalog metric — over the last 30 days,
+give or take the two exceptions under
 [Finding and reading an incident row](#finding-an-incident): a still-silenced
 incident is held past that window, and a very loud project can get less than it.
 An incident stays the same row for as
@@ -915,6 +991,12 @@ rule watches alerting normally. An incident is keyed by *(scan, rule, scope,
 direction)*, so two rules watching the same event keep two incidents — silence
 one and the other still pages you, from its own row.
 
+**A catalog metric names no scan in that key**, because it is measured once for
+the whole project rather than by any one scan. It therefore has a single incident
+however many scans the project runs: acknowledge, mute or resolve it and the
+decision holds for all of them, rather than for the scan that happened to be
+collecting when it fired.
+
 **The four do not last alike, and that is the whole answer to "I acknowledged it
 and it fired again".** Acknowledge, resolve and false positive last exactly as
 long as the incident does: the first collection in which that scope stops firing
@@ -934,6 +1016,13 @@ necessary. The first three are resolved into a `muted_until` instant at the mome
 you click, and the row counts as `open` again on its own once it passes.
 **Indefinitely** stores no `muted_until` at all: it never lapses, it is not
 released when the incident ends, and the only thing that lifts it is **Reopen**.
+
+**A mute has to end in the future.** The buttons can only ever produce one that
+does, but the API takes the instant you send it, and an instant already behind
+the clock is now refused rather than stored — the same refusal muting a **rule**
+has always given, so the two Mute buttons no longer disagree about it. A silence
+that ended before it began would have left the incident reading `open` the
+moment it was written: accepted, recorded, and silencing nothing.
 
 **A rule has 1h / 24h / 7d and no indefinite option**, on purpose. Muting a rule
 silences every scope it watches, not one, and a rule you never want to hear from

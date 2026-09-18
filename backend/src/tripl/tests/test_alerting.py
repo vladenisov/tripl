@@ -23,7 +23,10 @@ from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.project import Project
-from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.project_anomaly_settings import (
+    DEFAULT_SIGMA_THRESHOLD,
+    ProjectAnomalySettings,
+)
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.user import User
@@ -1834,6 +1837,7 @@ def _seed_telegram_length_case(
     item_count: int,
     message_template: str,
     ai_explanation_enabled: bool = False,
+    suffix: str = "",
 ) -> tuple[str, list[str]]:
     """One pending Telegram delivery whose items are the size live ones are.
 
@@ -1841,18 +1845,25 @@ def _seed_telegram_length_case(
     characters (97-389 across the deliveries this instance has sent), so the
     URLs carry the production shape rather than None. Returns the delivery id
     and every item's scope_name, in seeded order.
+
+    ``suffix`` distinguishes a SECOND seeding in the same database. Both
+    ``data_sources.name`` (uq_data_source_name) and ``projects.slug`` are unique
+    across the whole database, so a test that seeds two deliveries into one
+    engine — a resume beside its control, say — dies on an IntegrityError from
+    the fixture rather than on the thing it set out to measure. The default is
+    empty, so every existing caller seeds exactly the names it always did.
     """
     scope_names: list[str] = []
     with sync_session_factory() as session:
         project = Project(
             id=uuid.uuid4(),
-            name="Alert Runtime",
-            slug="alert-runtime",
+            name=f"Alert Runtime{suffix}",
+            slug=f"alert-runtime{suffix}",
             description="",
         )
         data_source = DataSource(
             id=uuid.uuid4(),
-            name="Runtime DS",
+            name=f"Runtime DS{suffix}",
             db_type="clickhouse",
             host="localhost",
             port=8123,
@@ -1864,7 +1875,7 @@ def _seed_telegram_length_case(
             id=uuid.uuid4(),
             data_source_id=data_source.id,
             project_id=project.id,
-            name="Runtime Scan",
+            name=f"Runtime Scan{suffix}",
             base_query="SELECT * FROM events",
             time_column="created_at",
             cardinality_threshold=100,
@@ -2435,6 +2446,11 @@ def _build_rule(**overrides: object) -> AlertRule:
 # Sentinel meaning "some scan, I don't care which": ``_build_anomaly`` swaps it
 # for a fresh id. Deliberately distinct from an explicit ``None``, which is what
 # a project-global (``metric``-scope) anomaly really carries on its row.
+#
+# A COOLDOWN TEST MUST NOT USE IT. The replay's cooldown key carries the scan
+# partition (tripl-0zpq.42), mirroring ``uq_alert_rule_state_scope``, so a fresh
+# id per anomaly puts each one on its own clock and nothing is ever suppressed.
+# Pass one explicit ``scan_config_id`` to every anomaly that shares a clock.
 _ANY_SCAN_CONFIG = uuid.UUID("00000000-0000-0000-0000-0000000000ff")
 
 
@@ -2473,14 +2489,18 @@ def test_simulate_rule_firings_applies_cooldown_per_scope() -> None:
     scope_a = str(uuid.uuid4())
     scope_b = str(uuid.uuid4())
     base = datetime(2026, 5, 1, 12, tzinfo=UTC)
+    # One scan for every anomaly, stated explicitly: the cooldown partition
+    # includes the scan (tripl-0zpq.42), so the ``_ANY_SCAN_CONFIG`` default
+    # would give each of these its own clock and admit all four.
+    scan = uuid.uuid4()
 
     anomalies = [
         # Scope A: 3 anomalies at 0, 30min, 90min → cooldown=60min admits 1st and 3rd.
-        _build_anomaly(base, scope_ref=scope_a),
-        _build_anomaly(base.replace(hour=12, minute=30), scope_ref=scope_a),
-        _build_anomaly(base.replace(hour=14), scope_ref=scope_a),
+        _build_anomaly(base, scope_ref=scope_a, scan_config_id=scan),
+        _build_anomaly(base.replace(hour=12, minute=30), scope_ref=scope_a, scan_config_id=scan),
+        _build_anomaly(base.replace(hour=14), scope_ref=scope_a, scan_config_id=scan),
         # Scope B: independent cooldown — 1 anomaly admitted.
-        _build_anomaly(base.replace(hour=12, minute=15), scope_ref=scope_b),
+        _build_anomaly(base.replace(hour=12, minute=15), scope_ref=scope_b, scan_config_id=scan),
     ]
 
     fired = simulate_rule_firings(rule, anomalies)
@@ -3418,10 +3438,13 @@ def test_simulate_rule_firings_respects_cooldown_override() -> None:
     rule = _build_rule(cooldown_minutes=60)
     scope = str(uuid.uuid4())
     base = datetime(2026, 5, 1, 12, tzinfo=UTC)
+    # One scan for all three: the cooldown partition includes the scan
+    # (tripl-0zpq.42), and three separate scans would be three separate clocks.
+    scan = uuid.uuid4()
     anomalies = [
-        _build_anomaly(base, scope_ref=scope),
-        _build_anomaly(base.replace(hour=12, minute=15), scope_ref=scope),
-        _build_anomaly(base.replace(hour=12, minute=30), scope_ref=scope),
+        _build_anomaly(base, scope_ref=scope, scan_config_id=scan),
+        _build_anomaly(base.replace(hour=12, minute=15), scope_ref=scope, scan_config_id=scan),
+        _build_anomaly(base.replace(hour=12, minute=30), scope_ref=scope, scan_config_id=scan),
     ]
 
     # Without override: saved cooldown=60 → only the first fires.
@@ -4433,13 +4456,21 @@ def _seed_alert_delivery(
     updated_at: datetime | None = None,
     channel: str = "webhook",
     destination_enabled: bool = True,
+    claimed_at: datetime | None = None,
 ) -> uuid.UUID:
     """Create the minimal Project/ScanConfig/Destination/Rule graph plus one
     AlertDelivery, returning the delivery id. Used by the reaper tests.
 
     ``error_message`` and ``updated_at`` are what the reaper's failed arm
     selects on; when ``updated_at`` is omitted the column keeps its server
-    default rather than being inserted as an explicit NULL."""
+    default rather than being inserted as an explicit NULL.
+
+    ``claimed_at`` is the send task's single-flight LEASE
+    (``alerts._claim_delivery``), seeded the same optional way for the same
+    reason. A row holding one is a row no send task can pick up until the lease
+    ages out ``STRANDED_DELIVERY_MINUTES``, so which rows the reaper clears it
+    on — and which it leaves alone — decides whether the delivery it just
+    enqueued actually goes anywhere (tripl-0zpq.37)."""
     suffix = uuid.uuid4().hex[:8]
     project = Project(
         id=uuid.uuid4(), name=f"Reaper Project {suffix}", slug=f"reaper-{suffix}", description=""
@@ -4483,6 +4514,8 @@ def _seed_alert_delivery(
         optional_fields["error_message"] = error_message
     if updated_at is not None:
         optional_fields["updated_at"] = updated_at
+    if claimed_at is not None:
+        optional_fields["claimed_at"] = claimed_at
     delivery = AlertDelivery(
         id=uuid.uuid4(),
         project_id=project.id,
@@ -4598,6 +4631,15 @@ def test_requeue_auto_retries_recent_transient_failed_delivery(
             dispatch_attempts=0,
             error_message=_TRANSIENT_SEND_ERROR,
             updated_at=now,
+            # A lease still inside its horizon, i.e. one no send task would be
+            # able to take. The send task's own failure handler normally hands
+            # the lease back with the attempt, so this is the state that
+            # handler did NOT produce: a worker killed between its claim and
+            # its terminal write, a release whose commit raised, a row written
+            # before that release existed. The reaper clears it unconditionally
+            # rather than trusting the release to have run, and this is the
+            # only row in the suite that can tell whether it still does.
+            claimed_at=now - timedelta(minutes=1),
         )
 
     monkeypatch.setattr(maintenance, "_get_sync_session", sync_session_factory)
@@ -4626,6 +4668,18 @@ def test_requeue_auto_retries_recent_transient_failed_delivery(
         assert delivery.dispatch_attempts == 1
         assert delivery.status == AlertDeliveryStatus.pending.value
         assert delivery.error_message == _TRANSIENT_SEND_ERROR
+        # ...and the row can actually be SENT when the task it was just handed
+        # to picks it up. ``_claim_delivery`` is a compare-and-set that refuses
+        # a row whose ``claimed_at`` is newer than the stranded horizon, so a
+        # lease left on this row would make the ``.delay()`` above a silent
+        # no-op for fifteen minutes — the flip to `pending` and the enqueue
+        # would both be visible and nothing would go out. Delete
+        # ``delivery.claimed_at = None`` from the ``recent_failed`` loop in
+        # worker/tasks/maintenance.py and this is the assertion that reddens.
+        assert delivery.claimed_at is None, (
+            "the auto-retried row kept a live lease, so the send it was just "
+            "enqueued for cannot claim it"
+        )
 
     Base.metadata.drop_all(engine)
     engine.dispose()
@@ -4659,6 +4713,7 @@ def test_requeue_auto_retry_leaves_ticket_channels_and_disabled_destinations_alo
             error_message=_TRANSIENT_SEND_ERROR,
             updated_at=now,
             channel="jira",
+            claimed_at=now - timedelta(minutes=1),
         )
         disabled_id = _seed_alert_delivery(
             session,
@@ -4668,6 +4723,7 @@ def test_requeue_auto_retry_leaves_ticket_channels_and_disabled_destinations_alo
             error_message=_TRANSIENT_SEND_ERROR,
             updated_at=now,
             destination_enabled=False,
+            claimed_at=now - timedelta(minutes=1),
         )
 
     monkeypatch.setattr(maintenance, "_get_sync_session", sync_session_factory)
@@ -4693,6 +4749,12 @@ def test_requeue_auto_retry_leaves_ticket_channels_and_disabled_destinations_alo
             assert delivery.status == AlertDeliveryStatus.failed.value
             assert delivery.dispatch_attempts == 0
             assert delivery.error_message == _TRANSIENT_SEND_ERROR
+            # Untouched means untouched, lease included. This is the scope
+            # control for the release the sibling test asserts: the clear
+            # belongs to the failed->pending FLIP, on the rows this arm's WHERE
+            # actually selected, and not to a blanket sweep over every failed
+            # row. A sweep would pass the sibling test and redden this one.
+            assert delivery.claimed_at is not None
 
     Base.metadata.drop_all(engine)
     engine.dispose()
@@ -5181,6 +5243,7 @@ def test_check_deprecated_sunset_events_fires_when_event_alive_past_sunset(
         message: str,
         project,  # type: ignore[no-untyped-def]
         email_config,  # type: ignore[no-untyped-def]
+        subject_title: str = "Weekly tripl digest",
     ) -> None:
         sent_messages.append(message)
 
@@ -5237,6 +5300,7 @@ def test_check_deprecated_sunset_events_silent_when_no_recent_data(monkeypatch, 
         message: str,
         project,  # type: ignore[no-untyped-def]
         email_config,  # type: ignore[no-untyped-def]
+        subject_title: str = "Weekly tripl digest",
     ) -> None:
         sent_messages.append(message)
 
@@ -6404,12 +6468,36 @@ async def test_a_lapsed_mute_on_an_aged_incident_is_not_rescued(
             )
         ],
     )
-    lapsed = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    # The state, not the request, is this test's subject: what it needs is a
+    # row carrying `muted` with an expiry that has passed. It used to POST the
+    # lapsed instant directly, which the route now refuses with a 422 — a mute
+    # whose end has already gone by is a silence no reader can honour, so it is
+    # rejected at the door (tripl-0zpq.273; the refusal itself is pinned in
+    # test_batch4_services.py). So the mute is made the way an operator makes
+    # one, with a real future expiry, and then TIME is what passes — written
+    # onto the row directly, the same way ``test_lapsed_mute_stops_reporting_
+    # muted_until`` above ages its own state. Nothing sweeps an expired mute,
+    # which is exactly the point: the lapse only ever exists as a stored
+    # instant that a reader compares against now.
     mute = await client.post(
         f"/api/v1/projects/lapsed-window/alert-inbox/{group_id}/actions",
-        json={"action": "mute", "muted_until": lapsed},
+        json={
+            "action": "mute",
+            "muted_until": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+        },
     )
     assert mute.status_code == 200
+
+    async with TestSessionLocal() as session:
+        state = await session.scalar(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        )
+        assert state is not None
+        assert state.status == "muted"
+        state.muted_until = datetime.now(UTC) - timedelta(days=1)
+        await session.commit()
 
     listing = await client.get("/api/v1/projects/lapsed-window/alert-inbox")
     assert listing.json()["items"] == []
@@ -7995,8 +8083,6 @@ async def test_open_incident_count_agrees_with_the_inbox_it_badges(client: Async
 async def _seed_simulate_fixture(
     client: AsyncClient,
     slug: str,
-    *,
-    second_scan_sigma: float | None = None,
 ) -> dict[str, object]:
     """A project with one destination, one wide-open rule and three scopes.
 
@@ -8011,9 +8097,15 @@ async def _seed_simulate_fixture(
     thin             5.0      20.0     300%      8.0
     ==========  ========  ========  =======  =======
 
-    ``second_scan_sigma`` adds a second scan configured to a different
-    ``sigma_threshold``, which is how a project stops having ONE saved detector
-    threshold to quote.
+    No ``ProjectAnomalySettings`` row is seeded, so every replay driven from this
+    fixture quotes ``DEFAULT_SIGMA_THRESHOLD`` as its saved sigma — the value
+    that row is born holding. Sigma is a PROJECT setting and the replay reads it
+    from there alone (tripl-0zpq.160); the ``ScanConfig.sigma_threshold`` column
+    is a per-scan copy nothing scores against and no API writes. That is why the
+    ``second_scan_sigma`` knob this fixture used to carry is gone: a second scan
+    disagreeing on that column could not move the quoted number, so it had
+    nothing left to control. Telling the two columns apart needs values that are
+    the default on neither side, and those cases live in test_batch4_services.py.
     """
     project_resp = await client.post(
         "/api/v1/projects",
@@ -8086,19 +8178,6 @@ async def _seed_simulate_fixture(
             interval="1h",
         )
         session.add(scan)
-        if second_scan_sigma is not None:
-            session.add(
-                ScanConfig(
-                    id=uuid.uuid4(),
-                    data_source_id=data_source.id,
-                    project_id=project_id,
-                    name="sc-strict",
-                    base_query="SELECT 2",
-                    cardinality_threshold=100,
-                    interval="1h",
-                    sigma_threshold=second_scan_sigma,
-                )
-            )
         await session.flush()
         from tripl.models.metric_anomaly import MetricAnomaly
 
@@ -8214,9 +8293,16 @@ async def test_simulate_sigma_override_re_reads_what_the_detector_recorded(
 
     baseline = (await client.post(f"{url}?days=7")).json()
     assert baseline["anomalies_considered"] == 3
-    # No override: `used` mirrors the scan's own configured threshold.
-    assert baseline["sigma_threshold_saved"] == 4.0
-    assert baseline["sigma_threshold_used"] == 4.0
+    # No override: `used` mirrors the SAVED threshold, and saved is the
+    # PROJECT's Detection setting, never the scan's column (tripl-0zpq.160).
+    # This fixture seeds no ``ProjectAnomalySettings`` row, so both numbers are
+    # ``DEFAULT_SIGMA_THRESHOLD`` — the value that row would be born holding —
+    # and this test cannot tell the two sources apart, because the scan column's
+    # own default happens to be the same number. The ones that can are in
+    # test_batch4_services.py, which seeds a project sigma and a scan column that
+    # agree with neither each other nor the default.
+    assert baseline["sigma_threshold_saved"] == DEFAULT_SIGMA_THRESHOLD
+    assert baseline["sigma_threshold_used"] == DEFAULT_SIGMA_THRESHOLD
 
     strict = (await client.post(f"{url}?days=7&sigma_threshold_override=5")).json()
     # `quiet` was scored at z=4.2 and would not have been written at all.
@@ -8244,33 +8330,24 @@ async def test_simulate_sigma_override_re_reads_what_the_detector_recorded(
     assert loosened["sigma_threshold_used"] == 1.0
 
 
-@pytest.mark.asyncio
-async def test_simulate_reports_no_saved_sigma_when_the_scans_disagree(
-    client: AsyncClient,
-) -> None:
-    """``sigma_threshold`` is a SCAN setting, and a project-wide rule reads many."""
-    slug = "sim-sigma-saved"
-    fixture = await _seed_simulate_fixture(client, slug, second_scan_sigma=6.0)
-    url = _simulate_url(fixture, slug)
-
-    wide = (await client.post(f"{url}?days=7")).json()
-    assert wide["sigma_threshold_saved"] is None
-    assert wide["sigma_threshold_used"] is None
-
-    # Bind the rule to one scan and it has exactly one saved value to quote.
-    bound = await client.patch(
-        f"/api/v1/projects/{slug}/alert-destinations/"
-        f"{fixture['destination_id']}/rules/{fixture['rule_id']}",
-        json={"scan_config_id": str(fixture["scan_id"])},
-    )
-    assert bound.status_code == 200
-    narrowed = (await client.post(f"{url}?days=7")).json()
-    assert narrowed["sigma_threshold_saved"] == 4.0
-    assert narrowed["sigma_threshold_used"] == 4.0
-    # ...and an override still wins over it.
-    overridden = (await client.post(f"{url}?days=7&sigma_threshold_override=6")).json()
-    assert overridden["sigma_threshold_used"] == 6.0
-    assert overridden["sigma_threshold_saved"] == 4.0
+# ``test_simulate_reports_no_saved_sigma_when_the_scans_disagree`` stood here and
+# is deliberately gone rather than repaired (tripl-0zpq.160). Its subject was the
+# premise, not an assertion: "``sigma_threshold`` is a SCAN setting, and a
+# project-wide rule reads many", from which it followed that a project whose
+# scans disagree has no saved number to quote and the replay answers null. That
+# is the defect. Sigma is a PROJECT setting — ``ProjectAnomalySettings``, the
+# only row ``detect._build_anomaly_settings`` reads — so the replay now always
+# has exactly one number, whatever the per-scan columns hold, and the two
+# ``is None`` assertions read ``DEFAULT_SIGMA_THRESHOLD``. Its other half
+# (bind the rule to one scan, override still wins) survived only because the two
+# columns' defaults are both 4.0, so it asserted the right value for the wrong
+# reason and could not have caught this.
+#
+# Rewriting it here would have reproduced test_batch4_services.py's
+# ``test_the_replay_has_one_sigma_to_quote_whatever_the_scans_hold``, which seeds
+# the same two disagreeing scans plus a project sigma that is neither, and checks
+# a wide and a bound rule in one pass — the assertion this test could not make.
+# The default-when-no-settings-row arm it also covered is asserted above.
 
 
 @pytest.mark.asyncio

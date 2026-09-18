@@ -57,9 +57,22 @@ class AlertDestination(UUIDMixin, TimestampMixin, Base):
     # (`core/alert_schedule.parse_cron`).
     delivery_schedule_cron: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # Watermark for the cadence: the fire instant of the last window this
-    # destination flushed, never `now()`. Storing the fire instant keeps the
-    # due test a clean total order, and makes the flusher's compare-and-set
-    # reject a repeated DST wall-clock time instead of sending twice.
+    # destination flushed — the scheduled instant, not the clock the flush ran
+    # at. That keeps the due test a clean total order and makes the window claim
+    # single-flight: a second tick, or a second worker, recomputes the same
+    # instant for the same window and loses the compare-and-set
+    # (`worker/tasks/alert_flush`). A watermark advanced to `now()` on each
+    # flush would be a new value every time and could never reject anything.
+    #
+    # `now()` is written here only as the SEED: attaching or changing a cadence
+    # stamps the current clock (`services/_alerting_destinations`, plus the
+    # defensive first-tick adoption in the flusher) so the first digest is the
+    # next real fire rather than a backlog dump. NULL means no cadence — or a
+    # destination that was disabled, which forgets its alerting state.
+    #
+    # The claim is per INSTANT, not per wall-clock time. The autumn fold's two
+    # 02:30s are two instants an hour apart, so both are claimed — two windows
+    # that day, each carrying only what was buffered since the previous one.
     #
     # UtcDateTime rather than DateTime(timezone=True): SQLite hands tz-aware
     # columns back naive, and every read of this value is compared against an

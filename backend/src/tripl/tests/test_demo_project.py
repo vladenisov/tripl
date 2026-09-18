@@ -508,7 +508,9 @@ async def test_demo_seeds_one_open_variable_value_drift(client: AsyncClient) -> 
     # product_id on Trial Started ([prod_monthly, prod_annual]), so the
     # variables drift UI (list_value_drifts / open drift counts / event drift
     # badge) has a real open row behind it. It never feeds the firing rule's
-    # replay — candidates come from MetricAnomaly + schema/distribution drifts.
+    # replay, but only because its scan_config_id is NULL and both the live
+    # loader and the replay twin require one to be set — the replay HAS read
+    # variable-value drifts since tripl-0zpq.158.
     resp = await client.post("/api/v1/projects/demo")
     assert resp.status_code == 201
     slug = resp.json()["slug"]
@@ -1116,6 +1118,17 @@ async def test_demo_seeds_a_retryable_failed_delivery(
     failed = [row for row in deliveries if row["status"] == "failed"]
     assert len(failed) == 1
     assert failed[0]["error_message"]
+
+    # ...and it is a row Retry can actually re-send. ``send_alert_delivery``
+    # re-renders the message from ``delivery.items`` while the header it writes
+    # counts ``matched_count``, so a failed row seeded with no items of its own
+    # came back from the one Retry this demo exists to demonstrate reading
+    # "sent", announcing N signals, with nothing underneath (tripl-0zpq.247).
+    # Asserted on the DETAIL endpoint because that is the payload the Audit
+    # row expands into, and the number the reader compares against the header.
+    detail = await client.get(f"/api/v1/projects/{slug}/alert-deliveries/{failed[0]['id']}")
+    assert detail.status_code == 200
+    assert len(detail.json()["items"]) == failed[0]["matched_count"] > 0
 
     # Retry enqueues the real dispatch task. Stub ``.delay`` so the suite keeps
     # its no-broker contract (CONTRIBUTING: pytest needs no RabbitMQ) — the same

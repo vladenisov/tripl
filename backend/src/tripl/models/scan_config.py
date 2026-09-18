@@ -119,6 +119,38 @@ class ScanConfig(UUIDMixin, TimestampMixin, Base):
 
     data_source: Mapped[DataSource] = relationship(back_populates="scan_configs")
     event_type: Mapped[EventType | None] = relationship()
+
+    # This collection exists for ONE reason: the ORM delete cascade in
+    # ``scan_service.delete_scan_config``. Nothing reads the ATTRIBUTE. Every
+    # read of the job history is a direct query against the table instead — the
+    # Scans tab's ``scan_service.list_scan_jobs``, the dispatcher's
+    # ``_get_active_scan_jobs`` and ``coverage.covered_buckets_from_scan_jobs``.
+    #
+    # It must therefore stay lazily loaded. It used to be ``lazy="selectin"``,
+    # so EVERY ScanConfig ENTITY load hydrated that config's entire scan
+    # history — JSON ``result_summary`` and ``error_message`` included — for
+    # callers that only wanted ``name`` or ``interval``: the alert inbox's
+    # ``_alerting_deliveries._INBOX_GROUP_SELECT`` (four call sites, once per
+    # request), ``alert_flush``, the metrics scheduler's beat tick over every
+    # scheduled config, the Scans tab, the metrics/insights services and the
+    # search indexer (tripl-0zpq.157).
+    #
+    # Unlike the small parent-child fan-outs elsewhere in this package, that one
+    # had no ceiling. ``scan_jobs`` gains a row per collection and is pruned only
+    # for demo projects (``demo_runtime._prune_retention``), so the bill grew
+    # with deployment age x cadence — on the order of 8.7K rows per config per
+    # year at a 1h interval, 35K at 15m — with nothing to bound it.
+    #
+    # ``await session.delete(config)`` still removes the jobs: AsyncSession.delete
+    # is a coroutine precisely so the cascade can lazy-load. That cascade rides on
+    # ``cascade="all, delete-orphan"`` with ``passive_deletes`` off — change either
+    # and the unit of work stops emitting the child DELETEs, leaving only the
+    # DB-level ``ondelete="CASCADE"`` on ``ScanJob.scan_config_id``, which not every
+    # test engine turns on (tests/_sqlite.py). The LOADER strategy is no part of
+    # that, contrary to the obvious guess: ``lazy="raise"`` was measured on this
+    # relationship and the unit of work still loads the collection and deletes the
+    # rows, emitting SQL identical to the above. Same decision and same reasoning as
+    # the four plan collections on ``Project`` (tripl-jfm3.54).
     scan_jobs: Mapped[list[ScanJob]] = relationship(
-        back_populates="scan_config", cascade="all, delete-orphan", lazy="selectin"
+        back_populates="scan_config", cascade="all, delete-orphan"
     )

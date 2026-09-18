@@ -95,6 +95,23 @@ class EventCommentActionRequest(BaseModel):
     def validate_action(self) -> EventCommentActionRequest:
         if self.action == "snooze" and self.snoozed_until is None:
             raise ValueError("snoozed_until is required when action is snooze")
+        # A ``snoozed_until`` that has ALREADY PASSED is accepted here, and this
+        # is the one "stay quiet until then" body in the codebase that takes one
+        # (``schemas/time_guards.py`` refuses it for four, and ``mute_monitor``
+        # has answered 422 to its own since it shipped). Not an oversight:
+        # nothing is hidden by taking it. The reply carries ``snoozed_until``
+        # beside ``status``, and both readers that decide whether the thread
+        # still wants an answer work it out from that pair rather than from
+        # ``status`` alone — ``event_comment_service.unanswered_clause`` on the
+        # server, ``commentThreadState.isThreadUnanswered`` in the client, which
+        # also drops the "snoozed" badge once the date is behind the clock. So
+        # the thread reads as open immediately, which is exactly what a lapsed
+        # snooze means here anyway, and refusing the instant would buy no
+        # honesty while closing the only way to reach that state without waiting
+        # out the clock — the way
+        # ``test_event_comments.py::test_a_lapsed_snooze_counts_as_unanswered_again``
+        # reaches it. The refusal below is a different question: a date sent
+        # with an action that will never store it.
         if self.action != "snooze" and self.snoozed_until is not None:
             # A snooze date on a resolve or a reopen is a client that meant
             # something else; accepting and discarding it would hide the mistake.

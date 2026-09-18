@@ -83,6 +83,12 @@ class DemoContext:
     # PSI run over exactly the stored counts).
     home_series: dict[datetime, int] = field(default_factory=dict)
     type_bucket_counts: dict[tuple[uuid.UUID, datetime], int] = field(default_factory=dict)
+    # The bucket the warehouse builder injected the demo spike into: the NEWEST
+    # stored hour, which is one hour before ``now`` (the hourly grid stops before
+    # the still-open hour, so no series has a row at ``now``). Published so a
+    # later builder can point at the spike without re-deriving where it landed —
+    # ``None`` until the warehouse builder has run.
+    spike_bucket: datetime | None = None
 
 
 Builder = Callable[[AsyncSession, DemoContext], Awaitable[None]]

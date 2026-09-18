@@ -23,7 +23,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import type { AlertMessageFormat, AlertRule, AlertRuleSimulateResponse } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
-import { formatIncidentCount } from '@/lib/alertStatus'
+import { formatIncidentCount, scopeKindLabel } from '@/lib/alertStatus'
 import { formatDateTime } from '@/lib/datetime'
 import { formatPercentDelta } from '@/lib/percentDelta'
 import { formatCooldown } from './constants'
@@ -391,6 +391,13 @@ export function RuleReplayDialog({
                       used={String(displayResult.min_expected_count_used)}
                       saved={String(displayResult.min_expected_count_saved)}
                     />
+                    {/* Sigma has no rule-level column: `saved` is the project's
+                        Detection-settings threshold, the one the detector scores
+                        with (tripl-0zpq.160). The null arms below are defensive
+                        — the contract is still `number | null` and older cached
+                        responses can hold one — but this backend always sends a
+                        number, so "detector default" is no longer a state a
+                        replay of a live project reaches. */}
                     <ThresholdRow
                       label="Sigma"
                       used={displayResult.sigma_threshold_used === null
@@ -434,8 +441,30 @@ export function RuleReplayDialog({
                         {displayResult.firings.map((firing) => (
                           <tr key={firing.anomaly_id} className="border-t">
                             <td className="whitespace-nowrap px-3 py-1.5 font-mono">{formatDateTime(firing.bucket)}</td>
-                            <td className="truncate px-3 py-1.5" title={firing.scope_name}>
-                              <span className="text-muted-foreground">{firing.scope_type}</span>{' '}
+                            {/* The kind through the shared `scopeKindLabel`, the
+                                same words the Inbox chips use, rather than the
+                                raw enum. The column shipped printing
+                                `firing.scope_type`, which was survivable while
+                                the replay could only produce `project_total` /
+                                `event_type` / `event`; since it also replays
+                                value drifts and release regressions
+                                (tripl-0zpq.158) that cell would otherwise read
+                                `variable_value_drift`, in a table whose
+                                neighbouring surfaces call it "value drift".
+
+                                `title` prefers `rendered_item` — the exact line
+                                this firing would have been sent as, built by
+                                the backend's one shared item renderer — so the
+                                per-scope sentence a narrow cell cannot hold is
+                                a hover away and is never a second copy of the
+                                wording. */}
+                            <td
+                              className="truncate px-3 py-1.5"
+                              title={firing.rendered_item ?? firing.scope_name}
+                            >
+                              <span className="text-muted-foreground">
+                                {scopeKindLabel(firing.scope_type)}
+                              </span>{' '}
                               {firing.scope_name}
                               {firing.drift_field && (
                                 <div className="truncate text-[11px] text-muted-foreground">

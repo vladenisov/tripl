@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from tripl.models.domain_enums import SchemaDriftStatus, SchemaDriftType
+from tripl.schemas.time_guards import require_future_instant
 
 SchemaDriftAction = Literal["accept", "snooze", "false_positive", "reopen"]
 
@@ -52,8 +53,21 @@ class SchemaDriftActionRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_action(self) -> SchemaDriftActionRequest:
-        if self.action == "snooze" and self.snoozed_until is None:
-            raise ValueError("snoozed_until is required when action is snooze")
+        if self.action == "snooze":
+            if self.snoozed_until is None:
+                raise ValueError("snoozed_until is required when action is snooze")
+            # The two guards answer one question — can this snooze hide anything
+            # — half a second apart. A snooze whose end has already passed hides
+            # the drift for no time at all: the list works out what is snoozed by
+            # comparing the stored instant against now when it is READ
+            # (``schema_drift_service``), so an expired one is back in the open
+            # rows the moment the 200 lands, and the operator is told a decision
+            # was recorded that changed nothing they can see (tripl-0zpq.273).
+            # Only the arriving instant is bounded; a snooze that lapses later is
+            # supposed to come back, and that is a different mechanism entirely.
+            self.snoozed_until = require_future_instant(
+                self.snoozed_until, field_name="snoozed_until"
+            )
         if self.force and self.action != "accept":
             # `force` overrides exactly one guard, and that guard only fires on
             # the accept path. Accepting it elsewhere would make the contract

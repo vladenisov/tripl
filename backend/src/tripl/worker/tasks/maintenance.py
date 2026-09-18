@@ -103,6 +103,17 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
     exhausted: list[str] = []
     auto_retried: list[str] = []
     try:
+        # No ``AlertDestination.enabled`` join here, deliberately, and the
+        # asymmetry with the failed arm below is load-bearing rather than an
+        # oversight to tidy up. A disabled destination must not be sent to
+        # (tripl-0zpq.39) — but that is enforced in the send task, by
+        # ``alerts._assert_destination_enabled``, which turns this redispatch
+        # into a `failed` row naming the toggle: visible in the Inbox, where an
+        # alert that did not go out belongs. Filtering it out HERE instead
+        # would leave such a row selected by nothing at all — never
+        # redispatched, never reaching the exhaustion relabel below — sitting
+        # at `pending` for good. The failed arm can filter precisely because
+        # every row it skips is already in a terminal state the operator sees.
         stranded = (
             session.execute(
                 select(AlertDelivery).where(
@@ -180,6 +191,14 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
             # now leaves an existing message alone.
             delivery.status = AlertDeliveryStatus.pending.value
             delivery.dispatch_attempts += 1
+            # This row is going back to a send task, so it has to be claimable
+            # when it gets there (``alerts._claim_delivery``). Both send tasks
+            # release their own lease when an attempt ends, so a `failed` row
+            # should already carry none; clearing it here makes the hand-off
+            # unconditional rather than dependent on that release having run,
+            # and it is always safe because a live attempt holds its row at
+            # `pending` — never at `failed`.
+            delivery.claimed_at = None
             to_auto_retry.append(str(delivery.id))
 
         # Persist both arms' attempt-counter bumps and any failed transitions

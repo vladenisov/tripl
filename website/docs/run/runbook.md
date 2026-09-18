@@ -181,8 +181,8 @@ Recovery hinges on the durable/ephemeral split:
   not protect messages already sitting in the broker if **RabbitMQ itself** is
   lost. Recurring work is self-healing: `celery-beat` re-enqueues scheduled jobs
   (metric checks every 5 minutes, stranded-delivery requeue every 5 minutes,
-  schema-drift cleanup daily, weekly plan digest), so a missed tick is picked up
-  on the next interval.
+  schema-drift cleanup daily, the deprecated-event sunset notice daily, weekly
+  plan digest), so a missed tick is picked up on the next interval.
 - **`celery-beat` schedule file** lives at `/tmp/celerybeat-schedule` inside the
   beat container and is regenerated on start — nothing to back up.
 

@@ -20,7 +20,15 @@ BranchTransitionAction = Literal[
 
 
 class PlanBranchCreate(BaseModel):
-    name: str
+    # Bounded to the width of ``plan_branches.name`` (String(255)). The validator
+    # below strips the name and rejects the two unusable ones, but nothing capped
+    # its length, so a 300-character branch name passed here and failed in the
+    # INSERT as a Postgres StringDataRightTruncation — a generic 500 naming no
+    # field, for a body this layer had already accepted (tripl-0zpq.275). The
+    # bound is checked before the strip, the same order ``DataSourceCreate.name``
+    # uses, so padding cannot buy extra characters.
+    name: str = Field(max_length=255)
+    # No bound on the description: ``plan_branches.description`` is Text.
     description: str = ""
 
     @field_validator("name")

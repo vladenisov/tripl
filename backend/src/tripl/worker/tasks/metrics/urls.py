@@ -1,4 +1,31 @@
-"""URL builders + small text helpers used by alert payloads."""
+"""URL builders + small text helpers used by alert payloads.
+
+Every builder here is HANDED ``app_base_url``; none of them reads it back out
+of the database. All three used to open with
+``app_settings_service.get_runtime_config_sync()``, and called with no session
+that helper checks out a SECOND pooled connection and runs two ``app_settings``
+SELECTs — it has no cache of any kind. ``_build_item_paths`` runs twice per
+alert item (once for the typed ``AlertDeliveryItem``, once for the frozen
+``payload_snapshot``), and the two runs together cost 3 of those reads per item
+for an ordinary scope, 2 for a release regression, so a 24-item digest paid for
+48-72 of them. Worse, it paid while ``alert_flush._build_digest`` held FOR
+UPDATE locks on the whole buffer plus the flush advisory lock on the FIRST
+connection: a bounded pool and a second connection taken under a lock is the
+classic way to turn a slow settings read into a stuck flush (tripl-0zpq.109).
+
+Taking the value as an argument also makes it CONSISTENT. That helper swallows
+every exception and falls back to the env config, so one failing read used to
+give an item a link and its neighbour none — inside a single delivery, with
+nothing but a ``logger.warning`` to say so, and with the typed row and the
+snapshot disagreeing about the same item. ``dispatch._create_deliveries``
+resolves it ONCE, on the session it already holds, and builds every item of
+that delivery from that one value.
+
+``app_base_url`` is a ``str``, never ``None``: ``RuntimeConfig.app_base_url``
+is non-optional and an unconfigured instance carries ``""``. The empty string
+is the "emit no link" case, and every builder below still guards for it, so
+behaviour at an unconfigured base URL is exactly what it was.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +45,6 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_PROJECT_TOTAL,
 )
 from tripl.models.project import Project
-from tripl.services import app_settings_service
 
 # The one scope with nowhere else to go at all.
 #
@@ -44,10 +70,10 @@ _SCOPES_LINKED_TO_ALERT_AUDIT = frozenset({SCOPE_RELEASE_REGRESSION})
 def _build_monitoring_url(
     project_slug: str,
     *,
+    app_base_url: str,
     scope_type: str,
     scope_ref: str,
 ) -> str | None:
-    app_base_url = app_settings_service.get_runtime_config_sync().app_base_url
     if not app_base_url:
         return None
     base = app_base_url.rstrip("/")
@@ -90,8 +116,12 @@ def _build_monitoring_url(
     return None
 
 
-def _build_event_details_url(project_slug: str, event_id: uuid.UUID | None) -> str | None:
-    app_base_url = app_settings_service.get_runtime_config_sync().app_base_url
+def _build_event_details_url(
+    project_slug: str,
+    event_id: uuid.UUID | None,
+    *,
+    app_base_url: str,
+) -> str | None:
     if not app_base_url or event_id is None:
         return None
     base = app_base_url.rstrip("/")
@@ -140,6 +170,7 @@ def _build_alert_audit_url(
     project_slug: str,
     delivery_id: uuid.UUID | None,
     *,
+    app_base_url: str,
     scope_type: str,
     scope_ref: str,
     correlation_group_id: uuid.UUID | None = None,
@@ -161,7 +192,6 @@ def _build_alert_audit_url(
     with nothing marking the one the message quoted. The production alert that
     prompted this link carried a single item, which is why it looked right.
     """
-    app_base_url = app_settings_service.get_runtime_config_sync().app_base_url
     if not app_base_url or delivery_id is None:
         return None
     base = app_base_url.rstrip("/")
@@ -176,6 +206,19 @@ def _build_alert_audit_url(
     # the page (tripl-pq97). The delivery id and item anchor stay in the URL:
     # they still pick the exact row the message quoted, and links sent before
     # this change keep working.
+    #
+    # Note what this bakes in. The handle is DERIVED, not stable: it is a uuid5
+    # over the scope's partition, rule, scope_type, scope_ref and direction
+    # (``dispatch._correlation_group_id``), so re-defining any of those inputs
+    # re-keys every live incident — and this string is then a SECOND, untyped
+    # copy of the handle, one no schema knows about. It has happened once
+    # already: f4a8d3c72e19 moves catalog metrics onto a project-global
+    # partition, and it rewrites this substring alongside the column for exactly
+    # the rows it re-keys, because ``get_alert_inbox_group`` answers a retired
+    # handle with 404 and nothing records old -> new. A link is the right thing
+    # to send — the reader has to land on the card that holds the actions — but
+    # any future revision that re-keys the handle owes ``details_path`` the same
+    # pass, or it ships messages pointing at an incident that exists nowhere.
     if correlation_group_id is not None:
         url = f"{url}&{ALERT_INCIDENT_PARAM}={correlation_group_id}"
     return url
@@ -184,6 +227,7 @@ def _build_alert_audit_url(
 def _build_item_paths(
     project_slug: str,
     *,
+    app_base_url: str,
     scope_type: str,
     scope_ref: str,
     event_id: uuid.UUID | None,
@@ -197,6 +241,13 @@ def _build_item_paths(
     scope_type at all and fired for anything with a non-null ``event_id`` —
     which for an event-scoped release regression meant the event page, the one
     page guaranteed to contradict the alert.
+
+    Being the choke point is also why ``app_base_url`` is required here rather
+    than defaulted: this function is the only writer of
+    ``AlertDeliveryItem.details_path`` / ``monitoring_path`` and of the matching
+    pair in ``payload_snapshot``, so it mints every link an alert carries, and a
+    default would let a new call site ship link-less alerts in silence. See the
+    module docstring for why the value is passed in at all.
     """
     # One destination for every alert, whatever fired it: the incident, where the
     # actions are. Previously only release regressions came here and everything
@@ -210,6 +261,7 @@ def _build_item_paths(
             _build_alert_audit_url(
                 project_slug,
                 delivery_id,
+                app_base_url=app_base_url,
                 scope_type=scope_type,
                 scope_ref=scope_ref,
                 correlation_group_id=correlation_group_id,
@@ -227,14 +279,20 @@ def _build_item_paths(
             _build_alert_audit_url(
                 project_slug,
                 delivery_id,
+                app_base_url=app_base_url,
                 scope_type=scope_type,
                 scope_ref=scope_ref,
             ),
             None,
         )
     return (
-        _build_event_details_url(project_slug, event_id),
-        _build_monitoring_url(project_slug, scope_type=scope_type, scope_ref=scope_ref),
+        _build_event_details_url(project_slug, event_id, app_base_url=app_base_url),
+        _build_monitoring_url(
+            project_slug,
+            app_base_url=app_base_url,
+            scope_type=scope_type,
+            scope_ref=scope_ref,
+        ),
     )
 
 

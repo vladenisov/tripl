@@ -246,8 +246,8 @@ Available actions:
   documented list.
 - **Accept for this event** — create or update the event override, seeded from
   the current effective list.
-- **Snooze** — hide the drift until a chosen time while scans continue to
-  refresh its evidence.
+- **Snooze** — hide the drift until a chosen time, which has to be in the
+  future, while scans continue to refresh its evidence.
 - **False positive** — resolve it without changing the documented contract.
 - **Reopen** — return a resolved drift to active review. On a row that is only
   snoozed the same control reads **Un-snooze**, because a snooze is what the

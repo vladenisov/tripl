@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.alert_templates import percent_delta_of
 from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
-from tripl.models.alert_delivery_item import AlertDeliveryItem
+from tripl.models.alert_delivery_item import AlertDeliveryItem, trim_scope_name
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
@@ -187,55 +187,52 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
         },
     )
     session.add(delivery)
-    # The earlier, failed attempt at the same incident (no items of its own —
-    # the successful delivery above owns the incident's item list).
-    session.add(
-        AlertDelivery(
-            project_id=ctx.project_id,
-            scan_config_id=ctx.scan_config_id,
-            destination_id=demo_sink.id,
-            rule_id=firing_rule.id,
-            status=AlertDeliveryStatus.failed.value,
-            channel=AlertDestinationType.demo_sink.value,
-            matched_count=len(firings),
-            dispatch_attempts=1,
-            error_message=_FAILED_DELIVERY_ERROR,
-            created_at=ctx.now - timedelta(hours=_FAILED_DELIVERY_AGE_HOURS),
-            payload_snapshot={
-                "message_format": AlertMessageFormat.plain.value,
-                "rendered_message": rendered_message,
-                "delivery_mode": "local_sink",
-                "is_local": True,
-                "simulated": True,
-                "local_notice": _LOCAL_NOTICE,
-            },
-        )
+    # The earlier, failed attempt at the same incident. It carries the same
+    # rendered text and, below, its own copy of the incident's items.
+    failed_delivery = AlertDelivery(
+        project_id=ctx.project_id,
+        scan_config_id=ctx.scan_config_id,
+        destination_id=demo_sink.id,
+        rule_id=firing_rule.id,
+        status=AlertDeliveryStatus.failed.value,
+        channel=AlertDestinationType.demo_sink.value,
+        matched_count=len(firings),
+        dispatch_attempts=1,
+        error_message=_FAILED_DELIVERY_ERROR,
+        created_at=ctx.now - timedelta(hours=_FAILED_DELIVERY_AGE_HOURS),
+        payload_snapshot={
+            "message_format": AlertMessageFormat.plain.value,
+            "rendered_message": rendered_message,
+            "delivery_mode": "local_sink",
+            "is_local": True,
+            "simulated": True,
+            "local_notice": _LOCAL_NOTICE,
+        },
     )
+    session.add(failed_delivery)
     await session.flush()
 
+    # BOTH deliveries get their own copy of the incident's items, because the
+    # failed row is not decoration: Retry re-dispatches it through
+    # ``send_alert_delivery``, which re-renders the message from
+    # ``delivery.items`` and OVERWRITES ``payload_snapshot["rendered_message"]``
+    # with the result. While the failed row owned no items, the one retry the
+    # demo exists to demonstrate replaced the seeded message with a header
+    # counting ``matched_count`` signals above an empty list, and left the row
+    # reading "sent" with nothing in it (tripl-0zpq.247).
+    #
+    # The copies share ``correlation_group_id`` because that is the shape live
+    # dispatch writes — items are stamped with the incident's group id when the
+    # delivery row is created, and a send that fails does not take them back —
+    # and because it is what keeps the failed attempt reachable: the Inbox
+    # card's "show what was sent" list asks the API for deliveries having an
+    # item in this group (frontend IncidentDeliveries), so a NULL group here
+    # would hide the failed row from the incident the docs say it belongs to,
+    # and with it the Retry. The card consequently counts this incident's items
+    # across both deliveries, exactly as it does for any scope that fires twice.
     for firing in firings:
-        session.add(
-            AlertDeliveryItem(
-                delivery_id=delivery.id,
-                scope_type=firing.scope_type.value,
-                scope_ref=firing.scope_ref,
-                scope_name=firing.scope_name,
-                event_type_id=firing.event_type_id,
-                event_id=firing.event_id,
-                bucket=firing.bucket,
-                direction=firing.direction.value,
-                actual_count=firing.actual_count,
-                expected_count=firing.expected_count,
-                absolute_delta=firing.absolute_delta,
-                percent_delta=firing.percent_delta,
-                drift_field=firing.drift_field,
-                drift_type=firing.drift_type,
-                sample_value=firing.sample_value,
-                # All items in this seeded delivery belong to one demo incident so
-                # the inbox group is explorable.
-                correlation_group_id=correlation_group_id,
-            )
-        )
+        session.add(_delivery_item(firing, delivery.id, correlation_group_id))
+        session.add(_delivery_item(firing, failed_delivery.id, correlation_group_id))
 
     session.add(
         AlertCorrelationState(
@@ -253,7 +250,16 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
         session.add(
             AlertRuleState(
                 rule_id=firing_rule.id,
-                scan_config_id=ctx.scan_config_id,
+                # A ``metric`` firing is project-global and stores NULL, which is
+                # the key live dispatch writes (tripl-0zpq.28). Seeding it on a
+                # real scan config would leave the demo carrying a state row the
+                # dispatcher could never load again — and the builder seeds a
+                # catalog-metric firing, so this arm is reached every time.
+                scan_config_id=(
+                    None
+                    if firing.scope_type == MetricScopeType.metric.value
+                    else ctx.scan_config_id
+                ),
                 scope_type=firing.scope_type.value,
                 scope_ref=firing.scope_ref,
                 is_active=True,
@@ -264,14 +270,24 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
             )
         )
 
-    # Chart annotation explaining the controlled scenario change (the spike).
+    # Chart annotation explaining the controlled scenario change (the spike),
+    # dated at the bucket the warehouse builder injected that spike into rather
+    # than at ``ctx.now``. ``ctx.now`` is the still-open hour, one bucket PAST the
+    # newest stored point, so a marker there never lines up with the series it
+    # explains: on the default hourly view the chart snaps it onto the one-step
+    # dashed forecast point, and once the demo runtime has appended that hour for
+    # real the marker labels an ordinary bucket sitting right after the spike
+    # (tripl-0zpq.249). ``ChartAnnotation.bucket`` is NOT NULL, so ``or ctx.now``
+    # keeps the row valid for a context assembled without the warehouse builder;
+    # inside the recipe that cannot happen, because the early return at the top
+    # of this builder already requires the scan config warehouse writes.
     spike_event_id = ctx.event_ids.get(SPIKE_EVENT_NAME)
     session.add(
         ChartAnnotation(
             project_id=ctx.project_id,
             scope_type=(ChartAnnotationScopeType.event.value if spike_event_id else None),
             scope_ref=str(spike_event_id) if spike_event_id else None,
-            bucket=ctx.now,
+            bucket=ctx.spike_bucket or ctx.now,
             label="Injected demo spike",
             description=(
                 "Controlled demo scenario: a synthetic traffic spike was injected "
@@ -283,6 +299,48 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
     )
 
     await session.flush()
+
+
+def _delivery_item(
+    firing: SimulatedRuleFiring,
+    delivery_id: uuid.UUID,
+    correlation_group_id: uuid.UUID,
+) -> AlertDeliveryItem:
+    """One ``AlertDeliveryItem`` for ``firing``, attached to ``delivery_id``.
+
+    One constructor for both the sent delivery and the seeded failed attempt, so
+    the two carry identical signals rather than two hand-maintained lists. That
+    is the point rather than tidiness: a field set on one copy and forgotten on
+    the other would make a retried delivery re-render the incident differently
+    from the way it was first delivered — the same class of divergence the
+    failed row's missing items already produced.
+    """
+    return AlertDeliveryItem(
+        delivery_id=delivery_id,
+        scope_type=firing.scope_type.value,
+        scope_ref=firing.scope_ref,
+        # Already inside ``SCOPE_NAME_MAX_LEN``: ``_build_firings`` runs every
+        # label through ``trim_scope_name`` before it builds the firing, so the
+        # message rendered from these firings and the column written from them
+        # carry the same string. Trimmed there rather than here deliberately —
+        # re-trimming an already-trimmed label is a no-op, but trimming ONLY
+        # here would let the two diverge.
+        scope_name=firing.scope_name,
+        event_type_id=firing.event_type_id,
+        event_id=firing.event_id,
+        bucket=firing.bucket,
+        direction=firing.direction.value,
+        actual_count=firing.actual_count,
+        expected_count=firing.expected_count,
+        absolute_delta=firing.absolute_delta,
+        percent_delta=firing.percent_delta,
+        drift_field=firing.drift_field,
+        drift_type=firing.drift_type,
+        sample_value=firing.sample_value,
+        # Every item the builder writes belongs to one demo incident, so the
+        # inbox group is explorable out of the box.
+        correlation_group_id=correlation_group_id,
+    )
 
 
 async def _seed_catalog_metric_anomaly(
@@ -457,12 +515,34 @@ async def _build_firings(
 
     firings: list[SimulatedRuleFiring] = []
     for anomaly in anomalies:
-        scope_name = _resolve_scope_name(
-            anomaly,
-            project=project,
-            event_names=event_names,
-            event_type_names=event_type_names,
-            metric_names=metric_names,
+        # Trimmed here, at the ONE construction site, the way
+        # ``alerting_service.simulate_rule`` trims the firings it builds and for
+        # the same reason: this list feeds both ``render_firings_message`` (which
+        # becomes ``payload_snapshot["rendered_message"]``) and, through
+        # ``_delivery_item``, the ``scope_name`` column — so trimming only at the
+        # item would leave the seeded message naming a scope the item does not.
+        #
+        # Nothing the demo seeds overflows 255 today: ``_resolve_scope_name``
+        # returns the project name, a seeded event/event-type/metric display
+        # name, or the scope ref, and the seeder writes all of them. But it reads
+        # them back out of the DB by id, so its inputs are ``Event.name``
+        # (String(500)) and ``EventType.display_name`` — the same wider sources
+        # ``trim_scope_name`` exists for — and this is the last
+        # ``AlertDeliveryItem`` writer outside the guard the rest of the batch
+        # added (``alert_payload``, ``_event_generator_merge``,
+        # ``_event_generator_merge_refs``, ``dispatch``). A demo recipe that one
+        # day seeds a realistically long event name would otherwise reproduce
+        # tripl-0zpq.253 inside ``create_demo_project``, where the whole seed is
+        # one transaction and the Postgres "value too long" would roll all of it
+        # back.
+        scope_name = trim_scope_name(
+            _resolve_scope_name(
+                anomaly,
+                project=project,
+                event_names=event_names,
+                event_type_names=event_type_names,
+                metric_names=metric_names,
+            )
         )
         absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
         # The same definition live dispatch stores and the real simulator

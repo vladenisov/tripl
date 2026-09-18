@@ -48,6 +48,7 @@ from tripl.core.analyzers.anomaly_detector import (
 from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.domain_enums import DistributionDriftBand
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
@@ -508,6 +509,14 @@ def _get_active_variable_value_drift_candidates(
     covered by the exclude ENDPOINT deleting those rows, which fixed one caller
     and left the branch-merge and branch-revert paths — both of which carry
     ``excluded_from_scans`` across without a purge — still alerting.
+
+    The in-UI replay reads the same rows through the async twin
+    ``services.alerting_service._load_variable_value_drift_candidates``, which
+    trades the retention cutoff for the replay window and this one
+    ``scan_config_id`` for the project; both trades are argued there. The FIELD
+    MAPPING above is not a trade — change it here and it has to change there, or
+    the simulator starts describing a firing differently from the send
+    (tripl-0zpq.158).
     """
     retention_cutoff = datetime.now(UTC) - timedelta(days=30)
     candidates: dict[tuple[str, str], DriftAlertCandidate] = {}
@@ -557,6 +566,15 @@ def _get_active_release_regression_candidates(
     (version -> drift_field, kind -> drift_type, previous release -> sample_value)
     so it flows through the existing delivery-item and message machinery.
     Naturally inert: no rows exist when the scan has no version column.
+
+    The in-UI replay has an async twin,
+    ``services.alerting_service._load_release_regression_candidates``. It cannot
+    copy the "no time filter" above — that only works because this function runs
+    per collection, right after the pass that rewrote the rows — so it bounds
+    ``window_to`` by the replay window and therefore reports a standing
+    regression at most once, where a live rule re-sends it every cooldown
+    (tripl-0zpq.158). The ``app_version_column`` short-circuit it DOES copy,
+    because rows outlive the setting.
     """
     if not config.app_version_column:
         return {}
@@ -593,6 +611,24 @@ def _get_active_distribution_drift_candidates(
     session: Session,
     config: ScanConfig,
 ) -> dict[tuple[str, str], DistributionDriftAlertCandidate]:
+    """This scan's newest collected distribution drifts, significant band only.
+
+    Both filters are load-bearing and neither is a tidy-up. Every scored bucket
+    is persisted, not just the alarming ones (``metric_rows`` bands each PSI and
+    writes the stable and minor rows too), so without the band clause a field
+    that has never actually shifted would alert; and without the latest-bucket
+    clause every bucket ever collected would re-enter the candidate set on each
+    dispatch, re-firing history.
+
+    ``services/_alerting_scope_readiness.load_scope_readiness`` mirrors the band
+    clause — it answers "can this scope ever fire anywhere in this project", so
+    a row this function could never select must not count as readiness
+    (tripl-0zpq.166). It deliberately does not mirror the latest-bucket clause,
+    because its question is per project and "ever" rather than per config and
+    "now". Widen what counts here and that probe starts warning about projects
+    that do alert; narrow it and the probe starts promising a scope nothing will
+    feed.
+    """
     latest_bucket = session.execute(
         select(sa_func.max(DistributionDrift.bucket)).where(
             DistributionDrift.scan_config_id == config.id,
@@ -607,7 +643,10 @@ def _get_active_distribution_drift_candidates(
         .where(
             DistributionDrift.scan_config_id == config.id,
             DistributionDrift.bucket == latest_bucket,
-            DistributionDrift.band == "significant",
+            # Spelled through the enum, not a bare "significant", so the
+            # readiness probe that has to mirror this predicate is greppable
+            # from here (tripl-0zpq.166). Same value, same SQL.
+            DistributionDrift.band == DistributionDriftBand.significant.value,
         )
         .order_by(DistributionDrift.field_name)
     ).scalars():

@@ -305,7 +305,9 @@ Each top-level comment carries a resolution state, so a thread can end:
 **resolve** it when it is answered, **snooze** it for a week when the answer is
 not due yet, or **reopen** one that was closed too early. A snooze that has
 lapsed counts as open again — the state is worked out when the thread is read,
-not written back by a background job, so it is never briefly wrong.
+not written back by a background job, so it is never briefly wrong. The date you
+snooze *to* has to be in the future; one that has already passed is refused
+rather than stored.
 
 Resolution belongs to the **thread**, not to individual replies: a three-reply
 conversation is one question, and only the top-level comment carries the
@@ -368,9 +370,10 @@ Drift is detected when incoming data diverges from an event type's declared
 schema and is surfaced as the **schema-drift badge** on event rows in the
 catalog. Drift kinds are `new_field`, `missing_field`, `type_changed`,
 `enum_violation`, `required_null_violation`, `regex_violation`, and
-`range_violation`. Per drift you can **accept**, **snooze** (defaults to 7 days),
-mark **false positive**, or **reopen**. A resolution note is optional on every
-one of them, and an action that carries no note **leaves the stored note alone**
+`range_violation`. Per drift you can **accept**, **snooze** (defaults to 7 days,
+and the date you pick has to be in the future), mark **false positive**, or
+**reopen**. A resolution note is optional on every one of them, and an action
+that carries no note **leaves the stored note alone**
 — re-snoozing a drift does not erase the reason somebody recorded last week.
 **Reopen** is the exception and clears the note: a reopened drift has no
 resolution to annotate.
@@ -740,9 +743,9 @@ Open a rule for its detail page, which adds the fired history.
 The rule editor and the monitor detail also mark an enabled drift scope whose
 source data does not exist anywhere in the project — value drift with no
 documented allowed-values list on main and no drift collected, distribution drift
-with no scan watching a column and no drift collected — with an inline notice
-linking to the screen
-that supplies it (**Variables**, **Scan settings**). The toggle stays usable,
+with no scan watching a column and no significant drift collected — with an
+inline notice linking to the screen that supplies it (**Variables**, **Scan
+settings**). The toggle stays usable,
 because the missing data can arrive later; the check is project-wide, so it says
 nothing about the particular scan a rule is bound to. See
 [When a scope is on but nothing feeds it](./alerting.md#when-a-scope-is-on-but-nothing-feeds-it).
@@ -970,8 +973,14 @@ and message and items templates with variables such as `${channel}`,
 `${matched_count}`, and `${items_text}`. Metric-scope anomalies are also safe-off
 and are enabled by the rule editor's **Metrics** box (`include_metrics`). A rule can be
 **simulated/replayed** over the last N days (default 7), optionally overriding
-the saved cooldown. The **Inbox** is one row per incident — keyed by *(scan, rule,
-scope, direction)* — with six actions: **acknowledge**, **resolve**, **mute**
+the saved cooldown, minimum percent delta and minimum expected count, plus the
+detector's sigma threshold — a project **Detection settings** value rather than a
+rule field, accepted only above `0` and up to `10`. Every override applies to
+that one run and is written back nowhere. The **Inbox** is one row per incident — keyed by *(scan, rule,
+scope, direction)*, or by *(rule, scope, direction)* for a catalog metric, which
+is measured once for the whole project, names no scan, and so gets one shared
+incident whose acknowledgement holds for every scan — with six actions:
+**acknowledge**, **resolve**, **mute**
 (**1h / 24h / 7d / indefinitely**), **reopen**, **false positive**, and a
 standalone **note**. Acknowledge, resolve, mute and false positive all stop
 further deliveries for that incident; only a mute outlives the incident, and only

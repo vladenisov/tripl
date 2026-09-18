@@ -559,8 +559,8 @@ session — so `reserved_catalog_columns` can be reused verbatim on it.
 4. Delivery status becomes `pending`, `sent`, or `failed`.
 
 Separately, the weekly plan-digest beat task sends directly to every enabled
-Slack/email destination; it does not evaluate routing rules or create a normal
-anomaly delivery.
+Slack/email destination on a non-demo project; it does not evaluate routing rules
+or create a normal anomaly delivery.
 
 ### Branch and implementation-ticket flow
 

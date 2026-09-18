@@ -19,14 +19,23 @@ from tripl.alert_templates import percent_delta_of
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
     SCOPE_METRIC,
+    SCOPE_RELEASE_REGRESSION,
+    SCOPE_VARIABLE_VALUE_DRIFT,
     AlertMatchCandidate,
     DistributionDriftAlertCandidate,
+    DriftAlertCandidate,
     SchemaDriftAlertCandidate,
     distribution_drift_scope_ref,
     rule_matches_anomaly,
     simulate_rule_firings,
 )
+from tripl.models.alert_delivery_item import trim_scope_name
+from tripl.models.domain_enums import MetricScopeType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.project_anomaly_settings import (
+    DEFAULT_SIGMA_THRESHOLD,
+    ProjectAnomalySettings,
+)
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.alerting import (
     AlertRuleSimulateResponse,
@@ -88,6 +97,13 @@ from tripl.services.alerting_rendering import (
     trim_alert_text as _trim_alert_text,
 )
 from tripl.services.project_lookup import get_project_by_slug as _get_project
+
+# The one scope family whose label is a CONSTANT rather than a row lookup.
+# ``worker.tasks.metrics.alert_payload`` imports the identical string as
+# ``SCOPE_PROJECT_TOTAL`` from ``core.analyzers.anomaly_detector``; it is spelled
+# off the enum here instead because that module imports numpy and statsmodels at
+# module scope and nothing else on this async request path pulls them in.
+SCOPE_PROJECT_TOTAL = MetricScopeType.project_total.value
 
 SIMULATE_NOISY_THRESHOLD = 50
 SIMULATE_MAX_DAYS = 90
@@ -176,11 +192,33 @@ async def _build_scope_name_map(
         anomaly.event_type_id for anomaly in anomalies if anomaly.event_type_id is not None
     }
 
-    names: dict[tuple[str, str], str] = {}
+    # Project-total firings are NAMED BY A CONSTANT, not resolved from a row:
+    # ``detect`` writes ``scope_ref=str(config.id)``, so the ref is the scan
+    # CONFIG's uuid and there is no entity to look up. Without this seed the
+    # caller's ``scope_names.get(..., anomaly.scope_ref)`` fallback labels the
+    # row with that uuid, while the delivery built from the very same firing says
+    # "All events" — and because ``include_project_total`` defaults on, that is
+    # the MODAL preview/send disagreement rather than an edge case.
+    #
+    # Seeded first and unconditionally, exactly as the live twin
+    # ``alert_payload._build_alert_scope_names`` opens, so every branch below can
+    # only add to it. The label is spelled twice for the same reason
+    # ``alerting_rendering._ADOPTION_ADJUSTED_LABEL`` is — the live builder sits
+    # in the worker package and the two share no leaf to import it from — so the
+    # copy is pinned by ``tests/test_batch4_replay.py``, which runs one
+    # project-total candidate through BOTH builders and asserts the maps are
+    # equal.
+    names: dict[tuple[str, str], str] = {
+        (SCOPE_PROJECT_TOTAL, anomaly.scope_ref): "All events"
+        for anomaly in anomalies
+        if anomaly.scope_type == SCOPE_PROJECT_TOTAL
+    }
+    event_names: dict[uuid.UUID, str] = {}
     event_type_names: dict[uuid.UUID, str] = {}
     if event_ids:
         rows = await session.execute(select(Event.id, Event.name).where(Event.id.in_(event_ids)))
         for event_id, name in rows.all():
+            event_names[event_id] = name
             names[("event", str(event_id))] = name
     if event_type_ids:
         rows = await session.execute(
@@ -205,6 +243,34 @@ async def _build_scope_name_map(
             continue
         drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
         names[(SCOPE_DISTRIBUTION_DRIFT, anomaly.scope_ref)] = f"All events.{drift_field}"
+
+    # A variable-value drift is anchored on an EVENT and keeps the variable in
+    # ``drift_field``, so it reads "<event>.<variable>" — the live rule, from
+    # ``worker.tasks.metrics.alert_payload._build_alert_scope_names``. Its
+    # ``scope_ref`` is the drift ROW's uuid, so without this branch every such
+    # firing in the replay table would be named by a raw id (tripl-0zpq.158).
+    for anomaly in anomalies:
+        if anomaly.scope_type != SCOPE_VARIABLE_VALUE_DRIFT or anomaly.event_id is None:
+            continue
+        event_name = event_names.get(anomaly.event_id, "Event")
+        drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
+        names[(SCOPE_VARIABLE_VALUE_DRIFT, anomaly.scope_ref)] = f"{event_name}.{drift_field}"
+
+    # Release regressions borrow the name of the event / event type they were
+    # measured on, again mirroring the live builder: their ``scope_ref`` IS that
+    # entity's id, so "Login" is both available and the only honest label. Runs
+    # after both lookups above so the borrow always has something to find.
+    for anomaly in anomalies:
+        if anomaly.scope_type != SCOPE_RELEASE_REGRESSION:
+            continue
+        if anomaly.event_id is not None:
+            underlying = names.get(("event", str(anomaly.event_id)))
+        elif anomaly.event_type_id is not None:
+            underlying = names.get(("event_type", str(anomaly.event_type_id)))
+        else:
+            underlying = None
+        if underlying is not None:
+            names[(SCOPE_RELEASE_REGRESSION, anomaly.scope_ref)] = underlying
 
     # Catalog metric anomalies resolve to the metric's display name (scope_ref is
     # the metric-definition id), mirroring the live worker's _build_alert_scope_names.
@@ -269,6 +335,32 @@ async def _load_schema_drift_candidates(
     window_from: datetime,
     window_to: datetime,
 ) -> list[SchemaDriftAlertCandidate]:
+    """Replay twin of ``signals._get_active_schema_drift_candidates``.
+
+    Same join, the same open/unsnoozed gate and the same field mapping — field
+    name -> ``drift_field``, the drift kind -> ``drift_type``, the trimmed
+    sample -> ``sample_value``. Two predicates differ, and both differ because
+    the QUESTION differs:
+
+    * the live loader runs per collection and asks "is this drift open NOW", so
+      it reads a fixed 30-day retention cutoff. A replay is asked about a
+      window, so the window bounds ``detected_at`` instead.
+    * the live loader matches ONE ``scan_config_id``; a replay spans the
+      project, so it matches the project and requires the column to be set —
+      the same NOT NULL ``_load_variable_value_drift_candidates`` below carries,
+      for the same reason. ``scan_config_id`` is ``SET NULL`` when a scan is
+      deleted (``scan_service.delete_scan_config`` and the
+      ``DataSource.scan_configs`` cascade both reach it) and nothing purges the
+      orphaned rows before the 30-day prune, while ``signals`` selects
+      ``SchemaDrift.scan_config_id == config.id`` and a NULL never equals a
+      config id. Live goes quiet on those rows the moment the scan goes, so a
+      replay that kept listing them would be LOUDER than the pipeline it
+      predicts, which is the same defect as being quieter (tripl-0zpq.158).
+      Nothing is hidden permanently: ``_upsert_schema_drifts``'s ``coalesce``
+      re-stamps the provenance as soon as any scan re-detects the same (event
+      type, field, kind), and the row becomes deliverable and replayable again
+      together.
+    """
     from datetime import UTC
 
     from sqlalchemy import select
@@ -283,6 +375,7 @@ async def _load_schema_drift_candidates(
                 .join(EventType, EventType.id == SchemaDrift.event_type_id)
                 .where(
                     EventType.project_id == project_id,
+                    SchemaDrift.scan_config_id.is_not(None),
                     SchemaDrift.detected_at >= window_from,
                     SchemaDrift.detected_at < window_to,
                     SchemaDrift.status.in_(("open", "snoozed")),
@@ -367,14 +460,174 @@ async def _load_distribution_drift_candidates(
     return candidates
 
 
+async def _load_variable_value_drift_candidates(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    window_from: datetime,
+    window_to: datetime,
+) -> list[DriftAlertCandidate]:
+    """Replay twin of ``signals._get_active_variable_value_drift_candidates``.
+
+    Same rows and the same field mapping — variable display name ->
+    ``drift_field``, ``"value_drift"`` -> ``drift_type``, the sampled novel
+    values -> ``sample_value``, the per-event anchor through ``event_id`` so
+    event filters still apply. Two predicates differ, and both differ because
+    the QUESTION differs:
+
+    * the live loader runs per collection and asks "is this drift open NOW", so
+      it reads a fixed 30-day retention cutoff. A replay is asked about a
+      window, so the window bounds ``detected_at`` instead — the same trade
+      ``_load_schema_drift_candidates`` above already makes.
+    * the live loader matches ONE ``scan_config_id``; a replay spans the
+      project, so it matches the project and requires the column to be set. That
+      NOT NULL is load-bearing rather than tidy: ``scan_config_id`` is ``SET
+      NULL`` when a scan is deleted, and a NULL can never equal a config id, so
+      live can never deliver such a row. A replay that showed it would be LOUDER
+      than the pipeline it predicts, which is the same defect as being quieter
+      (tripl-0zpq.158) — and the demo seeds exactly one of them on purpose
+      (``services/demo/builders/variables._build_value_drift``).
+
+    The join to ``Variable`` carries both the display name and the
+    ``excluded_from_scans`` gate; the live docstring explains why that flag has
+    to be asked here rather than trusted to the exclude endpoint's purge.
+    """
+    from datetime import UTC
+
+    from sqlalchemy import select
+
+    from tripl.models.variable import Variable
+    from tripl.models.variable_value_drift import VariableValueDrift
+
+    rows = (
+        await session.execute(
+            select(VariableValueDrift, Variable.name)
+            .join(Variable, Variable.id == VariableValueDrift.variable_id)
+            .where(
+                VariableValueDrift.project_id == project_id,
+                VariableValueDrift.scan_config_id.is_not(None),
+                Variable.excluded_from_scans.is_(False),
+                VariableValueDrift.detected_at >= window_from,
+                VariableValueDrift.detected_at < window_to,
+                VariableValueDrift.status.in_(("open", "snoozed")),
+                (VariableValueDrift.status != "snoozed")
+                | (VariableValueDrift.snoozed_until.is_(None))
+                | (VariableValueDrift.snoozed_until <= datetime.now(UTC)),
+            )
+            .order_by(VariableValueDrift.detected_at)
+        )
+    ).all()
+    return [
+        DriftAlertCandidate(
+            id=drift.id,
+            scan_config_id=drift.scan_config_id,
+            scope_type=SCOPE_VARIABLE_VALUE_DRIFT,
+            scope_ref=str(drift.id),
+            event_id=drift.event_id,
+            event_type_id=None,
+            bucket=drift.detected_at,
+            direction="spike",
+            actual_count=float(len(drift.observed_values or [])),
+            expected_count=0.0,
+            drift_field=variable_name,
+            drift_type="value_drift",
+            sample_value=_trim_alert_text(", ".join(drift.observed_values or [])),
+        )
+        for drift, variable_name in rows
+    ]
+
+
+async def _load_release_regression_candidates(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    window_from: datetime,
+    window_to: datetime,
+) -> list[DriftAlertCandidate]:
+    """Replay twin of ``signals._get_active_release_regression_candidates``.
+
+    Every stored row is CURRENT — the recalculation keeps only the latest
+    release's regressions — which is why the live loader needs no time filter at
+    all: it runs per collection and re-reads whatever the last pass wrote. A
+    replay cannot reconstruct that history, because the table holds one row per
+    (scan, scope, release) and not one per collection. So it places each row at
+    the window it actually measured and admits it when that window's END falls
+    inside the replay range.
+
+    The consequence is worth stating rather than discovering: a standing
+    regression contributes AT MOST ONE firing to a replay, while the live rule
+    re-sends it once per cooldown for as long as it persists. For this one
+    family the replay is a LOWER bound, not an estimate — see
+    ``website/docs/use/alerting.md``. It is still the honest answer available
+    from the rows that exist, and it is enormously closer than the zero this
+    replay used to report (tripl-0zpq.158).
+
+    The ``app_version_column`` clause mirrors the live short-circuit instead of
+    trusting "no rows exist anyway". Rows outlive the setting — nothing purges
+    them when an operator clears the column — while live stops delivering them
+    the moment it is cleared, so the replay has to stop as well.
+    """
+    from sqlalchemy import select
+
+    from tripl.models.release_regression import ReleaseRegression
+
+    rows = (
+        (
+            await session.execute(
+                select(ReleaseRegression)
+                .join(ScanConfig, ScanConfig.id == ReleaseRegression.scan_config_id)
+                .where(
+                    ScanConfig.project_id == project_id,
+                    ScanConfig.app_version_column.is_not(None),
+                    ScanConfig.app_version_column != "",
+                    ReleaseRegression.window_to >= window_from,
+                    ReleaseRegression.window_to < window_to,
+                )
+                .order_by(ReleaseRegression.window_to, ReleaseRegression.scope_ref)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        DriftAlertCandidate(
+            id=regression.id,
+            scan_config_id=regression.scan_config_id,
+            scope_type=SCOPE_RELEASE_REGRESSION,
+            scope_ref=regression.scope_ref,
+            event_id=regression.event_id,
+            event_type_id=regression.event_type_id,
+            bucket=regression.window_to,
+            direction="drop",
+            actual_count=regression.observed_count,
+            expected_count=regression.expected_count,
+            drift_field=regression.version,
+            drift_type=regression.kind,
+            sample_value=regression.previous_version,
+            # ``bucket`` above is window_to, and carrying the other end is what
+            # lets the PREVIEW name the rollout overlap the send already names.
+            # TWO hops carry it and both are load-bearing: this one, and
+            # ``simulate_rule``'s ``SimulatedRuleFiring(window_from=...)``, which
+            # reads it back off the candidate. Drop either and
+            # ``build_drift_line`` silently loses the clause on the preview side
+            # only — the exact preview/send split the shared builder exists to
+            # close (tripl-0zpq.165).
+            window_from=regression.window_from,
+        )
+        for regression in rows
+    ]
+
+
 def _clears_sigma(anomaly: AlertMatchCandidate, sigma_threshold: float) -> bool:
     """Would the detector still have recorded this anomaly at ``sigma_threshold``?
 
     ``AlertMatchCandidate`` is a Protocol and only the ``MetricAnomaly`` members
-    of it carry a ``z_score`` — the drift dataclasses are produced by PSI and
-    schema comparisons, which are not scored in sigmas at all. Those answer True:
-    a detector sensitivity has nothing to say about them, the same way the rule's
-    numeric thresholds do not gate them.
+    of it carry a ``z_score``. The four dataclass families — schema drift,
+    distribution drift, variable-value drift and release regressions — come from
+    schema comparisons, PSI, allowed-value lists and release composition shares
+    respectively, and not one of them is scored in sigmas at all. Those answer
+    True: a detector sensitivity has nothing to say about them, the same way the
+    rule's numeric thresholds do not gate them.
     """
     z_score = getattr(anomaly, "z_score", None)
     if z_score is None:
@@ -400,6 +653,21 @@ async def simulate_rule(
     300 have cut these incidents" must not be asked by saving 300 and waiting
     (tripl-oxkt.17 part 3). Each is reported back as ``*_used`` beside the rule's
     stored ``*_saved`` value.
+
+    "What it would have sent" is the IMMEDIATE-delivery answer, and for one
+    destination class that is not what production does. ``destination`` is loaded
+    below for the rendered preview only; the counting is done by
+    ``simulate_rule_firings``, which gates every candidate on
+    ``cooldown_minutes``, while live switches that gate off for a destination
+    carrying a ``delivery_schedule_cron`` and lets the cadence and the digest
+    buffer limit it instead (``dispatch._prepare_alert_deliveries``,
+    ``_buffer_pending_items``). For such a destination ``firings``, ``noisy`` and
+    ``rendered_message`` describe a limiter production does not apply — see
+    ``simulate_rule_firings`` for which way the count is off and for why
+    mirroring the live gate alone would make it worse rather than better. The
+    number on this response that no limiter touches either way is
+    ``matched_before_cooldown``, computed straight from the shared matcher; the
+    replay dialog already shows it as "Matched N before cooldown".
     """
     from datetime import UTC, timedelta
 
@@ -512,10 +780,41 @@ async def simulate_rule(
         window_from=window_from,
         window_to=window_to,
     )
+    variable_value_drift_candidates = await _load_variable_value_drift_candidates(
+        session,
+        project_id=project.id,
+        window_from=window_from,
+        window_to=window_to,
+    )
+    release_regression_candidates = await _load_release_regression_candidates(
+        session,
+        project_id=project.id,
+        window_from=window_from,
+        window_to=window_to,
+    )
+    # FIVE sources, matching the five ``dispatch._prepare_alert_deliveries``
+    # merges (worker/tasks/metrics/dispatch.py). It was three until
+    # tripl-0zpq.158: variable-value drifts and release regressions were never
+    # loaded, so a rule with ``include_variable_value_drifts`` or
+    # ``include_release_regressions`` on replayed SILENT while the pipeline
+    # paged on every one of those rows — and silent in every field at once,
+    # because the whole response is derived from this list:
+    # ``anomalies_considered``, ``matched_before_cooldown``, ``firings``,
+    # ``noisy`` and ``rendered_message``. The operator read "quiet, not noisy"
+    # for a rule that pages thirty times a week, and troubleshooting.md's "if it
+    # doesn't match in the simulator it won't match live either" was false for
+    # precisely the two scopes nothing here could produce.
+    #
+    # Both toggles are gated inside ``rule_matches_anomaly``, so loading the
+    # rows here is all it takes to make the gate reachable; nothing about WHICH
+    # of them fires is decided in this module — that is the point of
+    # ``tripl.alerting_matching``.
     anomalies: list[AlertMatchCandidate] = [
         *metric_anomalies,
         *schema_candidates,
         *distribution_candidates,
+        *variable_value_drift_candidates,
+        *release_regression_candidates,
     ]
     # A sigma what-if is a question about DETECTION, not about the rule, so it is
     # applied to the candidate list itself: in the world being simulated those
@@ -526,8 +825,9 @@ async def simulate_rule(
     # threshold, so raising the bar re-reads rows that exist on disk, while
     # lowering it asks about rows nobody ever wrote and there is nothing to bring
     # back — see the docstring on ``AlertRuleSimulateResponse``. Candidates with
-    # no z-score (schema and distribution drift) pass through untouched, exactly
-    # as they bypass the rule's numeric thresholds.
+    # no z-score — all four non-metric families: schema drift, distribution
+    # drift, variable-value drift and release regressions — pass through
+    # untouched, exactly as they bypass the rule's numeric thresholds.
     if sigma_threshold_override is not None:
         anomalies = [
             anomaly for anomaly in anomalies if _clears_sigma(anomaly, sigma_threshold_override)
@@ -581,9 +881,16 @@ async def simulate_rule(
         # number. Readers of it go through ``format_percent_delta`` (rendered
         # preview) or the frontend's ``lib/percentDelta`` (replay table).
         percent_delta = percent_delta_of(anomaly.actual_count, anomaly.expected_count)
-        scope_name = scope_names.get(
-            (anomaly.scope_type, anomaly.scope_ref),
-            anomaly.scope_ref,
+        # Trimmed the way the live path trims it: ``alert_payload`` runs every
+        # name through ``trim_scope_name`` before it reaches the 255-character
+        # ``scope_name`` column, so a preview that showed the untrimmed label
+        # would disagree with the message the send actually delivers — the one
+        # thing this module exists to prevent.
+        scope_name = trim_scope_name(
+            scope_names.get(
+                (anomaly.scope_type, anomaly.scope_ref),
+                anomaly.scope_ref,
+            )
         )
         firings.append(
             SimulatedRuleFiring(
@@ -597,6 +904,21 @@ async def simulate_rule(
                 drift_type=getattr(anomaly, "drift_type", None),
                 sample_value=getattr(anomaly, "sample_value", None),
                 bucket=anomaly.bucket,
+                # ``bucket`` above is the window's END; this is the hop that
+                # carries the START off the candidate and onto the DTO the
+                # preview renders from. Only ``_load_release_regression_candidates``
+                # fills it, and without this line every simulated firing takes
+                # the field's ``None`` default: the preview drops " over the 51h
+                # rollout overlap" while the delivered item keeps it, about the
+                # same firing, because ``alert_templates._format_window_span``
+                # is written to return None rather than to fail.
+                #
+                # ``getattr`` because ``AlertMatchCandidate`` is a Protocol and
+                # its ``MetricAnomaly`` members carry no window — the same form
+                # the send side uses for the same field
+                # (``dispatch._create_deliveries`` and ``_buffer_pending_items``),
+                # and the same form the three drift fields above use here.
+                window_from=getattr(anomaly, "window_from", None),
                 direction=anomaly.direction,
                 actual_count=anomaly.actual_count,
                 expected_count=anomaly.expected_count,
@@ -620,15 +942,37 @@ async def simulate_rule(
         if cooldown_minutes_override is not None
         else rule.cooldown_minutes
     )
-    # The detector threshold this replay is measured against. A scan-bound rule
-    # quotes its scan's; a rule left on "All scans" only has one to quote when
-    # every scan in the project agrees, so disagreement reports null rather than
-    # picking one scan's value and presenting it as the rule's.
-    scan_sigma_query = select(ScanConfig.sigma_threshold).where(ScanConfig.project_id == project.id)
-    if rule.scan_config_id is not None:
-        scan_sigma_query = scan_sigma_query.where(ScanConfig.id == rule.scan_config_id)
-    scan_sigmas = {float(value) for value in (await session.execute(scan_sigma_query)).scalars()}
-    sigma_threshold_saved = next(iter(scan_sigmas)) if len(scan_sigmas) == 1 else None
+    # The detector threshold this replay is measured against, read from the one
+    # place the detector itself reads it: the PROJECT's Detection settings
+    # (tripl-0zpq.160). This used to quote ``ScanConfig.sigma_threshold`` — a
+    # per-scan copy of the same number that nothing scores against and no API
+    # writes. ``worker.tasks.metrics.detect`` builds its
+    # ``AnomalyDetectionSettings`` from ``ProjectAnomalySettings`` alone
+    # (``_build_anomaly_settings``), so an operator who raised sigma to 5.0 in
+    # Detection settings — as anomaly-detection.md recommends for cutting noise —
+    # was shown the stale 4.0 the column still held, and every what-if typed into
+    # this dialog was then reasoned about against a threshold nothing detects
+    # with: an "override" of 4.5 looked stricter and dropped nothing, because
+    # every stored row had already cleared 5.0.
+    #
+    # ``DEFAULT_SIGMA_THRESHOLD`` when there is no settings row, the same
+    # fallback the false-positive ratchet already uses for the same value
+    # (``_alerting_deliveries``). The row is created lazily by the Detection
+    # settings endpoint, and detect.py treats its absence as "detection off,
+    # purge everything", so a project in that state has no anomalies to replay
+    # anyway — the default is what the row would be born holding.
+    #
+    # Per-scope ``AnomalyScopeOverride`` rows can still raise the effective
+    # threshold ABOVE this for individual scopes. This is the project-wide base,
+    # which is the only thing a single number in the dialog can honestly be.
+    settings_sigma = await session.scalar(
+        select(ProjectAnomalySettings.sigma_threshold).where(
+            ProjectAnomalySettings.project_id == project.id
+        )
+    )
+    sigma_threshold_saved = (
+        DEFAULT_SIGMA_THRESHOLD if settings_sigma is None else float(settings_sigma)
+    )
 
     return AlertRuleSimulateResponse(
         rule_id=rule.id,

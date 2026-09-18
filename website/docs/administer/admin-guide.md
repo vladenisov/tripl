@@ -371,7 +371,11 @@ password-reset links. Leaving **SMTP host** blank disables all of them.
   unreachable however it was set.
 - **Default From address** (`smtp_from_address`) — used when a destination
   doesn't override it, and **required** for password-reset mail: without it a
-  reset link is minted and then dropped.
+  reset link is minted and then dropped. A display name is allowed
+  (`Tripl Alerts <no-reply@example.com>`), and the address inside it is checked
+  when you **save** rather than hours later by a failed alert. The
+  per-destination From: override accepts exactly the same values, so anything
+  this field takes can also be set on a single destination.
 - A **Send test email** button that sends one message to your own address using
   the SAVED settings and shows what the relay answered. Save before testing, or
   you are testing what is still stored rather than what is on screen.

@@ -3,15 +3,19 @@ from __future__ import annotations
 from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
     AlertTemplateContext,
+    DriftLineFacts,
+    alert_scope_label,
+    build_drift_line,
     escape_alert_value,
     format_metric_alert_value,
     format_percent_delta,
     get_default_items_template,
     get_default_message_template,
+    has_baseline,
     normalize_message_template,
     render_alert_template,
 )
-from tripl.alerting_matching import SCOPE_DISTRIBUTION_DRIFT, SCOPE_METRIC
+from tripl.alerting_matching import SCOPE_METRIC
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.distribution_drift import DistributionDrift
@@ -20,14 +24,57 @@ from tripl.models.project import Project
 from tripl.schemas.alerting import SimulatedRuleFiring
 
 SCOPE_SCHEMA_DRIFT = MetricScopeType.schema.value
+SCOPE_RELEASE_REGRESSION = MetricScopeType.release_regression.value
 
-_SCOPE_LABELS = {
-    MetricScopeType.project_total.value: "Project total",
-    MetricScopeType.event_type.value: "Event type",
-    MetricScopeType.event.value: "Event",
-    SCOPE_SCHEMA_DRIFT: "Schema drift",
-    SCOPE_DISTRIBUTION_DRIFT: "Distribution drift",
-}
+# The parenthetical that rides on ``${expected_count}`` for the one scope whose
+# expectation is not a plain baseline. Byte-identical to
+# ``worker.tasks.alerts_messages._ADOPTION_ADJUSTED_LABEL``, and pinned to it by
+# ``tests/test_batch4_replay.py``, which renders ONE release regression through
+# both renderers and asserts the two whole items are equal.
+#
+# It is spelled twice only because the leaf both renderers already share —
+# ``alert_templates``, where ``NO_BASELINE_LABEL`` lives for exactly this reason
+# — is owned by another lane in this batch. Hoisting it there, beside a shared
+# ``expected_basis(scope_type, expected_count)``, is the follow-up; until then
+# the equality test is what stops the copy drifting.
+_ADOPTION_ADJUSTED_LABEL = " (adoption-adjusted)"
+
+
+def _drift_facts(firing: SimulatedRuleFiring) -> DriftLineFacts:
+    """The simulated firing's half of the ``${drift_line}`` contract.
+
+    Twin of ``worker.tasks.alerts_messages._drift_facts``, which fills the same
+    fields off a delivered ``AlertDeliveryItem``. Keeping these two adapters the
+    only production constructors is what stops the preview's wording and the
+    send's from splitting again (tripl-0zpq.165).
+
+    ``window_from`` rides along like every other fact. It used to be the one
+    field a firing could not supply — the replay loaded only stored anomaly
+    rows, which record a bucket and no window — but a ``ReleaseRegression`` IS a
+    stored row and it records both ends, and since tripl-0zpq.158 the replay
+    loads it. THREE hops carry it from that row to here and all three are
+    load-bearing: ``_load_release_regression_candidates``'s
+    ``DriftAlertCandidate(window_from=...)``, ``simulate_rule``'s
+    ``SimulatedRuleFiring(window_from=...)``, and this line. With all three the
+    rollout-overlap clause renders in the preview exactly as it does in the
+    send; break any one and it drops out of the PREVIEW alone, silently,
+    because ``alert_templates._format_window_span`` is written to return None
+    rather than to fail. Every other family still leaves it None, which is what
+    that drop-out branch is for — and what an item delivered before the column
+    existed still relies on.
+    """
+    return DriftLineFacts(
+        scope_type=firing.scope_type,
+        drift_type=firing.drift_type,
+        drift_field=firing.drift_field,
+        sample_value=firing.sample_value,
+        expected_count=firing.expected_count,
+        percent_delta=firing.percent_delta,
+        bucket=firing.bucket,
+        window_from=firing.window_from,
+        event_id=firing.event_id,
+        event_type_id=firing.event_type_id,
+    )
 
 
 def render_firing_item(
@@ -44,14 +91,19 @@ def render_firing_item(
     queries per firing. ``metric_unit`` is the firing metric's display unit
     (metric scope only) so percent metrics render the same numbers as the
     live send path.
+
+    The two strings whose wording is not derivable from a shared formatter —
+    ``${scope_label}`` and ``${drift_line}`` — are built by the shared
+    ``alert_templates`` helpers rather than restated here. Both used to be a
+    second copy and both had drifted from the send: a schema drift previewed as
+    "drift: type_changed: amount — e.g. 9.99" and then arrived as
+    "drift: type_changed amount sample=9.99" (tripl-0zpq.165).
+
+    ``${expected_basis}`` is the third such string and was the last one still
+    diverging — see the comment on it below.
     """
-    scope_label = _SCOPE_LABELS.get(firing.scope_type, firing.scope_type)
-    drift_line = ""
-    if firing.drift_field and firing.drift_type:
-        drift_summary = f"{firing.drift_type}: {firing.drift_field}"
-        if firing.sample_value:
-            drift_summary += f" — e.g. {firing.sample_value}"
-        drift_line = f"\n  drift: {drift_summary}"
+    scope_label = alert_scope_label(firing.scope_type)
+    drift_line = build_drift_line(_drift_facts(firing))
 
     variables = {
         "scope_name": escape_alert_value(firing.scope_name, message_format),
@@ -72,13 +124,32 @@ def render_firing_item(
         "expected_count": escape_alert_value(
             format_metric_alert_value(firing.expected_count, metric_unit), message_format
         ),
-        # Must be defined even where it is always empty: render_alert_template
-        # leaves an unknown ${var} in the output verbatim, so omitting it here
-        # would print the literal "${expected_basis}" in every preview. The
-        # simulator replays stored anomalies, which are never release
+        # Must be defined even where it is empty: render_alert_template leaves
+        # an unknown ${var} in the output verbatim, so omitting it here would
+        # print the literal "${expected_basis}" in every preview.
+        #
+        # It is no longer hard-coded to "". It was, behind a comment asserting
+        # that the simulator "replays stored anomalies, which are never release
         # regressions (those are recomputed per scan, not stored as anomaly
-        # rows), so the qualifier has nothing to qualify.
-        "expected_basis": "",
+        # rows)" — and ``ReleaseRegression`` is a table
+        # (``models/release_regression.py``), recomputed in full per scan but
+        # very much stored. The claim only looked true because the replay never
+        # LOADED those rows; now that it does (tripl-0zpq.158) the empty string
+        # would have been the family's last preview/send divergence, previewing
+        # "expected=715.7" where the delivery says
+        # "expected=715.7 (adoption-adjusted)" about the same firing.
+        #
+        # Same condition as the send's
+        # (``alerts_messages._build_item_template_context``), and through the
+        # same ``has_baseline`` so a signed expectation is QUALIFIED rather than
+        # denied — the distinction tripl-0zpq.102 drew for every other reader of
+        # "was there a baseline".
+        "expected_basis": escape_alert_value(
+            _ADOPTION_ADJUSTED_LABEL
+            if firing.scope_type == SCOPE_RELEASE_REGRESSION and has_baseline(firing.expected_count)
+            else "",
+            message_format,
+        ),
         "absolute_delta": escape_alert_value(
             format_metric_alert_value(firing.absolute_delta, metric_unit), message_format
         ),

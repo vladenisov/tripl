@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.domain_enums import AnomalyDirection
 from tripl.models.scan_config import ScanConfig
+from tripl.services import app_settings_service
 from tripl.worker.tasks.metrics.alert_payload import (
     _build_alert_scope_names,
     _build_delivery_snapshot,
@@ -81,9 +82,54 @@ def _cooldown_elapsed(
     return now - last >= timedelta(minutes=cooldown_minutes)
 
 
+# The partition a project-global scope hashes into, where a config-scoped one
+# hashes its scan config id.
+#
+# A NON-UUID literal on purpose: no scan config id can ever render as this
+# string, so the project-global id space is provably DISJOINT from every
+# config-scoped one and no config can collide into a catalog metric's incident
+# handle. It is also drift-proof by construction — there is no row behind it to
+# be created, deleted or re-elected, which is precisely what went wrong with the
+# anchor it replaces (tripl-0zpq.28).
+#
+# The PROJECT ID is deliberately not hashed in its place. ``rule_id`` is already
+# in the key and a rule belongs to exactly one destination, which belongs to
+# exactly one project, so a project component adds no discriminating power — it
+# would only put a different KIND of uuid into the slot that otherwise holds a
+# config id, which is the overlap this literal exists to rule out.
+# ``AlertCorrelationState`` is looked up with an explicit ``project_id`` filter
+# anyway (see ``_suppressed_correlation_group_ids``).
+_PROJECT_GLOBAL_PARTITION = "project-global"
+
+
+def _scope_partition_id(scope_type: str, *, config_id: uuid.UUID) -> uuid.UUID | None:
+    """Which partition a scope lives in: NO config for ``metric``, the firing one otherwise.
+
+    One function for the one question this module keeps asking, because all
+    three answers have to agree: the ``AlertRuleState`` a run writes, the
+    ``AlertPendingItem`` it buffers, and the incident handle
+    ``_correlation_group_id`` hashes. A ``metric`` scope is project-global — its
+    anomaly row carries a NULL ``scan_config_id`` of its own — so all three store
+    or hash nothing for the config, and every scan's run converges on one state
+    row, one cooldown clock and one incident. Converges even when those runs are
+    concurrent: sharing a row across workers is what makes its creation a race,
+    which ``_claim_rule_state`` settles in the database rather than in the load.
+
+    They used to disagree. The state and the buffer were keyed project-wide while
+    the handle hashed the FIRING config, so a three-scan project minted three
+    handles for one project-global scope: an Inbox acknowledgement or mute on one
+    of them left the other two paging on the next collection, and the Inbox
+    listed up to N rows for a single incident (tripl-0zpq.27).
+
+    ``services/_alerting_deliveries`` asks the same question of the
+    false-positive ratchet and answers it the same way.
+    """
+    return None if scope_type == SCOPE_METRIC else config_id
+
+
 def _correlation_group_id(
     *,
-    scan_config_id: uuid.UUID,
+    scan_config_id: uuid.UUID | None,
     rule_id: uuid.UUID,
     scope_type: str,
     scope_ref: str,
@@ -109,10 +155,19 @@ def _correlation_group_id(
     ``_reopen_closed_incidents`` now resets a scope's groups as soon as THAT
     scope's alert state is closed, so a genuinely new incident is never silenced
     by an old decision.
+
+    ``scan_config_id`` is the scope's PARTITION, not "the config collecting right
+    now": a NULL is the project-global one, which is what a ``metric`` scope
+    stores in its state row and its buffered row (``_scope_partition_id``). It
+    renders through ``_PROJECT_GLOBAL_PARTITION`` rather than through ``None``'s
+    repr, so the string that is hashed says what it means and cannot be produced
+    by any scan config id. Callers pass the partition, never a config id "for a
+    metric scope anyway" — that is the bug this rule replaced (tripl-0zpq.27).
     """
+    partition = _PROJECT_GLOBAL_PARTITION if scan_config_id is None else str(scan_config_id)
     return uuid.uuid5(
         _CORRELATION_NAMESPACE,
-        f"{scan_config_id}:{rule_id}:{scope_type}:{scope_ref}:{direction}",
+        f"{partition}:{rule_id}:{scope_type}:{scope_ref}:{direction}",
     )
 
 
@@ -150,7 +205,7 @@ def _reopen_closed_incidents(
     session: Session,
     *,
     project_id: uuid.UUID,
-    scan_config_id: uuid.UUID,
+    scan_config_id: uuid.UUID | None,
     rule_id: uuid.UUID,
     scope_keys: Iterable[tuple[str, str]],
 ) -> None:
@@ -163,6 +218,14 @@ def _reopen_closed_incidents(
     Per SCOPE, matching ``_correlation_group_id``. The old rule-wide reset needed
     every scope of the rule to be quiet at once, which a suppressed scope could
     never be — it kept firing, unseen, holding its own release hostage.
+
+    ONE PARTITION PER CALL. ``scan_config_id`` is the partition the ids being
+    released were minted under — ``None`` for the project-global ``metric``
+    scopes, the firing config for every other scope — so a caller whose closed
+    keys span both makes two calls (``_prepare_alert_deliveries`` does). Ids
+    rebuilt under the wrong partition match no stored row, and a release that
+    matches nothing is a suppression that never ends: the incident stays
+    acknowledged forever and its scope can never alert again.
 
     A mute is deliberately excluded, timed or indefinite. "Acknowledged" means
     "I am on this incident" and dies with it; "muted until T" means "do not tell
@@ -218,6 +281,20 @@ def _reopen_closed_incidents(
         state.muted_until = None
 
 
+# The two columns of ``uq_alert_correlation_state_project_group``. Spelled out
+# because the claim below names them as conflict targets while the model names
+# them as the constraint — they have to stay the same list, exactly as
+# ``_RULE_STATE_CONFLICT_KEYS`` and ``_PENDING_ITEM_CONFLICT_KEYS`` do for the
+# tables either side of this one.
+#
+# Named as COLUMNS and not as the constraint. ``ON CONFLICT ON CONSTRAINT`` is
+# PostgreSQL-only syntax while SQLite's upsert accepts a column list only, so a
+# constraint name here would compile in production and fail in the unit suite.
+# There is no partial-index arm to branch on the way the other two have: both
+# columns are NOT NULL, so this one constraint answers for every row.
+_CORRELATION_STATE_CONFLICT_KEYS = ("project_id", "correlation_group_id")
+
+
 def _touch_correlation_state(
     session: Session,
     *,
@@ -225,6 +302,102 @@ def _touch_correlation_state(
     correlation_group_id: uuid.UUID,
     seen_at: datetime,
 ) -> None:
+    """Keep an incident's inbox row alive, converging when a peer opens it first.
+
+    This was a select-then-``session.add``, and since tripl-0zpq.27 its two
+    halves can be executed by two workers at once. ``check_metrics_due``
+    dispatches ``collect_metrics.delay(str(config.id), str(job.id))`` per CONFIG,
+    so two configs of one project collect in parallel; the handle they touch is
+    ``_correlation_group_id``, which hashes the scope's PARTITION, and for a
+    project-global ``metric`` scope that partition is the same NULL in both runs.
+    The two used to hash their own firing config and write different rows — the
+    bug tripl-0zpq.27 fixed — so agreeing on ONE handle is the point of that
+    change, and it is also what turned the first touch of a handle into a race.
+
+    ``_claim_rule_state`` does not serialize this one. Its key is the rule state,
+    which carries no ``direction``, while the incident handle does — so a scope
+    that dropped in the morning and spikes in the afternoon reuses the single
+    state row it already has (both runs take the branch for an EXISTING state,
+    where nothing is claimed) and then touches a second, brand-new handle. That
+    flip is the common case rather than a corner: 106 of 223 live scopes fired in
+    BOTH directions inside one day, recorded at ``_buffer_pending_items``.
+
+    ``uq_alert_correlation_state_project_group`` is a plain, non-deferrable
+    unique constraint — ``f4a8d3c72e19._move_correlation_states`` leans on
+    exactly that when it merges rekeyed rows — so the loser of that race raised
+    IntegrityError at the next flush, inside ``_prepare_alert_deliveries``, which
+    nothing wraps in a savepoint. That took the whole ``collect_metrics`` run
+    down with it: the anomaly recalculation, the cooldown updates and every
+    delivery for every scope of that scan. The same blast radius as the rule
+    state race one table over, and reachable for the same reason.
+
+    INSERT ... ON CONFLICT DO NOTHING and a re-read, the shape
+    ``_claim_rule_state``, ``_buffer_pending_items`` and ``detect.py`` already
+    use. Not a ``begin_nested()`` savepoint: that flushes the caller's pending
+    work at ROOT level on the way in — the reason
+    ``_event_identity.insert_event_claiming_identity`` has to flush ABOVE its own
+    ``try`` — and both call sites reach this function holding unflushed ORM work
+    (the delivery path an unflushed ``AlertDeliveryItem``, the buffer path the
+    rule-state rows the send gate has just left dirty), whose own failure would
+    then surface inside the ``try`` and be read as this row's collision.
+
+    DO NOTHING rather than DO UPDATE, because the row already there is the
+    OPERATOR's: ``status``, ``muted_until``, ``note``, ``acted_at``,
+    ``acted_by`` and ``false_positive_count`` are what an inbox action wrote
+    (``_alerting_deliveries._apply_inbox_action_to_state``), and a collection has
+    no business restating any of them. Only ``last_seen_at`` moves, and it moves
+    in PYTHON after the re-read rather than in a SET clause: the two backends
+    have no shared spelling of a maximum. PostgreSQL has ``GREATEST``, SQLite has
+    a two-argument ``max()``, and they disagree precisely where it matters —
+    ``GREATEST`` ignores a NULL argument while SQLite's ``max()`` returns NULL if
+    any argument is NULL, so the same SET clause would set the timestamp on a
+    never-seen row in production and ERASE it in the unit suite.
+
+    ``last_seen_at`` is left to the INSERT on the winning path and never
+    re-compared there, which is what the early return is for: the row the
+    statement just wrote already holds ``seen_at``, so there is nothing to take a
+    maximum against and no second statement worth spending.
+
+    A re-read that finds NOTHING is left alone. ``AlertCorrelationState`` is
+    never pruned (``_alerting_deliveries._load_orphan_group_rows`` says so and
+    budgets for it), so the only way to lose the holder between two statements of
+    one transaction is the project being deleted underneath the run and taking
+    the row with it by cascade. The guard is here because the collection this
+    function is a detail of is worth more than one incident's last-seen stamp.
+    """
+    dialect = session.bind.dialect.name if session.bind is not None else "postgresql"
+    insert = sqlite_insert if dialect == "sqlite" else postgresql_insert
+    claim = (
+        insert(AlertCorrelationState)
+        .values(
+            # Spelled out for symmetry with this package's other Core inserts;
+            # UUIDMixin's ``default=uuid.uuid4`` would render it anyway. The
+            # timestamp columns are left out because theirs are SERVER defaults,
+            # which a Core INSERT does not bypass — and so is ``status``, which
+            # is passed anyway so this row's opening state is stated where it is
+            # made rather than read out of the migration.
+            id=uuid.uuid4(),
+            project_id=project_id,
+            correlation_group_id=correlation_group_id,
+            status="open",
+            last_seen_at=seen_at,
+        )
+        .on_conflict_do_nothing(index_elements=list(_CORRELATION_STATE_CONFLICT_KEYS))
+    )
+    # RETURNING yields the id only when the row was actually inserted — DO
+    # NOTHING inserts nothing and returns nothing — so this answers "did THIS
+    # statement open the incident" without inferring it from what a later read
+    # happens to find.
+    created = (
+        session.execute(claim.returning(AlertCorrelationState.id)).scalar_one_or_none() is not None
+    )
+    if created:
+        return
+    # A second statement on purpose. Under READ COMMITTED it takes a fresh
+    # snapshot, which is what lets it see a row this transaction's own INSERT
+    # could not: on PostgreSQL the peer may still be UNCOMMITTED when the claim
+    # above runs, and ON CONFLICT waits for it to commit or abort, so by the time
+    # control reaches here the winner's row is visible either way.
     state = session.execute(
         select(AlertCorrelationState).where(
             AlertCorrelationState.project_id == project_id,
@@ -232,16 +405,19 @@ def _touch_correlation_state(
         )
     ).scalar_one_or_none()
     if state is None:
-        session.add(
-            AlertCorrelationState(
-                project_id=project_id,
-                correlation_group_id=correlation_group_id,
-                status="open",
-                last_seen_at=seen_at,
-            )
-        )
         return
-    state.last_seen_at = max(state.last_seen_at or seen_at, seen_at)
+    # The maximum, written as a guarded assignment rather than ``max(...)`` so
+    # the value STORED is the one that was read rather than a normalised copy of
+    # it. Only the COMPARISON goes through ``_as_utc``: ``last_seen_at`` and
+    # every ``bucket`` that reaches ``seen_at`` are plain
+    # ``DateTime(timezone=True)`` columns rather than the module's ``UtcDateTime``
+    # decorator, so a driver that drops tzinfo hands back a naive value on one
+    # side of this while a caller holding an aware one raises on the comparison
+    # alone. ``_as_utc`` is what this module already answers that with.
+    stored = _as_utc(state.last_seen_at)
+    observed = _as_utc(seen_at) or seen_at
+    if stored is None or stored < observed:
+        state.last_seen_at = seen_at
 
 
 # Telegram rejects a sendMessage body over 4096 characters with a 400, and
@@ -312,28 +488,186 @@ def _delivery_chunks(
     return [anomalies[start : start + limit] for start in range(0, len(anomalies), limit)]
 
 
-def _project_metric_state_config_id(session: Session, config: ScanConfig) -> uuid.UUID:
-    """Canonical scan_config_id for project-global (``metric``-scope) AlertRuleState.
+def _retire_config_anchored_metric_states(
+    session: Session,
+    destinations: list[AlertDestination],
+) -> None:
+    """Delete metric states an OLD worker anchored on a scan config (tripl-0zpq.28).
 
-    ``metric``-scope anomalies are project-global (NULL ``scan_config_id`` on the
-    anomaly row), but ``AlertRuleState.scan_config_id`` is a NOT-NULL FK to
-    scan_configs, so it cannot be NULL or a synthetic id. ``_prepare_alert_
-    deliveries`` runs once per scan config, and every run for the project sees the
-    same metric anomaly. Keying the rule state on ``config.id`` would give each
-    config its own cooldown clock and re-send the same metric anomaly N times.
+    Nothing in this tree writes one: ``_scope_partition_id`` answers NULL for a
+    ``metric`` scope, so every path that creates a state stores NULL. Such a row
+    can only arrive during a rolling deploy. ``migrate`` is a one-shot that app,
+    celery-worker and celery-beat merely WAIT on, so the previous release's worker
+    is still collecting while c9e2a71b4d38 commits, and one more collection under
+    the old code inserts a state anchored on ``min(config id)`` — legal, because
+    the partial unique index only covers the NULL space. The migration cannot
+    clear a row created after it ran.
 
-    We instead anchor every metric-scope rule state on a deterministic
-    project-canonical config id (the lowest config id in the project), so all
-    config runs converge on ONE shared state row and ONE cooldown clock. It stays
-    a real FK target; if that config is deleted its states cascade away and the
-    next-lowest id becomes canonical.
+    That row is in NEITHER partition ``_prepare_alert_deliveries`` loads, so no
+    write path can reach it: it is never matched, never closed, and
+    ``_stamp_rule_state`` filters it out too. The READ paths have no scope or
+    config predicate at all — ``_alerting_monitors`` and ``project_service`` load
+    every state of a rule — so ``summarize_monitor_states`` counts it as one
+    permanently active scope and the monitor never returns to "healthy" again.
+    That is the rot tripl-0zpq.28 exists to clear, re-created after its migration.
+
+    DELETED rather than closed, for the reason ``collapse_metric_rule_states``
+    gives for dropping these rows instead of merging them: they are permanently
+    ``is_active=True`` with a frozen bucket, and a closed one would still sit in
+    the rollup as a second copy of a scope whose real row is the project-global
+    one beside it. Nothing is lost with it — the pre-fix ``_stamp_rule_state``
+    dropped the config filter for a metric scope, so any notification stamp this
+    row carries is on the project-global row as well, and that row is reconciled
+    by the ordinary open/close pass either way. No send decision can change:
+    every path that takes one already cannot see this row.
+
+    Scoped to the rules this run dispatches through, which is not a gap:
+    disabling or deleting a rule or its destination deletes every state of the
+    rule (``_alerting_destinations.clear_rule_states``), and deleting the rule
+    itself cascades them.
     """
-    config_ids = list(
-        session.execute(
-            select(ScanConfig.id).where(ScanConfig.project_id == config.project_id)
-        ).scalars()
+    rule_ids = [
+        rule.id for destination in destinations for rule in destination.rules if rule.enabled
+    ]
+    if not rule_ids:
+        return
+    session.execute(
+        delete(AlertRuleState)
+        .where(
+            AlertRuleState.rule_id.in_(rule_ids),
+            AlertRuleState.scope_type == SCOPE_METRIC,
+            AlertRuleState.scan_config_id.is_not(None),
+        )
+        .execution_options(synchronize_session=False)
     )
-    return min(config_ids) if config_ids else config.id
+
+
+# The four columns of ``uq_alert_rule_state_scope``, and the same key MINUS the
+# config for the partial ``uq_alert_rule_state_metric_scope``. Spelled out
+# because the claim below names them as conflict targets while the model names
+# them as the constraint and the index — they have to stay the same two lists,
+# exactly as ``_PENDING_ITEM_*_CONFLICT_KEYS`` do for the buffer one table over.
+_RULE_STATE_CONFLICT_KEYS = ("rule_id", "scan_config_id", "scope_type", "scope_ref")
+_RULE_STATE_METRIC_CONFLICT_KEYS = ("rule_id", "scope_type", "scope_ref")
+
+
+def _claim_rule_state(
+    session: Session,
+    *,
+    rule_id: uuid.UUID,
+    scan_config_id: uuid.UUID | None,
+    scope_type: str,
+    scope_ref: str,
+    now: datetime,
+    bucket: datetime,
+) -> tuple[AlertRuleState | None, bool]:
+    """Open a scope's state row, and say whether THIS run is the one that opened it.
+
+    ``created`` is the send claim. Exactly one of the runs racing for a
+    ``(rule, partition, scope)`` can insert it, and that run is the one that
+    notifies; a run that loses adopts the row already there and stays quiet for
+    this collection instead of shipping the peer's alert a second time.
+
+    The load in ``_prepare_alert_deliveries`` is NOT an existence check that can
+    be trusted to still hold at the insert. ``check_metrics_due`` dispatches
+    ``collect_metrics.delay(config_id, job_id)`` per CONFIG, so two configs of
+    one project collect in parallel workers, and a ``metric`` scope's state is
+    shared by all of them (it stores the project-global NULL partition — see
+    ``_scope_partition_id``). Both runs' loads can miss the row and both then
+    insert it. The config-partitioned scopes race the same way whenever a manual
+    replay overlaps the scheduled collection of the same config, which is the
+    concurrency ``detect.py`` already upserts its anomaly rows against.
+
+    Before ``uq_alert_rule_state_metric_scope`` existed the loser merely wrote a
+    SECOND project-global row — one cooldown clock per config, the duplicate the
+    index was added to forbid. With the index the loser's INSERT raises
+    IntegrityError instead, and nothing wraps ``_prepare_alert_deliveries`` in a
+    savepoint, so that failure takes the whole ``collect_metrics`` run down with
+    it: the anomaly recalculation, the cooldown updates and every delivery for
+    every scope of that scan, on every collection for as long as the scope keeps
+    firing. Same blast radius as the oversized ``scope_name`` (tripl-0zpq.253),
+    reached from a different direction.
+
+    INSERT ... ON CONFLICT rather than a SAVEPOINT and a re-select, which is the
+    shape ``_buffer_pending_items`` and ``detect.py`` already use, and the choice
+    is not only taste: a statement that converges raises nothing, so there is no
+    ``except`` here for someone else's failure to land in.
+    ``_event_identity.insert_event_claiming_identity`` has to flush the caller's
+    pending work ABOVE its ``try`` precisely because ``begin_nested()`` performs
+    that flush itself, at ROOT level, and a caller's own failing row would
+    otherwise be read as this function's collision.
+
+    DO NOTHING rather than DO UPDATE, unlike the buffer's upsert: the row that is
+    already there is the authority, and what it holds is the cooldown clock
+    (``opened_at``, ``last_notified_at``, ``last_notified_delivery_id``). An
+    update would stamp this run's fresh ``now`` over the timer the shared row
+    exists to keep, which is the tripl-0zpq.28 reset wearing another hat.
+
+    WHICH unique index this conflicts against depends on the partition, the same
+    branch ``_buffer_pending_items`` makes for the buffer. A NULL config escapes
+    the four-column constraint entirely (SQL treats NULLs as DISTINCT), so the
+    metric arm names the partial index and has to repeat its predicate through
+    ``index_where``. Both arms compile identically on SQLite and PostgreSQL — the
+    dialect only picks the ``insert()`` construct.
+
+    On PostgreSQL the peer may still be UNCOMMITTED when this runs: ON CONFLICT
+    waits for it to commit or abort, so the re-read below sees the winner's row
+    either way, and if the peer aborted this INSERT lands and ``created`` is
+    True. The re-read is a second statement on purpose — under READ COMMITTED it
+    takes a fresh snapshot, which is what lets it see a row this transaction's
+    earlier load could not.
+
+    Returns ``(None, False)`` when the holder we lost to is gone by the time of
+    the re-read — ``_alerting_destinations.clear_rule_states`` wipes a rule's
+    states when its destination or the rule itself is disabled. There is nothing
+    to converge on and nothing worth inserting for a rule that is going away, so
+    the caller skips the scope for this collection.
+    """
+    dialect = session.bind.dialect.name if session.bind is not None else "postgresql"
+    insert = sqlite_insert if dialect == "sqlite" else postgresql_insert
+    statement = insert(AlertRuleState).values(
+        # Spelled out for symmetry with this package's other Core inserts;
+        # UUIDMixin's ``default=uuid.uuid4`` would render it anyway. The
+        # timestamp columns are left out because theirs are SERVER defaults,
+        # which a Core INSERT does not bypass.
+        id=uuid.uuid4(),
+        rule_id=rule_id,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        is_active=True,
+        opened_at=now,
+        closed_at=None,
+        last_anomaly_bucket=bucket,
+    )
+    if scan_config_id is None:
+        claim = statement.on_conflict_do_nothing(
+            index_elements=list(_RULE_STATE_METRIC_CONFLICT_KEYS),
+            index_where=AlertRuleState.scan_config_id.is_(None),
+        )
+    else:
+        claim = statement.on_conflict_do_nothing(
+            index_elements=list(_RULE_STATE_CONFLICT_KEYS),
+        )
+    # RETURNING yields the id only when the row was actually inserted — DO
+    # NOTHING inserts nothing and returns nothing — so this is the claim itself
+    # and not an inference from what the re-read finds.
+    created = session.execute(claim.returning(AlertRuleState.id)).scalar_one_or_none() is not None
+    state = session.execute(
+        select(AlertRuleState).where(
+            AlertRuleState.rule_id == rule_id,
+            # Spelled as IS NULL rather than left to ``== None`` to render
+            # itself, the same care ``_buffer_pending_items`` takes with its
+            # fallback read: a silently wrong answer here is a state row the run
+            # cannot see and a notification nobody gets.
+            AlertRuleState.scan_config_id.is_(None)
+            if scan_config_id is None
+            else AlertRuleState.scan_config_id == scan_config_id,
+            AlertRuleState.scope_type == scope_type,
+            AlertRuleState.scope_ref == scope_ref,
+        )
+    ).scalar_one_or_none()
+    return state, created
 
 
 def _prepare_alert_deliveries(
@@ -363,11 +697,14 @@ def _prepare_alert_deliveries(
     if not destinations:
         return []
 
+    # Before the state loads below, because what it removes is exactly what
+    # neither of them can see — and one statement for the whole run, not one per
+    # rule, since it finds nothing on every collection but the first after a
+    # deploy that raced.
+    _retire_config_anchored_metric_states(session, destinations)
+
     now = datetime.now(UTC)
     project_slug = _get_project_slug(session, config.project_id)
-    # ``metric`` scopes are project-global; anchor their rule state on a single
-    # canonical config so cooldown is shared across every config's dispatch run.
-    metric_state_config_id = _project_metric_state_config_id(session, config)
     scope_names = _build_alert_scope_names(session, list(active_candidates.values()))
     # Event-anchored candidates store a NULL event_type_id on purpose; without
     # this map an ``event_type`` filter is silently inert for every one of them
@@ -404,13 +741,36 @@ def _prepare_alert_deliveries(
         #
         # The freshness half of the gate is untouched, so a scope that produced
         # no new bucket is still not re-reported, and the buffer's unique key
-        # collapses a scope that re-fires all day into ONE digest line.
+        # collapses a scope that re-fires all day into ONE digest line per
+        # DIRECTION — a scope that flips ships one line per incident, which is
+        # what ``_buffer_pending_items`` explains at length.
         cooldown_applies = destination.delivery_schedule_cron is None
 
         for rule in enabled_rules:
-            # Non-metric scopes are config-partitioned (state keyed by config.id);
-            # metric scopes are project-global, keyed by the canonical config so
-            # the cooldown clock is shared across every config run.
+            # Two loads because there are two partitions. Non-metric scopes are
+            # config-partitioned, so this run sees only its own config's states;
+            # metric scopes are project-global and carry NO scan config at all,
+            # so every config's run converges on the one row below and shares
+            # its cooldown clock.
+            #
+            # The scope guard on the first load is what keeps the two disjoint,
+            # and the ``== config.id`` equality would exclude a NULL anyway —
+            # both belts stay on purpose.
+            #
+            # A row in NEITHER partition — ``metric`` scope WITH a scan config,
+            # which only a pre-0zpq.28 worker writes — is unreachable from here
+            # by design. Relaxing either filter would NOT retire it: the second
+            # load overwrites the first's entry under the same
+            # ``(scope_type, scope_ref)`` key, so the close loop would still
+            # never see it. It is deleted before this loop instead, by
+            # ``_retire_config_anchored_metric_states``.
+            #
+            # What these two loads are NOT is a race-safe existence check. A
+            # miss here only decides which branch the send gate takes; the row
+            # is created by a converging INSERT further down
+            # (``_claim_rule_state``), because a sibling config's worker can
+            # open the same project-global metric state between this load and
+            # that insert.
             existing_states = {
                 (state.scope_type, state.scope_ref): state
                 for state in session.execute(
@@ -424,7 +784,7 @@ def _prepare_alert_deliveries(
             for state in session.execute(
                 select(AlertRuleState).where(
                     AlertRuleState.rule_id == rule.id,
-                    AlertRuleState.scan_config_id == metric_state_config_id,
+                    AlertRuleState.scan_config_id.is_(None),
                     AlertRuleState.scope_type == SCOPE_METRIC,
                 )
             ).scalars():
@@ -466,12 +826,27 @@ def _prepare_alert_deliveries(
                 if not state.is_active and key not in matched_keys
             ]
             if closed_keys:
+                # TWO calls, because there are two partitions — the same split
+                # the state loads above make, and for the same reason. A metric
+                # scope's incident hashes NO config, so rebuilding its ids under
+                # ``config.id`` would match nothing and an acknowledged
+                # catalog-metric incident would stay suppressed forever, its
+                # scope unable to alert again. Each call returns immediately when
+                # its side of the split is empty; a key is ``(scope_type,
+                # scope_ref)``.
+                _reopen_closed_incidents(
+                    session,
+                    project_id=config.project_id,
+                    scan_config_id=None,
+                    rule_id=rule.id,
+                    scope_keys=[key for key in closed_keys if key[0] == SCOPE_METRIC],
+                )
                 _reopen_closed_incidents(
                     session,
                     project_id=config.project_id,
                     scan_config_id=config.id,
                     rule_id=rule.id,
-                    scope_keys=closed_keys,
+                    scope_keys=[key for key in closed_keys if key[0] != SCOPE_METRIC],
                 )
 
             anomalies_to_send: list[AlertMatchCandidate] = []
@@ -480,22 +855,50 @@ def _prepare_alert_deliveries(
                 current_state = existing_states.get(key)
                 should_send = False
                 if current_state is None:
-                    state_config_id = (
-                        metric_state_config_id if anomaly.scope_type == SCOPE_METRIC else config.id
-                    )
-                    current_state = AlertRuleState(
+                    # Store what the row IS: a metric scope belongs to the
+                    # project, not to the config that happened to observe it.
+                    # Through the shared helper, so what this row STORES and what
+                    # the incident handle below HASHES cannot drift apart.
+                    state_config_id = _scope_partition_id(anomaly.scope_type, config_id=config.id)
+                    # The INSERT is the send claim, not this branch. "The load
+                    # found nothing" is only true as of the load: a parallel
+                    # worker collecting a SIBLING config of this project shares
+                    # the state row of a metric scope, and it can open the
+                    # incident between that load and this line
+                    # (``_claim_rule_state``). Whoever's INSERT actually lands
+                    # notifies; the other converges on that row and stays quiet
+                    # here, which is not a swallowed alert — ``last_notified_at``
+                    # is stamped only on a SUCCESSFUL send, so a peer whose
+                    # delivery never lands leaves the NULL that makes the next
+                    # collection deliver through the branch below.
+                    current_state, created = _claim_rule_state(
+                        session,
                         rule_id=rule.id,
                         scan_config_id=state_config_id,
                         scope_type=anomaly.scope_type,
                         scope_ref=anomaly.scope_ref,
-                        is_active=True,
-                        opened_at=now,
-                        closed_at=None,
-                        last_anomaly_bucket=anomaly.bucket,
+                        now=now,
+                        bucket=anomaly.bucket,
                     )
-                    session.add(current_state)
+                    if current_state is None:
+                        # Lost the race to a holder that was deleted before we
+                        # could read it — the rule or its destination is being
+                        # disabled underneath this run. Leave the key out of
+                        # ``existing_states`` so a later anomaly on this scope
+                        # tries again.
+                        continue
                     existing_states[key] = current_state
-                    should_send = True
+                    if created:
+                        should_send = True
+                    else:
+                        # Converged. Advance the bucket anyway so this run's
+                        # observation is not lost, through the same ``max`` the
+                        # gate below uses — the re-read saw the winner's
+                        # committed row, so this can only move forwards.
+                        current_state.last_anomaly_bucket = max(
+                            anomaly.bucket,
+                            current_state.last_anomaly_bucket or anomaly.bucket,
+                        )
                 else:
                     if not current_state.is_active:
                         # Reopen the state either way: open/close tracking has to
@@ -551,10 +954,15 @@ def _prepare_alert_deliveries(
             # accurate through the mute so the monitor is not stuck "firing" on
             # a stale scope once the mute lapses.
             #
-            # AlertRule.muted_until had no reader in the worker at all — the
-            # model comment called worker-side suppression "a separate
-            # follow-up" — so the Monitors UI shipped a Mute button that wrote a
-            # column and changed nothing (tripl-jfm3.99).
+            # HISTORY, not a description of the tree as it stands: the model
+            # comment on ``AlertRule.muted_until`` USED TO call worker-side
+            # suppression "a separate follow-up", so the Monitors UI shipped a
+            # Mute button that wrote a column no worker read and changed
+            # nothing (tripl-jfm3.99). That comment has since been corrected to
+            # name the column's only two worker readers — this line and
+            # ``alert_flush._build_digest`` (tripl-0zpq.259). A third delivery
+            # path added without a mute check of its own would be that bug
+            # again.
             #
             # ``is not None and > now`` is correct HERE and must stay: a NULL on
             # an AlertRule means NOT MUTED (it is the default on every rule ever
@@ -578,10 +986,20 @@ def _prepare_alert_deliveries(
             # fired together. Anything asking "did this co-fire?" has to count the
             # DELIVERY's items — ``alerts_messages._build_ai_explanation`` still
             # counts group members and now always sees one.
+            #
+            # It hashes the PARTITION the scope's rows store, not the config
+            # collecting right now (``_scope_partition_id``), so a project-global
+            # metric scope lands on the one handle its state row and its buffered
+            # row already use. While it hashed the firing config, each scan of a
+            # multi-scan project minted its own handle for one project-wide
+            # scope: the suppression check below — the whole mechanism behind an
+            # Inbox ack or mute — then missed every handle but the one belonging
+            # to the scan that happened to collect next, so the silenced incident
+            # paged anyway and the Inbox listed it N times (tripl-0zpq.27).
             correlation_by_anomaly: dict[int, uuid.UUID] = {}
             for anomaly in anomalies_to_send:
                 correlation_by_anomaly[id(anomaly)] = _correlation_group_id(
-                    scan_config_id=config.id,
+                    scan_config_id=_scope_partition_id(anomaly.scope_type, config_id=config.id),
                     rule_id=rule.id,
                     scope_type=anomaly.scope_type,
                     scope_ref=anomaly.scope_ref,
@@ -617,6 +1035,19 @@ def _prepare_alert_deliveries(
                 # stranded-delivery reaper has nothing to sweep and the Inbox,
                 # the delivery history and their created_at orderings are
                 # untouched until the digest is actually minted.
+                #
+                # Held against a window that may never come. If the operator
+                # switches this destination back to "Immediately", the service
+                # SPLITS these rows rather than leaving all of them for the
+                # flusher (``_alerting_destinations.update_destination``). One
+                # whose scope has a NULL ``last_notified_at`` is DISCARDED,
+                # because the branch above then delivers that scope on the next
+                # collection — the gate fires on the NULL — and being the only
+                # path that delivers it is what keeps the operator from
+                # receiving it twice. One whose scope a digest already stamped
+                # is KEPT for the flusher's drain arm, because the gate above
+                # needs a newer bucket AND an elapsed cooldown for that scope
+                # and would deliver nothing at all (tripl-0zpq.38).
                 buffered_count += _buffer_pending_items(
                     session,
                     config,
@@ -626,7 +1057,6 @@ def _prepare_alert_deliveries(
                     scope_names=scope_names,
                     correlation_by_anomaly=correlation_by_anomaly,
                     scan_job_id=scan_job_id,
-                    metric_state_config_id=metric_state_config_id,
                     now=now,
                 )
 
@@ -658,6 +1088,32 @@ def _create_deliveries(
     that keeps a Telegram message under its item cap. A second implementation
     for digests would be a second chance for them to disagree.
     """
+    # Resolved ONCE here, on the caller's own session, and used for every link
+    # of every item of every chunk below.
+    #
+    # Here rather than in the two callers precisely because of the paragraph
+    # above: this is the one place the immediate path and the scheduled flush
+    # meet, so one line fixes both and there is no parameter for a third caller
+    # to forget.
+    #
+    # It used to be read inside the URL builders, once per LINK — three reads
+    # per item for an ordinary scope, two for a release regression, since
+    # ``_build_item_paths`` runs once for the typed rows and again for the
+    # snapshot. ``get_runtime_config_sync`` has no cache, and called with no
+    # session it checks out a SECOND pooled connection for its two
+    # ``app_settings`` SELECTs. On the digest path it did that while
+    # ``alert_flush._build_digest`` held FOR UPDATE locks on the whole buffer
+    # and the flush advisory lock on the first connection (tripl-0zpq.109).
+    # Passing ``session`` keeps the reads on the connection this transaction
+    # already holds, which is how ``worker/tasks/scan.py`` and
+    # ``metrics/tasks.py`` already call this helper.
+    #
+    # One read is the correctness boundary too, not just the cheap one: the
+    # helper swallows a failed read and falls back to the env config, where
+    # ``app_base_url`` defaults to ``""``. Independent reads therefore let this
+    # delivery's typed items and its frozen ``payload_snapshot`` disagree about
+    # the same item's link, with nothing but a warning in the log to say why.
+    app_base_url = app_settings_service.get_runtime_config_sync(session).app_base_url
     delivery_ids: list[uuid.UUID] = []
     for chunk in _delivery_chunks(anomalies, channel=destination.type, chunk_items=chunk_items):
         delivery = AlertDelivery(
@@ -680,6 +1136,7 @@ def _create_deliveries(
         snapshot = _build_delivery_snapshot(
             config,
             project_slug=project_slug,
+            app_base_url=app_base_url,
             rule=rule,
             destination=destination,
             anomalies=chunk,
@@ -690,7 +1147,7 @@ def _create_deliveries(
             # The send path has no other way to tell a digest from an immediate
             # alert: the destination's cadence column cannot answer it (the
             # flush's drain arm ships a real digest from a destination whose
-            # cadence was just cleared), and by send time the buffer rows are
+            # cadence is already gone), and by send time the buffer rows are
             # gone. Recorded at creation, where the caller's intent is known.
             snapshot["digest"] = True
         delivery.payload_snapshot = snapshot
@@ -749,6 +1206,7 @@ def _create_deliveries(
             percent_delta = percent_delta_of(anomaly.actual_count, anomaly.expected_count)
             details_path, monitoring_path = _build_item_paths(
                 project_slug,
+                app_base_url=app_base_url,
                 scope_type=anomaly.scope_type,
                 scope_ref=anomaly.scope_ref,
                 event_id=anomaly.event_id,
@@ -808,6 +1266,21 @@ _PENDING_ITEM_CONFLICT_KEYS = (
     "direction",
 )
 
+# The five columns of ``uq_alert_pending_item_metric_scope``: the same key minus
+# the config, because a ``metric`` scope stores NULL there and SQL treats NULLs
+# as DISTINCT. The six-column constraint above can therefore NEVER fire for one,
+# so the upsert has to target the partial index instead — the trap ``detect.py``
+# documents for MetricAnomaly and solves the same way. Missing this does not
+# raise: it buffers a second row on every collection and duplicates the digest
+# line.
+_PENDING_ITEM_METRIC_CONFLICT_KEYS = (
+    "destination_id",
+    "rule_id",
+    "scope_type",
+    "scope_ref",
+    "direction",
+)
+
 
 def _buffer_pending_items(
     session: Session,
@@ -819,16 +1292,48 @@ def _buffer_pending_items(
     scope_names: dict[tuple[str, str], str],
     correlation_by_anomaly: dict[int, uuid.UUID],
     scan_job_id: uuid.UUID | None,
-    metric_state_config_id: uuid.UUID,
     now: datetime,
 ) -> int:
     """Hold matched signals for this destination's next digest window.
 
     Upsert, not insert: a scope that keeps firing is re-offered on every
     collection, and each one overwrites its buffered row with the newest
-    numbers. That is what makes the digest carry the state of the world at the
-    moment it is SENT rather than the moment the incident opened — and it is
-    why a scope firing all day still occupies exactly one line.
+    numbers, so a scope firing all day occupies exactly one line — ONE PER
+    DIRECTION. The key is ``_correlation_group_id``'s five components plus the
+    destination, ``direction`` among them, so one buffered row stands for
+    exactly one incident and one Inbox card.
+
+    A scope that DROPPED at 03:00 and SPIKED at 11:00 therefore buffers two
+    rows and ships two lines, one in each of the digest's two groups. That is
+    the intended reading — two real movements, two incidents, two things an
+    operator can acknowledge separately — and it is the common case rather than
+    a corner: 106 of 223 live scopes fired in BOTH directions inside one day
+    (``models/alert_rule``).
+
+    Collapsing the pair was proposed both ways and neither is available
+    (tripl-0zpq.108):
+
+    * DROP ``direction`` from the key and one row stands for two incidents
+      while ``correlation_group_id`` is a single column that can name only one.
+      ``alert_flush._build_digest`` filters on exactly that value, so whichever
+      handle survived, an acknowledgement of the drop would either be ignored
+      or silently swallow the spike nobody acknowledged.
+    * DELETE the sibling on a flip and an incident that was already buffered is
+      destroyed before it is ever delivered, which nothing re-offers:
+      ``AlertRuleState`` carries no direction, so the flipped scope is already
+      reusing that one state row, and ``last_notified_at`` is stamped only on a
+      SENT delivery.
+
+    So the digest is every incident that fired inside the window, each with its
+    OWN latest numbers — not a snapshot of what is broken at the fire instant.
+    Nothing prunes a buffered row when its scope falls quiet either (the only
+    deletes are this flush's own claim, the 14-day sweep, the service discarding
+    the whole buffer when the destination is disabled, and — when its cadence is
+    cleared — the service discarding only the PART of the buffer whose scopes
+    the immediate path provably re-delivers, which is that same trap avoided on
+    the other side of the handoff), so a scope that fired once at 03:00 and
+    stopped still ships that 03:00 line. The flipped drop is no staler than that one: it is its
+    incident's last true reading.
 
     Values are snapshotted rather than referenced. ``_recalculate_*`` deletes
     and rewrites the anomaly rows on every collection, so by flush time the row
@@ -840,14 +1345,22 @@ def _buffer_pending_items(
 
     for anomaly in anomalies:
         group_id = correlation_by_anomaly[id(anomaly)]
-        # Mirror AlertRuleState's key exactly: metric scopes are project-global
-        # and anchor on the canonical config, everything else on the firing one.
-        # Recomputing this at flush time instead would be wrong — the buffered
-        # row would then key differently from the rule state that gates it.
-        scan_config_id = metric_state_config_id if anomaly.scope_type == SCOPE_METRIC else config.id
+        # Mirror AlertRuleState's key exactly — one helper answers for both, and
+        # for the incident handle the caller minted: a metric scope is
+        # project-global and carries no config, everything else carries the
+        # firing one. Recomputing this at flush time instead would be wrong — the
+        # buffered row would then key differently from the rule state that gates
+        # it.
+        scan_config_id = _scope_partition_id(anomaly.scope_type, config_id=config.id)
         statement = insert(AlertPendingItem).values(
-            # UUIDMixin's default is Python-side and does not fire for a Core
-            # insert, so the id is supplied here.
+            # Redundant, and kept only for symmetry with this package's other
+            # Core upserts — detect.py, metric_rows.py and schema_drift.py all
+            # spell out an ``id`` too. UUIDMixin's ``default=uuid.uuid4`` is an
+            # ordinary Core ``Column.default``, which SQLAlchemy renders into
+            # the INSERT by itself when the column is left out of ``values()``.
+            # Do not generalise that to the ``onupdate`` note on the SET clause
+            # below: a column default and an ``onupdate`` are different
+            # mechanisms, and only the first survives a Core upsert.
             id=uuid.uuid4(),
             project_id=config.project_id,
             destination_id=destination.id,
@@ -871,32 +1384,50 @@ def _buffer_pending_items(
             correlation_group_id=group_id,
             observation_count=1,
         )
-        upserted_group_id = session.execute(
-            statement.on_conflict_do_update(
+        update_values = {
+            "scan_job_id": statement.excluded.scan_job_id,
+            "source_anomaly_id": statement.excluded.source_anomaly_id,
+            "scope_name": statement.excluded.scope_name,
+            "event_type_id": statement.excluded.event_type_id,
+            "event_id": statement.excluded.event_id,
+            "bucket": statement.excluded.bucket,
+            "actual_count": statement.excluded.actual_count,
+            "expected_count": statement.excluded.expected_count,
+            "drift_field": statement.excluded.drift_field,
+            "drift_type": statement.excluded.drift_type,
+            "sample_value": statement.excluded.sample_value,
+            "window_from": statement.excluded.window_from,
+            # A Core upsert bypasses SQLAlchemy's ``onupdate``, so the age
+            # sweep's column is advanced by hand.
+            "updated_at": now,
+            "observation_count": AlertPendingItem.observation_count + 1,
+        }
+        # Never let a late collection of an OLDER bucket rewind the numbers a
+        # newer one already wrote — the same stance ``last_anomaly_bucket =
+        # max(...)`` takes in the send gate.
+        bucket_not_rewound = AlertPendingItem.bucket <= statement.excluded.bucket
+        # WHICH unique index this conflicts against depends on what the row
+        # stores, the same branch ``detect.py`` makes for MetricAnomaly. A NULL
+        # config escapes the six-column constraint entirely (SQL treats NULLs as
+        # DISTINCT), so a metric scope names the partial index instead and has
+        # to repeat its predicate through ``index_where``. No second
+        # sqlite/postgres arm is needed the way detect.py has one: the dialect
+        # was already chosen above and this call compiles identically on both.
+        if scan_config_id is None:
+            upsert = statement.on_conflict_do_update(
+                index_elements=list(_PENDING_ITEM_METRIC_CONFLICT_KEYS),
+                index_where=AlertPendingItem.scan_config_id.is_(None),
+                set_=update_values,
+                where=bucket_not_rewound,
+            )
+        else:
+            upsert = statement.on_conflict_do_update(
                 index_elements=list(_PENDING_ITEM_CONFLICT_KEYS),
-                set_={
-                    "scan_job_id": statement.excluded.scan_job_id,
-                    "source_anomaly_id": statement.excluded.source_anomaly_id,
-                    "scope_name": statement.excluded.scope_name,
-                    "event_type_id": statement.excluded.event_type_id,
-                    "event_id": statement.excluded.event_id,
-                    "bucket": statement.excluded.bucket,
-                    "actual_count": statement.excluded.actual_count,
-                    "expected_count": statement.excluded.expected_count,
-                    "drift_field": statement.excluded.drift_field,
-                    "drift_type": statement.excluded.drift_type,
-                    "sample_value": statement.excluded.sample_value,
-                    "window_from": statement.excluded.window_from,
-                    # A Core upsert bypasses SQLAlchemy's ``onupdate``, so the
-                    # age sweep's column is advanced by hand.
-                    "updated_at": now,
-                    "observation_count": AlertPendingItem.observation_count + 1,
-                },
-                # Never let a late collection of an OLDER bucket rewind the
-                # numbers a newer one already wrote — the same stance
-                # ``last_anomaly_bucket = max(...)`` takes in the send gate.
-                where=AlertPendingItem.bucket <= statement.excluded.bucket,
-            ).returning(AlertPendingItem.correlation_group_id)
+                set_=update_values,
+                where=bucket_not_rewound,
+            )
+        upserted_group_id = session.execute(
+            upsert.returning(AlertPendingItem.correlation_group_id)
         ).scalar_one_or_none()
         # RETURNING yields nothing when the ``where`` guard above vetoed the
         # update (a late collection of an older bucket), so fall back to the
@@ -906,7 +1437,13 @@ def _buffer_pending_items(
                 select(AlertPendingItem.correlation_group_id).where(
                     AlertPendingItem.destination_id == destination.id,
                     AlertPendingItem.rule_id == rule.id,
-                    AlertPendingItem.scan_config_id == scan_config_id,
+                    # Spelled as IS NULL rather than left to ``== None`` to
+                    # render itself: this branch only runs on a late-bucket
+                    # collection, so a silently wrong answer here would be very
+                    # hard to find.
+                    AlertPendingItem.scan_config_id.is_(None)
+                    if scan_config_id is None
+                    else AlertPendingItem.scan_config_id == scan_config_id,
                     AlertPendingItem.scope_type == anomaly.scope_type,
                     AlertPendingItem.scope_ref == anomaly.scope_ref,
                     AlertPendingItem.direction == anomaly.direction,
@@ -917,13 +1454,19 @@ def _buffer_pending_items(
         # operator can still acknowledge or mute it before the digest ships.
         #
         # Touch the id the ROW ended up carrying, not the one just computed.
-        # They differ for a ``metric`` scope on a multi-scan project: the buffer
-        # keys on the CANONICAL config while ``_correlation_group_id`` is
-        # derived from the FIRING one (dispatch builds ``correlation_by_anomaly``
-        # with ``config.id`` for every scope), so the second config's collection
-        # would otherwise touch a group the delivered item never references —
-        # leaving a stray AlertCorrelationState and an inbox decision the digest
-        # cannot honour. Idempotent either way (``last_seen_at = max(...)``).
+        # Since tripl-0zpq.27 the two AGREE by construction — both hash the
+        # partition this row stores — so a second scan collecting the same
+        # project-global metric recomputes the handle already buffered instead of
+        # minting one of its own, which is what used to leave a stray
+        # AlertCorrelationState holding a decision the digest could never honour.
+        #
+        # The read-back stays anyway, because two cases still hand back a
+        # DIFFERENT id: the late-bucket fallback above (whatever an earlier
+        # collection stored), and a row buffered by a pre-tripl-0zpq.27 worker
+        # during a rolling deploy, which carries the old firing-config hash until
+        # its digest ships. Touching what the row carries is what keeps the
+        # operator's decision attached to the id the digest will actually
+        # deliver. Idempotent either way (``last_seen_at = max(...)``).
         if upserted_group_id is not None:
             _touch_correlation_state(
                 session,

@@ -18,8 +18,8 @@ from tripl.alert_templates import (
 )
 from tripl.alerting_validation import (
     reject_private_host,
-    validate_email_address,
     validate_email_recipients,
+    validate_sender_address,
     validate_slack_webhook_url,
 )
 from tripl.config import SMTP_SECURITY_IMPLICIT_TLS, SMTP_SECURITY_STARTTLS
@@ -390,6 +390,21 @@ def _send_email_message(
         raise ValueError(detail)
 
 
+# The title half of the email subject the weekly plan digest has always
+# carried, and the default below so that path keeps sending exactly the subject
+# it did. It is a parameter at all because this helper now serves two beats:
+# ``check_deprecated_sunset_events`` reuses it on its own DAILY schedule
+# (celery_app.py's ``check-deprecated-sunset-events``), and with the subject
+# hardcoded here that alert reached the operator's inbox titled "Weekly tripl
+# digest" — wrong about the cadence, wrong about the contents, and threaded by
+# the mail client into the weekly digest's conversation.
+#
+# Only the title is the caller's: the ``[project]`` prefix is applied below, so
+# the two beats cannot drift into different subject SHAPES. Slack has no
+# subject, so that arm never reads this.
+DIGEST_SUBJECT_TITLE = "Weekly tripl digest"
+
+
 def _send_digest_to_destination(
     *,
     destination: AlertDestination,
@@ -398,6 +413,7 @@ def _send_digest_to_destination(
     email_config: app_settings_service.EmailConfig,
     send_slack_message: SendSlackMessage,
     send_email_message: SendEmailMessage,
+    subject_title: str = DIGEST_SUBJECT_TITLE,
 ) -> None:
     if destination.type == AlertDestinationType.slack.value:
         webhook_url = _decrypt_secret(destination.webhook_url_encrypted)
@@ -415,7 +431,21 @@ def _send_digest_to_destination(
         from_address = destination.email_from_address or email_config.smtp_from_address
         if not from_address:
             raise ValueError("Email from address is required for weekly digest")
-        validate_email_address(from_address)
+        # The same helper the per-delivery path resolves with
+        # (``alerts._resolve_email_context``) and the same one both test sends
+        # check with, so all four agree on which senders are usable: a display
+        # name in the global Default From is legal — it reaches ``msg["From"]``
+        # below intact — and a value with no @-sign is still refused. The strict
+        # ``validate_email_address`` used to stand here and refused the display
+        # name, which cost more here than anywhere else: both callers swallow
+        # the failure into ``logger.warning`` (alerts_digest.py), so the weekly
+        # plan digest and the sunset alert simply stopped arriving and said so
+        # only in the worker log (tripl-0zpq.29).
+        #
+        # Assigned rather than called for its raise, so this site and
+        # ``_resolve_email_context`` read identically; the helper returns the
+        # string unchanged, so the assignment itself is a no-op.
+        from_address = validate_sender_address(from_address)
         send_email_message(
             smtp_host=email_config.smtp_host,
             smtp_port=email_config.smtp_port,
@@ -424,7 +454,7 @@ def _send_digest_to_destination(
             smtp_security=email_config.smtp_security,
             from_address=from_address,
             recipients=recipients,
-            subject=f"[{project.name}] Weekly tripl digest",
+            subject=f"[{project.name}] {subject_title}",
             body=message,
         )
 

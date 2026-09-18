@@ -5,6 +5,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from tripl.alerting_validation import validate_sender_address
+
 # Mirrors app_settings_service.SettingSource. "default" means the value equals
 # the built-in default — either nothing was delivered for it, or what was
 # delivered matches it; the two are indistinguishable from here (tripl-wkwv.2).
@@ -121,6 +123,54 @@ class EmailSettingsUpdate(BaseModel):
     smtp_password: str | None = Field(default=None, max_length=4096)
     smtp_security: SmtpSecurity | None = None
     smtp_from_address: str | None = None
+
+    @field_validator("smtp_from_address")
+    @classmethod
+    def _check_smtp_from_address(cls, value: str | None) -> str | None:
+        # The global Default From every email destination without an override
+        # falls back to, and until now the only email setting nothing checked:
+        # ``app_settings_service.update_service_overrides`` writes whatever
+        # arrives. A typo was therefore reported at 10:00 the next morning by a
+        # failed alert rather than by the form that accepted it.
+        #
+        # Checked with the SEND PATH's own helper, so what this endpoint accepts
+        # is what the alert tasks accept. Deliberately NOT ``EmailStr`` or
+        # ``validate_email_address``: the strict form refuses
+        # ``Tripl Alerts <no-reply@example.com>``, which the From: header takes
+        # happily, and putting it here would rebuild tripl-0zpq.29 at the other
+        # end of the same pipe — a value the operator can never save, instead of
+        # one they can save but never deliver.
+        #
+        # None and "" pass through untouched: they are how the value is CLEARED
+        # (``update_service_overrides`` drops a None and stores an empty string),
+        # and "no Default From configured" is a supported state — the one
+        # Settings → Send test email reports on rather than refuses.
+        #
+        # A value that is only whitespace is FOLDED INTO that empty string
+        # rather than refused. It is the same intent typed differently — an
+        # operator clearing the field with a space means "not configured" — and
+        # a 422 there would refuse a state the product supports while leaving
+        # the previous Default From in place, still sending.
+        #
+        # Folding is what keeps "not configured" a single FALSY value, which is
+        # the only form its readers recognise. All three ask the question with
+        # ``not``/``or``: ``alerts._resolve_email_context`` resolves
+        # ``destination.email_from_address or email_config.smtp_from_address``
+        # and names the unset setting only when that is falsy,
+        # ``_email_test_send.send_test_email`` refuses on ``not
+        # smtp_from_address`` with the sentence about dropped reset mail, and
+        # ``api/v1/auth.py`` computes ``email_configured`` — the flag deciding
+        # whether a reset token is minted at all — the same way. A stored "   "
+        # is truthy in all three, so it is not the cleared state but a fourth
+        # one nothing handles: with no per-destination override the alert fails
+        # at send with "From: address is invalid", the probe answers "Not a
+        # usable From: address: '   '" instead of naming the setting that is
+        # unset, and the reset flow mints a token and hands SMTP a blank From:.
+        if value is None:
+            return value
+        if not value.strip():
+            return ""
+        return validate_sender_address(value)
 
 
 class AiSettings(BaseModel):

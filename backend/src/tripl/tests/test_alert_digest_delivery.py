@@ -703,10 +703,12 @@ def test_the_buffered_incident_handle_is_the_one_the_digest_will_deliver(
 ) -> None:
     """A `metric` scope is project-global; two scans must not open two incidents.
 
-    The buffer keys metric scopes on the CANONICAL scan config (the lowest id,
-    mirroring AlertRuleState) while `_correlation_group_id` is derived from the
-    FIRING one — dispatch builds `correlation_by_anomaly` with `config.id` for
-    every scope. So the second scan's collection computes a DIFFERENT group id
+    The buffer keys metric scopes on NO scan config at all — `_scope_partition_id`
+    answers NULL for `metric`, and `_correlation_group_id` hashes that same
+    project-global partition, so since tripl-0zpq.27 the two AGREE by
+    construction. This test hands the buffer the OLD handle instead, derived from
+    the FIRING config: the shape a pre-tripl-0zpq.27 worker buffers during a
+    rolling deploy. So the second scan's collection computes a DIFFERENT group id
     than the row already carries. Touching that computed id would leave a stray
     AlertCorrelationState: an inbox row an operator can acknowledge, holding a
     decision the digest can never honour because the delivered item references
@@ -732,8 +734,6 @@ def test_the_buffered_incident_handle_is_the_one_the_digest_will_deliver(
         )
         session.add(config_b)
         session.commit()
-
-        canonical = metrics_dispatch._project_metric_state_config_id(session, config_a)
         scope_ref = str(uuid.uuid4())
 
         def buffer_from(config: ScanConfig) -> None:
@@ -759,7 +759,9 @@ def test_the_buffered_incident_handle_is_the_one_the_digest_will_deliver(
                 destination=destination,
                 anomalies=[candidate],
                 scope_names={("metric", scope_ref): "Signups"},
-                # Exactly what dispatch computes: keyed on the FIRING config.
+                # The OLD handle, keyed on the FIRING config — what a
+                # pre-tripl-0zpq.27 worker buffers. Today's dispatch hashes
+                # ``_scope_partition_id`` here, which is NULL for a metric scope.
                 correlation_by_anomaly={
                     id(candidate): metrics_dispatch._correlation_group_id(
                         scan_config_id=config.id,
@@ -770,7 +772,6 @@ def test_the_buffered_incident_handle_is_the_one_the_digest_will_deliver(
                     )
                 },
                 scan_job_id=None,
-                metric_state_config_id=canonical,
                 now=datetime.now(UTC),
             )
             session.commit()
@@ -781,7 +782,7 @@ def test_the_buffered_incident_handle_is_the_one_the_digest_will_deliver(
         buffered = session.execute(select(AlertPendingItem)).scalars().all()
         assert len(buffered) == 1, "a project-global metric buffers ONE row, not one per scan"
         assert buffered[0].observation_count == 2
-        assert buffered[0].scan_config_id == canonical
+        assert buffered[0].scan_config_id is None
 
         states = session.execute(select(AlertCorrelationState)).scalars().all()
         assert [state.correlation_group_id for state in states] == [

@@ -1350,7 +1350,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
                       <Label htmlFor="dest-email-from">From Address (optional)</Label>
                       <Input
                         id="dest-email-from"
-                        placeholder="alerts@tripl.example (defaults to SMTP_FROM_ADDRESS)"
+                        placeholder={'alerts@tripl.example or Tripl Alerts <alerts@tripl.example>'}
                         value={destinationForm.email_from_address}
                         onChange={event => setDestinationForm(current => ({ ...current, email_from_address: event.target.value }))}
                       />

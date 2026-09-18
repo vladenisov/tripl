@@ -280,9 +280,21 @@ async def test_demo_sink_seeded_scenario_is_local_and_no_network(monkeypatch) ->
         assert detail.payload_snapshot["rendered_message"]
         assert detail.payload_snapshot["is_local"] is True
 
-        # --- inbox is explorable ---
+        # --- inbox is explorable, and the card counts BOTH attempts ---
         inbox = await alerting_service.list_alert_inbox(session, slug)
         assert inbox.total >= 1
+        # The seeded incident is one delivery that succeeded and one earlier
+        # attempt that failed, and the failed one owns its own copy of the same
+        # items under the same correlation group (tripl-0zpq.247) — which is the
+        # shape live dispatch writes, and what keeps the failed row and its
+        # Retry reachable from the card. So the card reads two deliveries and
+        # twice the items, exactly as it does for any scope that fires twice.
+        # Seed the failed row without items again and this drops to 1x/1.
+        incident = next(
+            group for group in inbox.items if any(ref.id == firing_rule.id for ref in group.rules)
+        )
+        assert incident.delivery_count == 2
+        assert incident.item_count == 2 * len(detail.items)
 
         # --- simulate: render-only, no network, produces firings + a message ---
         simulation = await alerting_service.simulate_rule(

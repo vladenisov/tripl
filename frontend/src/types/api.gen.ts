@@ -10144,7 +10144,7 @@ export interface components {
             /** Expected Count */
             expected_count: number;
             /** Percent Delta */
-            percent_delta: number;
+            percent_delta: number | null;
             /** Rendered Item */
             rendered_item?: string | null;
             /** Sample Value */
@@ -10154,6 +10154,8 @@ export interface components {
             /** Scope Ref */
             scope_ref: string;
             scope_type: components["schemas"]["MetricScopeType"];
+            /** Window From */
+            window_from?: string | null;
         };
         /**
          * SqlConfig

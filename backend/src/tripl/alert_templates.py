@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import html
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
 from tripl.models.alert_destination import AlertDestinationType
-from tripl.models.domain_enums import AlertMessageFormat
+from tripl.models.domain_enums import AlertMessageFormat, MetricScopeType
 
 ALERT_MESSAGE_FORMAT_PLAIN = AlertMessageFormat.plain.value
 ALERT_MESSAGE_FORMAT_SLACK_MRKDWN = AlertMessageFormat.slack_mrkdwn.value
@@ -518,3 +519,208 @@ def percent_delta_or_none(percent_delta: float, expected_count: float) -> float 
     if has_baseline(expected_count):
         return percent_delta
     return None
+
+
+# ── ${scope_label} and ${drift_line}: one wording, two renderers ───────────
+#
+# Two code paths render an alert item and they must word it identically. The
+# worker renders a DELIVERED ``AlertDeliveryItem``
+# (``alerts_messages._build_item_template_context``); the rule simulator
+# renders a SIMULATED ``SimulatedRuleFiring``
+# (``alerting_rendering.render_firing_item``), and the simulator exists so an
+# operator can read what a rule WOULD send before pointing it at a live
+# channel. Each used to build these two strings itself and the copies drifted:
+# for one schema drift the worker wrote "drift: type_changed amount
+# sample=9.99" where the preview wrote "drift: type_changed: amount — e.g.
+# 9.99", so a rule tested in the simulator and then sent for real described the
+# same firing two different ways (tripl-0zpq.165). The label map had split the
+# same way — only the worker's knew about release regressions.
+#
+# The WORKER's wording is the one kept in both cases. It is the text an
+# operator actually receives, it is what website/docs/use/alerting.md
+# ("Release-regression items") quotes, and adopting it moves only future
+# previews; adopting the preview's would have rewritten production message text
+# on every channel and every already-stored payload snapshot would disagree
+# with the next send.
+#
+# The scope constants below come from ``MetricScopeType`` rather than from
+# ``tripl.alerting_matching``: this module is the leaf that both the worker and
+# the services layer import, and it stays below the matcher.
+
+_SCOPE_RELEASE_REGRESSION = MetricScopeType.release_regression.value
+_SCOPE_VARIABLE_VALUE_DRIFT = MetricScopeType.variable_value_drift.value
+
+ALERT_SCOPE_LABELS: dict[str, str] = {
+    MetricScopeType.project_total.value: "Project total",
+    MetricScopeType.event_type.value: "Event type",
+    MetricScopeType.event.value: "Event",
+    MetricScopeType.schema.value: "Schema drift",
+    MetricScopeType.distribution.value: "Distribution drift",
+    _SCOPE_RELEASE_REGRESSION: "Release regression",
+}
+
+
+def alert_scope_label(scope_type: str) -> str:
+    """The human name a rendered item gives a scope, for ``${scope_label}``.
+
+    Deliberately NOT exhaustive over ``MetricScopeType``: ``metric`` and
+    ``variable_value_drift`` have no entry and fall through to the raw scope
+    string, which is exactly what both renderers have always printed for them.
+    Filling those gaps would change the text of live messages, and unifying the
+    two maps (tripl-0zpq.165) must not — that is a separate decision with its
+    own reader-facing consequences.
+    """
+    return ALERT_SCOPE_LABELS.get(scope_type, str(scope_type))
+
+
+@dataclass(frozen=True)
+class DriftLineFacts:
+    """Every fact ``${drift_line}`` is built from, named once.
+
+    This field list IS the contract between the two renderers: a delivered
+    ``AlertDeliveryItem`` and a simulated ``SimulatedRuleFiring`` each carry all
+    of them, so neither side can render a line the other cannot. Adapters on
+    both sides fill every field; the defaults exist so a test can state only the
+    facts its case is about.
+
+    ``window_from`` is filled by both adapters too, but only one family HAS
+    one: a release regression is measured over the activation-anchored rollout
+    overlap, so ``ReleaseRegression.window_from`` is NOT NULL, the send
+    snapshots it onto ``AlertDeliveryItem.window_from`` and — since
+    tripl-0zpq.158 taught the replay to load those rows — the preview carries
+    it through ``DriftAlertCandidate`` and ``SimulatedRuleFiring``. Every other
+    scope's window IS its bucket and leaves it None, as does any item delivered
+    before the column existed; that is what its only consumer, the
+    rollout-overlap clause, drops out on.
+    """
+
+    scope_type: str
+    drift_type: str | None = None
+    drift_field: str | None = None
+    sample_value: str | None = None
+    expected_count: float = 0.0
+    percent_delta: float = 0.0
+    bucket: datetime | None = None
+    window_from: datetime | None = None
+    event_id: uuid.UUID | None = None
+    event_type_id: uuid.UUID | None = None
+
+
+_RELEASE_KIND_LABELS = {"missing": "disappeared", "volume_drop": "dropped"}
+
+
+def plain_alert_number(value: float) -> str:
+    """Stringify a number exactly as ``${expected_count}`` does, unescaped.
+
+    The basis clause is escaped as a whole by its caller, so escaping here too
+    would double-escape it under MarkdownV2. The plain format is the shared
+    stringifier's pass-through branch, which is all this needs.
+    """
+    return escape_alert_value(value, ALERT_MESSAGE_FORMAT_PLAIN)
+
+
+def _release_scope_noun(facts: DriftLineFacts) -> str:
+    """What the regressed scope IS, so the basis sentence can name it."""
+    if facts.event_id is not None:
+        return "event"
+    if facts.event_type_id is not None:
+        return "event type"
+    return "scope"
+
+
+def _format_window_span(facts: DriftLineFacts) -> str | None:
+    """``"51h"`` for the window this item was measured over, or None.
+
+    ``bucket`` is the window's end and ``window_from`` its start. Every scope
+    whose window IS its bucket, and any item delivered before the column
+    existed, gets None and simply loses the clause. Release regressions are the
+    one family that carries a window, and they carry it on BOTH sides since
+    tripl-0zpq.158 — a simulated firing has it too, which is what lets the
+    preview print the same "over the 51h rollout overlap" the delivered message
+    prints. A span that rounds to under an hour returns None as well, rather
+    than printing ``0h``.
+    """
+    if facts.window_from is None or facts.bucket is None:
+        return None
+    hours = round((facts.bucket - facts.window_from).total_seconds() / 3600)
+    if hours < 1:
+        return None
+    return f"{hours}h"
+
+
+def release_regression_basis(facts: DriftLineFacts) -> str:
+    """The body of the "release:" line: which build, over what window, vs what.
+
+    Naming the build is not enough. ``expected`` for a release regression is
+    ``total_new * share_prev`` — the PREVIOUS release's share of this scope
+    applied to the NEW release's own volume over the rollout-overlap window —
+    so it is not a count of the same thing as ``actual`` and the ``%`` beside
+    it is already ``1 - share_new/share_prev``, i.e. the share-for-share drop.
+    Printed bare, the pair reads as "the count halved", and the first reply is
+    "so what, the release only just rolled out" — an objection the
+    normalization has already priced in, because a smaller adopting cohort
+    shrinks ``total_new`` and shrinks ``expected`` with it.
+
+    So the line states that the expectation was built FROM the new release's
+    own volume. That single fact is what kills the misreading; the window is
+    corroboration. Costs ~117 UTF-16 units over the old line, well inside the
+    per-item budget that keeps a full 8-item Telegram delivery in one message.
+
+    Public because the AI-explanation prompt quotes the same clause it renders
+    (``alerts_messages._append_ai_explanation``): without it the model writes
+    the note from the raw counts alone and re-teaches the reading this sentence
+    exists to remove.
+    """
+    kind_label = _RELEASE_KIND_LABELS.get(facts.drift_type or "", "regressed")
+    version = facts.drift_field or "the new release"
+    previous = facts.sample_value or "the previous release"
+    span = _format_window_span(facts)
+    window_clause = f" over the {span} rollout overlap" if span else ""
+    line = f"{kind_label} in {version} vs {previous}{window_clause}"
+    if not has_baseline(facts.expected_count):
+        # No baseline: there is no ratio to explain and ${percent_delta_label}
+        # already says "no baseline". Adding the formula here would quote a
+        # zero as if it were an expectation. Through ``has_baseline`` so that it
+        # is the SAME question ``format_percent_delta`` answers four lines down:
+        # a signed expectation renders a real percentage there, and this sentence
+        # has to explain the ratio rather than deny there is one (tripl-0zpq.102).
+        return line
+    return (
+        f"{line}; {plain_alert_number(facts.expected_count)} is {previous}'s share "
+        f"of this {_release_scope_noun(facts)} at {version}'s own volume, so "
+        f"{format_percent_delta(facts.percent_delta, facts.expected_count)} "
+        f"is share-for-share"
+    )
+
+
+def build_drift_line(facts: DriftLineFacts) -> str:
+    """``${drift_line}`` for one item — leading ``"\\n  "`` included, or ``""``.
+
+    Three scopes reuse the same three drift columns to say three different
+    things, so the placeholder is one variable with three wordings:
+
+    * a release regression reads version -> ``drift_field``, kind ->
+      ``drift_type``, previous release -> ``sample_value`` and renders the
+      ``release:`` basis sentence;
+    * a value drift reads variable -> ``drift_field`` and the sampled novel
+      values -> ``sample_value``;
+    * everything that has drift columns at all — schema and distribution drift
+      — space-joins whichever of the three it has.
+
+    Returns the empty string when there is nothing to say, which is the normal
+    case: a count anomaly carries no drift columns, and the default item
+    templates place ``${drift_line}`` so that an empty one leaves no blank line.
+    The caller escapes the result as a whole, once, for its message format.
+    """
+    if facts.scope_type == _SCOPE_RELEASE_REGRESSION:
+        return f"\n  release: {release_regression_basis(facts)}"
+    if facts.scope_type == _SCOPE_VARIABLE_VALUE_DRIFT:
+        observed_clause = f" observed {facts.sample_value}" if facts.sample_value else ""
+        return f"\n  value drift: ${{{facts.drift_field}}}{observed_clause}"
+    drift_parts = [
+        facts.drift_type or "",
+        facts.drift_field or "",
+        f"sample={facts.sample_value}" if facts.sample_value else "",
+    ]
+    drift_text = " ".join(part for part in drift_parts if part)
+    return f"\n  drift: {drift_text}" if drift_text else ""

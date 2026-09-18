@@ -276,7 +276,7 @@ destinations.
 | `SMTP_PASSWORD` | `""` | SMTP auth password. |
 | `SMTP_SECURITY` | derived | `starttls`, `implicit_tls` or `none`. See below. |
 | `SMTP_USE_TLS` | `true` | **Deprecated.** Only supplies `SMTP_SECURITY`'s default when that is unset. |
-| `SMTP_FROM_ADDRESS` | `""` | Default `From:` address. Required — password reset mail is dropped without one. |
+| `SMTP_FROM_ADDRESS` | `""` | Default `From:` address; may carry a display name (`Tripl Alerts <no-reply@example.com>`). Required — password reset mail is dropped without one. Set here it is never checked until a send fails; the same value set in Settings → Email is checked as you save it. |
 
 `SMTP_SECURITY` names the transport, and the transport has to match the port:
 

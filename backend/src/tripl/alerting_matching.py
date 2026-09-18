@@ -1,8 +1,21 @@
 """Pure rule/anomaly matching helpers shared by live and simulated paths.
 
-The live alert pipeline (worker/tasks/metrics.py) and the in-UI rule simulator
-both apply the SAME predicates to anomalies — extracting them here guarantees
-the simulator never diverges from production behavior.
+The live alert pipeline (worker/tasks/metrics/dispatch.py) and the in-UI rule
+simulator both apply the SAME predicates to anomalies — extracting them here
+guarantees the simulator never diverges from production about WHICH signals a
+rule admits.
+
+That is the whole of the promise, and the limit is deliberate rather than an
+omission. The predicate half is shared CODE: ``rule_matches_anomaly`` is the one
+function both callers run, and it takes no destination because no destination
+can change whether a signal matches. The RATE LIMITER is not shared —
+``simulate_rule_firings`` below re-implements the live cooldown in memory — and
+there is one destination class it gets wrong, because dispatch switches the
+cooldown off for a destination carrying a ``delivery_schedule_cron`` (its
+cadence is its rate limiter) and nothing in this module is handed a destination
+to notice. The argument lives on ``simulate_rule_firings`` and on
+``services.alerting_service.simulate_rule``, where the gate is actually applied,
+so there is one copy of it to keep true rather than three.
 
 These functions never touch the session and never mutate state.
 """
@@ -310,10 +323,37 @@ def simulate_rule_firings(
     """Replay anomalies through a rule with in-memory cooldown gating.
 
     Returns the subset that would have triggered a delivery, in bucket order.
-    Cooldown is applied per (scope_type, scope_ref) — the same partition the
-    live pipeline uses for AlertRuleState. When ``cooldown_minutes_override``
-    is set, that value is used in place of ``rule.cooldown_minutes`` so the
-    simulator can A/B different cooldowns without writing back to the rule.
+
+    Cooldown is applied per (scope_type, scope_ref, scan config) — the partition
+    ``uq_alert_rule_state_scope`` gives AlertRuleState, which is the clock the
+    live pipeline gates on for a destination that delivers IMMEDIATELY. (For one
+    that does not, see the last two paragraphs: it gates on no clock at all.)
+    Keying it on (scope_type, scope_ref) alone was ONE place this module's
+    no-divergence promise was false
+    (tripl-0zpq.42): ``dispatch._prepare_alert_deliveries`` runs once per scan
+    config and loads only THAT config's states, while the replay hands a whole
+    project's anomalies through in a single pass, and a rule is project-wide
+    unless deliberately bound to one scan. An event that is anomalous in scan A
+    at 09:00 and in scan B at 09:30 therefore has two live clocks and sends
+    twice; the scan-blind key collapsed both onto one and reported a single
+    firing, so the what-if under-counted the rule it was asked about. Which
+    scopes this moves is decided by the scope_ref: ``event`` and ``event_type``
+    refs are the bare entity id and genuinely repeat across configs, whereas
+    ``project_total`` (the config id) and schema drift (the drift row id) are
+    already partitioned inside the ref and are unaffected either way.
+
+    ``metric`` is the deliberate exception and stays project-global: a catalog
+    metric is not a per-scan series, so its live state carries NO scan config at
+    all — ``AlertRuleState.scan_config_id`` is NULL for a metric scope, and a
+    partial unique index over that NULL space is what gives it one clock per
+    (rule, scope) for the whole project (tripl-0zpq.28). The branch below reads
+    the scope rather than the candidate's ``scan_config_id`` anyway: metric
+    candidates carry NULL there too, so the two agree, and keying on the scope
+    says what the partition IS rather than what one candidate happens to hold.
+
+    When ``cooldown_minutes_override`` is set, that value is used in place of
+    ``rule.cooldown_minutes`` so the simulator can A/B different cooldowns
+    without writing back to the rule.
 
     The two threshold overrides do the same for the numeric gates, and are
     forwarded whole to ``rule_matches_anomaly`` — the gate has to move INSIDE the
@@ -321,6 +361,37 @@ def simulate_rule_firings(
     matched must not consume the cooldown slot that then hides the next one.
     ``event_type_by_event_id`` is forwarded for exactly that reason too: a
     candidate the ``event_type`` filter rejects must not burn the cooldown slot.
+
+    THE COOLDOWN IS THE IMMEDIATE PATH'S LIMITER AND THIS FUNCTION APPLIES IT TO
+    EVERY REPLAY, INCLUDING ONES LIVE DOES NOT APPLY IT TO.
+    ``dispatch._prepare_alert_deliveries`` computes ``cooldown_applies =
+    destination.delivery_schedule_cron is None`` and both of its send gates read
+    ``not cooldown_applies or _cooldown_elapsed(...)``, so a destination holding
+    its alerts for a digest never consults ``cooldown_minutes`` at all. The clock
+    is not absent — ``alert_digest_send`` runs ``alerts._stamp_rule_state`` for
+    every member of a sent digest, exactly as the immediate path does, and a
+    scope no digest has carried yet simply still holds NULL — it is just never
+    read while the cadence is set. What limits that destination instead is the
+    buffer's unique key ``uq_alert_pending_item_scope``: one row per
+    (destination, rule, scan config, scope, direction), so a scope re-firing all
+    day occupies one digest line per direction per cron window
+    (``dispatch._buffer_pending_items``).
+
+    This function is handed no destination and models no cron window, so for a
+    cadence destination it answers the immediate-delivery question, and it is off
+    in whichever direction the two periods differ: hourly digests under the
+    default 1440-minute cooldown UNDER-count (one firing a day per scope against
+    up to 24 digest lines), a daily digest under a 60-minute cooldown
+    OVER-counts. Mirroring ``cooldown_applies`` here — just skipping the gate
+    when a cadence is set — would be worse than either, because with no limiter
+    every matched bucket becomes a firing (~2000 a week per scope at five-minute
+    collections, against a digest that ships one line) and ``noisy`` would trip
+    for every cadence destination in the deployment. A faithful mirror has to
+    replay the cron windows (``core.alert_schedule``) and collapse per (scope,
+    direction) inside each, which reports digest LINES rather than rule firings
+    and leaves ``cooldown_minutes_override`` — the knob the replay dialog exists
+    to A/B — with nothing to vary. That is a different feature, so the gap is
+    stated here and on ``simulate_rule`` rather than half-closed.
     """
     effective_cooldown = (
         cooldown_minutes_override
@@ -330,7 +401,9 @@ def simulate_rule_firings(
     cooldown = timedelta(0) if effective_cooldown < 0 else timedelta(minutes=effective_cooldown)
 
     fired: list[AlertMatchCandidate] = []
-    last_fired_at: dict[tuple[str, str], datetime] = {}
+    # Third element is the scan partition described above: the candidate's own
+    # scan, or None for the project-global ``metric`` scope.
+    last_fired_at: dict[tuple[str, str, uuid.UUID | None], datetime] = {}
 
     for anomaly in sorted(anomalies, key=lambda a: a.bucket):
         if not rule_matches_anomaly(
@@ -341,7 +414,8 @@ def simulate_rule_firings(
             event_type_by_event_id=event_type_by_event_id,
         ):
             continue
-        key = (anomaly.scope_type, anomaly.scope_ref)
+        scan_partition = None if anomaly.scope_type == SCOPE_METRIC else anomaly.scan_config_id
+        key = (anomaly.scope_type, anomaly.scope_ref, scan_partition)
         last = last_fired_at.get(key)
         if last is not None and anomaly.bucket - last < cooldown:
             continue

@@ -25,15 +25,18 @@ Two defects, both the product's fault:
     showing strictly less than the message. Section (c) below re-derives the
     membership rule scope by scope and pins it.
 
-These tests are pure: no DB, no network. The URL builders are exercised through
-a stubbed runtime config.
+These tests are pure: no DB, no network. The URL builders are HANDED their base
+URL: ``_build_item_paths`` takes a required ``app_base_url`` and reads nothing
+back out of ``app_settings``, so ``BASE`` is passed to each call here the way
+``dispatch._create_deliveries`` passes the value it resolved once for the whole
+delivery. Nothing in this file stubs a settings read, and nothing needs to.
 """
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import pytest
 
@@ -45,7 +48,6 @@ from tripl.alert_templates import (
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.domain_enums import MetricScopeType
 from tripl.models.variable_value_drift import VariableValueDrift
-from tripl.services import app_settings_service
 from tripl.worker.tasks.alerts_messages import (
     _build_item_template_context,
     telegram_message_length,
@@ -61,15 +63,6 @@ SLUG = "windy-ios"
 # The window the real alert measured over: 2026-07-24T09:00Z -> 2026-07-26T12:00Z.
 WINDOW_FROM = datetime(2026, 7, 24, 9, tzinfo=UTC)
 WINDOW_TO = datetime(2026, 7, 26, 12, tzinfo=UTC)
-
-
-@pytest.fixture(autouse=True)
-def _app_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        app_settings_service,
-        "get_runtime_config_sync",
-        lambda: SimpleNamespace(app_base_url=BASE),
-    )
 
 
 def _release_regression_item(
@@ -113,6 +106,7 @@ def _full_item(item: AlertDeliveryItem) -> AlertDeliveryItem:
     """
     item.details_path, item.monitoring_path = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type=item.scope_type,
         scope_ref=item.scope_ref,
         event_id=item.event_id,
@@ -145,6 +139,7 @@ def test_a_release_regression_never_links_to_the_event_monitoring_page() -> None
 
     details_path, monitoring_path = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="release_regression",
         scope_ref=str(event_id),
         event_id=event_id,
@@ -173,6 +168,7 @@ def test_an_event_type_scoped_regression_does_not_get_an_event_url() -> None:
 
     details_path, monitoring_path = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="release_regression",
         scope_ref=str(event_type_id),
         event_id=None,
@@ -187,6 +183,7 @@ def test_an_event_type_scoped_regression_does_not_get_an_event_url() -> None:
 def test_a_regression_without_a_delivery_id_gets_no_link_rather_than_a_wrong_one() -> None:
     details_path, monitoring_path = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="release_regression",
         scope_ref=str(uuid.uuid4()),
         event_id=uuid.uuid4(),
@@ -229,6 +226,7 @@ def test_every_other_scope_keeps_the_links_it_had(
 
     details_path, monitoring_path = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type=scope_type,
         scope_ref=scope_ref,
         event_id=event_id,
@@ -266,6 +264,7 @@ def test_every_scope_links_to_the_incident_when_there_is_one(scope_type: str) ->
 
     details_path, monitoring_path = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type=scope_type,
         scope_ref=str(uuid.uuid4()),
         event_id=uuid.uuid4(),
@@ -285,12 +284,33 @@ def test_a_catalog_metric_links_to_the_metric_drilldown_not_the_event_route() ->
     metric_id = uuid.uuid4()
     _, monitoring_path = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="metric",
         scope_ref=str(metric_id),
         event_id=None,
         delivery_id=uuid.uuid4(),
     )
     assert monitoring_path == f"{BASE}/p/{SLUG}/monitoring/metric/{metric_id}"
+
+
+def test_the_base_url_is_handed_in_and_has_no_default() -> None:
+    """Where every ``BASE`` above comes from, pinned as a contract.
+
+    These builders used to open by reading the base URL back out of
+    ``app_settings`` themselves, and this file used to stub that read with an
+    autouse fixture. ``_build_item_paths`` is now the only writer of
+    ``AlertDeliveryItem.details_path`` / ``monitoring_path`` and of the matching
+    pair in ``payload_snapshot``, so it mints every link an alert carries, and
+    it takes the value as a REQUIRED keyword-only argument precisely so a new
+    call site cannot ship link-less alerts in silence (see the ``urls`` module
+    docstring). Giving the parameter a default would leave every call above
+    passing while quietly reopening that hole, so requiredness is asserted
+    rather than assumed.
+    """
+    parameter = inspect.signature(_build_item_paths).parameters["app_base_url"]
+
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty
 
 
 # --------------------------------------------------------------------------
@@ -449,6 +469,7 @@ def test_two_items_in_one_delivery_do_not_share_a_link() -> None:
 
     first, _ = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="release_regression",
         scope_ref=str(first_event),
         event_id=first_event,
@@ -456,6 +477,7 @@ def test_two_items_in_one_delivery_do_not_share_a_link() -> None:
     )
     second, _ = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="release_regression",
         scope_ref=str(second_event),
         event_id=second_event,
@@ -478,6 +500,7 @@ def test_the_audit_link_names_the_item_it_was_printed_for() -> None:
 
     details_path, _ = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="release_regression",
         scope_ref=str(event_id),
         event_id=event_id,
@@ -504,6 +527,7 @@ def test_the_anchor_carries_the_scope_type_because_scope_ref_alone_collides() ->
 
     regression_details, _ = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="release_regression",
         scope_ref=str(shared_event_id),
         event_id=shared_event_id,
@@ -529,6 +553,7 @@ def test_the_anchor_is_url_safe_for_a_scope_ref_that_is_not_a_uuid() -> None:
     audit_scope = next(iter(_SCOPES_LINKED_TO_ALERT_AUDIT))
     details_path, _ = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type=audit_scope,
         scope_ref="checkout total&spend=1",
         event_id=uuid.uuid4(),
@@ -548,6 +573,7 @@ def test_the_per_item_anchor_does_not_leak_into_scopes_that_have_a_real_page() -
     for scope_type in ("event", "event_type", "project_total", "metric"):
         details_path, monitoring_path = _build_item_paths(
             SLUG,
+            app_base_url=BASE,
             scope_type=scope_type,
             scope_ref=str(uuid.uuid4()),
             event_id=uuid.uuid4(),
@@ -625,6 +651,7 @@ def test_value_drift_links_to_the_event_its_variable_is_anchored_to() -> None:
 
     details_path, monitoring_path = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="variable_value_drift",
         # scope_ref is the VariableValueDrift row id, which no route accepts.
         scope_ref=str(uuid.uuid4()),
@@ -644,6 +671,7 @@ def test_value_drift_is_not_sent_to_the_audit_row() -> None:
     delivery_id = uuid.uuid4()
     details_path, monitoring_path = _build_item_paths(
         SLUG,
+        app_base_url=BASE,
         scope_type="variable_value_drift",
         scope_ref=str(uuid.uuid4()),
         event_id=uuid.uuid4(),

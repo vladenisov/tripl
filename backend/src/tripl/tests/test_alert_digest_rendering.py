@@ -63,6 +63,14 @@ def _item(name: str, actual: float, expected: float, direction: str, hour: int =
         drift_type=None,
         sample_value=None,
         window_from=None,
+        # An event-scope item carries an event id on the real row, and the
+        # renderer reads both of these now: ``_release_scope_noun`` names what
+        # the regressed scope IS ("event" / "event type" / "scope") in the
+        # release-regression basis clause. These items never take that branch —
+        # they carry no drift_type — but a double that omits a column its
+        # subject always has is a claim that the absence is normal.
+        event_id=uuid.uuid4(),
+        event_type_id=None,
     )
 
 

@@ -139,9 +139,32 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
         server_default=AlertMessageFormat.plain.value,
     )
     # Manual snooze for a monitor: while ``muted_until`` is in the future the
-    # monitor is considered muted (mirrors AlertCorrelationState.muted_until).
-    # NULL means not muted. Timed-only, like the inbox mute action; worker-side
-    # suppression of deliveries for muted rules is a separate follow-up.
+    # monitor is muted and delivers nothing. NULL means NOT MUTED — it is what
+    # every rule ever created carries, and a rule has no status column to tell
+    # "never muted" from "muted forever". Same shape as
+    # ``AlertCorrelationState.muted_until`` but read the OPPOSITE way: on an
+    # inbox incident a NULL is the INDEFINITE mute (tripl-a50u). The two checks
+    # look alike and must not be unified — see
+    # ``AlertInboxActionRequest.validate_action``.
+    #
+    # Timed-only, and deliberately NOT like the inbox mute action this was
+    # modelled on: ``MonitorMuteRequest.muted_until`` is required, non-null and
+    # must be in the future, because accepting a null HERE would mute the whole
+    # fleet at once. A rule's permanent lever is ``enabled``.
+    #
+    # The worker suppresses deliveries for a muted rule on BOTH delivery paths.
+    # An older version of this comment called that "a separate follow-up", and
+    # on the strength of it the Monitors UI shipped a Mute button that wrote
+    # this column and changed nothing (tripl-jfm3.99). Today:
+    # ``metrics.dispatch._prepare_alert_deliveries`` skips a muted rule BEFORE
+    # it splits immediate destinations from scheduled ones, so a muted monitor
+    # neither mints an ``AlertDelivery`` nor buffers an ``AlertPendingItem``;
+    # ``alert_flush._build_digest`` re-checks when the digest is built, so a
+    # mute set during a hold window drops the items already buffered along with
+    # the claim instead of releasing them once the mute lapses. The rule's
+    # open/close state is updated before the dispatch check, deliberately, so a
+    # mute does not leave the monitor stuck "firing" on a stale scope. The
+    # API-side predicate is ``_alerting_monitors.is_rule_muted``.
     muted_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

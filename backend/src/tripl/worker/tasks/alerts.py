@@ -1,10 +1,11 @@
 import logging
 import smtplib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import or_, select, update
+from sqlalchemy.orm import Session, object_session, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from tripl import realtime
 from tripl.alert_templates import (
@@ -14,7 +15,6 @@ from tripl.alert_templates import (
 )
 from tripl.alerting_matching import SCOPE_METRIC
 from tripl.alerting_validation import (
-    validate_email_address,
     validate_email_recipients,
     validate_jira_api_token,
     validate_jira_auth_email,
@@ -23,6 +23,7 @@ from tripl.alerting_validation import (
     validate_jira_project_key,
     validate_linear_api_key,
     validate_linear_team_id,
+    validate_sender_address,
     validate_slack_webhook_url,
     validate_telegram_bot_token,
     validate_telegram_chat_id,
@@ -84,6 +85,14 @@ from tripl.worker.tasks.alerts_messages import (
 
 logger = logging.getLogger(__name__)
 
+# Re-exported, and load-bearing rather than tidy. Both digest tasks are DEFINED
+# in alerts_digest.py but registered under ``tripl.worker.tasks.alerts.*``
+# names, and celery_app.py's registration block imports this module and never
+# that one — so the import above is what puts them in the task registry. Beat
+# schedules both by those names (``send-weekly-plan-digest``,
+# ``check-deprecated-sunset-events``); drop the import as unused and the
+# schedule points at tasks no worker knows, which shows up only as
+# "unregistered task" in a worker log.
 __all__ = [
     "check_deprecated_sunset_events",
     "send_alert_delivery",
@@ -97,6 +106,12 @@ __all__ = [
 # the failed status that follows it, and the retry after that.
 TELEGRAM_DELIVERED_ITEM_IDS_KEY = "telegram_delivered_item_ids"
 
+# How many Telegram messages of this delivery the reader has ACROSS attempts,
+# kept in the same snapshot and written in the same commit as the ids above.
+# It is not a resume point (see :func:`_read_delivered_item_ids`); the only
+# thing it decides is where the "2/3" marker resumes counting.
+TELEGRAM_PARTS_DELIVERED_KEY = "telegram_parts_delivered"
+
 
 def _read_delivered_item_ids(payload_snapshot: object) -> set[uuid.UUID]:
     """Item ids a previous attempt recorded as delivered, from the snapshot.
@@ -106,6 +121,12 @@ def _read_delivered_item_ids(payload_snapshot: object) -> set[uuid.UUID]:
     not: the AI note and each item's sparkline/top-mover context are re-resolved
     on the retry, so the same items can pack into different messages and a part
     counter would either duplicate or drop items.
+
+    A part counter is nonetheless kept beside them
+    (:func:`_read_delivered_part_count`), and it does not weaken that argument:
+    it never decides what is SENT, only where the "2/3" marker resumes
+    counting, and a marker off by one costs a reader a moment's confusion where
+    a resume point off by one costs them an item.
 
     Anything unreadable is treated as "nothing delivered": re-sending a message
     is bad, but silently dropping items because a hand-edited snapshot did not
@@ -125,6 +146,31 @@ def _read_delivered_item_ids(payload_snapshot: object) -> set[uuid.UUID]:
     return delivered
 
 
+def _read_delivered_part_count(payload_snapshot: object) -> int:
+    """Telegram messages of this delivery already in the chat, from the snapshot.
+
+    Deliberately NOT ``payload_snapshot['telegram_message_parts']``, which is
+    the nearest-looking key and the wrong one: that is the PLAN an attempt made
+    (and only written when the plan ran to more than one message), overwritten
+    by every later attempt, while this is what previous attempts actually got
+    accepted. The two disagree exactly when an attempt fails part-way through,
+    which is the only situation either is read in.
+
+    Absent or unreadable means zero — the reverse of
+    :func:`_read_delivered_item_ids`'s caution, and for the same reason: a
+    wrong offset mislabels a message the reader still receives in full, so
+    guessing low here costs less than refusing to send.
+    """
+    if not isinstance(payload_snapshot, dict):
+        return 0
+    raw = payload_snapshot.get(TELEGRAM_PARTS_DELIVERED_KEY)
+    # ``bool`` is an ``int`` subclass, and ``True`` would silently become an
+    # offset of one.
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+        return 0
+    return raw
+
+
 def _record_delivered_items(
     session: Session,
     delivery: AlertDelivery,
@@ -140,19 +186,157 @@ def _record_delivered_items(
     ``payload_snapshot`` but rolled back with the failure records nothing. The
     ``status=sent`` commit at the end of the task is a separate, later write.
 
-    ``delivered_ids`` accumulates in place — it is the attempt's running set —
-    and the new snapshot is returned rather than edited in place, because the
-    dict handed in has already been committed and mutating that same object
-    would leave SQLAlchemy comparing it against itself and skipping the UPDATE.
+    ``delivered_ids`` accumulates in place, and it is the DELIVERY's running
+    set rather than this attempt's: the caller seeds it from the snapshot with
+    what earlier attempts landed (:func:`_read_delivered_item_ids`) and each
+    call here adds the part that just went out. Its size is therefore the whole
+    answer to "how many items does the reader already have", which is what the
+    too-long failure in :func:`send_alert_delivery` quotes — adding this
+    attempt's own tally to it double-counts (tripl-0zpq.40).
+
+    The part COUNT written beside them answers a different question — how many
+    MESSAGES the reader holds, not how many items — and only the "2/3" marker
+    asks it (``alerts_messages.split_telegram_messages``'s ``part_offset``).
+    Both are written here because both are facts about the one message that was
+    just accepted, and a commit recording either without the other would resume
+    with a marker that disagreed with the items printed under it.
+
+    The new snapshot is returned rather than edited in place, because the dict
+    handed in has already been committed and mutating that same object would
+    leave SQLAlchemy comparing it against itself and skipping the UPDATE.
     """
     delivered_ids.update(item.id for item in items)
     updated = {
         **payload_snapshot,
         TELEGRAM_DELIVERED_ITEM_IDS_KEY: sorted(str(item_id) for item_id in delivered_ids),
+        # One call, one accepted message, so +1. Counted off the snapshot rather
+        # than off ``delivered_ids`` because items per message vary and the
+        # marker counts messages.
+        TELEGRAM_PARTS_DELIVERED_KEY: _read_delivered_part_count(payload_snapshot) + 1,
     }
     delivery.payload_snapshot = updated
     session.commit()
     return updated
+
+
+def _digest_summary_items(
+    delivery: AlertDelivery,
+    items: list[AlertDeliveryItem] | None,
+    *,
+    digest: bool,
+) -> list[AlertDeliveryItem] | None:
+    """What a digest's header must describe when the body lists only part of it.
+
+    ``${matched_count}`` and the list under it describe the MESSAGE in front of
+    the reader; ``${headline}`` and ``${window_label}`` describe the DIGEST,
+    which is one thing however many messages carry it
+    (website/docs/use/alerting.md). ``_build_template_context`` can only keep
+    those apart if the caller says what the whole is — handed nothing, it
+    summarises whatever it was asked to render.
+
+    A Telegram resume renders the UNDELIVERED SUBSET, and that is exactly the
+    caller that used to hand it nothing. The retried part of a 24-item digest
+    therefore announced "9 alerts" over a window that opens hours after the one
+    the two earlier messages named: three disagreeing summaries of one morning,
+    which is the reading the digest layout exists to prevent (tripl-0zpq.35).
+    The MarkdownV2→plain fallback re-renders a remainder for the same reason
+    and needs the same answer. So does ``split_telegram_messages``, at both
+    call sites: it re-renders every part it packs, and left to itself it
+    re-derives the summary from the part it was handed — undoing this answer
+    again the moment a remainder needs more than one message.
+
+    None means "nothing to correct", and it is not the same as passing every
+    item: a body that already lists the whole delivery keeps ``matched_count``
+    — what dispatch counted — as the headline's total instead of recounting the
+    rows, and a non-digest has no header making a claim about scope at all (a
+    reader looking at message 2 of 2 of a plain alert counts what is in front of
+    them, by design).
+    """
+    if not digest or items is None or len(items) == len(delivery.items):
+        return None
+    return list(delivery.items)
+
+
+def _claim_delivery(session: Session, delivery: AlertDelivery, *, now: datetime) -> bool:
+    """Take the single-flight claim on a pending delivery; False means someone else has it.
+
+    Nothing else keeps two workers off one delivery. The send tasks leave the
+    row untouched from the load at the top until the message is already out —
+    on the Slack/webhook paths the first write is ``payload_snapshot`` and the
+    first commit is the ``status=sent`` one — so two tasks carrying the same id
+    both read `pending` and both send. That is not hypothetical:
+    ``requeue_stranded_alert_deliveries`` re-enqueues a row on age alone, and
+    the worker runs prefork with no ``--concurrency`` flag (compose.yaml), so
+    the backlog that makes a row look stranded is exactly the condition under
+    which its first send is still running in another process.
+
+    The paths that DO commit before ``status=sent`` commit no earlier than
+    their own send call returning, and none of them closes this race: the
+    ticket paths record the external issue id in a ``payload_snapshot`` commit
+    of their own, which stops a sequential RE-RUN from filing a second ticket
+    but not a concurrent worker holding the copy of the row it loaded before
+    that commit landed, and Telegram commits once per accepted message
+    (:func:`_record_delivered_items`).
+
+    So the claim is a compare-and-set in its own committed transaction — the
+    shape ``alert_flush`` claims a digest window with — and the commit is the
+    point: an uncommitted claim is invisible to the other process, which is the
+    whole failure mode. Callers run it BEFORE resolving the destination, so a
+    duplicate dispatch costs one UPDATE instead of an AI round-trip, a set of
+    sparkline queries and a second message.
+
+    It is a LEASE, not a lock: a worker SIGKILLed between the claim and the
+    terminal status write leaves ``claimed_at`` set with no transaction left to
+    roll it back. The lease is deliberately ``STRANDED_DELIVERY_MINUTES``, the
+    reaper's own horizon, so the first redispatch that arm makes is also the
+    first claim that can win — a shorter lease would re-open the race this
+    closes, a longer one would refuse the reaper's redispatch and burn a
+    dispatch attempt on a no-op. The UPDATE also bumps ``updated_at`` through
+    the column's ``onupdate``, which keeps the reaper's pending arm (which
+    requires ``updated_at < cutoff``) off a row whose send is live.
+
+    A row that is not `pending` cannot be claimed. `sent` is already handled by
+    the early return in :func:`send_alert_delivery`; `failed` is not sendable
+    until the reaper's failed arm or the Inbox Retry button flips it back, and
+    both do that in a committed transaction of their own.
+    """
+    # Deferred import, for the cycle maintenance.py documents from the other
+    # side: entering the task graph at maintenance imports celery_app, which
+    # imports this module, which would then be importing a half-initialized
+    # maintenance whose constants below the import block do not exist yet.
+    from tripl.worker.tasks.maintenance import STRANDED_DELIVERY_MINUTES
+
+    abandoned_before = now - timedelta(minutes=STRANDED_DELIVERY_MINUTES)
+    claimed = int(
+        getattr(
+            session.execute(
+                update(AlertDelivery)
+                .where(
+                    AlertDelivery.id == delivery.id,
+                    AlertDelivery.status == AlertDeliveryStatus.pending.value,
+                    or_(
+                        AlertDelivery.claimed_at.is_(None),
+                        AlertDelivery.claimed_at < abandoned_before,
+                    ),
+                )
+                .values(claimed_at=now)
+                .execution_options(synchronize_session=False)
+            ),
+            "rowcount",
+            0,
+        )
+        or 0
+    )
+    session.commit()
+    if claimed != 1:
+        return False
+    # ``synchronize_session=False`` leaves the loaded row's copy of the column
+    # stale, and the release at the end of the attempt is an ORM assignment: if
+    # the in-session value still read NULL, assigning NULL would look like no
+    # change at all, emit no UPDATE, and leave a finished delivery holding a
+    # lease for the rest of the horizon.
+    delivery.claimed_at = now
+    return True
 
 
 def _assert_egress_allowed(destination: AlertDestination, project: Project | None) -> None:
@@ -160,11 +344,26 @@ def _assert_egress_allowed(destination: AlertDestination, project: Project | Non
 
     A demo project is strictly zero-egress: the only sendable destination it may
     have is the local ``demo_sink``. The API refuses to create or enable an
-    external destination on a demo project, but every dispatch path (scan
-    dispatch, manual retry, stale-pending re-dispatch, the scheduled digest)
-    funnels through a send task, so the guard that actually stops the send lives
-    here — it also covers rows written before that API guard existed. Callers
-    run it BEFORE rendering, so the AI round-trip cannot fire either.
+    external destination on one, so what this guard covers is a row that exists
+    anyway — written before that API guard, or by hand against the database.
+
+    Every path that MINTS a delivery (scan dispatch, manual retry, stale-pending
+    re-dispatch, the flushed digest) funnels through a send task, which is why
+    the guard that actually stops the send lives here. "The flushed digest"
+    means ``alert_digest_send.send_alert_digest``, which mints deliveries and
+    calls this; it is NOT the weekly plan digest, which the older wording "the
+    scheduled digest" read as.
+
+    Two worker senders mint nothing and resolve a destination themselves: the
+    weekly plan digest and the sunset alert. They are not outside the guard —
+    ``alerts_digest._send_digest_to_destination`` calls it directly — but there
+    it is a backstop, because both tasks already exclude demo projects in their
+    SELECT (tripl-0zpq.33). The one destination send genuinely outside it is the
+    **Test** button, which refuses a demo in its own words at
+    ``services/_alerting_test_send.send_destination_test``.
+
+    The send tasks run it BEFORE rendering, so a refusal costs no AI round-trip;
+    the digest sender runs it after building its message and says why there.
     """
     if (
         project is not None
@@ -176,6 +375,106 @@ def _assert_egress_allowed(destination: AlertDestination, project: Project | Non
             f"{destination.name!r} ({destination.type}) is not a local demo sink. "
             "Nothing was sent."
         )
+
+
+def _assert_destination_enabled(destination: AlertDestination) -> None:
+    """Refuse a send through a destination the operator switched off (tripl-0zpq.39).
+
+    Every path that MINTS a delivery already filters on ``enabled`` — the
+    dispatcher's ``_load_enabled_alert_destinations``, both of the flusher's
+    destination selects — so a row exists at all only because the toggle was on
+    when the signal fired. What none of them can cover is the interval between
+    minting and sending, and that interval is not the millisecond it sounds
+    like: a ``.delay()`` lost to a broker restart, the stranded-delivery
+    reaper's fifteen-minute redispatch, and the Inbox Retry button each hand an
+    OLD row to a send task, and the toggle can have moved since. So the check
+    belongs beside :func:`_assert_egress_allowed`, for the same reason that one
+    does — the send task is the chokepoint every dispatcher funnels through —
+    and it reads the toggle at the moment of SENDING rather than the moment of
+    deciding, which is what "route no alerts here"
+    (website/docs/use/alerting.md) has to mean to be worth anything.
+
+    Called where the send tasks call it — at the top, before the render — this
+    is the CHEAP half of that and NOT yet the moment of sending: the render in
+    between is an AI round-trip and a set of sparkline/top-mover warehouse
+    reads, which on a 24-item digest is where the seconds are. The moment of
+    sending is :func:`_assert_destination_still_enabled` below, which both send
+    tasks run again immediately before their outbound call and which
+    ``alerts_digest._send_digest_to_destination`` — having no render of its own
+    to protect — runs instead of this one.
+
+    It raises rather than returning quietly so the Inbox carries a failed
+    delivery naming the cause, instead of an alert that simply never arrived.
+    Nothing resurrects that row behind the operator's back either: the reaper's
+    failed arm excludes disabled destinations by design, and a hand-pressed
+    Retry meets this same guard while the toggle is still off.
+
+    The **Test** button is deliberately NOT subject to this. It is a separate
+    endpoint that writes no delivery, and checking credentials before switching
+    a destination back on is the commonest reason to press it
+    (``services/_alerting_test_send.py``); disabled stops alerts, not answers.
+    """
+    if not destination.enabled:
+        raise ValueError(
+            f"Alert destination {destination.name!r} is disabled: alerts are not "
+            "routed here. Nothing was sent."
+        )
+
+
+def _assert_destination_still_enabled(destination: AlertDestination) -> None:
+    """:func:`_assert_destination_enabled`, re-READ, for the line before an egress.
+
+    The check above is placed where a refusal is cheapest; this one is placed
+    where a refusal is TRUE. Between them sits everything the send task does
+    before it touches the network — the AI round-trip, the sparkline and
+    top-mover warehouse reads, the template render, and in the digest sender an
+    entire batch of other members rendered and committed. That is the window an
+    operator actually flips a toggle in: the alert storm they are switching the
+    channel off because of is the same storm that made the render slow.
+
+    Re-READ rather than re-checked, and that is the whole of this function.
+    Worker sessions are built ``expire_on_commit=False`` (worker/db.py) and
+    nothing between the two calls expires the row, so calling
+    :func:`_assert_destination_enabled` a second time on the same instance
+    would hand back the value the first call already saw and could never
+    disagree with it — a guard that cannot fail. So this reads the column
+    itself: one primary-key SELECT of one column per delivery (or per digest
+    group), not one per item, and not a second load of the destination's
+    secrets.
+
+    NOT ``session.refresh``, and not an ordinary ``session.execute`` either.
+    Both FLUSH first, and a flush in the middle of the send is not harmless
+    here: it freezes ``delivery.payload_snapshot``'s committed state on the very
+    dict the branches below go on to mutate in place, after which re-assigning
+    that same object is no longer a change the unit of work can see — and
+    ``delivery_mode`` for a demo sink, or ``external_issue_key`` for a ticket,
+    never reaches the row. Hence ``no_autoflush`` around the read, and
+    ``set_committed_value`` to land the answer on the instance without marking
+    it dirty (the idiom ``services/_branch_counterparts.py`` uses for the same
+    reason: a read that must not become a write).
+
+    A destination with no session — one a caller built or detached itself —
+    keeps the value it was loaded with rather than raising, because the only
+    honest answer available is the one already in hand.
+
+    A destination DELETED mid-flight reads back as no row at all. That is
+    refused too, by the same ``ValueError`` and into the same ``failed`` row: a
+    delivery pointing at a destination that no longer exists is not one to send
+    to either, and saying so in the error the operator reads beats an
+    ``ObjectDeletedError`` from the ORM.
+    """
+    session = object_session(destination)
+    if session is not None:
+        with session.no_autoflush:
+            still_enabled = session.execute(
+                select(AlertDestination.enabled).where(AlertDestination.id == destination.id)
+            ).scalar_one_or_none()
+        if still_enabled is None:
+            raise ValueError(
+                f"Alert destination {destination.name!r} no longer exists; nothing was sent."
+            )
+        set_committed_value(destination, "enabled", still_enabled)
+    _assert_destination_enabled(destination)
 
 
 def _resolve_slack_webhook(destination: AlertDestination) -> str:
@@ -209,7 +508,24 @@ def _resolve_email_context(
     if not from_address:
         raise ValueError("Email destination has no From: address and SMTP_FROM_ADDRESS is unset.")
     try:
-        from_address = validate_email_address(from_address)
+        # ``validate_sender_address``, not the strict ``validate_email_address``:
+        # the global Default From is free text an operator types, and
+        # ``Tripl Alerts <no-reply@example.com>`` is what they naturally type
+        # there. The strict helper refuses a display name outright, while both
+        # diagnostics — Settings → Send test email and the destination's own
+        # Test — accept one, so a Default From that passed every check the UI
+        # offers then failed EVERY real alert here, with the message below
+        # (tripl-0zpq.29). A diagnostic that is more permissive than delivery is
+        # worse than no diagnostic: it certifies a configuration that does not
+        # deliver. The ORIGINAL string comes back, display name intact, and goes
+        # straight into ``msg["From"]``, which takes it; what is still refused
+        # is a value with no @-sign, which serialises happily and comes back
+        # from the relay naming nothing.
+        #
+        # The address also stops being normalised here (lower-cased domain,
+        # IDNA-encoded) — nothing reads it back. It is written to one header and
+        # never compared or stored, so the normal form had no consumer.
+        from_address = validate_sender_address(from_address)
     except ValueError as exc:
         raise ValueError(
             "Email destination From: address is invalid. Update the override or SMTP_FROM_ADDRESS."
@@ -226,20 +542,50 @@ def _stamp_rule_state(session: Session, delivery: AlertDelivery) -> None:
             AlertRuleState.scope_ref == item.scope_ref,
         ]
         # Every scope but ``metric`` keys its state on the scan config that
-        # produced the delivery. A metric-scope state cannot: catalog metrics
-        # are project-global, so dispatch anchors their state on ONE canonical
-        # config for the whole project (the lowest id) to give them a single
-        # cooldown clock. Matching on the delivery's own config therefore
-        # found nothing for every config but that one — windy-ios runs three,
-        # so two sends in three stamped nothing, last_notified_at stayed NULL,
-        # and the re-send gate reads NULL as "never told them". The cooldown
-        # was permanently elapsed for metric scopes.
+        # produced the delivery. A metric scope is project-global and stores
+        # NULL there (tripl-0zpq.28), so it matches on the NULL — filter for
+        # what the row actually holds, rather than dropping the column.
+        #
+        # Dropping it is what this used to do, and it stamped EVERY metric state
+        # of this rule and scope in the project. While metric states were
+        # anchored on the project's lowest config id, a created or deleted scan
+        # config moved that anchor and stranded the old row: dropping the filter
+        # then kept stamping the stranded row's ``last_notified_at``, so it read
+        # as freshly notified forever while nothing could ever load it again.
         if item.scope_type != SCOPE_METRIC:
             filters.append(AlertRuleState.scan_config_id == delivery.scan_config_id)
-        # Not scalar_one_or_none: what guarantees a single row is the
-        # (rule, config, scope_type, scope_ref) uniqueness, and dropping the
-        # config from the filter drops that guarantee with it. Raising here
-        # would fail a delivery that has already gone out.
+        else:
+            filters.append(AlertRuleState.scan_config_id.is_(None))
+        # Not scalar_one_or_none — and NOT because a second row is expected.
+        # Both arms are single-row by key: the config arm's four equalities are
+        # exactly ``uq_alert_rule_state_scope``, and the NULL arm is covered by
+        # the partial ``uq_alert_rule_state_metric_scope``, so against this
+        # tree's schema the body below runs at most once and the two forms
+        # cannot be told apart. What differs is the behaviour when that second
+        # key is absent, and it is the fragile one of the pair: SQL treats NULLs
+        # as DISTINCT, so the composite constraint stops deduping the moment the
+        # column is NULL, and every dialect has to be told about the partial
+        # index separately (``sqlite_where`` on the model is the only reason the
+        # test database has one at all). Without it, two collections of the same
+        # project that both run dispatch's ``scan_config_id IS NULL`` load before
+        # either inserts leave two project-global rows, and this query returns
+        # them together.
+        #
+        # The loop stamps both and moves on; scalar_one_or_none would raise
+        # MultipleResultsFound — inside the ``try`` whose message is ALREADY in
+        # front of the reader, and whose handler rolls the ``sent`` status back
+        # and records ``failed`` instead. Retry in the Inbox re-dispatches a
+        # failed row (``_alerting_deliveries.retry_delivery``), and the Slack,
+        # webhook and email paths keep no delivered-marker to skip on the way
+        # Telegram and the ticket channels do: the alert would ship twice
+        # because a bookkeeping write raised after the send.
+        #
+        # It does not reach the row an old worker anchored on a config
+        # mid-deploy either: the ``.is_(None)`` arm above excludes that one on
+        # purpose, so it is never stamped — and stamping it is what used to keep
+        # it looking freshly notified forever. Retiring it is dispatch's job,
+        # not this one's: ``metrics.dispatch._retire_config_anchored_metric_states``
+        # deletes it on the next collection that dispatches the rule.
         for state in session.execute(select(AlertRuleState).where(*filters)).scalars():
             state.last_notified_at = delivery.sent_at
             state.last_notified_delivery_id = delivery.id
@@ -381,6 +727,21 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         if delivery.status == AlertDeliveryStatus.sent.value:
             return {"status": "already_sent", "delivery_id": delivery_id}
 
+        # Single flight (tripl-0zpq.37). The early return above only catches a
+        # re-run that STARTS after the first one committed; a second worker
+        # that starts while this delivery is still being rendered or posted
+        # reads the same `pending` row and sends a second copy. That is what
+        # the reaper's age-based redispatch produces on a backlogged worker,
+        # and it is the one duplicate this pipeline can actually prevent — the
+        # other one, a send whose response timed out after the receiver
+        # accepted it, is a trade the docs make deliberately.
+        if not _claim_delivery(session, delivery, now=datetime.now(UTC)):
+            logger.info(
+                "Alert delivery %s is already being sent by another worker; skipping",
+                delivery_id,
+            )
+            return {"status": "already_claimed", "delivery_id": delivery_id}
+
         destination = session.get(AlertDestination, delivery.destination_id)
         rule = session.get(AlertRule, delivery.rule_id)
         scan_config = session.get(ScanConfig, delivery.scan_config_id)
@@ -390,6 +751,16 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
 
         is_demo_project = project is not None and project.is_demo
         _assert_egress_allowed(destination, project)
+        # Read here, not at dispatch: this row may have been minted before the
+        # operator flipped the toggle (tripl-0zpq.39). Like the guard above it
+        # runs BEFORE the render, so a destination that is off costs no AI
+        # round-trip and no sparkline queries either.
+        #
+        # That saving is ALL this call buys. It is not what makes "a disabled
+        # destination is not sent to" true, because the send is still an AI
+        # round-trip and a set of warehouse reads away; the re-read immediately
+        # before the branch dispatch below is.
+        _assert_destination_enabled(destination)
 
         # Built once and reused across re-renders (e.g. the MarkdownV2→plain
         # fallback) so the warehouse/DB queries behind sparkline + top-movers
@@ -406,6 +777,9 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         # that have not been delivered yet. Every other channel sends the whole
         # delivery in one call, so there is nothing to resume.
         already_delivered_ids = _read_delivered_item_ids(delivery.payload_snapshot)
+        # Messages rather than items: what the "2/3" marker has to carry on
+        # from, so the retry does not restart the reader's count at one.
+        already_delivered_parts = _read_delivered_part_count(delivery.payload_snapshot)
         is_telegram_resume = destination.type == AlertDestinationType.telegram and bool(
             already_delivered_ids
         )
@@ -443,8 +817,21 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         # computed over EVERY item, which is the whole point of one digest
         # instead of three chunks, so the immediate path's 10-item prompt cap
         # would silently describe less than half a 24-item morning.
+        #
+        # Off on a resume for the reason the appended note below is off on one:
+        # the note rides on the FIRST message only and that message is already
+        # with the reader, so regenerating it would buy an LLM round-trip and
+        # then print a second copy above the remainder. The earlier attempt's
+        # text stays in ``payload_snapshot['ai_explanation']`` — nothing below
+        # overwrites the key when there is no new note — so the Inbox still
+        # shows what was actually sent.
         digest_ai: str | None = None
-        if is_digest and rule.ai_explanation_enabled and not is_demo_project:
+        if (
+            is_digest
+            and rule.ai_explanation_enabled
+            and not is_demo_project
+            and not is_telegram_resume
+        ):
             digest_ai = _build_ai_explanation(
                 delivery,
                 scan_name=scan_config.name,
@@ -464,6 +851,9 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             item_context_cache=item_context_cache,
             metric_units_cache=metric_units_cache,
             items=pending_items,
+            # The body is the remainder; the header still describes the whole
+            # digest. None on a first attempt, where they are the same set.
+            summary_items=_digest_summary_items(delivery, pending_items, digest=is_digest),
             digest=is_digest,
             ai_explanation=digest_ai,
             project_timezone=project.timezone if project else None,
@@ -506,6 +896,20 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             payload_snapshot["ai_explanation"] = ai_explanation or digest_ai
         delivery.payload_snapshot = payload_snapshot
 
+        # The toggle again, with the render behind us and the next statement
+        # the outbound call itself (tripl-0zpq.39). The check at the top of the
+        # task bought the AI round-trip and the sparkline queries; this one
+        # buys the window between them and the egress — the only window long
+        # enough for an operator to reach the switch, and the one the check at
+        # the top cannot see into. It costs a single-column SELECT on a row
+        # already in the session, so it is not a second query per item.
+        #
+        # The render is deliberately NOT thrown away: ``rendered_message`` and
+        # ``message_format`` are already set, so the failure arm stamps the
+        # body this delivery would have carried onto the `failed` row and the
+        # Inbox can show the operator exactly what their toggle stopped.
+        _assert_destination_still_enabled(destination)
+
         if destination.type == AlertDestinationType.slack:
             _send_slack_message(
                 _resolve_slack_webhook(destination), text, message_format=message_format
@@ -546,11 +950,25 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     metric_units_cache=metric_units_cache,
                     ai_explanation=ai_explanation or digest_ai,
                     items=pending_items,
+                    # The same correction the unsplit render above makes, and
+                    # it has to be repeated because the split re-renders every
+                    # part: without it a remainder needing two messages
+                    # summarises the remainder in both of them.
+                    summary_items=_digest_summary_items(delivery, pending_items, digest=is_digest),
                     digest=is_digest,
+                    # Zero on a first attempt. On a resume it is what keeps the
+                    # marker continuous with the messages already on the
+                    # reader's screen (tripl-0zpq.35).
+                    part_offset=already_delivered_parts,
                     project_timezone=project.timezone if project else None,
                 )
             )
             if len(parts) > 1:
+                # This attempt's PLAN, written only when the plan runs to more
+                # than one message. NOT the marker's offset — that is
+                # TELEGRAM_PARTS_DELIVERED_KEY, written per message actually
+                # accepted; this key is overwritten by every attempt and says
+                # nothing about what reached the reader.
                 payload_snapshot["telegram_message_parts"] = len(parts)
                 delivery.payload_snapshot = payload_snapshot
 
@@ -607,6 +1025,11 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         item_context_cache=item_context_cache,
                         metric_units_cache=metric_units_cache,
                         items=remaining,
+                        # ``remaining`` is a remainder twice over here — of a
+                        # resume, and of the parts this attempt already landed
+                        # in the format that has just been refused — so the
+                        # header needs the whole digest even on a first attempt.
+                        summary_items=_digest_summary_items(delivery, remaining, digest=is_digest),
                         # Still a digest. Dropping this reverts the reader to
                         # the verbose 317-character-per-item layout precisely
                         # when something has already gone wrong.
@@ -631,11 +1054,18 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         message=fallback_text,
                         message_format=fallback_format,
                         items=remaining,
+                        summary_items=_digest_summary_items(delivery, remaining, digest=is_digest),
                         session=None,
                         item_context_cache=item_context_cache,
                         metric_units_cache=metric_units_cache,
                         ai_explanation=fallback_note,
                         digest=is_digest,
+                        # Read from the running snapshot, so it includes the
+                        # parts THIS attempt landed before the parse error: the
+                        # messages that went out in MarkdownV2 are still in the
+                        # chat, and the plain-text remainder continues their
+                        # numbering instead of opening a second sequence.
+                        part_offset=_read_delivered_part_count(payload_snapshot),
                         project_timezone=project.timezone if project else None,
                     ):
                         _send_telegram_message(
@@ -677,9 +1107,21 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     # used to live here is gone rather than merely fixed. Say
                     # what happened instead: the raw HTTP 400 in the Inbox names
                     # neither the cause nor how much of the delivery got out.
+                    # The numerator is ``already_delivered_ids`` ALONE. That set
+                    # is seeded from the snapshot with what earlier attempts
+                    # landed and _record_delivered_items adds each part this
+                    # attempt lands to it in place, so it is already the union —
+                    # exactly "how many of its items had already gone out", the
+                    # number website/docs/use/alerting.md promises the Inbox
+                    # reports. Adding ``len(delivered_items)`` counted this
+                    # attempt's parts a second time: a 24-item delivery that
+                    # landed two 8-item parts and lost the third announced
+                    # "32 of 24 items had already been sent" (tripl-0zpq.40).
+                    # ``parts_sent`` below is this attempt's alone on purpose,
+                    # which is why the sentence names the attempt only there.
                     raise ValueError(
                         "Telegram refused a message as too long. "
-                        f"{len(already_delivered_ids) + len(delivered_items)} of "
+                        f"{len(already_delivered_ids)} of "
                         f"{len(delivery.items)} items had already been sent, "
                         f"{parts_sent} message(s) of them in this attempt. The "
                         "refused message carries a single item and cannot be split "
@@ -865,6 +1307,11 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         delivery.status = AlertDeliveryStatus.sent.value
         delivery.sent_at = datetime.now(UTC)
         delivery.error_message = None
+        # The attempt is over, so the lease goes with it. `sent` is guarded by
+        # the early return at the top rather than by the claim, and a row still
+        # holding a lease it no longer needs is a row a later legitimate
+        # dispatch would have to wait out.
+        delivery.claimed_at = None
         alert_deliveries_total.labels(status=AlertDeliveryStatus.sent.value).inc()
         _stamp_rule_state(session, delivery)
         session.commit()
@@ -893,6 +1340,13 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 delivery.payload_snapshot = payload_snapshot
             delivery.status = AlertDeliveryStatus.failed.value
             delivery.error_message = str(exc)
+            # Released with the attempt, and this half matters more than the
+            # success one: the Inbox Retry button flips this row straight back
+            # to `pending` and re-dispatches it, so a lease left behind would
+            # make that send a silent no-op until it expired — an operator
+            # pressing Retry and watching nothing happen for fifteen minutes is
+            # worse than the duplicate the claim exists to stop.
+            delivery.claimed_at = None
             session.commit()
             failed_project = session.get(Project, delivery.project_id)
             if failed_project is not None:

@@ -115,7 +115,12 @@ class ScanConfigCreate(BaseModel):
     base_query: str = Field(min_length=1)
     event_type_column: str | None = None
     time_column: str | None = None
-    event_name_format: str | None = None
+    # Bounded to the width of ``scan_configs.event_name_format`` (String(500)).
+    # A format is a short template like ``${action}_${object}``, but nothing was
+    # enforcing that, so a long one passed validation here and failed in the
+    # INSERT as a Postgres StringDataRightTruncation — a generic 500 for a body
+    # this layer had already accepted (tripl-0zpq.275).
+    event_name_format: str | None = Field(None, max_length=500)
     json_value_paths: list[str] = Field(default_factory=list)
     event_group_rules: list[EventGroupRule] = Field(default_factory=list)
     metric_breakdown_columns: list[str] = Field(default_factory=list)
@@ -209,7 +214,8 @@ class ScanConfigUpdate(BaseModel):
     base_query: str | None = Field(None, min_length=1)
     event_type_column: str | None = None
     time_column: str | None = None
-    event_name_format: str | None = None
+    # Same bound as on create: the PATCH writes the same column.
+    event_name_format: str | None = Field(None, max_length=500)
     json_value_paths: list[str] | None = None
     event_group_rules: list[EventGroupRule] | None = None
     metric_breakdown_columns: list[str] | None = None
@@ -367,7 +373,9 @@ class ScanDryRunRequest(BaseModel):
     event_type_id: uuid.UUID | None = None
     event_type_column: str | None = None
     time_column: str | None = None
-    event_name_format: str | None = None
+    # Same bound again: a dry run stores the draft it was asked about, and
+    # ``scan_dry_run_jobs.event_name_format`` is String(500) like the real one.
+    event_name_format: str | None = Field(None, max_length=500)
     event_group_rules: list[EventGroupRule] = Field(default_factory=list)
     json_value_paths: list[str] = Field(default_factory=list)
     cardinality_threshold: int = Field(default=100, ge=1)
