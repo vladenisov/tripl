@@ -1699,28 +1699,33 @@ class BigQueryAdapter(BaseAdapter):
                 # skipped rather than reused because its only special case is
                 # the REPEATED column, and `_string_value_expression` has
                 # already refused a REPEATED breakdown a few lines above.
-                # The expression is spelled out a second time because GoogleSQL
-                # does not expose a SELECT alias to the same SELECT list, and it
-                # is then added to the grouping as well.
+                # Two BigQuery-only spellings are needed here, and the ZetaSQL
+                # gate had to teach us both — every fake-client test in this
+                # repo passes either way, because a fake answers any string.
                 #
-                # That second half is required, and an earlier version of this
-                # code asserted the opposite: that ZetaSQL would match the
-                # repeated expression against the grouping key
-                # `_breakdown_value` is bound to. It does not. It answers
-                # `SELECT list expression references column <name> which is
-                # neither grouped nor aggregated` and refuses to analyze the
-                # statement at all — caught by the ZetaSQL gate in
-                # tests/conformance/test_bigquery_analysis.py, which is the only
-                # thing in this repo that can execute GoogleSQL.
+                # First, the expression is repeated and ALSO added to the
+                # grouping. GoogleSQL does not expose a SELECT alias to the same
+                # SELECT list, and ZetaSQL will not match the repeated
+                # expression against the grouping key `_breakdown_value` is
+                # bound to; without its own grouping term it answers `SELECT
+                # list expression references column <name> which is neither
+                # grouped nor aggregated` and refuses to analyze the statement.
+                # Grouping by that value twice forms no new groups — it IS the
+                # value `_breakdown_value` holds.
                 #
-                # Grouping by the same value twice costs nothing: `_bucket,
-                # _breakdown_value, _is_other, <this expression>` forms exactly
-                # the groups of the first three, because this expression IS the
-                # one `_breakdown_value` is bound to. The other two engines need
-                # no such term — ClickHouse uses GROUP BY ALL, and PostgreSQL
-                # resolves the output name to the same expression tree — so this
-                # stays local to BigQuery rather than becoming a shared shape.
-                select_parts.append(f"{breakdown_expr} AS `{c}`")
+                # Second, the slot is NOT aliased to the column's own name. That
+                # alias shadows the source column, and GoogleSQL resolves GROUP
+                # BY names against SELECT aliases before FROM columns, so the
+                # grouping term above would bind to this very slot rather than
+                # to the column — leaving the column ungrouped and the statement
+                # rejected exactly as before. The alias is cosmetic here: every
+                # consumer reads these rows positionally and takes its names
+                # from `col_names`, which still carries the real column name.
+                #
+                # Neither spelling is needed by the sibling engines — ClickHouse
+                # groups with GROUP BY ALL, PostgreSQL resolves the output name
+                # to the same expression tree — so both stay local to BigQuery.
+                select_parts.append(f"{breakdown_expr} AS `_bd_col{len(col_names)}`")
                 group_parts.append(breakdown_expr)
             else:
                 select_sql, group_sql = self._regular_column_sql(c)

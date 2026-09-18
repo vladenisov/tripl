@@ -706,7 +706,19 @@ def test_the_breakdown_columns_own_slot_repeats_the_folded_value(engine: str) ->
     # Precondition, asserted rather than assumed: with the pre-query seeded the
     # fold really is a conditional and not the degenerate constant.
     assert folded != "'Other'", folded
-    assert f"{folded} AS {_RAW_BREAKDOWN_TERM[engine]}" in terms, terms
+    # The ALIAS differs by dialect and is cosmetic — consumers read these rows
+    # positionally and take their names from col_names. BigQuery deliberately
+    # does NOT alias the slot to the column's own name: that would shadow the
+    # source column, and GoogleSQL resolves GROUP BY names against SELECT
+    # aliases first, so the grouping term would bind to this slot instead of to
+    # the column and ZetaSQL would reject the statement. What this test pins is
+    # that the slot carries the FOLDED value rather than the raw column.
+    slot = next(
+        term for term in terms if term.startswith(f"{folded} AS ") and "_breakdown" not in term
+    )
+    assert _TRAILING_ALIAS.sub("", slot) == folded, slot
+    if engine != "bigquery":
+        assert f"{folded} AS {_RAW_BREAKDOWN_TERM[engine]}" in terms, terms
 
 
 @pytest.mark.parametrize("engine", sorted(_SQL_ENGINES))
