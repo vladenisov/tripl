@@ -33,6 +33,13 @@ def compile_time_bucketed_multi_aggregate_sql(
         from tripl.core.adapters.clickhouse import ClickHouseAdapter
 
         clickhouse = object.__new__(ClickHouseAdapter)
+        # ClickHouse's nested-shape SQL is type-directed (JSON / Map / Tuple each
+        # need a different shape function), so the primed instance carries the same
+        # type map a real ``get_columns`` would have left behind. The multi-aggregate
+        # builder itself takes no nested columns today; priming both fields keeps
+        # this stand-in a faithful replica of a connected adapter rather than one
+        # that happens to be right only for the statement we ask it for.
+        clickhouse._column_types = dict(column_types)
         clickhouse._allowed_columns = set(column_types)
         adapter = clickhouse
     elif db_type == "postgres":

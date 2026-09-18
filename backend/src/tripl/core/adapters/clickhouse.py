@@ -25,6 +25,7 @@ from tripl.core.adapters.measure_validator import (
 )
 from tripl.core.bucketing import format_utc_literal
 from tripl.core.intervals import IntervalUnit, get_interval
+from tripl.core.warehouse_types import ComplexKind, classify_complex
 from tripl.models.domain_enums import MetricAggregation
 
 # Hard cap on rows pulled from the catalog so a warehouse with thousands of
@@ -47,7 +48,10 @@ _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 # JSON path *discovery* (preview) enumeration functions. "dynamic" lists only the
 # important typed subcolumn paths (fast); "all" lists every path incl. shared-data
-# paths. Scan-time value extraction always uses JSONAllPaths and is unaffected.
+# paths. Both are JSON-only: given a Map or a Tuple they raise
+# `ILLEGAL_TYPE_OF_ARGUMENT`, so discovery is skipped for those families rather
+# than run with a different function. The scan-time shape expression does branch
+# per family — see `_json_paths_expression`.
 _JSON_PATH_DISCOVERY_FUNCS = {"all": "JSONAllPaths", "dynamic": "JSONDynamicPaths"}
 _DEFAULT_JSON_PATH_DISCOVERY = "dynamic"
 
@@ -58,6 +62,20 @@ def _as_rows(rows: Sequence[Sequence[Any]]) -> list[tuple[object, ...]]:
 
 
 class ClickHouseAdapter(BaseAdapter):
+    #: Declared ClickHouse type per column, captured by :meth:`get_columns` and read
+    #: by :meth:`_nested_kind` to pick the nested-shape SQL. The default deliberately
+    #: lives on the *class* rather than in ``__init__``: five call sites build an
+    #: adapter with ``object.__new__`` and never run ``__init__``
+    #: (``core/adapters/multi_aggregate_sql.py`` in production, plus the helpers in
+    #: ``tests/test_clickhouse_adapter.py``, ``tests/test_warehouse_bucketing.py``,
+    #: ``tests/test_schema_introspection.py`` and ``tests/test_adapter_aggregations.py``).
+    #: BigQuery keeps the equivalent map in ``__init__`` and has to be primed by hand
+    #: at every such site; a class-level default cannot be forgotten by a new one. It
+    #: is only ever rebound, never mutated in place, so the shared empty dict is safe.
+    #: Empty means "never introspected", which :meth:`_nested_kind` reads as JSON —
+    #: the behavior every caller had before this map existed.
+    _column_types: dict[str, str] = {}
+
     def __init__(
         self,
         host: str,
@@ -105,6 +123,10 @@ class ClickHouseAdapter(BaseAdapter):
             is_nullable = "Nullable" in type_name
             columns.append(ColumnInfo(name=name, type_name=type_name, is_nullable=is_nullable))
         self._allowed_columns = {c.name for c in columns}
+        # Kept alongside the allowlist because the nested-shape SQL is type-directed:
+        # ClickHouse has one path/shape function per nested family and none of them
+        # accepts another family's argument.
+        self._column_types = {c.name: c.type_name for c in columns}
         return columns
 
     def get_schema_tables(self) -> list[SchemaTable]:
@@ -176,8 +198,19 @@ class ClickHouseAdapter(BaseAdapter):
         typed subcolumn paths and is much faster on wide JSON columns; "all"
         (JSONAllPaths) lists every path including shared-data ones. It runs across
         the source query so the UI sees path candidates even when they do not
-        appear in the small preview sample. Scan-time value extraction always uses
-        JSONAllPaths and is unaffected by this setting.
+        appear in the small preview sample. The scan's own shape column is built by
+        ``_json_paths_expression``, which picks its function from the column's nested
+        family and is unaffected by this setting.
+
+        Only ``JSON`` columns are enumerated. ``json_columns`` is filled by a split
+        that also counts ``Map`` and ``Tuple`` as nested, and for those this returns
+        an empty mapping — no query, no error. Both discovery functions reject them
+        outright, and even with an enumerator the sample query below could not read a
+        Map leaf: ``_json_path_expression`` compiles a path to ``tupleElement``-style
+        member access, which ClickHouse refuses on a Map. A Map/Tuple column still
+        reaches the scan with its shape intact via ``_json_paths_expression``; what it
+        has no route to is a *selectable value path*, so offering the user none is the
+        honest answer rather than a half-open capability.
         """
         if not json_columns or path_limit <= 0 or sample_limit <= 0 or sample_row_limit <= 0:
             return {column: {} for column in json_columns}
@@ -193,6 +226,9 @@ class ClickHouseAdapter(BaseAdapter):
         path_fn = _JSON_PATH_DISCOVERY_FUNCS[self._json_path_discovery]
         for column in json_columns:
             c = self._validate_column(column)
+            if self._nested_kind(c) is not ComplexKind.json:
+                samples_by_column[c] = {}
+                continue
             path_sql = (
                 "SELECT _path "
                 "FROM ("
@@ -306,6 +342,92 @@ class ClickHouseAdapter(BaseAdapter):
         if spec.unit is IntervalUnit.week:
             return f"toDateTime(toMonday({col}, 'UTC'), 'UTC')"
         return f"toStartOfInterval({col}, INTERVAL {spec.count} {spec.unit.value.upper()}, 'UTC')"
+
+    def _nested_kind(self, column: str) -> ComplexKind:
+        """Which nested family a column belongs to: JSON document, Map or Tuple.
+
+        The regular/nested split that fills ``json_columns`` is
+        :func:`~tripl.core.warehouse_types.is_complex_type`, which puts all three
+        families in the nested bucket — and that predicate is recomputed independently
+        in eight modules across ``core`` and ``worker``, so narrowing it at the split
+        is not an option. Narrowing it in the shared classifier is worse still:
+        BigQuery relies on ``struct`` staying nested to expand its declared RECORD
+        paths. The dialect knowledge has to live behind the adapter instead, which is
+        also where BigQuery put it (``BigQueryAdapter._complex_kind``).
+
+        Falls back to JSON when the column's type was never introspected. Every
+        production read path runs ``get_columns`` on the same adapter instance first
+        (``worker/tasks/scan.py``, ``worker/tasks/scan_dry_run.py``,
+        ``worker/tasks/metrics/tasks.py``, ``core/analyzers/preview.py``), and the
+        fact-metric paths in ``worker/tasks/metrics/metric_collect.py`` pass an empty
+        ``json_columns`` list, so this fallback is not a live code path today — it
+        exists so a caller that skips introspection gets the pre-existing behavior
+        rather than a new ``AttributeError``-shaped surprise.
+        """
+        type_name = self._column_types.get(column)
+        if type_name is None:
+            return ComplexKind.json
+        kind = classify_complex(type_name)
+        if kind is None:
+            msg = (
+                f"ClickHouse: column {column!r} has scalar type {type_name} and holds "
+                "no nested paths."
+            )
+            raise ValueError(msg)
+        return kind
+
+    def _json_paths_expression(self, column: str) -> str:
+        """Sorted ``Array(String)`` describing ONE row's nested-value shape.
+
+        Named after :meth:`PostgresAdapter._json_paths_expression` on purpose: it
+        plays the same role — the single place a dialect renders "what shape does this
+        row's nested value have" for the scan's ``GROUP BY`` — and the analyzer
+        (``core/analyzers/cardinality.py``) counts each distinct array as one document
+        shape.
+
+        ``JSONAllPaths`` is not polymorphic over ClickHouse's three nested families.
+        Verified on ClickHouse 26.5.4.14: ``arraySort(JSONAllPaths(map('a','b')))``
+        and the same call on a ``Tuple`` both fail with ``Code: 43 ... requires
+        argument with type JSON ... (ILLEGAL_TYPE_OF_ARGUMENT)``. Emitting it
+        unconditionally is what made a single Map or Tuple column anywhere in the
+        source query kill every scan and every metrics collection for that config.
+
+        So, per family:
+
+        - ``JSON``  -> ``JSONAllPaths``: full nested leaf paths, a columnar metadata
+          read, and what this adapter has always emitted.
+        - ``Map``   -> the row's key set. ``mapKeys`` alone leaks the key type into
+          the result (verified: ``arraySort(mapKeys(map(2,'b',10,'a')))`` is
+          ``Array(UInt8)``), so the cast to String happens INSIDE ``arraySort`` and
+          the sort is therefore lexicographic: ``['10','2']``, not ``[2,10]``. That
+          is deliberate — every Python consumer of this cell (``cardinality.py``,
+          ``event_plan.py``, ``metric_rows.py``) re-imposes ``sorted(str(p) ...)``,
+          so sorting the raw keys first would produce a SQL-side order the analyzer
+          immediately contradicts. No engine error was observed with a non-String
+          element type; the cast is here so all three branches answer
+          ``Array(String)`` and the shape column's SQL type does not depend on which
+          nested family the user's column happens to be. Those columns sit side by
+          side as grouping keys in the GROUPING SETS statement built by
+          ``get_time_bucketed_breakdown_counts_multi``.
+        - ``Tuple`` -> ``tupleNames``, the declared field names (already
+          ``Array(String)``). A Tuple's shape cannot vary row to row, so this column
+          groups to a single constant — degenerate, but correct, and it keeps the
+          returned ``json_col_names`` list byte-identical to what the caller passed,
+          which the row-indexing contract in ``cardinality.py`` depends on.
+
+        Alternatives rejected: dropping the column silently deletes a user's field
+        from the event plan with no message, and demoting it to ``toString(col)``
+        would move the name into the regular bucket while the seven modules other than
+        ``cardinality.py`` that recompute the same predicate still classify it as
+        nested and hunt for path combinations that no longer exist.
+        """
+        c = self._validate_column(column)
+        kind = self._nested_kind(c)
+        if kind is ComplexKind.map:
+            return f"arraySort(arrayMap(k -> toString(k), mapKeys(`{c}`)))"
+        if kind is ComplexKind.struct:
+            return f"arraySort(tupleNames(`{c}`))"
+        return f"arraySort(JSONAllPaths(`{c}`))"
 
     def _json_path_expression(self, column: str, path: str) -> str:
         parts = [part for part in path.split(".") if part]
@@ -586,9 +708,14 @@ class ClickHouseAdapter(BaseAdapter):
         time_to: datetime | None = None,
         limit: int = 50000,
     ) -> tuple[list[str], list[str], list[str], list[tuple[object, ...]]]:
-        """Single GROUP BY ALL query: regular cols + JSONAllPaths(json cols) + count().
+        """Single GROUP BY ALL query: regular cols + nested-shape arrays + count().
 
-        Returns (regular_col_names, json_col_names, rows).
+        The returned tuple and the row layout are stated once, on
+        :meth:`BaseAdapter.get_full_breakdown`, and deliberately not repeated here.
+        This file used to carry four hand-maintained copies of that contract and
+        three of them had drifted; this one named a 3-tuple while both the annotation
+        and the ``return`` statement below say four. PostgreSQL's override carries no
+        docstring at all for exactly this reason and never drifted.
         """
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
@@ -599,7 +726,7 @@ class ClickHouseAdapter(BaseAdapter):
         for c in reg_cols:
             select_parts.append(f"`{c}`")
         for c in json_cols:
-            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            select_parts.append(self._json_paths_expression(c))
         for c in json_cols:
             for path in json_value_paths.get(c, []):
                 full_path = f"{c}.{path}"
@@ -642,8 +769,8 @@ class ClickHouseAdapter(BaseAdapter):
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         """Time-bucketed GROUP BY ALL with all columns, like get_full_breakdown.
 
-        Returns (column_names, rows).
-        Row layout: (_bucket, col1_val, ..., json_paths1, ..., count).
+        Returned tuple and row layout: see
+        :meth:`BaseAdapter.get_time_bucketed_counts`.
         """
         tc = self._validate_column(time_column)
         bucket_sql = self._bucket_expression(tc, interval)
@@ -658,7 +785,7 @@ class ClickHouseAdapter(BaseAdapter):
             select_parts.append(f"`{c}`")
             col_names.append(c)
         for c in json_cols:
-            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            select_parts.append(self._json_paths_expression(c))
             col_names.append(c)
         for c in json_cols:
             for path in json_value_paths.get(c, []):
@@ -710,8 +837,8 @@ class ClickHouseAdapter(BaseAdapter):
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         """Time-bucketed aggregate, mirroring get_time_bucketed_counts.
 
-        Returns (column_names, json_value_names, rows).
-        Row layout: (_bucket, col1_val, ..., json_paths1, ..., aggregate_value).
+        Returned tuple and row layout: see
+        :meth:`BaseAdapter.get_time_bucketed_aggregate`.
         """
         tc = self._validate_column(time_column)
         bucket_sql = self._bucket_expression(tc, interval)
@@ -727,7 +854,7 @@ class ClickHouseAdapter(BaseAdapter):
             select_parts.append(f"`{c}`")
             col_names.append(c)
         for c in json_cols:
-            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            select_parts.append(self._json_paths_expression(c))
             col_names.append(c)
         for c in json_cols:
             for path in json_value_paths.get(c, []):
@@ -774,8 +901,8 @@ class ClickHouseAdapter(BaseAdapter):
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         """Time-bucketed aggregate grouped by one breakdown column.
 
-        Returns (column_names, json_value_names, rows).
-        Row layout: (_bucket, _breakdown_value, _is_other, col1_val, ..., aggregate_value).
+        Returned tuple and row layout: see
+        :meth:`BaseAdapter.get_time_bucketed_aggregate_breakdown`.
         """
         tc = self._validate_column(time_column)
         bucket_sql = self._bucket_expression(tc, interval)
@@ -808,7 +935,7 @@ class ClickHouseAdapter(BaseAdapter):
             select_parts.append(f"`{c}`")
             col_names.append(c)
         for c in json_cols:
-            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            select_parts.append(self._json_paths_expression(c))
             col_names.append(c)
         for c in json_cols:
             for path in json_value_paths.get(c, []):
@@ -1130,7 +1257,7 @@ class ClickHouseAdapter(BaseAdapter):
             prepared_parts.append(f"`{c}` AS `{c}`")
             col_names.append(c)
         for c in json_cols:
-            prepared_parts.append(f"arraySort(JSONAllPaths(`{c}`)) AS `{c}`")
+            prepared_parts.append(f"{self._json_paths_expression(c)} AS `{c}`")
             col_names.append(c)
         for c in json_cols:
             for path in json_value_paths.get(c, []):

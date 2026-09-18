@@ -52,6 +52,25 @@ from tripl.schemas.metric_definition import (
 from tripl.services.demo import noise
 from tripl.services.demo.scenario import DemoContext
 
+# The seeded ``active_sessions`` statement, as ONE constant rather than a literal
+# buried in the create schema. Two readers need the exact text: the synthetic
+# adapter recognises the sql-metric statements it can compute by EXACT match
+# (``synthetic._ACTIVE_SESSIONS_STATEMENTS``) rather than by probing for
+# substrings, and ``test_batch5_synthetic`` imports this constant to pin the two
+# together. core/ cannot import services/, so the adapter carries its own copy;
+# naming it here is what makes the duplication testable instead of silent.
+#
+# ``GROUP BY ts`` is not decoration. Without it real ClickHouse rejects the
+# statement ("not under aggregate function and not in GROUP BY"), so the demo —
+# whose job is to teach the product — shipped a metric whose SQL would fail on
+# the warehouse it was demonstrating (bd tripl-0zpq.76). Demos created before
+# that fix still carry the GROUP BY-less text in their stored config; the adapter
+# keeps a legacy entry for exactly that reason.
+ACTIVE_SESSIONS_METRIC_SQL = (
+    "SELECT toStartOfDay(event_time) AS ts, "
+    "count(DISTINCT session_id) AS value FROM events GROUP BY ts"
+)
+
 
 async def build_catalog(session: AsyncSession, ctx: DemoContext) -> None:
     await _build_fact_table(session, ctx)
@@ -100,13 +119,7 @@ async def _build_metric_definitions(
         unit="sessions",
         status=MetricStatus.active,
         anomaly_detection_enabled=True,
-        config=SqlConfig(
-            metric_sql=(
-                "SELECT toStartOfDay(event_time) AS ts, "
-                "count(DISTINCT session_id) AS value FROM events"
-            ),
-            time_column="ts",
-        ),
+        config=SqlConfig(metric_sql=ACTIVE_SESSIONS_METRIC_SQL, time_column="ts"),
         data_source_id=ctx.data_source_id,
         interval=ScanInterval.d1,
     )
@@ -246,7 +259,15 @@ def _build_adapter_derived_values(
     interval_code = get_interval(ScanInterval.d1.value).code
     end_day = ctx.now.replace(hour=0, minute=0, second=0, microsecond=0)
     time_from = end_day - day * _DEMO_METRIC_HISTORY_DAYS
-    time_to = end_day + day
+    # Ends at the start of TODAY, so only COMPLETE days are seeded. This is
+    # exactly the window the worker would compute — ``metric_collect
+    # ._resolve_value_window`` sets ``time_to = floor_to_bucket(now, interval)``
+    # — so the seeded series and every later recollection agree about what a
+    # finished bucket is. It used to run to ``end_day + day``, which seeded a
+    # partial "today" bucket that no collection would ever reproduce: the newest
+    # point of each daily chart was a fraction of a day's data sitting next to
+    # thirty full ones, and it read as a drop rather than as a day in progress.
+    time_to = end_day
 
     # revenue_completed: SUM(amount) WHERE status = 'completed' per day -- the same
     # conditional aggregate the batched fact collector runs for a filtered single.

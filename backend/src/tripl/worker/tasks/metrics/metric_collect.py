@@ -219,7 +219,7 @@ MANUAL_COLLECT_MAX_WINDOW = timedelta(days=30)
 # Per-query row ceiling; one row per bucket (no breakdown) or per
 # (bucket, breakdown_value), so this comfortably bounds a normal window.
 #
-# Every call site asks for ``METRIC_QUERY_ROW_LIMIT + 1`` and runs the result
+# Every call site asks for ``metric_query_fetch_limit()`` and runs the result
 # through ``_reject_truncated_rows``. Asking for exactly the limit cannot tell a
 # window that happens to have 100,000 rows from one the warehouse cut short, and
 # the difference is not cosmetic here: collection WINDOW-DELETEs the chunk before
@@ -227,6 +227,29 @@ MANUAL_COLLECT_MAX_WINDOW = timedelta(days=30)
 # of the window is silently erased and the metric reads as a clean series with a
 # hole in it (tripl-jfm3.112).
 METRIC_QUERY_ROW_LIMIT = 100_000
+
+
+def metric_query_fetch_limit() -> int:
+    """The ``LIMIT`` actually sent to the warehouse: the ceiling plus a probe row.
+
+    Two numbers, one rule: ``METRIC_QUERY_ROW_LIMIT`` is the ceiling
+    ``_reject_truncated_rows`` compares against, and this is what the query asks
+    for. They must differ by exactly one or truncation detection stops working
+    (see the comment on the constant above), so the ``+ 1`` is written once here
+    rather than at each call site.
+
+    It is a FUNCTION, not a derived module constant, for two reasons. First,
+    ``METRIC_QUERY_ROW_LIMIT`` is a module global that tests rebind —
+    ``monkeypatch.setattr(metric_collect, "METRIC_QUERY_ROW_LIMIT", n)`` appears
+    in tests/test_scans.py and tests/test_batch3_c2.py — and a value computed at
+    import time would not follow the patch, making the fetch limit and the
+    ceiling disagree in exactly the tests that exist to make them agree. Second,
+    ``services/metric_preview_service`` calls this to disclose the statement
+    ``GET /metrics/{id}/generated-sql`` promises is "the exact adapter SQL used
+    by collection"; before this existed that endpoint passed the bare ceiling and
+    disclosed ``LIMIT 100000`` for a statement that runs ``LIMIT 100001``.
+    """
+    return METRIC_QUERY_ROW_LIMIT + 1
 
 
 def _reject_truncated_rows[RowT](
@@ -647,7 +670,7 @@ def _aggregate_fact_window(
         None,
         chunk_from,
         chunk_to,
-        limit=METRIC_QUERY_ROW_LIMIT + 1,
+        limit=metric_query_fetch_limit(),
     )
     rows = _reject_truncated_rows(
         rows,
@@ -776,7 +799,7 @@ def _collect_fact_breakdown_rows(
             chunk_from,
             chunk_to,
             values_limit=definition.breakdown_values_limit,
-            limit=METRIC_QUERY_ROW_LIMIT + 1,
+            limit=metric_query_fetch_limit(),
         )
         rows = _reject_truncated_rows(
             rows,
@@ -873,7 +896,7 @@ def _collect_fact_ratio_breakdown_rows(
             chunk_from,
             chunk_to,
             values_limit=definition.breakdown_values_limit,
-            limit=METRIC_QUERY_ROW_LIMIT + 1,
+            limit=metric_query_fetch_limit(),
         )
         rows = _reject_truncated_rows(
             rows,
@@ -1892,7 +1915,7 @@ def _run_fact_interval_group(
                         registry.specs,
                         chunk_from,
                         chunk_to,
-                        limit=METRIC_QUERY_ROW_LIMIT + 1,
+                        limit=metric_query_fetch_limit(),
                     )
                     rows = _reject_truncated_rows(
                         rows,
@@ -1927,7 +1950,7 @@ def _run_fact_interval_group(
                         chunk_from,
                         chunk_to,
                         values_limit=values_limit,
-                        limit=METRIC_QUERY_ROW_LIMIT + 1,
+                        limit=metric_query_fetch_limit(),
                     )
                     rows = _reject_truncated_rows(
                         rows,
@@ -2085,7 +2108,7 @@ def _collect_sql(
         for chunk_from, chunk_to in chunks:
             column_names, rows = adapter.get_preview_rows(
                 safe_sql,
-                limit=METRIC_QUERY_ROW_LIMIT + 1,
+                limit=metric_query_fetch_limit(),
                 time_column=time_column,
                 time_from=chunk_from,
                 time_to=chunk_to,
@@ -2202,7 +2225,7 @@ def _collect_distinct_user_series(
             None,
             time_from,
             time_to,
-            limit=METRIC_QUERY_ROW_LIMIT + 1,
+            limit=metric_query_fetch_limit(),
         )
     finally:
         adapter.close()

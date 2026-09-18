@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import UTC, date, datetime
 from typing import cast, override
 
 from google.cloud import bigquery
@@ -29,6 +29,7 @@ from tripl.core.bucketing import EPOCH, format_utc_literal, to_utc
 from tripl.core.intervals import IntervalUnit, get_interval
 from tripl.core.warehouse_types import ComplexKind, TimeKind, classify_complex, classify_time
 from tripl.models.domain_enums import MetricAggregation
+from tripl.schemas.data_source import MAX_SCHEMA_DATASETS
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +55,18 @@ _SCHEMA_ROW_LIMIT = 50000
 # INFORMATION_SCHEMA.COLUMNS view is dataset-qualified, so covering N datasets costs
 # N jobs. A UNION ALL across them would be one job but would make a single
 # permission-denied dataset fail the whole browse, which is exactly the failure mode
-# the contract forbids. So: one job per dataset, hard-capped here, so an autocomplete
+# the contract forbids. So: one job per dataset, hard-capped, so an autocomplete
 # keystroke can never fan out into an unbounded number of billed jobs.
-_MAX_SCHEMA_DATASETS = 20
+#
+# The number itself is declared in ``schemas.data_source`` and only aliased here: it
+# is simultaneously the bound this module truncates to and the bound the
+# ``dataset_allowlist`` write path validates against, and while it was two literals
+# the write path accepted 50 datasets that this one silently dropped to 20. The
+# dependency runs schemas -> adapters, the direction ``adapters.registry`` already
+# imports ``DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED`` in; the reverse is not available,
+# because this module imports ``google.cloud.bigquery`` at module scope and the
+# schema layer is imported by every API request.
+_MAX_SCHEMA_DATASETS = MAX_SCHEMA_DATASETS
 
 # Wall-clock cap on the catalog introspection job so a hung BQ job can't block
 # the worker thread forever. Scoped to schema introspection: this is a CAP, not a
@@ -142,6 +152,27 @@ def _decode_grouped_array(value: object) -> object:
         )
         raise ValueError(msg)
     return decoded
+
+
+def _as_utc_bucket(value: object) -> object:
+    """One ``_bucket`` cell, as an aware UTC ``datetime``.
+
+    ``datetime`` is tested BEFORE ``date`` because it is a *subclass* of it. The other
+    order matches every TIMESTAMP and DATETIME bucket too and rebuilds it from its
+    date part alone, silently moving every non-midnight bucket to midnight — which is
+    the one way to get this conversion wrong and still look plausible in a test that
+    only checks ``tzinfo``.
+
+    A value that is no kind of date is returned untouched rather than coerced. Reaching
+    here with one means the row layout changed and column 0 stopped being the bucket;
+    inventing a datetime for it would hide that, and the caller that compares it
+    against the chunk window will say so far more clearly.
+    """
+    if isinstance(value, datetime):
+        return to_utc(value)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+    return value
 
 
 def _walk_struct_fields(
@@ -414,12 +445,20 @@ class BigQueryAdapter(BaseAdapter):
             zone = ", 'UTC'" if kind is TimeKind.timestamp else ""
             return f"{prefix}_TRUNC({col}, WEEK(MONDAY){zone})"
         if kind is TimeKind.date and spec.unit in _SUB_DAY_UNITS:
+            # ``WarehouseCapabilityError``, not a bare ``ValueError``, for the same
+            # reason ``__init__``'s three rejections are (see its comment, tripl-rcn8):
+            # nothing configuration-time catches this combination, so the first thing
+            # that runs it is a collection tick, and the worker's sanitiser replaces
+            # an uncurated exception with "Scan failed due to an internal error." —
+            # every tick, forever, for a config the operator can fix in one click if
+            # only they are told which one. The message is tripl-authored and carries
+            # no host, port or driver text, which is the whole contract of the type.
             msg = (
                 f"BigQuery: time column {time_column!r} is a DATE, which has no "
                 f"time-of-day, so it cannot be bucketed at {interval_code!r}. "
                 "Use the 1d or 1w interval, or a TIMESTAMP/DATETIME column."
             )
-            raise ValueError(msg)
+            raise WarehouseCapabilityError(msg)
         origin = self._time_literal(kind, EPOCH)
         width = f"INTERVAL {spec.count} {spec.unit.value.upper()}"
         return f"{prefix}_BUCKET({col}, {width}, {origin})"
@@ -649,6 +688,9 @@ class BigQueryAdapter(BaseAdapter):
         immediately after them. Both groups were grouped as JSON strings (see
         ``_regular_column_sql`` / ``_json_paths_expression``) and must be handed back as
         lists so the documented row contract holds.
+
+        Column 0 is never touched here even when ``offset`` is non-zero; the leading
+        positional columns are handled by ``_utc_bucket_rows``.
         """
         array_indexes = {
             offset + index for index, c in enumerate(reg_cols) if c in self._repeated_columns
@@ -664,8 +706,81 @@ class BigQueryAdapter(BaseAdapter):
             for row in rows
         ]
 
+    def _utc_bucket_rows(self, rows: list[tuple[object, ...]]) -> list[tuple[object, ...]]:
+        """Every bucketed rowset, with column 0 normalized to an aware UTC datetime.
+
+        GoogleSQL keeps three time families and ``google-cloud-bigquery`` decodes them
+        three different ways (see ``google.cloud.bigquery._helpers``): a TIMESTAMP
+        becomes an aware ``datetime``, a DATETIME a naive one (``strptime``), and a
+        DATE a ``datetime.date``. ``_query_rows`` passes cells through verbatim, so
+        without this the type of ``_bucket`` depended on the declared type of a column
+        the caller never sees. The consumers assume one type: they compare the bucket
+        against a window bound that is aware by construction
+        (``floor_to_bucket(datetime.now(UTC), ...)``) and persist it into
+        ``DateTime(timezone=True)`` columns. Two of the three families are a
+        ``TypeError`` against that bound, and a naive value written to a timestamptz
+        means whatever the database session's timezone says it means.
+
+        ``BaseAdapter`` documents each bucketed row's LAYOUT but has never said what
+        type column 0 holds, which is why every reader answered it differently. Closing
+        it here is the answer that scales: this is the only place that knows which
+        GoogleSQL family the cell was decoded from, and the readers are not a closed
+        set — ``metric_collect._collect_distinct_user_series`` was given its own
+        laundering for this exact ``TypeError`` (tripl-ju0d) and the four remaining
+        ``cast(datetime, row[0])`` sites (``chunk_processing``, three in
+        ``metric_rows``) were not, which is how the bug survived that fix.
+
+        Unconditional rather than skipped for a declared-TIMESTAMP column: ``to_utc``
+        on an already-aware datetime returns an equal value, and making the rewrite
+        conditional on the declared family would reintroduce exactly the coupling —
+        "what the driver returns" inferred from "what the schema probe said" — that
+        this method exists to sever.
+        """
+        return [(_as_utc_bucket(row[0]), *row[1:]) for row in rows]
+
     def _quote_string(self, value: str) -> str:
-        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        """A GoogleSQL single-quoted literal holding an arbitrary string value.
+
+        GoogleSQL has no ``''`` escape — the escape character is a BACKSLASH — and a
+        quoted (non-triple) literal may not contain a raw newline or carriage return:
+        those are an "Unclosed string literal". Both facts were verified against
+        ZetaSQL for the sibling helper ``measure_validator.quote_sql_string_literal``,
+        whose docstring records the verdicts; this method had only the first half, so
+        any value carrying a newline produced a literal that spanned lines and failed
+        the statement outright.
+
+        That is a correctness and availability bug rather than an injection one: a
+        value can only ever add PAIRED quotes, never an odd one. What it costs is the
+        run. Several callers hand this an already-validated identifier, but several do
+        not: a breakdown's top-N values, a grouped event-type value and a discovered
+        JSON path are warehouse DATA, and an enum option and a contract regex are
+        analyst text that ``schemas.field_definition`` bounds only by length and
+        compilability — neither of which excludes a line terminator. Nothing sanitises
+        any of those on the way to a literal, so one row carrying a newline fails the
+        chunk for as long as that value stays in the top N, which for a high-volume
+        value is indefinitely.
+
+        Escaping order is load-bearing: the backslash is doubled FIRST, so a value
+        ending in a backslash cannot escape the closing quote, and an input containing
+        the two characters ``\\n`` is not confused with a real newline.
+
+        Deliberately NOT delegating to ``quote_sql_string_literal``. That helper serves
+        the visual condition builder, where its input is one analyst-typed filter
+        value: it ``strip()``s and rejects the empty string and NUL. Both are wrong
+        here. A breakdown value's leading/trailing whitespace is part of the group key,
+        so stripping would merge ``"a"`` and ``"a "`` into one group and misattribute
+        their counts; and the empty string is the legitimate NULL-collapsed group value
+        that ``_contract_where_clause`` compares against. Raising on a pathological
+        character would likewise turn a warehouse-supplied value into a failed run,
+        which is the failure mode this fix exists to remove.
+        """
+        escaped = (
+            value.replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        )
+        return f"'{escaped}'"
 
     def _time_condition(
         self,
@@ -787,8 +902,17 @@ class BigQueryAdapter(BaseAdapter):
         """Resolve the declared time-type family of a configured time column.
 
         Raises for a column that carries no date (BigQuery ``TIME``). Every read path
-        runs ``_ensure_column_types`` first, so this fires while the caller is still
-        configuring/previewing a metric, not several layers deep inside a worker.
+        runs ``_ensure_column_types`` first, so the declared type is known by the time
+        this is asked.
+
+        WHERE it fires is not guaranteed to be the preview, and the message is written
+        for an operator on the assumption that it might not be. A preview only reaches
+        here when the job carries a lookback window: ``worker.tasks.scan`` passes
+        ``time_column=... if preview_window else None`` and
+        ``resolve_lookback_window`` returns ``None`` with no ``scan_lookback_hours``,
+        so ``_time_condition`` returns early and never asks for the kind. Without a
+        lookback the first thing to ask is the bucket expression, inside a collection
+        tick.
 
         Falls back to TIMESTAMP only when the column's type was never introspected —
         callers that reach the bucket path without a preceding ``get_columns`` are
@@ -799,12 +923,17 @@ class BigQueryAdapter(BaseAdapter):
             return TimeKind.timestamp
         kind = classify_time(type_name)
         if kind is TimeKind.unsupported:
+            # ``WarehouseCapabilityError`` for the reason spelled out at the DATE
+            # rejection in ``_bucket_expression``: this can surface from a worker, and
+            # the worker's sanitiser keeps only curated types verbatim. ``type_name``
+            # is a declared BigQuery type string read back from the schema probe, not
+            # driver text, so the message stays free of host/port/credential material.
             msg = (
                 f"BigQuery: time column {time_column!r} has type {type_name}, which "
                 "carries no date and cannot be used as a time column. "
                 "Use a TIMESTAMP, DATETIME or DATE column."
             )
-            raise ValueError(msg)
+            raise WarehouseCapabilityError(msg)
         return kind
 
     def _schema_datasets(self) -> list[str]:
@@ -1276,7 +1405,7 @@ class BigQueryAdapter(BaseAdapter):
         logger.info("BQ bucketed done in %.2fs, %s rows", elapsed, len(rows))
 
         decoded = self._decode_rows(rows, offset=1, reg_cols=reg_cols, json_cols=json_cols)
-        return col_names, json_value_names, decoded
+        return col_names, json_value_names, self._utc_bucket_rows(decoded)
 
     def _aggregate_value_sql(self, agg_fn: MetricAggregation, measure_column: str | None) -> str:
         """Validate + escape the measure and build the safe aggregate fragment."""
@@ -1385,7 +1514,7 @@ class BigQueryAdapter(BaseAdapter):
         logger.info("BQ bucketed aggregate done in %.2fs, %s rows", elapsed, len(rows))
 
         decoded = self._decode_rows(rows, offset=1, reg_cols=reg_cols, json_cols=json_cols)
-        return col_names, json_value_names, decoded
+        return col_names, json_value_names, self._utc_bucket_rows(decoded)
 
     def _breakdown_value_exprs(
         self,
@@ -1495,7 +1624,7 @@ class BigQueryAdapter(BaseAdapter):
         logger.info("BQ bucketed aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
         decoded = self._decode_rows(rows, offset=3, reg_cols=reg_cols, json_cols=json_cols)
-        return col_names, json_value_names, decoded
+        return col_names, json_value_names, self._utc_bucket_rows(decoded)
 
     def build_time_bucketed_multi_aggregate_sql(
         self,
@@ -1559,7 +1688,7 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed multi-aggregate done in %.2fs, %s rows", elapsed, len(rows))
 
-        return column_names, rows
+        return column_names, self._utc_bucket_rows(rows)
 
     def get_time_bucketed_multi_aggregate_breakdown(
         self,
@@ -1619,7 +1748,7 @@ class BigQueryAdapter(BaseAdapter):
             "BQ bucketed multi-aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows)
         )
 
-        return column_names, rows
+        return column_names, self._utc_bucket_rows(rows)
 
     def get_time_bucketed_breakdown_counts(
         self,
@@ -1844,4 +1973,4 @@ class BigQueryAdapter(BaseAdapter):
 
         # Row layout leads with _bucket, _breakdown_column, _breakdown_value, _is_other.
         decoded = self._decode_rows(rows, offset=4, reg_cols=reg_cols, json_cols=json_cols)
-        return col_names, json_value_names, decoded
+        return col_names, json_value_names, self._utc_bucket_rows(decoded)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import datetime
 
 
 def normalize_json_value_paths(paths: Iterable[str] | None) -> list[str]:
@@ -55,6 +56,43 @@ def decode_json_path_value(raw_value: object) -> object:
     return str(raw_value)
 
 
+def json_safe(value: object) -> object:
+    """Rebuild a warehouse value as JSON-native data, all the way down.
+
+    Adapters hand back raw driver values and a container hides them from every
+    top-level type check: a ClickHouse ``Array(DateTime)`` arrives as a list of
+    ``datetime``, a ``Map(Date, String)`` as a dict with ``date`` keys, a
+    BigQuery ``STRUCT<ARRAY<TIMESTAMP>>`` as nested lists. Anything that then
+    reaches ``json.dumps`` — this module's renderer below, or SQLAlchemy
+    serialising a preview payload into ``ScanPreviewJob.result_summary`` —
+    raised ``TypeError`` and the operator was told "Scan failed due to an
+    internal error."
+
+    ``json.dumps(..., default=str)`` is the obvious cheaper fix and it does not
+    work: ``default`` is consulted for values only, never for dict KEYS, so a
+    ``Map(Date, String)`` keeps raising. Rebuilding the tree covers both halves
+    with one rule.
+
+    Keys become ``str``. For int and finite float keys that is byte-identical
+    to the coercion ``json.dumps`` already applied; what changes is their ORDER
+    under ``sort_keys=True`` (``"1", "10", "2"`` rather than ``1, 2, 10``), and
+    that ordering only ever reaches display text and the dedup keys built from
+    it, never a stored value. In exchange ``sort_keys=True`` stops being a
+    second latent ``TypeError``: keys of mixed types are not orderable.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        # Matches what the preview payload has always emitted for a top-level
+        # datetime; ``str()`` would spell the same instant with a space.
+        return value.isoformat()
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    return str(value)
+
+
 def format_json_path_value(raw_value: object) -> str:
     value = decode_json_path_value(raw_value)
     if value is None:
@@ -67,7 +105,17 @@ def format_json_path_value(raw_value: object) -> str:
         if isinstance(value, float) and value.is_integer():
             return str(int(value))
         return str(value)
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    # Only a list or a dict can reach here: every branch above and
+    # ``decode_json_path_value``'s trailing ``str()`` have taken the rest. Its
+    # LEAVES, though, are still raw driver values, which is why the container
+    # goes through ``json_safe`` first.
+    #
+    # Deliberate asymmetry: a scalar datetime is stringified by
+    # ``decode_json_path_value`` ("2026-04-12 10:30:00") while one nested in a
+    # container renders as isoformat. Unifying them would move sample-value and
+    # variable-value strings that the drift detector compares across runs, for
+    # no gain — this function's output is display text and a dedup key.
+    return json.dumps(json_safe(value), ensure_ascii=False, sort_keys=True)
 
 
 def build_json_value(

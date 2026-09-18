@@ -27,6 +27,32 @@ def _validate_identifier_list(value: list[str]) -> list[str]:
     return [validate_identifier(item) for item in value]
 
 
+# A warehouse type NAME has no length contract: a labelled ClickHouse
+# ``Enum8('checkout_started' = 1, ...)``, a named ``Tuple``/``Map``, or a BigQuery
+# ``STRUCT<...>`` renders well past this bound, and introspection passes the
+# adapter's string through verbatim. The value is descriptive and every consumer
+# reads its HEAD (``core.warehouse_types.classify_time`` / ``classify_complex``
+# are ``startswith``-based), so it is bounded on the way in rather than rejected —
+# a rejection here is a ``ValidationError`` raised inside the preview handler,
+# which is neither ``FactTableIntrospectionError`` nor ``HTTPException`` and so
+# becomes a blanket 500 over one irrelevant column. Same rule, same shape and same
+# ellipsis as ``worker/tasks/metrics/schema_drift._truncate_observed_type``.
+NATIVE_TYPE_MAX_LEN = 255
+
+
+def _bound_native_type(value: object) -> object:
+    """Fit a warehouse type name into ``NATIVE_TYPE_MAX_LEN``, truncating the tail.
+
+    Truncate from the tail because the head carries the outer constructor
+    (``Nullable(``, ``Map(``, ``Tuple(``, ``Enum8(``, ``STRUCT<``) — the part every
+    classifier matches on. Anything that is not an over-long ``str`` is returned
+    untouched so pydantic still owns type errors, ``None`` and ``min_length``.
+    """
+    if isinstance(value, str) and len(value) > NATIVE_TYPE_MAX_LEN:
+        return value[: NATIVE_TYPE_MAX_LEN - 1] + "…"
+    return value
+
+
 # ── Nested value objects ─────────────────────────────────────────────────────
 
 
@@ -38,9 +64,17 @@ class FactTableColumnSchema(BaseModel):
     native_type: str | None = Field(
         default=None,
         min_length=1,
-        max_length=255,
+        # Kept even though the before-validator makes it unreachable for strings:
+        # it is the declared contract NATIVE_TYPE_MAX_LEN is pinned against, and
+        # the two are asserted equal by the batch-5 fact-table tests.
+        max_length=NATIVE_TYPE_MAX_LEN,
         exclude_if=lambda value: value is None,
     )
+
+    @field_validator("native_type", mode="before")
+    @classmethod
+    def _truncate_native_type(cls, value: object) -> object:
+        return _bound_native_type(value)
 
 
 class FactTableRowFilter(BaseModel):
@@ -58,6 +92,44 @@ class FactTableRowFilter(BaseModel):
     @classmethod
     def _check_sql(cls, value: str) -> str:
         return validate_sql_fragment(value)
+
+
+def _reject_duplicate_filter_names(
+    value: list[FactTableRowFilter] | None,
+) -> list[FactTableRowFilter] | None:
+    """Row-filter names are the key metrics reference them by, so they must be unique.
+
+    A fact metric stores the NAME and the collector resolves it to the FIRST match
+    (``worker/tasks/metrics/_fact_conditions._resolve_named_filter_fragment``
+    returns on the first row whose ``name`` matches). Two filters sharing a name
+    therefore make the metric form offer the same label twice while only one of the
+    two fragments can ever run, and the save-time membership check cannot see it:
+    ``metric_definition_service._verify_fact_metric`` builds a SET of names, into
+    which two identical names collapse. Save time is the last point where the
+    ambiguity is still visible to the person who created it.
+
+    Raised as a ``ValueError`` so it surfaces as a 422 — a malformed payload, like
+    every other rejection this module produces. Deliberately not the 409
+    ``create_fact_table`` uses: that one reports a collision with an EXISTING row,
+    this one is a collision inside a single payload.
+
+    Iterating and raising on the first repeat rather than comparing
+    ``len(set(...))`` (the idiom in ``schemas/variable.py``) is what lets the
+    message name the offending filter.
+
+    Stored rows that already hold duplicates are untouched: this is an input
+    validator, first-match stays their behaviour, and a backfill or a DB
+    constraint would block saving any legacy table until the user fixed it.
+    """
+    if value is None:
+        return None
+    seen: set[str] = set()
+    for row_filter in value:
+        if row_filter.name in seen:
+            msg = f"Duplicate row filter name {row_filter.name!r}"
+            raise ValueError(msg)
+        seen.add(row_filter.name)
+    return value
 
 
 # ── Create ───────────────────────────────────────────────────────────────────
@@ -100,6 +172,12 @@ class FactTableCreate(BaseModel):
     @classmethod
     def _check_identifier_columns(cls, value: list[str]) -> list[str]:
         return _validate_identifier_list(value)
+
+    @field_validator("row_filters")
+    @classmethod
+    def _check_row_filter_names(cls, value: list[FactTableRowFilter]) -> list[FactTableRowFilter]:
+        _reject_duplicate_filter_names(value)
+        return value
 
     def to_create_values(self) -> dict[str, object]:
         return {
@@ -166,6 +244,15 @@ class FactTableUpdate(BaseModel):
     @classmethod
     def _check_identifier_columns(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else _validate_identifier_list(value)
+
+    @field_validator("row_filters")
+    @classmethod
+    def _check_row_filter_names(
+        cls, value: list[FactTableRowFilter] | None
+    ) -> list[FactTableRowFilter] | None:
+        # ``None`` means the client did not send ``row_filters`` at all, which
+        # ``exclude_unset`` drops at the service layer — leave it alone.
+        return _reject_duplicate_filter_names(value)
 
 
 # ── Read models ──────────────────────────────────────────────────────────────

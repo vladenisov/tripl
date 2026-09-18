@@ -38,11 +38,13 @@ constraints carry all the weight.
 
 Independence
 ------------
-The tick only touches ``is_demo`` projects and is independent of
-``check_metrics_due`` / ``check_metric_definitions_due`` — REAL scan/metric
-scheduling is entirely unaffected. Anomaly re-detection reuses the REAL
-``detect_anomalies`` over the fresh window; the appended series is kept fully
-coherent so a later real collection stays consistent.
+The tick only touches ``is_demo`` projects, so REAL scan/metric scheduling is
+entirely unaffected by it. It shares exactly ONE thing with ``check_metrics_due``:
+the idle-pause rule in :mod:`tripl.worker.tasks._demo_pause`, which both must apply
+or a demo this tick has stopped advancing gets collected with a window that
+destroys its history (tripl-0zpq.72, argued in that module). Anomaly re-detection
+reuses the REAL ``detect_anomalies`` over the fresh window; the appended series is
+kept fully coherent so a later real collection stays consistent.
 
 Tests monkey-patch ``_get_sync_session`` on this module's globals (the shared
 sync-session pattern) and pass an explicit ``now`` (fake clock).
@@ -89,6 +91,7 @@ from tripl.services.demo.builders.warehouse import SPIKE_EVENT_NAME
 from tripl.services.demo.scenario import DEMO_SEED
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
+from tripl.worker.tasks._demo_pause import is_demo_paused
 
 logger = logging.getLogger(__name__)
 
@@ -96,11 +99,13 @@ logger = logging.getLogger(__name__)
 # aggregated logs even though the sweep swallows it to keep advancing other demos.
 DEMO_TICK_FAILED_EVENT = "demo.runtime.tick_failed"
 
-# A demo whose last explicit access (falling back to seed time) is older than this
-# is PAUSED — the tick skips it so a demo nobody is looking at stops consuming
-# worker time. The next access (``demo_last_accessed_at`` touched on GET / reset)
-# resumes it and the next tick catches it up.
-DEMO_IDLE_PAUSE_MINUTES = 6 * 60
+# The idle-pause rule itself lives in :mod:`tripl.worker.tasks._demo_pause`
+# (``DEMO_IDLE_PAUSE_MINUTES`` / ``is_demo_paused``) because the metrics dispatcher
+# has to apply the SAME rule: a demo this tick has stopped advancing must not have
+# its scheduled collection dispatched either, or that collection's window reaches
+# back past the synthetic warehouse's full-volume hours and overwrites real history
+# with sampled near-zero counts (tripl-0zpq.72).
+
 # A per-demo advance runs in ONE transaction that can lose a Postgres deadlock race
 # against a concurrent metric-collection run over the same ``metric_anomalies`` rows.
 # A deadlock poisons that transaction, so the only recovery is to roll back and
@@ -147,7 +152,6 @@ def advance_demos(now: datetime | None = None) -> dict[str, object]:
         return {"enabled": False, "advanced": 0, "skipped": 0}
 
     tick_now = _aware(now) if now is not None else datetime.now(UTC)
-    idle_threshold = timedelta(minutes=DEMO_IDLE_PAUSE_MINUTES)
     session = _get_sync_session()
     advanced = 0
     skipped = 0
@@ -168,7 +172,7 @@ def advance_demos(now: datetime | None = None) -> dict[str, object]:
         session.rollback()
 
         for project_id, slug, seeded_at, last_accessed in candidates:
-            if _is_paused(seeded_at, last_accessed, tick_now, idle_threshold):
+            if is_demo_paused(seeded_at, last_accessed, tick_now):
                 skipped += 1
                 continue
             # Deadlock-resilient advance. A demo-project metric collection racing
@@ -217,23 +221,6 @@ def advance_demos(now: datetime | None = None) -> dict[str, object]:
         return {"enabled": True, "advanced": advanced, "skipped": skipped}
     finally:
         session.close()
-
-
-def _is_paused(
-    seeded_at: datetime | None,
-    last_accessed: datetime | None,
-    now: datetime,
-    threshold: timedelta,
-) -> bool:
-    """A demo is paused when its most-recent activity is older than ``threshold``.
-
-    Activity = last explicit access, falling back to seed time for a demo nobody
-    has opened yet (so a fresh demo is active for one idle window before pausing).
-    """
-    activity = last_accessed or seeded_at
-    if activity is None:
-        return True
-    return _aware(activity) < now - threshold
 
 
 def _advance_demo(session: Session, project_id: uuid.UUID, slug: str, now: datetime) -> None:

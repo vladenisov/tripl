@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import ValidationError
 
 from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
 from tripl.models.fact_table import FactTable
@@ -94,14 +95,31 @@ async def preview_fact_table(
     except FactTableIntrospectionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    columns = [
-        FactTableColumnSchema(
-            name=column.name,
-            type=column.type,
-            native_type=column.native_type,
-        )
-        for column in result.columns
-    ]
+    # Introspection hands back the warehouse's own strings, and ``name`` is bounded
+    # at 255 characters by the response model. An over-long name is a
+    # ``pydantic.ValidationError`` raised HERE, inside the handler — neither a
+    # ``FactTableIntrospectionError`` nor an ``HTTPException`` nor a
+    # ``RequestValidationError`` — so without this it reaches ``main``'s catch-all
+    # and the user gets a blank 500 for a query they can actually fix. It is not
+    # truncated the way ``native_type`` is (see NATIVE_TYPE_MAX_LEN): a column name
+    # is a dict KEY that the saved column allowlist is later built from, and a
+    # truncated key silently stops matching the warehouse's own column.
+    try:
+        columns = [
+            FactTableColumnSchema(
+                name=column.name,
+                type=column.type,
+                native_type=column.native_type,
+            )
+            for column in result.columns
+        ]
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This query projects a column tripl cannot describe; alias it to a shorter name."
+            ),
+        ) from exc
     return FactTablePreviewResponse(
         columns=columns,
         identifier_candidates=list(result.identifier_candidates),

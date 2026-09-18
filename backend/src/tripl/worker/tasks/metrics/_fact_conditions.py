@@ -343,6 +343,7 @@ def _resolve_condition_fragment(
     *,
     dialect: SqlDialect,
     column_types: Mapping[str, str] | None = None,
+    native_column_types: Mapping[str, str] | None = None,
 ) -> str:
     """Compile ONE visual condition into a boolean WHERE fragment for ``dialect``.
 
@@ -358,6 +359,23 @@ def _resolve_condition_fragment(
     * **Timestamp literals.** A time column's bound is emitted as a UTC-pinned typed
       literal (see ``_condition_scalar_literal``).
 
+    TWO type maps, on purpose, and they are not interchangeable:
+
+    * ``column_types`` is the NORMALIZED/bucketed map — the strings ``number`` /
+      ``bool`` / ``string`` / ``timestamp``. It is the validation contract:
+      ``_condition_scalar_literal`` branches on those exact words, and
+      ``metric_definition_service._validate_fact_condition_type`` branches on them
+      again at save time. Feeding native warehouse types into it silently disables
+      both checks, because ``DATE`` matches none of the branches.
+    * ``native_column_types`` is the warehouse's own spelling (``DATE``,
+      ``DATETIME``, ``DateTime64(3)``), and is used for ONE thing: deciding the time
+      literal's type family. It has to be separate because the bucketed map folds
+      BigQuery ``DATE``/``DATETIME``/``TIMESTAMP`` into one word, and BigQuery is
+      the dialect that rejects ``DATETIME '...+00:00'``. When it is absent — a fact
+      table saved before ``native_type`` was captured — the bucketed map is used, so
+      such a table keeps the behaviour it had. ``metric_preview_service`` builds the
+      same split for the SQL-disclosure path.
+
     Security: the column still clears ``validate_identifier``'s allowlist regex FIRST
     (inside ``quote_identifier``), and every value still becomes a quoted/escaped
     literal — there are no bound parameters and no new path by which user input
@@ -366,7 +384,7 @@ def _resolve_condition_fragment(
     quoted = quote_identifier(condition.column, dialect)
     operator = condition.operator
     value = condition.value
-    time_kind = time_kind_of(condition.column, column_types)
+    time_kind = time_kind_of(condition.column, native_column_types or column_types)
     column_type = column_types.get(condition.column) if column_types is not None else None
 
     if operator == "is_null":
@@ -438,13 +456,45 @@ def _resolve_condition_fragment(
 
 
 def _fact_column_types(fact_table: FactTable) -> dict[str, str]:
-    """``{column: warehouse_type}`` from the fact table's introspected columns."""
+    """``{column: bucketed type}`` from the fact table's introspected columns.
+
+    The bucketed ``type`` — ``number`` / ``bool`` / ``string`` / ``timestamp`` —
+    which is the form and validation contract. For the warehouse's own spelling,
+    see ``_fact_native_column_types``.
+    """
     types: dict[str, str] = {}
     for column in fact_table.columns or []:
         if not isinstance(column, Mapping):
             continue
         name = column.get("name")
         type_name = column.get("type")
+        if isinstance(name, str) and isinstance(type_name, str):
+            types[name] = type_name
+    return types
+
+
+def _fact_native_column_types(fact_table: FactTable) -> dict[str, str]:
+    """``{column: native warehouse type}`` from the same introspected columns.
+
+    ``native_type`` is what the warehouse called the column (``DATE``,
+    ``TIMESTAMP``, ``DateTime64(3)``); introspection records it alongside the
+    bucketed ``type``. Only the time classification reads this map — see
+    ``_resolve_condition_fragment`` for why the two cannot be merged.
+
+    The fallback to the bucketed ``type`` is deliberate rather than defensive: a
+    fact table saved before ``native_type`` existed has no such value, and reading
+    the bucket for it reproduces exactly the behaviour it has today instead of
+    silently dropping its time typing. An empty-string ``native_type`` takes the
+    same fallback, which is why this is ``or`` and not ``if "native_type" in``.
+    """
+    types: dict[str, str] = {}
+    for column in fact_table.columns or []:
+        if not isinstance(column, Mapping):
+            continue
+        name = column.get("name")
+        native = column.get("native_type")
+        bucketed = column.get("type")
+        type_name = native if isinstance(native, str) and native else bucketed
         if isinstance(name, str) and isinstance(type_name, str):
             types[name] = type_name
     return types
@@ -478,8 +528,14 @@ def _resolve_combined_filter(
     if filter_sql is not None:
         fragments.append(validate_sql_fragment(filter_sql))
     column_types = _fact_column_types(fact_table)
+    native_column_types = _fact_native_column_types(fact_table)
     fragments.extend(
-        _resolve_condition_fragment(condition, dialect=dialect, column_types=column_types)
+        _resolve_condition_fragment(
+            condition,
+            dialect=dialect,
+            column_types=column_types,
+            native_column_types=native_column_types,
+        )
         for condition in conditions
     )
     if not fragments:

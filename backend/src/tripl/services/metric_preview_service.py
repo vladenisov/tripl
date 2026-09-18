@@ -237,6 +237,33 @@ def _saved_fact_column_types(fact_table: FactTable, data_source: DataSource) -> 
     return column_types
 
 
+async def _load_project_fact_table(
+    session: AsyncSession, slug: str, fact_table_id: uuid.UUID
+) -> FactTable:
+    """``get_fact_table``, with its 404 translated into this module's vocabulary.
+
+    ``get_saved_fact_metric_sql`` walks a saved metric's operands, and an operand
+    can name a fact table that is gone. That is a fact about ONE metric in the
+    batch, so it must reach the ``except (ScanError, ValueError)`` handler and come
+    back as the 422 that names the metric — not escape as a bare
+    ``HTTPException(404, "Fact table not found")`` telling the client the metric
+    it asked for does not exist.
+
+    A ``ValueError`` rather than a ``ScanError`` because nothing about this is a
+    warehouse failure, and because ``ValueError`` costs the module no worker
+    import. The 404 caught here can only be the fact table's own: the caller
+    resolved the slug before reaching this, through ``get_metric_definition``,
+    which raises 404 for an unknown project itself.
+    """
+    try:
+        return await get_fact_table(session, slug, fact_table_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        msg = f"fact table {fact_table_id} is no longer in this project"
+        raise ValueError(msg) from exc
+
+
 def _ensure_generated_sql_query_capacity(query_count: int) -> None:
     if query_count >= MAX_GENERATED_SQL_QUERIES:
         raise HTTPException(
@@ -348,16 +375,23 @@ async def preview_sql_metric(
     # Reuses the worker's bucket/value coercion so preview points match what a
     # collection would store. Imported lazily to keep the Celery worker stack
     # out of module import (mirrors metric_definition_service).
+    # Function-local for the same reason ``get_saved_fact_metric_sql`` imports
+    # ``_fact_collection_group`` that way: this module is the light preview layer
+    # and must not pull the whole catalog service into its module import graph.
+    from tripl.services.metric_definition_service import load_project_data_source
     from tripl.worker.tasks.metrics.metric_collect import (
         SQL_VALUE_COLUMN,
         _coerce_bucket,
         _coerce_value,
     )
 
-    await get_project_id_by_slug(session, slug)  # 404 for an unknown project
-    ds = await session.scalar(select(DataSource).where(DataSource.id == data.data_source_id))
-    if ds is None:
-        raise HTTPException(status_code=404, detail="Data source not found")
+    project_id = await get_project_id_by_slug(session, slug)  # 404 for an unknown project
+    # Project-scoped, not a bare id lookup. This function OPENS A CONNECTION with
+    # the selected data source's credential and runs the user's free-text SELECT
+    # through it, so resolving the id without a project term let an editor in
+    # project A read project B's warehouse by supplying its UUID. Same predicate,
+    # same single not-found message as the metric save path.
+    ds = await load_project_data_source(session, project_id, data.data_source_id)
 
     value_column = data.value_column or SQL_VALUE_COLUMN
     try:
@@ -543,14 +577,17 @@ async def get_saved_fact_metric_sql(
     No adapter is connected and no warehouse statement is executed. The service
     expands the same fact-table dependency closure as Collect now, builds the
     worker's deduplicated conditional ``AggregateSpec`` registries, splits the
-    same bounded manual windows into replay chunks, then invokes the exact
-    adapter SQL builders used by collection.
+    same effective manual windows into replay chunks — bounded by
+    ``compute_manual_collect_window`` and then widened to each metric's own resume
+    point, exactly as the batch does (``effective_manual_window``) — then invokes
+    the exact adapter SQL builders used by collection, down to the row LIMIT.
     """
     from tripl.core.adapters.multi_aggregate_sql import (
         compile_time_bucketed_multi_aggregate_sql,
     )
     from tripl.services.metric_definition_service import (
         _fact_collection_group,
+        effective_manual_window,
         get_metric_definition,
     )
     from tripl.worker.tasks._errors import ScanError
@@ -560,10 +597,9 @@ async def get_saved_fact_metric_sql(
     )
     from tripl.worker.tasks.metrics.generation import _iter_window_chunks
     from tripl.worker.tasks.metrics.metric_collect import (
-        METRIC_QUERY_ROW_LIMIT,
         _batch_chunk_interval_code,
         _SpecRegistry,
-        compute_manual_collect_window,
+        metric_query_fetch_limit,
     )
 
     metric = await get_metric_definition(session, slug, metric_id)
@@ -643,7 +679,19 @@ async def get_saved_fact_metric_sql(
                     # the table select).
                     fact_table = saved_fact_tables.get(operand.fact_table_id)
                     if fact_table is None:
-                        fact_table = await get_fact_table(session, slug, operand.fact_table_id)
+                        # Deliberately NOT ``get_fact_table``: that raises
+                        # ``HTTPException(404, "Fact table not found")``, which is
+                        # neither ``ScanError`` nor ``ValueError`` and so walks
+                        # straight past the handler below. The client asked about a
+                        # metric that exists; a bare 404 on the whole request says
+                        # the metric is missing, which is a different and wrong
+                        # answer. A ratio operand's fact table id lives in opaque
+                        # config JSON with no foreign key behind it, so a dangling
+                        # id is reachable for rows written before
+                        # ``fact_table_service`` started refusing the delete.
+                        fact_table = await _load_project_fact_table(
+                            session, slug, operand.fact_table_id
+                        )
                         saved_fact_tables[operand.fact_table_id] = fact_table
                     _ensure_saved_fact_filter_input_budget(
                         fact_table,
@@ -687,7 +735,16 @@ async def get_saved_fact_metric_sql(
                     detail=f"Metric {definition.name!r} in the collection batch: {exc}",
                 ) from exc
 
-        time_from, time_to = compute_manual_collect_window(interval_code)
+        # The window the batch will actually scan for THIS interval group, not the
+        # bare manual window. ``_run_fact_metrics_batch`` derives its own
+        # ``compute_manual_collect_window(interval_code)`` per interval group and
+        # then widens it per metric to that metric's resume point, so a group
+        # holding one lagging metric scans further back than the manual cap. The
+        # time literals in the disclosed statement are part of the statement; a
+        # window that is merely a lower bound makes this endpoint's promise false.
+        time_from, time_to = await effective_manual_window(
+            session, definitions=definitions, interval_code=interval_code
+        )
         chunks = _iter_window_chunks(
             time_from,
             time_to,
@@ -722,7 +779,15 @@ async def get_saved_fact_metric_sql(
                         time_from=chunk_from,
                         time_to=chunk_to,
                         column_types=column_types,
-                        limit=METRIC_QUERY_ROW_LIMIT,
+                        # The collector's fetch limit, not the ceiling: every
+                        # collection call site asks for one probe row above
+                        # METRIC_QUERY_ROW_LIMIT so ``_reject_truncated_rows`` can
+                        # tell a full window from a cut-short one. Passing the bare
+                        # ceiling here disclosed ``LIMIT 100000`` for a statement
+                        # that runs ``LIMIT 100001`` — a one-character difference,
+                        # but this endpoint's whole contract is that the string can
+                        # be pasted into a warehouse console and reproduce the run.
+                        limit=metric_query_fetch_limit(),
                     )
                 except ValueError as exc:
                     raise HTTPException(status_code=422, detail=str(exc)) from exc
