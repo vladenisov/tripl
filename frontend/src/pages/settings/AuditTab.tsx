@@ -146,6 +146,15 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
       'fact_table.create',
       'fact_table.update',
       'fact_table.delete',
+      // The three SQL-executing previews. They create nothing, so unlike an
+      // accepted shadow candidate they get their own actions rather than
+      // filing someone else's — but they DO run an editor's SQL against a
+      // warehouse credential, and they are the only such surfaces that leave
+      // no stored object behind. An owner asking "who ran what against our
+      // warehouse?" has to be able to find them (tripl-0zpq.75).
+      'fact_table.preview',
+      'metric.preview',
+      'metric.fact_preview',
     ],
   },
   {

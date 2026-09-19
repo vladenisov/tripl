@@ -119,7 +119,6 @@ describe('FactTableForm', () => {
         { name: 'created_at', type: 'timestamp' },
       ],
       identifier_candidates: ['user_id'],
-      sample_rows: [],
     })
 
     const { onClose } = renderForm()
@@ -221,7 +220,6 @@ describe('FactTableForm', () => {
     vi.mocked(factTablesApi.preview).mockResolvedValue({
       columns,
       identifier_candidates: ['user_id', 'country'],
-      sample_rows: [],
     })
 
     const existing = {

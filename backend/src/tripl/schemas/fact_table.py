@@ -327,4 +327,3 @@ class FactTablePreviewRequest(BaseModel):
 class FactTablePreviewResponse(BaseModel):
     columns: list[FactTableColumnSchema]
     identifier_candidates: list[str]
-    sample_rows: list[dict[str, object]]

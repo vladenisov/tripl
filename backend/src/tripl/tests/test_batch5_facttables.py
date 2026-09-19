@@ -38,6 +38,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from httpx import AsyncClient
 from pydantic import ValidationError
+from sqlalchemy import select
 
 import tripl.core.adapters.registry as adapter_registry
 
@@ -47,6 +48,7 @@ import tripl.core.adapters.registry as adapter_registry
 # order they all survive. Entering any other way hits a partially initialised
 # module.
 import tripl.worker.celery_app  # noqa: F401
+from tripl.models.audit_log import AuditLog
 from tripl.models.data_source import DataSource
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.scan_config import ScanConfig
@@ -974,3 +976,36 @@ async def test_a_data_source_owned_by_another_project_is_refused_even_if_nobody_
 
     assert resp.status_code == 404, resp.text
     assert resp.json()["detail"] == "Data source not found"
+
+
+async def test_previewing_a_fact_table_leaves_an_audit_row(client: AsyncClient) -> None:
+    """The one capability preview held over the saved paths was invisibility.
+
+    Authoring a fact table or a metric writes a row an owner can read back; the
+    previews wrote nothing, so an editor could run SQL against a warehouse
+    credential and leave no trace. That — not the data access, which the saved
+    paths already grant — was the real argument for moving these routes behind
+    the owner gate (tripl-0zpq.75). Recording them is what makes the editor
+    boundary defensible, so it is pinned here.
+
+    The row carries the SQL on purpose: a trail that says only "someone
+    previewed something" answers none of the questions an owner would ask it.
+    """
+    project = await _create_project(client)
+    data_source = await _create_data_source(client)
+    sql = "SELECT created_at, amount FROM orders"
+
+    await client.post(
+        f"{_fact_tables_url(project['slug'])}/preview",
+        json={"data_source_id": data_source["id"], "sql": sql, "timestamp_column": "created_at"},
+    )
+
+    async with TestSessionLocal() as session:
+        rows = (
+            (await session.execute(select(AuditLog).where(AuditLog.action == "fact_table.preview")))
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1, "the fact-table preview must leave exactly one audit row"
+    assert rows[0].payload is not None
+    assert rows[0].payload["sql"] == sql

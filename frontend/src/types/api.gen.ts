@@ -1970,7 +1970,13 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Preview Fact Table */
+        /**
+         * Preview Fact Table
+         * @description Read the column shape of a candidate fact-table SELECT (editor-gated).
+         *
+         *     Reads the query's columns and identifier candidates; no rows are returned
+         *     and nothing is persisted. The run is recorded in the audit log.
+         */
         post: operations["preview_fact_table_api_v1_projects__slug__fact_tables_preview_post"];
         delete?: never;
         options?: never;
@@ -6812,10 +6818,6 @@ export interface components {
             columns: components["schemas"]["FactTableColumnSchema"][];
             /** Identifier Candidates */
             identifier_candidates: string[];
-            /** Sample Rows */
-            sample_rows: {
-                [key: string]: unknown;
-            }[];
         };
         /** FactTableResponse */
         FactTableResponse: {

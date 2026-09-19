@@ -1,16 +1,19 @@
-"""Introspect a fact-table SQL: bucketed columns, identifier candidates, samples.
+"""Introspect a fact-table SQL: bucketed columns and identifier candidates.
 
 This powers the FactTable create/edit "Preview columns" surface. Given a
 project, a data source, and a read-only ``SELECT``, it opens a warehouse
-adapter, asks it for the query's output columns (warehouse type names) and a
-bounded set of preview rows, then returns:
+adapter, asks it for the query's output columns (warehouse type names), then
+returns:
 
 * ``columns`` with each warehouse type bucketed to one of
-  ``number`` / ``string`` / ``bool`` / ``timestamp``,
+  ``number`` / ``string`` / ``bool`` / ``timestamp``, and
 * ``identifier_candidates`` (string-typed columns whose name or declared
   warehouse type carries an identifier signal — see
-  :func:`is_identifier_column` — excluding the timestamp column), and
-* ``sample_rows`` coerced to JSON-safe scalars.
+  :func:`is_identifier_column` — excluding the timestamp column).
+
+It reads the query's SHAPE and never its rows. The response used to carry up
+to twenty raw warehouse rows as ``sample_rows``, which nothing in the product
+displayed; see :func:`_run_introspection`.
 
 Scope: a data source is global in this schema; it "belongs to" a project when
 the project has at least one ``ScanConfig`` bound to it. The introspection
@@ -27,12 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
-from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,10 +43,6 @@ from tripl.models.data_source import DataSource
 from tripl.models.scan_config import ScanConfig
 
 logger = logging.getLogger(__name__)
-
-# Default preview size for the create/edit UI. Bounded so a preview never pulls
-# more than a handful of rows back from the warehouse.
-_DEFAULT_SAMPLE_LIMIT = 20
 
 # User-safe message for any adapter failure (bad SQL, connection, timeout). The
 # underlying exception is logged server-side; its text is never surfaced so a
@@ -169,8 +165,6 @@ class FactTableIntrospection:
     # type (see ``is_identifier_column``), excluding the timestamp column.
     # Order mirrors the projected column order for determinism.
     identifier_candidates: list[str]
-    # Up to ``sample_limit`` preview rows with JSON-safe scalar values.
-    sample_rows: list[dict[str, object]]
 
 
 def _unwrap_type(normalized: str) -> str:
@@ -226,45 +220,6 @@ def bucket_warehouse_type(type_name: str) -> str:
     return _STRING
 
 
-def _json_safe(value: object) -> object:
-    """Coerce a sampled warehouse value into a JSON-safe scalar.
-
-    ``datetime``/``date`` -> ISO 8601 string, ``Decimal`` -> ``float``,
-    ``bytes``-like -> ``repr`` string. Native JSON scalars pass through, except
-    non-finite floats (``NaN``/``±Infinity``) which become ``None`` to keep the
-    body valid RFC 7159 JSON. Anything else falls back to ``str`` so the preview
-    never carries a non-serializable object.
-    """
-    if value is None or isinstance(value, (bool, int, str)):
-        return value
-    if isinstance(value, float):
-        # NaN / ±Infinity are valid Python floats but invalid JSON (RFC 7159);
-        # coerce them to null so the preview body stays strictly parseable.
-        return value if math.isfinite(value) else None
-    if isinstance(value, Decimal):
-        return float(value)
-    # ``datetime`` is a subclass of ``date``; both expose ``isoformat``.
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return repr(bytes(value))
-    return str(value)
-
-
-def _rows_to_dicts(
-    column_names: list[str],
-    rows: list[tuple[object, ...]],
-    sample_limit: int,
-) -> list[dict[str, object]]:
-    """Zip ``(names, rows)`` into JSON-safe dicts, bounded by ``sample_limit``."""
-    if sample_limit <= 0:
-        return []
-    return [
-        {name: _json_safe(value) for name, value in zip(column_names, row, strict=False)}
-        for row in rows[:sample_limit]
-    ]
-
-
 async def _load_project_data_source(
     session: AsyncSession,
     project_id: uuid.UUID,
@@ -307,16 +262,21 @@ def _close_adapter(adapter: BaseAdapter) -> None:
         logger.debug("adapter.close() failed after fact-table introspection: %s", exc)
 
 
-def _run_introspection(
-    data_source: DataSource,
-    sql: str,
-    sample_limit: int,
-) -> tuple[list[ColumnInfo], list[dict[str, object]]]:
-    """Open a sync adapter, read columns + preview rows, always close.
+def _run_introspection(data_source: DataSource, sql: str) -> list[ColumnInfo]:
+    """Open a sync adapter, read the column shape, always close.
 
     Wraps every adapter failure (build, query, connection) in a
     ``FactTableIntrospectionError`` carrying only the user-safe message; the
     original exception is logged server-side and chained for diagnostics.
+
+    It reads the SHAPE and never the rows. There used to be a second query here
+    whose rows were returned to the caller as ``sample_rows``; nothing in the
+    product ever displayed them — not the fact-table form, not the CLI, not the
+    MCP server — so the route answered a question nobody asked with up to twenty
+    raw warehouse rows. Dropping it removes both the disclosure and a warehouse
+    query per preview. Column discovery never depended on it: ``get_columns``
+    reads the projection's declared types by itself, which is also why a query
+    matching no rows still previews correctly.
     """
     from tripl.core.adapters.registry import build_adapter
 
@@ -336,7 +296,6 @@ def _run_introspection(
 
     try:
         columns = adapter.get_columns(sql)
-        column_names, rows = adapter.get_preview_rows(sql, limit=sample_limit)
     except Exception as exc:
         logger.warning("Fact-table introspection query failed: %s", type(exc).__name__)
         logger.debug("Introspection query failure detail", exc_info=True)
@@ -344,7 +303,7 @@ def _run_introspection(
     finally:
         _close_adapter(adapter)
 
-    return columns, _rows_to_dicts(column_names, rows, sample_limit)
+    return columns
 
 
 async def introspect_fact_table(
@@ -354,7 +313,6 @@ async def introspect_fact_table(
     data_source_id: uuid.UUID | None,
     sql: str,
     timestamp_column: str | None = None,
-    sample_limit: int = _DEFAULT_SAMPLE_LIMIT,
 ) -> FactTableIntrospection:
     """Introspect a fact-table SQL and return columns, identifiers, and samples.
 
@@ -377,9 +335,7 @@ async def introspect_fact_table(
     except ValueError as exc:
         raise FactTableIntrospectionError(str(exc)) from exc
     data_source = await _load_project_data_source(session, project_id, data_source_id)
-    columns, sample_rows = await asyncio.to_thread(
-        _run_introspection, data_source, sql, sample_limit
-    )
+    columns = await asyncio.to_thread(_run_introspection, data_source, sql)
 
     bucketed = [
         FactTableColumn(
@@ -399,5 +355,4 @@ async def introspect_fact_table(
     return FactTableIntrospection(
         columns=bucketed,
         identifier_candidates=identifier_candidates,
-        sample_rows=sample_rows,
     )

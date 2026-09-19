@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from datetime import date, datetime
-from decimal import Decimal
+from datetime import datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import (
@@ -153,6 +152,9 @@ class _FakeAdapter:
         self._column_names = column_names
         self._rows = rows
         self.closed = False
+        # The preview must read the column SHAPE and never the rows, so the
+        # fake counts the calls rather than merely answering them.
+        self.preview_calls = 0
 
     def get_columns(self, base_query: str) -> list[ColumnInfo]:
         return self._columns
@@ -160,6 +162,7 @@ class _FakeAdapter:
     def get_preview_rows(
         self, base_query: str, limit: int = 10, **kwargs: object
     ) -> tuple[list[str], list[tuple[object, ...]]]:
+        self.preview_calls += 1
         return self._column_names, self._rows[:limit]
 
     def close(self) -> None:
@@ -314,78 +317,6 @@ async def test_introspect_does_not_suggest_ordinary_string_columns(
     assert result.identifier_candidates == ["id", "user_id", "deviceId"]
 
 
-async def test_introspect_sample_rows_are_json_safe(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project = await _make_project(session)
-    data_source = await _make_data_source(session)
-    await _bind_scan_config(session, project, data_source)
-
-    columns = [
-        ColumnInfo(name="price", type_name="Decimal(18, 2)"),
-        ColumnInfo(name="created_at", type_name="DateTime"),
-        ColumnInfo(name="day", type_name="Date"),
-        ColumnInfo(name="payload", type_name="String"),
-        ColumnInfo(name="missing", type_name="Nullable(String)"),
-    ]
-    rows: list[tuple[object, ...]] = [
-        (
-            Decimal("12.50"),
-            datetime(2026, 1, 1, 12, 30, 45),
-            date(2026, 1, 1),
-            b"\x00\x01",
-            None,
-        )
-    ]
-    adapter = _FakeAdapter(columns, [c.name for c in columns], rows)
-    _install_fake_adapter(monkeypatch, adapter)
-
-    result = await introspect_fact_table(
-        session,
-        project_id=project.id,
-        data_source_id=data_source.id,
-        sql="SELECT price, created_at, day, payload, missing FROM orders",
-        timestamp_column="created_at",
-    )
-
-    assert result.sample_rows == [
-        {
-            "price": 12.5,
-            "created_at": "2026-01-01T12:30:45",
-            "day": "2026-01-01",
-            "payload": repr(b"\x00\x01"),
-            "missing": None,
-        }
-    ]
-    # Decimal coerced to float, datetime/date to ISO strings.
-    assert isinstance(result.sample_rows[0]["price"], float)
-    assert result.sample_rows[0]["created_at"] == "2026-01-01T12:30:45"
-
-
-async def test_introspect_respects_sample_limit(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project = await _make_project(session)
-    data_source = await _make_data_source(session)
-    await _bind_scan_config(session, project, data_source)
-
-    columns = [ColumnInfo(name="n", type_name="Int64")]
-    rows: list[tuple[object, ...]] = [(i,) for i in range(50)]
-    adapter = _FakeAdapter(columns, ["n"], rows)
-    _install_fake_adapter(monkeypatch, adapter)
-
-    result = await introspect_fact_table(
-        session,
-        project_id=project.id,
-        data_source_id=data_source.id,
-        sql="SELECT n FROM events",
-        sample_limit=3,
-    )
-
-    assert len(result.sample_rows) == 3
-    assert result.sample_rows == [{"n": 0}, {"n": 1}, {"n": 2}]
-
-
 async def test_introspect_wraps_adapter_failure(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -492,38 +423,6 @@ async def test_introspect_rejects_unsafe_sql_before_touching_adapter(
     assert adapter.closed is False
 
 
-async def test_introspect_coerces_non_finite_floats(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """NaN / ±Infinity become null so the sample body stays valid JSON."""
-    import json
-
-    project = await _make_project(session)
-    data_source = await _make_data_source(session)
-    await _bind_scan_config(session, project, data_source)
-
-    columns = [
-        ColumnInfo(name="nan_v", type_name="Float64"),
-        ColumnInfo(name="inf_v", type_name="Float64"),
-        ColumnInfo(name="ninf_v", type_name="Float64"),
-        ColumnInfo(name="ok_v", type_name="Float64"),
-    ]
-    rows: list[tuple[object, ...]] = [(float("nan"), float("inf"), float("-inf"), 1.5)]
-    adapter = _FakeAdapter(columns, [c.name for c in columns], rows)
-    _install_fake_adapter(monkeypatch, adapter)
-
-    result = await introspect_fact_table(
-        session,
-        project_id=project.id,
-        data_source_id=data_source.id,
-        sql="SELECT nan_v, inf_v, ninf_v, ok_v FROM metrics",
-    )
-
-    assert result.sample_rows == [{"nan_v": None, "inf_v": None, "ninf_v": None, "ok_v": 1.5}]
-    # Strict JSON: no NaN/Infinity tokens (allow_nan=False raises if any slip through).
-    json.dumps(result.sample_rows, allow_nan=False)
-
-
 async def test_introspect_wraps_adapter_build_failure(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -550,3 +449,45 @@ async def test_introspect_wraps_adapter_build_failure(
     message = str(exc_info.value)
     assert "secret-host" not in message
     assert "hunter2" not in message
+
+
+async def test_introspect_reads_the_shape_and_never_the_rows(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preview must not fetch rows at all (tripl-0zpq.75).
+
+    This replaces three tests that pinned how sample rows were coerced — JSON
+    safety, the row cap, non-finite floats. Their subject is gone rather than
+    relaxed: nothing in the product ever displayed those rows (not the
+    fact-table form, not the CLI, not the MCP server), so the route ran a second
+    warehouse query and handed back up to twenty raw rows to nobody.
+
+    Asserted as "get_preview_rows was never called" rather than "sample_rows is
+    absent from the response", because the field could be dropped while the
+    query still ran — removing the disclosure and keeping the cost. Column
+    discovery goes through get_columns and is unaffected, which the identifier
+    assertion keeps honest.
+    """
+    project = await _make_project(session)
+    data_source = await _make_data_source(session)
+    await _bind_scan_config(session, project, data_source)
+
+    columns = [
+        ColumnInfo(name="user_id", type_name="String"),
+        ColumnInfo(name="amount", type_name="Float64"),
+    ]
+    adapter = _FakeAdapter(columns, [c.name for c in columns], [("u1", 1.5)])
+    _install_fake_adapter(monkeypatch, adapter)
+
+    result = await introspect_fact_table(
+        session,
+        project_id=project.id,
+        data_source_id=data_source.id,
+        sql="SELECT user_id, amount FROM orders",
+    )
+
+    assert [c.name for c in result.columns] == ["user_id", "amount"]
+    assert result.identifier_candidates == ["user_id"]
+    assert adapter.preview_calls == 0, (
+        "the fact-table preview fetched warehouse rows; it must read the column shape only"
+    )

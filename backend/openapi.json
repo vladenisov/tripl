@@ -9327,20 +9327,11 @@
             },
             "title": "Identifier Candidates",
             "type": "array"
-          },
-          "sample_rows": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Sample Rows",
-            "type": "array"
           }
         },
         "required": [
           "columns",
-          "identifier_candidates",
-          "sample_rows"
+          "identifier_candidates"
         ],
         "title": "FactTablePreviewResponse",
         "type": "object"
@@ -28196,6 +28187,7 @@
     },
     "/api/v1/projects/{slug}/fact-tables/preview": {
       "post": {
+        "description": "Read the column shape of a candidate fact-table SELECT (editor-gated).\n\nReads the query's columns and identifier candidates; no rows are returned\nand nothing is persisted. The run is recorded in the audit log.",
         "operationId": "preview_fact_table_api_v1_projects__slug__fact_tables_preview_post",
         "parameters": [
           {

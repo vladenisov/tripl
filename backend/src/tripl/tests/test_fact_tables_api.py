@@ -309,7 +309,6 @@ class TestPreview:
                 SimpleNamespace(name="user_id", type="string", native_type="String"),
             ],
             identifier_candidates=["user_id"],
-            sample_rows=[{"amount": 1, "user_id": "u1"}],
         )
 
         async def fake_introspect(
@@ -335,7 +334,10 @@ class TestPreview:
             {"name": "user_id", "type": "string", "native_type": "String"},
         ]
         assert body["identifier_candidates"] == ["user_id"]
-        assert body["sample_rows"] == [{"amount": 1, "user_id": "u1"}]
+        # No sample_rows: the preview answers the query's SHAPE and never its
+        # rows (tripl-0zpq.75). Nothing in the product displayed them, so the
+        # field returned up to twenty raw warehouse rows to no one.
+        assert "sample_rows" not in body
 
     async def test_preview_survives_an_over_long_native_type(
         self, monkeypatch: pytest.MonkeyPatch, client: AsyncClient, project: dict
