@@ -45,7 +45,7 @@ async def project(client: AsyncClient) -> dict:
 
 
 @pytest.fixture
-async def data_source(client: AsyncClient) -> dict:
+async def data_source(client: AsyncClient, project: dict) -> dict:
     resp = await client.post(
         "/api/v1/data-sources",
         json={
@@ -57,7 +57,21 @@ async def data_source(client: AsyncClient) -> dict:
         },
     )
     assert resp.status_code == 201
-    return resp.json()
+    created = resp.json()
+    # A data source belongs to a project through a ScanConfig; the sql-metric save
+    # path refuses an unbound id, because that id selects the warehouse credential
+    # the metric's free-text SELECT will run under on the catalog beat.
+    async with TestSessionLocal() as session:
+        session.add(
+            ScanConfig(
+                project_id=uuid.UUID(project["id"]),
+                data_source_id=uuid.UUID(created["id"]),
+                name="series-ds-binding",
+                base_query="SELECT 1",
+            )
+        )
+        await session.commit()
+    return created
 
 
 def _metrics_url(slug: str) -> str:

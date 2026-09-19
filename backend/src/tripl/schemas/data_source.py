@@ -73,13 +73,31 @@ DEFAULT_TIMEOUT_SECONDS = 300
 # by BigQuery before it runs, so a stray cross join cannot quietly burn a budget.
 DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED = 100 * 1024**3
 
+# How many datasets ONE BigQuery schema browse may span. Each dataset costs its own
+# billed catalog job (``INFORMATION_SCHEMA.COLUMNS`` is dataset-qualified), so the
+# browse is bounded; ``core.adapters.bigquery._schema_datasets`` enforces it by
+# truncating. The number is declared here, next to the write path that accepts the
+# allowlist, because the two were separate literals (50 here, 20 there) and a save
+# path that accepts a list the read path then silently drops is the defect
+# tripl-0zpq.70 filed: the operator configured 50 datasets, 30 never appeared, and
+# nothing said so.
+MAX_SCHEMA_DATASETS = 20
+
 _BQ_LOCATION_RE = re.compile(r"^[A-Za-z0-9-]{2,40}$")
 _BQ_DATASET_RE = re.compile(r"^[A-Za-z0-9_]{1,1024}$")
 # A comma-separated list of plain SQL identifiers. Interpolated into
 # ``SET search_path`` by the adapter, so anything that is not an identifier list
 # (quotes, semicolons, whitespace tricks) must not get through.
 _SEARCH_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*(\s*,\s*[A-Za-z_][A-Za-z0-9_$]*)*$")
-_MAX_DATASET_ALLOWLIST = 50
+# One slot short of the browse budget, because the connection's own default dataset
+# always takes the first one (``bigquery._schema_datasets`` puts it there and never
+# lets the allowlist squeeze it out). Flat rather than conditional on "is a default
+# dataset configured": this model is validated standalone by
+# ``parse_connection_settings(db_type, raw)``, which never sees the DataSource row
+# and therefore cannot know whether ``database_name`` is set. The cost of the flat
+# rule is one wasted slot for a source with no default dataset; the benefit is a
+# bound that is one sentence long and true wherever it is quoted.
+_MAX_DATASET_ALLOWLIST = MAX_SCHEMA_DATASETS - 1
 
 
 def _require_pem(value: str | None, *, label: str) -> str | None:
@@ -207,7 +225,14 @@ class BigQuerySettings(_ConnectionSettingsBase):
             if dataset not in cleaned:
                 cleaned.append(dataset)
         if len(cleaned) > _MAX_DATASET_ALLOWLIST:
-            raise ValueError(f"dataset_allowlist accepts at most {_MAX_DATASET_ALLOWLIST} datasets")
+            # The reason travels with the limit: the previous message named a number
+            # (50) that the schema browser would never honour, so an operator who
+            # trimmed to exactly 50 still lost 30 datasets with no further word.
+            raise ValueError(
+                f"dataset_allowlist accepts at most {_MAX_DATASET_ALLOWLIST} datasets — "
+                f"a schema browse covers {MAX_SCHEMA_DATASETS} and the connection's "
+                "default dataset takes one of them"
+            )
         return cleaned or None
 
 

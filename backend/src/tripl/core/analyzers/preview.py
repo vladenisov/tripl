@@ -19,19 +19,12 @@ from tripl.json_paths import (
     flatten_json_paths,
     format_json_path_value,
     group_json_value_paths,
+    json_safe,
 )
 
 JSON_PATH_DISCOVERY_LIMIT = 1000
 JSON_PATH_SAMPLE_LIMIT = 3
 JSON_PATH_SAMPLE_ROW_LIMIT = 1000
-
-
-def _serialize_preview_value(value: object) -> object:
-    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
-        return value
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
 
 
 def _is_feature_worth_sampling(unique_count: int, total_rows: int) -> bool:
@@ -127,34 +120,6 @@ def _select_diverse_preview_rows(
     return [raw_rows[row_index] for row_index in ordered_indices[:limit]]
 
 
-def _collect_json_path_samples_from_rows(
-    rows: list[dict[str, object]],
-    json_column_names: list[str],
-) -> dict[str, dict[str, list[object]]]:
-    samples_by_column: dict[str, dict[str, list[object]]] = {
-        column_name: {} for column_name in json_column_names
-    }
-    seen_by_column: dict[str, dict[str, set[str]]] = {
-        column_name: {} for column_name in json_column_names
-    }
-
-    for row in rows:
-        for column_name in json_column_names:
-            parsed_value = decode_json_path_value(row.get(column_name))
-            for path, sample_value in flatten_json_paths(parsed_value):
-                column_samples = samples_by_column.setdefault(column_name, {})
-                if path not in column_samples and len(column_samples) >= JSON_PATH_DISCOVERY_LIMIT:
-                    continue
-                sample_text = format_json_path_value(sample_value)
-                seen = seen_by_column.setdefault(column_name, {}).setdefault(path, set())
-                if sample_text in seen or len(seen) >= JSON_PATH_SAMPLE_LIMIT:
-                    continue
-                seen.add(sample_text)
-                column_samples.setdefault(path, []).append(sample_value)
-
-    return samples_by_column
-
-
 def _merge_json_path_samples(
     discovered: dict[str, dict[str, list[object]]],
     selected: dict[str, list[str]],
@@ -191,31 +156,27 @@ def _get_json_path_samples(
     if not json_column_names:
         return {}
 
-    try:
-        return adapter.get_json_path_samples(
-            base_query,
-            json_column_names,
-            time_column=time_column,
-            time_from=time_from,
-            time_to=time_to,
-            path_limit=JSON_PATH_DISCOVERY_LIMIT,
-            sample_limit=JSON_PATH_SAMPLE_LIMIT,
-            sample_row_limit=JSON_PATH_SAMPLE_ROW_LIMIT,
-        )
-    except AttributeError:
-        # Adapter without native discovery (e.g. a test double): sample rows
-        # ourselves and flatten the JSON locally.
-        column_names, rows = adapter.get_preview_rows(
-            base_query,
-            limit=JSON_PATH_SAMPLE_ROW_LIMIT,
-            time_column=time_column,
-            time_from=time_from,
-            time_to=time_to,
-        )
-        fallback_rows = [
-            {name: value for name, value in zip(column_names, row, strict=False)} for row in rows
-        ]
-        return _collect_json_path_samples_from_rows(fallback_rows, json_column_names)
+    # No ``except AttributeError`` fallback here any more. It existed for an
+    # "adapter without native discovery", but ``BaseAdapter.get_json_path_samples``
+    # IS that fallback — a concrete default that samples rows and flattens the
+    # JSON locally — and every adapter the registry can build derives from
+    # ``BaseAdapter``. So the except could no longer fire for a missing method,
+    # only for an AttributeError raised INSIDE an adapter (a None client, a
+    # renamed attribute), which it answered with a local 1000-row sample instead
+    # of the warehouse-side discovery ClickHouse and Postgres override this with:
+    # a different, worse result, reported as success and logged nowhere. An
+    # adapter bug now reaches ``preview_scan_config_async`` and fails the job,
+    # like every other adapter failure in that task.
+    return adapter.get_json_path_samples(
+        base_query,
+        json_column_names,
+        time_column=time_column,
+        time_from=time_from,
+        time_to=time_to,
+        path_limit=JSON_PATH_DISCOVERY_LIMIT,
+        sample_limit=JSON_PATH_SAMPLE_LIMIT,
+        sample_row_limit=JSON_PATH_SAMPLE_ROW_LIMIT,
+    )
 
 
 def build_preview_payload(
@@ -253,9 +214,14 @@ def build_preview_payload(
         for row in row_values
     ]
     raw_rows = _select_diverse_preview_rows(columns, sampled_rows, limit=limit)
+    # ``json_safe`` is not decoration: this payload is assigned to
+    # ``ScanPreviewJob.result_summary``, an ``sa.JSON`` column, and the sync
+    # worker engine registers no ``json_serializer`` (worker/db.py), so plain
+    # ``json.dumps`` encodes it at commit. One ``datetime`` left inside an array
+    # or a map fails that commit and the job is reported as an internal error.
     preview_rows = [
         {
-            name: _serialize_preview_value(
+            name: json_safe(
                 decode_json_path_value(value)
                 if _is_json_type(column_map[name].type_name)
                 else value

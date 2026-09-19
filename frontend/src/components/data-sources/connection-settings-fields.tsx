@@ -5,6 +5,8 @@ import {
   DEFAULT_MAX_BILLED_BYTES_LABEL,
   FIELD_COL_CLASS,
   HELP_CLASS,
+  MAX_DATASET_ALLOWLIST,
+  MAX_SCHEMA_DATASETS,
   SELECT_CLASS,
   SSL_MODE_OPTIONS,
   TEXTAREA_CLASS,
@@ -76,7 +78,8 @@ export function ConnectionSettingsFields({
           />
           <p className={HELP_CLASS}>
             Comma-separated datasets the schema browser may list. Empty means the default dataset
-            only.
+            only. At most {MAX_DATASET_ALLOWLIST} — a browse covers {MAX_SCHEMA_DATASETS} datasets
+            and the default dataset takes one of them.
           </p>
         </div>
       </>

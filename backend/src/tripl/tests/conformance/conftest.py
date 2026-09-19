@@ -20,8 +20,9 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -111,9 +112,34 @@ def _pg_adapter(**overrides: object) -> PostgresAdapter:
     )
 
 
+@contextmanager
+def seeding_cursor(adapter: PostgresAdapter) -> Iterator[Any]:
+    """A cursor on the adapter's OWN connection, with its read-only pin lifted.
+
+    These fixtures seed through the adapter's connection deliberately: the rows
+    have to be written under exactly the session the adapter reads them back
+    with, which is the whole reason the hostile-timezone tests mean anything.
+    Opening a second connection here would restate ``-c timezone=UTC`` by hand,
+    and a hand-copied session setting is free to drift from the adapter's.
+
+    The adapter pins ``default_transaction_read_only=on`` so a warehouse query
+    cannot write even where the credential could. That setting is USERSET on
+    purpose — it is defence in depth, not a privilege boundary, and
+    website/docs/run/security.md says so — which is what lets a session that
+    genuinely means to write turn it off. A fixture is such a session. No
+    ``base_query`` can be: the shared SQL gate admits a single statement, so
+    there is no room for a ``SET`` in front of a ``SELECT``.
+    """
+    with adapter._conn.cursor() as cur:  # noqa: SLF001 — seed on the adapter's own session
+        cur.execute("SET default_transaction_read_only = off")
+        try:
+            yield cur
+        finally:
+            cur.execute("SET default_transaction_read_only = on")
+
+
 def _seed_postgres(adapter: PostgresAdapter) -> None:
-    conn = adapter._conn  # noqa: SLF001 — the gate seeds through the adapter's own connection
-    with conn.cursor() as cur:
+    with seeding_cursor(adapter) as cur:
         cur.execute(f"DROP TABLE IF EXISTS {TABLE}")
         cur.execute(
             f"CREATE TABLE {TABLE} ("
@@ -127,7 +153,18 @@ def _seed_postgres(adapter: PostgresAdapter) -> None:
             "event_name text NOT NULL, "
             "amount double precision, "
             "user_id text NOT NULL, "
-            "doc jsonb"
+            "doc jsonb, "
+            # An ARRAY of a JSON type and an ARRAY of a scalar. psycopg's type
+            # registry returns the ELEMENT's TypeInfo for both a type's own oid and
+            # its array oid, so before tripl-0zpq.56 `docs` was reported as plain
+            # `jsonb` — which routed it into the JSON path walk, whose
+            # `"docs"::jsonb` PostgreSQL refuses ("cannot cast type jsonb[] to
+            # jsonb"), failing the whole scan rather than one column. `counts` is
+            # the control: same bug, an element type nothing would have walked.
+            # Filled by the UPDATE below rather than by the INSERT, so the
+            # parameter adaptation of the shared executemany stays untouched.
+            "docs jsonb[], "
+            "counts integer[]"
             ")"
         )
         cur.executemany(
@@ -146,6 +183,13 @@ def _seed_postgres(adapter: PostgresAdapter) -> None:
                 for row in ROWS
             ],
         )
+        # Built from the columns already there, so the array values need no
+        # client-side adaptation and no cast: `ARRAY[doc]` is a jsonb[] because
+        # `doc` is a jsonb, and `ARRAY[id, id * 2]` is an int4[] for the same
+        # reason. Every row is filled — a column that were NULL everywhere would
+        # still carry the right oid, but it would not prove the scan can GROUP BY
+        # the value.
+        cur.execute(f"UPDATE {TABLE} SET docs = ARRAY[doc], counts = ARRAY[id, id * 2]")
 
 
 #: Timezone names this fixture is allowed to set. `ALTER ROLE ... SET` is a utility
@@ -158,7 +202,9 @@ _ALLOWED_TIMEZONES = frozenset({"UTC", PG_HOSTILE_TZ})
 def _set_pg_role_timezone(adapter: PostgresAdapter, zone: str) -> None:
     if zone not in _ALLOWED_TIMEZONES:
         raise ValueError(f"refusing to interpolate an unknown timezone: {zone!r}")
-    with adapter._conn.cursor() as cur:  # noqa: SLF001
+    # ALTER is a write, so it needs the read-only pin lifted exactly as seeding
+    # does — see ``seeding_cursor``.
+    with seeding_cursor(adapter) as cur:
         cur.execute(f"ALTER ROLE \"{_PG_USER}\" SET timezone TO '{zone}'")
         cur.execute(f"ALTER DATABASE \"{_PG_DB}\" SET timezone TO '{zone}'")
 
@@ -220,6 +266,13 @@ def _seed_clickhouse(adapter: ClickHouseAdapter) -> None:
     client = adapter._client  # noqa: SLF001
     settings = {"allow_experimental_json_type": 1}
     client.command(f"DROP TABLE IF EXISTS {TABLE}")
+    # `props` and `tup` are ClickHouse-only and deliberately absent from dataset.py:
+    # a Map and a Tuple are the two nested families JSONAllPaths rejects, and before
+    # tripl-0zpq.55 either one made every scan on this table fail with
+    # ILLEGAL_TYPE_OF_ARGUMENT. Putting them in the shared `FixtureRow` instead would
+    # force the PostgreSQL and BigQuery gates to invent an equivalent for a shape
+    # neither engine has. `props` varies its key set per row so the shape column has
+    # more than one distinct value to group.
     client.command(
         f"CREATE TABLE {TABLE} ("
         "id UInt32, "
@@ -227,7 +280,9 @@ def _seed_clickhouse(adapter: ClickHouseAdapter) -> None:
         "event_name String, "
         "amount Nullable(Float64), "
         "user_id String, "
-        "doc JSON"
+        "doc JSON, "
+        "props Map(String, String), "
+        "tup Tuple(`a` Int32, `b` String)"
         ") ENGINE = MergeTree ORDER BY id",
         settings=settings,
     )
@@ -239,9 +294,16 @@ def _seed_clickhouse(adapter: ClickHouseAdapter) -> None:
         ts = row.ts.strftime("%Y-%m-%d %H:%M:%S.%f+00:00")
         amount = "NULL" if row.amount is None else repr(row.amount)
         doc = json.dumps(row.doc).replace("\\", "\\\\").replace("'", "\\'")
+        # Odd ids carry one extra key, so the Map's shape array is not constant.
+        props = (
+            f"map('shared', 'v{row.id}', 'odd', 'v{row.id}')"
+            if row.id % 2
+            else f"map('shared', 'v{row.id}')"
+        )
         return (
             f"({row.id}, parseDateTime64BestEffort('{ts}', 6, 'UTC'), "
-            f"'{row.event_name}', {amount}, '{row.user_id}', '{doc}')"
+            f"'{row.event_name}', {amount}, '{row.user_id}', '{doc}', "
+            f"{props}, ({row.id}, '{row.event_name}'))"
         )
 
     values = ", ".join(_row_literal(row) for row in ROWS)
@@ -326,8 +388,7 @@ class PipelineWarehouse:
 
 
 def _seed_postgres_pipeline(adapter: PostgresAdapter) -> None:
-    conn = adapter._conn  # noqa: SLF001 — seed through the adapter's own connection
-    with conn.cursor() as cur:
+    with seeding_cursor(adapter) as cur:
         cur.execute(f"DROP TABLE IF EXISTS {PIPELINE_TABLE}")
         cur.execute(
             f"CREATE TABLE {PIPELINE_TABLE} ("

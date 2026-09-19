@@ -151,7 +151,16 @@ class _CapturingClient:
         if sql.endswith("LIMIT 0"):  # the schema probe
             return _Job([], schema=_SCHEMA)
         if "__bd_raw_" in sql:  # the top-values probe
-            return _Job([("event_name", "click"), ("event_name", "view")])
+            # Two warehouse values carrying a line terminator, a quote and a
+            # backslash. These are the only values in this gate that reach
+            # `_quote_string` and then a statement, so seeding them here is what
+            # makes the ANALYZER re-verify its escape table on every run: GoogleSQL
+            # reads a raw newline inside a quoted (non-triple) literal as an
+            # "Unclosed string literal", and `\x` followed by a non-hex character is
+            # an invalid escape, so an unescaped backslash fails too (tripl-0zpq.67).
+            # Nothing in this file asserts on the values themselves — the gate only
+            # asserts that every generated statement analyzes.
+            return _Job([("event_name", "line1\nline2"), ("event_name", "o'brien\\x")])
         return _Job([])
 
     def close(self) -> None:

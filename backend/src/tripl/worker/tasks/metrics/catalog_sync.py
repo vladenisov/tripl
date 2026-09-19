@@ -166,6 +166,13 @@ class CatalogSyncResult:
     gen_results: dict[str, GenerationResult] = field(default_factory=dict)
     single_result: GenerationResult | None = None
     contract_violations_detected: int = 0
+    # Event-type groups whose contracts could not be evaluated at all this run —
+    # the denominator that keeps the line above honest. Without it a run that
+    # checked nothing and a run that found nothing report the same 0, which is
+    # how a contract the warehouse had stopped accepting could go unnoticed
+    # indefinitely. Counted per group, because that is the unit the check runs
+    # in: one bad contract does not cost the groups beside it their check.
+    contract_checks_failed: int = 0
     replay_branch_id: uuid.UUID | None = None
     # Stays at its zero default on replay: replay has its own sampler in
     # ``tasks`` and reports through ``variable_values_touched``; only scheduled
@@ -603,7 +610,7 @@ def sync_catalog(
                 scan_config_id=config.id,
                 cardinality_results=getattr(grouped_analyses[et_name], "results", None),
             )
-            out.contract_violations_detected += _detect_field_contract_violations(
+            contracts = _detect_field_contract_violations(
                 session,
                 adapter=adapter,
                 event_type=existing_et,
@@ -618,6 +625,8 @@ def sync_catalog(
                 group_value=et_name,
                 limit=metrics_row_limit,
             )
+            out.contract_violations_detected += contracts.violations_detected
+            out.contract_checks_failed += contracts.checks_failed
             et = _ensure_event_type_with_fields(
                 session,
                 config.project_id,
@@ -685,7 +694,7 @@ def sync_catalog(
             scan_config_id=config.id,
             cardinality_results=getattr(analysis, "results", None),
         )
-        out.contract_violations_detected += _detect_field_contract_violations(
+        contracts = _detect_field_contract_violations(
             session,
             adapter=adapter,
             event_type=event_type,
@@ -698,6 +707,8 @@ def sync_catalog(
             time_to=time_to_dt,
             limit=metrics_row_limit,
         )
+        out.contract_violations_detected += contracts.violations_detected
+        out.contract_checks_failed += contracts.checks_failed
         field_defs = {fd.name: fd for fd in event_type.field_definitions}
         out.single_result = generate_events_fn(
             session,

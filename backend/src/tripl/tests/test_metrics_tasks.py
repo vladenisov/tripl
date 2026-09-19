@@ -229,6 +229,13 @@ def _prepare_demo_dispatch(
     assert project is not None
     project.is_demo = True
     now = datetime.now(UTC)
+    # An ACTIVE demo. The dispatcher skips a PAUSED one outright (tripl-0zpq.72),
+    # and these tests are about the cooldown, so the pause gate must not be what
+    # holds them back. A demo with both stamps NULL reads as paused, which would
+    # leave `test_demo_collection_is_deferred_by_the_cooldown` passing for the
+    # wrong reason.
+    project.demo_seeded_at = now - timedelta(days=3)
+    project.demo_last_accessed_at = now
     if recent_scheduled_job:
         session.add(
             ScanJob(
@@ -4674,7 +4681,7 @@ def test_field_contract_violations_are_upserted_as_schema_drifts(
         session.commit()
 
         adapter = FakeContractAdapter()
-        count = metrics_schema_drift._detect_field_contract_violations(
+        outcome = metrics_schema_drift._detect_field_contract_violations(
             session,
             adapter=adapter,
             event_type=et,
@@ -4696,7 +4703,12 @@ def test_field_contract_violations_are_upserted_as_schema_drifts(
         )
         session.commit()
 
-        assert count == 4
+        # Two numbers now, not one: a contract that could not be EVALUATED used
+        # to report the same 0 as a contract that was evaluated and met, so the
+        # count alone could not tell "nothing is wrong" from "nothing was
+        # checked". Assert both, or this stops pinning the distinction.
+        assert outcome.violations_detected == 4
+        assert outcome.checks_failed == 0
         assert adapter.group_value == "purchase"
         assert sorted(adapter.expectation_types) == [
             "enum_violation",

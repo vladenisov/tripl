@@ -33,6 +33,8 @@ from tripl.models.domain_enums import MetricKind, MetricStatus, ScanInterval
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.project import Project
+from tripl.models.scan_config import ScanConfig
+from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks.metrics import metric_collect
 
 # The metric is far behind: its own resume window opens ten days before the
@@ -305,7 +307,7 @@ async def project(client: AsyncClient) -> dict:
 
 
 @pytest.fixture
-async def data_source(client: AsyncClient) -> dict:
+async def data_source(client: AsyncClient, project: dict) -> dict:
     resp = await client.post(
         "/api/v1/data-sources",
         json={
@@ -317,7 +319,21 @@ async def data_source(client: AsyncClient) -> dict:
         },
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    created = resp.json()
+    # A data source belongs to a project through a ScanConfig; the sql-metric save
+    # and preview paths refuse an unbound id, because that id selects the warehouse
+    # credential the free-text SELECT below would run under.
+    async with TestSessionLocal() as session:
+        session.add(
+            ScanConfig(
+                project_id=uuid.UUID(project["id"]),
+                data_source_id=uuid.UUID(created["id"]),
+                name="batch3-c1-ds-binding",
+                base_query="SELECT 1",
+            )
+        )
+        await session.commit()
+    return created
 
 
 class _FakeAsyncResult:

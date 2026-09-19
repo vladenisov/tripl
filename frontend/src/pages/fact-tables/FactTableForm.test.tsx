@@ -119,7 +119,6 @@ describe('FactTableForm', () => {
         { name: 'created_at', type: 'timestamp' },
       ],
       identifier_candidates: ['user_id'],
-      sample_rows: [],
     })
 
     const { onClose } = renderForm()
@@ -185,6 +184,29 @@ describe('FactTableForm', () => {
     )
   })
 
+  it('refuses a save whose row filters repeat a name', async () => {
+    renderForm()
+    fillRequired()
+
+    fireEvent.click(screen.getByRole('button', { name: /Add row filter/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Add row filter/ }))
+    fireEvent.change(screen.getByLabelText('Row filter 1 name'), { target: { value: 'ios_only' } })
+    fireEvent.change(screen.getByLabelText('Row filter 1 SQL condition'), {
+      target: { value: "platform = 'ios'" },
+    })
+    // Trailing space on the repeat: the payload is trimmed, so the two names
+    // collide in the request even though the inputs do not look identical.
+    fireEvent.change(screen.getByLabelText('Row filter 2 name'), { target: { value: 'ios_only ' } })
+    fireEvent.change(screen.getByLabelText('Row filter 2 SQL condition'), {
+      target: { value: "platform = 'ipados'" },
+    })
+
+    submit()
+
+    expect(await screen.findByText(/Two row filters are named "ios_only"/)).toBeInTheDocument()
+    expect(factTablesApi.create).not.toHaveBeenCalled()
+  })
+
   it('preview keeps saved identifier picks and only adds new suggestions (tripl-4qfr)', async () => {
     const columns = [
       { name: 'paid', type: 'string' },
@@ -198,7 +220,6 @@ describe('FactTableForm', () => {
     vi.mocked(factTablesApi.preview).mockResolvedValue({
       columns,
       identifier_candidates: ['user_id', 'country'],
-      sample_rows: [],
     })
 
     const existing = {

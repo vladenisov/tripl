@@ -47,9 +47,21 @@ _MEASURE_REQUIRED: frozenset[MetricAggregation] = frozenset(
 # Statement keywords that make a "read-only SELECT" claim false. Matched
 # case-insensitively on word boundaries so an identifier suffix like
 # ``updated_at`` does not trip ``update`` (and ``created_at`` does not trip
-# ``create``). Kept deliberately broad: anything that writes, locks, changes
-# schema, changes session state, or stacks a second query (``union``) is
-# rejected. This set is shared by every SQL-text validator below.
+# ``create``). This set is shared by every SQL-text validator below.
+#
+# What this list IS: a broad guard against accidental and obvious DDL/DML and
+# against query stacking, applied to text the user typed into a query box.
+#
+# What it is NOT, and must not be described as: a write barrier. It is a keyword
+# blocklist, so it only catches writes that are spelled with one of these words.
+# It does not stop a write reached through a function call (``setval``,
+# ``nextval``, ``lo_create``), a lock clause (``FOR SHARE``), or session mutation
+# (``set_config``) — all of which pass today. Widening the list is not the answer
+# either: bare words like ``for`` and ``share`` would reject ordinary SQL
+# (``FROM sales_for_2026``) and ordinary values. The barrier is the warehouse
+# credential's own privileges, which is the posture ClickHouse states for itself
+# in ``ClickHouseAdapter.get_schema_tables``; on PostgreSQL the adapter also pins
+# ``default_transaction_read_only=on`` on the connection as defence in depth.
 _FORBIDDEN_SQL_KEYWORDS: tuple[str, ...] = (
     "union",
     "insert",
@@ -91,6 +103,12 @@ _FORBIDDEN_FRAGMENT_RE = re.compile(
 
 # Comment markers that can hide trailing injection from a naive scan.
 _COMMENT_MARKERS: tuple[str, ...] = ("--", "/*", "*/", "#")
+
+# String and quoted-identifier delimiters, shared by the two scanners below
+# (``_find_top_level_keyword`` and ``_mask_quoted_spans``) so they cannot drift
+# apart: one decides where a clause keyword is, the other decides what the text
+# gates are allowed to look at, and a disagreement between them is a hole.
+_QUOTE_CHARS: tuple[str, ...] = ("'", '"', "`")
 
 _FROM_RE = re.compile(r"\bfrom\b", re.IGNORECASE)
 
@@ -270,7 +288,7 @@ def _find_top_level_keyword(sql: str, keyword: str, *, start: int = 0) -> int | 
             i += 1
             continue
 
-        if char in ("'", '"', "`"):
+        if char in _QUOTE_CHARS:
             quote = char
             i += 1
             continue
@@ -286,6 +304,70 @@ def _find_top_level_keyword(sql: str, keyword: str, *, start: int = 0) -> int | 
             return i
         i += 1
     return None
+
+
+def _mask_quoted_spans(sql: str) -> str:
+    """Blank the INSIDE of every closed quoted span, preserving length.
+
+    The text gates below scan raw SQL for comment markers, ``;`` and forbidden
+    keywords. Without this they scan the DATA as well as the code, and ordinary
+    values are rejected as attacks: ``event_name IN ('Delete Account')`` trips
+    ``DELETE``, ``'Sign in with Apple'`` trips ``WITH``, ``'#launch'`` trips the
+    ``#`` comment marker, ``'call-center'`` trips ``CALL`` because ``-`` is a word
+    boundary. None of those can execute anything — a keyword inside a closed
+    literal is a string, and a ``;`` inside one cannot stack a statement.
+
+    Length is preserved (interior characters become spaces, the quotes stay) so a
+    caller can keep indexing the ORIGINAL text by offsets taken from the masked
+    copy; ``validate_select_sql_safety`` relies on that to slice its trailing
+    semicolon off the real statement.
+
+    The state machine is the one ``_find_top_level_keyword`` already uses: the
+    same delimiters, and the same rule that a doubled delimiter is an escape that
+    keeps the span open.
+
+    An UNTERMINATED span is deliberately left unmasked and scanned raw. That is
+    the safe direction in both readings: nothing can be hidden behind a quote that
+    never closes, and the doubling-only escape rule misreads the backslash form
+    ClickHouse and BigQuery allow (``'O\\'Brien'``) as "closed, then a new open
+    span" — leaving that tail raw keeps rejecting whatever follows it, exactly as
+    the gate does today, instead of trusting it.
+
+    The gate is dialect-agnostic, so the doubled-delimiter rule has to be right
+    for a dialect that does NOT have it (BigQuery reads ``'a''b'`` as two adjacent
+    literals, not one). It is: a doubled pair is adjacent by definition, so the
+    text this masks always sits between two delimiters with no delimiter between
+    them, and under the alternating reading that region is the inside of a literal
+    too — only WHICH literal it belongs to differs. So text this masks is literal
+    content on every one of the three engines and cannot be code on any of them;
+    the engines differ only in whether they see one literal or two adjacent ones.
+    """
+    chars = list(sql)
+    length = len(sql)
+    i = 0
+    while i < length:
+        if sql[i] not in _QUOTE_CHARS:
+            i += 1
+            continue
+        quote = sql[i]
+        start = i
+        i += 1
+        closed = False
+        while i < length:
+            if sql[i] != quote:
+                i += 1
+                continue
+            if i + 1 < length and sql[i + 1] == quote:
+                i += 2
+                continue
+            closed = True
+            i += 1
+            break
+        if closed:
+            # i - 1 is the closing delimiter; blank strictly between the pair.
+            for index in range(start + 1, i - 1):
+                chars[index] = " "
+    return "".join(chars)
 
 
 def _read_only_select_start(sql: str) -> int | None:
@@ -499,7 +581,15 @@ def quote_timestamp_literal(value: datetime, dialect: SqlDialect, *, kind: TimeK
 def time_kind_of(column: str, column_types: Mapping[str, str] | None) -> TimeKind:
     """Classify a column as a time column using the fact table's stored types.
 
-    ``column_types`` is ``{name: warehouse_type}`` (from ``FactTable.columns``).
+    ``column_types`` must be ``{name: NATIVE warehouse type}`` — ``native_type``
+    from ``FactTable.columns``, falling back to the bucketed ``type`` for rows
+    saved before ``native_type`` was captured. It is NOT the bucketed map: fact
+    table introspection folds BigQuery ``DATE``, ``DATETIME``, ``TIMESTAMP`` and
+    ``TIME`` into the single bucket ``"timestamp"``, so feeding that map here
+    collapses every BigQuery time column to :attr:`TimeKind.timestamp` and makes
+    the DATE/DATETIME arms of ``quote_timestamp_literal`` unreachable — which is
+    a wrong literal type on the one dialect that rejects the mismatch.
+
     An unknown column — no introspected types at all, or a name that is not in
     them — is :attr:`TimeKind.unsupported`, i.e. "do not type this literal", so
     the compiler falls back to the plain string literal it emitted before.
@@ -537,24 +627,30 @@ def lint_dialect_sql(sql: str, dialect: SqlDialect) -> str | None:
 def validate_sql_fragment(text: str) -> str:
     """Validate a raw WHERE-clause fragment (e.g. a metric ``filter_sql``).
 
-    Intended for boolean filter expressions, not full statements. Rejects comment
-    markers (``--``/``/*``/``*/``/``#``), an embedded ``;``, and any forbidden
+    Intended for boolean filter expressions, not full statements. OUTSIDE string
+    and quoted-identifier literals, it rejects comment markers
+    (``--``/``/*``/``*/``/``#``), an embedded ``;``, and any forbidden
     DDL/DML/session/``UNION`` keyword plus ``SELECT``/``WITH`` (matched on word
     boundaries, case-insensitively), so a fragment can never embed a correlated
     subquery (``user_id IN (SELECT ...)``) or a CTE. Returns ``text`` unchanged.
-    Legitimate filters such as ``status IN ('a','b') AND created_at >
-    '2026-01-01'`` pass (``created_at`` does not trip ``create``); probes like
-    ``1=1 UNION SELECT ...`` or ``x; DROP ...`` are rejected. Raises
-    ``ValueError`` (English) on violation.
+
+    "Outside literals" is load-bearing in both directions. Legitimate filters
+    pass: ``status IN ('a','b') AND created_at > '2026-01-01'`` (``created_at``
+    does not trip ``create``), and so do ``event_name IN ('Delete Account')`` and
+    ``utm_campaign = '#launch'``, whose keywords are values a user typed, not SQL.
+    Probes are still rejected: ``1=1 UNION SELECT ...``, ``x; DROP ...``, and
+    ``x = 'a' UNION SELECT p``, where the keyword sits after a literal that
+    closed. Raises ``ValueError`` (English) on violation.
     """
+    masked = _mask_quoted_spans(text)
     for marker in _COMMENT_MARKERS:
-        if marker in text:
+        if marker in masked:
             msg = f"Filter must not contain comments or comment markers ({marker!r})"
             raise ValueError(msg)
-    if ";" in text:
+    if ";" in masked:
         msg = "Filter must not contain ';' separators"
         raise ValueError(msg)
-    forbidden = _FORBIDDEN_FRAGMENT_RE.search(text)
+    forbidden = _FORBIDDEN_FRAGMENT_RE.search(masked)
     if forbidden is not None:
         msg = f"Filter must be read-only; disallowed keyword: {forbidden.group(1).upper()}"
         raise ValueError(msg)
@@ -641,6 +737,11 @@ def validate_select_sql_safety(sql: str) -> str:
     * no DDL/DML/session keyword and no ``UNION`` (INSERT/UPDATE/DELETE/DROP/
       ALTER/CREATE/TRUNCATE/GRANT/COPY/UNION/...).
 
+    The last three are checked OUTSIDE string and quoted-identifier literals, so
+    ``WHERE event_name != 'System Heartbeat'`` and ``WHERE label = 'Copy of X'``
+    are statements about data rather than rejected keywords. A keyword or ``;``
+    that a literal closed before is still caught.
+
     Returns the trimmed statement with any single trailing ``;`` stripped. Raises
     ``ValueError`` (English) on any violation.
     """
@@ -649,16 +750,22 @@ def validate_select_sql_safety(sql: str) -> str:
         raise ValueError(msg)
 
     stripped = sql.strip()
+    masked = _mask_quoted_spans(stripped)
 
     for marker in _COMMENT_MARKERS:
-        if marker in stripped:
+        if marker in masked:
             msg = f"Metric SQL must not contain comments or comment markers ({marker!r})"
             raise ValueError(msg)
 
     # Allow exactly one optional trailing semicolon; anything else is a stacked
-    # statement (or an injected second statement) and is rejected.
+    # statement (or an injected second statement) and is rejected. The trailing
+    # `;` is decided on the real text — it is outside any literal by definition,
+    # since a statement ending inside one would end with the delimiter instead.
+    # `_mask_quoted_spans` preserves length, so the same prefix of the masked copy
+    # is what the keyword and `;` scans below must read.
     without_trailing = stripped[:-1].rstrip() if stripped.endswith(";") else stripped
-    if ";" in without_trailing:
+    masked_without_trailing = masked[: len(without_trailing)]
+    if ";" in masked_without_trailing:
         msg = "Metric SQL must be a single statement (no ';' separators)"
         raise ValueError(msg)
 
@@ -666,7 +773,7 @@ def validate_select_sql_safety(sql: str) -> str:
         msg = "Metric SQL must be a single read-only SELECT statement"
         raise ValueError(msg)
 
-    forbidden = _FORBIDDEN_SQL_RE.search(without_trailing)
+    forbidden = _FORBIDDEN_SQL_RE.search(masked_without_trailing)
     if forbidden is not None:
         msg = f"Metric SQL must be read-only; disallowed keyword: {forbidden.group(1).upper()}"
         raise ValueError(msg)

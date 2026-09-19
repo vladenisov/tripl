@@ -29,6 +29,7 @@ from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.worker.celery_app import celery_app
+from tripl.worker.tasks._demo_pause import is_demo_paused
 from tripl.worker.tasks.metrics._helpers import (
     STALE_ACTIVE_SCAN_JOB_TIMEOUT,
     _fail_stale_active_scan_job,
@@ -288,7 +289,12 @@ def check_metrics_due() -> dict[str, int]:
                 return {"checked": 0, "dispatched": 0}
 
         config_rows = session.execute(
-            select(ScanConfig, Project.is_demo)
+            select(
+                ScanConfig,
+                Project.is_demo,
+                Project.demo_seeded_at,
+                Project.demo_last_accessed_at,
+            )
             .join(Project, Project.id == ScanConfig.project_id)
             .where(
                 ScanConfig.interval.isnot(None),
@@ -296,7 +302,17 @@ def check_metrics_due() -> dict[str, int]:
             )
         ).all()
         configs = [row[0] for row in config_rows]
-        is_demo_by_config = {row[0].id: bool(row[1]) for row in config_rows}
+        # Demo-only project state, keyed by config: PRESENCE in this map is
+        # ``is_demo`` and the value is the activity pair the pause gate reads.
+        # Deliberately one map rather than an ``is_demo`` map beside a parallel
+        # activity map — the two demo gates below would then have two things to
+        # keep in agreement. Carried on the join the dispatcher already does
+        # rather than re-read per config: this loop runs over every scan config
+        # on every 300 s beat tick, and two more columns on one query is free
+        # where a per-config Project load is not.
+        demo_activity_by_config: dict[uuid.UUID, tuple[datetime | None, datetime | None]] = {
+            row[0].id: (row[2], row[3]) for row in config_rows if row[1]
+        }
 
         # One grouped aggregate instead of one max() per config per beat tick.
         # Safe to snapshot before the loop: collection is dispatched asynchronously
@@ -368,7 +384,42 @@ def check_metrics_due() -> dict[str, int]:
                         )
                         should_run = False
 
-            if should_run and is_demo_by_config.get(config.id):
+            demo_activity = demo_activity_by_config.get(config.id)
+
+            if should_run and demo_activity is not None:
+                # A PAUSED demo must not be collected either (tripl-0zpq.72).
+                #
+                # ``advance_demos`` stops appending this demo's hourly buckets
+                # while it is paused, so ``max(EventMetric.bucket)`` freezes and
+                # with it ``collection_progress_to`` — the point the collector
+                # resumes from. Every run from then on opens a window stretching
+                # back to the previous run instead of the resume overlap alone,
+                # far enough to reach behind the synthetic warehouse's
+                # full-volume hours, and the collector DELETES a window before
+                # rewriting it. ``_demo_pause`` carries the full argument and the
+                # reason both callers must ask it rather than each testing
+                # idleness their own way.
+                #
+                # Nothing is lost by skipping: an access unpauses the demo, the
+                # next tick (300 s) backfills the missed buckets from the same
+                # deterministic helpers the seeder used, and by the time
+                # collection is dispatched again the window is back to the
+                # overlap. A paused demo therefore ends up with neither the dips
+                # nor a hole.
+                #
+                # Placed ahead of the cooldown so a demo that will be skipped
+                # anyway does not pay the cooldown's job-history read, matching
+                # how the failure backoff above is only measured once the cheap
+                # bucket check has said "due".
+                seeded_at, last_accessed = demo_activity
+                if is_demo_paused(seeded_at, last_accessed, now):
+                    logger.info(
+                        f"Skipping collect_metrics for paused demo {config.name!r}: "
+                        "no activity within the demo idle window"
+                    )
+                    should_run = False
+
+            if should_run and demo_activity is not None:
                 age_hours = _hours_since_last_scheduled_collection(session, config.id, now=now)
                 if age_hours is not None and age_hours < DEMO_COLLECTION_COOLDOWN_HOURS:
                     logger.info(

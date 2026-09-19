@@ -200,7 +200,21 @@ viewer — so a stranger who registers can immediately **read**:
 
 - create, rename and edit **any shared project** — the tracking plan an owner
   created, and any project predating creator tracking — including its events,
-  event types, variables and scan configuration.
+  event types, variables, fact tables and catalog metrics. Authoring a **scan
+  config** is the exception: that one is owner-only.
+
+…and, the part that is easiest to miss:
+
+- **run read-only SQL of their own writing against the warehouses those projects
+  use.** A fact table and a `sql`-kind metric are both free-text `SELECT`
+  statements, saved by an editor and then executed by the worker under an
+  owner-configured warehouse credential. An editor never sees the credential,
+  and cannot point one at a warehouse that is identifiably another project's —
+  but within that scope, **whatever that credential can read, they can read**.
+
+So on an internet-reachable instance with `open` registration, a stranger who
+registers becomes a read-only SQL user on the warehouses your projects query.
+That is the decision `REGISTRATION_MODE` is really making.
 
 Another member's **demo workspace** and a project created by a **different
 editor** stay closed, and deleting a project or creating/editing a data source
@@ -337,20 +351,56 @@ edit the tracking plan**. If the instance also has registration `open`, anyone
 who can reach the URL can become that editor. Close registration, or keep the
 instance private.
 
-Two further surfaces carry a stricter gate than the role table alone implies:
+Some surfaces carry a stricter gate than the role table alone implies:
 
 | Surface | Gate | Why |
 |---|---|---|
-| Scan configs — create / update / delete, `preview`, `preview-jobs`, `dry-run`, `dry-run-jobs`, `metrics/replay` | `get_owner_user` (owner, interactive session) | A scan's `base_query` is free-text SQL executed verbatim against an owner-configured warehouse credential, so it can read anything that credential can. Data sources are owner-only; authoring the SQL run against them matches. |
-| `POST /scans/{id}/run`, `event-groups/apply`, cancelling a job | `get_editor_user` | Running a **stored** config executes no new SQL, so it stays with the role that maintains the plan — and with the API keys that automate it. Only *authoring* the query is owner-only. |
+| Scan configs — create / update / delete, `preview`, `preview-jobs`, `dry-run`, `dry-run-jobs`, `metrics/replay` | `get_owner_user` (owner, interactive session) | A scan config is the project's **ingestion contract**: it binds a warehouse credential to a project permanently, drives event-type discovery and schema drift, and its `base_query` is recorded in the audit log. Owning that binding is an owner's decision. This gate is **not** a data-access boundary — see the row below. |
+| Fact tables and `sql`-kind catalog metrics — create / update / delete, `preview`, `metrics/preview`, `metrics/fact-preview` | `get_editor_user` | These are also free-text `SELECT` statements run against an owner-configured credential, and they are **editor**-authored on purpose: maintaining the metrics catalog is what the editor role is for. The consequence is stated plainly rather than hidden — **an editor is a read-only SQL user on every warehouse their projects already use.** Scoping is by project: a data source that is identifiably another project's (owned by it, or scanned by it and not by this one) is refused. The three preview routes write an audit row, because they are the only ones here that leave no stored object behind. |
+| `GET /metrics/{id}/generated-sql` | `get_editor_user` | The compiled SQL embeds the fact table's own query — warehouse table and column names an editor authored. A `viewer` authors none of it and does not need to read it. |
+| `POST /scans/{id}/run`, `event-groups/apply`, cancelling a job | `get_editor_user` | Running a **stored** config executes no new SQL, so it stays with the role that maintains the plan — and with the API keys that automate it. |
 | `PATCH /api/v1/projects/{slug}` (name, slug, retention) | Project **creator** or owner | Identity, not content: otherwise any editor could rename or re-slug every project on the instance. Stricter than the content rule above, which permits shared-project edits. |
 | `GET /data-sources/{id}/schema` | `get_editor_user` | Warehouse table and column names. Editors need it — the scan, metric and fact-table forms drive column pickers off it — but a `viewer` edits none of those. |
 | `GET /data-sources/{id}/stats`, and connection details (host, port, username, `password_set`, TLS) on every data-source read | Owner | Non-owners see a data source's name, type and health, which is all the scan picker and metric card need. |
 | `GET /api/v1/audit`, `GET /api/v1/audit/{entry_id}` | Owner | The list carries no payload; a payload is read one entry at a time from the detail route, behind the same owner gate. A payload re-exposes both of the rows above: `data_source.*` payloads carry the connection details blanked on a direct read, and `scan_config.create` payloads carry `base_query`. It is also instance-wide — `project_slug` is a filter, not a scope, and **Settings → Instance → Audit log** is the owner-only screen that reads it that way: the actions belonging to no project (`data_source.*`, `user.*`, workspace `api_key.*`) answer nowhere else. That filter resolves the slug to a project and matches on its id, so a renamed project keeps one trail and a re-used slug inherits nobody's; while no live project answers to a slug, the denormalized label is matched instead, which is what keeps a deleted project's entries readable. Passwords were always redacted (`audit_service._redact`). |
 
-`base_query` is additionally validated by the shared read-only-SELECT gate
-(`validate_select_sql_safety`, the same one `metric_sql` uses): single statement,
-no stacked `;`, no comment markers, no DDL/DML/`UNION`.
+Every one of those statements — a scan's `base_query`, a fact table's `sql`, a
+metric's `metric_sql` — goes through the same read-only-SELECT gate
+(`validate_select_sql_safety`): single statement,
+no stacked `;`, no comment markers, no DDL/DML/`UNION` — each of those three
+checked **outside** string and quoted-identifier literals, so a value such as
+`'Delete Account'` is data rather than a rejected keyword. A keyword or `;` after
+a literal that closed is still caught, and an unterminated literal is scanned as
+if it were code.
+
+The gate is an accident guard, not the write barrier. It is a keyword blocklist,
+so it stops only writes spelled with one of those words — not a write reached
+through a function call (`setval`, `lo_create`), a lock clause (`FOR SHARE`) or
+session mutation (`set_config`). The barrier is the warehouse credential's own
+privileges (and, on PostgreSQL, `default_transaction_read_only=on` pinned on the
+connection).
+
+It also places **no limit on which tables are read**. There is no table
+allowlist: a statement that passes is read-only and single, not narrow. Combined
+with the row above — editors author fact tables and `sql` metrics — that gives
+one rule worth stating on its own:
+
+:::warning The warehouse credential is the real boundary
+Give tripl a credential scoped to what tripl should see. A read-only role
+limited to the analytics schema is the difference between "an editor can query
+our event tables" and "an editor can query our customer table". tripl enforces
+*who may author SQL* and *which project's warehouse they may point it at*; it
+does not, and cannot, enforce *which tables inside that warehouse* the
+credential reaches.
+:::
+
+**What is recorded.** Authoring writes an audit row (`fact_table.create`,
+`metric_definition.create`, `scan_config.create`, and their update/delete
+counterparts), and so do the three preview routes (`fact_table.preview`,
+`metric.preview`, `metric.fact_preview`) — the only SQL-executing surfaces that
+leave no stored object behind. Each carries the SQL that was run. The audit log
+is owner-only, so an owner can answer "who ran what, against which data source,
+and when" without an editor being able to read those answers.
 
 Additional guards:
 

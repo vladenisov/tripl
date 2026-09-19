@@ -81,12 +81,18 @@ def _create_scan_config(
     with_event_type: bool = False,
     is_demo: bool = False,
 ) -> ScanConfig:
+    # An ACTIVE demo when is_demo: the dispatcher skips a PAUSED one outright
+    # (tripl-0zpq.72), and a demo with neither stamp set reads as paused, so the
+    # cooldown's job-identity rule below would never be reached.
+    now = datetime.now(UTC)
     project = Project(
         id=uuid.uuid4(),
         name="Batch3 A3",
         slug=f"batch3-a3-{uuid.uuid4().hex[:8]}",
         description="",
         is_demo=is_demo,
+        demo_seeded_at=now - timedelta(days=3) if is_demo else None,
+        demo_last_accessed_at=now if is_demo else None,
     )
     data_source = DataSource(
         id=uuid.uuid4(),

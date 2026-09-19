@@ -44,6 +44,13 @@ from tripl.services.demo import noise
 from tripl.services.demo.scenario import DEMO_SEED
 from tripl.worker.tasks import demo_runtime
 
+# Imported from the leaf module that now owns it, not off ``demo_runtime``: the
+# constant moved there with the predicate that reads it (tripl-0zpq.72) and is
+# deliberately not re-exported, because ruff selects "F" — an unused import there
+# would be F401, and an ``import X as X`` alias kept alive for one test line is a
+# second name for one truth.
+from tripl.worker.tasks._demo_pause import DEMO_IDLE_PAUSE_MINUTES
+
 # Two events from the demo roster (names must match ``event_specs``): the spike
 # event (base 1800) and a click event (base 300).
 _HOME = ("Home Screen View", "screen_view", 1800)
@@ -506,7 +513,7 @@ def test_paused_demo_is_skipped_and_resumes_on_access(
     factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seed_now = _floor(datetime.now(UTC)) - timedelta(days=2)
-    stale_access = seed_now - timedelta(minutes=demo_runtime.DEMO_IDLE_PAUSE_MINUTES + 60)
+    stale_access = seed_now - timedelta(minutes=DEMO_IDLE_PAUSE_MINUTES + 60)
     with factory() as session:
         seeded = _seed_demo(
             session, seed_now=seed_now, history_hours=48, last_accessed=stale_access

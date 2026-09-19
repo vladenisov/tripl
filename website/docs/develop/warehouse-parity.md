@@ -129,12 +129,12 @@ Unix epoch also puts every boundary on a natural clock boundary.
 Weeks are the one place the warehouses disagree by default, and it is a trap:
 **1970-01-01 was a Thursday**, so a naive seven-day bin off the epoch starts
 weeks on a Thursday — which is exactly what PostgreSQL, BigQuery and the frontend
-all used to do. Each adapter must now say "Monday" *explicitly* rather than
-taking the dialect default:
+all used to do. Each adapter now says "Monday" *explicitly*, whether or not its
+dialect default already agrees:
 
 | Warehouse | Week expression | Verified |
 | --- | --- | --- |
-| ClickHouse | `toDateTime(toMonday(col, 'UTC'), 'UTC')` — a 1-week `toStartOfInterval` would bin off the epoch (Thursday) | **executed** |
+| ClickHouse | `toDateTime(toMonday(col, 'UTC'), 'UTC')` — ClickHouse is the one whose default already agrees: `toStartOfInterval(col, INTERVAL 1 WEEK)` is Monday-anchored at `1970-01-05`, *not* off the epoch Thursday. `toMonday` is used for a different reason — the week form of `toStartOfInterval` returns a **Date**, so a `1w` bucket would come back as `datetime.date` while every other interval yields `datetime.datetime` | **executed** |
 | PostgreSQL | `date_bin('7 days', col, TIMESTAMPTZ '1970-01-05 00:00:00+00:00')` — anchored at the first Monday, not the epoch | **executed** |
 | BigQuery | `TIMESTAMP_TRUNC(col, WEEK(MONDAY), 'UTC')` / `DATETIME_TRUNC(col, WEEK(MONDAY))` / `DATE_TRUNC(col, WEEK(MONDAY))` by declared time type | **executed on real BigQuery** for all three time families |
 
@@ -164,8 +164,8 @@ cannot be placed in a window at all.
 | Warehouse | Supported | Rejected | Rejected at configuration time? |
 | --- | --- | --- | --- |
 | ClickHouse | `DateTime`, `DateTime64`, `Date`, `Date32` | — | n/a |
-| BigQuery | `TIMESTAMP`, `DATETIME`, `DATE` | `TIME` | **Yes** — the adapter raises an actionable error naming the column and its type, on the preview that precedes the save |
-| PostgreSQL | `timestamp`, `timestamptz`, `date` | `time`, `timetz` | **No** — classified as unsupported, but not acted on. See caveat [7] |
+| BigQuery | `TIMESTAMP`, `DATETIME`, `DATE` | `TIME` | **Not guaranteed** — the adapter raises an actionable error naming the column and its type, but only where the column's time kind is first needed: a bucket expression or a window predicate. A scan preview builds a window predicate only when the config carries a lookback window, so a scan saved without one first fails on a run. See caveat [7] |
+| PostgreSQL | `timestamp`, `timestamptz`, `date` | `time`, `timetz`, and any array (`timestamptz[]`) | **No** — classified as unsupported, but not acted on. See caveat [7] |
 
 Notes that bite in practice:
 
@@ -206,11 +206,14 @@ Path rules:
   `jsonb_each` walk, BigQuery via `JSON_KEYS(col, 20)` reduced to its leaf set. All
   three surface `user.address.city`, not just `user`. This is the enumeration the UI
   shows you and the one you pick paths from. BigQuery stops at **depth 20** (caveat
-  [5]).
+  [5]), and on ClickHouse this covers `JSON` columns only — a `Map` or `Tuple`
+  column is not enumerated and offers no selectable path (caveat [8]).
 - **Scan-time *shape grouping* differs, and PostgreSQL is deliberately coarser.**
   The scan groups each row by its path set to count distinct document shapes, so that
   expression runs once per row across the whole window. ClickHouse gets nested paths
-  there for free — `JSONAllPaths` is a columnar metadata read. PostgreSQL has no such
+  there for free on a `JSON` column — `JSONAllPaths` is a columnar metadata read;
+  a `Map` groups on the row's key set and a `Tuple` on its declared field names,
+  because `JSONAllPaths` rejects both (caveat [8]). PostgreSQL has no such
   primitive: the equivalent recursive walk costs **~44 µs/row**, measured on
   PostgreSQL 18 over a 30k-row, 4-level fixture:
 
@@ -233,10 +236,20 @@ Path rules:
 - Path *discovery* (the preview-time "what keys does this column have" probe) is
   bounded on **all three** by a source-row sample — see caveat [4]. It is a
   different operation from scan-time enumeration, with a different bound.
+- **An array of a nested type is not nested.** psycopg reports a PostgreSQL array
+  column as `jsonb[]` / `int4[]` / `timestamptz[]` — it used to report the
+  *element's* name, so a `jsonb[]` column was read as `jsonb`, routed into the
+  `jsonb` path walk, and the `::jsonb` cast that walk emits failed the whole scan.
+  An array now classifies as an opaque scalar, which is what ClickHouse
+  `Array(JSON)` and BigQuery `REPEATED` already did; it still groups and still
+  renders as text. An array of a *time* type (`timestamptz[]`) is classified
+  unsupported for the same reason — but on PostgreSQL that classification is not
+  acted on at configuration time (caveat [7]).
 - BigQuery `STRUCT`/`RECORD` columns are now extractable via dotted field access,
   with one exclusion: a leaf underneath a **REPEATED** field needs `UNNEST`, which
   the adapter does not generate, and is rejected loudly. ClickHouse `Tuple`/`Map`
-  columns are still classified but have **no extractor** (caveat [8]).
+  columns are shape-enumerated by the scan but have **no value extractor** — no
+  dotted path under them is selectable (caveat [8]).
 
 ### Exact versus bounded
 
@@ -263,9 +276,9 @@ value proof; pipeline-derived capabilities execute in the credentialed release
 gate while pull requests retain analysis-only coverage.
 
 The `synthetic` column is the in-memory demo warehouse (`DBType.synthetic`). It
-opens no socket, serves a bounded deterministic fixture (~40k rows), and raises
-`SyntheticCapabilityError` rather than fabricating an answer it cannot honestly
-compute. It is included because it must satisfy the same contract, not because it
+opens no socket, serves a bounded deterministic fixture (a 30-day history, hard
+capped at 65,000 rows per table), and raises `SyntheticCapabilityError` rather
+than fabricating an answer it cannot honestly compute. It is included because it must satisfy the same contract, not because it
 is a shipping warehouse.
 
 | Capability | Adapter surface | ClickHouse | BigQuery | PostgreSQL | synthetic |
@@ -274,7 +287,7 @@ is a shipping warehouse.
 | Schema browse (autocomplete) | `get_schema_tables` | full | **bounded [1]** | full | full |
 | Preview rows (time-windowed) | `get_preview_rows` | full | full | full | full |
 | JSON path discovery (preview probe) | `get_json_path_samples` | **bounded [4]** | **bounded [4]** | **bounded [4]** | bounded [4] |
-| Nested path enumeration (scan) | `get_full_breakdown` | full | **bounded [5]** | **top-level only [6]** | full |
+| Nested path enumeration (scan) | `get_full_breakdown` | **full (JSON), shape-only for `Map`/`Tuple` [8]** | **bounded [5]** | **top-level only [6]** | full |
 | Nested value extraction (selected paths) | all bucketed methods | full (JSON), none for `Tuple`/`Map` [8] | full (JSON + STRUCT [5]) | full (JSON) | full |
 | Scan run / full breakdown | `get_full_breakdown` | full | full | full | full |
 | Scan replay (chunked) | bucketed methods | full | full | full | full |
@@ -297,7 +310,7 @@ is a shipping warehouse.
 | **Field contracts** (required/enum/regex/range) | `validate_field_contracts` | **full** | **full** (warehouse-side, full window) | **full** (warehouse-side, full window) | bounded [10] |
 | Anomaly detection | none (post-hoc) | full [11] | full [11] | full [11] | full [11] |
 | Alerts | none (post-hoc) | full [11] | full [11] | full [11] | full [11] |
-| Query timeout | data source `timeout_seconds` | full | full [2] | full | full |
+| Query timeout | data source `timeout_seconds` | full | full [2] | full | **n/a — accepted and ignored [10]** |
 | In-flight query cancellation | adapter | **bounded [12]** | **bounded [12]** | **bounded [12]** | bounded [12] |
 | Cost / billed-bytes guard | `maximum_bytes_billed` | n/a | full [3] | n/a | n/a |
 | TLS enforcement | connection settings | full (HTTPS port) | full (Google TLS) | full [13] | n/a |
@@ -315,7 +328,10 @@ its own job. The browse therefore covers the connection's default dataset plus
 any datasets in the source's **dataset allowlist**, with three hard bounds: at
 most **20 datasets**, at most **50,000 catalog rows across all of them combined**
 (a shared budget, not a per-dataset allowance), and a **30-second cap** per
-introspection job. Names inside the default dataset come back bare (`events`);
+introspection job. That 20 is why the allowlist field itself accepts at most
+**19**: the connection's default dataset always takes the first slot, so a
+longer list would be one the browse could never honour.
+Names inside the default dataset come back bare (`events`);
 names outside it come back qualified (`analytics.orders`), matching the
 ClickHouse/PostgreSQL convention the frontend depends on. A dataset the
 credentials cannot read is logged and skipped — the rest still return their
@@ -347,9 +363,10 @@ probe that populates the "which JSON paths does this column have" picker is
 bounded by **1,000 source rows** (`sample_row_limit`), **1,000 distinct paths**
 (`path_limit`) and **3 sample values per path** (`sample_limit`), on ClickHouse,
 BigQuery and PostgreSQL alike. ClickHouse and PostgreSQL enumerate the paths
-**warehouse-side** within that sample (`JSONAllPaths`/`JSONDynamicPaths` and a
-recursive `jsonb_each` walk respectively), so they see every nested leaf in the
-sampled rows at a fraction of the transfer; BigQuery inherits the `BaseAdapter`
+**warehouse-side** within that sample (`JSONAllPaths`/`JSONDynamicPaths` — for
+ClickHouse `JSON` columns only, caveat [8] — and a recursive `jsonb_each` walk
+respectively), so they see every nested leaf in the sampled rows at a fraction of
+the transfer; BigQuery inherits the `BaseAdapter`
 fallback, which pulls the sampled rows back and flattens them in Python. Either
 way: **a key present in 0.01% of your events will usually not be discovered.**
 The bound is on discovery only — scan-time enumeration and extraction are not
@@ -390,7 +407,7 @@ rejected at configuration time.** Every bucket query goes through `date_bin()`,
 added in PostgreSQL 14, so the connection test **refuses an older server up
 front** with a message naming the version and the required upgrade — verified
 against a real `postgres:13` container — rather than letting it fail deep inside a
-scan as an opaque "function date_bin(…) does not exist". Two things to know:
+scan as an opaque "function date_bin(…) does not exist". Three things to know:
 
 - That precise message **reaches the UI verbatim**, under a
   `Connection test failed:` prefix — `_friendly_test_error` surfaces
@@ -398,16 +415,48 @@ scan as an opaque "function date_bin(…) does not exist". Two things to know:
   no host, port or driver text. It used to be generalized away, which sent
   operators to the logs for the one sentence that named their problem
   (tripl-64n8.12, closed by tripl-rcn8).
-- `classify_time` marks `time`/`timetz` as unsupported, but only BigQuery is wired
-  to *act* on that. A PostgreSQL (or ClickHouse) source configured with a
-  time-of-day column still fails later, inside a worker, instead of at
-  configuration time.
+- `classify_time` marks `time`/`timetz` — and any array type — as unsupported, but
+  only BigQuery is wired to *act* on that. A PostgreSQL (or ClickHouse) source
+  configured with a time-of-day column still fails later, inside a worker, instead
+  of at configuration time.
+- BigQuery's rejection is not reliably configuration-time either, and the two
+  cases it covers do not behave alike. A **`TIME` column** is rejected wherever the
+  column's time *kind* is first read, and building a window predicate reads it, so
+  a scan preview does catch it — but only when the config carries a lookback
+  window: with no `scan_lookback_hours`, `resolve_lookback_window` returns `None`,
+  `worker.tasks.scan` then passes `time_column=None`, no predicate is built and the
+  kind is never asked for. A **`DATE` column at a sub-day interval** is caught by
+  **no** preview, lookback window or not: that rejection lives in
+  `_bucket_expression`, which only a `get_time_bucketed_*` call reaches, and
+  neither preview half nor the dry run makes one — a preview job carries no
+  interval at all (`ScanPreviewJob` has no such column). So it is always the first
+  collection that surfaces it, and catching it at save time would take a check
+  nothing performs today. Both are raised as `WarehouseCapabilityError`,
+  which the worker surfaces **verbatim**, so the message names the column and the
+  setting to change rather than reading "Scan failed due to an internal error." on
+  every tick.
 
-**[8] ClickHouse `Tuple`/`Map` are classified but not extractable.**
-`classify_complex` recognizes them as complex kinds, but no ClickHouse extractor
-exists for them. Treat `Tuple` and `Map` columns as not yet usable as nested scan
-fields. (BigQuery `STRUCT`/`RECORD`, which was in the same position, is now
-extractable — see caveat [5] for its one remaining exclusion.)
+**[8] ClickHouse `Tuple`/`Map` are shape-enumerated, not value-extractable.**
+`classify_complex` recognizes them as complex kinds, and the scan now groups them
+by their per-row shape — the sorted key set for a `Map`, the declared field names
+for a `Tuple` — instead of calling `JSONAllPaths` on them. That call is the reason
+this caveat used to understate the damage: `JSONAllPaths` rejects both families
+with `ILLEGAL_TYPE_OF_ARGUMENT`, so a single `Map` or `Tuple` column anywhere in a
+source query failed *every* scan and *every* metrics collection for that config,
+not just the nested field.
+
+What is still unavailable is a selectable **value** path: `get_json_path_samples`
+returns no candidates for these columns, so the UI offers none and
+`json_passthrough_paths` stays empty while the field is still marked JSON. Map
+leaf access needs a subscript (`` `m`['k'] ``) rather than the dotted member
+access the adapter compiles today, which ClickHouse rejects on a Map — that is
+what [tripl-bc1u] covers. (BigQuery `STRUCT`/`RECORD`, which was in the same
+position, is now value-extractable — see caveat [5] for its one remaining
+exclusion.)
+
+Verified by execution: the ClickHouse conformance fixture carries a
+`Map(String, String)` and a `Tuple(a Int32, b String)` column alongside its
+`JSON` one, and the gate scans, buckets and runs discovery over all three.
 
 **[9] Free-text SQL metrics are dialect-specific by definition.**
 A SQL metric runs the user's own query. It is executed through `get_preview_rows`,
@@ -423,12 +472,34 @@ in a worker. The lint runs *after* the read-only gate and can only ever reject
 more, never admit more.
 
 **[10] The synthetic adapter is a fixture, not a warehouse.**
-`test_connection` is an honest *local* check — the in-memory dataset is present —
+`test_connection` is an honest *local* check — both in-memory tables hold rows —
 and never claims a network connection. It recognizes only the scan shapes it can
 compute over its fixture and raises `SyntheticCapabilityError` for anything else,
-rather than inventing a plausible number. Its dataset is capped at ~40,000 rows,
-so its sampled paths happen to be exact *for it* — an accident of size, not a
-guarantee.
+rather than inventing a plausible number. Its dataset is held to **65,000 rows
+per table**, checked once when the tables are generated rather than on every scan
+(the old per-scan check compared the generators' output against itself and could
+not fire), so its sampled paths happen to be exact *for it* — an accident of
+size, not a guarantee.
+
+Three things it does *not* do like a warehouse, and each one is a refusal rather
+than a guess:
+
+- **A SQL metric is matched by exact statement text**, not by probing for
+  fragments. The demo's seeded active-sessions statement (and its pre-`GROUP BY`
+  spelling, which existing demos still carry) is computed from the dataset;
+  editing that SQL — adding a `WHERE`, dividing by two, reading another table —
+  raises the capability error instead of returning the unfiltered series under
+  the new query's name.
+- **A row filter is read, not ignored.** Both ways a fact filter arrives are
+  honoured: `AggregateSpec.filter_sql` on the batched path, and the top-level
+  `WHERE` of a `SELECT * FROM (<source>) AS _filtered WHERE …` wrapper on the
+  per-metric path, so the two paths agree. What it can evaluate is a column
+  compared to a string or numeric literal, combined with `AND`/`OR` and
+  parentheses, in ClickHouse's *or* PostgreSQL's quoting; a function call, a
+  subquery or a timestamp condition is refused.
+- **There is no query timer.** The data source's timeout is accepted and ignored:
+  the dataset is built in the constructor and every scan is an in-memory pass over
+  at most the row cap.
 
 **[11] Anomalies and alerts are warehouse-agnostic.**
 They are computed after collection, in Python, from the `MetricValue` rows already
@@ -483,7 +554,7 @@ be *authenticated* as well, choose `verify-full` and supply the CA. Do not read
 | Default port | 8123 (HTTP) |
 | Credentials | host, port, database, username, password |
 | Privileges | `SELECT` on the scanned tables. tripl never writes. |
-| Source-specific setting | **JSON path discovery** — `dynamic` (`JSONDynamicPaths`, the default, faster on wide JSON columns) or `all` (`JSONAllPaths`, lists shared-data paths too). Affects the discovery probe only; scan-time extraction always uses `JSONAllPaths`. |
+| Source-specific setting | **JSON path discovery** — `dynamic` (`JSONDynamicPaths`, the default, faster on wide JSON columns) or `all` (`JSONAllPaths`, lists shared-data paths too). Affects the discovery probe only, and only for `JSON` columns: both functions reject a `Map` or `Tuple`, so those are skipped rather than probed (caveat [8]). The scan's own shape expression picks its function from the column's nested family and is unaffected by this setting. |
 
 ### PostgreSQL (as a **warehouse**, not tripl's own database)
 
@@ -494,7 +565,7 @@ be *authenticated* as well, choose `verify-full` and supply the CA. Do not read
 | Credentials | host, port, database, username, password |
 | Privileges | `CONNECT` on the database, `USAGE` on the schemas, `SELECT` on the scanned tables. A read-only role is the right choice. |
 | Source-specific settings | **SSL mode** (unset → `require` for remote hosts, `prefer` for localhost — see caveat [13]), **CA certificate**, **client certificate**, **client private key** (all PEM *content*, not paths; the key is stored encrypted and never returned), **search path** (comma-separated plain identifiers). |
-| Session | tripl pins `timezone=UTC` and a `statement_timeout` derived from the source's timeout on every connection. |
+| Session | tripl pins `timezone=UTC`, `standard_conforming_strings=on`, `default_transaction_read_only=on`, and a `statement_timeout` derived from the source's timeout, on every connection. `standard_conforming_strings` is what makes tripl's own quote-doubling sound — under the legacy `off` a backslash escapes the closing quote and a value ending in one closes the literal early. `default_transaction_read_only` is defence in depth *behind* the read-only role, not a substitute for it: it is `USERSET`, so SQL that can `SET` it off undoes it. |
 
 ### BigQuery
 
@@ -504,14 +575,16 @@ be *authenticated* as well, choose `verify-full` and supply the CA. Do not read
 | IAM roles | `roles/bigquery.jobUser` on the project (to run jobs) and `roles/bigquery.dataViewer` on each dataset you scan. Nothing else — tripl never writes. |
 | **Location** | The region or multi-region the datasets live in (`EU`, `US`, `us-east1`, …). Leave empty to let BigQuery infer it. **A job started in the wrong location fails** — this is the single most common BigQuery setup error. |
 | **Max billed bytes** | Cost guard, default **100 GiB** per query. BigQuery refuses a query estimated to exceed it. |
-| **Dataset allowlist** | Comma-separated datasets the schema browser may list, in addition to the default dataset. Empty means the default dataset only. Bounded at 20 datasets — see caveat [1]. |
+| **Dataset allowlist** | Comma-separated datasets the schema browser may list, in addition to the default dataset. Empty means the default dataset only. Up to **19** datasets: a browse covers 20 in total and the default dataset takes one slot — see caveat [1]. |
 
 ### Every warehouse
 
-**Timeout (seconds)** applies to all four source types, BigQuery included, and
-defaults to **300s**. It bounds the connect handshake and the query itself
+**Timeout (seconds)** applies to all three real source types, BigQuery included,
+and defaults to **300s**. It bounds the connect handshake and the query itself
 (`send_receive_timeout` on ClickHouse, `statement_timeout` on PostgreSQL,
-a result deadline plus `job_timeout_ms` on BigQuery).
+a result deadline plus `job_timeout_ms` on BigQuery). The synthetic source
+accepts the setting and ignores it — there is no wall clock to guard over an
+in-memory fixture (caveat [10]).
 
 ---
 
@@ -573,7 +646,10 @@ ORDER BY 1
 The **New metric** screen renders exactly these, per selected data source, and
 re-renders when you switch sources — as long as you have not yet edited the SQL,
 in which case your text is never overwritten. Note the absence of SQL comments:
-the read-only gate rejects every comment marker outright.
+the read-only gate rejects every comment marker that is not inside a string or
+quoted-identifier literal. (A value may contain one — `utm_campaign = '#launch'`
+passes — but an unterminated literal is scanned as if it were code, so the text
+after a stray quote is still rejected.)
 
 Weekly buckets, if you write them by hand, must say Monday explicitly:
 
@@ -667,9 +743,19 @@ that is neither the default nor in the **Dataset allowlist** (caveat [1]).
 
 ### BigQuery: "time column … has type TIME" / "cannot be bucketed at '1h'"
 
-Both are deliberate configuration-time rejections. `TIME` carries no date and
-cannot be windowed at all; a `DATE` column has no time-of-day and cannot take a
-sub-day interval. Pick a `TIMESTAMP`/`DATETIME` column, or a `1d`/`1w` interval.
+Both are deliberate rejections, and both now reach you verbatim in the job's
+error message rather than as "failed due to an internal error". `TIME` carries no
+date and cannot be windowed at all; a `DATE` column has no time-of-day and cannot
+take a sub-day interval. Neither is caught by *saving* the configuration, and they
+do not surface at the same moment either. The `TIME` rejection fires wherever the
+column's time kind is first read, which a preview does when it builds its window
+predicate — so a preview catches it, but only when the config carries a lookback
+window; without one the preview never asks for the kind. The "cannot be bucketed"
+rejection fires only when the interval is compiled into a bucket expression, and
+only a collection compiles one: a preview job carries no interval, so **no
+preview catches a `DATE` column at a sub-day interval**, lookback window or not —
+the first run after the change is where you will see it. Pick a
+`TIMESTAMP`/`DATETIME` column, or a `1d`/`1w` interval.
 
 ### PostgreSQL: the connection test names a version requirement
 
@@ -781,9 +867,32 @@ The JSON text is an implementation detail of the SQL, not of the row contract.
 ClickHouse's `match()` (RE2), BigQuery's `REGEXP_CONTAINS` (RE2), and Python's
 `re.search` in the fallback. All four are **unanchored partial matches**, and all
 four agree on ordinary patterns — literals, character classes, anchors, `|`,
-quantifiers, `\d` / `\w` / `\s`. They do not agree on everything (`\b` is a word
-boundary in Python and a *backspace* in POSIX ARE, for one), and tripl does not
-pretend otherwise. Keep contract patterns simple.
+quantifiers, `\d` / `\w` / `\s`. They do not agree on everything, and tripl does
+not pretend otherwise. Two divergences worth knowing, and they point in opposite
+directions:
+
+- `\b` is a word boundary in Python and RE2 and a *backspace* in POSIX ARE, so a
+  `\b` pattern matches nothing on PostgreSQL.
+- Lookaround (`(?=`, `(?!`, `(?<=`, `(?<!`) and backreferences are valid in
+  PostgreSQL's ARE and in Python but are rejected by **RE2**, so those patterns
+  fail on ClickHouse and BigQuery instead.
+
+A pattern the engine refuses costs exactly that one expectation. Before the
+statement is built, tripl offers the pattern to the engine itself (`SELECT
+match('', …)` on ClickHouse, `SELECT REGEXP_CONTAINS('', …)` on BigQuery); a
+refusal drops that expectation, and every other contract in the scan is still
+evaluated. The engine is asked rather than screened against a "portable subset",
+because a static screen would have to reject the lookahead a PostgreSQL-only
+project is entitled to write.
+
+The cost of a refusal is small but **quiet**: the only record is a worker warning
+naming the column — `Field contract skipped: … cannot compile the pattern …`. A
+contract that silently stops being evaluated looks exactly like a contract that
+is being met, so if a contract you rely on stops producing drifts on ClickHouse
+or BigQuery, read the worker log for that line before concluding the data is
+clean. Saving the pattern does not warn you either: the save-time check is a typo
+screen against Python's own `re` and deliberately not a portability guarantee, so
+a pattern can save here and still be one an engine refuses.
 
 ### BigQuery `DATETIME` is zone-less
 
@@ -791,6 +900,14 @@ A `DATETIME` column is a wall clock with no zone. tripl renders its window
 literals as `DATETIME '…'` (no offset — BigQuery rejects one) spelling the UTC
 wall clock. If your `DATETIME` column holds local time rather than UTC, tripl's
 windows will not mean what you expect. Use `TIMESTAMP` if you can.
+
+The same asymmetry exists on the way *out*, and the adapter closes it: the driver
+decodes a `TIMESTAMP` bucket to an aware `datetime`, a `DATETIME` bucket to a
+naive one and a `DATE` bucket to a `date`, so the bucket column's Python type
+would otherwise depend on a column type the caller never sees. Every bucketed
+rowset is normalized to an aware UTC `datetime` before it leaves the adapter — a
+`DATE` bucket becoming that date at 00:00 UTC — because the readers compare it
+against an aware window bound and persist it into a `timestamptz`.
 
 ---
 
@@ -857,7 +974,7 @@ For the record, so the matrix above is not read as static. Every item below was 
 
 | Gap | Issue |
 | --- | --- |
-| ClickHouse `Tuple`/`Map` columns are classified but have **no nested extractor** (caveat [8]) | [tripl-bc1u] |
+| ClickHouse `Tuple`/`Map` columns are shape-enumerated but have **no nested value extractor**: no selectable path in the UI (caveat [8]) | [tripl-bc1u] |
 | A fact-metric breakdown group whose aggregate is all-`NULL` crashes the collector with a `TypeError` instead of being recorded as absent | [tripl-s2m7] |
 
 The rest of what this table used to list has landed: scan/replay, event

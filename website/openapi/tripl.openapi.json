@@ -11690,6 +11690,7 @@
           "fact-tables"
         ],
         "summary": "Preview Fact Table",
+        "description": "Read the column shape of a candidate fact-table SELECT (editor-gated).\n\nReads the query's columns and identifier candidates; no rows are returned\nand nothing is persisted. The run is recorded in the audit log.",
         "operationId": "preview_fact_table_api_v1_projects__slug__fact_tables_preview_post",
         "parameters": [
           {
@@ -23582,21 +23583,12 @@
             },
             "type": "array",
             "title": "Identifier Candidates"
-          },
-          "sample_rows": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Sample Rows"
           }
         },
         "type": "object",
         "required": [
           "columns",
-          "identifier_candidates",
-          "sample_rows"
+          "identifier_candidates"
         ],
         "title": "FactTablePreviewResponse"
       },

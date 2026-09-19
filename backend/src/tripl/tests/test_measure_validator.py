@@ -321,6 +321,15 @@ def test_validate_sql_fragment_accepts_realistic_filter() -> None:
     ],
 )
 def test_validate_sql_fragment_rejects_injection(bad: str, match: str) -> None:
+    """The gate's own cases. The adversarial ones live next to the masker.
+
+    Since tripl-0zpq.77 the gate masks closed literals before it looks for
+    keywords, so the interesting rejections are the ones that probe the MASKER —
+    an unterminated literal, an empty literal, a quoted identifier — and they are
+    parametrized alongside the accept cases they have to stay distinct from, in
+    ``test_batch5_postgres_validator.py``. Do not "simplify" this list on the
+    assumption that it is all the coverage there is.
+    """
     with pytest.raises(ValueError, match=match):
         validate_sql_fragment(bad)
 
@@ -532,10 +541,28 @@ def test_quote_timestamp_literal_pins_utc_per_dialect(
 # --- time_kind_of ------------------------------------------------------------
 
 
-def test_time_kind_of_reads_the_introspected_type() -> None:
-    types = {"ts": "timestamp", "amount": "Float64"}
-    assert time_kind_of("ts", types) is TimeKind.timestamp
-    assert time_kind_of("amount", types) is TimeKind.unsupported
+@pytest.mark.parametrize(
+    ("native_type", "expected"),
+    [
+        ("TIMESTAMP", TimeKind.timestamp),
+        ("DATE", TimeKind.date),
+        ("DATETIME", TimeKind.datetime),
+        ("DateTime64(3)", TimeKind.datetime),
+        ("Nullable(Date32)", TimeKind.date),
+        ("Float64", TimeKind.unsupported),
+    ],
+)
+def test_time_kind_of_reads_the_NATIVE_type(native_type: str, expected: TimeKind) -> None:
+    """The contract is "native warehouse type in, TimeKind out".
+
+    The old fixture fed the BUCKETED ``"timestamp"``, which is the one value that
+    cannot tell DATE from DATETIME — fact-table introspection folds all four
+    BigQuery time types into it. Passing it here collapses every BigQuery time
+    column to ``TimeKind.timestamp`` and makes the DATE/DATETIME arms of
+    ``quote_timestamp_literal`` unreachable, so the test encoded the bug rather
+    than the contract (tripl-0zpq.74).
+    """
+    assert time_kind_of("ts", {"ts": native_type}) is expected
 
 
 @pytest.mark.parametrize("types", [None, {}, {"other": "timestamp"}])

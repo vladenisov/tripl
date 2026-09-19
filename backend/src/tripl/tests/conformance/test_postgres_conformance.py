@@ -20,6 +20,7 @@ import pytest
 from tripl.core.adapters.base import AggregateSpec
 from tripl.core.adapters.postgres import PostgresAdapter
 from tripl.core.bucketing import floor_to_bucket
+from tripl.core.warehouse_types import is_complex_type
 from tripl.models.domain_enums import MetricAggregation
 from tripl.tests.conformance.conftest import (
     _PG_DB,
@@ -346,3 +347,54 @@ def test_field_contracts_find_exactly_the_drift_that_is_there(pg: PostgresAdapte
     actual = {(v.field_name, v.drift_type): (v.bad_count, v.total_count) for v in violations}
     assert actual == expected_contract_violations()
     assert ("user_id", "regex_violation") not in actual
+
+
+# --- arrays: reported as themselves, scanned as opaque scalars -----------------
+
+
+def test_an_array_column_is_reported_as_an_array_and_scanned_as_a_scalar(
+    pg: PostgresAdapter,
+) -> None:
+    """The end-to-end half of tripl-0zpq.56, and the only one that executes.
+
+    psycopg's type registry is keyed by a type's own oid AND its array oid, and
+    both lookups return the ELEMENT's ``TypeInfo``. So a ``jsonb[]`` column used
+    to report as ``jsonb``, the shared classifier called it nested, and the JSON
+    path walk emitted ``"docs"::jsonb`` — which PostgreSQL refuses outright
+    ("cannot cast type jsonb[] to jsonb"), so one array column anywhere in the
+    source failed the ENTIRE scan. A unit test with a fake cursor can pin the
+    reported name; only a real server can show the scan completing.
+    """
+    columns = pg.get_columns(BASE)
+    types = {column.name: column.type_name for column in columns}
+
+    # The names, exactly: an array reports as itself, and the scalar twin of the
+    # same element type is untouched — that is what makes this a fix and not a
+    # blanket rename.
+    assert types["docs"] == "jsonb[]"
+    assert types["counts"] == "int4[]"
+    assert types["doc"] == "jsonb"
+
+    # The split every caller makes, made here the same way rather than asserted
+    # from a hand-written list: an array is opaque, its scalar twin is not.
+    nested = [column.name for column in columns if is_complex_type(column.type_name)]
+    assert "doc" in nested
+    assert "docs" not in nested
+    assert "counts" not in nested
+
+    # ...and the scan that split produces runs. On revert `docs` moves into the
+    # json list and this raises rather than fails.
+    reg, json_cols, _values, rows = pg.get_full_breakdown(
+        BASE,
+        ["docs", "counts"],
+        ["doc"],
+        None,
+        time_column="ts",
+        time_from=FROM_TIME,
+        time_to=TO_TIME,
+    )
+    assert rows
+    assert reg == ["docs", "counts"]
+    assert json_cols == ["doc"]
+    # Every in-window row is accounted for, so nothing was dropped by the grouping.
+    assert sum(int(row[-1]) for row in rows) == len(IN_WINDOW_IDS)  # type: ignore[arg-type]

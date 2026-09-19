@@ -11,8 +11,27 @@ Design
 ------
 * Two tables, ``events`` and ``orders``, with fixed schemas matching the demo
   scenario. Rows are generated deterministically from a fixed seed via SHA-256
-  (never the salted builtin ``hash()``), so two builds with the same seed and
-  anchor are byte-for-byte identical, and the total row count is capped.
+  (never the salted builtin ``hash()``), and every digest is keyed on ABSOLUTE
+  time (the UTC epoch hour / date ordinal of the row's bucket), so the same seed
+  yields the same rows for the same instant whichever anchor generated them —
+  AS LONG AS both anchors put that instant in the same regime (see the next
+  bullet). That is stronger than "same seed and anchor are byte-for-byte
+  identical" and it has to be: ``registry._build_synthetic`` rebuilds the adapter
+  on every scan with ``anchor=None``, i.e. with a MOVING anchor, so
+  anchor-relative keys made the same absolute hour hold different rows on every
+  scan (bd tripl-0zpq.73). The total row count is capped.
+* Cross-anchor identity is NOT guaranteed across the ongoing/sampled boundary,
+  and the gap is not a rounding error. Which hours are "ongoing" is measured back
+  from the anchor (``_generate_events``: ``ongoing_start_hour = total_hours -
+  SYNTHETIC_ONGOING_HOURS``), so an hour that has aged out of that window between
+  two scans is regenerated at the sampled scale — a different sample, not a
+  thinned copy of the earlier one. Measured at ``DEFAULT_SEED``: one hour held
+  ~7.8k rows while it was ongoing and 3 once it had aged out, and those 3 were
+  not a subset of the earlier rows (``test_batch5_synthetic`` pins both halves at
+  its own seed). Since the anchor moves on every scan, that boundary sweeps the
+  dataset continuously, and a re-collection whose window reaches further back
+  than ``SYNTHETIC_ONGOING_HOURS`` will not reproduce what an earlier read of the
+  same hours returned.
 * The most-recent ``SYNTHETIC_ONGOING_HOURS`` hours are generated at each event's
   seeded *base* volume (a believable daily/weekly shape with mild noise), so a
   live scan's current window continues the demo's seeded baseline instead of
@@ -22,17 +41,28 @@ Design
 * Every abstract method aggregates the in-memory rows in Python according to the
   STRUCTURED params it receives (time window, regular/breakdown columns,
   aggregation + measure, ``AggregateSpec`` list, top-N ``values_limit``). It does
-  not parse SQL beyond deciding which table ``base_query`` selects and which
-  columns it projects: a query that mentions ``orders`` reads the orders table,
-  otherwise the events table, and a bare ``SELECT a, b, c FROM ...`` list narrows
-  the columns the caller sees (anything else means "every column").
+  not parse SQL beyond three things: which table ``base_query`` selects (a query
+  that mentions ``orders`` reads the orders table, otherwise the events table),
+  which columns it projects (a bare ``SELECT a, b, c FROM ...`` list narrows the
+  columns the caller sees; anything else means "every column"), and its top-level
+  ``WHERE`` predicate, which is evaluated row by row. The predicate matters
+  because the per-metric fact collector delivers a row filter by WRAPPING the
+  source — ``SELECT * FROM (<source>) AS _filtered WHERE <combined>`` — so an
+  adapter that ignored it answered the UNFILTERED question and disagreed with the
+  batched path, whose filter arrives as ``AggregateSpec.filter_sql``.
+* Filter fragments are read in the dialect this source DECLARES.
+  ``measure_validator._DB_TYPE_DIALECT`` maps ``"synthetic"`` to ClickHouse, so
+  everything the collector compiles for it arrives back-tick quoted and
+  backslash escaped; the evaluator accepts that spelling (and PostgreSQL's, since
+  named / free-text filters are user text) instead of silently matching nothing.
 * The sql-metric path funnels through ``get_preview_rows`` with the metric SQL as
-  ``base_query``. The one seeded aggregate shape (distinct sessions per day) is
-  recognized and computed from the dataset; a plain table scan returns rows; any
-  other SQL raises :class:`SyntheticCapabilityError` rather than fabricating data.
-* Read-only only. Row/time limits are honored and a cheap wall-clock/row-count
-  budget guards every scan. ``test_connection`` is an honest LOCAL check (the
-  dataset is present) — it never claims a real warehouse connection.
+  ``base_query``. The seeded aggregate statements (distinct sessions per day) are
+  recognized by EXACT match and computed from the dataset; a plain table scan
+  returns rows; any other SQL raises :class:`SyntheticCapabilityError` rather than
+  fabricating data.
+* Read-only only. Row/time limits are honored and the dataset is held to a
+  row-count budget at construction. ``test_connection`` is an honest LOCAL check
+  (the dataset is present) — it never claims a real warehouse connection.
 """
 
 from __future__ import annotations
@@ -50,6 +80,7 @@ from tripl.core.adapters.base import (
     SchemaColumn,
     SchemaTable,
 )
+from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.measure_validator import coerce_aggregation, requires_measure
 from tripl.core.bucketing import floor_to_bucket, to_utc
 from tripl.models.domain_enums import MetricAggregation
@@ -71,10 +102,6 @@ SYNTHETIC_HISTORY_DAYS = 30
 # ``test_synthetic_dataset_stays_within_row_budget`` pins the margin.
 SYNTHETIC_MAX_ROWS = 65000
 
-# Read/scan budget. In-memory scans are effectively instant, but an explicit
-# wall-clock and row-count guard keeps the "bounded, read-only" contract honest.
-_DEFAULT_TIMEOUT_SECONDS = 300
-
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 # ``SELECT <projection> FROM ...`` — the only projection shape recognized.
 _SELECT_LIST_RE = re.compile(r"^\s*select\s+(.+?)\s+from\b", re.IGNORECASE | re.DOTALL)
@@ -91,12 +118,26 @@ _NON_SCAN_RE = re.compile(
 _DAY_INTERVAL = "1d"
 
 
-class SyntheticCapabilityError(RuntimeError):
+class SyntheticCapabilityError(WarehouseCapabilityError):
     """The synthetic adapter was asked for something it cannot honestly compute.
 
     Raised for unrecognized SQL and unsupported filter expressions. The adapter
     NEVER fabricates a result for an unsupported request — the caller gets a
     clear capability error instead.
+
+    It subclasses :class:`~tripl.core.adapters.errors.WarehouseCapabilityError`
+    (and through it ``ValueError``) because these messages are exactly what that
+    class exists for: text *we* wrote about a request the operator can change,
+    carrying no host, port or credential. Being a plain ``RuntimeError`` meant
+    the sentence in ``_reject_unsupported_scan`` — written for a user — reached a
+    demo user as "Scan failed due to an internal error.", because both sanitisers
+    key on the BASE class and this was outside it:
+    ``metric_preview_service._warehouse_error_message`` surfaces a
+    ``WarehouseCapabilityError`` verbatim, and the worker's ``user_facing_error``
+    does the same for every member of ``worker/tasks/_errors._CURATED_ERRORS``.
+    Inheriting is the right shape rather than naming this class at each sanitiser:
+    the PostgreSQL and BigQuery adapters raise the base class too, so one entry
+    covers three adapters.
     """
 
 
@@ -126,6 +167,20 @@ _ORDERS_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 _EVENTS_NULLABLE = frozenset({"button_id", "product_id", "amount", "currency"})
 
+# The column allowlist per table, in ONE place. Both gates that hold a caller to
+# a real column answer to it — ``_validate_column`` for the STRUCTURED params and
+# ``_filter_column`` for a name parsed out of a WHERE fragment — so the two
+# cannot drift into disagreeing about what the tables hold.
+_TABLE_COLUMN_NAMES: dict[str, frozenset[str]] = {
+    "events": frozenset(name for name, _ in _EVENTS_COLUMNS),
+    "orders": frozenset(name for name, _ in _ORDERS_COLUMNS),
+}
+
+
+def _table_columns(table: str) -> frozenset[str]:
+    """Every column name ``table`` has (``events`` is the fallback table)."""
+    return _TABLE_COLUMN_NAMES.get(table, _TABLE_COLUMN_NAMES["events"])
+
 
 class SyntheticEventDef(NamedTuple):
     """One synthetic event identity and the column values its rows carry."""
@@ -151,10 +206,14 @@ class SyntheticEventDef(NamedTuple):
 # Exhaustiveness is the whole point: this used to list only the 7 highest-volume
 # identities, so an hourly metrics collection rewrote the window with counts for
 # 7 of 18 events and the detector read the other 11 as "dropped to zero" within
-# an hour of a demo's creation (bd tripl-jfm3.55 / .71). core/ cannot import
-# services/, so the values are duplicated here and
-# ``test_synthetic_event_defs_cover_every_seeded_event_spec`` pins the two
-# rosters together in BOTH directions.
+# an hour of a demo's creation (bd tripl-jfm3.55 / .71). The values are duplicated
+# rather than imported from the plan: ``core/`` importing ``services/`` is a
+# direction this repo takes once and deliberately
+# (``core/analyzers/release_regression.py``), not one Python or a lint rule
+# forbids, and a second exception here would pull the demo seeder's import graph
+# into every synthetic adapter build. So the copy stands and
+# ``test_synthetic_event_defs_cover_every_seeded_event_spec`` pins the two rosters
+# together in BOTH directions.
 _EVENT_DEFS: tuple[SyntheticEventDef, ...] = (
     # screen_view — the plan documents ``screen_name`` (+ ``${platform}``).
     SyntheticEventDef("screen_view", "Home Screen View", "home", None, None, None, None, 1800),
@@ -280,6 +339,273 @@ def _projection_columns(base_query: str) -> tuple[str, ...] | None:
     return tuple(items)
 
 
+# --- reading SQL text: string literals, identifiers, operators, WHERE ---------
+#
+# This adapter has to READ fragments it did not write.
+# ``measure_validator._DB_TYPE_DIALECT`` declares ``"synthetic"`` to be a
+# ClickHouse dialect, so ``_fact_conditions._resolve_condition_fragment`` compiles
+# a structured condition to ``` `status` = 'completed' ``` — back-tick quoted,
+# backslash escaped. Until bd tripl-0zpq.71 the evaluator here understood only
+# bare identifiers and did a chain of ``.strip("'")`` / ``.replace("''", "'")`` on
+# the literal, so ``` `status` = 'completed' ``` matched NOTHING (every bucket
+# collected NULL) and ``` `status` != 'completed' ``` matched EVERY row. The
+# declaration is the contract and this is the half that must honour it; the fix
+# is NOT to stop quoting on the compile side, where quoting is what makes a
+# reserved column name work on PostgreSQL and BigQuery.
+#
+# Both dialect spellings are accepted deliberately. Named and free-text row
+# filters are explicitly dialect-specific USER text (see
+# ``_fact_conditions._resolve_combined_filter``), so someone who typed ``"status"``
+# or ``'o''brien'`` against a PostgreSQL habit must not get a wrong number either.
+
+_LITERAL_MASK_CHAR = "\x00"
+
+#: The escape sequences ``measure_validator.quote_sql_string_literal`` emits for
+#: the backslash dialects. Anything else is refused rather than decoded: mapping
+#: an unknown ``\x`` to a bare ``x`` would silently mis-read ``'C:\temp'``, which
+#: ClickHouse reads as ``C:<TAB>emp``, and this module never answers a filter it
+#: cannot evaluate faithfully.
+_BACKSLASH_ESCAPES: dict[str, str] = {"\\": "\\", "'": "'", "n": "\n", "r": "\r"}
+
+#: Comparison operators, longest match first at a given position so ``!=`` can
+#: never be split as ``=`` and ``<=`` never as ``<``.
+_FILTER_OPERATORS: tuple[str, ...] = ("!=", "<>", ">=", "<=", "=", ">", "<")
+
+_WHERE_KEYWORD = "where"
+
+
+def _string_literal_end(text: str, start: int) -> int:
+    """Index just past the single-quoted literal that begins at ``text[start]``.
+
+    Both escape conventions are honoured: ``\\'`` (what
+    ``quote_sql_string_literal`` emits for ClickHouse / BigQuery) and ``''``
+    (PostgreSQL, and what a hand-written free-text filter may carry). Accepting
+    both means ``'a''b'`` and ``'a\\'b'`` denote the same value here, which is the
+    intended trade for reading user text of unknown provenance.
+    """
+    index = start + 1
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "'":
+            if index + 1 < length and text[index + 1] == "'":
+                index += 2
+                continue
+            return index + 1
+        index += 1
+    msg = "Unterminated string literal in SQL text"
+    raise SyntheticCapabilityError(msg)
+
+
+def _decode_string_literal(token: str) -> str:
+    """Decode ONE complete single-quoted SQL literal to the value it denotes.
+
+    A single left-to-right pass, not a chain of ``.replace()``: chaining decodes
+    a value ending in a backslash wrongly, which is the same ordering hazard
+    ``quote_sql_string_literal`` calls out on the compile side. The
+    ``.strip("'")`` this replaces was worse still — it strips ALL leading and
+    trailing quotes, so ``''`` (the empty string) and any value that legitimately
+    begins or ends with a quote were already read as something else.
+    """
+    if not token.startswith("'") or _string_literal_end(token, 0) != len(token):
+        msg = f"Unsupported filter literal: {token!r}"
+        raise SyntheticCapabilityError(msg)
+    decoded: list[str] = []
+    index = 1
+    end = len(token) - 1
+    while index < end:
+        char = token[index]
+        if char == "\\":
+            # ``_string_literal_end`` consumed this pair, so index + 1 <= end.
+            escape = _BACKSLASH_ESCAPES.get(token[index + 1])
+            if escape is None:
+                msg = f"Unsupported escape sequence in filter literal: {token!r}"
+                raise SyntheticCapabilityError(msg)
+            decoded.append(escape)
+            index += 2
+            continue
+        if char == "'":
+            # The scanner proved the only unpaired quote is the final character,
+            # so a quote here is the first half of a ``''`` pair.
+            decoded.append("'")
+            index += 2
+            continue
+        decoded.append(char)
+        index += 1
+    return "".join(decoded)
+
+
+def _mask_string_literals(text: str) -> str:
+    """A same-length copy of ``text`` with every string literal blanked out.
+
+    Position-preserving, so a caller finds parentheses, operators and keywords on
+    the MASK and slices the ORIGINAL at the same indices. One scanner decides
+    where a literal starts and ends, which is what stops the three text-splitting
+    helpers below from each re-deriving it and each getting it wrong: ``AND``
+    inside ``country = 'Trinidad and Tobago'`` was split as a boolean connective,
+    and ``<=`` inside ``status = 'a<=b'`` was split as an operator.
+
+    This is an EVALUATOR's masker, not a read-only safety gate's: it honours the
+    backslash escapes ``quote_sql_string_literal`` emits, and an unterminated
+    literal is an error here rather than something to scan raw and keep
+    rejecting. A gate that only has to decide "is this safe to send" can be
+    conservative about a quote that never closes; a reader that has to produce a
+    NUMBER cannot.
+    """
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] != "'":
+            out.append(text[index])
+            index += 1
+            continue
+        end = _string_literal_end(text, index)
+        out.append(_LITERAL_MASK_CHAR * (end - index))
+        index = end
+    return "".join(out)
+
+
+def _has_word_boundaries(text: str, start: int, end: int) -> bool:
+    """True when ``text[start:end]`` is not glued to an identifier character."""
+    before = text[start - 1] if start > 0 else " "
+    after = text[end] if end < len(text) else " "
+    return not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_")
+
+
+def _filter_identifier(raw: str) -> str:
+    """Strip ONE layer of dialect identifier quoting from a filter operand.
+
+    Back-ticks (ClickHouse / BigQuery) or double quotes (PostgreSQL), matched as
+    a pair. The result is NOT checked against the identifier regex here — the
+    caller checks membership in the table's column allowlist, which is strictly
+    stronger, and it is the error message the caller should own. A dot-qualified
+    ``` `t`.`col` ``` therefore survives as the single name ``` t`.`col ```, which
+    no table has, and is refused: the synthetic tables carry no alias, so there is
+    nothing such a name could faithfully resolve to.
+    """
+    text = raw.strip()
+    for quote in ("`", '"'):
+        if len(text) >= 2 and text[0] == quote and text[-1] == quote:
+            return text[1:-1]
+    return text
+
+
+def _split_comparison(atom: str) -> tuple[str, str, str]:
+    """Split one filter atom into ``(left, operator, right)``.
+
+    The search runs over the literal mask, so an operator character inside a
+    value is invisible and the first operator at quote depth zero wins. A
+    parenthesis outside a literal means the atom is not a plain column/literal
+    comparison — a subquery, or the ``parseDateTime64BestEffort(...)`` a
+    timestamp condition compiles to — and is refused here rather than guessed at.
+    """
+    masked = _mask_string_literals(atom)
+    if "(" in masked or ")" in masked:
+        msg = f"Unsupported filter expression: {atom!r}"
+        raise SyntheticCapabilityError(msg)
+    for index in range(len(masked)):
+        for operator in _FILTER_OPERATORS:
+            if masked.startswith(operator, index):
+                right = atom[index + len(operator) :]
+                return atom[:index].strip(), operator, right.strip()
+    msg = f"Unsupported filter expression: {atom!r}"
+    raise SyntheticCapabilityError(msg)
+
+
+def _trailing_where_predicate(base_query: str) -> str | None:
+    """The top-level ``WHERE`` predicate of ``base_query``, or ``None``.
+
+    Depth-aware over parentheses and blind to string literals, because both
+    shapes really occur: the per-metric fact collector emits ``SELECT * FROM
+    (<source>) AS _filtered WHERE <combined>`` and ``<source>`` may itself be a
+    CTE carrying its own ``WHERE`` — at depth >= 1, and therefore not this one.
+
+    More than one ``WHERE`` at depth 0 is REFUSED rather than resolved by taking
+    the last (the obvious alternative). Two top-level ``WHERE`` clauses mean a
+    set operation this adapter does not model, and applying the second one to
+    every row would answer a different question silently — which is the whole
+    failure mode this function exists to end.
+    """
+    masked = _mask_string_literals(base_query)
+    lowered = masked.lower()
+    depth = 0
+    positions: list[int] = []
+    for index, char in enumerate(masked):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif (
+            depth == 0
+            and lowered.startswith(_WHERE_KEYWORD, index)
+            and _has_word_boundaries(masked, index, index + len(_WHERE_KEYWORD))
+        ):
+            positions.append(index)
+    if not positions:
+        return None
+    if len(positions) > 1:
+        msg = "The synthetic warehouse cannot evaluate a query with two top-level WHERE clauses"
+        raise SyntheticCapabilityError(msg)
+    predicate = base_query[positions[0] + len(_WHERE_KEYWORD) :].strip()
+    if not predicate:
+        msg = "The synthetic warehouse cannot evaluate an empty WHERE clause"
+        raise SyntheticCapabilityError(msg)
+    return predicate
+
+
+def _normalize_sql(statement: str) -> str:
+    """Lower-cased, whitespace-collapsed, ``;``-free form of a statement.
+
+    Matches what the sql-metric collector actually hands the adapter:
+    ``validate_select_sql`` trims the statement and strips a single trailing
+    semicolon, so the recognized set below must be normalized the same way or an
+    otherwise-identical statement would miss it over punctuation.
+    """
+    return re.sub(r"\s+", " ", statement.strip().rstrip(";").strip()).lower()
+
+
+# The EXACT sql-metric statements this adapter can compute, normalized by
+# ``_normalize_sql``. MEMBERSHIP, deliberately — not the substring probe this
+# replaces, which tested for ``tostartofday(event_time)``,
+# ``count(distinct session_id)`` and ``from events`` appearing ANYWHERE in the
+# query. Under that probe an edited metric SQL that added ``WHERE platform =
+# 'ios'``, divided the count by 2, or read ``events_archive`` (``from events`` is
+# a substring of it) still matched, and the adapter answered with the unfiltered
+# whole-dataset series — a different question, answered confidently, in the one
+# module whose stated contract is to refuse rather than fabricate (bd
+# tripl-0zpq.76). A demo is editable by its creator and by any owner
+# (``project_service`` permits both), so that input is reachable.
+#
+# Exact matching is brittle BY DESIGN: reformatting the seeded statement breaks
+# the demo's Active Sessions metric loudly at collection time instead of quietly
+# computing something else. Add the new spelling to this set in the same commit —
+# do not soften it back into a substring probe.
+_ACTIVE_SESSIONS_STATEMENTS: frozenset[str] = frozenset(
+    {
+        # Current: the statement ``services.demo.builders.catalog`` seeds today.
+        # ``test_batch5_synthetic`` imports that constant and asserts it is a
+        # member, so the seeder cannot change the text without this set noticing.
+        _normalize_sql(
+            "SELECT toStartOfDay(event_time) AS ts, "
+            "count(DISTINCT session_id) AS value FROM events GROUP BY ts"
+        ),
+        # Legacy: the GROUP BY-less statement every demo created before
+        # tripl-0zpq.76 still carries in ``MetricDefinition.config``. Real
+        # ClickHouse rejects it ("not under aggregate function and not in GROUP
+        # BY"), which is why the seeder stopped writing it — but an existing demo
+        # must keep collecting, and one frozenset entry is a far smaller change
+        # than an Alembic data migration over a user-editable JSON config.
+        _normalize_sql(
+            "SELECT toStartOfDay(event_time) AS ts, count(DISTINCT session_id) AS value FROM events"
+        ),
+    }
+)
+
+
 def _digest_int(*parts: object) -> int:
     """Stable non-negative int from ``parts`` via SHA-256 (never builtin hash)."""
     key = "|".join(str(part) for part in parts)
@@ -322,14 +648,23 @@ def _event_row(
     bucket: datetime,
     event_def: SyntheticEventDef,
     session_span: int,
-    day_index: int,
+    day_ordinal: int,
     *occ: object,
 ) -> dict[str, object]:
     """Build one deterministic event row for ``event_def``.
 
-    ``occ`` is the per-occurrence digest key (``(hour, j)`` for a sampled row,
-    ``(hour, event_name, k)`` for an ongoing per-event row) so the two generation
-    regimes stay independent yet reproducible.
+    ``occ`` is the per-occurrence digest key (``(epoch_hour, j)`` for a sampled
+    row, ``(epoch_hour, event_name, k)`` for an ongoing per-event row) so the two
+    generation regimes stay independent yet reproducible. Every component of the
+    key is ABSOLUTE: ``epoch_hour`` identifies the bucket itself rather than its
+    offset from the anchor, so the same hour keeps the same minutes, platforms,
+    versions, users and sessions across the anchor moves ``_build_synthetic``
+    makes on every scan.
+
+    ``day_ordinal`` is the bucket's UTC date as a proleptic-Gregorian ordinal,
+    which is what ``session_id`` is namespaced by — so a session pool belongs to
+    a UTC DAY, the same unit ``toStartOfDay`` buckets the seeded active-sessions
+    metric into.
     """
     minute = _digest_int(seed, "ev_minute", *occ) % 60
     second = _digest_int(seed, "ev_second", *occ) % 60
@@ -346,12 +681,12 @@ def _event_row(
         "currency": event_def.currency,
         "app_version": _APP_VERSIONS[_digest_int(seed, "ev_ver", *occ) % len(_APP_VERSIONS)],
         "user_id": f"u{_digest_int(seed, 'ev_user', *occ) % 500}",
-        "session_id": f"s{day_index}_{session_slot}",
+        "session_id": f"s{day_ordinal}_{session_slot}",
     }
 
 
 def _ongoing_hour_rows(
-    seed: int, bucket: datetime, hour: int, session_span: int, day_index: int
+    seed: int, bucket: datetime, epoch_hour: int, session_span: int, day_ordinal: int
 ) -> list[dict[str, object]]:
     """One ongoing-window hour: each event at its seeded ``ongoing_base`` volume."""
     out: list[dict[str, object]] = []
@@ -359,30 +694,46 @@ def _ongoing_hour_rows(
         event_name = event_def.event_name
         count = _ongoing_hourly_count(seed, event_def.ongoing_base, event_name, bucket)
         for k in range(count):
-            occ = (hour, event_name, k)
-            out.append(_event_row(seed, bucket, event_def, session_span, day_index, *occ))
+            occ = (epoch_hour, event_name, k)
+            out.append(_event_row(seed, bucket, event_def, session_span, day_ordinal, *occ))
     return out
 
 
 def _sampled_hour_rows(
-    seed: int, bucket: datetime, hour: int, session_span: int, day_index: int
+    seed: int, bucket: datetime, epoch_hour: int, session_span: int, day_ordinal: int
 ) -> list[dict[str, object]]:
     """One older-history hour: a small sampled scatter across the event roster."""
     out: list[dict[str, object]] = []
-    n_events = 3 + _digest_int(seed, "ev_count", hour) % 6
+    n_events = 3 + _digest_int(seed, "ev_count", epoch_hour) % 6
     for j in range(n_events):
-        event_def = _EVENT_DEFS[_digest_int(seed, "ev_def", hour, j) % len(_EVENT_DEFS)]
-        out.append(_event_row(seed, bucket, event_def, session_span, day_index, hour, j))
+        event_def = _EVENT_DEFS[_digest_int(seed, "ev_def", epoch_hour, j) % len(_EVENT_DEFS)]
+        out.append(_event_row(seed, bucket, event_def, session_span, day_ordinal, epoch_hour, j))
     return out
 
 
-def _session_span(seed: int, day_index: int) -> int:
-    """Distinct sessions per day, in a bounded band.
+def _epoch_hour(bucket: datetime) -> int:
+    """The bucket's absolute UTC hour number since the epoch.
 
-    Keeps the sql metric's per-day distinct-session series live-looking but
-    stable for a given seed.
+    The digest key for everything generated inside one hour. It must not be the
+    hour's OFFSET from the anchor: the adapter is rebuilt with ``anchor=None`` on
+    every scan, so an offset key made the same wall-clock hour hold different
+    rows each time the clock moved on (bd tripl-0zpq.73).
     """
-    return 25 + _digest_int(seed, "day_sessions", day_index) % 20
+    return int(bucket.timestamp()) // 3600
+
+
+def _session_span(seed: int, day_ordinal: int) -> int:
+    """Distinct sessions available on one UTC DAY, in a bounded band.
+
+    Keyed on the UTC date ordinal, which is the unit the seeded active-sessions
+    sql metric aggregates by (``toStartOfDay``). Keyed on a day INDEX counted from
+    the anchor instead, the pool rolled over at the anchor's hour rather than at
+    UTC midnight, so a single UTC day drew from two pools and its distinct-session
+    count inflated by up to ~70% for an afternoon anchor — against a seeded
+    history written at a different hour, and recollected hourly by the scheduler
+    at whatever hour it fired (bd tripl-0zpq.73).
+    """
+    return 25 + _digest_int(seed, "day_sessions", day_ordinal) % 20
 
 
 def _generate_events(
@@ -404,12 +755,23 @@ def _generate_events(
     total_hours = history_days * 24
     ongoing_start_hour = max(0, total_hours - SYNTHETIC_ONGOING_HOURS)
 
+    def hour_keys(offset: int) -> tuple[datetime, int, int]:
+        """``(bucket, epoch_hour, day_ordinal)`` for the hour ``offset`` past start.
+
+        The loops below still count hours FROM the start of the window, because
+        that is what bounds the window; every digest key is derived here from the
+        resulting absolute instant instead, so the same bucket is generated
+        identically whichever anchor asked for it.
+        """
+        bucket = start + timedelta(hours=offset)
+        return bucket, _epoch_hour(bucket), bucket.date().toordinal()
+
     ongoing: list[dict[str, object]] = []
     for hour in range(ongoing_start_hour, total_hours):
-        day_index = hour // 24
+        bucket, epoch_hour, day_ordinal = hour_keys(hour)
         ongoing.extend(
             _ongoing_hour_rows(
-                seed, start + timedelta(hours=hour), hour, _session_span(seed, day_index), day_index
+                seed, bucket, epoch_hour, _session_span(seed, day_ordinal), day_ordinal
             )
         )
     ongoing = ongoing[:max_rows]
@@ -420,9 +782,9 @@ def _generate_events(
         remaining = older_budget - len(older)
         if remaining <= 0:
             break
-        day_index = hour // 24
+        bucket, epoch_hour, day_ordinal = hour_keys(hour)
         hour_rows = _sampled_hour_rows(
-            seed, start + timedelta(hours=hour), hour, _session_span(seed, day_index), day_index
+            seed, bucket, epoch_hour, _session_span(seed, day_ordinal), day_ordinal
         )
         older.extend(hour_rows[:remaining])
     return older + ongoing
@@ -431,25 +793,49 @@ def _generate_events(
 def _generate_orders(
     seed: int, anchor: datetime, history_days: int, max_rows: int
 ) -> list[dict[str, object]]:
-    """Deterministic daily orders over the last ``history_days`` before ``anchor``."""
+    """Deterministic orders over the UTC days ending at ``anchor``, exclusive.
+
+    Two properties that used to be missing, and that the rest of the module
+    already assumes:
+
+    * **One horizon with the events table.** Days are whole UTC days and no order
+      is stamped at or after the anchor. The days used to be measured from the
+      anchor's HOUR and the newest one ran to ``anchor + 24h``, so orders sat up
+      to a day in the FUTURE while ``_generate_events`` stopped at the last
+      complete hour (bd tripl-0zpq.80) — the two tables disagreed about when
+      "now" was, and the untimed ``get_full_breakdown`` path reported the future
+      rows. The newest day is therefore a genuine partial day that fills up as
+      the day goes on, exactly like the events table's newest hour.
+    * **Absolute keying.** Every digest is keyed on the day's UTC date ordinal,
+      not its offset from the anchor, so a given date yields the same orders for
+      any anchor (bd tripl-0zpq.73). Without it, each scan's freshly-built adapter
+      re-rolled the amount, country and status of every historical order.
+    """
+    anchor_day = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
     rows: list[dict[str, object]] = []
     for day_offset in range(history_days):
-        day = anchor - timedelta(days=history_days - 1 - day_offset)
-        n_orders = 5 + _digest_int(seed, "ord_count", day_offset) % 15
+        day = anchor_day - timedelta(days=history_days - 1 - day_offset)
+        day_ordinal = day.date().toordinal()
+        n_orders = 5 + _digest_int(seed, "ord_count", day_ordinal) % 15
         for j in range(n_orders):
+            hour = _digest_int(seed, "ord_hour", day_ordinal, j) % 24
+            minute = _digest_int(seed, "ord_minute", day_ordinal, j) % 60
+            created = day + timedelta(hours=hour, minutes=minute)
+            # Drop BEFORE the budget check, so the cap counts rows that are
+            # actually emitted rather than rows that were only considered.
+            if created >= anchor:
+                continue
             if len(rows) >= max_rows:
                 return rows
-            hour = _digest_int(seed, "ord_hour", day_offset, j) % 24
-            minute = _digest_int(seed, "ord_minute", day_offset, j) % 60
-            amount = 5.0 + (_digest_int(seed, "ord_amount", day_offset, j) % 19500) / 100.0
+            amount = 5.0 + (_digest_int(seed, "ord_amount", day_ordinal, j) % 19500) / 100.0
             rows.append(
                 {
-                    "created_at": day + timedelta(hours=hour, minutes=minute),
+                    "created_at": created,
                     "amount": round(amount, 2),
-                    "currency": str(_pick(_CURRENCIES, seed, "ord_cur", day_offset, j)),
-                    "user_id": f"u{_digest_int(seed, 'ord_user', day_offset, j) % 500}",
-                    "country": str(_pick(_COUNTRIES, seed, "ord_country", day_offset, j)),
-                    "status": str(_pick(_ORDER_STATUSES, seed, "ord_status", day_offset, j)),
+                    "currency": str(_pick(_CURRENCIES, seed, "ord_cur", day_ordinal, j)),
+                    "user_id": f"u{_digest_int(seed, 'ord_user', day_ordinal, j) % 500}",
+                    "country": str(_pick(_COUNTRIES, seed, "ord_country", day_ordinal, j)),
+                    "status": str(_pick(_ORDER_STATUSES, seed, "ord_status", day_ordinal, j)),
                 }
             )
     return rows
@@ -470,9 +856,16 @@ class SyntheticAdapter(BaseAdapter):
         self._seed = seed
         self._history_days = history_days
         self._max_rows = max_rows
-        self._timeout_seconds = (
-            timeout_seconds if timeout_seconds and timeout_seconds > 0 else _DEFAULT_TIMEOUT_SECONDS
-        )
+        # ``timeout_seconds`` is accepted and IGNORED. The signature is shared
+        # with the real adapters and ``registry._build_synthetic`` passes the
+        # data source's effective timeout, but there is no wall clock to guard
+        # here: the dataset is built in this constructor and every scan is a list
+        # comprehension over at most ``max_rows`` dicts. The value used to be
+        # stored in ``self._timeout_seconds`` and read by nothing, while the
+        # module docstring advertised a wall-clock budget — a guard that does not
+        # exist reads as one that does (bd tripl-0zpq.79). Implementing a real
+        # timer would be theatre; saying so is not.
+        #
         # Anchor to the start of the current UTC HOUR by default. Events are
         # generated for the ``history_days`` window strictly BEFORE the anchor, so
         # the newest event bucket is ``anchor - 1h`` — which, with an hourly
@@ -490,7 +883,8 @@ class SyntheticAdapter(BaseAdapter):
         self._anchor = base.replace(minute=0, second=0, microsecond=0)
         self._events = _generate_events(seed, self._anchor, history_days, max_rows)
         self._orders = _generate_orders(seed, self._anchor, history_days, max_rows)
-        self._allowed_columns: set[str] = set()
+        self._enforce_budget("events", self._events)
+        self._enforce_budget("orders", self._orders)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -499,20 +893,23 @@ class SyntheticAdapter(BaseAdapter):
         return None
 
     def test_connection(self) -> bool:
-        # Honest LOCAL check: the in-memory dataset exists. No host is contacted
-        # and no real warehouse success is reported.
-        return len(self._events) >= 0 and len(self._orders) >= 0
+        # Honest LOCAL check: BOTH in-memory tables hold rows. No host is
+        # contacted and no real warehouse success is reported. This used to read
+        # ``len(self._events) >= 0 and len(self._orders) >= 0``, which is true of
+        # any list — a connection test that cannot fail tells the operator
+        # nothing (bd tripl-0zpq.79). Non-empty can fail: ``history_days=0``, or a
+        # future generator change that stops emitting a table, both make the
+        # source report a problem instead of a green tick over no data.
+        return bool(self._events) and bool(self._orders)
 
     # -- schema / preview --------------------------------------------------
 
     def get_columns(self, base_query: str) -> list[ColumnInfo]:
         table = self._table_for_query(base_query)
-        columns = [
+        return [
             ColumnInfo(name=name, type_name=type_name, is_nullable=name in _EVENTS_NULLABLE)
             for name, type_name in self._columns_for_query(base_query, table)
         ]
-        self._allowed_columns = {column.name for column in columns}
-        return columns
 
     def get_schema_tables(self) -> list[SchemaTable]:
         return [
@@ -543,7 +940,9 @@ class SyntheticAdapter(BaseAdapter):
         column_names = [name for name, _ in self._columns_for_query(base_query, table)]
         if time_column is not None:
             self._validate_column(table, time_column)
-        rows = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
+        rows = self._windowed_rows(
+            self._scan_rows(base_query, table), time_column, time_from, time_to
+        )
         order_key = time_column or column_names[0]
         rows = sorted(rows, key=lambda row: _bval(row.get(order_key)))
         capped = rows[: max(int(limit), 0)]
@@ -568,7 +967,9 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         if time_column is not None:
             self._validate_column(table, time_column)
-        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
+        windowed = self._windowed_rows(
+            self._scan_rows(base_query, table), time_column, time_from, time_to
+        )
         counts: dict[tuple[object, ...], int] = {}
         for row in windowed:
             key = tuple(row.get(column) for column in reg)
@@ -595,7 +996,9 @@ class SyntheticAdapter(BaseAdapter):
         table = self._table_for_query(base_query)
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
-        groups = self._bucket_groups(table, time_column, interval, reg, time_from, time_to)
+        groups = self._bucket_groups(
+            base_query, table, time_column, interval, reg, time_from, time_to
+        )
         out: list[tuple[object, ...]] = []
         for (bucket, *values), members in self._sorted_items(groups):
             out.append((bucket, *values, len(members)))
@@ -620,7 +1023,9 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
         breakdown = self._validate_column(table, breakdown_column)
-        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
+        windowed = self._windowed_rows(
+            self._scan_rows(base_query, table), time_column, time_from, time_to
+        )
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
@@ -655,7 +1060,9 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
         breakdowns = [self._validate_column(table, column) for column in breakdown_columns]
-        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
+        windowed = self._windowed_rows(
+            self._scan_rows(base_query, table), time_column, time_from, time_to
+        )
         out: list[tuple[object, ...]] = []
         for breakdown in breakdowns:
             top = self._top_values(windowed, breakdown, values_limit)
@@ -692,7 +1099,9 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
         measure = self._validate_measure(table, agg_fn, measure_column)
-        groups = self._bucket_groups(table, time_column, interval, reg, time_from, time_to)
+        groups = self._bucket_groups(
+            base_query, table, time_column, interval, reg, time_from, time_to
+        )
         out: list[tuple[object, ...]] = []
         for (bucket, *values), members in self._sorted_items(groups):
             out.append((bucket, *values, self._aggregate(members, agg_fn, measure)))
@@ -720,13 +1129,27 @@ class SyntheticAdapter(BaseAdapter):
         self._validate_column(table, time_column)
         breakdown = self._validate_column(table, breakdown_column)
         measure = self._validate_measure(table, agg_fn, measure_column)
-        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
+        windowed = self._windowed_rows(
+            self._scan_rows(base_query, table), time_column, time_from, time_to
+        )
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
             bucket = self._bucket_start(row[time_column], interval)
             value, is_other = self._fold(top, _bval(row.get(breakdown)))
-            key = (bucket, value, is_other, *tuple(row.get(column) for column in reg))
+            # The breakdown's own regular-column slot carries the FOLDED value,
+            # so it adds nothing to the group key: see
+            # BaseAdapter.get_time_bucketed_aggregate_breakdown for why the raw
+            # value may not be part of it. The three SQL adapters make the same
+            # substitution and are guaranteed to make it, because they reject a
+            # breakdown that is not also in ``regular_columns``; this adapter
+            # does not, so here ``reg`` may simply never contain it.
+            key = (
+                bucket,
+                value,
+                is_other,
+                *tuple(value if column == breakdown else row.get(column) for column in reg),
+            )
             groups.setdefault(key, []).append(row)
         out: list[tuple[object, ...]] = []
         for key, members in self._sorted_breakdown_items(groups):
@@ -748,7 +1171,9 @@ class SyntheticAdapter(BaseAdapter):
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         table = self._table_for_query(base_query)
         self._validate_column(table, time_column)
-        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
+        windowed = self._windowed_rows(
+            self._scan_rows(base_query, table), time_column, time_from, time_to
+        )
         buckets: dict[datetime, list[dict[str, object]]] = {}
         for row in windowed:
             buckets.setdefault(self._bucket_start(row[time_column], interval), []).append(row)
@@ -775,7 +1200,9 @@ class SyntheticAdapter(BaseAdapter):
         table = self._table_for_query(base_query)
         self._validate_column(table, time_column)
         breakdown = self._validate_column(table, breakdown_column)
-        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
+        windowed = self._windowed_rows(
+            self._scan_rows(base_query, table), time_column, time_from, time_to
+        )
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[datetime, str, int], list[dict[str, object]]] = {}
         for row in windowed:
@@ -813,21 +1240,79 @@ class SyntheticAdapter(BaseAdapter):
     def _rows_for_table(self, table: str) -> list[dict[str, object]]:
         return self._orders if table == "orders" else self._events
 
+    def _scan_rows(self, base_query: str, table: str) -> list[dict[str, object]]:
+        """The table's rows, narrowed by a top-level ``WHERE`` in ``base_query``.
+
+        The single seam through which every TABLE-SCAN method reads the dataset,
+        so the two ways the metric collector delivers a row filter produce the
+        same rows. (``_active_sessions_rows`` reads ``self._events`` directly and
+        does not come through here: it serves an exactly-recognized statement,
+        which by definition has no WHERE to honour.)
+
+        The batched path sends its combined WHERE as ``AggregateSpec.filter_sql``
+        (evaluated in ``_spec_value``); the per-metric path instead WRAPS the
+        fact SQL —
+        ``_fact_conditions._resolve_fact_operand_query`` returns ``SELECT * FROM
+        (<source>) AS _filtered WHERE <combined>`` — and this adapter used to
+        throw that clause away and aggregate the whole table. On the demo's own
+        seeded ``status = 'completed'`` filter the two paths disagreed by about
+        2x, directly contradicting the invariant ``metric_collect`` states for the
+        batched path ("The per-bucket VALUES are identical to the per-metric
+        path"), and the fact-operand dry run counted every row in the window
+        (bd tripl-0zpq.71).
+
+        A predicate the evaluator cannot read raises ``SyntheticCapabilityError``
+        — the documented outcome, and the honest one. Refusing every top-level
+        WHERE instead would be cheaper and equally truthful, but it breaks the
+        demo's own "Collect now" and filter preview, turning a silent wrong number
+        into a visibly broken feature.
+        """
+        rows = self._rows_for_table(table)
+        predicate = _trailing_where_predicate(base_query)
+        if predicate is None:
+            return rows
+        return [row for row in rows if self._row_matches_filter(table, row, predicate)]
+
     def _table_for_query(self, base_query: str) -> str:
-        # Table selection is the ONLY thing parsed out of base_query: a query
-        # mentioning ``orders`` reads orders, everything else reads events.
-        if re.search(r"\borders\b", base_query, re.IGNORECASE):
+        # Table selection is one of the three things parsed out of base_query: a
+        # query mentioning ``orders`` reads orders, everything else reads events.
+        # The search runs over the literal mask so a VALUE that happens to contain
+        # the word (``WHERE product_id = 'orders'``) cannot switch the table out
+        # from under an events query.
+        if re.search(r"\borders\b", _mask_string_literals(base_query), re.IGNORECASE):
             return "orders"
         return "events"
 
     def _validate_column(self, table: str, name: str) -> str:
+        """Hold a STRUCTURED column parameter to the table's columns.
+
+        Raises ``ValueError``, which is this module's contract for a parameter the
+        CALLER supplied positionally (a time / measure / breakdown column). A name
+        parsed out of free-text SQL goes through ``_filter_column`` instead and
+        raises the capability error, because there the adapter is declining to
+        read something, not rejecting an argument.
+        """
         if not _IDENT_RE.match(name):
             msg = f"Invalid column name: {name!r}"
             raise ValueError(msg)
-        allowed = {column for column, _ in self._columns_for_table(table)}
-        if name not in allowed:
+        if name not in _table_columns(table):
             msg = f"Column {name!r} not found in {table} query result"
             raise ValueError(msg)
+        return name
+
+    def _filter_column(self, table: str, raw: str) -> str:
+        """Resolve a column named inside a WHERE fragment, or refuse.
+
+        Strips the dialect identifier quoting the collector emits, then answers to
+        the SAME allowlist ``_validate_column`` uses. Without the membership check
+        an unknown name simply read as ``None`` on every row, so the filter
+        matched nothing and the metric collected NULL for every bucket with no
+        error anywhere (bd tripl-0zpq.71).
+        """
+        name = _filter_identifier(raw)
+        if name not in _table_columns(table):
+            msg = f"Unsupported filter column: {raw!r}"
+            raise SyntheticCapabilityError(msg)
         return name
 
     def _validate_measure(
@@ -853,7 +1338,6 @@ class SyntheticAdapter(BaseAdapter):
         time_from: datetime | None,
         time_to: datetime | None,
     ) -> list[dict[str, object]]:
-        self._enforce_budget(rows)
         if time_column is None or (time_from is None and time_to is None):
             return list(rows)
         # Half-open ``[from, to)`` in UTC, per tripl.core.bucketing: a row exactly
@@ -876,16 +1360,26 @@ class SyntheticAdapter(BaseAdapter):
             out.append(row)
         return out
 
-    def _enforce_budget(self, rows: list[dict[str, object]]) -> None:
-        # Cheap read-only guard: a synthetic scan can never exceed the bounded
-        # dataset. This makes the row/time-limit contract explicit rather than
-        # implicit, without any real socket or timer.
+    def _enforce_budget(self, table: str, rows: list[dict[str, object]]) -> None:
+        """Hold one generated table to the row budget, at CONSTRUCTION time.
+
+        This used to run on every scan, against ``self._events`` /
+        ``self._orders`` — the very lists the generators had already capped at
+        ``max_rows`` — so the branch was unreachable and read as a guard while
+        guarding nothing (bd tripl-0zpq.79). Checking the generators' OUTPUT once,
+        here, is the assertion that can actually fire: it catches a future change
+        to ``_generate_events`` / ``_generate_orders`` that stops respecting the
+        cap, which is the failure mode that matters, because
+        ``_generate_events`` fills oldest-first and a cap that bites silently
+        drops the NEWEST hours a live scan reads.
+        """
         if len(rows) > self._max_rows:
-            msg = "Synthetic scan exceeded the row budget"
+            msg = f"Synthetic {table} dataset exceeded the row budget"
             raise SyntheticCapabilityError(msg)
 
     def _bucket_groups(
         self,
+        base_query: str,
         table: str,
         time_column: str,
         interval: str,
@@ -893,7 +1387,9 @@ class SyntheticAdapter(BaseAdapter):
         time_from: datetime,
         time_to: datetime,
     ) -> dict[tuple[object, ...], list[dict[str, object]]]:
-        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
+        windowed = self._windowed_rows(
+            self._scan_rows(base_query, table), time_column, time_from, time_to
+        )
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
             bucket = self._bucket_start(row[time_column], interval)
@@ -924,7 +1420,12 @@ class SyntheticAdapter(BaseAdapter):
         """Top ``values_limit - 1`` breakdown values by row count, or ``None``.
 
         ``None`` (no limit) means every value is kept and folds to ``is_other=0``.
-        Mirrors the ClickHouse adapter's top-N selection exactly.
+        The tie-break in ``(-count, value)`` below is the BaseAdapter top-N
+        contract rather than a local convenience: the three SQL adapters rank on
+        the same key pair — count descending, then the value ascending — in
+        their top-values pre-query, so the demo warehouse and a real one keep
+        the same values when counts tie. Python compares ``str`` by code point,
+        which is what each engine's value sort resolves to.
         """
         if values_limit is None:
             return None
@@ -969,10 +1470,18 @@ class SyntheticAdapter(BaseAdapter):
     ) -> object:
         measure = self._validate_column(table, spec.column) if spec.column is not None else None
         if spec.filter_sql:
-            matching = [row for row in members if self._row_matches_filter(row, spec.filter_sql)]
+            matching = [
+                row for row in members if self._row_matches_filter(table, row, spec.filter_sql)
+            ]
             if not matching:
-                # Mirror ClickHouse's ``if(countIf(cond) = 0, NULL, ...)`` sentinel:
-                # a bucket with rows but none matching reads as absent (NULL).
+                # The row-presence gate every adapter owes (the conditional-aggregate
+                # contract on BaseAdapter), spelled here as the question the SQL
+                # engines have to ask with a second aggregate — ClickHouse
+                # ``countIf(cond)``, PostgreSQL ``count(*) FILTER (WHERE cond)``,
+                # BigQuery ``COUNTIF(cond)``: a bucket with rows but none matching
+                # reads as absent (NULL). Below it, a matching set whose measure is
+                # NULL throughout still aggregates — to 0 for a distinct count — and
+                # that 0 is a data point rather than a gap.
                 return None
             return self._aggregate(matching, spec.aggregation, measure)
         return self._aggregate(members, spec.aggregation, measure)
@@ -1001,12 +1510,13 @@ class SyntheticAdapter(BaseAdapter):
     # -- sql-metric support ------------------------------------------------
 
     def _is_active_sessions_query(self, base_query: str) -> bool:
-        normalized = re.sub(r"\s+", " ", base_query.strip().lower())
-        return (
-            "tostartofday(event_time)" in normalized
-            and "count(distinct session_id)" in normalized
-            and "from events" in normalized
-        )
+        # Exact membership in a curated set, NOT a substring probe — see
+        # ``_ACTIVE_SESSIONS_STATEMENTS`` for why that distinction is the whole
+        # finding. Anything else falls through to ``_reject_unsupported_scan``,
+        # whose ``_NON_SCAN_RE`` already matches ``count(`` and ``distinct``, so
+        # an edited active-sessions query lands on the documented capability
+        # error with no further work here.
+        return _normalize_sql(base_query) in _ACTIVE_SESSIONS_STATEMENTS
 
     def _reject_unsupported_scan(self, base_query: str) -> None:
         # A plain table scan (``SELECT * FROM events`` / an explicit column list)
@@ -1028,7 +1538,6 @@ class SyntheticAdapter(BaseAdapter):
         real query's ``ts`` alias is filtered), and the projection is
         ``(ts, value)`` so the sql-metric collector reads it back unchanged.
         """
-        self._enforce_budget(self._events)
         sessions_by_day: dict[datetime, set[object]] = {}
         for row in self._events:
             day = self._bucket_start(row["event_time"], _DAY_INTERVAL)
@@ -1044,8 +1553,8 @@ class SyntheticAdapter(BaseAdapter):
             rows.append((day, len(sessions_by_day[day])))
         return ["ts", "value"], rows[: max(int(limit), 0)]
 
-    def _row_matches_filter(self, row: dict[str, object], filter_sql: str) -> bool:
-        """Evaluate a simple, safe WHERE fragment against one row.
+    def _row_matches_filter(self, table: str, row: dict[str, object], filter_sql: str) -> bool:
+        """Evaluate a simple, safe WHERE fragment against one row of ``table``.
 
         Supports comparisons (``=``/``!=``/``<>``/``>``/``>=``/``<``/``<=``) of a
         column against a quoted-string or numeric literal, combined with ``AND`` /
@@ -1057,18 +1566,28 @@ class SyntheticAdapter(BaseAdapter):
         that is NOT boolean grouping (e.g. a subquery ``IN (SELECT ...)`` or a
         function call) survives into an atom and still raises a capability error —
         the adapter never guesses at a filter it cannot faithfully evaluate.
-        """
-        return self._eval_filter(row, filter_sql.strip())
 
-    def _eval_filter(self, row: dict[str, object], expression: str) -> bool:
+        ``table`` is needed because a column name is now RESOLVED rather than
+        looked up hopefully: it is unquoted from whichever dialect spelling it
+        arrived in and then held to that table's columns, so a name this warehouse
+        does not have is refused instead of silently reading as ``NULL`` on every
+        row.
+
+        Every split below runs over ``_mask_string_literals``, so nothing inside a
+        value can be mistaken for structure: ``country = 'Trinidad and Tobago'`` is
+        one atom, not two.
+        """
+        return self._eval_filter(table, row, filter_sql.strip())
+
+    def _eval_filter(self, table: str, row: dict[str, object], expression: str) -> bool:
         expression = self._strip_wrapping_parens(expression.strip())
         or_parts = self._split_top_level(expression, "or")
         if len(or_parts) > 1:
-            return any(self._eval_filter(row, part) for part in or_parts)
+            return any(self._eval_filter(table, row, part) for part in or_parts)
         and_parts = self._split_top_level(expression, "and")
         if len(and_parts) > 1:
-            return all(self._eval_filter(row, part) for part in and_parts)
-        return self._atom_matches(row, expression)
+            return all(self._eval_filter(table, row, part) for part in and_parts)
+        return self._atom_matches(table, row, expression)
 
     def _strip_wrapping_parens(self, expression: str) -> str:
         """Strip balanced parentheses that enclose the WHOLE expression.
@@ -1079,14 +1598,15 @@ class SyntheticAdapter(BaseAdapter):
         ``((status = 'x'))`` collapse.
         """
         while len(expression) >= 2 and expression[0] == "(" and expression[-1] == ")":
+            masked = _mask_string_literals(expression)
             depth = 0
             wraps_whole = True
-            for index, char in enumerate(expression):
+            for index, char in enumerate(masked):
                 if char == "(":
                     depth += 1
                 elif char == ")":
                     depth -= 1
-                    if depth == 0 and index != len(expression) - 1:
+                    if depth == 0 and index != len(masked) - 1:
                         wraps_whole = False
                         break
             if not wraps_whole:
@@ -1097,14 +1617,15 @@ class SyntheticAdapter(BaseAdapter):
     def _split_top_level(self, expression: str, keyword: str) -> list[str]:
         """Split ``expression`` on a whole-word ``keyword`` at paren depth zero."""
         parts: list[str] = []
-        lowered = expression.lower()
+        masked = _mask_string_literals(expression)
+        lowered = masked.lower()
         depth = 0
         start = 0
         index = 0
-        length = len(expression)
+        length = len(masked)
         klen = len(keyword)
         while index < length:
-            char = expression[index]
+            char = masked[index]
             if char == "(":
                 depth += 1
             elif char == ")":
@@ -1112,7 +1633,7 @@ class SyntheticAdapter(BaseAdapter):
             elif (
                 depth == 0
                 and lowered.startswith(keyword, index)
-                and self._word_boundaries(expression, index, index + klen)
+                and _has_word_boundaries(masked, index, index + klen)
             ):
                 parts.append(expression[start:index])
                 index += klen
@@ -1122,39 +1643,35 @@ class SyntheticAdapter(BaseAdapter):
         parts.append(expression[start:])
         return [part.strip() for part in parts if part.strip()]
 
-    @staticmethod
-    def _word_boundaries(expression: str, start: int, end: int) -> bool:
-        before = expression[start - 1] if start > 0 else " "
-        after = expression[end] if end < len(expression) else " "
-        return not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_")
-
-    def _atom_matches(self, row: dict[str, object], atom: str) -> bool:
+    def _atom_matches(self, table: str, row: dict[str, object], atom: str) -> bool:
         atom = self._strip_wrapping_parens(atom.strip())
-        # A residual parenthesis means the atom is not a plain column/literal
-        # comparison (a subquery or function call slipped through); refuse it.
-        if "(" in atom or ")" in atom:
-            msg = f"Unsupported filter expression: {atom!r}"
-            raise SyntheticCapabilityError(msg)
-        for operator in ("!=", "<>", ">=", "<=", "=", ">", "<"):
-            index = atom.find(operator)
-            if index != -1:
-                left = atom[:index].strip()
-                right = atom[index + len(operator) :].strip()
-                return self._compare(row, left, operator, right)
-        msg = f"Unsupported filter expression: {atom!r}"
-        raise SyntheticCapabilityError(msg)
+        left, operator, right = _split_comparison(atom)
+        return self._compare(row, self._filter_column(table, left), operator, right)
 
     def _compare(self, row: dict[str, object], column: str, operator: str, literal: str) -> bool:
+        """Compare one row's ``column`` against a literal.
+
+        The literal's SHAPE is validated before the row's value is looked at, so
+        whether a fragment is refused depends only on the fragment — never on
+        which row happened to be evaluated first.
+
+        A ``NULL`` value makes every comparison false, including ``!=``. That is
+        SQL's three-valued logic (``status != 'x'`` is NULL, not TRUE, for a NULL
+        ``status``) and it is what the numeric branch already did; the string
+        branch rendered NULL as ``''`` through ``_bval``, so ``button_id !=
+        'share'`` matched every row that carried no button at all — and four of
+        the events columns are nullable (``_EVENTS_NULLABLE``).
+        """
         value = row.get(column)
         if literal.startswith("'"):
-            expected = literal.strip().strip("'").replace("''", "'")
+            expected = _decode_string_literal(literal)
+            if operator not in ("=", "!=", "<>"):
+                msg = f"Unsupported string comparison: {operator!r}"
+                raise SyntheticCapabilityError(msg)
+            if value is None:
+                return False
             actual = _bval(value)
-            if operator == "=":
-                return actual == expected
-            if operator in ("!=", "<>"):
-                return actual != expected
-            msg = f"Unsupported string comparison: {operator!r}"
-            raise SyntheticCapabilityError(msg)
+            return actual == expected if operator == "=" else actual != expected
         try:
             number = float(literal)
         except ValueError as exc:
@@ -1162,7 +1679,14 @@ class SyntheticAdapter(BaseAdapter):
             raise SyntheticCapabilityError(msg) from exc
         if value is None:
             return False
-        actual_number = float(value)  # type: ignore[arg-type]
+        try:
+            actual_number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            # A numeric literal compared against a text column. Refusing names the
+            # column; letting float() raise reached the user as "Scan failed due
+            # to an internal error." with nothing in it to act on.
+            msg = f"Cannot compare column {column!r} to the numeric literal {literal!r}"
+            raise SyntheticCapabilityError(msg) from exc
         if operator == "=":
             return actual_number == number
         if operator in ("!=", "<>"):

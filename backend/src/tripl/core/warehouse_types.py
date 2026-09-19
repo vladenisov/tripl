@@ -59,14 +59,37 @@ def _normalize(type_name: str) -> str:
     return stripped.lower()
 
 
+def _is_array(normalized: str) -> bool:
+    """Whether a NORMALIZED type name names an array rather than one value.
+
+    PostgreSQL is the only dialect that spells this as a suffix: psycopg reports an
+    array column as ``jsonb[]`` / ``int4[]`` / ``timestamptz[]``. ClickHouse's
+    ``Array(JSON)`` and BigQuery's REPEATED mode are already handled by falling off
+    the ends of both classifiers, so the suffix is all that is missing.
+    """
+    return normalized.endswith("[]")
+
+
 def classify_complex(type_name: str) -> ComplexKind | None:
     """Classify a column as a complex/nested type, or ``None`` if it is scalar.
 
     Case-insensitive across every dialect: ClickHouse ``JSON``/``Object(...)``/
     ``Tuple(...)``/``Map(...)``, BigQuery ``JSON``/``RECORD``/``STRUCT``, and
     PostgreSQL ``json``/``jsonb``.
+
+    An ARRAY of any of those is NOT complex. Every classifier here is a prefix
+    test, so ``jsonb[]`` would otherwise answer :attr:`ComplexKind.json` and be
+    routed into the JSON path walk, which casts the column ``::jsonb`` — an error
+    Postgres raises for an array, taking the whole scan with it. Treating the
+    array as an opaque scalar is what the other two dialects already do
+    (ClickHouse ``Array(JSON)`` matches no prefix here; BigQuery rejects REPEATED
+    in its own adapter), and it works on Postgres: array types have a default
+    btree opclass, so the column still groups and still renders through
+    ``::text``.
     """
     name = _normalize(type_name)
+    if _is_array(name):
+        return None
     if name.startswith(("json", "object(")):
         # Covers CH `JSON`/`Object('json')`, BQ `JSON`, PG `json`/`jsonb`.
         return ComplexKind.json
@@ -87,9 +110,15 @@ def classify_time(type_name: str) -> TimeKind:
 
     Returns :attr:`TimeKind.unsupported` for anything that cannot carry a date —
     notably BigQuery ``TIME`` and PostgreSQL ``time``/``timetz``, which have no
-    date part and so cannot be bucketed into a window at all.
+    date part and so cannot be bucketed into a window at all, and an ARRAY of a
+    time type: ``timestamptz[]`` names many instants, so no window bound compares
+    against it and no bucket expression accepts it. The prefix tests below would
+    otherwise read it as a single ``timestamp`` and let it be picked as a scan's
+    time column, which fails inside a worker instead of at configuration time.
     """
     name = _normalize(type_name)
+    if _is_array(name):
+        return TimeKind.unsupported
     # Order matters: `timestamptz` must be seen before the bare `time` fallthrough,
     # and `datetime64(3)` before `date`.
     if name.startswith("timestamp"):

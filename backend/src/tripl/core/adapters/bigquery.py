@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import UTC, date, datetime
 from typing import cast, override
 
 from google.cloud import bigquery
@@ -18,6 +18,9 @@ from tripl.core.adapters.base import (
     FieldContractViolation,
     SchemaColumn,
     SchemaTable,
+    clamp_field_contract_threshold,
+    contract_bound_literal,
+    field_contract_is_inert,
 )
 from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.measure_validator import (
@@ -29,6 +32,7 @@ from tripl.core.bucketing import EPOCH, format_utc_literal, to_utc
 from tripl.core.intervals import IntervalUnit, get_interval
 from tripl.core.warehouse_types import ComplexKind, TimeKind, classify_complex, classify_time
 from tripl.models.domain_enums import MetricAggregation
+from tripl.schemas.data_source import MAX_SCHEMA_DATASETS
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +58,18 @@ _SCHEMA_ROW_LIMIT = 50000
 # INFORMATION_SCHEMA.COLUMNS view is dataset-qualified, so covering N datasets costs
 # N jobs. A UNION ALL across them would be one job but would make a single
 # permission-denied dataset fail the whole browse, which is exactly the failure mode
-# the contract forbids. So: one job per dataset, hard-capped here, so an autocomplete
+# the contract forbids. So: one job per dataset, hard-capped, so an autocomplete
 # keystroke can never fan out into an unbounded number of billed jobs.
-_MAX_SCHEMA_DATASETS = 20
+#
+# The number itself is declared in ``schemas.data_source`` and only aliased here: it
+# is simultaneously the bound this module truncates to and the bound the
+# ``dataset_allowlist`` write path validates against, and while it was two literals
+# the write path accepted 50 datasets that this one silently dropped to 20. The
+# dependency runs schemas -> adapters, the direction ``adapters.registry`` already
+# imports ``DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED`` in; the reverse is not available,
+# because this module imports ``google.cloud.bigquery`` at module scope and the
+# schema layer is imported by every API request.
+_MAX_SCHEMA_DATASETS = MAX_SCHEMA_DATASETS
 
 # Wall-clock cap on the catalog introspection job so a hung BQ job can't block
 # the worker thread forever. Scoped to schema introspection: this is a CAP, not a
@@ -142,6 +155,27 @@ def _decode_grouped_array(value: object) -> object:
         )
         raise ValueError(msg)
     return decoded
+
+
+def _as_utc_bucket(value: object) -> object:
+    """One ``_bucket`` cell, as an aware UTC ``datetime``.
+
+    ``datetime`` is tested BEFORE ``date`` because it is a *subclass* of it. The other
+    order matches every TIMESTAMP and DATETIME bucket too and rebuilds it from its
+    date part alone, silently moving every non-midnight bucket to midnight — which is
+    the one way to get this conversion wrong and still look plausible in a test that
+    only checks ``tzinfo``.
+
+    A value that is no kind of date is returned untouched rather than coerced. Reaching
+    here with one means the row layout changed and column 0 stopped being the bucket;
+    inventing a datetime for it would hide that, and the caller that compares it
+    against the chunk window will say so far more clearly.
+    """
+    if isinstance(value, datetime):
+        return to_utc(value)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+    return value
 
 
 def _walk_struct_fields(
@@ -414,12 +448,20 @@ class BigQueryAdapter(BaseAdapter):
             zone = ", 'UTC'" if kind is TimeKind.timestamp else ""
             return f"{prefix}_TRUNC({col}, WEEK(MONDAY){zone})"
         if kind is TimeKind.date and spec.unit in _SUB_DAY_UNITS:
+            # ``WarehouseCapabilityError``, not a bare ``ValueError``, for the same
+            # reason ``__init__``'s three rejections are (see its comment, tripl-rcn8):
+            # nothing configuration-time catches this combination, so the first thing
+            # that runs it is a collection tick, and the worker's sanitiser replaces
+            # an uncurated exception with "Scan failed due to an internal error." —
+            # every tick, forever, for a config the operator can fix in one click if
+            # only they are told which one. The message is tripl-authored and carries
+            # no host, port or driver text, which is the whole contract of the type.
             msg = (
                 f"BigQuery: time column {time_column!r} is a DATE, which has no "
                 f"time-of-day, so it cannot be bucketed at {interval_code!r}. "
                 "Use the 1d or 1w interval, or a TIMESTAMP/DATETIME column."
             )
-            raise ValueError(msg)
+            raise WarehouseCapabilityError(msg)
         origin = self._time_literal(kind, EPOCH)
         width = f"INTERVAL {spec.count} {spec.unit.value.upper()}"
         return f"{prefix}_BUCKET({col}, {width}, {origin})"
@@ -649,6 +691,9 @@ class BigQueryAdapter(BaseAdapter):
         immediately after them. Both groups were grouped as JSON strings (see
         ``_regular_column_sql`` / ``_json_paths_expression``) and must be handed back as
         lists so the documented row contract holds.
+
+        Column 0 is never touched here even when ``offset`` is non-zero; the leading
+        positional columns are handled by ``_utc_bucket_rows``.
         """
         array_indexes = {
             offset + index for index, c in enumerate(reg_cols) if c in self._repeated_columns
@@ -664,8 +709,81 @@ class BigQueryAdapter(BaseAdapter):
             for row in rows
         ]
 
+    def _utc_bucket_rows(self, rows: list[tuple[object, ...]]) -> list[tuple[object, ...]]:
+        """Every bucketed rowset, with column 0 normalized to an aware UTC datetime.
+
+        GoogleSQL keeps three time families and ``google-cloud-bigquery`` decodes them
+        three different ways (see ``google.cloud.bigquery._helpers``): a TIMESTAMP
+        becomes an aware ``datetime``, a DATETIME a naive one (``strptime``), and a
+        DATE a ``datetime.date``. ``_query_rows`` passes cells through verbatim, so
+        without this the type of ``_bucket`` depended on the declared type of a column
+        the caller never sees. The consumers assume one type: they compare the bucket
+        against a window bound that is aware by construction
+        (``floor_to_bucket(datetime.now(UTC), ...)``) and persist it into
+        ``DateTime(timezone=True)`` columns. Two of the three families are a
+        ``TypeError`` against that bound, and a naive value written to a timestamptz
+        means whatever the database session's timezone says it means.
+
+        ``BaseAdapter`` documents each bucketed row's LAYOUT but has never said what
+        type column 0 holds, which is why every reader answered it differently. Closing
+        it here is the answer that scales: this is the only place that knows which
+        GoogleSQL family the cell was decoded from, and the readers are not a closed
+        set — ``metric_collect._collect_distinct_user_series`` was given its own
+        laundering for this exact ``TypeError`` (tripl-ju0d) and the four remaining
+        ``cast(datetime, row[0])`` sites (``chunk_processing``, three in
+        ``metric_rows``) were not, which is how the bug survived that fix.
+
+        Unconditional rather than skipped for a declared-TIMESTAMP column: ``to_utc``
+        on an already-aware datetime returns an equal value, and making the rewrite
+        conditional on the declared family would reintroduce exactly the coupling —
+        "what the driver returns" inferred from "what the schema probe said" — that
+        this method exists to sever.
+        """
+        return [(_as_utc_bucket(row[0]), *row[1:]) for row in rows]
+
     def _quote_string(self, value: str) -> str:
-        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        """A GoogleSQL single-quoted literal holding an arbitrary string value.
+
+        GoogleSQL has no ``''`` escape — the escape character is a BACKSLASH — and a
+        quoted (non-triple) literal may not contain a raw newline or carriage return:
+        those are an "Unclosed string literal". Both facts were verified against
+        ZetaSQL for the sibling helper ``measure_validator.quote_sql_string_literal``,
+        whose docstring records the verdicts; this method had only the first half, so
+        any value carrying a newline produced a literal that spanned lines and failed
+        the statement outright.
+
+        That is a correctness and availability bug rather than an injection one: a
+        value can only ever add PAIRED quotes, never an odd one. What it costs is the
+        run. Several callers hand this an already-validated identifier, but several do
+        not: a breakdown's top-N values, a grouped event-type value and a discovered
+        JSON path are warehouse DATA, and an enum option and a contract regex are
+        analyst text that ``schemas.field_definition`` bounds only by length and
+        compilability — neither of which excludes a line terminator. Nothing sanitises
+        any of those on the way to a literal, so one row carrying a newline fails the
+        chunk for as long as that value stays in the top N, which for a high-volume
+        value is indefinitely.
+
+        Escaping order is load-bearing: the backslash is doubled FIRST, so a value
+        ending in a backslash cannot escape the closing quote, and an input containing
+        the two characters ``\\n`` is not confused with a real newline.
+
+        Deliberately NOT delegating to ``quote_sql_string_literal``. That helper serves
+        the visual condition builder, where its input is one analyst-typed filter
+        value: it ``strip()``s and rejects the empty string and NUL. Both are wrong
+        here. A breakdown value's leading/trailing whitespace is part of the group key,
+        so stripping would merge ``"a"`` and ``"a "`` into one group and misattribute
+        their counts; and the empty string is the legitimate NULL-collapsed group value
+        that ``_contract_where_clause`` compares against. Raising on a pathological
+        character would likewise turn a warehouse-supplied value into a failed run,
+        which is the failure mode this fix exists to remove.
+        """
+        escaped = (
+            value.replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        )
+        return f"'{escaped}'"
 
     def _time_condition(
         self,
@@ -787,8 +905,17 @@ class BigQueryAdapter(BaseAdapter):
         """Resolve the declared time-type family of a configured time column.
 
         Raises for a column that carries no date (BigQuery ``TIME``). Every read path
-        runs ``_ensure_column_types`` first, so this fires while the caller is still
-        configuring/previewing a metric, not several layers deep inside a worker.
+        runs ``_ensure_column_types`` first, so the declared type is known by the time
+        this is asked.
+
+        WHERE it fires is not guaranteed to be the preview, and the message is written
+        for an operator on the assumption that it might not be. A preview only reaches
+        here when the job carries a lookback window: ``worker.tasks.scan`` passes
+        ``time_column=... if preview_window else None`` and
+        ``resolve_lookback_window`` returns ``None`` with no ``scan_lookback_hours``,
+        so ``_time_condition`` returns early and never asks for the kind. Without a
+        lookback the first thing to ask is the bucket expression, inside a collection
+        tick.
 
         Falls back to TIMESTAMP only when the column's type was never introspected —
         callers that reach the bucket path without a preceding ``get_columns`` are
@@ -799,12 +926,17 @@ class BigQueryAdapter(BaseAdapter):
             return TimeKind.timestamp
         kind = classify_time(type_name)
         if kind is TimeKind.unsupported:
+            # ``WarehouseCapabilityError`` for the reason spelled out at the DATE
+            # rejection in ``_bucket_expression``: this can surface from a worker, and
+            # the worker's sanitiser keeps only curated types verbatim. ``type_name``
+            # is a declared BigQuery type string read back from the schema probe, not
+            # driver text, so the message stays free of host/port/credential material.
             msg = (
                 f"BigQuery: time column {time_column!r} has type {type_name}, which "
                 "carries no date and cannot be used as a time column. "
                 "Use a TIMESTAMP, DATETIME or DATE column."
             )
-            raise ValueError(msg)
+            raise WarehouseCapabilityError(msg)
         return kind
 
     def _schema_datasets(self) -> list[str]:
@@ -968,6 +1100,26 @@ class BigQueryAdapter(BaseAdapter):
             return ""
         return " WHERE " + " AND ".join(conditions)
 
+    @override
+    def _probe_contract_regex(self, pattern: str) -> None:
+        """Have BigQuery compile the pattern with RE2, scanning nothing.
+
+        A statement with no FROM processes no bytes, so the probe costs a job and
+        no billed data — which is the only reason a round trip is affordable on
+        the engine that bills by the byte. It goes through ``_run_query`` like
+        every other statement this adapter issues, so it inherits the deadline
+        and the cancel-on-timeout that method exists for.
+
+        One job per DISTINCT pattern per adapter, memoized by
+        ``contract_regex_is_compilable``: a config with no regex contract issues
+        none at all, and the one that has a regex contract on ten event-type
+        groups still issues one. The alternative — compiling the pattern into the
+        contract statement and letting a rejection fail the job — is what
+        ``validate_field_contracts`` below is built to avoid, since that job is
+        the one that reads the whole window.
+        """
+        self._run_query(f"SELECT REGEXP_CONTAINS('', {self._quote_string(pattern)})")
+
     def _contract_fragments(
         self,
         expectation: FieldContractExpectation,
@@ -976,9 +1128,12 @@ class BigQueryAdapter(BaseAdapter):
     ) -> tuple[str, str] | None:
         """Compile one expectation to ``(aggregate_sql, struct_sql)``, or None if inert.
 
-        Semantics are matched to ``ClickHouseAdapter._contract_select_sql`` term for term
-        — the canonical warehouse-side contract — and, through it, to the Python fallback
-        in ``BaseAdapter``:
+        What counts as a BAD row is matched term for term to
+        ``ClickHouseAdapter._contract_aggregates`` and
+        ``PostgresAdapter._contract_bad_condition``, and through them to the Python
+        fallback in ``BaseAdapter``. What counts as a VIOLATION is not decided here at
+        all — see the field contract section of ``BaseAdapter`` for where that lives and
+        why this method is the one place still allowed to apply it warehouse-side:
 
         * **required_null_violation** — the NULL *is* the violation, so NULLs are counted
           in the denominator: ``total`` is ``COUNT(*)``, not the non-NULL count. Its sample
@@ -1002,10 +1157,44 @@ class BigQueryAdapter(BaseAdapter):
         The sample is ``MIN(IF(bad, value, NULL))`` rather than an ``ANY_VALUE``: MIN
         ignores NULL inputs, so it can only ever return a value from a row that actually
         violated, and it is deterministic, where ClickHouse's ``anyIf`` is not.
+
+        "Inert" here is the shared list plus what THIS dialect declines — a REPEATED
+        column, and a pattern RE2 will not compile — and that split is the whole
+        point: what an expectation MEANS is shared, what an engine can compile is
+        not. See the field contract section of ``BaseAdapter``, where both
+        divergences are declared.
         """
+        if field_contract_is_inert(expectation):
+            return None
+
         column = self._validate_column(expectation.field_name)
         present = f"`{column}` IS NOT NULL"
-        threshold = max(0.0, min(1.0, expectation.threshold))
+        threshold = clamp_field_contract_threshold(expectation.threshold)
+
+        if expectation.drift_type != "required_null_violation" and column in self._repeated_columns:
+            # Every branch below but required_null needs the scalar STRING rendering,
+            # and there is none for an ARRAY — so `_string_value_expression` raises,
+            # and it must keep raising for `role="breakdown column"`, where the caller
+            # is still choosing a column and a loud failure is the right answer.
+            #
+            # Here the caller is a worker replaying contracts a user declared long ago,
+            # so the same raise ended the entire collection: `schema_drift` called
+            # `validate_field_contracts` bare and `catalog_sync` calls that once per
+            # event-type group. `schema_drift` now contains a raise and counts it, but
+            # that is a backstop and not a licence to raise from here: it costs the
+            # event type every other contract it declared, where declining costs one.
+            # An explicit pre-check, rather than wrapping the call in
+            # try/except ValueError, is what keeps the two roles' answers separate —
+            # and it mirrors the `_allowed_columns` skip in `validate_field_contracts`
+            # line for line, which exists for the identical reason (a stale contract).
+            logger.warning(
+                "BQ field contract skipped: column %r is REPEATED (an ARRAY) and has no "
+                "scalar STRING rendering, so its %s contract cannot be compiled. The "
+                "other contracts in this scan still run.",
+                column,
+                expectation.drift_type,
+            )
+            return None
 
         if expectation.drift_type == "required_null_violation":
             # Deliberately does NOT build the STRING rendering: a required-ness check is
@@ -1015,31 +1204,39 @@ class BigQueryAdapter(BaseAdapter):
             total = "COUNT(*)"
             sample = f"MIN(IF({bad}, '<NULL>', NULL))"
         elif expectation.drift_type == "enum_violation":
-            if not expectation.enum_options:
-                return None
             value_expr = self._string_value_expression(column, role="field-contract column")
             options = ", ".join(self._quote_string(option) for option in expectation.enum_options)
             bad = f"{present} AND {value_expr} NOT IN ({options})"
             total = f"COUNTIF({present})"
             sample = f"MIN(IF({bad}, {value_expr}, NULL))"
         elif expectation.drift_type == "regex_violation":
-            if not expectation.regex:
-                return None
             value_expr = self._string_value_expression(column, role="field-contract column")
+            # The assert narrows the type; a pattern-less regex is inert above.
+            assert expectation.regex is not None
+            # The second reason this engine can decline an expectation the other
+            # two would compile, and the mirror of the one above: RE2 has no
+            # lookaround and no backreferences, all of which the Python `re` the
+            # save gate screens with accepts. Offered to the engine before it
+            # rides into the job that reads the window.
+            if not self.contract_regex_is_compilable(expectation.regex):
+                return None
             pattern = self._quote_string(expectation.regex)
             bad = f"{present} AND NOT REGEXP_CONTAINS({value_expr}, {pattern})"
             total = f"COUNTIF({present})"
             sample = f"MIN(IF({bad}, {value_expr}, NULL))"
         elif expectation.drift_type == "range_violation":
-            if expectation.min_value is None and expectation.max_value is None:
-                return None
             value_expr = self._string_value_expression(column, role="field-contract column")
             numeric = f"SAFE_CAST({value_expr} AS FLOAT64)"
             checks = [f"{numeric} IS NULL"]
+            # Rendered through the shared helper rather than an f-string of the float.
+            # GoogleSQL has no literal for infinity or NaN, so `< -inf` is a parse
+            # error the fake client in a unit test happily accepts and a worker only
+            # discovers against the real service — and it would take the sibling
+            # contracts in the same statement with it.
             if expectation.min_value is not None:
-                checks.append(f"{numeric} < {float(expectation.min_value)}")
+                checks.append(f"{numeric} < {contract_bound_literal(expectation.min_value)}")
             if expectation.max_value is not None:
-                checks.append(f"{numeric} > {float(expectation.max_value)}")
+                checks.append(f"{numeric} > {contract_bound_literal(expectation.max_value)}")
             bad = f"{present} AND ({' OR '.join(checks)})"
             total = f"COUNTIF({present})"
             sample = f"MIN(IF({bad}, {value_expr}, NULL))"
@@ -1054,15 +1251,24 @@ class BigQueryAdapter(BaseAdapter):
         # bad_rate goes through SAFE_DIVIDE, not `/`. GoogleSQL's `/` raises on a zero
         # denominator ("zero divided error" — verified against the emulator), and SQL does
         # not promise that the `total_count > 0` guard in the outer WHERE is evaluated
-        # first. ClickHouse can get away with a bare division because it yields nan there;
-        # BigQuery would fail the whole scan.
+        # first. That zero is why the other two engines stopped judging in SQL at all;
+        # BigQuery keeps doing it because its STRUCT array already gives it a row per
+        # expectation to filter, and SAFE_DIVIDE makes the empty window a NULL rate
+        # rather than a failed scan.
+        #
+        # The threshold is spelled with repr(), not `%.12g`. This literal is the ONLY
+        # copy of the threshold that is compared anywhere but inside
+        # field_contract_verdict, so it has to be the same double that function would
+        # have used: repr of a float round-trips exactly, while %.12g silently rounds
+        # one with more digits than that — enough for a contract set to 1/3 to fire
+        # here and not on the engines that compare in Python.
         struct_sql = (
             "STRUCT("
             f"{self._quote_string(expectation.field_name)} AS field_name, "
             f"{self._quote_string(expectation.drift_type)} AS drift_type, "
             f"_agg._bad_{index} AS bad_count, "
             f"_agg._total_{index} AS total_count, "
-            f"CAST({threshold:.12g} AS FLOAT64) AS threshold, "
+            f"CAST({threshold!r} AS FLOAT64) AS threshold, "
             f"IFNULL(SAFE_DIVIDE(_agg._bad_{index}, _agg._total_{index}), 0.0) AS bad_rate, "
             f"_agg._sample_{index} AS sample_value"
             ")"
@@ -1090,14 +1296,16 @@ class BigQueryAdapter(BaseAdapter):
         sample, not the data — so a contract could be badly violated and the scan would
         either miss it or under-report it straight past its threshold.
 
-        ONE job covers every expectation. The naive port of ClickHouse's shape is a
-        ``UNION ALL`` of one aggregate subquery per expectation, which is one job but N
-        SCANS of ``base_query`` — and BigQuery bills by bytes scanned, so a table with ten
-        contracts would be billed ten times over on every scan. Instead the per-expectation
-        aggregates are computed side by side in a SINGLE pass, assembled into an array of
-        STRUCTs, and unnested into the one-row-per-violation shape the caller wants. The
-        threshold/nonzero filtering happens on the unnested rows, so — exactly as on
-        ClickHouse — a passing contract never crosses the wire.
+        ONE job AND one scan covers every expectation. The shape both other SQL engines
+        started with — a ``UNION ALL`` of one aggregate subquery per expectation — is one
+        job but N SCANS of ``base_query``, and BigQuery bills by bytes scanned, so a table
+        with ten contracts would be billed ten times over on every scan. Instead the
+        per-expectation aggregates are computed side by side in a SINGLE pass, assembled
+        into an array of STRUCTs, and unnested into the one-row-per-violation shape the
+        caller wants. The threshold/nonzero filtering happens on the unnested rows, so a
+        passing contract never crosses the wire; PostgreSQL and ClickHouse reach the same
+        single pass but stop at the counts and decide in Python, which the field contract
+        section of ``BaseAdapter`` states as the rule and this method as its exception.
 
         ``limit`` no longer bounds what is *evaluated* (that is the whole point); it stays
         as the bound on how many violation ROWS come back, matching ClickHouse.
@@ -1276,7 +1484,7 @@ class BigQueryAdapter(BaseAdapter):
         logger.info("BQ bucketed done in %.2fs, %s rows", elapsed, len(rows))
 
         decoded = self._decode_rows(rows, offset=1, reg_cols=reg_cols, json_cols=json_cols)
-        return col_names, json_value_names, decoded
+        return col_names, json_value_names, self._utc_bucket_rows(decoded)
 
     def _aggregate_value_sql(self, agg_fn: MetricAggregation, measure_column: str | None) -> str:
         """Validate + escape the measure and build the safe aggregate fragment."""
@@ -1304,12 +1512,26 @@ class BigQueryAdapter(BaseAdapter):
         ``agg(CASE WHEN cond THEN col END)``. ``filter_sql`` is a pre-validated
         boolean fragment injected as-is, matching the row-filter trust model.
 
-        ``count`` / ``count_distinct`` return 0 (not NULL) for a bucket whose
-        rows never match ``cond``; ``avg`` / ``sum`` / ``min`` / ``max`` over the
-        ``CASE WHEN`` form already return NULL there. The zero-returning counts
-        are wrapped in ``NULLIF(..., 0)`` so such a bucket reads as absent,
-        matching the per-metric path whose filtered scan emits no row at all for
-        it (a 0 would otherwise render as a spurious data point instead of a gap).
+        The NULL-means-gap rule this implements is stated once, on
+        :class:`~tripl.core.adapters.base.BaseAdapter`: a bucket is absent for a
+        spec when NO row in it matched ``cond``, and a bucket that does have
+        matching rows is a data point even when the aggregate over them is 0.
+        Each aggregate spells the row-presence test as cheaply as it can:
+
+        * ``avg`` / ``sum`` / ``min`` / ``max`` over the ``CASE WHEN`` form need
+          no test at all — they already return NULL over zero matching rows.
+        * ``count`` uses ``NULLIF(count(CASE WHEN cond THEN 1 END), 0)``,
+          because that value IS the count of matching rows: 0 and "nothing
+          matched" are the same statement. Spelling it as the CASE below was
+          rejected — it emits the same verdict from twice the text and a second
+          copy of ``cond``.
+        * ``count_distinct`` needs an explicit ``COUNTIF(cond)`` probe:
+          ``count(DISTINCT IF(cond, m, NULL))`` returns 0 both for a bucket
+          nothing matched AND for a bucket whose matching rows all have ``m IS
+          NULL``, so its own value cannot answer the question. It used to be
+          ``NULLIF(..., 0)`` too, which reported an all-NULL measure over real
+          rows as a gap, while ClickHouse — gating on ``countIf(cond)``, a row
+          count — kept the bucket and stored the 0.
         """
         measure_sql: str | None = None
         if spec.column is not None:
@@ -1324,7 +1546,8 @@ class BigQueryAdapter(BaseAdapter):
             msg = f"Aggregation {agg.value!r} requires a measure column"
             raise ValueError(msg)
         if agg is MetricAggregation.count_distinct:
-            return f"NULLIF(count(DISTINCT IF({cond}, {measure_sql}, NULL)), 0)"
+            distinct = f"count(DISTINCT IF({cond}, {measure_sql}, NULL))"
+            return f"CASE WHEN COUNTIF({cond}) = 0 THEN NULL ELSE {distinct} END"
         return f"{agg.value}(CASE WHEN {cond} THEN {measure_sql} END)"
 
     def get_time_bucketed_aggregate(
@@ -1385,7 +1608,7 @@ class BigQueryAdapter(BaseAdapter):
         logger.info("BQ bucketed aggregate done in %.2fs, %s rows", elapsed, len(rows))
 
         decoded = self._decode_rows(rows, offset=1, reg_cols=reg_cols, json_cols=json_cols)
-        return col_names, json_value_names, decoded
+        return col_names, json_value_names, self._utc_bucket_rows(decoded)
 
     def _breakdown_value_exprs(
         self,
@@ -1467,9 +1690,51 @@ class BigQueryAdapter(BaseAdapter):
         group_parts: list[str] = ["_bucket", "_breakdown_value", "_is_other"]
         col_names: list[str] = []
         for c in reg_cols:
-            select_sql, group_sql = self._regular_column_sql(c)
-            select_parts.append(select_sql)
-            group_parts.append(group_sql)
+            if c == breakdown:
+                # The breakdown keeps its regular-column slot but carries the
+                # FOLDED value there, and is deliberately NOT added to
+                # group_parts: see
+                # BaseAdapter.get_time_bucketed_aggregate_breakdown for why the
+                # raw column may not be a grouping key. `_regular_column_sql` is
+                # skipped rather than reused because its only special case is
+                # the REPEATED column, and `_string_value_expression` has
+                # already refused a REPEATED breakdown a few lines above.
+                # The breakdown's slot is grouped BY ITS OWN ALIAS, and the alias
+                # is deliberately not the column's name. Both halves were
+                # settled against Google's ZetaSQL analyzer, because every
+                # fake-client test in this repo passes either way — a fake
+                # answers any string, so nothing here can tell you the warehouse
+                # would have refused the statement.
+                #
+                # ZetaSQL does NOT match a repeated expression against an
+                # identical one in GROUP BY. Projecting the fold a second time
+                # and adding that same expression to the grouping is rejected
+                # with `SELECT list expression references column <name> which is
+                # neither grouped nor aggregated` — measured, not reasoned:
+                # grouping by the expression fails, grouping by the alias bound
+                # to it passes. So the grouping names the alias.
+                #
+                # The alias avoids the column's own name because that name would
+                # then mean two things at once — the source column and this
+                # slot. GoogleSQL accepts the ambiguity and resolves it, but its
+                # two readings differ in VALUE, not just in spelling: the alias
+                # is the folded value, the column is the raw one, and grouping
+                # by the raw one is the defect tripl-0zpq.58 exists to remove. A
+                # name that can only mean one of them cannot regress quietly.
+                # Nothing downstream is affected — rows are read positionally
+                # and their names come from `col_names`, which still carries the
+                # real column name.
+                #
+                # Neither spelling is needed by the siblings: ClickHouse groups
+                # with GROUP BY ALL and PostgreSQL resolves the output name to
+                # the same expression tree, so both stay local to BigQuery.
+                slot_alias = f"_bd_col{len(col_names)}"
+                select_parts.append(f"{breakdown_expr} AS `{slot_alias}`")
+                group_parts.append(f"`{slot_alias}`")
+            else:
+                select_sql, group_sql = self._regular_column_sql(c)
+                select_parts.append(select_sql)
+                group_parts.append(group_sql)
             col_names.append(c)
         nested_select, nested_group = self._nested_select_group(json_cols, alias_by_name)
         select_parts.extend(nested_select)
@@ -1495,7 +1760,7 @@ class BigQueryAdapter(BaseAdapter):
         logger.info("BQ bucketed aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
         decoded = self._decode_rows(rows, offset=3, reg_cols=reg_cols, json_cols=json_cols)
-        return col_names, json_value_names, decoded
+        return col_names, json_value_names, self._utc_bucket_rows(decoded)
 
     def build_time_bucketed_multi_aggregate_sql(
         self,
@@ -1559,7 +1824,7 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed multi-aggregate done in %.2fs, %s rows", elapsed, len(rows))
 
-        return column_names, rows
+        return column_names, self._utc_bucket_rows(rows)
 
     def get_time_bucketed_multi_aggregate_breakdown(
         self,
@@ -1619,7 +1884,7 @@ class BigQueryAdapter(BaseAdapter):
             "BQ bucketed multi-aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows)
         )
 
-        return column_names, rows
+        return column_names, self._utc_bucket_rows(rows)
 
     def get_time_bucketed_breakdown_counts(
         self,
@@ -1681,7 +1946,14 @@ class BigQueryAdapter(BaseAdapter):
         sql = (
             "SELECT _breakdown_column, _breakdown_value FROM ("
             "SELECT _breakdown_column, _breakdown_value, "
-            "ROW_NUMBER() OVER (PARTITION BY _breakdown_column ORDER BY _cnt DESC) AS rn "
+            # _breakdown_value is the tie-break the BaseAdapter top-N contract
+            # requires: ranked by count alone, two equally-counted values at the
+            # `rn <= limit` cut could swap places between runs over the same
+            # window. GoogleSQL's default collation for STRING is binary, so a
+            # bare ascending sort already IS the code-point order the contract
+            # names; BigQuery has no "C" collation to spell it with.
+            "ROW_NUMBER() OVER (PARTITION BY _breakdown_column "
+            "ORDER BY _cnt DESC, _breakdown_value) AS rn "
             "FROM ("
             "SELECT "
             f"CASE {label_branches} ELSE '' END AS _breakdown_column, "
@@ -1844,4 +2116,4 @@ class BigQueryAdapter(BaseAdapter):
 
         # Row layout leads with _bucket, _breakdown_column, _breakdown_value, _is_other.
         decoded = self._decode_rows(rows, offset=4, reg_cols=reg_cols, json_cols=json_cols)
-        return col_names, json_value_names, decoded
+        return col_names, json_value_names, self._utc_bucket_rows(decoded)

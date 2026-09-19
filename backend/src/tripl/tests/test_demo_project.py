@@ -255,11 +255,12 @@ async def test_demo_fact_table_preview_serves_synthetic_orders(client: AsyncClie
     # ``user_id`` carries an identifier signal and is offered as a candidate.
     assert "user_id" in preview["identifier_candidates"]
 
-    # Real rows from the in-memory dataset (never fabricated, never empty).
-    assert preview["sample_rows"], "Expected synthetic orders sample rows"
-    first_row = preview["sample_rows"][0]
-    assert set(first_row) >= {"created_at", "amount", "status"}
-    assert first_row["status"] in {"completed", "pending", "refunded", "failed"}
+    # No rows come back. The preview answers the query's SHAPE and never its
+    # contents (tripl-0zpq.75): sample rows were returned to callers and
+    # displayed by nothing, so the second warehouse query behind them is gone.
+    # The column assertions above are what prove the synthetic adapter really
+    # served this — they are the demo ``orders`` schema, not a fabrication.
+    assert "sample_rows" not in preview
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 import logging
 import uuid
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -28,6 +28,7 @@ from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.metric_value_breakdown import MetricValueBreakdown
+from tripl.models.scan_config import ScanConfig
 from tripl.schemas.event_metric import MetricSignalResponse
 from tripl.schemas.metric_definition import (
     EventCompositionMetricCreate,
@@ -95,10 +96,77 @@ async def _refresh_main_search_index(
     )
 
 
-async def _verify_data_source(session: AsyncSession, data_source_id: uuid.UUID) -> None:
-    exists = await session.scalar(select(DataSource.id).where(DataSource.id == data_source_id))
-    if exists is None:
-        raise HTTPException(status_code=404, detail="Data source not found")
+async def load_project_data_source(
+    session: AsyncSession, project_id: uuid.UUID, data_source_id: uuid.UUID
+) -> DataSource:
+    """Load a data source this project is allowed to point a metric at.
+
+    A ``sql`` metric's ``data_source_id`` selects the warehouse CREDENTIAL its
+    free-text SELECT runs under. This check used to be a bare existence test with
+    no project term, so an editor in project A could SAVE a metric against
+    project B's credential by supplying its UUID — and the catalog beat then ran
+    that query every five minutes, unattended, with nobody watching the result.
+    Preview is a request the user sees; this is not.
+
+    Consistent with ``scan_service._verify_data_source``, which fences a synthetic
+    demo source to its own demo project.
+
+    WHAT IT REFUSES, and why it is not simply the fact-table rule. The fact-table
+    doors require a ``ScanConfig`` in this project, full stop. Applying that here
+    would have been wrong in a way worth writing down, because a ``sql`` metric
+    needs no scan at all: ``check_metric_definitions_due`` selects active metrics
+    with no ``ScanConfig`` join, so a warehouse a project uses ONLY for SQL
+    metrics collects forever without one. Creating a scan config is owner-only,
+    so "must be bound by a ScanConfig" would have meant an editor may use only
+    warehouses an owner already bound — and there is no other way for an owner to
+    bless one. A project that scans ClickHouse for events and queries Postgres
+    for metrics would have lost the ability to create OR EDIT those metrics: this
+    check runs on every definition update, so a PATCH that changed only a colour
+    would 404 too, because the client resends the stored data source with it.
+
+    So the rule is ownership, not binding. A data source is refused when it is
+    identifiably ANOTHER project's:
+
+    * ``project_id`` set to a different project — the demo case, where that
+      column exists precisely to scope a synthetic warehouse to one workspace;
+    * workspace-global but scanned by some other project and not by this one —
+      an owner pointed it at that project, and an editor here should not borrow
+      its credential.
+
+    A workspace-global source that no project scans is allowed, which is what
+    that NULL means: shared. This still closes the hole the check was added for —
+    an editor supplying another project's data source UUID so the catalog beat
+    runs their free-text SELECT under it every five minutes, unattended.
+
+    One message for every refusal, copied deliberately from the introspection
+    path: distinct messages let a project member probe arbitrary UUIDs and tell a
+    non-existent id apart from another project's data source.
+
+    Returns the row so a caller that needs the credential does not re-query it.
+    """
+    # Every branch raises the SAME message on purpose — see the docstring.
+    not_available_msg = "Data source not found"
+    data_source = await session.get(DataSource, data_source_id)
+    if data_source is None:
+        raise HTTPException(status_code=404, detail=not_available_msg)
+    if data_source.project_id is not None and data_source.project_id != project_id:
+        raise HTTPException(status_code=404, detail=not_available_msg)
+    if data_source.project_id is None:
+        # Claimed by another project's scan and not by this one? Then it is that
+        # project's warehouse in all but the column. One query answers both
+        # halves: ask which projects scan it, then look for ours among them.
+        scanning_projects = set(
+            (
+                await session.execute(
+                    select(ScanConfig.project_id).where(ScanConfig.data_source_id == data_source_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if scanning_projects and project_id not in scanning_projects:
+            raise HTTPException(status_code=404, detail=not_available_msg)
+    return data_source
 
 
 async def _verify_composition_refs(
@@ -844,7 +912,7 @@ async def create_metric_definition(
 
     # Kind-specific existence checks that the schema cannot do (need the DB).
     if isinstance(data, SqlMetricCreate):
-        await _verify_data_source(session, data.data_source_id)
+        await load_project_data_source(session, project_id, data.data_source_id)
     elif isinstance(data, FactMetricCreate):
         await _verify_fact_metric(session, project_id, data)
     elif isinstance(data, EventCompositionMetricCreate):
@@ -950,7 +1018,7 @@ async def _apply_definition_update(
     """
     project_id = metric.project_id
     if isinstance(definition, SqlMetricDefinition):
-        await _verify_data_source(session, definition.data_source_id)
+        await load_project_data_source(session, project_id, definition.data_source_id)
     elif isinstance(definition, FactMetricDefinition):
         await _verify_fact_metric(
             session,
@@ -1148,6 +1216,137 @@ async def _fact_collection_group(
     return sorted(selected.values(), key=lambda definition: str(definition.id))
 
 
+async def effective_manual_window(
+    session: AsyncSession,
+    *,
+    definitions: Sequence[MetricDefinition],
+    interval_code: str,
+) -> tuple[datetime, datetime]:
+    """The window a "collect now" click will ACTUALLY scan for these metrics.
+
+    The async twin of ``metric_collect._effective_value_window(manual_backfill=True)``
+    followed by the covering ``min`` ``metric_collect._run_fact_interval_group``
+    takes across its group. A manual window only ever WIDENS: it is applied to
+    every metric the click sweeps in, so a metric lagging further back than the
+    bounded manual window keeps its backlog rather than having
+    ``_stamp_metric_success`` advance its watermark past buckets nobody queried.
+
+    Two surfaces disclose that window — ``MetricCollectNowResponse`` and
+    ``GET /metrics/{id}/generated-sql`` — and both used to report the bare
+    ``compute_manual_collect_window``, which understates it. A fresh ``1w`` metric
+    is the clearest case: the manual window is capped at 28 days while the resume
+    fallback reaches 30 buckets, i.e. 210 days, and the worker scans the 210. For
+    ``1d`` and ``1h`` on a fresh metric the two rules coincide, which is why
+    nothing caught this.
+
+    STALENESS, inherent and worth stating: this reads the resume point at
+    DISCLOSURE time and the worker reads it at EXECUTION time, so a scheduler tick
+    in between can still move it by an interval or two. That residual is not the
+    same thing as the structural 28-vs-210 gap this closes.
+    """
+    # Function-local for the reason every worker import in this module is:
+    # keeping the Celery stack out of the request path's import graph.
+    from tripl.worker.tasks.metrics.metric_collect import (
+        DEFAULT_COLLECTION_BUCKETS,
+        compute_manual_collect_window,
+    )
+
+    manual_from, manual_to = compute_manual_collect_window(interval_code)
+    if not definitions:
+        return manual_from, manual_to
+
+    delta = get_interval(interval_code).delta
+    time_to = floor_to_bucket(datetime.now(UTC), interval_code)
+    # ONE grouped query for the whole group, not one per metric: a fact click can
+    # sweep in up to MAX_MANUAL_COLLECT_GROUP metrics and this runs on a request
+    # thread. ``scan_config_id.is_(None)`` is not optional — it is the filter
+    # ``_resolve_value_window`` uses, and without it a catalog metric would resume
+    # from an event-scope row that belongs to a different series.
+    last_buckets: dict[uuid.UUID, datetime] = dict(
+        (
+            await session.execute(
+                select(MetricValue.metric_definition_id, func.max(MetricValue.bucket))
+                .where(
+                    MetricValue.metric_definition_id.in_(
+                        [definition.id for definition in definitions]
+                    ),
+                    MetricValue.scan_config_id.is_(None),
+                )
+                .group_by(MetricValue.metric_definition_id)
+            )
+        )
+        .tuples()
+        .all()
+    )
+
+    earliest = manual_from
+    for definition in definitions:
+        progress_to = collection_progress_to(
+            last_bucket=last_buckets.get(definition.id),
+            watermark=definition.last_collection_window_to,
+            delta=delta,
+        )
+        if progress_to is not None:
+            # The historical two-bucket overlap, copied from
+            # ``_resolve_value_window``: the latest completed bucket and the one
+            # before it are recomputed for late-arriving data. Dropping it here
+            # would disclose a window two buckets narrower than the one that runs.
+            resume_from = min(progress_to, time_to) - delta * 2
+        else:
+            resume_from = time_to - delta * DEFAULT_COLLECTION_BUCKETS
+        earliest = min(earliest, resume_from)
+    return earliest, manual_to
+
+
+async def _reported_manual_window(
+    session: AsyncSession,
+    *,
+    kind: MetricKind,
+    clicked: MetricDefinition,
+    collection_group: Sequence[MetricDefinition],
+    dispatched: tuple[datetime, datetime],
+) -> tuple[datetime, datetime]:
+    """What ``collect now`` should REPORT, given what the worker will do with it.
+
+    The two kinds are dispatched to different tasks and the tasks treat the window
+    differently, so the reported answer cannot be derived from ``dispatched`` alone:
+
+    * ``sql`` goes to ``collect_metric_definitions`` with ``manual_backfill=True``,
+      which uses the dispatched window as a FLOOR for that one metric.
+    * ``fact`` goes to ``collect_fact_metrics_batch`` with
+      ``manual_backfill_all=True``, and ``_run_fact_metrics_batch`` then ignores
+      the dispatched window entirely: it recomputes
+      ``compute_manual_collect_window(interval_code)`` per interval group, so a 1d
+      dependent swept in by a clicked 1h metric is scanned on the 1d grid, not the
+      1h one. The honest report is therefore the union across interval groups.
+
+    What is DISPATCHED is deliberately unchanged. The widening rule stays the
+    worker's, read at execution time against the resume point that is current
+    then; if this handler pre-widened the dispatched window as well, the authority
+    for the rule would have quietly moved into the API.
+    """
+    if kind is not MetricKind.fact:
+        return await effective_manual_window(
+            session, definitions=[clicked], interval_code=str(clicked.interval)
+        )
+    by_interval: dict[str, list[MetricDefinition]] = {}
+    for definition in collection_group:
+        if definition.interval is not None:
+            by_interval.setdefault(str(definition.interval), []).append(definition)
+    windows = [
+        await effective_manual_window(session, definitions=group, interval_code=interval_code)
+        for interval_code, group in sorted(by_interval.items())
+    ]
+    if not windows:
+        # Unreachable through the handler: it 400s a fact/sql metric with no
+        # interval before reaching here, and the clicked metric is always a member
+        # of its own collection group. Spelled as a real fallback rather than an
+        # ``assert`` so a future direct caller gets the dispatched window back
+        # instead of a ``min()`` on an empty sequence.
+        return dispatched
+    return min(window[0] for window in windows), max(window[1] for window in windows)
+
+
 async def _try_acquire_metric_dispatch_transaction_lock(session: AsyncSession) -> bool:
     """Try to serialize manual dispatch with the catalog scheduler on Postgres.
 
@@ -1226,6 +1425,22 @@ async def trigger_metric_collection(
         await session.rollback()
         raise HTTPException(status_code=409, detail="Metric collection is already running")
 
+    # Read the resume points BEFORE the rows are stamped ``running`` below: the
+    # stamp does not touch ``last_collection_window_to`` or any MetricValue, so
+    # the answer is the same either way, but reading first keeps the disclosure
+    # independent of the bookkeeping write.
+    reported_window = (
+        await _reported_manual_window(
+            session,
+            kind=kind,
+            clicked=metric,
+            collection_group=collection_group,
+            dispatched=window,
+        )
+        if window is not None
+        else None
+    )
+
     # Mark the whole fact-table dependency group running before dispatch so the
     # scheduler cannot queue one of its active members independently while the
     # shared batch is waiting for a worker.
@@ -1258,8 +1473,12 @@ async def trigger_metric_collection(
     return MetricCollectNowResponse(
         metric_id=metric_id,
         status="queued",
-        window_from=window[0] if window is not None else None,
-        window_to=window[1] if window is not None else None,
+        # The window the worker will scan, which is the dispatched one WIDENED to
+        # each swept-in metric's own resume point (see ``_reported_manual_window``).
+        # It is not always equal to what was dispatched, and that asymmetry is the
+        # point: the task is handed a floor, the user is shown the floor's effect.
+        window_from=reported_window[0] if reported_window is not None else None,
+        window_to=reported_window[1] if reported_window is not None else None,
         task_id=task_id,
         metric_count=len(collection_group),
     )

@@ -19,10 +19,21 @@ so it cannot subclass ``ScanError``; admitting it by type here rather than
 wrapping it at each call site means every caller of the name-format code — there
 are two today and a third will come — surfaces the real reason without opting in
 (tripl-3mmh).
+
+A third is ``core.adapters.errors.WarehouseCapabilityError``, on the identical
+bargain and for the identical reason. It also lives in ``core``, it is documented
+at its definition as a message tripl authored about a configuration the operator
+can act on, and ``datasource_service`` and ``metric_preview_service`` already
+surface it verbatim on their own paths — the worker was the one consumer that
+flattened it. What the operator saw instead was "Scan failed due to an internal
+error." on every tick, forever, for conditions like a DATE time column configured
+at a 1h interval or a PostgreSQL server too old for ``date_bin`` — each of which
+names the setting to change in its own text (tripl-0zpq.66).
 """
 
 from __future__ import annotations
 
+from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.name_template import NameFormatError
 
 
@@ -42,7 +53,19 @@ class ScanError(Exception):
 # ``ScanError`` is the worker's own; ``NameFormatError`` is raised in ``core``
 # (see the module docstring) and carries only the format's placeholder names and
 # the columns that were available — no host, port, driver or ORM text.
-_CURATED_ERRORS = (ScanError, NameFormatError)
+#
+# ``WarehouseCapabilityError`` is the widest entry and the one to be careful with:
+# unlike the other two it is raised from the adapters, next to the driver text this
+# module exists to keep out. Admitting it is a claim about every present and future
+# raise site, so it is a decision, not a convenience. The claim is checkable and was
+# checked: the thirteen sites today (eight in ``adapters/postgres.py``, five in
+# ``adapters/bigquery.py``) interpolate only values the operator supplied via the form
+# (``sslmode``, ``search_path`` names), names rather than values where the value is
+# secret (``sslkey``), a declared column type, a server version, and one
+# ``json.JSONDecodeError`` whose text reports a syntax position and never the
+# document. If a future raise site cannot make that promise, the answer is to wrap
+# it in a ``ScanError`` at the worker boundary — not to loosen this tuple.
+_CURATED_ERRORS = (ScanError, NameFormatError, WarehouseCapabilityError)
 
 # A curated message is surfaced verbatim; cap its length so an
 # accidental novel-length message can't blow up a UI row (mirrors how a data

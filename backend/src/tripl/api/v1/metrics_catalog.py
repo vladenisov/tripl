@@ -104,15 +104,12 @@ async def bulk_update_metric_definitions(
     await metric_definition_service.bulk_update_metric_definitions(session, slug, data)
 
 
-@router.post(
-    "/preview",
-    response_model=MetricPreviewResponse,
-    dependencies=_editor_required,
-)
+@router.post("/preview", response_model=MetricPreviewResponse)
 async def preview_metric_sql(
     session: SessionDep,
     slug: str,
     data: MetricPreviewRequest,
+    current_user: EditorUserDep,
 ) -> MetricPreviewResponse:
     """Stateless dry-run of a sql-kind metric SELECT (editor-gated).
 
@@ -123,18 +120,28 @@ async def preview_metric_sql(
     ``error`` set so the editor can render them inline; unknown data source is
     a 404.
     """
+    # Audited: see the note on ``fact_tables.preview_fact_table``. This and the
+    # fact-operand preview below are the metrics catalog's two doors where an
+    # editor's SQL reaches a warehouse credential without leaving a stored
+    # object behind, so they are the two that needed a trail.
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="metric.preview",
+        target_type="metric_definition",
+        target_id=None,
+        project_slug=slug,
+        payload={"data_source_id": str(data.data_source_id), "sql": data.sql},
+    )
     return await metric_preview_service.preview_sql_metric(session, slug, data)
 
 
-@router.post(
-    "/fact-preview",
-    response_model=FactOperandPreviewResponse,
-    dependencies=_editor_required,
-)
+@router.post("/fact-preview", response_model=FactOperandPreviewResponse)
 async def preview_fact_operand(
     session: SessionDep,
     slug: str,
     data: FactOperand,
+    current_user: EditorUserDep,
 ) -> FactOperandPreviewResponse:
     """Stateless dry-run of ONE fact operand's row filter (editor-gated).
 
@@ -146,6 +153,19 @@ async def preview_fact_operand(
     return 200 with ``error`` set so the filter editor can render them inline.
     An unknown project or fact table is a 404.
     """
+    # The SQL here is a FRAGMENT the server compiles against a SAVED fact
+    # table's query, not free-text the caller hands to the warehouse whole — but
+    # it still selects rows under that table's credential, and it still stores
+    # nothing, so it gets the same trail for the same reason.
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="metric.fact_preview",
+        target_type="fact_table",
+        target_id=data.fact_table_id,
+        project_slug=slug,
+        payload=data.model_dump(mode="json"),
+    )
     return await metric_preview_service.preview_fact_operand(session, slug, data)
 
 
@@ -174,6 +194,7 @@ async def get_metric_definition(
 @router.get(
     "/{metric_id}/generated-sql",
     response_model=MetricGeneratedSqlResponse,
+    dependencies=_editor_required,
 )
 async def get_metric_generated_sql(
     session: SessionDep,
