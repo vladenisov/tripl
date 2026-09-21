@@ -21,7 +21,7 @@ vi.mock('recharts', async () => {
 })
 
 import { metricAxisFormatter } from '@/lib/metricFormat'
-import type { EventMetricPoint } from '@/types'
+import type { EventMetricPoint, EventMetricsResponse } from '@/types'
 import {
   buildChartData,
   CustomTooltip,
@@ -321,8 +321,9 @@ describe('CustomTooltip', () => {
 
     expect(screen.getByText('8%')).toBeInTheDocument()
     expect(screen.getByText('Expected: 5%')).toBeInTheDocument()
-    // Default sigma threshold is 3 when none is served.
-    expect(screen.getByText('±3σ band: 3%–7%')).toBeInTheDocument()
+    // Default sigma threshold is 4 when none is served — the detector's own
+    // ProjectAnomalySettings default (tripl-0zpq.299).
+    expect(screen.getByText('±4σ band: 3%–7%')).toBeInTheDocument()
     expect(screen.getByText('Deviation: +3%')).toBeInTheDocument()
   })
 
@@ -435,8 +436,71 @@ describe('buildChartData confidence band', () => {
   })
 
   it('falls back to the default multiplier for a missing/invalid threshold', () => {
+    // 4, not 3: the fallback is the detector's own default sigma threshold
+    // (ProjectAnomalySettings.sigma_threshold = 4.0). It used to be 3 under a
+    // comment claiming the scan-config default (tripl-0zpq.299).
     const [built] = buildChartData([flagged], [], Number.NaN)
-    expect(built.band).toEqual([10 - 3 * 2, 10 + 3 * 2])
+    expect(built.band).toEqual([10 - 4 * 2, 10 + 4 * 2])
+  })
+})
+
+// The `buildChartData confidence band` suite above hands the multiplier straight
+// to the builder, so it stays green even if MetricsChart stops forwarding the
+// prop — it certifies the arithmetic, not the wiring. These assert on the rows
+// MetricsChart actually hands recharts, which is the only place the prop ->
+// buildChartData hop is observable under jsdom (tripl-0zpq.299).
+describe('MetricsChart served sigma threshold', () => {
+  // A flagged bucket: actual 0 against expected 10 with effective stddev 2.
+  const flagged: EventMetricPoint = {
+    bucket: '2026-01-02T10:00:00Z',
+    count: 0,
+    expected_count: 10,
+    stddev: 2,
+    is_anomaly: true,
+    anomaly_direction: 'drop',
+    z_score: -6,
+  }
+
+  // jsdom measures every element as 0x0 and MetricsChart gates its
+  // ResponsiveContainer on a positive size, so nothing reaches ComposedChart
+  // without a measured box (mirrors the accessibility suite below).
+  function renderCharted(node: ReactElement): Array<{ band?: [number, number] }> {
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ width: 400, height: 200, x: 0, y: 0, top: 0, left: 0, right: 400, bottom: 200, toJSON: () => ({}) })
+    composedChartProps.length = 0
+    render(node)
+    rect.mockRestore()
+
+    expect(composedChartProps).not.toHaveLength(0)
+    return composedChartProps[composedChartProps.length - 1].data as Array<{ band?: [number, number] }>
+  }
+
+  it('draws the band at the sigma threshold served on the payload', () => {
+    // Shaped like the response MonitoringDetailPage and TabMetricsCard read, for
+    // a project whose operator moved Settings -> Monitoring -> sigma to 6.0.
+    const served: Pick<EventMetricsResponse, 'sigma_threshold' | 'data'> = {
+      sigma_threshold: 6,
+      data: [flagged],
+    }
+
+    const rows = renderCharted(
+      <MetricsChart granularity="day" data={served.data} sigmaThreshold={served.sigma_threshold} />,
+    )
+
+    // expected ± 6σ, the multiplier the detector flagged this bucket with — NOT
+    // the client's own DEFAULT_SIGMA_THRESHOLD of 4, which would read [2, 18].
+    expect(rows[0].band).toEqual([10 - 6 * 2, 10 + 6 * 2])
+  })
+
+  it('falls back to the client default when the payload serves no threshold', () => {
+    // The catalog-metric scope, whose MetricSeriesResponse has no
+    // `sigma_threshold` at all, so `adaptMetricSeries` leaves it undefined.
+    const rows = renderCharted(
+      <MetricsChart granularity="day" data={[flagged]} sigmaThreshold={undefined} />,
+    )
+
+    expect(rows[0].band).toEqual([10 - 4 * 2, 10 + 4 * 2])
   })
 })
 

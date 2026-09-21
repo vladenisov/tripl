@@ -220,12 +220,21 @@ function adaptMetricSeries(res: MetricSeriesResponse): EventMetricsResponse {
     // metric scope; event-scope forecasts come from their own endpoint and are
     // left untouched.
     forecast: [],
+    // No `sigma_threshold` key on purpose: MetricSeriesResponse has no such
+    // field, and synthesising one here would invent a multiplier the detector
+    // never used. Absent, MetricsChart falls back to DEFAULT_SIGMA_THRESHOLD,
+    // which equals the detector's default — right for a project still on 4.0,
+    // wrong for one that moved its sigma or a scope the false-positive ratchet
+    // tightened. Closing that needs `get_metric_series` to resolve the project
+    // sigma plus the metric-scope override and serve it (tripl-0zpq.119).
   }
 }
 
 function adaptMetricVersions(res: MetricVersionSeriesResponse): AppVersionSeriesResponse {
-  // MetricVersionSeries carries no is_active flag, but the versions catalog does;
-  // carry it across so the metric scope gets the same pre-release treatment.
+  // Both res.series and res.versions carry is_active, and the backend fills them
+  // from the same gate. Read it off the versions catalog because that is the list
+  // this adapter walks below, so the metric scope gets the same pre-release
+  // treatment as the event scope.
   const activeByVersion = new Map(res.versions.map(info => [info.version, info.is_active]))
   return {
     scan_config_id: res.scan_config_id ?? '',
@@ -1190,6 +1199,11 @@ export default function MonitoringDetailPage() {
                   granularity={granularity}
                   seriesLabel={metricSeriesLabel}
                   valueFormatter={metricValueFormatter}
+                  // The sigma the detector scored THIS scope with, so the band
+                  // and the "±Nσ" tooltip agree with the dots inside them. Left
+                  // undefined by the metric scope (see `adaptMetricSeries`), and
+                  // the chart falls back to its default there.
+                  sigmaThreshold={metrics?.sigma_threshold}
                 />
               )}
               {metrics?.interval && (
@@ -2105,6 +2119,7 @@ function EventDetailHero({
         <EventSignalMiniChart
           data={metrics?.data ?? []}
           interval={metrics?.interval ?? null}
+          sigmaThreshold={metrics?.sigma_threshold}
           signal={signal}
           tone={signalTone}
         />
@@ -2353,11 +2368,14 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: '
 function EventSignalMiniChart({
   data,
   interval,
+  sigmaThreshold,
   signal,
   tone,
 }: {
   data: EventMetricPoint[]
   interval: string | null
+  /** `EventMetricsResponse.sigma_threshold`, threaded from the hero's already-fetched series. */
+  sigmaThreshold: number | undefined
   signal: MonitoringSignal
   tone: 'danger' | 'warning'
 }) {
@@ -2390,6 +2408,7 @@ function EventSignalMiniChart({
         color={`var(--${tone})`}
         granularity={granularity}
         seriesLabel="events"
+        sigmaThreshold={sigmaThreshold}
       />
     </div>
   )

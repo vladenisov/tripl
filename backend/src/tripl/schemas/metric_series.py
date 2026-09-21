@@ -34,6 +34,14 @@ class MetricSeriesPoint(BaseModel):
 
 
 class MetricSeriesResponse(BaseModel):
+    # Deliberately NO ``sigma_threshold``, unlike ``EventMetricsResponse``: the
+    # value has to be read per scope (project setting narrowed by the metric's
+    # false-positive override — ``metrics_service._apply_scope_sigma_override``)
+    # and ``metric_series_service.get_metric_series`` does not read it yet. A
+    # field defaulted to 4.0 that nothing filled would claim a threshold the
+    # detector never consulted, which is worse than the gap: the chart falls
+    # back to the same 4.0 today, but honestly, as a client default. Add the
+    # field and the service read together (tripl-0zpq.119).
     metric_id: uuid.UUID
     scope: str = "metric"
     scan_config_id: uuid.UUID | None = None
@@ -64,8 +72,13 @@ class MetricVersionSeries(BaseModel):
     is_other: bool = False
     is_latest: bool = False
     # True once the release takes a real share of traffic (activation gate),
-    # mirroring ``AppVersionMetricSeries.is_active``. Always False for fractional
-    # metrics, where a value-share gate is meaningless.
+    # mirroring ``AppVersionMetricSeries.is_active``. For a FRACTIONAL metric the
+    # gate is on PROJECT traffic share when project-total maturity rows exist —
+    # a count, so meaningful for any metric shape — and without them every
+    # released version is active, because the metric's own ratio rows cannot
+    # answer "does this release carry real traffic" and refusing to answer would
+    # retire them all at once. Prereleases are never active. See
+    # ``metric_series_service._build_metric_version_series``.
     is_active: bool = False
     total_value: float
     data: list[MetricSeriesPoint]

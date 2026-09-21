@@ -2119,8 +2119,9 @@ export interface paths {
          *     against the data source over the last 50 buckets of the requested interval
          *     (hard-capped at 200 rows); nothing is persisted. Expected user mistakes —
          *     bad SQL, missing time/value columns, warehouse errors — return 200 with
-         *     ``error`` set so the editor can render them inline; unknown data source is
-         *     a 404.
+         *     ``error`` set so the editor can render them inline. A data source this
+         *     project may not use is a 404, whether the id is unknown or belongs to
+         *     another project — the same status and sentence the fact-table doors answer.
          */
         post: operations["preview_metric_sql_api_v1_projects__slug__metrics_preview_post"];
         delete?: never;
@@ -7669,8 +7670,15 @@ export interface components {
          *     block mirrors the create discriminated union (minus ``name`` and the other
          *     presentation fields, which keep their own update fields here); when present it
          *     is re-validated EXACTLY like creation and the service overwrites the metric's
-         *     ``kind`` / ``config`` / collection binding from it. A ``kind`` change clears
-         *     the metric's previously collected values (see the service).
+         *     ``kind`` / ``config`` / collection binding from it.
+         *
+         *     ANY definition change that means something different — not just a ``kind``
+         *     change — deletes the metric's previously collected values, breakdowns and
+         *     anomalies, because they were produced under the old definition. The
+         *     comparison is on meaning, so resending an unchanged ``definition`` (which the
+         *     catalog form always does) keeps the history. Such a change is refused with
+         *     409 while a collection for the metric is already in flight; retry it once the
+         *     run finishes.
          */
         MetricDefinitionUpdate: {
             /** Anomaly Detection Enabled */

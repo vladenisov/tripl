@@ -113,9 +113,11 @@ export function getBucketStart(dateStr: string, granularity: MetricsGranularity)
 
 /**
  * Re-flag an aggregated bucket only when the *rolled-up* count is itself
- * significant against the rolled-up baseline. Kept in line with the detector's
- * sigma_threshold (~3, see website/docs/use/anomaly-detection.md) so a single
- * anomalous hour cannot redden a day/week bucket that is otherwise
+ * significant against the rolled-up baseline. A fixed rollup gate, deliberately
+ * NOT the detector's sigma_threshold: that one defaults to 4.0 and is a
+ * per-project setting (see website/docs/use/anomaly-detection.md), and this code
+ * has no project context to read it from. 3 is the floor at which a single
+ * anomalous hour can no longer redden a day/week bucket that is otherwise
  * unremarkable — often the lowest point of the week (tripl-dmch.10).
  */
 const AGGREGATE_ANOMALY_Z_THRESHOLD = 3
