@@ -402,15 +402,15 @@ async def test_an_approval_stays_fresh_when_the_rows_come_back_in_another_order(
 # --- Namesakes (tripl-0zpq.149, cut back): said on the row, not solved --------
 
 _EVENT_WARNING = (
-    "More than one event is named 'purchase' in 'track'. This diff, the merge and a "
-    "revert match rows by name, so a change to one of them can show on, or land on, the "
-    "other. Rename one of them before changing either."
+    "More than one event is named 'purchase' in 'track'. This diff and a revert match "
+    "rows by name, so a change to one of them can show on, or land on, the other, and "
+    "the merge refuses while both exist. Rename one of them before changing either."
 )
 _RELATION_WARNING = (
     "More than one relation links the same two fields (track.screen_id → screen.id). "
-    "This diff, the merge and a revert match relations by those fields, so a change to "
-    "one of them can show on, or land on, the other. Remove one of them before changing "
-    "either."
+    "This diff and a revert match relations by those fields, so a change to one of them "
+    "can show on, or land on, the other, and the merge refuses while both exist. Remove "
+    "one of them before changing either."
 )
 
 _SHARED_KEY_KINDS = [
@@ -432,8 +432,13 @@ def test_an_entry_whose_key_more_than_one_row_holds_says_so(
     """Rows are matched one per key, as main always matched them, so with two
     rows under a key the entry can show one row's change as the other's: here a
     deleted namesake reads as an edit to the survivor, and an added one as an
-    edit to the original. The entry says that, and how to get out of it. It
-    claims nothing about the merge refusing."""
+    edit to the original. The entry says that, and how to get out of it.
+
+    It also says the merge refuses, because since tripl-0zpq.149 it does
+    (``plan_branch_merge_service._reject_ambiguous_keys``). This assertion used
+    to hold the sentence to claiming NOTHING about the merge; the wording and
+    the claim have to move together, so what it now pins is that the sentence
+    still tells the reader the one repair rather than only the refusal."""
     original = row("original")
     if held_twice_on == "base":
         base, branch = [original, row("deleted")], [_copy(original)]
@@ -445,8 +450,10 @@ def test_an_entry_whose_key_more_than_one_row_holds_says_so(
     )
 
     assert [(e.kind, e.warnings) for e in entries] == [("changed", [warning])]
-    assert "refuse" not in warning
+    assert "the merge refuses" in warning
+    # Still prose a reviewer can act on, not a status code read aloud.
     assert "409" not in warning
+    assert warning.rstrip().endswith("before changing either.")
 
 
 @pytest.mark.parametrize(("collection", "row", "warning"), _SHARED_KEY_KINDS)

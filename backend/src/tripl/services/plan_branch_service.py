@@ -572,6 +572,49 @@ async def deep_copy_plan_to_branch(
     new_event_by_old_id: dict[uuid.UUID, Event] = {}
     for ev in events:
         new_ev_id = event_id_map[ev.id]
+        # The same refusal the relation loop below makes, for the same class of
+        # row and for the same reason. ``event_service`` now scopes an event's
+        # type and its meta values to the branch the event is written on, but
+        # rows stored before those checks exist and no migration sweeps them
+        # (tripl-0zpq.123) — and all three lookups below were unqualified
+        # subscripts, i.e. a KeyError surfacing as a bare 500 on "create a
+        # branch", naming nothing. 409 for the same reason the relation guard
+        # gives: copying the event without its dangling child would make the new
+        # branch read as a deletion nobody made.
+        #
+        # A field value cannot dangle on its own — ``_validate_field_values``
+        # loads the definitions from the event's OWN type — so it dangles
+        # exactly when the type does. It is listed anyway, so the message names
+        # every id the operator has to deal with rather than the first one.
+        dangling = [
+            str(ref)
+            for ref, known in (
+                (ev.event_type_id, et_map),
+                *((fv.field_definition_id, fd_map) for fv in ev.field_values),
+                *((mv.meta_field_definition_id, mf_map) for mv in ev.meta_values),
+            )
+            if ref not in known
+        ]
+        if dangling:
+            remedy = (
+                # ``EventUpdate`` carries no ``event_type_id``: a mis-parented
+                # event cannot be re-pointed through any route, so the only
+                # repair left is removing it.
+                "Delete the event, then create the branch."
+                if ev.event_type_id not in et_map
+                # Only values dangle, and both doors that write them take a full
+                # replacement set, so leaving the bad one out of a PATCH is the
+                # whole repair.
+                else "Edit the event to drop those values, then create the branch."
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Event '{ev.name}' ({ev.id}) cannot be copied to a branch: it "
+                    f"points at {', '.join(dangling)}, which is not part of the plan "
+                    f"being copied. {remedy}"
+                ),
+            )
         new_event = Event(
             id=new_ev_id,
             project_id=project_id,
@@ -760,6 +803,33 @@ async def deep_copy_plan_to_branch(
 
     relations = await _load_for_branch(session, EventTypeRelation, project_id, source_branch_id)
     for rel in relations:
+        # ``relation_service.create_relation`` now refuses to write a relation
+        # whose ids are not all resolvable within the branch, but rows stored
+        # before that refusal exist and no migration sweeps them — and here they
+        # were an unqualified ``et_map[...]`` KeyError, i.e. a 500 on "create a
+        # branch" naming nothing (tripl-0zpq.128). 409 rather than a silent skip:
+        # a copy that quietly drops a relation is a branch whose diff then reads
+        # as a deletion nobody made, and the merge would carry that deletion onto
+        # main.
+        missing = [
+            str(ref)
+            for ref, table in (
+                (rel.source_event_type_id, et_map),
+                (rel.target_event_type_id, et_map),
+                (rel.source_field_id, fd_map),
+                (rel.target_field_id, fd_map),
+            )
+            if ref not in table
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Relation {rel.id} cannot be copied to a branch: it points at "
+                    f"{', '.join(missing)}, which is not part of this project's plan. "
+                    "Delete the relation, then create the branch."
+                ),
+            )
         new_objs.append(
             EventTypeRelation(
                 id=uuid.uuid4(),
