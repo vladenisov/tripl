@@ -85,6 +85,7 @@ from tripl.models.metric_definition import (
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.scan_config import ScanConfig
+from tripl.services.data_source_scope import data_source_out_of_project_scope
 from tripl.worker.analyzers.metric_composition import evaluate_composition
 from tripl.worker.celery_app import celery_app
 from tripl.worker.tasks._errors import ScanError, user_facing_error
@@ -692,11 +693,25 @@ def _aggregate_fact_window(
 
 
 def _metric_breakdown_columns(definition: MetricDefinition) -> list[str]:
-    """Return the metric's configured breakdown dimensions in collection order."""
-    breakdown_columns: list[str] = list(definition.breakdown_columns or [])
-    for extra in (definition.app_version_column, definition.platform_column):
-        if extra and extra not in breakdown_columns:
-            breakdown_columns.append(extra)
+    """Return the metric's configured breakdown dimensions in collection order.
+
+    Deduplicated, order preserved. The schema now refuses to SAVE a repeated
+    ``breakdown_columns`` entry, but rows stored before it still carry one, and a
+    column listed twice makes assembly emit each ``(bucket, breakdown_value)``
+    row twice inside a single ``INSERT ... ON CONFLICT DO UPDATE``, which
+    Postgres refuses with "command cannot affect row a second time" — the metric
+    then errors on every tick (tripl-0zpq.270). This guard is what protects the
+    legacy rows; the ``app_version``/``platform`` extras were always deduplicated
+    against the stored list, just never the stored list against itself.
+    """
+    breakdown_columns: list[str] = []
+    seen: set[str] = set()
+    extras = (definition.app_version_column, definition.platform_column)
+    for column in (*(definition.breakdown_columns or []), *(extra for extra in extras if extra)):
+        if column in seen:
+            continue
+        seen.add(column)
+        breakdown_columns.append(column)
     return breakdown_columns
 
 
@@ -832,8 +847,9 @@ def _collect_fact_breakdown_rows(
         time_from=chunk_from,
         time_to=chunk_to,
     )
-    _upsert_metric_value_breakdown_rows(session, rows=rows_out)
-    return len(rows_out)
+    # The upsert's own return, not ``len(rows_out)``: it drops non-finite values
+    # first, and the count the task reports has to be what was stored.
+    return _upsert_metric_value_breakdown_rows(session, rows=rows_out)
 
 
 def _collect_fact_ratio_breakdown_rows(
@@ -923,8 +939,9 @@ def _collect_fact_ratio_breakdown_rows(
         time_from=chunk_from,
         time_to=chunk_to,
     )
-    _upsert_metric_value_breakdown_rows(session, rows=rows_out)
-    return len(rows_out)
+    # The upsert's own return, not ``len(rows_out)``: it drops non-finite values
+    # first, and the count the task reports has to be what was stored.
+    return _upsert_metric_value_breakdown_rows(session, rows=rows_out)
 
 
 def _resolve_fact_composition(definition: MetricDefinition) -> MetricComposition:
@@ -1020,6 +1037,9 @@ def _collect_fact_single(
     if ds is None:
         msg = "DataSource for fact metric not found"
         raise ScanError(msg)
+    # ``_load_fact_table`` scoped the fact TABLE to this project; this scopes the
+    # warehouse credential behind it, which nothing else on this path does.
+    _reject_foreign_data_source(session, project_id=definition.project_id, data_source=ds)
     interval_code = interval_spec.code
     dialect = _dialect_for_data_source(ds)
 
@@ -1064,8 +1084,7 @@ def _collect_fact_single(
                 time_from=chunk_from,
                 time_to=chunk_to,
             )
-            _upsert_metric_values_rows(session, rows=value_rows)
-            total_values += len(value_rows)
+            total_values += _upsert_metric_values_rows(session, rows=value_rows)
             total_breakdowns += _collect_fact_breakdown_rows(
                 session,
                 adapter=adapter,
@@ -1123,6 +1142,12 @@ def _collect_fact_ratio(
     if numerator_ds is None or denominator_ds is None:
         msg = "DataSource for fact ratio operand not found"
         raise ScanError(msg)
+    # Both operands, because they may sit on different warehouses and either one
+    # is a credential this collection is about to open.
+    for operand_ds in (numerator_ds, denominator_ds):
+        _reject_foreign_data_source(
+            session, project_id=definition.project_id, data_source=operand_ds
+        )
     breakdown_columns = _metric_breakdown_columns(definition)
     if breakdown_columns and numerator_ft.id != denominator_ft.id:
         msg = (
@@ -1196,8 +1221,7 @@ def _collect_fact_ratio(
                     time_from=chunk_from,
                     time_to=chunk_to,
                 )
-                _upsert_metric_values_rows(session, rows=value_rows)
-                total_values += len(value_rows)
+                total_values += _upsert_metric_values_rows(session, rows=value_rows)
                 if breakdown_columns:
                     total_breakdowns += _collect_fact_ratio_breakdown_rows(
                         session,
@@ -1439,6 +1463,14 @@ class _FactBatchContext:
     adapters: dict[uuid.UUID, BaseAdapter] = field(default_factory=dict)
     columns: dict[uuid.UUID, set[str]] = field(default_factory=dict)
     dialects: dict[uuid.UUID, SqlDialect] = field(default_factory=dict)
+    #: ``(data_source_id, project_id)`` pairs already cleared by
+    #: ``_reject_foreign_data_source``. Keyed by BOTH because one batch mixes
+    #: projects: ``check_metric_definitions_due`` groups the fact metrics it
+    #: dispatches by interval alone, so an adapter this project legitimately
+    #: opened is sitting in ``adapters`` when the next project's metric asks for
+    #: the same source. A per-source-only memo would let that second project
+    #: inherit the first one's verdict.
+    scoped: set[tuple[uuid.UUID, uuid.UUID]] = field(default_factory=set)
 
     def resolve(
         self, fact_table_id: uuid.UUID | None, *, project_id: uuid.UUID
@@ -1451,17 +1483,25 @@ class _FactBatchContext:
         data_source_id = fact_table.data_source_id
         assert data_source_id is not None
         adapter = self.adapters.get(data_source_id)
-        if adapter is None:
+        scope_key = (data_source_id, project_id)
+        if adapter is None or scope_key not in self.scoped:
             ds = self.session.get(DataSource, data_source_id)
             if ds is None:
                 msg = "DataSource for fact metric not found"
                 raise ScanError(msg)
-            adapter = _build_adapter(ds)
-            adapter.test_connection()
-            self.adapters[data_source_id] = adapter
-            # Cached under the same key as the adapter: the dialect a filter must be
-            # compiled for is a property of the data source, not of the fact table.
-            self.dialects[data_source_id] = _dialect_for_data_source(ds)
+            # Before the credential is opened, and again for a project that has
+            # not been cleared for this source yet — see ``scoped`` above. The
+            # repeat ``session.get`` costs no query: the row is already in the
+            # session's identity map.
+            _reject_foreign_data_source(self.session, project_id=project_id, data_source=ds)
+            self.scoped.add(scope_key)
+            if adapter is None:
+                adapter = _build_adapter(ds)
+                adapter.test_connection()
+                self.adapters[data_source_id] = adapter
+                # Cached under the same key as the adapter: the dialect a filter must be
+                # compiled for is a property of the data source, not of the fact table.
+                self.dialects[data_source_id] = _dialect_for_data_source(ds)
         return fact_table, adapter
 
     def adapter_for(self, fact_table: FactTable) -> BaseAdapter:
@@ -1685,7 +1725,7 @@ def _assemble_single_metric(
         time_from=time_from,
         time_to=time_to,
     )
-    _upsert_metric_values_rows(session, rows=value_rows)
+    values_written = _upsert_metric_values_rows(session, rows=value_rows)
 
     breakdown_rows: list[dict[str, object]] = []
     for breakdown in plan.breakdowns:
@@ -1719,6 +1759,7 @@ def _assemble_single_metric(
                 }
             )
 
+    breakdowns_written = 0
     if plan.breakdowns:
         _delete_metric_value_breakdowns_window(
             session,
@@ -1726,9 +1767,9 @@ def _assemble_single_metric(
             time_from=time_from,
             time_to=time_to,
         )
-        _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
+        breakdowns_written = _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
 
-    return len(value_rows), len(breakdown_rows)
+    return values_written, breakdowns_written
 
 
 def _assemble_ratio_metric(
@@ -1764,7 +1805,7 @@ def _assemble_ratio_metric(
         time_from=time_from,
         time_to=time_to,
     )
-    _upsert_metric_values_rows(session, rows=value_rows)
+    values_written = _upsert_metric_values_rows(session, rows=value_rows)
 
     breakdown_rows: list[dict[str, object]] = []
     for breakdown in plan.breakdowns:
@@ -1789,6 +1830,7 @@ def _assemble_ratio_metric(
             denominator_index=index_by_key[breakdown.denominator_key],
         )
 
+    breakdowns_written = 0
     if plan.breakdowns:
         _delete_metric_value_breakdowns_window(
             session,
@@ -1796,9 +1838,9 @@ def _assemble_ratio_metric(
             time_from=time_from,
             time_to=time_to,
         )
-        _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
+        breakdowns_written = _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
 
-    return len(value_rows), len(breakdown_rows)
+    return values_written, breakdowns_written
 
 
 def _run_fact_interval_group(
@@ -2045,6 +2087,60 @@ def _run_fact_interval_group(
         context.close()
 
 
+def _reject_foreign_data_source(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    data_source: DataSource,
+) -> None:
+    """Fail the collection if the stored data source is another project's.
+
+    The save doors (``load_project_data_source`` for a ``sql`` metric,
+    ``fact_table_service._verify_data_source`` for a fact table) are SAVE-time,
+    and rows written before them walked in while they were open: this collector
+    resolves the credential by primary key alone and the beat dispatches every
+    active metric with no scoping join, so such a row kept running its project's
+    free-text SELECT under a foreign warehouse credential, unattended, forever
+    (tripl-0zpq.347).
+
+    Called on EVERY credential this module opens, not just the ``sql`` one: the
+    fact half reaches its warehouse through ``fact_tables.data_source_id``, and
+    ``_load_fact_table`` scopes the fact TABLE to the metric's project while
+    nothing scoped the source behind it. That half needs the guard MORE, because
+    tripl-0zpq.177 tightened its save door from "a ScanConfig binds this source
+    to this project" to ownership — so a stored binding the save door would now
+    refuse (a workspace-global source this project has since stopped scanning,
+    or one owned by another project) survives untouched in ``fact_tables`` and
+    is honoured on every tick.
+
+    The verdict is the SAME predicate the save doors apply
+    (:func:`data_source_out_of_project_scope`) — one rule, every caller — so a
+    legacy row now fails loudly, with a red metric and a message an owner can
+    act on, instead of quietly succeeding.
+
+    Takes ``project_id`` rather than the metric definition because the batched
+    fact path resolves data sources inside ``_FactBatchContext``, which is keyed
+    by fact table and holds no single definition.
+    """
+    scanning_project_ids: set[uuid.UUID] = set()
+    if data_source.project_id is None:
+        scanning_project_ids = set(
+            session.scalars(
+                select(ScanConfig.project_id).where(ScanConfig.data_source_id == data_source.id)
+            ).all()
+        )
+    if data_source_out_of_project_scope(
+        data_source,
+        project_id=project_id,
+        scanning_project_ids=scanning_project_ids,
+    ):
+        msg = (
+            "This metric's data source belongs to another project and cannot be "
+            "used here. Repoint the metric at a data source this project may use."
+        )
+        raise ScanError(msg)
+
+
 def _collect_sql(
     session: Session,
     *,
@@ -2079,12 +2175,23 @@ def _collect_sql(
         raise ScanError(msg)
     value_column = _config_str(config, "value_column") or SQL_VALUE_COLUMN
 
-    safe_sql = validate_select_sql(metric_sql, value_column=value_column, time_column=time_column)
+    try:
+        safe_sql = validate_select_sql(
+            metric_sql, value_column=value_column, time_column=time_column
+        )
+    except ValueError as exc:
+        # The validator's message is tripl-authored English naming the missing
+        # or unsafe part ("SELECT must project a 'value' column", ...). Letting
+        # the bare ValueError escape made ``user_facing_error`` fall back to
+        # "Scan failed due to an internal error." on a mistake the user can
+        # actually fix (tripl-0zpq.173).
+        raise ScanError(str(exc)) from exc
 
     ds = session.get(DataSource, definition.data_source_id)
     if ds is None:
         msg = "DataSource for sql metric not found"
         raise ScanError(msg)
+    _reject_foreign_data_source(session, project_id=definition.project_id, data_source=ds)
 
     adapter = _build_adapter(ds)
     total_values = 0
@@ -2141,8 +2248,7 @@ def _collect_sql(
                 time_from=chunk_from,
                 time_to=chunk_to,
             )
-            _upsert_metric_values_rows(session, rows=value_rows)
-            total_values += len(value_rows)
+            total_values += _upsert_metric_values_rows(session, rows=value_rows)
             session.commit()
     finally:
         adapter.close()
@@ -2328,8 +2434,9 @@ def _compose_grid_region(
         time_to=window_to,
         scan_config_id=scan_config.id,
     )
-    _upsert_metric_values_rows(session, rows=value_rows)
-    return len(value_rows), True
+    # ``True`` regardless: the window was processed and its watermark must move
+    # even if every bucket the warehouse answered was non-finite and dropped.
+    return _upsert_metric_values_rows(session, rows=value_rows), True
 
 
 def _collect_event_composition(

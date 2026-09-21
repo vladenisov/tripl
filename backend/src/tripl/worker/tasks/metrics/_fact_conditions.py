@@ -626,12 +626,15 @@ def _validate_breakdown_columns(
 ) -> None:
     """Hold breakdown dimensions to the same allowlist a measure column answers to.
 
-    Breakdown columns are never checked against the fact table when the metric is
-    saved: ``_verify_fact_operand`` covers the measure, distinct, condition and
-    row-filter columns only, and the schema layer applies nothing but
-    ``validate_identifier``'s bare-identifier regex. A metric can therefore be
-    CREATED naming a dimension the fact table has never had, and a dimension that was
-    valid at save time can be dropped from the warehouse afterwards.
+    The save door now refuses an unknown dimension itself:
+    ``_verify_fact_breakdown_columns`` in ``metric_definition_service`` answers 422
+    for a breakdown column, ``app_version_column`` or ``platform_column`` that is
+    not in the fact table's STORED ``columns`` snapshot (tripl-0zpq.174). So this
+    is the live-introspection backstop rather than the only check. It still has to
+    exist, because the snapshot and the warehouse are two different facts: a
+    dimension that was in the snapshot at save time can be dropped from the
+    warehouse afterwards, the snapshot itself can be stale, and rows saved before
+    that check landed were never asked.
 
     Without this the column is caught by the adapter's own ``_validate_column``, which
     raises a bare ``ValueError`` — the generic internal-error summary again. Fail here
