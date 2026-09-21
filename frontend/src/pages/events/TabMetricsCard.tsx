@@ -176,12 +176,21 @@ export function TabMetricsCard({
               </div>
             ) : hasChartData ? (
               <>
+                {/* The served band multiplier rather than the chart's own
+                    constant, so this card can never disagree with the drilldown
+                    it links to (tripl-0zpq.299). Inert while the events-total
+                    series stays count-only — metrics_service.get_events_metrics
+                    emits bare `EventMetricPoint(bucket, count)`, so no point
+                    carries the expected_count/stddev a band needs — but the
+                    prop is what keeps the two charts on one source the day it
+                    does. */}
                 <MetricsChart
                   data={tabMetricsData}
                   forecast={tabMetrics?.forecast}
                   height={160}
                   color={activeEt?.color || 'var(--chart-3)'}
                   granularity={granularity}
+                  sigmaThreshold={tabMetrics?.sigma_threshold}
                 />
                 {tabMetrics?.interval && (
                   <p className="mt-2 text-xs text-muted-foreground">

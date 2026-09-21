@@ -1,16 +1,24 @@
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.models.data_source import DataSource
 from tripl.models.fact_table import FactTable
-from tripl.models.scan_config import ScanConfig
+from tripl.models.metric_definition import MetricDefinition
 from tripl.schemas.fact_table import FactTableCreate, FactTableUpdate
+from tripl.services.data_source_scope import (
+    DATA_SOURCE_NOT_AVAILABLE,
+    data_source_out_of_project_scope,
+    scanning_project_ids_for,
+)
 from tripl.services.fact_table_dependents import (
     fact_table_conflict_detail,
     metrics_depending_on,
+    metrics_needing_column,
     metrics_needing_filter,
 )
 from tripl.services.plan_branch_service import resolve_branch_id
@@ -40,38 +48,109 @@ async def _refresh_main_search_index(
 async def _verify_data_source(
     session: AsyncSession, project_id: uuid.UUID, data_source_id: uuid.UUID
 ) -> None:
-    """Assert the data source is bound to this project before persisting a link.
+    """Assert this project may use the data source before persisting a link.
 
-    A data source is global; it "belongs to" a project only when at least one
-    ``ScanConfig`` links the two. Scoping the check to ``project_id`` blocks an
-    editor from binding a fact table to another project's warehouse by supplying
-    a foreign data source id (multi-tenant isolation). This mirrors the preview
-    path's scope check in ``fact_table_introspection_service``.
+    Blocks an editor from binding a fact table to another project's warehouse by
+    supplying a foreign data source id (multi-tenant isolation).
+
+    The rule is OWNERSHIP, shared verbatim with the fact-table preview door and
+    with the ``sql``-metric save and preview doors — see
+    ``services/data_source_scope``. It used to be "at least one ``ScanConfig``
+    links the two", which answered the same question differently from the metric
+    doors and refused a workspace-global warehouse nobody scans (tripl-0zpq.177).
     """
-    in_project = await session.scalar(
-        select(ScanConfig.id)
-        .where(
-            ScanConfig.data_source_id == data_source_id,
-            ScanConfig.project_id == project_id,
-        )
-        .limit(1)
-    )
-    if in_project is None:
-        raise HTTPException(status_code=404, detail="Data source not found")
+    data_source = await session.get(DataSource, data_source_id)
+    if data_source is None:
+        raise HTTPException(status_code=404, detail=DATA_SOURCE_NOT_AVAILABLE)
+    if data_source_out_of_project_scope(
+        data_source,
+        project_id=project_id,
+        scanning_project_ids=await scanning_project_ids_for(session, data_source),
+    ):
+        raise HTTPException(status_code=404, detail=DATA_SOURCE_NOT_AVAILABLE)
+
+
+def _stored_names(rows: object) -> list[str]:
+    """The ``name`` of every well-formed descriptor in a stored JSON list.
+
+    ``row_filters`` and ``columns`` are both JSON columns of ``{"name": ...}``
+    descriptors, so a legacy row can be any shape; anything without a string
+    ``name`` — up to and including the whole value not being a list — is skipped
+    rather than raising, because a referential guard must never turn an unrelated
+    edit into a 500.
+    """
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return []
+    return [
+        row["name"] for row in rows if isinstance(row, Mapping) and isinstance(row.get("name"), str)
+    ]
 
 
 def _stored_filter_names(fact_table: FactTable) -> list[str]:
-    """The named row filters currently stored on the table, in stored order.
+    """The named row filters currently stored on the table, in stored order."""
+    return _stored_names(fact_table.row_filters)
 
-    ``row_filters`` is a JSON column, so a legacy row can be any shape; anything
-    without a string ``name`` is skipped rather than raising, because a
-    referential guard must never turn an unrelated edit into a 500.
+
+def _stored_column_names(fact_table: FactTable) -> list[str]:
+    """The introspected columns currently stored on the table, in stored order."""
+    return _stored_names(fact_table.columns)
+
+
+def _removed_names(replacement: object, stored: Sequence[str]) -> list[str]:
+    """Which ``stored`` names the PATCH's whole-list replacement drops.
+
+    ``replacement`` is untyped at this boundary (it arrives from
+    ``model_dump(exclude_unset=True)``), and ``_stored_names`` narrows it: a value
+    that is not a list of named descriptors leaves the surviving set empty, which
+    reports every stored name as removed and makes the guard refuse the update
+    rather than let a malformed payload strand a metric silently.
     """
-    return [
-        row["name"]
-        for row in (fact_table.row_filters or [])
-        if isinstance(row, Mapping) and isinstance(row.get("name"), str)
-    ]
+    surviving = set(_stored_names(replacement))
+    return [name for name in stored if name not in surviving]
+
+
+def _reject_stranding_removals(
+    *,
+    dependents: Sequence[MetricDefinition],
+    removed: Sequence[str],
+    needing: Callable[[Sequence[MetricDefinition], str], list[MetricDefinition]],
+    noun: str,
+    nouns: str,
+    then_one: str,
+    then_many: str,
+) -> None:
+    """One 409 naming EVERY removed name a saved metric still reads, or nothing.
+
+    Raising on the first blocked name would cost the operator one
+    edit/save/409 round trip per name in a payload the server already examined in
+    full: a form that prunes three filters used by three metrics teaches them one
+    of the three facts at a time, and each message reads as though it were the
+    only obstruction. ``fact_table_conflict_detail``'s ten-then-count truncation
+    already bounds the body, so naming them all together costs nothing.
+    """
+    blocking_ids: set[uuid.UUID] = set()
+    blocked: list[str] = []
+    for name in removed:
+        metrics = needing(dependents, name)
+        if not metrics:
+            continue
+        blocked.append(name)
+        blocking_ids.update(metric.id for metric in metrics)
+    if not blocked:
+        return
+    one = len(blocked) == 1
+    named = ", ".join(repr(name) for name in blocked)
+    raise HTTPException(
+        status_code=409,
+        detail=fact_table_conflict_detail(
+            # Ordered by ``dependents`` rather than by discovery order, so the
+            # same PATCH always produces the same sentence.
+            metrics=[metric for metric in dependents if metric.id in blocking_ids],
+            lead=f"Cannot remove or rename the {noun if one else nouns} {named}.",
+            reason=f"That {noun} is used by" if one else f"Those {nouns} are used by",
+            then=then_one if one else then_many,
+        ),
+    )
 
 
 async def _reject_updates_that_strand_a_metric(
@@ -81,42 +160,42 @@ async def _reject_updates_that_strand_a_metric(
 ) -> None:
     """409 when this PATCH would leave a saved fact metric pointing at nothing.
 
-    Two edits are referential, not presentational:
+    Three edits are referential, not presentational:
 
     * dropping or renaming a named row filter — metrics store the NAME, and
       ``_fact_conditions._resolve_named_filter_fragment`` raises at collection
       time when it no longer resolves;
+    * dropping or renaming an introspected column — metrics store the NAME of the
+      column they aggregate, break down by, or filter on, and ``_fact_conditions``
+      rejects it against ``allowed_columns`` at collection time. A re-preview
+      against a query that no longer projects the column sends exactly this
+      PATCH;
     * unbinding the data source — ``metric_collect`` raises "FactTable ... has no
       data source bound" for every metric on the table.
 
-    ``exclude_unset`` is what makes the row-filter arm safe to write this way: a
-    PATCH that does not mention ``row_filters`` has no key here and cannot trip
-    the guard, while an explicit ``"row_filters": []`` does, because removing all
+    ``exclude_unset`` is what makes the two list arms safe to write this way: a
+    PATCH that does not mention ``row_filters`` (or ``columns``) has no key here
+    and cannot trip the guard, while an explicit ``[]`` does, because removing all
     of them is exactly the destructive case. Same for ``data_source_id``: the key
     is present only when the client actually sent it, so ``None`` here always
     means "unbind", never "left alone".
 
-    The dependents query runs only when one of those two keys is present, so an
-    ordinary rename of ``display_name`` still costs nothing.
+    The dependents query runs only when one of those three keys is present AND
+    something was actually dropped, so an ordinary rename of ``display_name`` —
+    or a re-preview that only ADDS a column — still costs nothing.
     """
     unbinding = "data_source_id" in update_data and update_data["data_source_id"] is None
-    removed_filters: list[str] = []
-    if "row_filters" in update_data:
-        # ``update_data`` is untyped at this boundary (it arrives from
-        # ``model_dump(exclude_unset=True)``), so narrow before iterating: a
-        # value that is not a list leaves ``surviving`` empty, which reports
-        # every stored filter as removed and makes the guard below refuse the
-        # update rather than let a malformed payload strand a metric silently.
-        raw_surviving = update_data["row_filters"]
-        surviving = {
-            row["name"]
-            for row in (raw_surviving if isinstance(raw_surviving, list) else [])
-            if isinstance(row, Mapping) and isinstance(row.get("name"), str)
-        }
-        removed_filters = [
-            name for name in _stored_filter_names(fact_table) if name not in surviving
-        ]
-    if not unbinding and not removed_filters:
+    removed_filters = (
+        _removed_names(update_data["row_filters"], _stored_filter_names(fact_table))
+        if "row_filters" in update_data
+        else []
+    )
+    removed_columns = (
+        _removed_names(update_data["columns"], _stored_column_names(fact_table))
+        if "columns" in update_data
+        else []
+    )
+    if not unbinding and not removed_filters and not removed_columns:
         return
 
     dependents = await metrics_depending_on(
@@ -125,18 +204,27 @@ async def _reject_updates_that_strand_a_metric(
     if not dependents:
         return
 
-    for name in removed_filters:
-        blocking = metrics_needing_filter(dependents, name)
-        if blocking:
-            raise HTTPException(
-                status_code=409,
-                detail=fact_table_conflict_detail(
-                    metrics=blocking,
-                    lead=f"Cannot remove or rename the row filter {name!r}.",
-                    reason="That row filter is used by",
-                    then="change the filter",
-                ),
-            )
+    # Both predicates are scoped to THIS table: a cross-table ratio metric names
+    # its other operand's filters and columns in the same ``config``, and those
+    # references are not this edit's business.
+    _reject_stranding_removals(
+        dependents=dependents,
+        removed=removed_filters,
+        needing=partial(metrics_needing_filter, fact_table_id=fact_table.id),
+        noun="row filter",
+        nouns="row filters",
+        then_one="change the filter",
+        then_many="change those filters",
+    )
+    _reject_stranding_removals(
+        dependents=dependents,
+        removed=removed_columns,
+        needing=partial(metrics_needing_column, fact_table_id=fact_table.id),
+        noun="column",
+        nouns="columns",
+        then_one="change the column",
+        then_many="change those columns",
+    )
     if unbinding:
         raise HTTPException(
             status_code=409,

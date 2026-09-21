@@ -1230,10 +1230,16 @@ def forecast_next_buckets(
 ) -> list[ForecastPoint]:
     """One-step (or N-step) seasonal-naive + trend forecast.
 
-    Reuses the same STL/MSTL decomposition the anomaly detector fits, then
-    extrapolates: trend continues with the slope of the last full seasonal
-    period, and the seasonal component repeats with its phase. Stddev comes
-    from the robust scale of residuals so the UI can render a band of the
+    Fits its OWN STL/MSTL decomposition — the same KIND the anomaly detector
+    fits, but a separate model: it calls ``STL(...).fit()`` / ``MSTL(...).fit()``
+    directly rather than going through ``_fit_components_cached``, so it shares
+    neither that cache nor its flat-series shortcut. A caller on the request path
+    must therefore bound the series it hands in and expect to pay for a real fit;
+    callers that do not read the result should not ask for one at all.
+
+    It then extrapolates: trend continues with the slope of the last full
+    seasonal period, and the seasonal component repeats with its phase. Stddev
+    comes from the robust scale of residuals so the UI can render a band of the
     same width as the historical anomaly band.
 
     Returns an empty list when there isn't enough history to fit a model.

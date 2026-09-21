@@ -668,9 +668,11 @@ async def test_saving_a_sql_metric_against_another_projects_data_source_is_refus
     )
 
     assert resp.status_code == 404, resp.text
-    # One message for both "no such row" and "out of scope": two distinct messages
-    # would let a member tell a non-existent id from another project's source.
-    assert resp.json()["detail"] == "Data source not found"
+    # One message for both "no such row" and "out of scope". Not anti-enumeration
+    # — ``GET /api/v1/data-sources`` hands a session user the whole inventory
+    # anyway — but a project-scoped API key is refused on those slug-less routes,
+    # so for THAT caller uniform wording is the one thing still withheld.
+    assert resp.json()["detail"] == "Data source is not available in this project."
 
 
 async def test_repointing_a_sql_metric_at_another_projects_data_source_is_refused(
@@ -726,8 +728,8 @@ async def test_repointing_a_sql_metric_at_another_projects_data_source_is_refuse
     )
 
     assert resp.status_code == 404, resp.text
-    # The same non-enumerable message every branch of the check raises.
-    assert resp.json()["detail"] == "Data source not found"
+    # The same message every branch of the check raises — see the create test.
+    assert resp.json()["detail"] == "Data source is not available in this project."
 
     # And the refusal lands before anything is written: the check runs first in
     # ``_apply_definition_update``, so the stored binding is untouched.
@@ -763,7 +765,7 @@ async def test_previewing_against_another_projects_data_source_never_reaches_the
     # failures as a 200 with ``error`` set, so the status code is the assertion
     # that carries the weight here, not the stub.
     assert resp.status_code == 404, resp.text
-    assert resp.json()["detail"] == "Data source not found"
+    assert resp.json()["detail"] == "Data source is not available in this project."
 
 
 async def test_previewing_against_the_projects_own_data_source_still_runs(
@@ -875,8 +877,8 @@ async def test_a_shared_warehouse_no_project_scans_can_back_a_sql_metric(
     is shared by definition, and this is the test that says so.
 
     Red if the rule goes back to requiring a ScanConfig in this project: the save
-    404s with "Data source not found" on a source the owner created for exactly
-    this use.
+    404s with "Data source is not available in this project." on a source the
+    owner created for exactly this use.
     """
     project = await _create_project(client)
     data_source = await _create_data_source(client)
@@ -975,7 +977,7 @@ async def test_a_data_source_owned_by_another_project_is_refused_even_if_nobody_
     )
 
     assert resp.status_code == 404, resp.text
-    assert resp.json()["detail"] == "Data source not found"
+    assert resp.json()["detail"] == "Data source is not available in this project."
 
 
 async def test_previewing_a_fact_table_leaves_an_audit_row(client: AsyncClient) -> None:

@@ -42,6 +42,34 @@ _editor_required = [Depends(get_editor_user)]
 TimeFrom = Annotated[datetime | None, Query(alias="from")]
 TimeTo = Annotated[datetime | None, Query(alias="to")]
 
+# Same ceiling events.py puts on its bulk samples, for the same reason: the
+# catalog's "select all" is unbounded, and an audit row should stay readable.
+_BULK_SAMPLE = 200
+
+
+def _bulk_update_audit_payload(
+    metric_ids: list[uuid.UUID], data: MetricDefinitionBulkUpdate
+) -> dict[str, object]:
+    """The ``metric_definition.bulk_update`` payload: count, id sample, changes.
+
+    Deliberately the shape of ``events.bulk_event_audit_payload`` — ``count`` is
+    the true number of metrics and ``metric_ids`` is only a sample, so a reader
+    can tell a 3-metric archive from a 300-metric one even when the list is cut
+    off. Pass the DEDUPLICATED ids: the service updates ``set(data.metric_ids)``,
+    so auditing the raw list would file ``count: 3`` for a 2-metric change.
+
+    ``exclude_unset`` mirrors the service's own ``update_values``, so the row
+    reports exactly the columns the statement wrote — including an explicit
+    ``owner_id: null``, which unassigns the owner rather than meaning "unset".
+    The fixed keys are written last so a request field can never shadow them.
+    """
+    return {
+        **data.model_dump(mode="json", exclude_unset=True, exclude={"metric_ids"}),
+        "count": len(metric_ids),
+        "metric_ids": [str(metric_id) for metric_id in metric_ids[:_BULK_SAMPLE]],
+        "truncated": len(metric_ids) > _BULK_SAMPLE,
+    }
+
 
 @router.get("", response_model=MetricDefinitionListResponse)
 async def list_metric_definitions(
@@ -95,13 +123,35 @@ async def create_metric_definition(
     return metric
 
 
-@router.post("/bulk-update", status_code=204, dependencies=_editor_required)
+@router.post("/bulk-update", status_code=204)
 async def bulk_update_metric_definitions(
     session: SessionDep,
     slug: str,
     data: MetricDefinitionBulkUpdate,
+    current_user: EditorUserDep,
 ) -> None:
+    # ``current_user`` rather than the bare ``_editor_required`` dependency
+    # because the row below needs the actor: this route stops collection and
+    # anomaly detection for a whole selection, and it used to be the only bulk
+    # mutation in the group invisible in the Audit log — its ``events`` and
+    # ``variables`` siblings both file one (tripl-0zpq.238). The gate is the same
+    # ``get_editor_user`` either way.
+    #
+    # A comment and not a docstring: FastAPI publishes a route docstring as the
+    # operation ``description``, and this operation has none in the checked-in
+    # ``backend/openapi.json``.
     await metric_definition_service.bulk_update_metric_definitions(session, slug, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="metric_definition.bulk_update",
+        target_type="metric_definition",
+        # No single target: one row stands for the whole selection, which is why
+        # the ids live in the payload.
+        target_id=None,
+        project_slug=slug,
+        payload=_bulk_update_audit_payload(list(dict.fromkeys(data.metric_ids)), data),
+    )
 
 
 @router.post("/preview", response_model=MetricPreviewResponse)
@@ -117,8 +167,9 @@ async def preview_metric_sql(
     against the data source over the last 50 buckets of the requested interval
     (hard-capped at 200 rows); nothing is persisted. Expected user mistakes —
     bad SQL, missing time/value columns, warehouse errors — return 200 with
-    ``error`` set so the editor can render them inline; unknown data source is
-    a 404.
+    ``error`` set so the editor can render them inline. A data source this
+    project may not use is a 404, whether the id is unknown or belongs to
+    another project — the same status and sentence the fact-table doors answer.
     """
     # Audited: see the note on ``fact_tables.preview_fact_table``. This and the
     # fact-operand preview below are the metrics catalog's two doors where an
@@ -285,12 +336,18 @@ async def collect_metric_now(
     Unknown metric -> 404.
     """
     result = await metric_definition_service.trigger_metric_collection(session, slug, metric_id)
+    # Re-read for the NAME alone. The 202 body carries ids and a window, and this
+    # row was filed with an empty ``target_name`` — so the Audit log listed a
+    # collect against a bare UUID, while every other row in this router names its
+    # metric (tripl-0zpq.241). After the trigger, so the 404 path pays nothing.
+    collected = await metric_definition_service.get_metric_definition(session, slug, metric_id)
     await audit_service.record(
         session,
         user=current_user,
         action="metric_definition.collect",
         target_type="metric_definition",
         target_id=metric_id,
+        target_name=collected.name,
         project_slug=slug,
         payload={
             "window_from": result.window_from.isoformat() if result.window_from else None,

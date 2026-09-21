@@ -17,11 +17,12 @@ from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.data_source import DataSource
-from tripl.models.domain_enums import ProjectGenerationStatus, UserRole
+from tripl.models.domain_enums import MetricScopeType, ProjectGenerationStatus, UserRole
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_definition import MetricDefinition
 from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
@@ -837,9 +838,10 @@ async def purge_project_rows(session: AsyncSession, project: Project) -> None:
     seed its replacement inside a single transaction: if seeding fails, the
     rollback puts the old demo back untouched (tripl-2su6.13).
 
-    Data sources OWNED by this project (a demo's synthetic warehouse) go first,
-    so nothing leaks a workspace-wide orphan. Real, workspace-global sources carry
-    project_id IS NULL and are untouched. The FK is ``ondelete="CASCADE"``, so
+    Data sources OWNED by this project (a demo's synthetic warehouse) are deleted
+    explicitly, ahead of the project row, so nothing leaks a workspace-wide
+    orphan. Real, workspace-global sources carry project_id IS NULL and are
+    untouched. The FK is ``ondelete="CASCADE"``, so
     both databases would remove them anyway — this used to claim otherwise, that
     SQLite has cascades off, which stopped being true when the suite began
     setting ``PRAGMA foreign_keys=ON`` on every connection (tests/_sqlite.py).
@@ -847,11 +849,33 @@ async def purge_project_rows(session: AsyncSession, project: Project) -> None:
     reader of this function can see it, rather than resting on a schema detail
     two files away.
 
+    The metric-scope anomalies go first, and they are the one thing here that a
+    cascade genuinely cannot reach: ``MetricAnomaly`` has no ``project_id`` and
+    no FK to the metric it describes — a catalog-metric anomaly is addressed by
+    ``scope_type='metric'`` plus a ``scope_ref`` holding the metric's UUID as
+    TEXT, with a NULL ``scan_config_id``. Dropping the project cascades the
+    ``metric_definitions`` rows away and leaves those anomalies behind forever,
+    pointing at ids nothing resolves (tripl-0zpq.179). Scan-scope anomalies are
+    not in this sweep: they hang off ``scan_config_id``, which the cascade does
+    reach.
+
     The flush matters: it forces the DELETE out before any later INSERT, so a
     caller re-creating a project under the same (unique) slug within this same
     transaction cannot trip the unique constraint on SQLAlchemy's insert-before-
     delete unit-of-work ordering.
     """
+    metric_ids = (
+        await session.scalars(
+            select(MetricDefinition.id).where(MetricDefinition.project_id == project.id)
+        )
+    ).all()
+    if metric_ids:
+        await session.execute(
+            delete(MetricAnomaly).where(
+                MetricAnomaly.scope_type == MetricScopeType.metric.value,
+                MetricAnomaly.scope_ref.in_([str(metric_id) for metric_id in metric_ids]),
+            )
+        )
     await session.execute(delete(DataSource).where(DataSource.project_id == project.id))
     await session.delete(project)
     await session.flush()

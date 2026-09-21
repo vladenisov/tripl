@@ -111,6 +111,10 @@ class EventMove(BaseModel):
     visible_event_ids: list[uuid.UUID] | None = None
 
 
+# The events of one view, in the order they should be shown. Ids must be unique —
+# a duplicate is rejected with 400 (it used to walk off the end of the slot list
+# with an IndexError 500). A comment rather than a docstring: a docstring here
+# would change the published schema description in ``backend/openapi.json``.
 class EventReorder(BaseModel):
     event_ids: list[uuid.UUID] = Field(min_length=1)
 

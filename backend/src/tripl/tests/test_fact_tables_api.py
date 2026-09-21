@@ -7,17 +7,33 @@ import pytest
 from httpx import AsyncClient
 from pydantic import ValidationError
 
+from tripl.models.data_source import DataSource
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.fact_table import NATIVE_TYPE_MAX_LEN, FactTableCreate
 from tripl.tests.conftest import TestSessionLocal
 
 
-async def _bind_data_source_to_project(project_id: str, data_source_id: str) -> None:
-    """Bind a data source to a project via a ScanConfig (its membership link).
+async def _own_data_source(project_id: str, data_source_id: str) -> None:
+    """Stamp ``data_sources.project_id`` — the stronger of the two claims.
 
-    The create/update persist path now scopes a supplied ``data_source_id`` to
-    the project through ``ScanConfig`` (multi-tenant isolation), so a fact table
-    can only reference a warehouse the project already uses.
+    Where a ScanConfig only claims a workspace-global source, this column says
+    outright whose the source is, and ``data_source_out_of_project_scope``
+    decides on it alone: no ScanConfig is consulted, in either direction.
+    """
+    async with TestSessionLocal() as session:
+        row = await session.get(DataSource, uuid.UUID(data_source_id))
+        assert row is not None
+        row.project_id = uuid.UUID(project_id)
+        await session.commit()
+
+
+async def _bind_data_source_to_project(project_id: str, data_source_id: str) -> None:
+    """Point a project's ScanConfig at a data source.
+
+    On a workspace-global source (``project_id`` NULL) this is what CLAIMS it:
+    ``services/data_source_scope`` reads "scanned by some other project and not
+    by this one" as "theirs", so binding is how these tests build an out-of-scope
+    source. A source nobody scans is shared and reachable from every project.
     """
     async with TestSessionLocal() as session:
         session.add(
@@ -153,13 +169,25 @@ class TestCrudLifecycle:
 
 
 class TestDataSourceScoping:
-    """A fact table may only bind a data source the project already uses."""
+    """A fact table may not bind a data source that is another project's.
 
-    async def test_create_rejects_data_source_not_in_project(
+    The rule used to be "a ScanConfig must link the source to THIS project",
+    which answered the same question differently from the ``sql``-metric doors
+    and locked out a workspace-global warehouse nobody scans (tripl-0zpq.177).
+    It is now ownership — so these two build the out-of-scope source by having
+    ANOTHER project claim it, which is the case that was always the point.
+    """
+
+    async def test_create_rejects_data_source_another_project_claims(
         self, client: AsyncClient, project: dict, data_source: dict
     ):
-        # The data source exists globally but is NOT bound to this project via a
-        # ScanConfig, so the persist path must refuse the cross-project binding.
+        other = await client.post(
+            "/api/v1/projects",
+            json={"name": "Other", "slug": "fact-tables-other", "description": ""},
+        )
+        assert other.status_code == 201, other.text
+        await _bind_data_source_to_project(other.json()["id"], data_source["id"])
+
         resp = await client.post(
             _fact_tables_url(project["slug"]),
             json={
@@ -172,9 +200,16 @@ class TestDataSourceScoping:
         )
         assert resp.status_code == 404, resp.text
 
-    async def test_update_rejects_data_source_not_in_project(
+    async def test_update_rejects_data_source_another_project_claims(
         self, client: AsyncClient, project: dict, data_source: dict
     ):
+        other = await client.post(
+            "/api/v1/projects",
+            json={"name": "Other 2", "slug": "fact-tables-other-2", "description": ""},
+        )
+        assert other.status_code == 201, other.text
+        await _bind_data_source_to_project(other.json()["id"], data_source["id"])
+
         created = await _create_fact_table(client, project["slug"], "no_source")
         resp = await client.patch(
             f"{_fact_tables_url(project['slug'])}/{created['id']}",
@@ -182,12 +217,28 @@ class TestDataSourceScoping:
         )
         assert resp.status_code == 404, resp.text
 
-    async def test_create_accepts_bound_data_source(
+    async def test_create_accepts_a_data_source_this_project_owns(
         self, client: AsyncClient, project: dict, data_source: dict
     ):
-        await _bind_data_source_to_project(project["id"], data_source["id"])
+        """The branch the ``project_id`` COLUMN decides, which nothing else here
+        reaches.
+
+        This was ``test_create_accepts_bound_data_source``, and under the binding
+        rule its ``_bind_data_source_to_project`` call was what made it pass.
+        Under the ownership rule that call is inert: the fixture source is
+        workspace-global and nobody else scans it, so it was already in scope
+        with or without a ScanConfig, and the test asserted nothing about the
+        door — ``test_batch6_seam`` says that case out loud instead, in
+        ``test_a_fact_table_may_bind_a_warehouse_nobody_scans``. Stamping the
+        owning project covers the third branch, and it does so with NO
+        ScanConfig anywhere.
+
+        RED on a revert: restore "at least one ScanConfig links the source to
+        this project" and this save answers 404, because this project has none.
+        """
+        await _own_data_source(project["id"], data_source["id"])
         created = await _create_fact_table(
-            client, project["slug"], "bound", data_source_id=data_source["id"]
+            client, project["slug"], "owned", data_source_id=data_source["id"]
         )
         assert created["data_source_id"] == data_source["id"]
 

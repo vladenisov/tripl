@@ -84,6 +84,7 @@ async def preview_fact_table(
     # after this router. A function-local import keeps the app importable even
     # before that module exists on disk.
     from tripl.services.fact_table_introspection_service import (
+        DataSourceNotAvailableError,
         FactTableIntrospectionError,
         introspect_fact_table,
     )
@@ -119,6 +120,11 @@ async def preview_fact_table(
             sql=payload.sql,
             timestamp_column=payload.timestamp_column,
         )
+    except DataSourceNotAvailableError as exc:
+        # 404, the same status and sentence the fact-table SAVE door and both
+        # ``sql``-metric doors answer with for this exact cause. Caught before
+        # its base class, which is the 400 case (tripl-0zpq.353).
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except FactTableIntrospectionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
@@ -1248,20 +1249,66 @@ def _collect_distribution_drift_rows(
     return output_rows, significant_count, truncated
 
 
+def _drop_non_finite_values(rows: list[dict[str, object]], *, kind: str) -> list[dict[str, object]]:
+    """Drop rows whose ``value`` is NaN or ±infinity, logging the count.
+
+    A user SELECT can hand back either — ``0.0/0.0``, ``log(0)``, an overflowing
+    ``sum`` — and ``float()`` accepts both. Postgres stores them in a ``double
+    precision`` column verbatim; SQLite rewrites NaN to NULL and keeps inf. Once
+    stored they poison every consumer downstream: a mean, a stddev, an anomaly
+    band and a JSON response all go NaN, and the anomaly detector's thresholds
+    stop comparing true (tripl-0zpq.116).
+
+    DROPPED rather than clamped or zeroed. The surrounding window-delete has
+    already cleared the bucket, so it reads as ABSENT — the same outcome as a
+    divide-by-zero bucket, which is honest: the warehouse did not answer with a
+    number. Writing 0 would draw a dive that never happened.
+    """
+    finite = [row for row in rows if _is_finite_value(row.get("value"))]
+    dropped = len(rows) - len(finite)
+    if dropped:
+        logger.warning("Dropped %d non-finite %s row(s) before upsert", dropped, kind)
+    return finite
+
+
+def _is_finite_value(value: object) -> bool:
+    """Whether this row survives the non-finite filter — NOT "is a valid float".
+
+    False for exactly one thing: a number that is NaN or ±infinity. A ``str``,
+    a ``None`` or a ``bool`` is passed through as True even though the Float
+    column cannot carry it, because rejecting it here would swallow a type
+    error the DB reports precisely (see the body comment). Naming this
+    "is a real number the Float column can carry" would invert that at the call
+    site, which reads ``if _is_finite_value(row.get("value"))``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        # Not a number at all: leave it to the DB, which owns that error.
+        return True
+    return math.isfinite(value)
+
+
 def _upsert_metric_values_rows(
     session: Session,
     *,
     rows: list[dict[str, object]],
-) -> None:
+) -> int:
     """Insert-or-refresh MetricValue rows keyed by (definition, config, bucket).
 
     Uses the same dialect-aware ON CONFLICT DO UPDATE pattern as the event
     helpers, but generalized over the Float ``value`` column. On conflict only
     ``value`` moves so re-collecting a window overwrites stale values without
-    creating duplicates.
+    creating duplicates. Non-finite values are dropped first — see
+    :func:`_drop_non_finite_values`.
+
+    Returns how many rows were actually written, which is ``len(rows)`` MINUS
+    whatever that filter removed. Callers accumulate this instead of the length
+    of the list they passed in: a collection whose warehouse answered one bucket
+    with ``0.0/0.0`` would otherwise report a value it did not store
+    (tripl-0zpq.116).
     """
+    rows = _drop_non_finite_values(rows, kind="metric value")
     if not rows:
-        return
+        return 0
 
     is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
     for chunk in _chunk_rows(rows):
@@ -1306,21 +1353,27 @@ def _upsert_metric_values_rows(
                     set_={"value": pg_stmt.excluded.value},
                 )
             session.execute(pg_stmt)
+    return len(rows)
 
 
 def _upsert_metric_value_breakdown_rows(
     session: Session,
     *,
     rows: list[dict[str, object]],
-) -> None:
+) -> int:
     """Insert-or-refresh MetricValueBreakdown rows.
 
     Keyed by (definition, config, bucket, breakdown_column, breakdown_value,
     is_other). On conflict ``value`` and ``is_other`` move, mirroring the
     event-breakdown upsert generalized over the Float ``value`` column.
+    Non-finite values are dropped first — see :func:`_drop_non_finite_values`.
+
+    Returns the number of rows actually written, for the same reason as
+    :func:`_upsert_metric_values_rows`.
     """
+    rows = _drop_non_finite_values(rows, kind="metric breakdown")
     if not rows:
-        return
+        return 0
 
     is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
     for chunk in _chunk_rows(rows):
@@ -1392,6 +1445,7 @@ def _upsert_metric_value_breakdown_rows(
                     },
                 )
             session.execute(pg_stmt)
+    return len(rows)
 
 
 def _delete_metric_values_window(

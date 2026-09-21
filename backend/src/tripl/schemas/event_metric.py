@@ -162,9 +162,16 @@ class EventMetricsResponse(BaseModel):
     event_type_id: uuid.UUID | None = None
     interval: ScanInterval | None = None
     latest_signal: MetricSignalResponse | None = None
-    # The scan's anomaly sigma threshold — the ``k`` the UI multiplies the
-    # per-point (effective) stddev by to draw the confidence band, so "outside
-    # the band" equals "flagged". Defaults to the scan-config default.
+    # The anomaly sigma threshold — the ``k`` the UI multiplies the per-point
+    # (effective) stddev by to draw the confidence band, so "outside the band"
+    # equals "flagged". Read from ``ProjectAnomalySettings`` and narrowed by this
+    # scope's false-positive override, which is what the detector scored with;
+    # NOT from ``ScanConfig.sigma_threshold``, which no API has ever written and
+    # which has no reader left (``metrics_service._get_project_sigma_threshold``).
+    # The default below is the system default, and it is served as-is by the one
+    # route that does not resolve a sigma — ``get_events_metrics``, whose points
+    # carry no ``expected_count``/``stddev``, so no band is drawn from it
+    # (tripl-0zpq.119 follow-up).
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD
     data: list[EventMetricPoint]
     forecast: list[ForecastPoint] = []
