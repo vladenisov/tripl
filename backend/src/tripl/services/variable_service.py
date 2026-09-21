@@ -263,7 +263,15 @@ async def update_variable(
     variable_id: uuid.UUID,
     data: VariableUpdate,
     branch_id: uuid.UUID | None = None,
-) -> Variable:
+) -> tuple[Variable, str]:
+    """Patch one variable, returning it and the name it had BEFORE the patch.
+
+    The previous name is returned for the audit trail. A rename is not confined
+    to this row — it rewrites ``${old}`` to ``${new}`` in every event field value
+    on the branch — and the record carried only the new name, so the token that
+    was replaced was not recoverable from the trail (tripl-0zpq.241). Unchanged
+    when the patch is not a rename, which is how the route tells the two apart.
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
     result = await session.execute(
@@ -276,6 +284,7 @@ async def update_variable(
     var = result.scalar_one_or_none()
     if not var:
         raise HTTPException(status_code=404, detail="Variable not found")
+    previous_name = var.name
     update_data = data.model_dump(exclude_unset=True)
     if "bindings" in update_data and update_data["bindings"] is not None:
         await _check_binding_conflicts(
@@ -335,7 +344,7 @@ async def update_variable(
     await session.commit()
     await session.refresh(var)
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
-    return var
+    return var, previous_name
 
 
 async def delete_variable(
@@ -471,14 +480,23 @@ async def bulk_delete_variables(
     slug: str,
     data: VariableBulkDelete,
     branch_id: uuid.UUID | None = None,
-) -> None:
+) -> list[tuple[uuid.UUID, str]]:
+    """Delete the named variables, returning the (id, name) of each one deleted.
+
+    The return value is for the audit trail, and it is what the REQUEST said only
+    by coincidence: ids that name no variable on this branch are silently skipped
+    by ``_load_variables_by_ids``, so recording the request body would file a
+    delete of rows that were never there (tripl-0zpq.241).
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
     variables = await _load_variables_by_ids(session, project_id, branch_id, data.variable_ids)
+    deleted = [(variable.id, variable.name) for variable in variables]
     for variable in variables:
         await session.delete(variable)
     await session.commit()
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
+    return deleted
 
 
 async def _get_variable_in_branch(
@@ -528,10 +546,17 @@ async def upsert_event_override(
     event_id: uuid.UUID,
     data: VariableEventOverrideUpsert,
     branch_id: uuid.UUID | None = None,
-) -> VariableEventValueOverride:
+) -> tuple[VariableEventValueOverride, str]:
+    """Upsert one event override, returning it and the VARIABLE's own name.
+
+    The name is returned because the audit row this feeds has
+    ``target_type="variable"``: it used to file the EVENT's name against a
+    variable target, so a reader could not tell which variable was overridden
+    (tripl-0zpq.241). The event name belongs in the payload, not the target.
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
-    await _get_variable_in_branch(session, project_id, branch_id, variable_id)
+    variable = await _get_variable_in_branch(session, project_id, branch_id, variable_id)
     event = await session.execute(
         select(Event).where(
             Event.id == event_id,
@@ -561,7 +586,7 @@ async def upsert_event_override(
         override.values = list(data.values)
     await session.commit()
     await session.refresh(override)
-    return override
+    return override, variable.name
 
 
 async def delete_event_override(
@@ -570,10 +595,17 @@ async def delete_event_override(
     variable_id: uuid.UUID,
     event_id: uuid.UUID,
     branch_id: uuid.UUID | None = None,
-) -> None:
+) -> tuple[str, str]:
+    """Delete one event override, returning the (variable name, event name).
+
+    Both are read BEFORE the delete: after the commit the row is expired and its
+    ``event`` relationship is no longer loadable on an async session. The audit
+    row this feeds had an EMPTY ``target_name`` and named neither
+    (tripl-0zpq.241).
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
-    await _get_variable_in_branch(session, project_id, branch_id, variable_id)
+    variable = await _get_variable_in_branch(session, project_id, branch_id, variable_id)
     result = await session.execute(
         select(VariableEventValueOverride).where(
             VariableEventValueOverride.variable_id == variable_id,
@@ -583,5 +615,7 @@ async def delete_event_override(
     override = result.scalar_one_or_none()
     if not override:
         raise HTTPException(status_code=404, detail="Override not found")
+    names = (variable.name, override.event_name)
     await session.delete(override)
     await session.commit()
+    return names

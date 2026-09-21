@@ -5,11 +5,12 @@ from typing import Any, NamedTuple
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy import event as sa_event
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.models import Base
+from tripl.models.audit_log import AuditLog
 from tripl.models.data_source import DataSource
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
@@ -556,6 +557,166 @@ async def test_event_override_crud(client: AsyncClient):
     assert deleted.status_code == 204
     listed3 = await client.get(f"/api/v1/projects/var-ovr/variables/{var_id}/event-overrides")
     assert listed3.json() == []
+
+
+# ── tripl-0zpq.241 — what the variable routes leave in the audit log ─────────
+#
+# Four routes changed their service's return type so the row could name what it
+# touched: ``bulk_delete_variables``, ``upsert_event_override``,
+# ``delete_event_override`` and ``update_variable``. Each test below says in its
+# own docstring what the row carried BEFORE, so the revert that reddens it is
+# named rather than left to the reader.
+
+
+async def _variable_audit_rows(action: str) -> list[AuditLog]:
+    """Every audit row filed under one action.
+
+    Read from the table rather than through ``GET /api/v1/audit``: these
+    assertions are about what the route RECORDED, and the reader's filtering and
+    redaction are somebody else's test. Deliberately UNORDERED — ``created_at``
+    is a ``server_default=now()``, which on SQLite gives two rows written in the
+    same second the same value, so a caller expecting more than one row has to
+    identify them by content rather than by position.
+    """
+    async with TestSessionLocal() as session:
+        result = await session.execute(select(AuditLog).where(AuditLog.action == action))
+        return list(result.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_audit_row_names_only_the_variables_that_existed(client: AsyncClient):
+    """The trail of an irreversible delete must name what actually went.
+
+    ``_load_variables_by_ids`` silently skips an id that resolves to nothing on
+    this branch, so the REQUEST's id list is a claim about intent, not about
+    what happened. The request below mixes one real id with one that names no
+    variable at all.
+
+    RED on a revert: restore ``payload=data.model_dump(mode="json")`` and the
+    row carries a two-entry ``variable_ids`` list with no ``count``, no
+    ``variable_names`` and no ``truncated``, so every assertion after the first
+    raises ``KeyError`` — and ``count == 1`` is precisely the number the old
+    payload could not express.
+    """
+    await _setup_project(client, "var-bulk-audit")
+    created = await client.post(
+        "/api/v1/projects/var-bulk-audit/variables",
+        json={"name": "real_one", "variable_type": "string"},
+    )
+    assert created.status_code == 201
+    real_id = created.json()["id"]
+    ghost_id = str(uuid.uuid4())
+
+    resp = await client.post(
+        "/api/v1/projects/var-bulk-audit/variables/bulk-delete",
+        json={"variable_ids": [real_id, ghost_id]},
+    )
+    assert resp.status_code == 204, resp.text
+
+    rows = await _variable_audit_rows("variable.bulk_delete")
+    assert len(rows) == 1
+    payload = rows[0].payload or {}
+    assert payload["count"] == 1
+    assert payload["variable_ids"] == [real_id]
+    assert payload["variable_names"] == ["real_one"]
+    assert payload["truncated"] is False
+    assert ghost_id not in payload["variable_ids"]
+
+
+@pytest.mark.asyncio
+async def test_override_rows_name_the_variable_and_carry_the_event(client: AsyncClient):
+    """``target_type`` is ``variable``, so ``target_name`` must be the variable.
+
+    RED on a revert, in four independent places. The upsert used to file
+    ``target_name=override.event_name``, so restoring it makes the first
+    assertion read "Onboarding Screen" against a row whose target_type says
+    ``variable``; its payload was ``{"event_id", "values"}``, so restoring that
+    makes the ``event_name`` assertion raise ``KeyError``. The delete filed no
+    ``target_name`` at all — an anonymous delete, "" from the column's server
+    default — and a payload of ``{"event_id"}`` only, so the same two reverts
+    redden the same two assertions on that half.
+    """
+    await _setup_project(client, "var-ovr-audit")
+    _, event_id = await _setup_event(client, "var-ovr-audit")
+    created = await client.post(
+        "/api/v1/projects/var-ovr-audit/variables",
+        json={"name": "variant", "allowed_values": ["a", "b"]},
+    )
+    var_id = created.json()["id"]
+
+    put = await client.put(
+        f"/api/v1/projects/var-ovr-audit/variables/{var_id}/event-overrides/{event_id}",
+        json={"values": ["a"]},
+    )
+    assert put.status_code == 200, put.text
+
+    set_rows = await _variable_audit_rows("variable.override_set")
+    assert len(set_rows) == 1
+    assert set_rows[0].target_name == "variant"
+    assert (set_rows[0].payload or {})["event_id"] == event_id
+    assert (set_rows[0].payload or {})["event_name"] == "Onboarding Screen"
+    assert (set_rows[0].payload or {})["values"] == ["a"]
+
+    removed = await client.delete(
+        f"/api/v1/projects/var-ovr-audit/variables/{var_id}/event-overrides/{event_id}"
+    )
+    assert removed.status_code == 204, removed.text
+
+    delete_rows = await _variable_audit_rows("variable.override_delete")
+    assert len(delete_rows) == 1
+    assert delete_rows[0].target_name == "variant"
+    # Read BEFORE the delete: after the commit the override row is expired and
+    # its ``event`` relationship can no longer be loaded on an async session, so
+    # naming the event here is also a test of the ordering in the service.
+    assert (delete_rows[0].payload or {})["event_name"] == "Onboarding Screen"
+
+
+@pytest.mark.asyncio
+async def test_only_a_rename_records_the_previous_name(client: AsyncClient):
+    """A rename rewrites ``${old}`` across the branch; the row must say which.
+
+    The two halves guard each other. Without the first, the branch-wide rewrite
+    leaves no record of the token it replaced (``target_name`` is already the
+    NEW name). Without the second, ``previous_name`` could be filed on every
+    patch, and its presence would stop meaning "the rewrite ran".
+
+    RED on a revert: drop the ``if previous_name != v.name`` block in the route
+    and the first assertion fails with a ``KeyError``; make it unconditional and
+    the last assertion fails, because a colour-only patch would carry one too.
+    """
+    await _setup_project(client, "var-rename-audit")
+    created = await client.post(
+        "/api/v1/projects/var-rename-audit/variables",
+        json={"name": "old_name", "variable_type": "string"},
+    )
+    var_id = created.json()["id"]
+
+    renamed = await client.patch(
+        f"/api/v1/projects/var-rename-audit/variables/{var_id}",
+        json={"name": "new_name"},
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    rows = await _variable_audit_rows("variable.update")
+    assert len(rows) == 1
+    assert rows[0].target_name == "new_name"
+    assert (rows[0].payload or {})["previous_name"] == "old_name"
+
+    described = await client.patch(
+        f"/api/v1/projects/var-rename-audit/variables/{var_id}",
+        json={"description": "Now described"},
+    )
+    assert described.status_code == 200, described.text
+
+    rows = await _variable_audit_rows("variable.update")
+    assert len(rows) == 2
+    # Identified by content, not by position — see ``_variable_audit_rows``.
+    presentation = [row for row in rows if "description" in (row.payload or {})]
+    assert len(presentation) == 1
+    assert "previous_name" not in (presentation[0].payload or {})
+    renames = [row for row in rows if "previous_name" in (row.payload or {})]
+    assert len(renames) == 1
+    assert (renames[0].payload or {})["name"] == "new_name"
 
 
 @pytest.mark.asyncio

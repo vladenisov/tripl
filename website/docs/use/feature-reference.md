@@ -855,24 +855,45 @@ operands, including operands from different fact tables. Fact tables and metrics
 are indexed by global search and are not copied into plan branches.
 
 A fact table that metrics still read cannot be pulled out from under them.
-**Deleting** it, **unbinding its data source**, and **removing or renaming a named
-row filter a metric uses** are each refused with a conflict naming the metrics in
-the way (up to ten, then a count of the rest). Every metric that references the
-table counts, whatever its status — a `draft` or `archived` metric hits the same
-dangling reference the moment it collects again — and so does a ratio operand,
-whose reference lives inside another metric's config rather than in a column of
-its own. Change or delete those metrics first. Every other edit to the fact
-table, including adding a filter, is unaffected — with one exception, which
-matters if you drive the API directly. The unbind refusal is decided by the
-`data_source_id` **in the request**, not by comparing it with the stored one, so a
-client that resubmits the whole object with `data_source_id: null` is refused even
-when the table already has no data source bound. That is exactly the state a
-*deleted* data source leaves behind — the fact table survives and its
-`data_source_id` is set to `NULL` — so the refusal lands on the edits made to
-repair such a table, and names metrics that are already failing for the unrelated
-reason that there is no source to read. Send a real `data_source_id` in the same
-request to get the edit through. The editor on this page never trips this: it
-refuses to save at all without a data source selected.
+**Deleting** it, **unbinding its data source**, **removing or renaming a named
+row filter a metric uses**, and **removing or renaming an introspected column a
+metric aggregates, breaks down by, or filters on** are each refused with a
+conflict naming the metrics in the way (up to ten, then a count of the rest).
+Every metric that references the table counts, whatever its status — a `draft`
+or `archived` metric hits the same dangling reference the moment it collects
+again — and so does a ratio operand, whose reference lives inside another
+metric's config rather than in a column of its own. Change or delete those
+metrics first.
+
+The column refusal is the one you are most likely to meet by accident: it fires
+on the ordinary re-preview-and-save flow, when you edit the SQL so it stops
+projecting a column and save the freshly previewed column list over the old one.
+A single save that prunes several used filters — or several used columns — is
+refused once, naming every blocked name, so there is no need to iterate one
+round trip per name. Refusals across categories are still reported one category
+at a time: filters first, then columns, then the unbind.
+
+Adding a column or a filter is unaffected. Dropping one is not, and neither is
+the unbind case below — which matters if you drive the API directly. The unbind
+refusal is decided by the `data_source_id` **in the request**, not by comparing
+it with the stored one, so a client that resubmits the whole object with
+`data_source_id: null` is refused even when the table already has no data source
+bound. That is exactly the state a *deleted* data source leaves behind — the
+fact table survives and its `data_source_id` is set to `NULL` — so the refusal
+lands on the edits made to repair such a table, and names metrics that are
+already failing for the unrelated reason that there is no source to read. Send a
+real `data_source_id` in the same request to get the edit through. The editor on
+this page never trips this: it refuses to save at all without a data source
+selected.
+
+**Which data sources a fact table may bind.** The same rule `sql`-kind metrics
+use: a source is available to this project unless it is identifiably another
+project's — that is, its owning project is a different one, or it is a shared
+(unowned) source that some other project scans and this one does not. A shared
+source **no** project scans is available everywhere. Anything else is refused
+with `404 Data source is not available in this project.`, the same sentence on
+the save and on the preview. See
+[Security → Roles and access control](../run/security.md#roles-and-access-control-rbac).
 
 ### Metric detail
 

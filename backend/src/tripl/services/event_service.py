@@ -1643,6 +1643,13 @@ async def reorder_events(
         )
     )
     events = list(result.scalars().all())
+    if len(set(data.event_ids)) != len(data.event_ids):
+        # Checked before the ownership count, which a duplicated id passes (both
+        # sides collapse to the same set) on the way to an IndexError 500 in the
+        # slot loop below — the same defect, and the same 400, as
+        # ``metric_definition_service.reorder_metric_definitions``
+        # (tripl-0zpq.239).
+        raise HTTPException(status_code=400, detail="Duplicate event ids in the requested order")
     if len(events) != len(set(data.event_ids)):
         raise HTTPException(status_code=400, detail="Some events do not belong to this project")
 
