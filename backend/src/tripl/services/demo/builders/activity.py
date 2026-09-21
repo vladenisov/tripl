@@ -1,6 +1,7 @@
 """Activity builder: edit history and external design specs.
 
-Seeds a small, realistic ``EventChange`` history (reachable via
+Seeds the ``created`` first row of every authored event plus a small, realistic
+``EventChange`` edit history (both reachable via
 ``/events/{id}/history``) and one ``EventPhoto`` of kind ``figma`` that embeds an
 external design URL with no stored bytes — the no-secret embed path, so the demo
 needs no storage backend. Both are reachable through the events API.
@@ -34,13 +35,16 @@ _FIGMA_URL = "https://www.figma.com/file/DEMO0paywall/Paywall-Spec?node-id=0-1"
 # per field but a single audit row per PATCH, so anything grouped here stays
 # grouped there.
 #
-# Only the four fields ``event_service._TRACKED_FIELDS`` records may appear here.
-# The history used to carry a ``metric_breakdown_columns`` edit, which is a row
-# the product cannot produce — the docs say history covers status, name,
-# description and sunset_at "and nothing else" — so the demo was teaching a
-# capability that does not exist. Harmless while it sat on one page; not harmless
-# once the audit builder began deriving ``event.update`` payloads from these rows
-# and carrying the invented field onto a second surface (tripl-wkwv.14).
+# Only fields ``event_service._TRACKED_FIELDS`` records may appear here — six of
+# them since 9fbc5811: status, name, title, description, sunset_at and
+# superseded_by_event_id. (This comment said "the four fields" and quoted docs
+# wording, "and nothing else", that no longer exists; the count was stale, not
+# the rule — tripl-0zpq.244.) The history used to carry a
+# ``metric_breakdown_columns`` edit, which is a row the product cannot produce,
+# so the demo was teaching a capability that does not exist. Harmless while it
+# sat on one page; not harmless once the audit builder began deriving
+# ``event.update`` payloads from these rows and carrying the invented field onto
+# a second surface (tripl-wkwv.14).
 _EDITS: tuple[tuple[str, int, tuple[tuple[str, str | None, str | None], ...]], ...] = (
     # Home Screen View: reviewed -> shipped -> renamed to the convention.
     ("Home Screen View", 5, (("status", "in_review", "live"),)),
@@ -81,8 +85,49 @@ def _edit_instant(now: datetime, days_ago: int, created_at: datetime) -> datetim
 
 
 async def build_activity(session: AsyncSession, ctx: DemoContext) -> None:
+    await _build_creation_history(session, ctx)
     await _build_event_history(session, ctx)
     await _build_figma_spec(session, ctx)
+
+
+async def _build_creation_history(session: AsyncSession, ctx: DemoContext) -> None:
+    """The first history row of EVERY authored event, the way a real create writes it.
+
+    ``event_service.create_event`` and ``bulk_create_events`` both file
+    ``EventChange(field="created", new_value=event.name)`` as an event's first
+    history row, so "who created this and when" is answered by the same list as
+    every later edit. The demo seeder writes its events directly, so until
+    tripl-0zpq.244 only the three events the ``_EDITS`` table touches had ANY
+    history at all and the other fifteen opened on an empty History tab — on a
+    project whose whole point is to look lived-in.
+
+    Dated from the event's own ``created_at``, which is the column the detail
+    page reads "first seen" from, so the first history row and the headline date
+    cannot disagree. ``_edit_instant`` already keeps every seeded EDIT at least
+    an hour after that instant, so the creation row stays first.
+    """
+    if not ctx.event_ids:
+        return
+    events = (
+        (await session.execute(select(Event).where(Event.id.in_(list(ctx.event_ids.values())))))
+        .scalars()
+        .all()
+    )
+    session.add_all(
+        [
+            EventChange(
+                event_id=event.id,
+                user_id=ctx.created_by,
+                field="created",
+                old_value=None,
+                new_value=event.name,
+                created_at=event.created_at,
+                updated_at=event.created_at,
+            )
+            for event in events
+        ]
+    )
+    await session.flush()
 
 
 async def _build_event_history(session: AsyncSession, ctx: DemoContext) -> None:

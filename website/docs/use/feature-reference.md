@@ -239,9 +239,21 @@ a flag-only flip as a change.
 Fields are defined on an event type (display name, name, type, required, enum
 options, order); each event carries a value per field. Meta fields are
 project-wide; each event carries a meta value per meta field. Tags are free-form
-labels (lower-cased) used for filtering. Field and meta values accept variable
+labels (lower-cased, trimmed, de-duplicated, and at most 100 characters each).
+That normalisation happens on every door now — the form, the API, MCP and the
+bulk paste — where once it happened only in the web form, so a tag written as
+`Checkout` through an API client used to sit beside `checkout` as a second
+label. Tags already stored keep the spelling they were given; nothing rewrites
+them. The tag filter and the tag list case-fold, so `Checkout` answers to
+`checkout` and the two show as one entry whichever way they were written.
+Field and meta values accept variable
 references (`${variable}`), and `url`/`date`/`json` field types render
-type-appropriate inputs.
+type-appropriate inputs. A **meta** value is capped at 2,000 bytes once stored —
+for a field with a link template, that is only the part the template wraps, not
+the whole address you paste. The value itself is part of the uniqueness key that
+stops one event carrying the same meta value twice, and a database index entry
+has a size limit. A field value has no such key and is capped far higher, at
+100,000 characters.
 
 **Who owns a field value.** A scan fills field values in from what it observes
 and keeps them up to date. The moment you type over one, it is yours: scans stop
@@ -364,6 +376,16 @@ removes, or edits the type itself — its display name, description, color, or
 order; a branch that changes only the type's fields or events does not ask for
 one); a type with no owners has no owner-approval gate.
 
+**Deleting an event type is refused with a `409 Conflict` while a scan is bound
+to it.** The binding is what tells the scan where to put the events it collects,
+and the database clears it on delete rather than refusing — so without the
+guard the scan kept running, kept listing, and quietly collected nothing. The
+message names every scan involved. Point the scan at another event type, give
+it an **Event type column** so it discovers its types from the data, or delete
+the scan; then delete the type. A branch's copy of a type is bound by nothing
+and deletes as before. Merging a branch that removed the type is refused the
+same way, for the same reason.
+
 ### Schema drift
 
 Drift is detected when incoming data diverges from an event type's declared
@@ -385,8 +407,11 @@ without it, and deleting the field would fail every subsequent collection with
 *"the event name format references unknown keys"*. The message names the
 column, the scan and its format. Fix it by editing the scan's
 [**Event name format**](#event-detail--editing) so it no longer references the column, then
-accept the drift. A project-wide scan (one with no bound event type)
-counts too, because it can produce events for any event type in the project.
+accept the drift. A **grouped** scan counts too — one with no bound event type
+*and* an **Event type column**, which discovers its event types from the data
+and so can produce events for any event type in the project. A scan with
+neither does not: it discovers nothing and names nothing, so its format governs
+no event type at all.
 
 A placeholder is matched on its **base column**. A format of `{event.category}`
 reads the `category` key out of the JSON `event` column, and that lookup only
@@ -516,6 +541,14 @@ is `all` and an unrecognised value is a `422`. See
 **Where:** Plan › Relations. Declare connections between event types; create and
 delete. Relations are resolved per the active branch.
 
+All four ids a relation names — two event types and two fields — must exist on
+the branch it is created in, and a request naming one that does not is refused.
+A relation that points outside its own branch is not a relation anybody can
+read: the diff, the merge and a branch copy all identify a relation by the names
+behind those ids, so one that cannot be resolved took down whichever of them
+reached it first. If a project stored such a row before the refusal existed,
+creating a branch reports it by id and asks you to delete it.
+
 ### Tracking-plan branches & merges
 
 **Where:** the branch switcher (top of the project sidebar) and Plan › Plan
@@ -562,7 +595,16 @@ alike, so the diff shows at most one row for the name and a change to one of
 them can show on, or land on, the other: deleting one of two such events can
 read as an edit to the survivor, or as nothing when the two were identical. A
 diff row for such a name carries a warning to rename one of the events, or
-remove one of the relations, before changing either. A branch copy of an event reads its
+remove one of the relations, before changing either — and **the merge itself is
+refused with a `409 Conflict`** while any of the three sides it reads (the
+branch, `main`, or the merge base) still holds two rows under one name. Merging
+anyway wrote whichever branch copy won onto whichever `main` namesake won and
+left `main` holding both, which is the one outcome nobody can undo by reading
+the diff. The message names each pair. On the branch or on `main`, rename or
+remove one of each and merge. The merge base cannot be edited — it is the
+snapshot of `main` taken when the branch was created — so when that is the side
+still holding a pair, clean `main` first and then recreate the branch from
+current `main` and redo its edits there. A branch copy of an event reads its
 metrics and **last seen** through its `main` twin (the event with the same type
 name and identity), so the branch shows what the live plan collected rather than
 blanks. Removals that are the machine's doing — a scan-minted variable still
@@ -1066,7 +1108,14 @@ that it measures data match — not the Coverage page's plan coverage — so the
 governance numbers are not read as contradictory. The **shadow events inbox** (tabs: `new` / `accepted` /
 `dismissed`) lists events seen in data but missing from the plan — **Accept**
 creates the event on the active branch (you pick an event type when none is
-inferred), or **Dismiss** it. In a scan grouped by an event type column one
+inferred), or **Dismiss** it. A scan reads `main`'s plan, so the event type it
+inferred is `main`'s; accepting on a working branch writes the branch's own copy
+of that type, matched by name. If the branch deleted the type, the accept is
+refused and says so — accept on `main`, or pick a type the branch still has.
+An accepted event carries the identity the scan observed and **no field
+values**: nothing in the inbox could have supplied them. Its required fields
+therefore open empty until somebody fills them in, which is the honest state —
+the scan has seen the event, the plan has not been written yet. In a scan grouped by an event type column one
 generated identity can turn up under more than one event type, and such an
 identity is a single inbox row carrying the combined volume across those types,
 attributed to the event type that contributed most of it. That happens because
