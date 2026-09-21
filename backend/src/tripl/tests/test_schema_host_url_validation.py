@@ -45,7 +45,11 @@ def test_data_source_host_rejects_malformed(host: str) -> None:
 
 
 def test_data_source_update_host_optional_but_format_checked() -> None:
-    assert DataSourceUpdate(host=None).host is None
+    # Left UNSET, not sent as null: ``host`` is a NOT NULL column, so an explicit
+    # null is refused by ``_reject_explicit_nulls`` (tripl-0zpq.267). What this
+    # line pins is that the field is optional, which is what "optional but format
+    # checked" means for a PATCH.
+    assert DataSourceUpdate().host is None
     assert DataSourceUpdate(host="10.1.2.3").host == "10.1.2.3"
     with pytest.raises(ValidationError):
         DataSourceUpdate(host="http://x/y")

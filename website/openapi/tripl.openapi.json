@@ -21102,6 +21102,7 @@
           },
           "value": {
             "type": "string",
+            "maxLength": 8000,
             "title": "Value"
           }
         },

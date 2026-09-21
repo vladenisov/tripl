@@ -17,7 +17,17 @@ class EventChange(UUIDMixin, TimestampMixin, Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    field: Mapped[str] = mapped_column(String(100))
+    #: Either a tracked attribute name (``status``, ``sunset_at``, ``tags``) or a
+    #: KEYED entry, ``field:<field name>`` / ``meta:<meta field name>``, written by
+    #: ``event_service._record_keyed_changes`` and split back apart by
+    #: ``frontend/src/lib/eventHistory.ts``. Both name columns are ``String(100)``
+    #: and both create schemas allow the full 100, so a keyed entry can be 106
+    #: characters — six more than the 100 this column held until tripl-0zpq.256,
+    #: which made editing such a field a rolled-back 500 on PostgreSQL
+    #: (StringDataRightTruncation at flush) while SQLite, which does not enforce
+    #: VARCHAR widths, stored it happily in the tests. 255 rather than a tight 106
+    #: so a longer prefix or a wider name column does not reopen the same hole.
+    field: Mapped[str] = mapped_column(String(255))
     old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     new_value: Mapped[str | None] = mapped_column(Text, nullable=True)
 

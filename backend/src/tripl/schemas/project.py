@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal, cast
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tripl.core.alert_schedule import validate_timezone
 from tripl.models.domain_enums import (
@@ -11,6 +11,7 @@ from tripl.models.domain_enums import (
     ProjectGenerationStatus,
 )
 from tripl.models.scan_job import ScanJobStatus
+from tripl.schemas.not_null_update import reject_explicit_nulls
 from tripl.semver import (
     DEFAULT_APP_VERSION_KEEP_RELEASES,
     MAX_APP_VERSION_KEEP_RELEASES,
@@ -53,6 +54,15 @@ class ProjectCreate(BaseModel):
         return validate_timezone(value.strip())
 
 
+# The update fields whose Project column is NOT NULL, so an explicit ``null``
+# from a client is a 422 naming the field and not a DB-level 500 — see
+# ``schemas/not_null_update``. ``timezone`` and ``app_version_keep_releases``
+# are absent because they refuse a null a second way, through the
+# ``Field(cast(T, None))`` spelling below; every other field here reaches
+# ``update_project``'s generic ``setattr`` loop unfiltered (tripl-0zpq.267).
+_PROJECT_NOT_NULL_UPDATE_FIELDS = frozenset({"name", "slug", "description"})
+
+
 class ProjectUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     slug: str | None = Field(
@@ -70,6 +80,11 @@ class ProjectUpdate(BaseModel):
     # rejecting an explicitly supplied JSON null — the column is NOT NULL, and
     # the generic setattr loop in ``update_project`` would otherwise write it.
     timezone: str = Field(cast(str, None), max_length=64)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _PROJECT_NOT_NULL_UPDATE_FIELDS)
 
     @field_validator("timezone")
     @classmethod
