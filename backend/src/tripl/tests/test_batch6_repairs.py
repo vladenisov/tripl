@@ -646,10 +646,15 @@ class TestCollectionCountsWhatItStored:
 # ── the events-metrics type resolution stays inside the project ──────────────
 
 
-def _seed_branch_and_type(
+async def _seed_branch_and_type(
     session: AsyncSession, project_id: uuid.UUID, *, kind: BranchKind, type_name: str
 ) -> tuple[uuid.UUID, uuid.UUID]:
-    """Add a branch of ``kind`` plus one EventType on it. Caller commits."""
+    """Add a branch of ``kind`` plus one EventType on it. Caller commits.
+
+    The branch is flushed before the type is added: ``event_types.branch_id`` is
+    a foreign key, and one ``add_all`` leaves the insert order to the unit of
+    work, which sorts by mapper and emitted the child first.
+    """
     branch = PlanBranch(
         id=uuid.uuid4(),
         project_id=project_id,
@@ -657,6 +662,8 @@ def _seed_branch_and_type(
         kind=kind.value,
         status=(BranchStatus.merged if kind is BranchKind.main else BranchStatus.draft).value,
     )
+    session.add(branch)
+    await session.flush()
     event_type = EventType(
         id=uuid.uuid4(),
         project_id=project_id,
@@ -664,7 +671,8 @@ def _seed_branch_and_type(
         name=type_name,
         display_name=type_name.title(),
     )
-    session.add_all([branch, event_type])
+    session.add(event_type)
+    await session.flush()
     return branch.id, event_type.id
 
 
@@ -694,10 +702,10 @@ class TestMainBranchEventTypeResolutionIsProjectScoped:
             session.add_all([here, there])
             await session.flush()
 
-            _, here_main_type = _seed_branch_and_type(
+            _, here_main_type = await _seed_branch_and_type(
                 session, here.id, kind=BranchKind.main, type_name="signup"
             )
-            _, there_main_type = _seed_branch_and_type(
+            _, there_main_type = await _seed_branch_and_type(
                 session, there.id, kind=BranchKind.main, type_name="signup"
             )
             await session.commit()
@@ -724,10 +732,10 @@ class TestMainBranchEventTypeResolutionIsProjectScoped:
             session.add(project)
             await session.flush()
 
-            _, main_type = _seed_branch_and_type(
+            _, main_type = await _seed_branch_and_type(
                 session, project.id, kind=BranchKind.main, type_name="signup"
             )
-            _, branch_copy_type = _seed_branch_and_type(
+            _, branch_copy_type = await _seed_branch_and_type(
                 session, project.id, kind=BranchKind.working, type_name="signup"
             )
             await session.commit()

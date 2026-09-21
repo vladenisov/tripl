@@ -587,40 +587,51 @@ async def _variable_audit_rows(action: str) -> list[AuditLog]:
 async def test_bulk_delete_audit_row_names_only_the_variables_that_existed(client: AsyncClient):
     """The trail of an irreversible delete must name what actually went.
 
-    ``_load_variables_by_ids`` silently skips an id that resolves to nothing on
-    this branch, so the REQUEST's id list is a claim about intent, not about
-    what happened. The request below mixes one real id with one that names no
-    variable at all.
+    A deleted variable's name exists nowhere else afterwards, so a row carrying
+    only the ids the caller sent answers none of the questions an owner asks of
+    it. The row now records the names, the count, and whether the sample was
+    truncated.
+
+    The other half of the guarantee is that the recorded list cannot overstate
+    what happened: ``_load_variables_by_ids`` refuses the WHOLE request with 404
+    when any id names nothing on this branch, so nothing is deleted and no row
+    is written. That is asserted here too — a partial delete under a
+    complete-looking trail is the failure this row exists to rule out.
 
     RED on a revert: restore ``payload=data.model_dump(mode="json")`` and the
-    row carries a two-entry ``variable_ids`` list with no ``count``, no
-    ``variable_names`` and no ``truncated``, so every assertion after the first
-    raises ``KeyError`` — and ``count == 1`` is precisely the number the old
-    payload could not express.
+    row carries the raw request with no ``count``, no ``variable_names`` and no
+    ``truncated``, so every assertion after the id list raises ``KeyError``.
     """
     await _setup_project(client, "var-bulk-audit")
-    created = await client.post(
-        "/api/v1/projects/var-bulk-audit/variables",
-        json={"name": "real_one", "variable_type": "string"},
+    ids: list[str] = []
+    for name in ("real_one", "real_two"):
+        created = await client.post(
+            "/api/v1/projects/var-bulk-audit/variables",
+            json={"name": name, "variable_type": "string"},
+        )
+        assert created.status_code == 201
+        ids.append(created.json()["id"])
+
+    refused = await client.post(
+        "/api/v1/projects/var-bulk-audit/variables/bulk-delete",
+        json={"variable_ids": [ids[0], str(uuid.uuid4())]},
     )
-    assert created.status_code == 201
-    real_id = created.json()["id"]
-    ghost_id = str(uuid.uuid4())
+    assert refused.status_code == 404, refused.text
+    assert await _variable_audit_rows("variable.bulk_delete") == []
 
     resp = await client.post(
         "/api/v1/projects/var-bulk-audit/variables/bulk-delete",
-        json={"variable_ids": [real_id, ghost_id]},
+        json={"variable_ids": ids},
     )
     assert resp.status_code == 204, resp.text
 
     rows = await _variable_audit_rows("variable.bulk_delete")
     assert len(rows) == 1
     payload = rows[0].payload or {}
-    assert payload["count"] == 1
-    assert payload["variable_ids"] == [real_id]
-    assert payload["variable_names"] == ["real_one"]
+    assert payload["count"] == 2
+    assert sorted(payload["variable_ids"]) == sorted(ids)
+    assert sorted(payload["variable_names"]) == ["real_one", "real_two"]
     assert payload["truncated"] is False
-    assert ghost_id not in payload["variable_ids"]
 
 
 @pytest.mark.asyncio
