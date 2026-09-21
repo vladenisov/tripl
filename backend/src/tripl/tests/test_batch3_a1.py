@@ -709,10 +709,12 @@ def test_multi_grid_metric_unions_every_source_configs_coverage(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
     """``_load_metric_value_points`` SUMS a metric's values across every source
-    grid with no ``scan_config_id`` filter, so coverage has to describe the same
-    population. Resolving it from one source alone excluded every bucket only
-    the other source contributed — ``expand_series`` drops an uncovered bucket
-    even when a real value is sitting in it.
+    grid ON THE RESOLVED GRID'S INTERVAL, with no filter down to one config, so
+    coverage has to describe the same population. Resolving it from one source
+    alone excluded every bucket only the other source contributed —
+    ``expand_series`` drops an uncovered bucket even when a real value is sitting
+    in it. Both sibling configs here are the default 1h, so the interval
+    predicate keeps every seeded row and the population is the full union.
 
     Two live scans collect the same event type. The YOUNGER one holds the newest
     stored bucket, so ``metric_grid_stmt``'s ``ORDER BY bucket DESC`` resolves

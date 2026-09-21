@@ -5,8 +5,8 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import ColumnExpressionArgument, delete, select
 from sqlalchemy import and_ as sa_and
-from sqlalchemy import delete, select
 from sqlalchemy import func as sa_func
 from sqlalchemy import not_ as sa_not
 from sqlalchemy import or_ as sa_or
@@ -880,24 +880,77 @@ def _collect_breakdown_scope_keys(
     return {key for key in keys if key[2] != app_version_column}
 
 
+def _metric_grid_population(grid: MetricGrid | None) -> ColumnExpressionArgument[bool]:
+    """The ``MetricValue`` rows that ARE this metric's series.
+
+    Every source config collecting the metric ON THE RESOLVED GRID'S INTERVAL,
+    not the single config :mod:`tripl.metric_grid` named. That set is what
+    :func:`_load_metric_value_points` sums, what
+    :func:`_metric_source_config_ids` reads coverage back for, and — because a
+    ``metric``-scope ``MetricAnomaly`` carries a NULL ``scan_config_id`` and so
+    describes whatever was scored — what the series read must plot. Its async
+    mirror is ``metric_series_service._grid_population_filter``; the two must
+    stay in step and belong together in :mod:`tripl.metric_grid`, next to the
+    grid rule they extend.
+
+    Interval, not config id, because an ``event_composition`` metric legitimately
+    has more than one LIVE source: ``EventMetric`` is keyed on (scan_config_id,
+    event_id, bucket) and ``_collect_event_composition`` writes one
+    ``MetricValue`` row set per source grid, so one event type collected by two
+    scans contributes two addends of one total. Narrowing to the grid's own
+    config would score one addend, chosen by ``metric_grid_stmt``'s
+    ``ORDER BY bucket DESC`` tie-break, which is undefined between two
+    equally-current configs and so could flap between runs.
+
+    But NOT every config regardless of interval, which is what this used to do:
+    a retired 1h grid and a live 1d grid are different units, and summing them
+    per bucket added an hour's count to a day's at every shared midnight while
+    the series was scored on the 1d delta. The interval is the line between
+    "another source of this series" and "a retired grid".
+
+    ``scan_config_id is None`` on the grid means ``sql``/``fact``: those rows are
+    written with a NULL ``scan_config_id`` exclusively, so the IS NULL branch is
+    exact rather than merely narrower and the interval never enters. A ``None``
+    grid (the metric row vanished mid-run) takes the same branch and matches
+    nothing, which is the safe answer.
+    """
+    if grid is None or grid.scan_config_id is None:
+        return MetricValue.scan_config_id.is_(None)
+    on_grid = (
+        ScanConfig.interval.is_(None)
+        if grid.interval is None
+        else ScanConfig.interval == grid.interval
+    )
+    return MetricValue.scan_config_id.in_(select(ScanConfig.id).where(on_grid).scalar_subquery())
+
+
 def _load_metric_value_points(
     session: Session,
     *,
     metric_definition_id: uuid.UUID,
     history_from: datetime,
     time_to: datetime,
+    grid: MetricGrid | None = None,
 ) -> list[SeriesPoint]:
     """Load a catalog metric's stored value series as ``SeriesPoint``s.
 
-    Values are summed per bucket (an ``event_composition`` metric may have been
-    collected across more than one source grid) and kept as floats — the
-    detector is scale-aware, so sub-unit ratio/average movements survive
-    instead of rounding toward 0 (tripl-68bc).
+    Values are summed per bucket over the metric's grid population — see
+    :func:`_metric_grid_population` for which configs that is and why — and kept
+    as floats, because the detector is scale-aware, so sub-unit ratio/average
+    movements survive instead of rounding toward 0 (tripl-68bc).
+
+    ``grid`` is optional only to save the resolving query for the detection loop,
+    which has already resolved it; omitting it resolves the same grid here rather
+    than widening the population, so no caller can accidentally score a series
+    the series read would not draw.
     """
+    if grid is None:
+        grid = _metric_grid_by_id(session, metric_definition_id)
     rows = session.execute(
         select(MetricValue.bucket, sa_func.sum(MetricValue.value))
         .where(
             MetricValue.metric_definition_id == metric_definition_id,
+            _metric_grid_population(grid),
             MetricValue.bucket >= history_from,
             MetricValue.bucket < time_to,
         )
@@ -907,6 +960,13 @@ def _load_metric_value_points(
     return [SeriesPoint(bucket=to_utc(bucket), count=float(value)) for bucket, value in rows]
 
 
+def _metric_grid_by_id(session: Session, metric_definition_id: uuid.UUID) -> MetricGrid | None:
+    """:func:`_resolve_metric_grid` for callers holding only the id."""
+    return metric_grids(
+        session.execute(metric_grid_stmt(MetricDefinition.id == metric_definition_id)).all()
+    ).get(metric_definition_id)
+
+
 def _resolve_metric_grid(session: Session, metric: MetricDefinition) -> MetricGrid | None:
     """Grid of a metric — the shared rule in :mod:`tripl.metric_grid`.
 
@@ -914,35 +974,38 @@ def _resolve_metric_grid(session: Session, metric: MetricDefinition) -> MetricGr
     ``event_composition`` leaves it NULL and inherits the grid of the
     most-recent value's ``scan_config_id``.
 
-    The whole entry is returned rather than just the interval because
+    The whole entry is returned rather than just the interval because the
+    interval SELECTS the series (:func:`_metric_grid_population`) and
     :func:`_metric_covered_buckets` also has to know whether the RUNNING scan's
-    grid is one of the metric's grids, which is an (interval, config) pair. It
-    does NOT decide whose coverage describes the series: that is the union over
-    every source config the values were summed from, read separately.
+    grid is one of the metric's grids, which is an (interval, config) pair. The
+    config id alone does NOT decide whose coverage describes the series: that is
+    the union over every source config the values were summed from, read
+    separately.
     """
-    return metric_grids(
-        session.execute(metric_grid_stmt(MetricDefinition.id == metric.id)).all()
-    ).get(metric.id)
+    return _metric_grid_by_id(session, metric.id)
 
 
 def _metric_source_config_ids(
     session: Session,
     *,
     metric_definition_id: uuid.UUID,
+    grid: MetricGrid | None,
     history_from: datetime,
     time_to: datetime,
 ) -> list[uuid.UUID]:
     """Every scan config that contributed a value to the series being scored.
 
-    The population :func:`_load_metric_value_points` SUMS over, read back over
-    the same window and the same metric so the two cannot describe different
-    things. Ordered so the coverage union below is byte-stable run to run.
+    The population :func:`_load_metric_value_points` SUMS over — the same
+    ``grid``, the same predicate, the same window and the same metric, so the two
+    cannot describe different things. Ordered so the coverage union below is
+    byte-stable run to run.
     """
     rows = session.execute(
         select(MetricValue.scan_config_id)
         .where(
             MetricValue.metric_definition_id == metric_definition_id,
             MetricValue.scan_config_id.is_not(None),
+            _metric_grid_population(grid),
             MetricValue.bucket >= history_from,
             MetricValue.bucket < time_to,
         )
@@ -972,26 +1035,30 @@ def _metric_covered_buckets(
       schedule, and store ``scan_config_id = NULL``. No scan job ever recorded a
       window for them, so no scan's coverage describes them at all; ``None``
       keeps the documented unconditional zero-fill.
-    * an ``event_composition`` metric gets the UNION of its source configs'
-      coverage, each re-enumerated on the metric's own delta. The source reading
-      THIS scan on THIS scan's grid contributes the running scan's set verbatim:
-      it is already on the right delta, and it uniquely carries the window this
-      run just wrote. Every other source is read from its own completed jobs and
-      stored buckets.
+    * an ``event_composition`` metric gets the UNION of ITS GRID POPULATION's
+      configs' coverage, each re-enumerated on the metric's own delta. The source
+      reading THIS scan on THIS scan's grid contributes the running scan's set
+      verbatim: it is already on the right delta, and it uniquely carries the
+      window this run just wrote. Every other source is read from its own
+      completed jobs and stored buckets.
 
     The union — rather than the newest value's single ``scan_config_id`` — is
     what keeps coverage describing the SAME population the series is summed
-    from. ``_load_metric_value_points`` sums across every source grid with no
-    config filter, because one event type can legitimately be collected by two
-    live scans (``EventMetric`` is keyed on (scan_config_id, event_id, bucket)
-    and ``_collect_event_composition`` writes one ``MetricValue`` row per source
-    grid). Masking that summed series with ONE source's coverage drops every
-    bucket only the other source contributed — ``expand_series`` EXCLUDES an
-    uncovered bucket rather than zero-filling it, even when a real value is
-    sitting there — and which source that was is an arbitrary
-    ``ORDER BY bucket DESC`` tie-break between two equally-current configs
-    (:func:`tripl.metric_grid.metric_grid_stmt`), so the truncation could also
-    flap between runs. A union has no tie to break.
+    from. ``_load_metric_value_points`` sums across every config on the metric's
+    grid interval (:func:`_metric_grid_population`), because one event type can
+    legitimately be collected by two live scans (``EventMetric`` is keyed on
+    (scan_config_id, event_id, bucket) and ``_collect_event_composition`` writes
+    one ``MetricValue`` row per source grid). Masking that summed series with ONE
+    source's coverage drops every bucket only the other source contributed —
+    ``expand_series`` EXCLUDES an uncovered bucket rather than zero-filling it,
+    even when a real value is sitting there — and which source that was is an
+    arbitrary ``ORDER BY bucket DESC`` tie-break between two equally-current
+    configs (:func:`tripl.metric_grid.metric_grid_stmt`), so the truncation could
+    also flap between runs. A union has no tie to break.
+
+    ``grid`` bounds the union to the same configs the values came from, so a
+    RETIRED grid on another interval — whose rows are no longer part of the
+    series — cannot vouch for buckets of it either.
 
     ``None`` still means "no coverage gating, zero-fill unconditionally", and a
     source whose set is unknown forces it: the running scan contributing a
@@ -1007,6 +1074,7 @@ def _metric_covered_buckets(
     source_ids = _metric_source_config_ids(
         session,
         metric_definition_id=metric.id,
+        grid=grid,
         history_from=history_from,
         time_to=evaluation_end,
     )
@@ -1234,6 +1302,9 @@ def _recalculate_project_metric_anomalies(
         points = _load_metric_value_points(
             session,
             metric_definition_id=metric.id,
+            # The grid this loop already resolved, so the population predicate
+            # costs no second query here.
+            grid=grid,
             history_from=history_from,
             time_to=evaluation_end,
         )

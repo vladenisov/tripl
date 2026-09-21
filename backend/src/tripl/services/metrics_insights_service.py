@@ -856,6 +856,14 @@ async def get_seasonality_heatmap(
     if scan_config is None:
         raise HTTPException(404, "Scan config not found")
 
+    # ``scope_ref`` arrives as free text (the route types it ``FreeTextFilter``,
+    # which only strips NUL bytes). For these two scopes ``_scope_metric_filters``
+    # feeds it straight to ``uuid.UUID()``, and an unparseable one raised a bare
+    # ValueError that the catch-all handler turned into a 500 — where the sibling
+    # insight endpoints (breakdown-timeline, distribution drifts) answer 422.
+    if scope_type in (SCOPE_EVENT, SCOPE_EVENT_TYPE):
+        _parse_scope_uuid(scope_ref, label="scope_ref")
+
     metric_rows = await _get_metric_rows(
         session,
         scope=scope_type,

@@ -2360,6 +2360,19 @@ async def test_data_source_stats_aggregates_recent_metrics(client: AsyncClient):
                     bucket=recent,
                     count=50,
                 ),
+                # The type-level row every real chunk writes alongside the
+                # event-level ones: same bucket, same total, ``event_id`` NULL.
+                # The stats query used to sum BOTH levels and reported 300 for
+                # 150 events; it now counts only this one (tripl-0zpq.118), so
+                # without this row the window would be empty.
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=None,
+                    event_type_id=uuid.UUID(ctx["page_type_id"]),
+                    bucket=recent,
+                    count=150,
+                ),
                 # Outside the window — excluded.
                 EventMetric(
                     id=uuid.uuid4(),

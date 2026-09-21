@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -132,16 +133,29 @@ async def _get_scan_config_interval(
     return result.scalar_one_or_none()
 
 
-async def _get_scan_config_sigma_threshold(
+async def _get_project_sigma_threshold(
     session: AsyncSession,
-    scan_config_id: uuid.UUID | None,
+    project_id: uuid.UUID,
 ) -> float:
-    """The scan's anomaly sigma threshold (the confidence-band multiplier the UI
-    serves), falling back to the system default when the scan is unknown or unset."""
-    if scan_config_id is None:
-        return DEFAULT_SIGMA_THRESHOLD
+    """The project's anomaly sigma threshold — the band multiplier the UI serves.
+
+    ``ProjectAnomalySettings.sigma_threshold``, because that is the column the
+    DETECTOR scores with (``worker.tasks.metrics.detect._build_anomaly_settings``)
+    and the one the operator edits in Settings → Monitoring. This used to read
+    ``ScanConfig.sigma_threshold``, which no API has ever written: after an
+    operator moved the project sigma to 5.0 the charts kept drawing the band at
+    the scan row's stale 4.0, so buckets sat outside a band that had not flagged
+    them — the exact opposite of the "outside the band = flagged" contract
+    ``_apply_scope_sigma_override`` states below. ``alerting_service`` already
+    reads the project row for the same reason.
+
+    Falls back to the system default when the project has no settings row yet,
+    which is the same value the detector would use.
+    """
     result = await session.execute(
-        select(ScanConfig.sigma_threshold).where(ScanConfig.id == scan_config_id)
+        select(ProjectAnomalySettings.sigma_threshold).where(
+            ProjectAnomalySettings.project_id == project_id
+        )
     )
     return result.scalar_one_or_none() or DEFAULT_SIGMA_THRESHOLD
 
@@ -159,9 +173,13 @@ async def _apply_scope_sigma_override(
 
     The chart band is ``expected ± sigma_threshold × effective_stddev`` and is
     meant to read as "outside the band = flagged". A scope the ratchet has
-    tightened is scored at its own sigma, so serving the scan-wide value would
-    draw a band narrower than the rule that produced the dots and show buckets
-    outside it that were deliberately not flagged.
+    tightened is scored at its own sigma, so serving the project-wide value
+    would draw a band narrower than the rule that produced the dots and show
+    buckets outside it that were deliberately not flagged.
+
+    ``fallback`` is the project sigma (``_get_project_sigma_threshold``) — the
+    same two-step the detector does, override first and project setting behind
+    it (``worker.tasks.metrics.detect``).
     """
     override = await session.scalar(
         select(AnomalyScopeOverride.sigma_threshold).where(
@@ -601,6 +619,13 @@ def _signal_from_anomaly(
     *,
     state: str,
 ) -> MetricSignalResponse:
+    """One stored anomaly as the signal every surface renders.
+
+    ``stddev`` is the served (floored *effective*) one, not the raw column — the
+    signal card sits next to the chart whose band is drawn from
+    ``_served_stddev``, and the two reporting different widths for the same
+    bucket is the disagreement ``_served_stddev`` exists to prevent.
+    """
     return MetricSignalResponse(
         scan_config_id=anomaly.scan_config_id,
         scope_type=anomaly.scope_type,
@@ -611,7 +636,7 @@ def _signal_from_anomaly(
         bucket=anomaly.bucket,
         actual_count=anomaly.actual_count,
         expected_count=anomaly.expected_count,
-        stddev=anomaly.stddev,
+        stddev=_served_stddev(anomaly),
         z_score=anomaly.z_score,
         direction=anomaly.direction,
     )
@@ -728,6 +753,34 @@ def _build_metric_points(
     return data
 
 
+# Longest densified series a request will fit a forecast on. Shared with
+# ``metric_series_service``, which imports it.
+#
+# ``forecast_next_buckets`` runs its OWN robust STL/MSTL fit, and on this
+# hardware that costs ~8.5 ms for a 7d hourly series (STL, period 24) but 1.75 s
+# at 720 points and 5.3 s at 2160 — an MSTL over periods 24 and 168. The cap is
+# therefore a budget on the FIT, and 400 is where the fit is still cheap.
+#
+# What it covers, stated against the ranges the UI actually offers (7d / 30d /
+# 90d, ``RANGE_OPTIONS`` in frontend/src/lib/metrics.ts). ``chartForecast``
+# (MonitoringDetailPage) draws the dashed tail only when the display granularity
+# equals the collection interval, and ``defaultGranularityForRange`` picks hour
+# at 7d, day at 30d, week at 90d. So at the DEFAULT granularity the tail is drawn
+# on 168 points (7d at 1h), 30 (30d at 1d) or ~13 (90d at 1w) — every one under
+# the cap. A 6h scan is under it at every range too (360 points at 90d).
+#
+# What it COSTS, because it is not nothing: a manual granularity pick wins over
+# the default and stays sticky across range changes, so a reader who pins the
+# native granularity keeps the tail rendered at any range. Those series are 672
+# points (7d at 15m), 720 (30d at 1h), 2160 (90d at 1h) and 8640 (90d at 15m) —
+# all over the cap, so the forecast comes back empty and the tail they would
+# have seen is not drawn. That is deliberate: the smallest bound that buys back
+# the two cheapest of those is ~750, which costs 1.75 s of request CPU per
+# drilldown and still leaves the other two empty. Raising the ceiling belongs
+# with a cached or precomputed fit, not with a bigger number here.
+_FORECAST_MAX_POINTS = 400
+
+
 def _forecast_from_points(
     *,
     data: list[EventMetricPoint],
@@ -735,10 +788,15 @@ def _forecast_from_points(
 ) -> list[ForecastPoint]:
     """One-step-ahead forecast off the densified series the chart already shows.
 
-    Returns an empty list when the series is too short to fit STL/MSTL — the
-    UI then simply omits the dashed preview rather than drawing a flat line.
+    Returns an empty list when the series is too short to fit STL/MSTL or longer
+    than ``_FORECAST_MAX_POINTS`` — the UI draws no dashed preview rather than a
+    flat line. On the long side that is a real, deliberate loss for a reader who
+    has pinned the native granularity; the cap's own comment says which views.
+
+    CPU-bound (numpy/statsmodels), so async callers reach it through
+    ``_forecast_off_event_loop`` rather than calling it directly.
     """
-    if not data or not interval:
+    if not data or not interval or len(data) > _FORECAST_MAX_POINTS:
         return []
     delta = get_interval(interval).delta
     series_points = [SeriesPoint(bucket=point.bucket, count=point.count) for point in data]
@@ -751,6 +809,24 @@ def _forecast_from_points(
         )
         for point in forecasted
     ]
+
+
+async def _forecast_off_event_loop(
+    *,
+    data: list[EventMetricPoint],
+    interval: str | None,
+) -> list[ForecastPoint]:
+    """``_forecast_from_points``, kept off the event loop.
+
+    The STL/MSTL fit is pure CPU. Run inline on the async request path it parks
+    the whole uvicorn worker for the length of the fit, so every unrelated
+    request multiplexed onto that worker waits behind one chart's dashed tail.
+    The cheap exits are taken here so the common case never pays for a thread
+    hop; only an actual fit is handed to the executor.
+    """
+    if not data or not interval or len(data) > _FORECAST_MAX_POINTS:
+        return []
+    return await asyncio.to_thread(_forecast_from_points, data=data, interval=interval)
 
 
 async def _get_scan_latest_buckets(
@@ -804,7 +880,7 @@ async def _get_scan_latest_bucket(
     return buckets.get(scan_config_id)
 
 
-def _build_metrics_response(
+async def _build_metrics_response(
     *,
     scope: str,
     scan_config_id: uuid.UUID | None,
@@ -818,7 +894,12 @@ def _build_metrics_response(
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD,
     recent_window: timedelta | None = None,
     scan_latest_bucket: datetime | None = None,
+    with_forecast: bool = True,
 ) -> EventMetricsResponse:
+    """Shape one drilldown response. Async ONLY because of the forecast fit,
+    which ``_forecast_off_event_loop`` hands to a worker thread; callers that
+    throw the forecast away should pass ``with_forecast=False`` instead of
+    paying for it."""
     data = _build_metric_points(
         interval=interval,
         metric_rows=metric_rows,
@@ -848,6 +929,10 @@ def _build_metrics_response(
         if state is not None:
             latest_signal = _signal_from_anomaly(latest_anomaly, state=state)
 
+    forecast: list[ForecastPoint] = []
+    if with_forecast:
+        forecast = await _forecast_off_event_loop(data=data, interval=interval)
+
     return EventMetricsResponse(
         scope=scope,
         scan_config_id=scan_config_id,
@@ -858,7 +943,7 @@ def _build_metrics_response(
         latest_signal=latest_signal,
         sigma_threshold=sigma_threshold,
         data=data,
-        forecast=_forecast_from_points(data=data, interval=interval),
+        forecast=forecast,
     )
 
 
@@ -891,7 +976,7 @@ async def get_event_metrics(
         scan_config_id=scan_config_id,
         scope_type=SCOPE_EVENT,
         scope_ref=str(event.id),
-        fallback=await _get_scan_config_sigma_threshold(session, scan_config_id),
+        fallback=await _get_project_sigma_threshold(session, project.id),
     )
     recent_window = await _get_project_recent_signal_window(session, project.id)
     scan_latest_bucket = await _get_scan_latest_bucket(
@@ -916,7 +1001,7 @@ async def get_event_metrics(
         time_from=effective_time_from,
         time_to=time_to,
     )
-    return _build_metrics_response(
+    return await _build_metrics_response(
         scope=SCOPE_EVENT,
         scan_config_id=scan_config_id,
         scope_ref=str(event.id),
@@ -967,7 +1052,17 @@ async def get_event_metric_breakdowns(
             series=[],
         )
 
-    columns = list(dict.fromkeys([*(config.metric_breakdown_columns or []), *event_columns]))
+    # The scan's platform_column belongs in this list even though nobody listed
+    # it: the collector gathers it as a scan-level breakdown on its own
+    # (worker/tasks/metrics/metric_rows.py) and the scan validator REFUSES to
+    # let it appear in metric_breakdown_columns, so without this line the stored
+    # per-platform series and its parity anomalies were unreachable — columns=[]
+    # and a 400 on ?column=<platform> (tripl-0zpq.112). Appended last so an
+    # explicitly configured column still wins the default selection below.
+    platform_columns = [config.platform_column] if config.platform_column else []
+    columns = list(
+        dict.fromkeys([*(config.metric_breakdown_columns or []), *event_columns, *platform_columns])
+    )
     if not columns:
         return EventMetricBreakdownsResponse(
             event_id=event.id,
@@ -1431,7 +1526,11 @@ async def get_app_version_series(
         app_version_column=config.app_version_column,
         interval=config.interval,
         latest_version=latest_version,
-        sigma_threshold=config.sigma_threshold,
+        # The project setting, not ``config.sigma_threshold``: see
+        # ``_get_project_sigma_threshold``. No scope override is applied — these
+        # per-version series are not a scored scope, so there is no override row
+        # keyed to them.
+        sigma_threshold=await _get_project_sigma_threshold(session, project.id),
         versions=versions,
         series=series,
     )
@@ -1483,7 +1582,9 @@ async def get_app_version_adoption(
         app_version_column=config.app_version_column,
         interval=config.interval,
         latest_version=latest_version,
-        sigma_threshold=config.sigma_threshold,
+        # As in ``get_app_version_series``: the project setting is the sigma the
+        # detector actually scored these buckets with.
+        sigma_threshold=await _get_project_sigma_threshold(session, project.id),
         versions=versions,
         series=series,
         totals=_build_app_version_totals(metric_rows_by_series),
@@ -1624,7 +1725,14 @@ async def get_platform_presence(
     Presence is derived from the generic breakdown rows the metrics worker stores
     under ``platform_column`` (event-scope, real values only, count > 0): an event
     is "present" on a platform if it has any such stored row. Empty when the scan
-    has no ``platform_column`` configured. Read-only; cheap index-backed query.
+    has no ``platform_column`` configured.
+
+    Read-only, and DISTINCT on purpose: the breakdown table is keyed per bucket
+    and these rows have no retention outside demo projects, so the undeduplicated
+    select hydrated one row per (event, platform, bucket) since the scan began —
+    cost growing with scan age for an answer that is at most events x platforms
+    (tripl-0zpq.117). The database folds them now; ``Event.name`` rides along
+    functionally dependent on ``event_id``, so it adds no rows of its own.
     """
     project = await _resolve_project(session, slug)
     config = await _resolve_scan_config(session, project.id, scan_config_id)
@@ -1647,6 +1755,7 @@ async def get_platform_presence(
             EventMetricBreakdown.is_other.is_(False),
             EventMetricBreakdown.count > 0,
         )
+        .distinct()
     )
     platforms: set[str] = set()
     by_event: dict[uuid.UUID, tuple[str, set[str]]] = {}
@@ -1671,6 +1780,53 @@ async def get_platform_presence(
     )
 
 
+async def _main_branch_event_type_id(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    event_type_id: uuid.UUID,
+) -> uuid.UUID:
+    """The MAIN-branch ``EventType`` a possibly branch-copied type id stands for.
+
+    ``event_metrics`` rows only ever reference main events — a scan never sees a
+    working branch (see ``services/_branch_counterparts``) — while the Events
+    page on a branch filters by the branch copy's type, which the deep copy gave
+    a fresh uuid. Filtering the series by that id matched no row at all, so every
+    event-type tab's Dynamics card read "no recent volume" while the sparklines
+    beside it (which read through to the twins) showed traffic (tripl-0zpq.111).
+
+    Paired on the type NAME, the pairing ``main_counterparts`` already uses.
+    Returns the id unchanged when it is already main's, or when the branch
+    introduced a type main has no copy of: that one genuinely has no metrics.
+    """
+    # Scoped to THIS project, like every sibling query in this module: the id is
+    # a raw query parameter on ``GET /events-metrics`` and nothing on that route
+    # checks it belongs here. Unscoped, another project's type id resolved to
+    # its name and then to a local twin of the same name, so the caller got a
+    # series for a type they never asked for. Scoped, it falls through the
+    # ``name is None`` branch below and is returned unchanged — which is what
+    # the docstring already promises for a type main has no copy of.
+    name = await session.scalar(
+        select(EventType.name).where(
+            EventType.id == event_type_id,
+            EventType.project_id == project_id,
+        )
+    )
+    if name is None:
+        return event_type_id
+    main_branch_ids = select(PlanBranch.id).where(
+        PlanBranch.project_id == project_id,
+        PlanBranch.kind == BranchKind.main.value,
+    )
+    twin_id = await session.scalar(
+        select(EventType.id).where(
+            EventType.project_id == project_id,
+            EventType.branch_id.in_(main_branch_ids),
+            EventType.name == name,
+        )
+    )
+    return twin_id or event_type_id
+
+
 async def get_events_metrics(
     session: AsyncSession,
     slug: str,
@@ -1691,7 +1847,10 @@ async def get_events_metrics(
         EventMetric.event_id.is_not(None),
     ]
     if event_type_id:
-        conditions.append(Event.event_type_id == event_type_id)
+        # On a branch the caller sends the branch copy's type id, which no
+        # metric row carries; resolve it to main's twin first (tripl-0zpq.111).
+        metrics_type_id = await _main_branch_event_type_id(session, project.id, event_type_id)
+        conditions.append(Event.event_type_id == metrics_type_id)
     if search:
         conditions.append(Event.name.ilike(f"%{search}%"))
     if status:
@@ -1720,6 +1879,12 @@ async def get_events_metrics(
 
     interval = await _get_scan_config_interval(session, scan_config_id) if rows else None
 
+    # No ``sigma_threshold``: the only route here that leaves it at the schema
+    # default. These points are bare ``(bucket, count)`` — no ``expected_count``
+    # and no ``stddev`` — so the UI draws no confidence band off this response
+    # and has nothing to multiply. Serving the project sigma anyway would cost a
+    # query for a number nothing reads; if this tab ever grows a band, resolve it
+    # the way ``get_event_metrics`` does rather than trusting the default.
     return EventMetricsResponse(
         scope="events_total",
         scan_config_id=scan_config_id,
@@ -1824,14 +1989,25 @@ async def get_data_source_stats(
     """Aggregate runtime activity for a data source from EventMetric rollups.
 
     Volume + events-tracked + a bucketed throughput series over the recent
-    window, joined to the data source via ScanConfig. Backs the redesign's
-    data-source health/throughput cards.
+    window, joined to the data source via ScanConfig. Owner-only diagnostics:
+    nothing in the product reads this (see the note on the route in
+    ``api/v1/data_sources.py``).
+
+    Volume counts TYPE-level rows only — ``event_id IS NULL AND event_type_id IS
+    NOT NULL``, the project-total definition ``_scope_metric_filters`` uses.
+    Every collection chunk writes both an event-level row for each matched plan
+    event and a type-level row re-counting the same warehouse rows, so summing
+    the table flat reported matched volume twice and unmatched volume once —
+    close to 2x (tripl-0zpq.118). ``events_tracked`` still counts distinct
+    ``event_id`` across all rows, because only the event-level rows carry one.
     """
     time_from = datetime.now(UTC) - timedelta(hours=window_hours)
+    type_level = and_(EventMetric.event_id.is_(None), EventMetric.event_type_id.is_not(None))
+    volume = func.coalesce(func.sum(case((type_level, EventMetric.count), else_=0)), 0)
     totals = (
         await session.execute(
             select(
-                func.coalesce(func.sum(EventMetric.count), 0),
+                volume,
                 func.count(func.distinct(EventMetric.event_id)),
             )
             .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
@@ -1842,7 +2018,11 @@ async def get_data_source_stats(
         await session.execute(
             select(EventMetric.bucket, func.coalesce(func.sum(EventMetric.count), 0))
             .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
-            .where(ScanConfig.data_source_id == data_source_id, EventMetric.bucket >= time_from)
+            .where(
+                ScanConfig.data_source_id == data_source_id,
+                EventMetric.bucket >= time_from,
+                type_level,
+            )
             .group_by(EventMetric.bucket)
             .order_by(EventMetric.bucket)
         )
@@ -2035,7 +2215,12 @@ async def get_events_window_metrics(
         # sparklines and reports ``total_count`` for the window the caller asked
         # for, so reaching outside it would silently change the number in the
         # column next to the chart. Nothing here reads ``latest_signal``.
-        metrics_response = _build_metrics_response(
+        #
+        # ``with_forecast=False`` because nothing here reads the forecast either:
+        # only ``.data`` is copied out below. Computing one cost a fresh robust
+        # STL/MSTL fit PER REQUESTED EVENT — up to 100 of them in one request —
+        # and every result was dropped on the next line.
+        metrics_response = await _build_metrics_response(
             scope=SCOPE_EVENT,
             scan_config_id=scan_config_id,
             scope_ref=str(event_id),
@@ -2047,6 +2232,7 @@ async def get_events_window_metrics(
             scan_latest_bucket=(
                 scan_latest_buckets.get(scan_config_id) if scan_config_id is not None else None
             ),
+            with_forecast=False,
         )
         responses.append(
             EventWindowMetricsResponse(
@@ -2090,7 +2276,7 @@ async def get_event_type_metrics(
         scan_config_id=scan_config_id,
         scope_type=SCOPE_EVENT_TYPE,
         scope_ref=str(event_type.id),
-        fallback=await _get_scan_config_sigma_threshold(session, scan_config_id),
+        fallback=await _get_project_sigma_threshold(session, project.id),
     )
     recent_window = await _get_project_recent_signal_window(session, project.id)
     scan_latest_bucket = await _get_scan_latest_bucket(
@@ -2115,7 +2301,7 @@ async def get_event_type_metrics(
         time_from=effective_time_from,
         time_to=time_to,
     )
-    return _build_metrics_response(
+    return await _build_metrics_response(
         scope=SCOPE_EVENT_TYPE,
         scan_config_id=scan_config_id,
         scope_ref=str(event_type.id),
@@ -2173,7 +2359,7 @@ async def get_project_total_metrics(
         time_from=effective_time_from,
         time_to=time_to,
     )
-    return _build_metrics_response(
+    return await _build_metrics_response(
         scope=SCOPE_PROJECT_TOTAL,
         scan_config_id=resolved_scan_config_id,
         scan_config_name=config.name,
@@ -2187,7 +2373,7 @@ async def get_project_total_metrics(
             scan_config_id=resolved_scan_config_id,
             scope_type=SCOPE_PROJECT_TOTAL,
             scope_ref=str(resolved_scan_config_id),
-            fallback=config.sigma_threshold,
+            fallback=await _get_project_sigma_threshold(session, project.id),
         ),
         recent_window=recent_window,
         scan_latest_bucket=scan_latest_bucket,
