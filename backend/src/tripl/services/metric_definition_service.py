@@ -8,8 +8,9 @@ from enum import Enum
 from uuid import UUID
 
 from fastapi import HTTPException
+from pydantic import ValidationError
+from sqlalchemy import ColumnElement, func, or_, select, text
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import func, or_, select, text
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +29,6 @@ from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.metric_value_breakdown import MetricValueBreakdown
-from tripl.models.scan_config import ScanConfig
 from tripl.schemas.event_metric import MetricSignalResponse
 from tripl.schemas.metric_definition import (
     EventCompositionMetricCreate,
@@ -50,6 +50,11 @@ from tripl.schemas.metric_definition import (
     SqlMetricDefinition,
 )
 from tripl.services._celery_dispatch import dispatch
+from tripl.services.data_source_scope import (
+    DATA_SOURCE_NOT_AVAILABLE,
+    data_source_out_of_project_scope,
+    scanning_project_ids_for,
+)
 from tripl.services.metrics_service import (
     _get_project_recent_signal_window,
     _signal_from_anomaly,
@@ -111,61 +116,39 @@ async def load_project_data_source(
     Consistent with ``scan_service._verify_data_source``, which fences a synthetic
     demo source to its own demo project.
 
-    WHAT IT REFUSES, and why it is not simply the fact-table rule. The fact-table
-    doors require a ``ScanConfig`` in this project, full stop. Applying that here
-    would have been wrong in a way worth writing down, because a ``sql`` metric
-    needs no scan at all: ``check_metric_definitions_due`` selects active metrics
-    with no ``ScanConfig`` join, so a warehouse a project uses ONLY for SQL
-    metrics collects forever without one. Creating a scan config is owner-only,
-    so "must be bound by a ScanConfig" would have meant an editor may use only
-    warehouses an owner already bound — and there is no other way for an owner to
-    bless one. A project that scans ClickHouse for events and queries Postgres
-    for metrics would have lost the ability to create OR EDIT those metrics: this
-    check runs on every definition update, so a PATCH that changed only a colour
-    would 404 too, because the client resends the stored data source with it.
+    WHAT IT REFUSES is :func:`data_source_out_of_project_scope`, the ownership
+    rule shared with the fact-table save and preview doors — see
+    ``services/data_source_scope`` for why ownership and not "bound by a
+    ``ScanConfig``", and for what that lets through. The short of it: a ``sql``
+    metric needs no scan at all, creating a scan config is owner-only, and this
+    check re-runs on every definition update, so a binding rule would 404 a
+    colour-only PATCH on a metrics-only warehouse.
 
-    So the rule is ownership, not binding. A data source is refused when it is
-    identifiably ANOTHER project's:
+    Refusing by ownership still closes the hole the check was added for — an
+    editor supplying another project's data source UUID so the catalog beat runs
+    their free-text SELECT under it every five minutes, unattended.
 
-    * ``project_id`` set to a different project — the demo case, where that
-      column exists precisely to scope a synthetic warehouse to one workspace;
-    * workspace-global but scanned by some other project and not by this one —
-      an owner pointed it at that project, and an editor here should not borrow
-      its credential.
-
-    A workspace-global source that no project scans is allowed, which is what
-    that NULL means: shared. This still closes the hole the check was added for —
-    an editor supplying another project's data source UUID so the catalog beat
-    runs their free-text SELECT under it every five minutes, unattended.
-
-    One message for every refusal, copied deliberately from the introspection
-    path: distinct messages let a project member probe arbitrary UUIDs and tell a
-    non-existent id apart from another project's data source.
+    WHAT THIS STILL DOES NOT COVER. It is a SAVE-time door, and rows written
+    before it existed walked in while it was open.
+    ``metric_collect._reject_foreign_data_source``, called from
+    ``metric_collect._collect_sql``, re-applies the same predicate to the stored
+    ``data_source_id`` before it opens the adapter (tripl-0zpq.347), so a legacy
+    ``sql`` row now fails its collection loudly instead of running under a
+    foreign credential — but the row itself stays as saved until someone edits
+    it.
 
     Returns the row so a caller that needs the credential does not re-query it.
     """
-    # Every branch raises the SAME message on purpose — see the docstring.
-    not_available_msg = "Data source not found"
+    # Both branches raise the SAME message on purpose — see DATA_SOURCE_NOT_AVAILABLE.
     data_source = await session.get(DataSource, data_source_id)
     if data_source is None:
-        raise HTTPException(status_code=404, detail=not_available_msg)
-    if data_source.project_id is not None and data_source.project_id != project_id:
-        raise HTTPException(status_code=404, detail=not_available_msg)
-    if data_source.project_id is None:
-        # Claimed by another project's scan and not by this one? Then it is that
-        # project's warehouse in all but the column. One query answers both
-        # halves: ask which projects scan it, then look for ours among them.
-        scanning_projects = set(
-            (
-                await session.execute(
-                    select(ScanConfig.project_id).where(ScanConfig.data_source_id == data_source_id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if scanning_projects and project_id not in scanning_projects:
-            raise HTTPException(status_code=404, detail=not_available_msg)
+        raise HTTPException(status_code=404, detail=DATA_SOURCE_NOT_AVAILABLE)
+    if data_source_out_of_project_scope(
+        data_source,
+        project_id=project_id,
+        scanning_project_ids=await scanning_project_ids_for(session, data_source),
+    ):
+        raise HTTPException(status_code=404, detail=DATA_SOURCE_NOT_AVAILABLE)
     return data_source
 
 
@@ -420,8 +403,123 @@ def _reject_cross_table_ratio_breakdowns() -> None:
     )
 
 
+async def _verify_fact_breakdown_columns(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    *,
+    fact_table_id: uuid.UUID | None,
+    breakdown_columns: list[str] | None,
+    app_version_column: str | None,
+    platform_column: str | None,
+) -> None:
+    """Check a fact metric's breakdown dimensions against its fact table.
+
+    :func:`_verify_fact_operand` has always checked the measure, distinct and
+    condition columns; the three dimension columns were checked by nobody, even
+    though the collector groups by exactly them. ``app_version_column`` and
+    ``platform_column`` are free-text inputs in the form (``ColumnSuggestInput``,
+    not a picker), so 'platform' where the table has 'platform_name' saved with a
+    201 and then failed on every tick — and it failed the WHOLE metric, not just that dimension: the
+    assembly loop re-raises a breakdown scan's error before writing anything, so
+    even the top line went uncollected and the catalog said "Scan failed due to
+    an internal error." (tripl-0zpq.174).
+
+    ``fact_table_id`` is the NUMERATOR's table for a ratio, which is the only
+    table a ratio with breakdowns may use — ``_reject_cross_table_ratio_breakdowns``
+    has already refused the cross-table case by the time this runs. ``None``
+    means there is no table to check against (a shape the schema does not allow
+    to reach collection), so there is nothing to say.
+    """
+    dimensions: list[tuple[str, str]] = [
+        ("breakdown column", column) for column in (breakdown_columns or [])
+    ]
+    if app_version_column is not None:
+        dimensions.append(("app_version_column", app_version_column))
+    if platform_column is not None:
+        dimensions.append(("platform_column", platform_column))
+    if not dimensions or fact_table_id is None:
+        return
+
+    fact_table = await session.get(FactTable, fact_table_id)
+    if fact_table is None or fact_table.project_id != project_id:
+        raise HTTPException(
+            status_code=422,
+            detail="referenced fact table does not exist in the project",
+        )
+    column_names = {
+        column["name"]
+        for column in (fact_table.columns or [])
+        if isinstance(column, dict) and isinstance(column.get("name"), str)
+    }
+    for label, column in dimensions:
+        if column not in column_names:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label} {column!r} is not a column of the referenced fact table",
+            )
+
+
+def _persisted_fact_table_id(metric: MetricDefinition) -> uuid.UUID | None:
+    """The fact table a stored fact metric's breakdowns would group by.
+
+    Single operand: the metric's own column. Ratio: the numerator's table out of
+    ``config`` (the denominator must match it whenever breakdowns exist).
+    """
+    if metric.fact_table_id is not None:
+        return metric.fact_table_id
+    config = metric.config if isinstance(metric.config, Mapping) else {}
+    numerator = config.get("numerator")
+    if not isinstance(numerator, Mapping):
+        return None
+    raw_id = numerator.get("fact_table_id")
+    if raw_id is None:
+        return None
+    try:
+        return raw_id if isinstance(raw_id, uuid.UUID) else uuid.UUID(str(raw_id))
+    except ValueError:
+        return None
+
+
+# The ``MetricDefinitionUpdate`` fields that change which columns a metric's
+# breakdowns group by. A PATCH that sets none of them cannot introduce a bad
+# dimension, so the persisted-dimension re-checks below are skipped for it — see
+# ``update_metric_definition``.
+_DIMENSION_UPDATE_FIELDS = frozenset({"breakdown_columns", "app_version_column", "platform_column"})
+
+
+async def _verify_persisted_fact_breakdown_columns(
+    session: AsyncSession, metric: MetricDefinition
+) -> None:
+    """Re-check breakdown dimensions on a dimension PATCH that carries no ``definition``.
+
+    A dimension-only edit — the user adds a breakdown column and changes nothing
+    else — never reaches ``_apply_definition_update``, so without this the same
+    unknown column slipped in through the one request shape most likely to carry
+    it. Validated against the fact table's STORED ``columns`` snapshot, which the
+    collector does not use (it introspects the warehouse live), so the two can
+    disagree — hence the caller only runs this when the request itself touched a
+    dimension field.
+    """
+    kind = metric.kind if isinstance(metric.kind, MetricKind) else MetricKind(metric.kind)
+    if kind is not MetricKind.fact:
+        return
+    await _verify_fact_breakdown_columns(
+        session,
+        metric.project_id,
+        fact_table_id=_persisted_fact_table_id(metric),
+        breakdown_columns=list(metric.breakdown_columns or []),
+        app_version_column=metric.app_version_column,
+        platform_column=metric.platform_column,
+    )
+
+
 def _verify_persisted_ratio_breakdown_compatibility(metric: MetricDefinition) -> None:
-    """Guard an already-persisted metric when only dimension fields change."""
+    """Guard an already-persisted metric when only dimension fields change.
+
+    Called from the same gate as :func:`_verify_persisted_fact_breakdown_columns`
+    and for the same reason: a PATCH that touches no dimension cannot make a
+    ratio's breakdowns cross-table, so it is not asked to answer for one.
+    """
     kind = metric.kind if isinstance(metric.kind, MetricKind) else MetricKind(metric.kind)
     if kind is not MetricKind.fact:
         return
@@ -462,7 +560,12 @@ async def _verify_fact_metric(
     app_version_column: str | None = None,
     platform_column: str | None = None,
 ) -> None:
-    """Validate a fact metric's operand(s) against their fact table(s)."""
+    """Validate a fact metric's operand(s) and dimensions against their fact table(s).
+
+    Operand columns are checked per operand; the breakdown dimensions are checked
+    once, against the table the collector will actually group by — see
+    :func:`_verify_fact_breakdown_columns`.
+    """
     if breakdown_columns is None and app_version_column is None and platform_column is None:
         breakdown_columns, app_version_column, platform_column = _extract_create_breakdown_fields(
             data
@@ -492,6 +595,14 @@ async def _verify_fact_metric(
                 conditions=operand.conditions,
                 role=role,
             )
+        await _verify_fact_breakdown_columns(
+            session,
+            project_id,
+            fact_table_id=data.numerator.fact_table_id,
+            breakdown_columns=breakdown_columns,
+            app_version_column=app_version_column,
+            platform_column=platform_column,
+        )
         return
 
     # SINGLE: the schema guarantees fact_table_id is set for a single fact metric.
@@ -506,6 +617,38 @@ async def _verify_fact_metric(
         row_filters=data.effective_row_filters(),
         conditions=data.conditions,
         role="single",
+    )
+    await _verify_fact_breakdown_columns(
+        session,
+        project_id,
+        fact_table_id=data.fact_table_id,
+        breakdown_columns=breakdown_columns,
+        app_version_column=app_version_column,
+        platform_column=platform_column,
+    )
+
+
+def _metric_search_clause(search: str | None) -> ColumnElement[bool] | None:
+    """The ONE catalog free-text clause, shared by the list and the active KPI.
+
+    Both queries MUST select the same population or the KPI strip contradicts the
+    table it sits above: the active count used to match name/display_name only,
+    against a stripped term, while the list also matched ``description`` against
+    the raw one. A term appearing only in descriptions listed rows and counted
+    zero active, and a trailing space moved the two counts apart the other way
+    (tripl-0zpq.178).
+
+    A blank or whitespace-only term filters nothing, rather than turning into a
+    ``%%`` pattern that matches every row with a non-NULL column.
+    """
+    term = (search or "").strip()
+    if not term:
+        return None
+    pattern = f"%{term}%"
+    return or_(
+        MetricDefinition.name.ilike(pattern),
+        MetricDefinition.display_name.ilike(pattern),
+        MetricDefinition.description.ilike(pattern),
     )
 
 
@@ -524,7 +667,9 @@ async def count_active_metric_definitions(
 
     Deliberately ignores the ``status`` filter — the stat answers "how many of my
     metrics are active", which must not change when you filter the list BY
-    status — while honouring kind/search so it matches the population on screen.
+    status — while honouring kind/search through the SAME
+    :func:`_metric_search_clause` the list uses, so it counts the population on
+    screen rather than a narrower one.
     """
     project_id = await get_project_id_by_slug(session, slug)
     query = select(func.count(MetricDefinition.id)).where(
@@ -533,14 +678,9 @@ async def count_active_metric_definitions(
     )
     if kind:
         query = query.where(MetricDefinition.kind == kind)
-    if search:
-        pattern = f"%{search.strip()}%"
-        query = query.where(
-            or_(
-                MetricDefinition.name.ilike(pattern),
-                MetricDefinition.display_name.ilike(pattern),
-            )
-        )
+    search_clause = _metric_search_clause(search)
+    if search_clause is not None:
+        query = query.where(search_clause)
     return int((await session.execute(query)).scalar() or 0)
 
 
@@ -566,12 +706,8 @@ async def list_metric_definitions(
     if kind:
         query = query.where(MetricDefinition.kind == kind)
         count_query = count_query.where(MetricDefinition.kind == kind)
-    if search:
-        search_clause = or_(
-            MetricDefinition.name.ilike(f"%{search}%"),
-            MetricDefinition.display_name.ilike(f"%{search}%"),
-            MetricDefinition.description.ilike(f"%{search}%"),
-        )
+    search_clause = _metric_search_clause(search)
+    if search_clause is not None:
         query = query.where(search_clause)
         count_query = count_query.where(search_clause)
 
@@ -894,6 +1030,20 @@ async def get_metric_definition_enriched(
     )
 
 
+async def _next_metric_order(session: AsyncSession, project_id: uuid.UUID) -> int:
+    """One past the project's highest catalog order — the append position.
+
+    Mirrors ``fact_table_service``'s ``_next_order``. Without it every metric
+    created from the form landed on the schema default 0, and a catalog of ties
+    cannot be reordered at all: the drag handle permutes positions that are all
+    the same value (tripl-0zpq.175).
+    """
+    highest = await session.scalar(
+        select(func.max(MetricDefinition.order)).where(MetricDefinition.project_id == project_id)
+    )
+    return 0 if highest is None else int(highest) + 1
+
+
 async def create_metric_definition(
     session: AsyncSession, slug: str, data: MetricDefinitionCreate
 ) -> MetricDefinition:
@@ -918,13 +1068,36 @@ async def create_metric_definition(
     elif isinstance(data, EventCompositionMetricCreate):
         await _verify_composition_refs(session, project_id, data)
 
-    metric = MetricDefinition(project_id=project_id, **data.to_create_values())
+    create_values = data.to_create_values()
+    if not create_values.get("order"):
+        # 0 is the schema default and what the catalog form always sends (it has
+        # no order field), so it means "no position asked for" → append. An
+        # explicit non-zero order is still honoured verbatim.
+        create_values["order"] = await _next_metric_order(session, project_id)
+
+    metric = MetricDefinition(project_id=project_id, **create_values)
     session.add(metric)
     await session.flush()
     await session.commit()
     await session.refresh(metric)
     await _refresh_main_search_index(session, project_id, slug)
     return metric
+
+
+async def _delete_metric_scope_anomalies(session: AsyncSession, metric_id: uuid.UUID) -> None:
+    """Delete the catalog-scope anomalies one metric owns.
+
+    ``MetricAnomaly`` carries no ``metric_definition_id`` FK: a metric's own
+    anomalies are addressed by ``scope_type='metric'`` + ``scope_ref``, with a
+    NULL ``scan_config_id``. Nothing in the database reaches them, so every
+    caller that drops a metric's history has to delete them explicitly.
+    """
+    await session.execute(
+        sql_delete(MetricAnomaly).where(
+            MetricAnomaly.scope_type == MetricScopeType.metric.value,
+            MetricAnomaly.scope_ref == str(metric_id),
+        )
+    )
 
 
 async def _clear_collected_metric_data(session: AsyncSession, metric: MetricDefinition) -> None:
@@ -947,6 +1120,14 @@ async def _clear_collected_metric_data(session: AsyncSession, metric: MetricDefi
 
     This is called for any material definition change, including same-kind config
     edits; presentation-only updates with an identical definition keep history.
+    A material change is refused while the metric carries a live ``running``
+    marker (see :func:`_reject_definition_change_during_collection`), and
+    :func:`update_metric_definition` takes the dispatcher's advisory lock so a
+    beat tick cannot stamp that marker between the check and the deletes below.
+    One window stays open and is meant to: a ``running`` marker older than
+    ``STALE_ACTIVE_SCAN_JOB_TIMEOUT`` reads as dead, so if the worker that left
+    it is somehow still alive, this clear does race it — the same trade the
+    scheduler makes to keep a crashed run from wedging a metric forever.
     """
     metric_id = metric.id
     await session.execute(
@@ -957,12 +1138,7 @@ async def _clear_collected_metric_data(session: AsyncSession, metric: MetricDefi
             MetricValueBreakdown.metric_definition_id == metric_id
         )
     )
-    await session.execute(
-        sql_delete(MetricAnomaly).where(
-            MetricAnomaly.scope_type == MetricScopeType.metric.value,
-            MetricAnomaly.scope_ref == str(metric_id),
-        )
-    )
+    await _delete_metric_scope_anomalies(session, metric_id)
     metric.last_collected_at = None
     metric.last_collection_window_to = None
     metric.last_collection_status = None
@@ -985,8 +1161,34 @@ def _normalise_definition_value(value: object) -> object:
     return value
 
 
-def _definition_values_changed(metric: MetricDefinition, new_values: dict[str, object]) -> bool:
-    current_values: dict[str, object] = {
+async def _reject_definition_change_during_collection(session: AsyncSession) -> None:
+    """Refuse a MATERIAL definition change while a collection is in flight.
+
+    The running worker read the old definition into locals before this request
+    arrived and keeps deleting/upserting its remaining chunks from them, then
+    stamps success and a watermark. Clearing the series underneath it therefore
+    leaves old-definition buckets inside the new series — as much as a whole
+    manual window — which no later scheduled run recomputes, because the
+    watermark the worker stamps says that ground is already covered. Resetting
+    ``last_collection_status`` to NULL also drops the one-active-job guard, so
+    the scheduler may dispatch a second run alongside the first (tripl-0zpq.172).
+
+    Rejected rather than queued: the user can save again when the run finishes,
+    and a ``running`` marker left by a crashed worker ages out of the guard by
+    itself.
+    """
+    # Nothing has been committed yet: roll back so the rejected request cannot
+    # leave a half-applied presentation edit pending in the session.
+    await session.rollback()
+    raise HTTPException(
+        status_code=409,
+        detail="Metric collection is already running; retry the change when it finishes",
+    )
+
+
+def _persisted_definition_columns(metric: MetricDefinition) -> dict[str, object]:
+    """The definition columns exactly as they sit in the row, raw ``config`` and all."""
+    return {
         "kind": metric.kind,
         "aggregation": metric.aggregation,
         "composition": metric.composition,
@@ -1000,6 +1202,89 @@ def _definition_values_changed(metric: MetricDefinition, new_values: dict[str, o
         "denominator_event_id": metric.denominator_event_id,
         "denominator_event_type_id": metric.denominator_event_type_id,
     }
+
+
+def _stored_definition_values(metric: MetricDefinition) -> dict[str, object] | None:
+    """The row's persisted definition, re-read through its own Pydantic model.
+
+    Returns the same shape an incoming ``definition`` block produces, so the two
+    can be compared on MEANING rather than on stored key sets. ``None`` means the
+    row is not parseable by today's schema (a corrupt or long-superseded config);
+    the caller then falls back to the raw columns.
+    """
+    kind = metric.kind if isinstance(metric.kind, MetricKind) else MetricKind(metric.kind)
+    config = dict(metric.config) if isinstance(metric.config, Mapping) else {}
+    model: (
+        type[FactMetricDefinition]
+        | type[SqlMetricDefinition]
+        | type[EventCompositionMetricDefinition]
+    )
+    payload: dict[str, object] = {"kind": kind}
+    if kind is MetricKind.fact:
+        model = FactMetricDefinition
+        payload["interval"] = metric.interval
+        payload["replay_chunk_interval"] = metric.replay_chunk_interval
+        raw_composition = metric.composition or MetricComposition.single
+        composition = (
+            raw_composition
+            if isinstance(raw_composition, MetricComposition)
+            else MetricComposition(raw_composition)
+        )
+        payload["composition"] = composition
+        if composition is MetricComposition.ratio:
+            # A ratio keeps both operands in ``config`` and MUST leave the
+            # single-operand columns unset, so they are not fed back in (the
+            # schema rejects a ratio that carries them).
+            payload["numerator"] = config.get("numerator")
+            payload["denominator"] = config.get("denominator")
+        else:
+            payload["fact_table_id"] = metric.fact_table_id
+            payload["aggregation"] = metric.aggregation
+            payload["measure_column"] = config.get("measure_column")
+            payload["distinct_column"] = config.get("distinct_column")
+            payload["row_filter"] = config.get("row_filter")
+            payload["row_filters"] = config.get("row_filters") or []
+            payload["filter_sql"] = config.get("filter_sql")
+            payload["conditions"] = config.get("conditions") or []
+    elif kind is MetricKind.sql:
+        model = SqlMetricDefinition
+        payload["interval"] = metric.interval
+        payload["replay_chunk_interval"] = metric.replay_chunk_interval
+        payload["config"] = config
+        payload["data_source_id"] = metric.data_source_id
+    else:
+        # ``event_composition`` has no data source and no interval of its own.
+        model = EventCompositionMetricDefinition
+        payload["composition"] = metric.composition
+        payload["numerator_event_id"] = metric.numerator_event_id
+        payload["numerator_event_type_id"] = metric.numerator_event_type_id
+        payload["denominator_event_id"] = metric.denominator_event_id
+        payload["denominator_event_type_id"] = metric.denominator_event_type_id
+        payload["user_id_column"] = config.get("user_id_column")
+
+    try:
+        definition = model.model_validate(payload)
+    except ValidationError, ValueError, TypeError:
+        return None
+    return definition.to_definition_values()
+
+
+def _definition_values_changed(metric: MetricDefinition, new_values: dict[str, object]) -> bool:
+    """Whether ``new_values`` MEANS something other than what is already stored.
+
+    Both sides are compared as ``to_definition_values()`` output, not as raw
+    columns: that call fills in every config key the schema defines TODAY, while
+    a row written before a key existed simply has no such key. Comparing the raw
+    dicts counted the newly defaulted key as a change, so editing only the
+    description of a legacy metric — the form always resends the unchanged
+    definition — wiped its entire collected history, and the next defaulted
+    config key added would do it to every metric in the catalog (tripl-0zpq.171).
+
+    A row today's schema cannot parse falls back to the raw columns. That answer
+    is conservative (it can over-report a change, never miss one), and it keeps
+    an unparseable stored definition from 500ing the edit that would replace it.
+    """
+    current_values = _stored_definition_values(metric) or _persisted_definition_columns(metric)
     return _normalise_definition_value(current_values) != _normalise_definition_value(new_values)
 
 
@@ -1007,6 +1292,8 @@ async def _apply_definition_update(
     session: AsyncSession,
     metric: MetricDefinition,
     definition: MetricDefinitionConfigUpdate,
+    *,
+    collection_running: bool,
 ) -> None:
     """Re-validate a kind/config ``definition`` like creation and apply it.
 
@@ -1014,7 +1301,8 @@ async def _apply_definition_update(
     table+columns+filters / event refs), then overwrites the metric's identity and
     config columns from ``to_definition_values()``. If the definition changed
     materially, the metric's previously collected data is cleared (see
-    :func:`_clear_collected_metric_data`).
+    :func:`_clear_collected_metric_data`) — unless a collection is in flight, in
+    which case the change is refused with 409 rather than raced.
     """
     project_id = metric.project_id
     if isinstance(definition, SqlMetricDefinition):
@@ -1033,6 +1321,9 @@ async def _apply_definition_update(
 
     new_values = definition.to_definition_values()
     changed = _definition_values_changed(metric, new_values)
+    if changed and collection_running:
+        # Before the first write: a rejected change must leave the row alone.
+        await _reject_definition_change_during_collection(session)
     for key, value in new_values.items():
         setattr(metric, key, value)
     if changed:
@@ -1045,7 +1336,34 @@ async def update_metric_definition(
     metric_id: uuid.UUID,
     data: MetricDefinitionUpdate,
 ) -> MetricDefinition:
+    # Imported lazily, like this module's other scheduler reads, to keep the
+    # request path out of the Celery import graph.
+    from tripl.worker.tasks.metrics.schedule import _metric_collection_in_progress
+
+    # A definition edit does the same read/check/write the dispatcher does —
+    # read ``last_collection_status``, decide nothing is running, then write
+    # (here: delete the series and reset the marker). Unlocked, a beat tick could
+    # stamp ``running`` and dispatch in the window between this read and the
+    # commit at the bottom, and the clear would then wipe the marker the tick
+    # just wrote and race the worker writing old-definition buckets
+    # (tripl-0zpq.172). So this takes the SAME advisory-lock key
+    # ``trigger_metric_collection`` and the beat use, and for the same reason;
+    # the transaction-scoped lock is released by the commit below, which is the
+    # write it has to cover. It MUST precede every ORM read in this transaction.
+    # A presentation-only PATCH clears nothing and takes no lock, so a colour or
+    # status edit still lands mid-tick.
+    if data.definition is not None and not await _try_acquire_metric_dispatch_transaction_lock(
+        session
+    ):
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="Metric collection dispatcher is busy")
+
     metric = await get_metric_definition(session, slug, metric_id)
+    # Asked BEFORE anything is assigned below: an autoflush of those edits would
+    # bump ``updated_at`` (``onupdate``), which is the timestamp the staleness
+    # half of the guard reads — a crashed run's dead ``running`` marker would
+    # then look freshly alive and block the very edit that replaces it.
+    collection_running = _metric_collection_in_progress(metric, now=datetime.now(UTC))
     # Presentation/lifecycle/dimension/monitoring fields: only the ones the client
     # explicitly sent. ``definition`` is applied separately below; ``name`` has no
     # update field and so can never be touched here.
@@ -1053,9 +1371,20 @@ async def update_metric_definition(
     for key, value in update_data.items():
         setattr(metric, key, value)
     if data.definition is not None:
-        await _apply_definition_update(session, metric, data.definition)
-    else:
+        await _apply_definition_update(
+            session, metric, data.definition, collection_running=collection_running
+        )
+    elif update_data.keys() & _DIMENSION_UPDATE_FIELDS:
+        # Only when the request actually TOUCHED a dimension. These two re-check
+        # the metric's stored dimensions, and a legacy row can fail them on data
+        # nobody sent: the fact table's ``columns`` snapshot may be empty (it is
+        # only filled by a preview) or may name a column the warehouse has since
+        # renamed. Running them on every definition-less PATCH turned that into a
+        # 422 on ``{"status": "archived"}`` — the metric could not be archived,
+        # recoloured or renamed until the caller repaired a dimension it had not
+        # asked to change (tripl-0zpq.174).
         _verify_persisted_ratio_breakdown_compatibility(metric)
+        await _verify_persisted_fact_breakdown_columns(session, metric)
     await session.commit()
     await session.refresh(metric)
     await _refresh_main_search_index(session, metric.project_id, slug)
@@ -1063,8 +1392,19 @@ async def update_metric_definition(
 
 
 async def delete_metric_definition(session: AsyncSession, slug: str, metric_id: uuid.UUID) -> None:
+    """Delete a metric definition and everything it owns.
+
+    ``MetricValue`` / ``MetricValueBreakdown`` go with it through their FK
+    cascade; its catalog-scope anomalies do not (see
+    :func:`_delete_metric_scope_anomalies`). Every other anomaly purge — the
+    detector's project sweep, the detection reset, the per-scope delete — finds
+    rows through the ids of metrics that STILL EXIST, so anomalies left behind
+    here were unreachable forever and grew without a surface that could show
+    them (tripl-0zpq.179).
+    """
     metric = await get_metric_definition(session, slug, metric_id)
     project_id = metric.project_id
+    await _delete_metric_scope_anomalies(session, metric_id)
     await session.delete(metric)
     await session.commit()
     await _refresh_main_search_index(session, project_id, slug)
@@ -1389,7 +1729,6 @@ async def trigger_metric_collection(
     """
     # Imported here to avoid importing the Celery worker stack at module load.
     from tripl.worker.tasks.metrics.metric_collect import (
-        COLLECTION_STATUS_ERROR,
         COLLECTION_STATUS_RUNNING,
         compute_manual_collect_window,
     )
@@ -1462,8 +1801,15 @@ async def trigger_metric_collection(
         )
     except Exception as exc:  # broker unavailable, etc.
         for definition in collection_group:
-            definition.last_collection_status = COLLECTION_STATUS_ERROR
-            definition.last_collection_error = "Failed to dispatch collection task to worker"
+            # Through the model's own setter, never by assigning the two columns
+            # here: ``mark_collection_error`` also stamps
+            # ``last_collection_failed_at``, and the dispatcher's post-error
+            # backoff reads ``last_collection_failed_at or updated_at``. Writing
+            # the status alone put the whole group — up to a fact metric's entire
+            # active closure — into the error state measuring its cooldown from
+            # an unrelated older failure, or from ``updated_at`` when the metric
+            # had never failed, i.e. from no cooldown at all (tripl-0zpq.180).
+            definition.mark_collection_error("Failed to dispatch collection task to worker")
         await session.commit()
         raise HTTPException(
             status_code=503,
@@ -1517,6 +1863,57 @@ async def bulk_update_metric_definitions(
     await _refresh_main_search_index(session, project_id, slug)
 
 
+async def _write_catalog_order(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    requested: Sequence[MetricDefinition],
+) -> None:
+    """Place ``requested`` in the order given and renumber the catalog densely.
+
+    The POSITIONS ``requested`` already occupies in the project's catalog ordering
+    are the positions it is written back into, so a request covering only part of
+    the catalog — a filtered or paginated view — permutes its own rows and leaves
+    every metric that was not in it exactly where it sat, before and after the
+    same neighbours. Everything is then numbered 0..n-1.
+
+    Renumbering the WHOLE project rather than just the sent rows is what makes
+    the write land and keeps it landed. Metrics that share an order — which,
+    before ``_next_metric_order``, was ALL of them — describe a permutation of
+    equal values, so permuting the values found was silently a no-op and every
+    drag sprang back on the next refetch (tripl-0zpq.175). Forcing only the sent
+    rows apart instead would have written one of them onto a value some unsent
+    metric already holds, re-creating the tie a slot down; a dense pass over the
+    project cannot, because no two positions are equal.
+
+    Ordered by the same key ``list_metric_definitions`` and ``move_metric_
+    definition`` read (``order``, then newest first, then id): the catalog the
+    user is looking at is the catalog being renumbered.
+    """
+    result = await session.execute(
+        select(MetricDefinition)
+        .where(MetricDefinition.project_id == project_id)
+        .order_by(
+            MetricDefinition.order.asc(),
+            MetricDefinition.created_at.desc(),
+            MetricDefinition.id.asc(),
+        )
+    )
+    catalog = list(result.scalars().all())
+    requested_ids = {metric.id for metric in requested}
+    slots = [index for index, metric in enumerate(catalog) if metric.id in requested_ids]
+    # ``strict`` holds because both callers have already proved every requested id
+    # belongs to this project and appears once.
+    for slot, metric in zip(slots, requested, strict=True):
+        catalog[slot] = metric
+    for position, metric in enumerate(catalog):
+        # Guarded so a reorder that settles the catalog into the numbering it
+        # already had emits no UPDATE, and does not bump ``updated_at`` on rows
+        # nobody moved.
+        if metric.order != position:
+            metric.order = position
+
+
 async def reorder_metric_definitions(
     session: AsyncSession,
     slug: str,
@@ -1530,15 +1927,21 @@ async def reorder_metric_definitions(
         )
     )
     metrics = list(result.scalars().all())
+    if len(set(data.metric_ids)) != len(data.metric_ids):
+        # Checked before the ownership count, which a duplicated id passes
+        # (both sides collapse to the same set) on the way to an IndexError 500.
+        raise HTTPException(status_code=400, detail="Duplicate metric ids in the requested order")
     if len(metrics) != len(set(data.metric_ids)):
         raise HTTPException(
             status_code=400, detail="Some metric definitions do not belong to this project"
         )
 
     metrics_by_id = {metric.id: metric for metric in metrics}
-    sorted_orders = sorted(metric.order for metric in metrics)
-    for new_index, metric_id in enumerate(data.metric_ids):
-        metrics_by_id[metric_id].order = sorted_orders[new_index]
+    await _write_catalog_order(
+        session,
+        project_id=project_id,
+        requested=[metrics_by_id[metric_id] for metric_id in data.metric_ids],
+    )
 
     await session.commit()
     refreshed = await session.execute(
@@ -1580,8 +1983,15 @@ async def move_metric_definition(
     if target_index < 0 or target_index >= len(ordered):
         return metric
 
-    target = ordered[target_index]
-    metric.order, target.order = target.order, metric.order
+    # Swap the two POSITIONS and let the catalog be renumbered from the result,
+    # rather than swapping the two order values: neighbours sharing an order value
+    # (the normal state of a catalog whose metrics were all created at 0) swap to
+    # exactly what they had, so the move never moved anything (tripl-0zpq.175).
+    ordered[current_index], ordered[target_index] = (
+        ordered[target_index],
+        ordered[current_index],
+    )
+    await _write_catalog_order(session, project_id=metric.project_id, requested=ordered)
     await session.commit()
     await session.refresh(metric)
     return metric

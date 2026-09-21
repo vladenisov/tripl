@@ -49,6 +49,7 @@ from tripl.models.chart_annotation import ChartAnnotation
 from tripl.models.domain_enums import (
     AlertRuleFilterField,
     ChartAnnotationScopeType,
+    MetricComposition,
     MetricScopeType,
 )
 from tripl.models.event import Event
@@ -99,6 +100,13 @@ def _move_metric_composition_operands(session: Session, *, source: Event, target
     worse, so the operands are re-pointed and the metric is driven red instead,
     naming both originals so an operator can see what happened and redefine it.
 
+    That red is gated on ``composition == ratio``, which is the only composition
+    the 1.0 argument is about: ``single`` and ``per_distinct_user`` read the
+    numerator alone, so a leftover denominator matching it changes nothing they
+    compute. The schema now refuses to STORE such a row, but one written before
+    that (only a hand-written API call could make one) was being marked red here
+    with a message about a ratio it is not (tripl-0zpq.89).
+
     Deliberately does NOT touch ``numerator_event_type_id`` /
     ``denominator_event_type_id``. They have the identical SET NULL shape when an
     event TYPE is deleted, which is a different trigger on a different path;
@@ -121,7 +129,8 @@ def _move_metric_composition_operands(session: Session, *, source: Event, target
             definition.denominator_event_id = target.id
 
         if (
-            definition.numerator_event_id is not None
+            definition.composition == MetricComposition.ratio
+            and definition.numerator_event_id is not None
             and definition.numerator_event_id == definition.denominator_event_id
         ):
             # Names THIS merge's source and target rather than the operands as

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from tripl.core.adapters.measure_validator import (
     validate_identifier,
+    validate_select_sql,
     validate_select_sql_safety,
     validate_sql_fragment,
 )
@@ -19,6 +20,7 @@ from tripl.models.domain_enums import (
     ScanInterval,
 )
 from tripl.schemas.event_metric import MetricSignalResponse
+from tripl.schemas.not_null_update import reject_explicit_nulls
 from tripl.schemas.scan_config import check_replay_chunk_against_interval
 
 
@@ -30,6 +32,32 @@ def _validate_optional_identifier(value: str | None) -> str | None:
     untouched; any provided value must pass the allowlist regex or raise.
     """
     return value if value is None else validate_identifier(value)
+
+
+def _normalise_breakdown_columns(value: list[str]) -> list[str]:
+    """Validate catalog breakdown columns and drop repeats, order preserved.
+
+    Deduplication is not cosmetic. The batch planner appends one breakdown plan
+    per entry, so a column listed twice makes assembly emit each
+    ``(bucket, breakdown_value)`` row twice, and the upsert sends the whole chunk
+    as ONE ``INSERT ... ON CONFLICT DO UPDATE``. Postgres refuses that with
+    "command cannot affect row a second time", so the metric errors on every
+    tick; SQLite applies the statement row by row and never notices, which is
+    why no test caught it (tripl-0zpq.270).
+
+    The sibling scalar-column fields — ``scan_config``'s and ``event``'s
+    ``metric_breakdown_columns`` — have always deduplicated; only the catalog
+    metric's copy did not.
+    """
+    columns: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        column = validate_identifier(item)
+        if column in seen:
+            continue
+        seen.add(column)
+        columns.append(column)
+    return columns
 
 
 def _validate_row_filter_names(value: list[str]) -> list[str]:
@@ -302,6 +330,51 @@ class SqlConfig(BaseModel):
     def _check_value_column(cls, value: str | None) -> str | None:
         return _validate_optional_identifier(value)
 
+    @model_validator(mode="after")
+    def _check_sql_projects_its_named_columns(self) -> SqlConfig:
+        """Reject at SAVE the SELECT the collector would reject on every tick.
+
+        ``_check_metric_sql`` above runs only the structural-safety subset, which
+        its own docstring flags as "no column check". The worker's ``_collect_sql``
+        then runs the FULL ``validate_select_sql``, which additionally requires
+        that the outer projection textually name the time and value columns — and
+        it raises a bare ``ValueError``, not a ``ScanError``, so the failure
+        reaches the user as "Scan failed due to an internal error." A save that
+        returned 201 therefore produced a metric that could never collect and
+        could not say why (tripl-0zpq.173). The classic shape is a CTE finished
+        with ``SELECT * FROM b``: the columns exist in the result, but the outer
+        projection does not mention them, so the textual check cannot see them.
+
+        ASYMMETRY, on purpose. The time column is always explicit config, so a
+        SELECT that does not project it is a typo and is refused here. The value
+        column is refused only when the caller NAMED one; when ``value_column``
+        is None the metric is leaning on the documented ``value`` convention, and
+        tightening that at this boundary would start 422-ing saves for a long
+        tail of stored metrics — including this repo's own fixtures — that the
+        collector's rule has silently condemned for as long as it has existed.
+        Closing that half means correcting those callers first, and teaching the
+        worker to report the refusal as a ``ScanError`` rather than as an
+        internal one.
+        """
+        if self.value_column is not None:
+            validate_select_sql(
+                self.metric_sql, value_column=self.value_column, time_column=self.time_column
+            )
+            return self
+        try:
+            # Both arguments are the time column: the safety subset has already
+            # passed on this exact string (field validators run first, and
+            # ``validate_select_sql`` re-runs precisely that subset), so the only
+            # failure left is the projection check — reported under the "value"
+            # label here. Re-raise it under the name the caller actually gave.
+            validate_select_sql(
+                self.metric_sql, value_column=self.time_column, time_column=self.time_column
+            )
+        except ValueError:
+            msg = f"Metric SQL must project the time column {self.time_column!r}"
+            raise ValueError(msg) from None
+        return self
+
 
 # ── Shared catalog fields ────────────────────────────────────────────────────
 
@@ -311,6 +384,10 @@ class _MetricDefinitionBase(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     description: str = ""
     color: str = Field(default="#6366f1", pattern=r"^#[0-9a-fA-F]{6}$")
+    # Catalog position. 0 means "wherever" — the form has no order field and
+    # always sends it — so the service appends instead, giving the new metric
+    # ``max(order) + 1``. Without that every metric shared order 0 and the
+    # catalog could not be reordered at all (tripl-0zpq.175).
     order: int = 0
     unit: str | None = Field(default=None, max_length=50)
     status: MetricStatus = MetricStatus.draft
@@ -330,7 +407,7 @@ class _MetricDefinitionBase(BaseModel):
     @field_validator("breakdown_columns")
     @classmethod
     def _check_breakdown_columns(cls, value: list[str]) -> list[str]:
-        return [validate_identifier(item) for item in value]
+        return _normalise_breakdown_columns(value)
 
     def _shared_values(self) -> dict[str, object]:
         return {
@@ -572,13 +649,27 @@ class EventCompositionMetricDefinition(BaseModel):
             role="numerator",
             required=True,
         )
-        denominator_required = self.composition == MetricComposition.ratio
+        is_ratio = self.composition == MetricComposition.ratio
         _validate_single_ref(
             self.denominator_event_id,
             self.denominator_event_type_id,
             role="denominator",
-            required=denominator_required,
+            required=is_ratio,
         )
+        if not is_ratio and (
+            self.denominator_event_id is not None or self.denominator_event_type_id is not None
+        ):
+            # A denominator was merely OPTIONAL here before, so a hand-written
+            # API call could park one on a ``single``/``per_distinct_user``
+            # metric. The collector reads it only for ratios, so it was dead
+            # config — except that the event-merge guard compares the two
+            # operands for EVERY composition and drives the metric into the
+            # error state with a message about a constant-1.0 ratio when a merge
+            # makes them equal, although the metric is a plain count and is
+            # still collecting correctly (tripl-0zpq.89). Config the collector
+            # never reads has no business being storable.
+            msg = "denominator is only valid for ratio composition"
+            raise ValueError(msg)
         if (
             self.user_id_column is not None
             and self.composition != MetricComposition.per_distinct_user
@@ -662,6 +753,25 @@ MetricDefinitionConfigUpdate = Annotated[
 # ── Update / bulk ────────────────────────────────────────────────────────────
 
 
+# The update fields whose MetricDefinition column is NOT NULL, so an explicit
+# ``null`` from a client is a 422 and not a DB-level 500 — see
+# ``schemas/not_null_update``. ``owner_id``, ``unit``, ``breakdown_values_limit``,
+# ``app_version_column``, ``platform_column`` and ``definition`` are deliberately
+# absent: each is nullable, and a null on them means "clear this".
+_METRIC_NOT_NULL_UPDATE_FIELDS = frozenset(
+    {
+        "display_name",
+        "description",
+        "color",
+        "order",
+        "status",
+        "reviewed",
+        "breakdown_columns",
+        "anomaly_detection_enabled",
+    }
+)
+
+
 class MetricDefinitionUpdate(BaseModel):
     """Partial update of presentation, lifecycle, dimension and monitoring fields,
     plus an optional ``definition`` block that re-defines the metric's kind +
@@ -672,9 +782,25 @@ class MetricDefinitionUpdate(BaseModel):
     block mirrors the create discriminated union (minus ``name`` and the other
     presentation fields, which keep their own update fields here); when present it
     is re-validated EXACTLY like creation and the service overwrites the metric's
-    ``kind`` / ``config`` / collection binding from it. A ``kind`` change clears
-    the metric's previously collected values (see the service).
+    ``kind`` / ``config`` / collection binding from it.
+
+    ANY definition change that means something different — not just a ``kind``
+    change — deletes the metric's previously collected values, breakdowns and
+    anomalies, because they were produced under the old definition. The
+    comparison is on meaning, so resending an unchanged ``definition`` (which the
+    catalog form always does) keeps the history. Such a change is refused with
+    409 while a collection for the metric is already in flight; retry it once the
+    run finishes.
     """
+
+    # The pointers behind the paragraph above, kept as a comment because this
+    # class's docstring is published as the schema description in
+    # ``backend/openapi.json``, in ``website/openapi/tripl.openapi.json`` and in
+    # the JSDoc of ``frontend/src/types/api.gen.ts``, where a symbol name means
+    # nothing: the meaning comparison is ``_definition_values_changed`` (it fills
+    # in today's defaults on both sides, so a row predating a config key is not
+    # counted as edited), and the 409 is
+    # ``_reject_definition_change_during_collection``.
 
     display_name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
@@ -691,6 +817,11 @@ class MetricDefinitionUpdate(BaseModel):
     anomaly_detection_enabled: bool | None = None
     definition: MetricDefinitionConfigUpdate | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _METRIC_NOT_NULL_UPDATE_FIELDS)
+
     @field_validator("app_version_column", "platform_column")
     @classmethod
     def _check_optional_identifier_columns(cls, value: str | None) -> str | None:
@@ -699,7 +830,13 @@ class MetricDefinitionUpdate(BaseModel):
     @field_validator("breakdown_columns")
     @classmethod
     def _check_breakdown_columns(cls, value: list[str] | None) -> list[str] | None:
-        return None if value is None else [validate_identifier(item) for item in value]
+        return None if value is None else _normalise_breakdown_columns(value)
+
+
+# The bulk route's own NOT NULL subset. Spelled out rather than intersected with
+# the single-metric set so the two lists can be read side by side; the bulk
+# schema simply has fewer fields.
+_BULK_NOT_NULL_UPDATE_FIELDS = frozenset({"status", "reviewed", "anomaly_detection_enabled"})
 
 
 class MetricDefinitionBulkUpdate(BaseModel):
@@ -708,6 +845,15 @@ class MetricDefinitionBulkUpdate(BaseModel):
     owner_id: uuid.UUID | None = None
     reviewed: bool | None = None
     anomaly_detection_enabled: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        # The bulk route feeds ``exclude_unset`` values straight into
+        # ``update(...).values()``, so a null lands on the column the same way
+        # the single-metric PATCH's ``setattr`` does. ``owner_id`` stays out of
+        # the set: a null there unassigns the owner across the selection.
+        return reject_explicit_nulls(data, _BULK_NOT_NULL_UPDATE_FIELDS)
 
     @model_validator(mode="after")
     def validate_has_update(self) -> MetricDefinitionBulkUpdate:
@@ -722,6 +868,14 @@ class MetricDefinitionBulkUpdate(BaseModel):
         return self
 
 
+# The metrics of one view, in the order they should be shown. May cover only
+# part of the catalog (the list is filterable and paginated): the service writes
+# the requested sequence into the order values those metrics already occupy, so
+# the run keeps its place among the metrics that were not sent. Ids must be
+# unique — a duplicate is rejected with 400 (it used to walk off the end of the
+# slot list with an IndexError 500). A comment rather than a docstring: a
+# docstring here would change the published schema description in
+# ``backend/openapi.json``.
 class MetricDefinitionReorder(BaseModel):
     metric_ids: list[uuid.UUID] = Field(min_length=1)
 
