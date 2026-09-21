@@ -13,6 +13,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from tripl import cache
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.user import User
 from tripl.schemas.schema_drift import (
@@ -259,7 +260,18 @@ async def apply_drift_action(
             branch_id=event_type.branch_id,
             slug=slug,
         )
-        if event_type.branch_id is None:
+        # Read the row's OWN branch, mirroring ``field_service._on_main``, which
+        # is the one other place that writes these same FieldDefinition rows.
+        # The guard this replaces asked ``event_type.branch_id is None``, and
+        # ``event_types.branch_id`` has been NOT NULL since 4e5f60718293 — the
+        # guard predates branches (aeb15a8d) — so it never fired and accepting a
+        # drift left the 300 s ``GET /event-types`` cache serving a field list
+        # the accept had just changed (tripl-0zpq.222). Not invalidated
+        # unconditionally: drift rows are only ever written against scanned
+        # (main) event types today, but the explicit main check stays correct if
+        # that changes.
+        branch = await session.get(PlanBranch, event_type.branch_id)
+        if branch is not None and branch.kind == BranchKind.main.value:
             await cache.delete_prefix(cache.prefix_event_types(slug))
     return SchemaDriftResponse.model_validate(drift)
 

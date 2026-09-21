@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.analyzers.event_generator import name_format_base_columns
@@ -29,11 +29,13 @@ from tripl.models.scan_config import ScanConfig
 
 __all__ = [
     "configs_naming_column",
+    "event_type_binding_conflict_detail",
     "governing_name_format",
     "load_governing_scan_configs",
     "load_governing_scan_configs_by_type",
     "name_format_base_columns",
     "name_format_conflict_detail",
+    "scan_configs_binding_event_types",
     "scan_configs_blocking_field_removal",
     "scan_configs_blocking_field_removals",
 ]
@@ -83,7 +85,12 @@ async def load_governing_scan_configs_by_type(
     * ``event_type_id IS NULL`` — the grouped scan. A config with no bound event
       type and an ``event_type_column`` discovers its event types from the data,
       so it can produce events for *any* event type in the project and its
-      ``event_name_format`` governs this one too.
+      ``event_name_format`` governs this one too. BOTH halves are checked, which
+      they were not until tripl-0zpq.254: ``scan_configs.event_type_id`` is
+      ``ON DELETE SET NULL``, so deleting a bound event type — or merging a
+      branch that removed it — silently turned that config project-wide. With no
+      ``event_type_column`` it is not a grouped scan, it is an orphan that
+      discovers nothing, and its format went on naming types it had never seen.
 
     There is still no branch term on the scan config side, and no "branch type
     binding" is invented here: the branch arm is a NAME lookup on the types
@@ -133,7 +140,10 @@ async def load_governing_scan_configs_by_type(
                     ScanConfig.event_name_format.is_not(None),
                     or_(
                         ScanConfig.event_type_id.in_(every_bound_id),
-                        ScanConfig.event_type_id.is_(None),
+                        and_(
+                            ScanConfig.event_type_id.is_(None),
+                            ScanConfig.event_type_column.is_not(None),
+                        ),
                     ),
                 )
             )
@@ -238,6 +248,100 @@ async def scan_configs_blocking_field_removals(
             if naming:
                 blocked[(event_type_id, field_name)] = naming
     return blocked
+
+
+async def scan_configs_binding_event_types(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    event_type_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, list[ScanConfig]]:
+    """The scan configs BOUND to each of these event types, by type id.
+
+    A different question from the loader above, which asks what governs a type's
+    names; this asks what would be broken by the type going away.
+    ``scan_configs.event_type_id`` is ``ON DELETE SET NULL``, so deleting a bound
+    type never fails — it silently unbinds every scan that named it, and an
+    unbound config with no ``event_type_column`` discovers no types from the data
+    and so collects nothing, while still reading as a live scan on the settings
+    page (tripl-0zpq.254). Both doors that can delete an event type — the CRUD
+    delete and a branch merge that removed the type — ask this first.
+
+    Here rather than at either call site for the reason the module docstring
+    gives: two copies of one predicate is the defect class this file exists to
+    prevent. One query for any number of types; a type nothing binds is absent
+    from the mapping, so an empty result means the delete is clear.
+
+    ``project_id`` is required for the reason every other query in this module
+    takes it, and this one specifically because its result is RENDERED: the 409
+    body names each blocking scan, so an unscoped answer shows one project's
+    operator a scan belonging to another project and blocks a delete they have
+    no way to unblock — the remedy the sentence offers (rebind it, give it an
+    Event type column, delete it) is not reachable from the project they are in.
+    Nothing below this layer enforces that a config binds a type from its own
+    project: ``scan_configs.event_type_id`` is a plain single-column FK and
+    ``scan_service`` validates only ``data_source_id`` against the project. So a
+    cross-project binding is invalid data that this query deliberately does not
+    count — and the delete it lets through then empties that binding through the
+    FK. That is the honest trade-off, and the durable fix is validating
+    ``event_type_id`` at scan create/update the way ``_verify_data_source``
+    already validates the source.
+    """
+    wanted = list(dict.fromkeys(event_type_ids))
+    if not wanted:
+        return {}
+    rows = (
+        (
+            await session.execute(
+                select(ScanConfig)
+                .where(
+                    ScanConfig.project_id == project_id,
+                    ScanConfig.event_type_id.in_(wanted),
+                )
+                .order_by(ScanConfig.name, ScanConfig.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    bound: dict[uuid.UUID, list[ScanConfig]] = {}
+    for row in rows:
+        if row.event_type_id is not None:
+            bound.setdefault(row.event_type_id, []).append(row)
+    return bound
+
+
+def event_type_binding_conflict_detail(
+    *,
+    configs: Sequence[ScanConfig],
+    lead: str,
+    then: str,
+) -> str:
+    """The 409 body both event-type delete doors share.
+
+    Shaped like :func:`name_format_conflict_detail` and holding the same
+    vocabulary rule — **"scan", not "scan config"** (tripl-24i0, tripl-3y7z) —
+    because it is rendered verbatim in the web UI, where
+    ``frontend/src/scan-docs-agreement.test.ts`` cannot see a sentence authored
+    on this side of the wire.
+    """
+    named = "; ".join(f"'{config.name}'" for config in configs)
+    one = len(configs) == 1
+    counted = f"{len(configs)} scan" if one else f"{len(configs)} scans"
+    consequence = (
+        "that scan would collect into nothing" if one else "those scans would collect into nothing"
+    )
+    instruction = (
+        "Point the scan at another event type, give it an Event type column so it "
+        "discovers its types from the data, or delete it"
+        if one
+        else "Point those scans at another event type, give them an Event type column so "
+        "they discover their types from the data, or delete them"
+    )
+    return (
+        f"{lead} It is collected into by {counted}: {named}. Deleting it leaves "
+        f"the binding empty — {consequence}. {instruction}, then {then}."
+    )
 
 
 def name_format_conflict_detail(

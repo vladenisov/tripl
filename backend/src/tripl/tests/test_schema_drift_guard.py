@@ -46,6 +46,7 @@ async def _seed(
     bind_config_to_event_type: bool = True,
     config_project_id: uuid.UUID | None = None,
     config_event_type_id: uuid.UUID | None = None,
+    config_event_type_column: str | None = "event_type",
     declared_fields: tuple[str, ...] = ("action",),
     drift_field: str = "action",
     drift_type: str = "missing_field",
@@ -57,6 +58,13 @@ async def _seed(
     OTHER than the drift's own project/event type, which is what pins the loader's
     scoping: without them a predicate that matched every config in the database
     would leave this whole suite green.
+
+    ``config_event_type_column`` only reaches the row when the config is UNBOUND,
+    because the two are alternatives rather than a pair: a scan either names one
+    event type or discovers its types from a column. Unbound-with-a-column is the
+    grouped scan; unbound-WITHOUT one (``config_event_type_column=None``) is the
+    orphan ``ON DELETE SET NULL`` leaves behind when a bound event type is
+    deleted, and since tripl-0zpq.254 the loader tells the two apart.
     """
     async with TestSessionLocal() as session:
         data_source = DataSource(
@@ -75,12 +83,17 @@ async def _seed(
             if config_event_type_id is not None
             else (event_type_id if bind_config_to_event_type else None)
         )
+        # A bound scan never carries a discovery column — the two are the two
+        # ways of answering "which event type does this row belong to", not a
+        # pair — so the column is stamped on the unbound seeds only.
+        discovery_column = config_event_type_column if bound_event_type_id is None else None
         session.add(
             ScanConfig(
                 id=uuid.uuid4(),
                 data_source_id=data_source.id,
                 project_id=config_project_id if config_project_id is not None else project_id,
                 event_type_id=bound_event_type_id,
+                event_type_column=discovery_column,
                 name=config_name,
                 base_query="SELECT * FROM events",
                 time_column="time",
@@ -171,8 +184,14 @@ async def test_accept_missing_field_is_blocked_when_a_name_format_uses_the_colum
 async def test_accept_missing_field_is_blocked_by_a_project_wide_config(
     client: AsyncClient,
 ) -> None:
-    """A grouped scan (event_type_id IS NULL) discovers its event types from the
-    data, so its name format governs this event type too — the ``or_`` NULL arm."""
+    """A grouped scan discovers its event types from a column, so its name format
+    governs this event type too — the ``or_`` NULL arm, BOTH halves of it.
+
+    ``event_type_id IS NULL`` alone is not the grouped scan and has not been one
+    since tripl-0zpq.254; the config also needs the ``event_type_column`` it
+    discovers types from. The sibling test below is the same seed without that
+    column, and it must NOT block.
+    """
     project_id, event_type_id = await _project_and_event_type(client)
     drift_id = await _seed(
         project_id=project_id,
@@ -185,6 +204,39 @@ async def test_accept_missing_field_is_blocked_by_a_project_wide_config(
 
     assert resp.status_code == 409, resp.text
     assert await _field(event_type_id, "action") is not None
+
+
+@pytest.mark.asyncio
+async def test_accept_is_not_blocked_by_a_scan_orphaned_by_a_deleted_event_type(
+    client: AsyncClient,
+) -> None:
+    """The NULL arm's OTHER half, and the only place this door pins it.
+
+    ``scan_configs.event_type_id`` is ``ON DELETE SET NULL``, so deleting a bound
+    event type — or merging a branch that removed it — leaves a config with no
+    binding AND no ``event_type_column``. That config discovers nothing and
+    collects nothing, so its ``{action}`` says nothing about this event type's
+    fields; until tripl-0zpq.254 it read as project-wide and blocked every
+    missing_field accept in the project.
+
+    Delete the ``ScanConfig.event_type_column.is_not(None)`` line from the
+    ``and_(...)`` in ``load_governing_scan_configs_by_type`` and this orphan
+    starts governing again: the accept goes back to 409 and both assertions
+    below fail.
+    """
+    project_id, event_type_id = await _project_and_event_type(client)
+    drift_id = await _seed(
+        project_id=project_id,
+        event_type_id=event_type_id,
+        name_format="{action}",
+        bind_config_to_event_type=False,
+        config_event_type_column=None,
+    )
+
+    resp = await client.post(f"{ACTIONS_URL}/{drift_id}/actions", json={"action": "accept"})
+
+    assert resp.status_code == 200, resp.text
+    assert await _field(event_type_id, "action") is None
 
 
 @pytest.mark.asyncio
@@ -216,9 +268,12 @@ async def test_accept_is_not_blocked_by_a_config_in_another_project(
 ) -> None:
     """The project filter's NEGATIVE, pinned through the NULL arm on purpose.
 
-    The other project's config has ``event_type_id IS NULL``, so the ``or_``
+    The other project's config is a REAL grouped scan — ``event_type_id IS
+    NULL`` and an ``event_type_column`` to discover types from — so the ``or_``
     matches it on every count and ONLY ``project_id`` keeps it out. Drop that
-    term and one project's grouped scan starts governing another's plan."""
+    term and one project's grouped scan starts governing another's plan. Seed it
+    without the column and this stops testing the project filter, because the
+    NULL arm would then reject it whatever project it sat in."""
     project_id, event_type_id = await _project_and_event_type(client)
     other_project_id = await _extra_project(client, "drift-guard-other")
     drift_id = await _seed(

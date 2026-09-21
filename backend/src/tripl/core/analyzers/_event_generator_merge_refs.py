@@ -246,14 +246,27 @@ def _move_superseded_pointers(session: Session, *, source: Event, target: Event)
     pointer follows it. Nothing to fold — the column is not unique and any
     number of retired events may name the same successor.
 
-    The source's OWN pointer needs nothing here: the target keeps whatever
-    successor it already named, and a group merge is not a statement about the
-    target's own retirement.
+    ONE row is not re-pointed, and it is the target itself. If the target had
+    already named the SOURCE as its successor, the blanket re-point set
+    ``target.superseded_by_event_id = target.id`` — an event that says "send this
+    instead: itself" (tripl-0zpq.86). Nothing at the database level stops it:
+    ``models/event.py``'s column is a plain FK with ON DELETE SET NULL and
+    c3a81f6d40b2 adds no CHECK. The damage outlives the merge, because the event
+    form re-sends ``superseded_by_event_id`` on every save while an event is
+    deprecated, so ``_resolve_successor`` then answers 400 on every save until
+    the event is un-deprecated. The target's stated successor is being merged
+    INTO the target, so "send this instead" has no referent left and the pointer
+    is cleared rather than moved.
     """
     for row in session.execute(
-        select(Event).where(Event.superseded_by_event_id == source.id)
+        select(Event).where(
+            Event.superseded_by_event_id == source.id,
+            Event.id != target.id,
+        )
     ).scalars():
         row.superseded_by_event_id = target.id
+    if target.superseded_by_event_id == source.id:
+        target.superseded_by_event_id = None
 
 
 def _move_chart_annotations(session: Session, *, source: Event, target: Event) -> None:
