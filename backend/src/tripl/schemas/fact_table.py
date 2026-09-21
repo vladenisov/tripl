@@ -3,13 +3,14 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from tripl.core.adapters.measure_validator import (
     validate_identifier,
     validate_select_sql_safety,
     validate_sql_fragment,
 )
+from tripl.schemas.not_null_update import reject_explicit_nulls
 
 
 def _validate_optional_identifier(value: str | None) -> str | None:
@@ -197,6 +198,25 @@ class FactTableCreate(BaseModel):
 # ── Update ───────────────────────────────────────────────────────────────────
 
 
+# The update fields whose FactTable column is NOT NULL, so an explicit ``null``
+# from a client is a 422 and not a DB-level 500 — see
+# ``schemas/not_null_update``. ``data_source_id`` is deliberately absent: it is
+# nullable, and a null on it unbinds the data source.
+_FACT_TABLE_NOT_NULL_UPDATE_FIELDS = frozenset(
+    {
+        "display_name",
+        "description",
+        "color",
+        "order",
+        "sql",
+        "timestamp_column",
+        "columns",
+        "identifier_columns",
+        "row_filters",
+    }
+)
+
+
 class FactTableUpdate(BaseModel):
     """Partial update of a fact table.
 
@@ -218,17 +238,15 @@ class FactTableUpdate(BaseModel):
     identifier_columns: list[str] | None = None
     row_filters: list[FactTableRowFilter] | None = Field(default=None, max_length=100)
 
-    @field_validator("order")
+    @model_validator(mode="before")
     @classmethod
-    def _reject_null_order(cls, value: int | None) -> int:
-        # ``order`` maps to a NOT NULL column. ``None`` here only reaches the
-        # validator when the client explicitly sends ``"order": null`` (an unset
-        # field is excluded by ``exclude_unset`` and never validated), so reject
-        # it at the boundary rather than letting it surface as a DB-level 500.
-        if value is None:
-            msg = "order cannot be null"
-            raise ValueError(msg)
-        return value
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        # ``order`` used to be the only field guarded here, and its comment named
+        # exactly the 500 the other NOT NULL fields still reached: an explicit
+        # ``"sql": null`` or ``"row_filters": null`` set the column to NULL and
+        # the commit raised (tripl-0zpq.181). ``data_source_id`` stays out of the
+        # set — a null there is how the form UNBINDS the warehouse.
+        return reject_explicit_nulls(data, _FACT_TABLE_NOT_NULL_UPDATE_FIELDS)
 
     @field_validator("sql")
     @classmethod
