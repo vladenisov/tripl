@@ -275,7 +275,9 @@ axes really are independent — an event can be marked reviewed and still sit in
 **In Review** — which is why the header's **In review** stat counts events whose
 *status* is `in_review`, and not the events nobody has reviewed yet. On the
 Events page you can select several rows at once and use the bulk action bar to
-**set status**, **mark reviewed**, **assign an owner**, or **delete** in one go.
+**set status**, **mark reviewed**, **assign an owner** (or **Unassign**, the
+same picker's first entry, which clears the owner across the selection), or
+**delete** in one go.
 Saved views, column toggles, and filters (by status, tag, silent days, reviewed
 state, or field value) help you work through a large catalog.
 

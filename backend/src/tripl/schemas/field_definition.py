@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tripl.models.domain_enums import FieldDefinitionType, Sensitivity
+from tripl.schemas.not_null_update import reject_explicit_nulls
 
 
 class FieldDefinitionCreate(BaseModel):
@@ -72,6 +73,25 @@ class FieldDefinitionCreate(BaseModel):
         return self
 
 
+# The update fields whose FieldDefinition column is NOT NULL, so an explicit
+# ``null`` is a 422 naming the field and not a DB-level 500 out of
+# ``update_field``'s generic ``setattr`` loop — see ``schemas/not_null_update``
+# (tripl-0zpq.267). Out of the set on purpose: ``enum_options`` and the three
+# nullable ``contract_*`` bounds, where a null CLEARS the setting, and
+# ``contract_max_bad_rate``, whose null ``update_field`` already reads as "back
+# to 0.0".
+_FIELD_NOT_NULL_UPDATE_FIELDS = frozenset(
+    {
+        "display_name",
+        "field_type",
+        "is_required",
+        "description",
+        "order",
+        "sensitivity",
+    }
+)
+
+
 class FieldDefinitionUpdate(BaseModel):
     display_name: str | None = Field(None, min_length=1, max_length=255)
     field_type: FieldDefinitionType | None = None
@@ -88,6 +108,11 @@ class FieldDefinitionUpdate(BaseModel):
     contract_min_value: float | None = Field(None, allow_inf_nan=False)
     contract_max_value: float | None = Field(None, allow_inf_nan=False)
     contract_max_bad_rate: float | None = Field(None, ge=0, le=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _FIELD_NOT_NULL_UPDATE_FIELDS)
 
     @field_validator("contract_regex")
     @classmethod

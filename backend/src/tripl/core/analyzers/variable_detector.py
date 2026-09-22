@@ -31,9 +31,6 @@ class DetectedPattern:
     coverage_pct: float = 0.0
 
 
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
-)
 _NUMERIC_RE = re.compile(r"^-?\d+(\.\d+)?$")
 
 
@@ -171,9 +168,19 @@ def _detect_json_pattern(
     for key, vals in key_values.items():
         unique_count = len(set(vals))
         if unique_count <= cardinality_threshold:
-            # Low cardinality — these will produce separate events per value
-            # Use a representative placeholder indicating concrete values exist
-            template_obj[key] = f"${{_low:{key}}}"
+            # Low cardinality: NOT a variable, so the template carries one of the
+            # observed values literally. It used to carry a ``${_low:<key>}``
+            # token beside a comment promising "these will produce separate
+            # events per value" — an expansion no production code performs.
+            # ``event_plan`` stores ``meta['template']`` verbatim as the field
+            # value and ``normalize_variable_tokens`` leaves an unresolved token
+            # alone, so the token reached the plan as text and
+            # ``event_service._attach_template_warnings`` reported it on every
+            # save, naming a variable that can never exist (tripl-0zpq.96).
+            # First of the sorted distinct values so two scans over the same
+            # data produce the same template.
+            representative = _distinct_values(vals)
+            template_obj[key] = representative[0] if representative else ""
         else:
             # High cardinality → variable
             var_name = key
@@ -326,55 +333,3 @@ def _detect_generic_string_pattern(
             return DetectedPattern(template=template, variables=variables, coverage_pct=coverage)
 
     return None
-
-
-def expand_json_low_cardinality(
-    template: str,
-    column_name: str,
-    values: list[str],
-    cardinality_threshold: int,
-) -> list[tuple[str, list[str]]]:
-    """Expand a JSON template's low-cardinality keys into concrete value lists.
-
-    Returns a list of (expanded_template, concrete_value_list) tuples representing
-    the cartesian product of low-cardinality key values.
-    """
-    try:
-        template_obj = json.loads(template)
-    except json.JSONDecodeError, TypeError:
-        return [(template, [])]
-
-    # Collect actual values for low-cardinality keys
-    parsed_values: list[dict[str, object]] = []
-    for v in values:
-        try:
-            obj = json.loads(v)
-            if isinstance(obj, dict):
-                parsed_values.append(obj)
-        except json.JSONDecodeError, TypeError:
-            continue
-
-    low_card_keys: dict[str, list[str]] = {}
-    for _key, tpl_val in template_obj.items():
-        if isinstance(tpl_val, str) and tpl_val.startswith("${_low:"):
-            actual_key = tpl_val[7:-1]  # strip ${_low: and }
-            unique_vals = sorted({str(obj.get(actual_key, "")) for obj in parsed_values})
-            low_card_keys[actual_key] = unique_vals
-
-    if not low_card_keys:
-        return [(template, [])]
-
-    # Build cartesian product
-    from itertools import product
-
-    keys = list(low_card_keys.keys())
-    value_lists = [low_card_keys[k] for k in keys]
-
-    results: list[tuple[str, list[str]]] = []
-    for combo in product(*value_lists):
-        expanded = dict(template_obj)
-        for k, v in zip(keys, combo, strict=True):
-            expanded[k] = v
-        results.append((json.dumps(expanded, ensure_ascii=False, sort_keys=True), list(combo)))
-
-    return results

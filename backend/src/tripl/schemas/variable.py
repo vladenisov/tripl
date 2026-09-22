@@ -5,6 +5,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tripl.schemas.not_null_update import reject_explicit_nulls
+
 # Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 BINDING_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$")
 
@@ -59,6 +61,24 @@ class VariableCreate(BaseModel):
     _check_bindings = field_validator("bindings")(_validate_bindings)
 
 
+# Every field of VariableUpdate maps to a NOT NULL Variable column, and
+# ``update_variable`` ``setattr``s whatever the dump holds — so an explicit
+# ``null`` is a 422 naming the field rather than a DB-level 500. See
+# ``schemas/not_null_update`` (tripl-0zpq.267). ``name`` is in the set for a
+# second reason: the rename branch reaches ``_STRICT_NAME_PATTERN.match(None)``,
+# which is a TypeError before any column is touched.
+_VARIABLE_NOT_NULL_UPDATE_FIELDS = frozenset(
+    {
+        "name",
+        "variable_type",
+        "description",
+        "allowed_values",
+        "bindings",
+        "excluded_from_scans",
+    }
+)
+
+
 class VariableUpdate(BaseModel):
     # Dots stay permitted at the schema level so legacy scan-created dotted
     # names remain loadable; the service enforces the strict (dot-free)
@@ -69,6 +89,11 @@ class VariableUpdate(BaseModel):
     allowed_values: list[str] | None = Field(None, max_length=500)
     bindings: list[str] | None = Field(None, max_length=100)
     excluded_from_scans: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _VARIABLE_NOT_NULL_UPDATE_FIELDS)
 
     _check_bindings = field_validator("bindings")(_validate_bindings)
 

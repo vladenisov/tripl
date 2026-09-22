@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, Integer, func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import lazyload, selectinload
 
@@ -624,14 +624,67 @@ def _entity_counts(payload: dict[str, Any]) -> dict[str, int]:
     }
 
 
-def _to_summary(rev: PlanRevision) -> PlanRevisionSummary:
+#: The snapshot's top-level lists, the ones ``_entity_counts`` takes ``len()``
+#: of directly. Fields are not among them: they live inside each event type.
+#: Fixed identifiers of ours, so formatting them into the SQL below is not
+#: somewhere a request can reach.
+_COUNTED_COLLECTIONS = ("event_types", "events", "variables", "meta_fields", "relations")
+
+#: Counting a snapshot list in the database rather than in Python. A revision
+#: is written at every branch creation, every merge and every manual snapshot,
+#: and ``payload`` is a plain JSON column with no deferral, so a page of the
+#: History tab (50 by default, 200 at most) pulled that many WHOLE plan
+#: snapshots over the wire and json-decoded them on the event loop only to take
+#: ``len()`` of five lists (tripl-0zpq.154). Postgres and SQLite are the only
+#: dialects this runs on; both count a JSON array in place, and only the syntax
+#: differs. A list the payload lacks — a snapshot older than the key — is NULL
+#: on both and counts 0, as the Python did.
+_ARRAY_LENGTH_SQL = {
+    "postgresql": "COALESCE(json_array_length(plan_revisions.payload -> '{key}'), 0)",
+    "sqlite": "COALESCE(json_array_length(plan_revisions.payload, '$.{key}'), 0)",
+}
+
+#: Fields are the one count that is not a top-level list: they live inside each
+#: event type's ``field_definitions``, so summing them needs to walk the types.
+_FIELD_COUNT_SQL = {
+    "postgresql": (
+        "(SELECT COALESCE(SUM(json_array_length(et.value -> 'field_definitions')), 0)"
+        " FROM json_array_elements(plan_revisions.payload -> 'event_types') AS et(value))"
+    ),
+    "sqlite": (
+        "(SELECT COALESCE(SUM(json_array_length(et.value, '$.field_definitions')), 0)"
+        " FROM json_each(plan_revisions.payload, '$.event_types') AS et)"
+    ),
+}
+
+
+def _entity_count_columns(dialect: str) -> list[ColumnElement[int]]:
+    """The six ``entity_counts`` as columns, so the payload can stay in the DB."""
+    array_length = _ARRAY_LENGTH_SQL[dialect]
+    columns: list[ColumnElement[int]] = [
+        literal_column(array_length.format(key=key), Integer).label(f"count_{key}")
+        for key in _COUNTED_COLLECTIONS
+    ]
+    columns.append(literal_column(_FIELD_COUNT_SQL[dialect], Integer).label("count_fields"))
+    return columns
+
+
+def _summary_from_counted_row(row: Any) -> PlanRevisionSummary:
+    """One list item from a row that carries counts instead of a payload."""
     return PlanRevisionSummary(
-        id=rev.id,
-        project_id=rev.project_id,
-        summary=rev.summary,
-        created_at=rev.created_at,
-        created_by=rev.created_by,
-        entity_counts=_entity_counts(rev.payload or {}),
+        id=row.id,
+        project_id=row.project_id,
+        summary=row.summary,
+        created_at=row.created_at,
+        created_by=row.created_by,
+        entity_counts={
+            "event_types": row.count_event_types,
+            "fields": row.count_fields,
+            "events": row.count_events,
+            "variables": row.count_variables,
+            "meta_fields": row.count_meta_fields,
+            "relations": row.count_relations,
+        },
     )
 
 
@@ -927,21 +980,43 @@ def _shared_key_warning(entity_type: str, name: str, parent: str | None) -> str:
 
     ``_diff_set`` keeps one row per key (the last one listed), and the merge and
     a revert match rows by that key too, so with two rows under it none of them
-    can tell which row a change was made to. Said on the row rather than solved:
-    pairing rows that share a key needs to know which base row each branch copy
-    came from, which the snapshot does not record.
+    can tell which row a change was made to. Said on the row — or, when the
+    collapse leaves no row to say it on, on a stand-in entry — rather than
+    solved: pairing rows that share a key needs to know which base row each
+    branch copy came from, which the snapshot does not record.
+
+    It deliberately claims NOTHING about the merge refusing. A refusal was
+    written in this batch and then removed: the branch is how an analyst CLEANS
+    UP a pair of namesakes — delete both copies, author one row in their place —
+    and refusing that merge takes away the only door out of the state the message
+    complains about (test_event_comment_merge_batch2 holds exactly that
+    workflow). The merge's own half of tripl-0zpq.149 waits on tripl-0zpq.292,
+    which gives branch copies an origin id, because pairing rows that share a key
+    is the one thing no wording can substitute for.
     """
     if entity_type == "event":
         return (
-            f"More than one event is named '{name}' in '{parent}'. This diff, the merge "
-            "and a revert match rows by name, so a change to one of them can show on, or "
-            "land on, the other. Rename one of them before changing either."
+            f"More than one event is named '{name}' in '{parent}'. This diff, the "
+            "merge and a revert all match rows by name, so a change to one of them "
+            "can show on, or land on, the other. Rename one of them before changing "
+            "either."
         )
     return (
-        f"More than one relation links the same two fields ({name}). This diff, the "
-        "merge and a revert match relations by those fields, so a change to one of them "
-        "can show on, or land on, the other. Remove one of them before changing either."
+        f"More than one relation links the same two fields ({name}). This diff and a "
+        "revert match relations by those fields, so a change to one of them can show "
+        "on, or land on, the other. Remove one of them before changing either."
     )
+
+
+# Said on the stand-in entry for a shared key whose two sides do not hold the
+# same rows. The entry carries no field changes of its own because there is no
+# honest way to name them: one row per key is matched, and the row the change
+# was made to may not be the row that was matched.
+_UNATTRIBUTABLE_CHANGE_WARNING = (
+    "The two sides do not hold the same rows under this key. Rows are matched one per "
+    "key, so this diff cannot say which of them was added, removed or edited — read "
+    "both sides in full."
+)
 
 
 def _diff_set(
@@ -978,8 +1053,40 @@ def _diff_set(
         parent = parent_of(item) if parent_of else None
         return [_shared_key_warning(entity_type, name_of(item), parent)]
 
+    def sides_hold_the_same_rows(key: object) -> bool:
+        """Whether old and new hold the same rows under ``key``, order aside.
+
+        Read only for a shared key, and only to decide whether the collapse hid
+        something: the rows are paired off by "no change between them" — the
+        same comparison the changed branch makes — and any row left over on
+        either side is a difference the one-per-key matching cannot show.
+        """
+        old_rows = [item for item in old_items if key_of(item) == key]
+        new_rows = [item for item in new_items if key_of(item) == key]
+        if len(old_rows) != len(new_rows):
+            return False
+        unpaired = list(new_rows)
+        for old_row in old_rows:
+            for index, candidate in enumerate(unpaired):
+                if not _field_changes_between(
+                    old_row,
+                    candidate,
+                    change_keys,
+                    old_is_current_version=old_is_current_version,
+                ):
+                    del unpaired[index]
+                    break
+            else:
+                return False
+        return True
+
+    # Keys an entry was raised for, so the stand-in pass below adds one only
+    # where the collapse left the reviewer with nothing at all.
+    entered: set[object] = set()
+
     for key, item in new_by_key.items():
         if key not in old_by_key:
+            entered.add(key)
             entries.append(
                 PlanDiffEntry(
                     entity_type=entity_type,
@@ -993,6 +1100,7 @@ def _diff_set(
             )
     for key, item in old_by_key.items():
         if key not in new_by_key:
+            entered.add(key)
             entries.append(
                 PlanDiffEntry(
                     entity_type=entity_type,
@@ -1010,6 +1118,15 @@ def _diff_set(
         old_item = old_by_key.get(key)
         if old_item is None:
             continue
+        # Under a shared key the two representatives are not a pair: each side
+        # kept whichever row it listed last, and ``build_plan_snapshot`` orders
+        # events by name alone, so two snapshots of the SAME namesakes can list
+        # them in either order. Comparing the representatives then reads one
+        # namesake as an edit of the other, and a project that has namesakes is
+        # ahead of, and behind, everything for ever. Say nothing when the sides
+        # hold the same rows (tripl-0zpq.149).
+        if key in shared_keys and sides_hold_the_same_rows(key):
+            continue
         field_changes = _field_changes_between(
             old_item,
             new_item,
@@ -1017,6 +1134,7 @@ def _diff_set(
             old_is_current_version=old_is_current_version,
         )
         if field_changes:
+            entered.add(key)
             entries.append(
                 PlanDiffEntry(
                     entity_type=entity_type,
@@ -1031,6 +1149,40 @@ def _diff_set(
                     warnings=warnings_for(key, new_item),
                 )
             )
+
+    # A shared key can otherwise produce NO entry at all. Both sides collapse to
+    # one representative, and when a deleted namesake is not the one that sorted
+    # last, the survivor lands in the slot the pair used to share: the two
+    # representatives then compare equal, the deletion is invisible and so is
+    # the warning, which rides on an entry (tripl-0zpq.149). Which namesake is
+    # the representative is not even stable — ``build_plan_snapshot`` orders
+    # events by name alone, so ties keep whatever order the database returned.
+    # Stand an entry in, but only where the sides genuinely differ under the
+    # key: a project that merely has namesakes must not read as ahead of, or
+    # behind, anything on every diff it is in. A key one side alone holds is
+    # already entered by the added/removed pass, and a key only
+    # ``collision_items`` holds twice has no row here to hang a notice on.
+    for key, new_item in new_by_key.items():
+        old_item = old_by_key.get(key)
+        if old_item is None or key in entered or key not in shared_keys:
+            continue
+        if sides_hold_the_same_rows(key):
+            continue
+        entries.append(
+            PlanDiffEntry(
+                entity_type=entity_type,
+                kind="changed",
+                name=name_of(new_item),
+                parent=parent_of(new_item) if parent_of else None,
+                entity_id=_entity_id(new_item),
+                before=_public_state(old_item),
+                after=_public_state(new_item),
+                warnings=[
+                    *warnings_for(key, new_item),
+                    _UNATTRIBUTABLE_CHANGE_WARNING,
+                ],
+            )
+        )
     return entries
 
 
@@ -1208,20 +1360,26 @@ async def list_revisions(
             select(func.count(PlanRevision.id)).where(PlanRevision.project_id == project.id)
         )
     ).scalar_one()
+    # Named columns, not whole ``PlanRevision`` rows: the list view shows counts
+    # and nothing else from the payload, and selecting the entity would bring
+    # every snapshot on the page along with it (tripl-0zpq.154).
     rows = (
-        (
-            await session.execute(
-                select(PlanRevision)
-                .where(PlanRevision.project_id == project.id)
-                .order_by(PlanRevision.created_at.desc())
-                .offset(offset)
-                .limit(limit)
+        await session.execute(
+            select(
+                PlanRevision.id,
+                PlanRevision.project_id,
+                PlanRevision.summary,
+                PlanRevision.created_at,
+                PlanRevision.created_by,
+                *_entity_count_columns(session.get_bind().dialect.name),
             )
+            .where(PlanRevision.project_id == project.id)
+            .order_by(PlanRevision.created_at.desc())
+            .offset(offset)
+            .limit(limit)
         )
-        .scalars()
-        .all()
-    )
-    return PlanRevisionList(items=[_to_summary(row) for row in rows], total=total)
+    ).all()
+    return PlanRevisionList(items=[_summary_from_counted_row(row) for row in rows], total=total)
 
 
 async def _get_revision(

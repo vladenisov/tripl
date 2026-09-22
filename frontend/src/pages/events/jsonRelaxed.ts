@@ -17,7 +17,7 @@
  * confirmed. It is a guess, so every repair is reported and undoable.
  */
 
-import { TEMPLATE_TOKEN_NAME_PATTERN } from './jsonTemplate'
+import { BARE_WORD_VARIABLE_PATTERN } from './jsonTemplate'
 
 const NUMBER_PATTERN = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/
 const VALUE_TERMINATORS = new Set([',', '}', ']', '\n'])
@@ -137,7 +137,7 @@ class RelaxedParser {
     // Only a dotted path or a name the project already knows is read as a
     // variable. A bare single word stays a string, so `mode: dark` is not
     // silently turned into a reference to something that does not exist.
-    if (TEMPLATE_TOKEN_NAME_PATTERN.test(text) && (text.includes('.') || this.known.has(text))) {
+    if (BARE_WORD_VARIABLE_PATTERN.test(text) && (text.includes('.') || this.known.has(text))) {
       this.repairs.templates += 1
       return { kind: 'template', token: text }
     }

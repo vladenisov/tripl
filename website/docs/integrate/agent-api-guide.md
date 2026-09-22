@@ -291,6 +291,28 @@ wrong label through `title`, since `name` is the identity. Values written
 through event mutations are treated as authored and are protected from later
 scan overwrite; re-sending an unchanged value keeps its flag as it was.
 
+On every partial-update body in the API — events, event types, fields, meta
+fields, scan configs, data sources, variables and projects — omitting a field is
+how you leave it alone, and sending it as an explicit `null` means "clear it".
+A `null` on a field whose column cannot be empty is refused with a `422` naming
+the field (`Field(s) cannot be null: status`). On `EventUpdate` those are `name`,
+`description`, `status` and `reviewed`; `sunset_at`, `owner_id` and
+`superseded_by_event_id` all accept a `null` and clear, `title` reads a `null` as
+`""`, `metric_breakdown_columns` reads one as `[]`, and `tags`, `field_values`
+and `meta_values` read one as "leave the children alone". These requests all
+failed before; only the status code and the message changed.
+
+Every `meta_field_definition_id` in a patch, and the `event_type_id` in a create,
+must come from a listing read with the same `branch` you are writing to. A branch
+holds its own copy of every event type and meta field under a new id, so an id
+read without `branch` is `main`'s and is refused with a `422` on a branch write.
+Because `meta_values` is a full-list replacement, you cannot get past that `422`
+by dropping the offending entry without losing the event's other meta values —
+re-read the meta fields on the right branch instead. Tags are
+stored lower-cased, trimmed and de-duplicated, and one over 100 characters is a
+`422`; a meta value over 2,000 bytes as stored is a `422` too (for a field with
+a link template, only the part the template wraps is stored).
+
 Event create and patch return `EventMutationResponse`, which is the event plus a
 `warnings` array. When a scan config governs the event type with an
 `event_name_format`, manual creation derives the canonical name from the
@@ -325,6 +347,15 @@ Payload:
 
 The uniform bulk patch supports `status`, `sunset_at`, `owner_id`, and
 `reviewed`. Bulk delete is a separate endpoint; both are write operations.
+
+Which fields you **send** is what the request means, not what values they hold.
+A field you leave out is left alone across the whole selection. An explicit
+`null` for `sunset_at` or `owner_id` clears that field across the whole
+selection — `{"event_ids": [...], "owner_id": null}` is how you unassign a
+selection, and it is the only way to do it. `status` and `reviewed` are NOT NULL
+columns: an explicit `null` for either is refused with 422. A body that sends
+nothing but `event_ids` is refused with 422 as well. The web UI spells the same
+unassign as an **Unassign** entry in the bulk bar's owner picker.
 
 ## Search Indexing
 

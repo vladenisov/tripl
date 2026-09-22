@@ -6845,6 +6845,7 @@
             "type": "string"
           },
           "value": {
+            "maxLength": 8000,
             "title": "Value",
             "type": "string"
           }

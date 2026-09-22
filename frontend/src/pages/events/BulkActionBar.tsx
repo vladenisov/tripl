@@ -10,6 +10,12 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
+// A stand-in for "no owner" inside the picker. Radix treats an empty
+// SelectItem value as "clear the selection" and throws on it, and this Select
+// already uses `value=""` as its own placeholder state, so the null has to
+// travel as a sentinel and be turned back into a null on the way out.
+const UNASSIGN_VALUE = '__unassign__'
+
 export function BulkActionBar({
   selectedCount,
   selectedVisibleCount,
@@ -44,7 +50,8 @@ export function BulkActionBar({
   isUpdating: boolean
   onSetStatus: (status: EventStatus) => void
   onMarkReviewed: () => void
-  onAssignOwner: (userId: string) => void
+  /** `null` clears the owner across the selection — see `UNASSIGN_VALUE`. */
+  onAssignOwner: (userId: string | null) => void
   owners: { id: string; name: string | null; email: string }[]
   onDelete: () => void
   onClear: () => void
@@ -113,13 +120,22 @@ export function BulkActionBar({
       {owners.length > 0 && (
         <Select
           value=""
-          onValueChange={v => { if (v) onAssignOwner(v) }}
+          onValueChange={v => { if (v) onAssignOwner(v === UNASSIGN_VALUE ? null : v) }}
           disabled={disabled}
         >
           <SelectTrigger className="h-7 w-auto min-w-[9.5rem] whitespace-nowrap border-[var(--border-strong)] text-xs data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Assign owner">
             <SelectValue placeholder="Assign owner…" />
           </SelectTrigger>
           <SelectContent>
+            {/*
+              The one bulk owner change the API offers that is not an
+              assignment. `bulk-update` reads an explicit `owner_id: null` as
+              "clear it across the selection" (tripl-0zpq.276); without an entry
+              here it was reachable from the API and MCP only.
+            */}
+            <SelectItem value={UNASSIGN_VALUE} className="text-xs">
+              Unassign
+            </SelectItem>
             {owners.map(u => (
               <SelectItem key={u.id} value={u.id} className="text-xs">
                 {u.name ?? u.email}

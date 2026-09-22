@@ -71,18 +71,34 @@ async def main_counterparts(
     main_rows = (
         (
             await session.execute(
-                select(Event).where(
+                select(Event)
+                .where(
                     Event.branch_id == main_branch_id,
                     Event.event_type_id.in_(set(main_type_by_name.values())),
                     or_(Event.source_name.in_(identities), Event.name.in_(identities)),
                 )
+                # Ordered so the LOWEST id wins the key below, which is the rule
+                # ``event_service._twin_reads_for_branch_rows`` picks the twin by
+                # for the "Silent > N days" filter and the "Busiest first" sort.
+                # Nothing stops main holding two rows under one (type, identity)
+                # — nothing refuses that state — and while this query was
+                # unordered the rendered Last seen came from whichever row it
+                # happened to return last, so the filter and the column could
+                # answer about two different main rows on the same branch row
+                # (tripl-0zpq.124).
+                .order_by(Event.id.asc())
             )
         )
         .scalars()
         .all()
     )
     main_type_name = {type_id: name for name, type_id in main_type_by_name.items()}
-    main_by_key = {(main_type_name[row.event_type_id], _identity(row)): row for row in main_rows}
+    # ``setdefault``, not a dict comprehension: a comprehension keeps the LAST
+    # row under a repeated key, which with the ascending sort above would be the
+    # highest id — the opposite of the rule.
+    main_by_key: dict[tuple[str, str], Event] = {}
+    for row in main_rows:
+        main_by_key.setdefault((main_type_name[row.event_type_id], _identity(row)), row)
     out: dict[uuid.UUID, Event] = {}
     for ev in branch_events:
         twin = main_by_key.get((type_names.get(ev.event_type_id, ""), _identity(ev)))

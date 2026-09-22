@@ -63,6 +63,38 @@ describe('BulkActionBar select-all-matching (tripl-7l83.11)', () => {
   })
 })
 
+describe('BulkActionBar bulk unassign (tripl-0zpq.276)', () => {
+  it('offers Unassign and reports it as a null owner', async () => {
+    // `POST .../events/bulk-update` keys off which fields were SENT, so
+    // `owner_id: null` is the selection-wide unassign and an omitted `owner_id`
+    // is "leave it alone". The picker offered assignments only, so the one bulk
+    // owner change the API has was reachable from the API and MCP alone.
+    //
+    // RED on a revert: drop the `Unassign` SelectItem from BulkActionBar and
+    // `findByRole` throws; keep it but drop the `UNASSIGN_VALUE` mapping in
+    // `onValueChange` and the callback gets the sentinel string, not `null`.
+    const { onAssignOwner } = renderBar({
+      owners: [{ id: 'user-1', name: 'Ada', email: 'ada@example.com' }],
+    })
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Assign owner' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Unassign' }))
+
+    expect(onAssignOwner).toHaveBeenCalledWith(null)
+  })
+
+  it('still reports a real owner by id', async () => {
+    const { onAssignOwner } = renderBar({
+      owners: [{ id: 'user-1', name: 'Ada', email: 'ada@example.com' }],
+    })
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Assign owner' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Ada' }))
+
+    expect(onAssignOwner).toHaveBeenCalledWith('user-1')
+  })
+})
+
 describe('BulkActionBar stale-selection disclosure (tripl-4i49)', () => {
   it('says how much of the selection is still on screen when they diverge', () => {
     renderBar({ selectedCount: 20, selectedVisibleCount: 3, matchingTotal: 3 })

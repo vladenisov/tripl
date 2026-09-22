@@ -5143,3 +5143,102 @@ def test_group_merge_counts_the_union_even_when_the_fold_stays_an_enumeration(
     assert folded.value_kind == "low"
     assert len(folded.values) == 60, "a low row is an exact enumeration and is never trimmed"
     assert folded.observed_count == 60
+
+
+def test_group_merge_never_leaves_the_target_superseded_by_itself(
+    sync_session: Session, project_and_type
+):
+    """A target that named the merged-away source comes out pointing at nothing.
+
+    The trigger is ordinary: "click events" was deprecated in favour of
+    "click:one", and a later scan's group rule folds "click:one" back into it.
+    ``_move_superseded_pointers`` re-points every event whose successor was the
+    source onto the target — and the target is the ONE row that must not be
+    re-pointed, because "send this instead: itself" is not an instruction
+    (tripl-0zpq.86). It outlives the merge: the event form re-sends
+    ``superseded_by_event_id`` on every save while an event is deprecated, and
+    ``event_service._resolve_successor`` answers 400 "An event cannot replace
+    itself" on each one, so the row cannot be edited again until somebody
+    un-deprecates it.
+
+    RED on a revert: delete ``Event.id != target.id`` from the SELECT in
+    ``_event_generator_merge_refs._move_superseded_pointers`` and the
+    ``if target.superseded_by_event_id == source.id`` tail below it, and the
+    blanket re-point writes ``target.id`` into the target's own pointer — the
+    first assertion below reads ``target.id`` where it wants ``None``, in
+    memory and again in the database.
+
+    The in-memory assertion is not redundant with the stored one, and it is the
+    half that pins the tail on its own: ``events.superseded_by_event_id`` is
+    ``ON DELETE SET NULL`` with deliberately no ``relationship()``
+    (``models/event.py``), so deleting the source clears the column in the
+    DATABASE whatever the merge did or did not do to the loaded object. Only
+    the object the rest of the transaction goes on reading shows the
+    difference.
+    """
+    project, et, fds = project_and_type
+    target = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click events",
+        screen="/home",
+        # Not a ``^click:`` match, so the group event is not itself a merge
+        # candidate — the same spelling the fold tests above use.
+        action="/^click:/",
+        order=0,
+    )
+    # Retired, which is both the realistic state for an event with a successor
+    # and the state that keeps the status fold out of this test: with either
+    # side retired the merge leaves the target's status exactly as it is.
+    target.status = "deprecated"
+    source = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="click:one",
+        screen="/home",
+        action="click:one",
+        order=1,
+    )
+    bystander = _add_event(
+        sync_session,
+        project,
+        et,
+        fds,
+        name="view:one",
+        screen="/home",
+        action="view:one",
+        order=2,
+    )
+    # Both retired events point at the row the group rule is about to swallow.
+    target.superseded_by_event_id = source.id
+    bystander.superseded_by_event_id = source.id
+    bystander.status = "deprecated"
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=_CLICK_GROUP_RULE,
+    )
+
+    assert merged == 1
+    assert target.superseded_by_event_id is None, "an event may not supersede itself"
+    assert bystander.superseded_by_event_id == target.id, "the target is what to send now"
+
+    sync_session.commit()
+    # ``expire_on_commit=False`` on this fixture, so the re-read has to be asked
+    # for: without the expiry the loop below would hand back the same objects
+    # just asserted on and prove nothing about what was written.
+    sync_session.expire_all()
+    stored = {
+        row.name: row.superseded_by_event_id
+        for row in sync_session.execute(
+            select(Event).where(Event.project_id == project.id)
+        ).scalars()
+    }
+    assert stored == {"click events": None, "view:one": target.id}

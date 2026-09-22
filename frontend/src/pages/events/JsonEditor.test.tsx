@@ -41,6 +41,28 @@ describe('JsonEditor template authoring', () => {
     expect(editor).toHaveAttribute('aria-invalid', 'true')
   })
 
+  it('accepts the raw JSON-path tokens a scan writes', () => {
+    // The backend's grammar is `^[^"\\}\x00-\x1f]+$` (tripl-0zpq.125): a scan
+    // keeps the raw path whenever `derive_display_name` cannot sanitise it, so
+    // these are tokens already sitting in stored field values. This editor
+    // blocks the save through EventForm's `invalidJsonFieldLabels`, so while it
+    // enforced the old identifier grammar such an event could not be re-saved
+    // at all — not even an edit that only touched the description.
+    //
+    // RED on a revert: put `[A-Za-z_][A-Za-z0-9_.-]*` back into
+    // `jsonTemplate.JSON_TEMPLATE_TOKEN_NAME_PATTERN` and the space, the comma
+    // and the Cyrillic all fail it, so `templateJsonError` returns a message and
+    // aria-invalid is 'true' on both values below.
+    render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
+
+    const editor = screen.getByRole('combobox')
+    fireEvent.change(editor, { target: { value: '{"city":"${property.Albany, OR}"}' } })
+    expect(editor).toHaveAttribute('aria-invalid', 'false')
+
+    fireEvent.change(editor, { target: { value: '{"city":"${property.Москва}"}' } })
+    expect(editor).toHaveAttribute('aria-invalid', 'false')
+  })
+
   it('rejects a variable token with JSON-breaking characters', () => {
     render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
 
@@ -158,6 +180,6 @@ describe('JsonEditor template authoring', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Format' }))
 
     expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
-    expect(screen.getByText(/Variable tokens may use/)).toBeInTheDocument()
+    expect(screen.getByText(/cannot contain a quote/)).toBeInTheDocument()
   })
 })

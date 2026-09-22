@@ -187,6 +187,21 @@ async def test_accept_shadow_event_works_when_a_scan_rule_names_the_event_type(
     422'd on any rule-governed type until the identity was passed in instead
     (tripl-u2h9.12). No test above seeds an ``event_name_format``, which is
     exactly why nothing caught it.
+
+    The rule is BOUND to the event type, which is what makes the seed governing
+    and this test a fang rather than a decoration. An unbound config used to
+    govern the whole project, so ``event_name_format`` alone was enough; since
+    tripl-0zpq.254 an unbound config with no ``event_type_column`` governs
+    nothing, and this seeded exactly that — the type came out unruled, the 422
+    below became unreachable, and reverting the fix left the test green.
+
+    Reverting it now reddens ``assert resp.status_code == 200`` at the bottom:
+    drop ``scan_identity=candidate.event_name`` from the ``create_event`` call
+    in ``reconciliation_service.accept_shadow_event`` (restoring the post-hoc
+    ``event.source_name = candidate.event_name``) and the accept routes through
+    ``_generate_scan_template_name``, which resolves ``{action}`` against a
+    candidate that has no field values and raises 422 "fill field values for:
+    action".
     """
     et_id, _ = await _setup_project(client, "rec-ruled")
     project_id = await _project_id("rec-ruled")
@@ -194,7 +209,9 @@ async def test_accept_shadow_event_works_when_a_scan_rule_names_the_event_type(
         f"/api/v1/projects/rec-ruled/event-types/{et_id}/fields",
         json={"name": "action", "display_name": "Action", "field_type": "string"},
     )
-    scan_id = await _insert_scan_config(project_id, event_name_format="{action}")
+    scan_id = await _insert_scan_config(
+        project_id, event_name_format="{action}", event_type_id=uuid.UUID(et_id)
+    )
     candidate_id = await _insert_candidate(
         project_id, scan_id, event_name="wind_alert_created", event_type_id=uuid.UUID(et_id)
     )

@@ -65,7 +65,9 @@ from tripl.services.plan_revision_service import (
 )
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
 from tripl.services.scan_config_lookup import (
+    event_type_binding_conflict_detail,
     name_format_conflict_detail,
+    scan_configs_binding_event_types,
     scan_configs_blocking_field_removals,
 )
 
@@ -798,6 +800,30 @@ async def _apply_merge(
         for name, m_et in main_et_by_name.items()
         if name in base_et_by_name and name not in branch_et_by_name
     ]
+    # The second door onto ``scan_configs.event_type_id``'s ON DELETE SET NULL,
+    # after ``event_type_service.delete_event_type``: merging a branch that
+    # removed an event type deletes main's copy, and every scan bound to it goes
+    # on running against an empty binding, collecting nothing (tripl-0zpq.254).
+    # Refused for the reason ``_reject_removals_a_scan_names_events_by`` — the
+    # field-removal guard, awaited further down this same function — gives in its
+    # docstring: a merge refuses whole rather than skipping the deletion.
+    if removed_main_ets:
+        binding = await scan_configs_binding_event_types(
+            session,
+            project_id=project_id,
+            event_type_ids=[m_et.id for m_et in removed_main_ets],
+        )
+        blocked_types = [
+            event_type_binding_conflict_detail(
+                configs=binding[m_et.id],
+                lead=f"Cannot merge this branch: merging deletes '{m_et.name}' from main.",
+                then="merge the branch",
+            )
+            for m_et in removed_main_ets
+            if binding.get(m_et.id)
+        ]
+        if blocked_types:
+            raise HTTPException(status_code=409, detail=" ".join(blocked_types))
     if removed_main_ets:
         # BEFORE the delete, and this placement is the substance of the fix.
         # Deleting the event type takes its events with it through the database
@@ -975,11 +1001,43 @@ async def _apply_merge(
         if name in base_mf_by_name and name not in branch_mf_by_name:
             await session.delete(m_mf)
     await session.flush()
-    main_mf_name_to_id = {
+    main_mf_name_to_id: dict[str, uuid.UUID] = {
         mf.name: mf.id
         for mf in await _load_for_branch(session, MetaFieldDefinition, project_id, main_branch_id)
     }
     branch_mf_id_to_name = {mf.id: mf.name for mf in branch_mfs}
+
+    def main_meta_field_id(event: Event, mv: EventMetaValue) -> uuid.UUID:
+        """Translate a branch meta value onto main by NAME, or refuse the merge.
+
+        ``branch_mf_id_to_name`` holds this branch's own definitions only, so a
+        value pointing at another branch's definition was an unqualified
+        subscript — the same bare 500, from the same pre-refusal rows, that
+        ``deep_copy_plan_to_branch`` now answers 409 for (tripl-0zpq.123).
+        ``event_service._normalize_meta_values`` refuses to write one today; no
+        migration sweeps the ones already stored, and the merge is the second
+        place they surface.
+
+        Refusing rather than skipping the value: both replay arms below DELETE
+        main's whole set for the event and rebuild it from the branch, so a
+        skipped value is one that disappears from main with nothing said.
+
+        ``main_mf_name_to_id`` needs no guard of its own — it is rebuilt after
+        the meta-field upsert above, which gives main a definition for every
+        name this branch has.
+        """
+        mf_name = branch_mf_id_to_name.get(mv.meta_field_definition_id)
+        if mf_name is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot merge this branch: event '{event.name}' carries a meta "
+                    f"value on {mv.meta_field_definition_id}, which is not a meta "
+                    "field of this branch, so it has no name to carry onto main. "
+                    "Edit the event to drop that value, then merge."
+                ),
+            )
+        return main_mf_name_to_id[mf_name]
 
     # --- variables: upsert by name
     main_vars = await _load_variables(session, project_id, main_branch_id)
@@ -1121,6 +1179,27 @@ async def _apply_merge(
     await session.flush()
     main_events = [e for e in main_events if e.event_type_id in main_et_id_to_name]
     main_event_by_key = {(main_et_id_to_name[e.event_type_id], e.name): e for e in main_events}
+    # The subscript below was unguarded, and it is the FIRST place a branch event
+    # parented by another branch's type lands — the pre-refusal row shape
+    # ``event_service`` now blocks, with no migration sweeping the ones already
+    # stored (tripl-0zpq.123). A KeyError here is the same bare 500 on the merge,
+    # naming nothing, that ``deep_copy_plan_to_branch`` now answers 409 for.
+    #
+    # Deliberately NOT the deletion main's events get a few lines above: there
+    # the type is missing because THIS merge removed it, so its events are doomed
+    # by the merge itself. Here the type is simply on another branch, and
+    # dropping the event would carry onto main a deletion nobody made.
+    mis_parented = [e for e in branch_events if e.event_type_id not in branch_et_id_to_name]
+    if mis_parented:
+        raise HTTPException(
+            status_code=409,
+            detail=" ".join(
+                f"Cannot merge this branch: event '{e.name}' is parented by "
+                f"{e.event_type_id}, which is not an event type of this branch, so it "
+                "has no type on main to land under. Delete the event, then merge."
+                for e in mis_parented
+            ),
+        )
     branch_event_by_key = {
         (branch_et_id_to_name[e.event_type_id], e.name): e for e in branch_events
     }
@@ -1230,12 +1309,11 @@ async def _apply_merge(
                     delete(EventMetaValue).where(EventMetaValue.event_id == m_ev.id)
                 )
                 for mv in b_ev.meta_values:
-                    mf_name = branch_mf_id_to_name[mv.meta_field_definition_id]
                     session.add(
                         EventMetaValue(
                             id=uuid.uuid4(),
                             event_id=m_ev.id,
-                            meta_field_definition_id=main_mf_name_to_id[mf_name],
+                            meta_field_definition_id=main_meta_field_id(b_ev, mv),
                             value=mv.value,
                         )
                     )
@@ -1281,12 +1359,11 @@ async def _apply_merge(
                     )
                 )
             for mv in b_ev.meta_values:
-                mf_name = branch_mf_id_to_name[mv.meta_field_definition_id]
                 session.add(
                     EventMetaValue(
                         id=uuid.uuid4(),
                         event_id=new_ev_id,
-                        meta_field_definition_id=main_mf_name_to_id[mf_name],
+                        meta_field_definition_id=main_meta_field_id(b_ev, mv),
                         value=mv.value,
                     )
                 )
@@ -1599,12 +1676,29 @@ async def _apply_merge(
     main_relation_by_key = {
         relation_key(relation, main_et_id_to_name_after, main_fd_id_to_key): relation
         for relation in main_relations
+        # ``relation_key`` indexes both maps directly, so a relation naming an
+        # end that is not on this side was a KeyError — a 500 on the merge with
+        # nothing saying which relation (tripl-0zpq.128).
+        # ``relation_service.create_relation`` now refuses to write one, but rows
+        # stored before that refusal have no migration sweeping them, and the
+        # merge is where they surface. Main needs the event-type half as much as
+        # the branch does: ``main_et_id_to_name_after`` covers MAIN's types only,
+        # and the four ids were never checked against each other, so a main
+        # relation can hold a branch copy's type id beside a main field id.
         if relation.source_field_id in main_fd_id_to_key
         and relation.target_field_id in main_fd_id_to_key
+        and relation.source_event_type_id in main_et_id_to_name_after
+        and relation.target_event_type_id in main_et_id_to_name_after
     }
     branch_relation_by_key = {
         relation_key(relation, branch_et_id_to_name, branch_fd_id_to_key): relation
         for relation in branch_relations
+        # Guarded the same way ``main_relation_by_key`` above is, and for the
+        # same reason.
+        if relation.source_field_id in branch_fd_id_to_key
+        and relation.target_field_id in branch_fd_id_to_key
+        and relation.source_event_type_id in branch_et_id_to_name
+        and relation.target_event_type_id in branch_et_id_to_name
     }
     base_relation_by_key = {
         (

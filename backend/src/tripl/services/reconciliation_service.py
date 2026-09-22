@@ -184,6 +184,55 @@ async def _get_candidate(
     return candidate
 
 
+async def _event_type_on_branch(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    event_type_id: uuid.UUID,
+) -> uuid.UUID:
+    """The counterpart of ``event_type_id`` on ``branch_id``, matched by name.
+
+    A no-op when the id already belongs to that branch, which is every accept on
+    main — a scan resolves its types against main's plan, so ``branch_id`` is
+    main's in the ordinary case and the SELECT returns the row unchanged.
+    ``uq_event_type_project_name`` is per branch, so the counterpart is unique.
+
+    422 rather than a silent fallback to the id the scan gave: the branch was
+    deep-copied from main, so a missing counterpart means the branch deleted
+    that event type, and accepting a candidate onto a type the branch says is
+    gone is not a thing the operator asked for.
+    """
+    row = await session.execute(
+        select(EventType.branch_id, EventType.name).where(
+            EventType.id == event_type_id, EventType.project_id == project_id
+        )
+    )
+    found = row.first()
+    if found is None:
+        raise HTTPException(status_code=404, detail="Event type not found")
+    detected_branch_id, name = found
+    if detected_branch_id == branch_id:
+        return event_type_id
+    counterpart = await session.scalar(
+        select(EventType.id).where(
+            EventType.project_id == project_id,
+            EventType.branch_id == branch_id,
+            EventType.name == name,
+        )
+    )
+    if counterpart is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Event type '{name}' does not exist on this branch. The scan detected "
+                "this candidate against the main plan; accept it on main, or name an "
+                "event type that exists on this branch."
+            ),
+        )
+    return counterpart
+
+
 # --- inbox resolutions: what the route answers, and what its audit row needs ---
 #
 # Both resolutions are recorded, and the audit row is written in the ROUTER, never
@@ -256,6 +305,22 @@ async def accept_shadow_event(
         )
 
     resolved_branch_id = await resolve_branch_id(session, project_id, branch_id)
+    if data.event_type_id is None:
+        # The candidate's type id was resolved by the SCAN, and a scan reads
+        # main's plan, so it is always a MAIN event type id. Writing it onto a
+        # row on a working branch would give that row main's identity, which
+        # ``create_event`` now refuses outright (tripl-0zpq.123) — and with it
+        # the whole branch accept flow. Translated by NAME to the branch's own
+        # copy, which is the pairing ``load_governing_scan_configs_by_type`` and
+        # ``services/_branch_counterparts`` already use in the other direction.
+        # Only for the DETECTED id: an id the operator picked came from a list
+        # scoped to the branch they are accepting on.
+        event_type_id = await _event_type_on_branch(
+            session,
+            project_id=project_id,
+            branch_id=resolved_branch_id,
+            event_type_id=event_type_id,
+        )
     existing = await session.scalar(
         select(Event.id).where(
             Event.project_id == project_id,
@@ -282,8 +347,17 @@ async def accept_shadow_event(
     # accept 422s on any rule-governed event type (tripl-u2h9.12); and assigning
     # it afterwards wrote the identity in a second transaction, after the search
     # index for this event had already been built without it.
+    # ``user_id`` names the accepting editor in the event's own 'created' history
+    # row, the way POST /events does. Without it the row was anonymous and the
+    # docs' claim that an accepted candidate is indistinguishable from one you
+    # typed was false on the History tab (tripl-0zpq.225).
     event = await event_service.create_event(
-        session, slug, event_create, branch_id=branch_id, scan_identity=candidate.event_name
+        session,
+        slug,
+        event_create,
+        branch_id=branch_id,
+        scan_identity=candidate.event_name,
+        user_id=user_id,
     )
 
     candidate.status = SHADOW_STATUS_ACCEPTED

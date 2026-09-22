@@ -285,7 +285,10 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     }
   }, [fetchAllMatchingIds, selectAll])
 
-  const handleBulkAssignOwner = useCallback((userId: string) => {
+  // `null` is a value here, not an absence: the bulk patch keys off which fields
+  // were SENT, so `owner_id: null` clears the owner across the selection and an
+  // omitted `owner_id` leaves it alone (tripl-0zpq.276).
+  const handleBulkAssignOwner = useCallback((userId: string | null) => {
     if (!selectedEventIds.length) return
     bulkUpdateMut.mutate({ eventIds: selectedEventIds, owner_id: userId })
   }, [bulkUpdateMut, selectedEventIds])

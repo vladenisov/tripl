@@ -41,8 +41,12 @@ NAME_FORMAT_PATTERN = re.compile(r"\{([^}]+)\}")
 # different questions: ``generation._VARIABLE_TEMPLATE_PATTERN`` is the same
 # grammar without a capture group (it tests whether a value is templated at all,
 # and a capture would change what ``findall`` returns), and
-# ``event_service._JSON_TEMPLATE_VALUE_PATTERN`` restricts the token body to an
-# identifier grammar on purpose, to keep hand-authored JSON values parseable.
+# ``event_service._JSON_TEMPLATE_VALUE_PATTERN`` narrows this body to
+# ``[^"\\}\x00-\x1f]+`` for two different reasons, which that file spells out:
+# ``}`` is what terminates the token in ``VARIABLE_TOKEN_PATTERN`` here, while a
+# quote, a backslash and the C0 control characters are what would break the JSON
+# text a token is spliced back into VERBATIM after ``json.dumps``. Everything
+# else a scan can write — spaces, commas, non-ASCII — stays saveable.
 VARIABLE_TOKEN_PATTERN = re.compile(r"\$\{([^}]*)\}")
 
 
