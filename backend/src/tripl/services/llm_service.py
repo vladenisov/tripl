@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import urllib.error
 import urllib.request
-from typing import Any, cast
+from typing import Any
 
 from tripl.config import settings  # noqa: F401 - kept for test monkeypatching
 from tripl.services.app_settings_service import AiConfig, env_ai_config
@@ -44,7 +45,7 @@ def _post_chat_completions(
     except urllib.error.HTTPError as exc:
         try:
             error_body = exc.read().decode("utf-8", errors="replace")[:2000]
-        except OSError:
+        except OSError, http.client.HTTPException:
             error_body = "<unreadable>"
         logger.warning(
             "AI completion request failed with HTTP %s: %s; model=%s url=%s body=%s",
@@ -62,7 +63,7 @@ def _post_chat_completions(
         except json.JSONDecodeError:
             pass
         return None, error
-    except urllib.error.URLError, TimeoutError:
+    except OSError, http.client.HTTPException, UnicodeError, TimeoutError:
         logger.exception("AI completion request failed")
         return None, None
 
@@ -126,17 +127,26 @@ def complete(
         return None
 
     try:
-        parsed = cast(dict[str, Any], json.loads(body))
+        parsed = json.loads(body)
+        if not isinstance(parsed, dict):
+            logger.warning("AI completion response is not an object")
+            return None
         choices = parsed.get("choices")
         if not isinstance(choices, list) or not choices:
             logger.warning("AI completion response has no choices")
             return None
-        message = choices[0].get("message", {})
+        if not isinstance(choices[0], dict):
+            logger.warning("AI completion response choice is not an object")
+            return None
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            logger.warning("AI completion response message is not an object")
+            return None
         content = message.get("content")
         if not isinstance(content, str):
             logger.warning("AI completion response content is not a string")
             return None
         return content
-    except json.JSONDecodeError, KeyError, IndexError:
+    except json.JSONDecodeError:
         logger.exception("Failed to parse AI completion response")
         return None

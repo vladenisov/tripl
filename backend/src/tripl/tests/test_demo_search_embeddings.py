@@ -468,7 +468,7 @@ async def test_postgres_search_serves_lexical_results_when_the_embed_leg_raises(
         lexical_completed.append(True)
         return [hit]
 
-    def failing_embed(query: str, *, config: AiConfig) -> list[float]:
+    def failing_embed(query: str, *, config: AiConfig, timeout: float) -> list[float]:
         embed_failed.set()
         raise ValueError("the provider answered 200 with a body that is not JSON")
 

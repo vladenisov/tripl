@@ -51,13 +51,19 @@ the vector leg alone — so a correctly configured instance routinely answers
 `semantic_used: true` on the envelope with every row reading `false`. Never
 diagnose an instance from a row.
 
+Interactive search gives the embedding provider three seconds. A timeout or a
+vector with the wrong width leaves the keyword results available; background
+embedding batches retain their longer timeout. Search snippets and highlights
+preserve the match location in descriptions with indentation or Unicode case
+folding. Long relation names are shortened to fit the search index.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SEARCH_EMBEDDINGS_ENABLED` | `false` | Master switch for semantic search. When `false`, `/search` uses keyword/substring fallback only. |
 | `SEARCH_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | Base URL of the OpenAI-compatible embeddings endpoint; `/embeddings` is appended. Env-only — no instance-settings override, see the re-indexing warning below — but shown read-only, with its source badge, under **Settings → Instance → AI**. |
 | `SEARCH_EMBEDDING_PROVIDER` | `openai` | Embedding provider. |
 | `SEARCH_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model used to index and query tracking-plan text. |
-| `SEARCH_EMBEDDING_DIMENSIONS` | `1536` | Vector dimensionality. Must match the chosen model. |
+| `SEARCH_EMBEDDING_DIMENSIONS` | `1536` | Fixed at 1536 by the database column. Startup rejects any other value; use a model that returns 1536 values. |
 | `SEARCH_EMBEDDING_API_KEY` | falls back to `OPENAI_API_KEY` | Credential for the embedding provider. |
 
 :::tip
@@ -72,6 +78,10 @@ same credential serves both embeddings and AI assistance.
 AI assistance drives generative helpers in the app — for example, suggesting an
 event description on the event form. It targets an OpenAI-compatible chat
 endpoint.
+
+Ask keeps the question at the start of the provider prompt, so large search
+contexts cannot truncate it. Malformed provider responses and interrupted
+connections produce the existing unavailable response or describe error.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -117,14 +127,14 @@ point `SEARCH_EMBEDDING_BASE_URL` and `AI_BASE_URL` at that endpoint. Both take 
 **base**, not a full path: tripl appends `/embeddings` and `/chat/completions`
 respectively, the way an OpenAI-compatible server lays them out.
 
-:::warning Repointing it later means re-indexing
+:::warning Changing the embedding space
 `SEARCH_EMBEDDING_BASE_URL` is env-only on purpose, and so is
-`SEARCH_EMBEDDING_DIMENSIONS`. Vectors already stored came from whatever endpoint
-produced them, and a similarity score between two different embedding spaces is
-meaningless — so changing either *after* documents have been indexed quietly
-degrades every result involving an older vector, with nothing logged. Set it
-before you enable embeddings; if you change it afterwards, re-index the project
-so the whole corpus is embedded by one provider.
+`SEARCH_EMBEDDING_DIMENSIONS`. The database accepts only 1536-dimensional
+vectors. Search uses vectors only when their recorded endpoint and model match
+the current configuration. Changing either makes old vectors ineligible; the
+scheduled reindex visits every branch and queues fresh embeddings. Until that
+finishes, affected searches use their keyword results. This re-embedding calls
+the configured provider and may take several sweep cycles for large projects.
 :::
 
 ---

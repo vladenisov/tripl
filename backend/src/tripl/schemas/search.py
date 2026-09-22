@@ -128,7 +128,7 @@ class SearchResult(BaseModel):
     #
     # Defaults to False so a result that never went through a lexical ladder at
     # all — a semantic-only hit — is not silently treated as an identity match.
-    # Such a hit still reports its cosine, which is its own honest certainty.
+    # Its cosine contributes to confidence, subject to the non-identity ceiling.
     _identity_match: bool = PrivateAttr(default=False)
 
     @property

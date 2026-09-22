@@ -37,6 +37,8 @@ def _parse_describe_response(raw: str) -> AiDescribeResponse:
     cleaned = _strip_markdown_fences(raw)
     try:
         data = json.loads(cleaned)
+        if not isinstance(data, dict):
+            raise ValueError("AI describe response is not an object")
         description = data.get("description", "") or ""
         raw_suggestions = data.get("field_suggestions", []) or []
         field_suggestions = [
@@ -212,7 +214,7 @@ async def ask_plan(
         context_lines.append("\n".join(parts))
 
     context_text = "\n\n".join(context_lines)
-    user_prompt = f"Context:\n{context_text}\n\nQuestion: {question}"
+    user_prompt = f"Question: {question}\n\nContext:\n{context_text}"
 
     config = await app_settings_service.get_ai_config(session)
     raw = await asyncio.to_thread(
