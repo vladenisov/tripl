@@ -9,11 +9,18 @@ subscripts, so one such row still made "create a branch" a bare 500 naming
 nothing, and the meta-value replay in ``_apply_merge`` made the merge one too.
 Both now refuse by name.
 
-tripl-0zpq.149, the base arm — ``_reject_ambiguous_keys`` reads the merge base
-as well as the two live sides, and told the operator to "Rename or remove one of
-each pair". The base is a stored ``PlanRevision`` payload and no route edits one,
-so for that arm the remedy could not be performed and the branch was bricked.
-The base keeps its refusal and gets the only repair that exists for it.
+tripl-0zpq.149 is deliberately NOT covered here any more. This file used to hold
+the base arm of an ambiguous-natural-key refusal — ``_ambiguous_keys``,
+``_reject_ambiguous_keys`` and the call in ``merge_branch`` — and that whole
+refusal was removed after review, so the test went with it. No coverage was
+lost: a branch is how an analyst CLEANS UP a pair of namesakes (delete both
+copies, author one row in their place), and refusing that merge took away the
+only door out of the very state it complained about, which is the workflow two
+tests in ``test_event_comment_merge_batch2`` already pin. The diff still warns
+on the row — ``plan_revision_service._shared_key_warning``, held by
+``test_plan_revision_batch2`` — and the merge's half of the ticket waits on
+tripl-0zpq.292, an origin id on branch copies, which is the one thing that lets
+rows sharing a key be paired instead of refused.
 
 tripl-0zpq.128, the main side — the KeyError guard on ``relation_key`` was added
 to the branch comprehension only, while ``main_relation_by_key`` still indexed
@@ -38,7 +45,7 @@ from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.tests.conftest import TestSessionLocal
-from tripl.tests.test_plan_branches import _approve_and_merge, _create_branch
+from tripl.tests.test_plan_branches import _approve_and_merge, _create_branch, _transition
 
 # --- helpers ------------------------------------------------------------------
 
@@ -290,8 +297,12 @@ async def test_a_branch_event_holding_mains_meta_field_refuses_the_merge(
     assert main_meta_id in detail, detail
     assert "Edit the event to drop that value, then merge." in detail, detail
 
-    # Not vacuous: the branch is still approved, and the identical merge goes
-    # through once the value the message names is gone.
+    # Not vacuous: the identical merge goes through once the value the message
+    # names is gone. Dropping it EDITS the branch, so the approval pinned to the
+    # old content hash reads stale and the merge would answer 409
+    # insufficient_approvals instead — a different refusal from the one under
+    # test. The reviewer approves again, which is legal from "approved" and
+    # restamps the hash in place, exactly as ``_approve_and_merge`` stamps it.
     async with TestSessionLocal() as session:
         planted = await session.scalar(
             select(EventMetaValue).where(EventMetaValue.event_id == branch_event_id)
@@ -299,60 +310,8 @@ async def test_a_branch_event_holding_mains_meta_field_refuses_the_merge(
         assert planted is not None
         await session.delete(planted)
         await session.commit()
+    assert "_status" not in await _transition(client, slug, branch_id, "approve")
     merged = await client.post(f"/api/v1/projects/{slug}/branches/{branch_id}/merge")
-    assert merged.status_code == 200, merged.text
-
-
-# --- tripl-0zpq.149: the merge base gets the only remedy it has ---------------
-
-
-@pytest.mark.asyncio
-async def test_namesakes_left_only_in_the_merge_base_ask_for_a_new_branch(
-    client: AsyncClient,
-) -> None:
-    """Folding the base back into the one ``live_problems`` message reddens this
-    twice over: the refusal would tell the operator to "Rename or remove one of
-    each pair, then merge" on a stored ``PlanRevision`` payload that no route
-    edits, and would never mention the repair that does exist.
-
-    Both live sides are clean here — the operator did exactly what
-    ``_shared_key_warning`` asks — so only the frozen base still holds the pair.
-    """
-    slug = "b7b-base-namesakes"
-    await _project(client, slug)
-    event_type_id = await _event_type(client, slug)
-    for description in ("the first one", "the second one"):
-        await _event(client, slug, event_type_id, "purchase", description=description)
-
-    branch_id = await _create_branch(client, slug)
-
-    listed = await client.get(f"/api/v1/projects/{slug}/events")
-    doomed = next(item["id"] for item in listed.json()["items"] if item["name"] == "purchase")
-    removed = await client.delete(f"/api/v1/projects/{slug}/events/{doomed}")
-    assert removed.status_code == 204, removed.text
-    on_branch = await client.get(f"/api/v1/projects/{slug}/events?branch={branch_id}")
-    doomed_copy = next(
-        item["id"] for item in on_branch.json()["items"] if item["name"] == "purchase"
-    )
-    removed_copy = await client.delete(
-        f"/api/v1/projects/{slug}/events/{doomed_copy}?branch={branch_id}"
-    )
-    assert removed_copy.status_code == 204, removed_copy.text
-
-    refused = await _approve_and_merge(client, slug, branch_id)
-    assert refused.status_code == 409, refused.text
-    detail = str(refused.json()["detail"])
-    assert "the merge base" in detail, detail
-    assert "two events named 'purchase' in 'pv'" in detail, detail
-    assert "recreate this branch from current main" in detail, detail
-    # The live-side remedy must NOT be offered here: it cannot be performed on a
-    # stored snapshot, and following it would leave the operator nothing to do.
-    assert "Rename or remove one of each pair" not in detail, detail
-
-    # Not vacuous, and it is exactly the repair the message names: a branch taken
-    # off current main carries a clean base and merges.
-    fresh = await _create_branch(client, slug, name="fresh")
-    merged = await _approve_and_merge(client, slug, fresh)
     assert merged.status_code == 200, merged.text
 
 

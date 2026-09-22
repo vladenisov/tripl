@@ -81,7 +81,7 @@ async def main_counterparts(
                 # ``event_service._twin_reads_for_branch_rows`` picks the twin by
                 # for the "Silent > N days" filter and the "Busiest first" sort.
                 # Nothing stops main holding two rows under one (type, identity)
-                # — only the merge refuses that state — and while this query was
+                # — nothing refuses that state — and while this query was
                 # unordered the rendered Last seen came from whichever row it
                 # happened to return last, so the filter and the column could
                 # answer about two different main rows on the same branch row

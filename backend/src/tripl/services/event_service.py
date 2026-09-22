@@ -619,8 +619,10 @@ def _twin_reads_for_branch_rows(
 
     ONE twin, the SAME one for both expressions: the lowest id among the main
     rows that answer the key. Nothing stops main from holding two rows under one
-    (event type, identity) — ``_ambiguous_keys`` exists because that state is
-    reachable and only the MERGE refuses it — and while the last-seen read took
+    (event type, identity), and nothing refuses that state: the plan diff warns
+    about it and the merge goes through (tripl-0zpq.149 waits on tripl-0zpq.292
+    for the origin id that would tell the pair apart) — and while the last-seen
+    read took
     ``max()`` over the pair and the metric id took the lowest id, the "Silent >
     N days" filter and the "Busiest first" sort could answer about two different
     main rows on the same branch row. ``_branch_counterparts.main_counterparts``,

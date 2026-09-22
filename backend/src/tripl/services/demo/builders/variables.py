@@ -52,19 +52,6 @@ _VARIABLE_SPECS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "Store product / SKU identifier.",
         ("prod_monthly", "prod_annual", "prod_lifetime"),
     ),
-    # Twelve of the plan's events template ``${platform}`` in a field value, and
-    # until tripl-0zpq.248 no variable answered to that token: the demo shipped
-    # with ``_attach_template_warnings`` reporting an unknown variable on every
-    # one of them, on every PATCH. Seeded rather than de-templated because the
-    # demo exists to show templating WORKING — and the twelve values would all
-    # have had to change together.
-    (
-        "platform",
-        "platform",
-        "string",
-        "Client platform the event was sent from.",
-        ("ios", "android", "web"),
-    ),
 )
 
 

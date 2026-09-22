@@ -30,8 +30,11 @@ export const BARE_WORD_VARIABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
 // those saves from this batch on; this file was the remaining door that did not.
 // What stays out is what a JSON string cannot hold verbatim (a quote, a
 // backslash, a C0 control character) plus `}`, which ends the token.
+// eslint-disable-next-line no-control-regex -- the C0 range is excluded, never matched: a JSON string cannot hold one verbatim and the backend pattern above refuses them too
 const JSON_TEMPLATE_TOKEN_NAME_PATTERN = /^[^"\\}\x00-\x1f]+$/
+// eslint-disable-next-line no-control-regex -- same C0 exclusion as the token name pattern above
 const JSON_TEMPLATE_VALUE_PATTERN = /"\$\{[^"\\}\x00-\x1f]+\}"|\$\{[^"\\}\x00-\x1f]+\}/g
+// eslint-disable-next-line no-control-regex -- same C0 exclusion as the token name pattern above
 const JSON_TEMPLATE_KEY_PATTERN = /"\$\{[^"\\}\x00-\x1f]+\}"\s*:/
 
 const SENTINEL_BASE = '__TRIPL_VAR_'

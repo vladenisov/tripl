@@ -208,10 +208,6 @@ async def test_the_demo_files_its_authored_objects_in_their_routes_own_shape(
     assert types.status_code == 200, types.text
     type_id_by_name = {et["name"]: uuid.UUID(et["id"]) for et in types.json()}
 
-    listed = await client.get(f"/api/v1/audit?project_slug={slug}&limit=400")
-    assert listed.status_code == 200, listed.text
-    entries = listed.json()["items"]
-
     async def payload_of(entry: dict[str, Any]) -> dict[str, Any]:
         # The list response carries no payload on purpose (AuditEntryResponse);
         # it travels one row at a time, which is the door the Audit tab uses
@@ -220,11 +216,28 @@ async def test_the_demo_files_its_authored_objects_in_their_routes_own_shape(
         assert detail.status_code == 200, detail.text
         return detail.json()["payload"]
 
-    def rows(action: str) -> list[dict[str, Any]]:
-        return [entry for entry in entries if entry["action"] == action]
+    async def rows(action: str) -> list[dict[str, Any]]:
+        """Every row this project filed under one action.
+
+        Asked for BY action rather than sliced out of the whole trail.
+        ``GET /audit`` caps ``limit`` at 200 (``api/v1/audit.py``), and the demo
+        trail has no fixed length — it grows with every object a future builder
+        authors — so "the demo filed exactly one" and "the page I happened to
+        fetch held exactly one" are different claims, and only the first is the
+        one these assertions mean. ``action`` is an equality filter in
+        ``audit_service.list_entries`` and ``total`` counts the same filtered
+        set the page slices, so the assertion below states that this page IS the
+        set: a trail that outgrows one page reddens here, loudly, instead of
+        quietly narrowing what the counts below are about.
+        """
+        listed = await client.get(f"/api/v1/audit?project_slug={slug}&action={action}&limit=200")
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert len(body["items"]) == body["total"], body["total"]
+        return body["items"]
 
     # The relation: the recipe authors exactly one, click -> screen_view.
-    relations = rows("relation.create")
+    relations = await rows("relation.create")
     assert len(relations) == 1, relations
     relation = relations[0]
     assert relation["target_type"] == "relation"
@@ -237,7 +250,7 @@ async def test_the_demo_files_its_authored_objects_in_their_routes_own_shape(
     # The owner grant: one, on screen_view, naming the grantee in the payload
     # rather than in the title — which is how api/v1/event_type_owners.py
     # records it, empty target_name and all.
-    grants = rows("event_type.add_owner")
+    grants = await rows("event_type.add_owner")
     assert len(grants) == 1, grants
     grant = grants[0]
     assert grant["target_type"] == "event_type"
@@ -250,7 +263,7 @@ async def test_the_demo_files_its_authored_objects_in_their_routes_own_shape(
 
     # The variable override: the TARGET is the variable, and the event it was
     # scoped to belongs in the payload beside it.
-    overrides = rows("variable.override_set")
+    overrides = await rows("variable.override_set")
     assert len(overrides) == 1, overrides
     override = overrides[0]
     assert override["target_type"] == "variable"

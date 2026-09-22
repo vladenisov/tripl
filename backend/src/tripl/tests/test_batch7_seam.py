@@ -95,7 +95,6 @@ from tripl.services.demo.builders.alerts import (
 from tripl.services.demo.scenario import DemoContext
 from tripl.services.project_service import demo_data_source_name
 from tripl.tests.conftest import TestSessionLocal
-from tripl.tests.test_plan_branches import _approve_and_merge, _create_branch
 
 # --- helpers ------------------------------------------------------------------
 
@@ -548,11 +547,25 @@ async def test_the_demo_trail_matches_the_routes_it_imitates(client: AsyncClient
     """
     slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
 
-    listed = await client.get(f"/api/v1/audit?project_slug={slug}&limit=400")
-    assert listed.status_code == 200, listed.text
-    entries = listed.json()["items"]
+    async def trail(action: str) -> list[dict[str, Any]]:
+        """Every row this project filed under one action.
 
-    fields = [entry for entry in entries if entry["action"] == "field.create"]
+        ``GET /audit`` caps ``limit`` at 200 (``api/v1/audit.py``) and the demo
+        trail has no fixed length, so fetching "the trail" and filtering here
+        would turn each block below into a claim about whichever rows one page
+        held. ``action`` is an equality filter in ``audit_service.list_entries``,
+        so a call returns that action's rows and nothing else; asserting the
+        page against ``total`` — the count of the same filtered set — makes "I
+        saw all of them" part of the test rather than an assumption about how
+        big the demo happens to be.
+        """
+        listed = await client.get(f"/api/v1/audit?project_slug={slug}&action={action}&limit=200")
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert len(body["items"]) == body["total"], body["total"]
+        return body["items"]
+
+    fields = await trail("field.create")
     assert fields, "the demo authored fields and filed nothing for them"
     assert {entry["target_type"] for entry in fields} == {"field_definition"}
     # The BARE name, the way the route writes it: ctx.field_ids is keyed
@@ -568,21 +581,29 @@ async def test_the_demo_trail_matches_the_routes_it_imitates(client: AsyncClient
     assert len(warehouses) == 1, unscoped.json()["items"]
 
     # The docstring's "one entry per authored object" is now true of the objects
-    # the finding enumerated.
-    actions = {entry["action"] for entry in entries}
-    assert {
+    # the finding enumerated. One query per action, so a missing one is a route
+    # that answered "no rows under this action" — not a row that fell off the
+    # end of a page — and the failure names which action is missing.
+    for authored in (
         "fact_table.create",
         "metric_definition.create",
         "relation.create",
         "event_type.add_owner",
         "variable.override_set",
         "plan_branch.create",
-    } <= actions, sorted(actions)
+    ):
+        assert await trail(authored), authored
 
     events = await client.get(f"/api/v1/projects/{slug}/events?limit=100")
     assert events.status_code == 200, events.text
-    items = events.json()["items"]
-    assert len(items) >= 18
+    body = events.json()
+    items = body["items"]
+    # Every demo event, not "at least N of them": a hard-coded floor either rots
+    # when the scenario gains an event or silently stops covering the ones past
+    # the page. ``total`` is computed over the same filter, so this says the loop
+    # below examined the whole set.
+    assert items, "the demo authored no events"
+    assert len(items) == body["total"], body["total"]
     for item in items:
         history = await client.get(f"/api/v1/projects/{slug}/events/{item['id']}/history")
         assert history.status_code == 200, history.text
@@ -594,64 +615,28 @@ async def test_the_demo_trail_matches_the_routes_it_imitates(client: AsyncClient
     # One act, one row. Reverting the ``change.field != "created"`` filter in
     # ``audit._event_edit_entries`` reddens this: every event would gain an
     # ``event.update`` at EXACTLY its ``event.create`` instant, for one creation.
-    creations = {
-        (entry["target_id"], entry["created_at"])
-        for entry in entries
-        if entry["action"] == "event.create"
-    }
+    creations = {(entry["target_id"], entry["created_at"]) for entry in await trail("event.create")}
     assert creations
-    edits = {
-        (entry["target_id"], entry["created_at"])
-        for entry in entries
-        if entry["action"] == "event.update"
-    }
+    edits = {(entry["target_id"], entry["created_at"]) for entry in await trail("event.update")}
+    # Not vacuous: the demo really does file edits, so an ``event.update`` born
+    # at its event's creation instant has somewhere to collide.
+    assert edits
     assert not (creations & edits), sorted(creations & edits)
 
 
 # --- tripl-0zpq.149 -----------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_a_branch_holding_two_events_under_one_key_cannot_be_merged(
-    client: AsyncClient,
-) -> None:
-    """Deleting the ``_reject_ambiguous_keys`` call from ``merge_branch`` reddens
-    this: the merge goes through and main keeps BOTH namesakes.
-
-    The diff already warns about this on the row, but a warning is not a gate —
-    a main row is doomed only if its key is absent from the branch, so a merge
-    that deleted one namesake left main with two and copied whichever branch
-    copy won onto whichever main row won.
-    """
-    slug = "b7s-namesakes"
-    await _project(client, slug)
-    event_type_id = await _event_type(client, slug)
-    for description in ("the first one", "the second one"):
-        created = await client.post(
-            f"/api/v1/projects/{slug}/events",
-            json={
-                "event_type_id": event_type_id,
-                "name": "purchase",
-                "description": description,
-            },
-        )
-        assert created.status_code == 201, created.text
-
-    branch_id = await _create_branch(client, slug)
-    refused = await _approve_and_merge(client, slug, branch_id)
-    assert refused.status_code == 409, refused.text
-    detail = str(refused.json()["detail"])
-    assert "two events named 'purchase' in 'pv'" in detail, detail
-    assert "Rename or remove one of each pair" in detail, detail
-
-    # Not vacuous: the identical branch merges once the namesakes are gone.
-    listed = await client.get(f"/api/v1/projects/{slug}/events")
-    doomed = next(item["id"] for item in listed.json()["items"] if item["name"] == "purchase")
-    removed = await client.delete(f"/api/v1/projects/{slug}/events/{doomed}")
-    assert removed.status_code == 204, removed.text
-    clean_branch = await _create_branch(client, slug, name="clean")
-    merged = await _approve_and_merge(client, slug, clean_branch)
-    assert merged.status_code == 200, merged.text
+#
+# Nothing here any more, deliberately. This batch added a merge refusal for two
+# rows under one natural key and a test that pinned it; review then removed both.
+# A branch is how an analyst CLEANS UP a pair of namesakes — delete both copies,
+# author one row in their place — so refusing that merge closed the only door out
+# of the state it complained about, and reddened two tests in
+# test_event_comment_merge_batch2 that hold exactly that workflow.
+#
+# What shipped for this finding is the diff-side warning, pinned by
+# test_plan_revision_batch2. The merge's own half waits on tripl-0zpq.292 (an
+# origin id on branch copies), which is where batch 2 had already put it: telling
+# the two rows apart is the thing no message or gate can substitute for.
 
 
 # --- tripl-0zpq.246, continued ------------------------------------------------
@@ -754,13 +739,24 @@ async def test_the_alerting_trail_is_ordered_by_name_not_by_a_uuid_tiebreak(
     # gives each entry a distinct timestamp in list order, so re-sorting the
     # trail by ``created_at`` recovers exactly the order ``_alerting_entries``
     # returned.
+    # One query per action rather than one page of the whole trail: ``GET
+    # /audit`` caps ``limit`` at 200 (``api/v1/audit.py``) and the demo trail has
+    # no fixed length, so a page would silently decide how many alerting rows
+    # this sees — and an ordering assertion over a PREFIX of the rows is the kind
+    # that goes green for the wrong reason. ``action`` is an equality filter in
+    # ``audit_service.list_entries``, so each call answers with that action's
+    # rows or none, and ``total`` — the count of the same filtered set — is
+    # asserted against what came back, so the four names below are the demo's
+    # whole alerting trail by construction.
     demo_slug = (await client.post("/api/v1/projects/demo")).json()["slug"]
-    listed = await client.get(f"/api/v1/audit?project_slug={demo_slug}&limit=400")
-    assert listed.status_code == 200, listed.text
-    rows = [
-        entry
-        for entry in listed.json()["items"]
-        if entry["action"] in {"alert_destination.create", "alert_rule.create"}
-    ]
-    rows.sort(key=lambda entry: entry["created_at"])
-    assert [entry["target_name"] for entry in rows] == by_name
+    seeded: list[dict[str, Any]] = []
+    for action in ("alert_destination.create", "alert_rule.create"):
+        listed = await client.get(
+            f"/api/v1/audit?project_slug={demo_slug}&action={action}&limit=200"
+        )
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert len(body["items"]) == body["total"], body["total"]
+        seeded += body["items"]
+    seeded.sort(key=lambda entry: entry["created_at"])
+    assert [entry["target_name"] for entry in seeded] == by_name

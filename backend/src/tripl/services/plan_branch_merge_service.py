@@ -2121,106 +2121,6 @@ async def _commit_merged_plan(
     return _MergeOutcome(post_payload=post_payload, released_blobs=released_blobs)
 
 
-def _ambiguous_keys(payload: dict[str, Any]) -> list[str]:
-    """Human-readable descriptions of the duplicate natural keys in a snapshot.
-
-    Events and relations are the only two plan entities with no uniqueness
-    constraint on the name everything matches them by: an event is keyed
-    (event type, name) and a relation by the two fields it links.
-    """
-    found: list[str] = []
-    seen_events: set[tuple[str, str]] = set()
-    for event in payload.get("events", []):
-        event_key = (str(event.get("event_type_name", "")), str(event.get("name", "")))
-        if event_key in seen_events:
-            found.append(f"two events named '{event_key[1]}' in '{event_key[0]}'")
-        seen_events.add(event_key)
-    seen_relations: set[tuple[str, str, str, str]] = set()
-    for relation in payload.get("relations", []):
-        relation_key = (
-            str(relation.get("source_event_type_name", "")),
-            str(relation.get("source_field_name", "")),
-            str(relation.get("target_event_type_name", "")),
-            str(relation.get("target_field_name", "")),
-        )
-        if relation_key in seen_relations:
-            found.append(
-                f"two relations linking '{relation_key[0]}.{relation_key[1]}' "
-                f"to '{relation_key[2]}.{relation_key[3]}'"
-            )
-        seen_relations.add(relation_key)
-    return found
-
-
-def _reject_ambiguous_keys(
-    base_payload: dict[str, Any],
-    main_payload: dict[str, Any],
-    branch_payload: dict[str, Any],
-) -> None:
-    """Refuse the merge while any side holds two rows under one natural key.
-
-    The same stance ``plan_branch_revert_service._one`` takes, and for the same
-    reason: everything downstream — the diff, the conflict detector, and
-    ``_merge_*`` below — keeps ONE row per key, so with two rows under it none
-    of them can say which row a change was made to. The merge's own arithmetic
-    is where that stopped being cosmetic: a main row is doomed only if its key
-    is absent from the branch, so main kept BOTH namesakes after a merge that
-    deleted one, and whichever branch copy won was copied onto whichever main
-    namesake won (tripl-0zpq.149).
-
-    All three sides are read. The base matters because every add/remove is
-    computed against it and each per-attribute comparison reads the one row that
-    survived the collapse, and main matters because it is what gets written; a
-    branch-only check would let the other two corrupt the result unseen.
-
-    Whole-merge refusal rather than a per-row skip, for the reason
-    ``_reject_removals_a_scan_names_events_by``'s docstring gives: a partial
-    merge silently diverges main from the branch that was just declared merged,
-    and every later three-way merge then compares against a base that never
-    describes that state.
-
-    The two live sides and the base get DIFFERENT messages because they have
-    different repairs. A rename on the branch or on main is one edit. The base
-    is a stored ``PlanRevision`` payload and no route edits one, so telling the
-    operator to rename a pair there asks for something they cannot do; what they
-    can do is clean main and take a fresh branch off it, which is also the
-    remedy the version guard in ``merge_branch`` offers for an unusable base.
-    The live sides are therefore checked FIRST: while main still holds the pair,
-    recreating the branch would only capture it again.
-    """
-    live_problems = [
-        f"{where}: {problem}"
-        for where, payload in (("the branch", branch_payload), ("main", main_payload))
-        for problem in _ambiguous_keys(payload)
-    ]
-    if live_problems:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Cannot merge this branch: "
-                + "; ".join(live_problems)
-                + ". The diff, the merge and a revert all match rows by that key, so a "
-                "change to one of them can land on the other. Rename or remove one of "
-                "each pair, then merge."
-            ),
-        )
-    base_problems = _ambiguous_keys(base_payload)
-    if base_problems:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Cannot merge this branch: the merge base — the snapshot of main "
-                "taken when this branch was created — holds "
-                + "; ".join(base_problems)
-                + ". Every add, removal and field change this merge makes is measured "
-                "against that snapshot, and with two rows under one key it cannot say "
-                "which row a change was made to. A stored snapshot cannot be edited, "
-                "so recreate this branch from current main, which is clean, and redo "
-                "its edits there."
-            ),
-        )
-
-
 async def merge_branch(
     session: AsyncSession,
     slug: str,
@@ -2254,7 +2154,6 @@ async def merge_branch(
         )
     main_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
     branch_payload = await build_plan_snapshot(session, project.id, branch_id=branch.id)
-    _reject_ambiguous_keys(base_payload, main_payload, branch_payload)
 
     all_conflicts = _detect_merge_conflicts(base_payload, main_payload, branch_payload)
     field_conflicts = _field_conflicts_event_type(base_payload, main_payload, branch_payload)

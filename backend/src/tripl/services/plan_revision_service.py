@@ -985,24 +985,26 @@ def _shared_key_warning(entity_type: str, name: str, parent: str | None) -> str:
     solved: pairing rows that share a key needs to know which base row each
     branch copy came from, which the snapshot does not record.
 
-    It now says the merge REFUSES, because it does:
-    ``plan_branch_merge_service._reject_ambiguous_keys`` answers 409 while any
-    side holds two rows under one key (tripl-0zpq.149). Until that landed the
-    sentence deliberately claimed nothing about the merge, and a test held it to
-    that — which is why the wording and that assertion had to move together.
+    It deliberately claims NOTHING about the merge refusing. A refusal was
+    written in this batch and then removed: the branch is how an analyst CLEANS
+    UP a pair of namesakes — delete both copies, author one row in their place —
+    and refusing that merge takes away the only door out of the state the message
+    complains about (test_event_comment_merge_batch2 holds exactly that
+    workflow). The merge's own half of tripl-0zpq.149 waits on tripl-0zpq.292,
+    which gives branch copies an origin id, because pairing rows that share a key
+    is the one thing no wording can substitute for.
     """
     if entity_type == "event":
         return (
-            f"More than one event is named '{name}' in '{parent}'. This diff and a "
-            "revert match rows by name, so a change to one of them can show on, or "
-            "land on, the other, and the merge refuses while both exist. Rename one "
-            "of them before changing either."
+            f"More than one event is named '{name}' in '{parent}'. This diff, the "
+            "merge and a revert all match rows by name, so a change to one of them "
+            "can show on, or land on, the other. Rename one of them before changing "
+            "either."
         )
     return (
         f"More than one relation links the same two fields ({name}). This diff and a "
         "revert match relations by those fields, so a change to one of them can show "
-        "on, or land on, the other, and the merge refuses while both exist. Remove "
-        "one of them before changing either."
+        "on, or land on, the other. Remove one of them before changing either."
     )
 
 

@@ -489,8 +489,8 @@ async def test_two_main_rows_under_one_key_give_the_branch_one_agreed_twin(
     """When main holds two rows under one key, ONE of them is the twin.
 
     Nothing stops main from holding two events with one name under one event
-    type — ``_ambiguous_keys`` exists because that state is reachable and only
-    the MERGE refuses it. While ``silent_since_days`` read ``max(last_seen_at)``
+    type, and nothing refuses that state: the plan diff warns and the merge goes
+    through. While ``silent_since_days`` read ``max(last_seen_at)``
     over the pair and ``order_by=volume`` read the lowest-id row's metrics, the
     filter and the sort could answer about two different main rows for the same
     branch row. Both now read the lowest-id twin, by the same subquery shape.

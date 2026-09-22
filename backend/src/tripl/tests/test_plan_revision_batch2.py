@@ -402,15 +402,14 @@ async def test_an_approval_stays_fresh_when_the_rows_come_back_in_another_order(
 # --- Namesakes (tripl-0zpq.149, cut back): said on the row, not solved --------
 
 _EVENT_WARNING = (
-    "More than one event is named 'purchase' in 'track'. This diff and a revert match "
-    "rows by name, so a change to one of them can show on, or land on, the other, and "
-    "the merge refuses while both exist. Rename one of them before changing either."
+    "More than one event is named 'purchase' in 'track'. This diff, the merge and a "
+    "revert all match rows by name, so a change to one of them can show on, or land on, "
+    "the other. Rename one of them before changing either."
 )
 _RELATION_WARNING = (
     "More than one relation links the same two fields (track.screen_id → screen.id). "
     "This diff and a revert match relations by those fields, so a change to one of them "
-    "can show on, or land on, the other, and the merge refuses while both exist. Remove "
-    "one of them before changing either."
+    "can show on, or land on, the other. Remove one of them before changing either."
 )
 
 _SHARED_KEY_KINDS = [
@@ -434,11 +433,16 @@ def test_an_entry_whose_key_more_than_one_row_holds_says_so(
     deleted namesake reads as an edit to the survivor, and an added one as an
     edit to the original. The entry says that, and how to get out of it.
 
-    It also says the merge refuses, because since tripl-0zpq.149 it does
-    (``plan_branch_merge_service._reject_ambiguous_keys``). This assertion used
-    to hold the sentence to claiming NOTHING about the merge; the wording and
-    the claim have to move together, so what it now pins is that the sentence
-    still tells the reader the one repair rather than only the refusal."""
+    It claims NOTHING about the merge refusing. A refusal was written in this
+    batch and then removed (``plan_branch_merge_service._reject_ambiguous_keys``
+    is gone): a branch is how an analyst CLEANS UP a pair of namesakes — delete
+    both copies, author one row in their place — and refusing that merge takes
+    away the only door out of the state this very sentence complains about
+    (``test_event_comment_merge_batch2`` holds that workflow). So the merge is
+    named here only as one more reader that matches by name, and the sentence
+    ends on the repair the operator can perform. The wording and the claim move
+    together, which is why the whole sentence is pinned above rather than a
+    substring of it."""
     original = row("original")
     if held_twice_on == "base":
         base, branch = [original, row("deleted")], [_copy(original)]
@@ -450,7 +454,9 @@ def test_an_entry_whose_key_more_than_one_row_holds_says_so(
     )
 
     assert [(e.kind, e.warnings) for e in entries] == [("changed", [warning])]
-    assert "the merge refuses" in warning
+    # No gate is promised: the merge matches rows by name like the diff and the
+    # revert do, it does not refuse while the pair exists.
+    assert "refuse" not in warning
     # Still prose a reviewer can act on, not a status code read aloud.
     assert "409" not in warning
     assert warning.rstrip().endswith("before changing either.")
