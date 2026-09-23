@@ -4457,6 +4457,7 @@ def _seed_alert_delivery(
     channel: str = "webhook",
     destination_enabled: bool = True,
     claimed_at: datetime | None = None,
+    payload_snapshot: dict[str, object] | None = None,
 ) -> uuid.UUID:
     """Create the minimal Project/ScanConfig/Destination/Rule graph plus one
     AlertDelivery, returning the delivery id. Used by the reaper tests.
@@ -4527,11 +4528,54 @@ def _seed_alert_delivery(
         matched_count=1,
         dispatch_attempts=dispatch_attempts,
         created_at=created_at,
+        payload_snapshot=payload_snapshot,
         **optional_fields,
     )
     session.add_all([project, data_source, scan_config, destination, rule, delivery])
     session.commit()
     return delivery.id
+
+
+def test_reaper_keeps_combinable_digest_members_on_the_digest_sender(tmp_path, monkeypatch) -> None:
+    from tripl.worker.tasks import maintenance
+    from tripl.worker.tasks.alert_digest_send import send_alert_digest
+    from tripl.worker.tasks.alerts import send_alert_delivery
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'digest-reaper.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    stale = datetime.now(UTC) - timedelta(minutes=maintenance.STRANDED_DELIVERY_MINUTES + 5)
+    with factory() as session:
+        slack_id = _seed_alert_delivery(
+            session,
+            status="pending",
+            created_at=stale,
+            updated_at=stale,
+            channel="slack",
+            payload_snapshot={"digest": True},
+        )
+        telegram_id = _seed_alert_delivery(
+            session,
+            status="pending",
+            created_at=stale,
+            updated_at=stale,
+            channel="telegram",
+            payload_snapshot={"digest": True},
+        )
+
+    monkeypatch.setattr(maintenance, "_get_sync_session", factory)
+    grouped: list[list[str]] = []
+    single: list[str] = []
+    monkeypatch.setattr(send_alert_digest, "delay", lambda ids: grouped.append(ids))
+    monkeypatch.setattr(
+        send_alert_delivery, "delay", lambda delivery_id: single.append(delivery_id)
+    )
+
+    result = maintenance.requeue_stranded_alert_deliveries.run()
+
+    assert result["requeued"] == 2
+    assert grouped == [[str(slack_id)]]
+    assert single == [str(telegram_id)]
 
 
 def test_requeue_stranded_alert_deliveries_redispatches_and_bounds_attempts(

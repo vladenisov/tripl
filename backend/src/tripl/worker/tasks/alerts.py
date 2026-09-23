@@ -36,7 +36,7 @@ from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
-from tripl.observability.metrics import alert_deliveries_total
+from tripl.observability.metrics import alert_deliveries_total, alert_delivery_missing_items_total
 from tripl.services import app_settings_service
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
@@ -169,6 +169,20 @@ def _read_delivered_part_count(payload_snapshot: object) -> int:
     if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
         return 0
     return raw
+
+
+def _telegram_too_long_error(
+    delivery: AlertDelivery, delivered_ids: set[uuid.UUID], parts_sent: int, cause: Exception
+) -> ValueError:
+    """Give both the primary and plain fallback loops the same useful failure."""
+    return ValueError(
+        "Telegram refused a message as too long. "
+        f"{len(delivered_ids)} of {len(delivery.items)} items had already been sent, "
+        f"{parts_sent} message(s) of them in this attempt. The refused message "
+        "carries a single item and cannot be split further, so the rule's "
+        "message template, that one item and any AI note exceed Telegram's "
+        "4096-character limit together. Shorten the rule's templates."
+    )
 
 
 def _record_delivered_items(
@@ -359,7 +373,7 @@ def _assert_egress_allowed(destination: AlertDestination, project: Project | Non
     ``alerts_digest._send_digest_to_destination`` calls it directly — but there
     it is a backstop, because both tasks already exclude demo projects in their
     SELECT (tripl-0zpq.33). The one destination send genuinely outside it is the
-    **Test** button, which refuses a demo in its own words at
+    **Test** button, which calls this predicate from
     ``services/_alerting_test_send.send_destination_test``.
 
     The send tasks run it BEFORE rendering, so a refusal costs no AI round-trip;
@@ -371,7 +385,7 @@ def _assert_egress_allowed(destination: AlertDestination, project: Project | Non
         and destination.type != AlertDestinationType.demo_sink
     ):
         raise ValueError(
-            "External alert delivery is disabled for demo projects: destination "
+            "Demo projects cannot send external alerts: destination "
             f"{destination.name!r} ({destination.type}) is not a local demo sink. "
             "Nothing was sent."
         )
@@ -475,6 +489,30 @@ def _assert_destination_still_enabled(destination: AlertDestination) -> None:
             )
         set_committed_value(destination, "enabled", still_enabled)
     _assert_destination_enabled(destination)
+
+
+def _assert_rule_active(rule: AlertRule, *, now: datetime | None = None) -> None:
+    """Refuse queued alerts after an operator disables or mutes their monitor."""
+    if not rule.enabled:
+        raise ValueError(f"Alert rule {rule.name!r} is disabled; nothing was sent.")
+    muted_until = rule.muted_until
+    if muted_until is not None and muted_until > (now or datetime.now(UTC)):
+        raise ValueError(f"Alert rule {rule.name!r} is muted; nothing was sent.")
+
+
+def _assert_rule_still_active(rule: AlertRule) -> None:
+    """Read the rule switches immediately before outbound delivery."""
+    session = object_session(rule)
+    if session is not None:
+        with session.no_autoflush:
+            state = session.execute(
+                select(AlertRule.enabled, AlertRule.muted_until).where(AlertRule.id == rule.id)
+            ).one_or_none()
+        if state is None:
+            raise ValueError(f"Alert rule {rule.name!r} no longer exists; nothing was sent.")
+        set_committed_value(rule, "enabled", state.enabled)
+        set_committed_value(rule, "muted_until", state.muted_until)
+    _assert_rule_active(rule)
 
 
 def _resolve_slack_webhook(destination: AlertDestination) -> str:
@@ -761,6 +799,15 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         # round-trip and a set of warehouse reads away; the re-read immediately
         # before the branch dispatch below is.
         _assert_destination_enabled(destination)
+        _assert_rule_active(rule)
+
+        if delivery.matched_count and not delivery.items:
+            logger.warning(
+                "Alert delivery %s has matched_count=%d but no items; sending existing payload",
+                delivery.id,
+                delivery.matched_count,
+            )
+            alert_delivery_missing_items_total.inc()
 
         # Built once and reused across re-renders (e.g. the MarkdownV2→plain
         # fallback) so the warehouse/DB queries behind sparkline + top-movers
@@ -909,6 +956,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         # body this delivery would have carried onto the `failed` row and the
         # Inbox can show the operator exactly what their toggle stopped.
         _assert_destination_still_enabled(destination)
+        _assert_rule_still_active(rule)
 
         if destination.type == AlertDestinationType.slack:
             _send_slack_message(
@@ -1009,8 +1057,10 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
                     ALERT_MESSAGE_FORMAT_TELEGRAM_HTML,
                 ) and _is_telegram_markdown_parse_error(exc):
-                    delivered_ids = {item.id for item in delivered_items}
-                    remaining = [item for item in send_items if item.id not in delivered_ids]
+                    this_attempt_delivered_ids = {item.id for item in delivered_items}
+                    remaining = [
+                        item for item in send_items if item.id not in this_attempt_delivered_ids
+                    ]
                     # Reuse the already-built sparkline/top-movers context and
                     # skip the session so the fallback only re-formats — no
                     # second round of warehouse/DB queries.
@@ -1045,46 +1095,55 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                             fallback_note,
                             fallback_format,
                         )
-                    for part_text, part_items in split_telegram_messages(
-                        delivery,
-                        destination=destination,
-                        rule=rule,
-                        scan_name=scan_config.name,
-                        project=project,
-                        message=fallback_text,
-                        message_format=fallback_format,
-                        items=remaining,
-                        summary_items=_digest_summary_items(delivery, remaining, digest=is_digest),
-                        session=None,
-                        item_context_cache=item_context_cache,
-                        metric_units_cache=metric_units_cache,
-                        ai_explanation=fallback_note,
-                        digest=is_digest,
-                        # Read from the running snapshot, so it includes the
-                        # parts THIS attempt landed before the parse error: the
-                        # messages that went out in MarkdownV2 are still in the
-                        # chat, and the plain-text remainder continues their
-                        # numbering instead of opening a second sequence.
-                        part_offset=_read_delivered_part_count(payload_snapshot),
-                        project_timezone=project.timezone if project else None,
-                    ):
-                        _send_telegram_message(
-                            bot_token,
-                            chat_id,
-                            part_text,
-                            message_format=fallback_format,
-                        )
-                        # The fallback is several messages too, and can fail
-                        # part-way through for the same reasons the first loop
-                        # can — so it records what landed the same way.
-                        delivered_items.extend(part_items)
-                        payload_snapshot = _record_delivered_items(
-                            session,
+                    try:
+                        fallback_parts = split_telegram_messages(
                             delivery,
-                            payload_snapshot=payload_snapshot,
-                            delivered_ids=already_delivered_ids,
-                            items=part_items,
+                            destination=destination,
+                            rule=rule,
+                            scan_name=scan_config.name,
+                            project=project,
+                            message=fallback_text,
+                            message_format=fallback_format,
+                            items=remaining,
+                            summary_items=_digest_summary_items(
+                                delivery, remaining, digest=is_digest
+                            ),
+                            session=None,
+                            item_context_cache=item_context_cache,
+                            metric_units_cache=metric_units_cache,
+                            ai_explanation=fallback_note,
+                            digest=is_digest,
+                            # Read from the running snapshot, so it includes the
+                            # parts THIS attempt landed before the parse error: the
+                            # messages that went out in MarkdownV2 are still in the
+                            # chat, and the plain-text remainder continues their
+                            # numbering instead of opening a second sequence.
+                            part_offset=_read_delivered_part_count(payload_snapshot),
+                            project_timezone=project.timezone if project else None,
                         )
+                        for part_text, part_items in fallback_parts:
+                            _send_telegram_message(
+                                bot_token,
+                                chat_id,
+                                part_text,
+                                message_format=fallback_format,
+                            )
+                            parts_sent += 1
+                            # A fallback can fail part-way through too.
+                            delivered_items.extend(part_items)
+                            payload_snapshot = _record_delivered_items(
+                                session,
+                                delivery,
+                                payload_snapshot=payload_snapshot,
+                                delivered_ids=already_delivered_ids,
+                                items=part_items,
+                            )
+                    except ValueError as fallback_exc:
+                        if _is_telegram_message_too_long_error(fallback_exc):
+                            raise _telegram_too_long_error(
+                                delivery, already_delivered_ids, parts_sent, fallback_exc
+                            ) from fallback_exc
+                        raise
                     # A fresh dict, not an in-place edit, for the same reason
                     # _record_delivered_items returns one: this snapshot may
                     # already be committed, and SQLAlchemy would compare the
@@ -1119,15 +1178,8 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     # "32 of 24 items had already been sent" (tripl-0zpq.40).
                     # ``parts_sent`` below is this attempt's alone on purpose,
                     # which is why the sentence names the attempt only there.
-                    raise ValueError(
-                        "Telegram refused a message as too long. "
-                        f"{len(already_delivered_ids)} of "
-                        f"{len(delivery.items)} items had already been sent, "
-                        f"{parts_sent} message(s) of them in this attempt. The "
-                        "refused message carries a single item and cannot be split "
-                        "further, so the rule's message template, that one item and "
-                        "any AI note exceed Telegram's 4096-character limit "
-                        "together. Shorten the rule's templates."
+                    raise _telegram_too_long_error(
+                        delivery, already_delivered_ids, parts_sent, exc
                     ) from exc
                 else:
                     raise

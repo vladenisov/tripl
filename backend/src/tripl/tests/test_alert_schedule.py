@@ -61,8 +61,14 @@ def test_a_fire_time_that_dst_skips_over_folds_forward_instead_of_vanishing() ->
     an hour late is the strictly better failure, so the nonexistent local time
     resolves forward to 03:30 CEST == 01:30Z.
     """
+    # At 00:45Z the invalid fold=1 mapping (00:30Z) has passed, while the
+    # forward mapping (01:30Z) has not. A scheduler admitting the early instant
+    # would return it here; probing only noon cannot distinguish the two.
     assert previous_fire_at(
-        "30 2 * * *", tz_name="Europe/Berlin", now=utc("2026-03-29 12:00:00")
+        "30 2 * * *", tz_name="Europe/Berlin", now=utc("2026-03-29 00:45:00")
+    ) == utc("2026-03-28 01:30:00")
+    assert previous_fire_at(
+        "30 2 * * *", tz_name="Europe/Berlin", now=utc("2026-03-29 01:45:00")
     ) == utc("2026-03-29 01:30:00")
 
 

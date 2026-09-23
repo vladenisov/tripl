@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { alertingApi } from '@/api/alerting'
+import { alertingApi, MAX_ALERT_RULE_NAME_LENGTH } from '@/api/alerting'
 import { INDEFINITE_MUTE, muteChoiceName } from '@/lib/mutePresets'
 import type { AlertDestination, AlertRule, MonitorsSummaryResponse } from '@/types'
 
@@ -446,6 +446,17 @@ describe('MonitorsSection guided-setup handoff (tripl-oxkt.15)', () => {
 })
 
 describe('MonitorsSection rule editor', () => {
+  it('limits rule names to the API and database width', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add rule/ }))
+    expect(screen.getByLabelText('Name')).toHaveAttribute(
+      'maxLength',
+      String(MAX_ALERT_RULE_NAME_LENGTH),
+    )
+  })
+
   it('asks which destination a new rule routes to, now that no card answers it', async () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
     renderSection({

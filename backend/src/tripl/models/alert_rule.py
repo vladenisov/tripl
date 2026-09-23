@@ -4,10 +4,10 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.base import Base, TimestampMixin, UtcDateTime, UUIDMixin
 from tripl.models.domain_enums import AlertMessageFormat
 from tripl.models.enum_types import db_enum
 
@@ -166,7 +166,7 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
     # mute does not leave the monitor stuck "firing" on a stale scope. The
     # API-side predicate is ``_alerting_monitors.is_rule_muted``.
     muted_until: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
+        UtcDateTime(),
         nullable=True,
     )
 

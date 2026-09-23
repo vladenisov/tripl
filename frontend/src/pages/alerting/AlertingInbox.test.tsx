@@ -153,6 +153,22 @@ function renderInbox(
  */
 const TARGET = 'onboarding/reviews_carousel'
 
+describe('AlertingInbox item and scope counts', () => {
+  it('explains when repeated items share the visible scope names', () => {
+    renderInbox({
+      inbox: makeInbox({
+        items: [makeGroup({
+          item_count: 8,
+          scope_names: ['one', 'two', 'three', 'four'],
+        })],
+      }),
+    })
+
+    expect(screen.getByText('8 items')).toBeInTheDocument()
+    expect(screen.getByText('· 4 distinct scope names shown')).toBeInTheDocument()
+  })
+})
+
 /**
  * Every mute sentence in this file is written out as a literal, and stays that
  * way after tripl-yapg.

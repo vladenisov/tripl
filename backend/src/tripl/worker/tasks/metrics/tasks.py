@@ -52,7 +52,6 @@ from tripl.worker.celery_app import celery_app
 from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import ScanError, user_facing_error
-from tripl.worker.tasks.alerts import send_alert_delivery
 from tripl.worker.tasks.metrics._helpers import (
     _build_adapter,
     _ceil_to_interval,
@@ -1283,6 +1282,10 @@ def collect_metrics(
                     realtime.EVENT_SIGNALS_UPDATED,
                     {"scan_config_id": scan_config_id},
                 )
+        # Import after task modules have registered: alerts imports celery_app,
+        # whose startup imports this metrics module.
+        from tripl.worker.tasks.alerts import send_alert_delivery
+
         for delivery_id in delivery_ids:
             send_alert_delivery.delay(str(delivery_id))
 

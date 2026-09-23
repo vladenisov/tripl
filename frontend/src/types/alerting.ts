@@ -146,6 +146,8 @@ export interface AlertDestinationTestResponse {
 
 export interface SimulatedRuleFiring {
   anomaly_id: string
+  // Distinguishes otherwise identical firings of one scope in different scans.
+  scan_config_id: string | null
   // Was a five-member subset while the backend has been simulating metric,
   // release_regression and variable_value_drift firings too — the narrowed union
   // silently mis-typed the scopes it omitted. Mirror the enum instead.

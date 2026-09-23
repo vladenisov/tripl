@@ -231,7 +231,7 @@ The reply is `{ "ok": …, "error": …, "sent_at": … }`, and:
 - **A demo project refuses it**, with `ok: false` and an explanation: a demo is
   zero-egress. The exception is the local demo sink, which answers `ok: true`,
   because rendering and recording locally is exactly what a real delivery through
-  it does.
+  it does. Test sends use the same demo egress guard as queued deliveries.
 
 Whoever reads that channel did not ask for the message, so it says on its own
 line that nothing is wrong and that someone pressed Test. Use rule replay to
@@ -412,6 +412,13 @@ sunset date the plan gave them. A demo project's destinations receive neither,
 because a demo project is zero-egress — the worker leaves it out for the same
 reason the API refuses it a real destination.
 
+The weekly digest counts metric anomalies by their **observation bucket** in
+the reporting week, the same window definition used by rule replay. A backfill
+written this week for an older bucket does not raise this week's count. This
+changes the former digest behavior, which counted metric anomalies by when
+their rows were written (`created_at`); totals around backfills may therefore
+differ from earlier weekly digests.
+
 The sunset notice is the digest's "deprecated events still receiving data"
 count expanded into named events, each with its sunset date and the day it was
 last seen. Both read the **main** plan branch only, so the count and the list
@@ -427,6 +434,9 @@ the destination if it should receive neither alerts nor either of them.
 ## Rules — what fires an alert
 
 A rule decides which signals reach its destination. The controls:
+
+Rule names can be up to 255 characters long; the editor enforces the same limit
+as the API and database.
 
 **Scan — which scan's signals to act on.** Defaults to **All scans**: the rule
 reacts to every scan in the project. Pick a single scan to narrow it — see
@@ -698,6 +708,10 @@ Each comes back as a `*_used` / `*_saved` pair (`min_percent_delta_used`,
 `min_percent_delta_saved`, and so on), so the result can show *tried* beside
 *stored* without a second request. Omit an override and `used` equals `saved`.
 
+Each firing also reports its scan. The preview table shows that scan's name,
+or **Project-wide** when the anomaly has no scan, so similarly named scopes
+from different scans remain distinguishable.
+
 **Every scope a rule can fire on is replayed**, the opt-in ones included: volume
 anomalies, catalog metrics, schema drift, distribution drift, **variable-value
 drift** and **release regressions**. If you had switched those last two on and a
@@ -866,12 +880,21 @@ never retried automatically either: fix the cause and press **Retry** in the
 UI, which also resets the attempt budget, so a delivery you retry by hand
 starts with a fresh set of attempts.
 
+If a digest worker is interrupted, the reaper requeues stranded Slack and email
+members through the digest sender, grouped by their original flush. Other
+channels retain their normal per-delivery sender.
+
 **The toggle is read when the message goes out, not when the alert was
 decided.** A delivery created while a destination was enabled and sent after you
 switched it off is marked **failed**, naming the destination, rather than
 delivered — nothing is routed to a channel you have turned off, and nothing is
 quietly dropped either. Switch the destination back on and press **Retry** if you
 still want it.
+
+The rule switch and mute are also checked just before a queued message leaves.
+Disabling or muting a rule stops its pending delivery and records the reason as
+**failed**. A manual **Retry** on a disabled destination returns 409; enable
+the destination first.
 
 A Telegram delivery carrying more than **8 matched items** is split into several
 deliveries, because Telegram rejects a message over 4,096 characters outright.
@@ -973,6 +996,11 @@ about it holds. From the Inbox you can **acknowledge**, **resolve**, **mute**,
 it, but you no longer have to change an incident's status to write one down:
 saying why something was a false positive used to mean first undoing the false
 positive.
+
+The row counts matched **items**, including repeat firings of the same scope.
+Its scope names are distinct and show at most eight names; the adjacent
+“distinct scope names shown” count describes that displayed list. For example,
+eight items beside four names means some scopes fired more than once.
 
 ### Silencing an incident: acknowledge, mute, resolve, false positive {#silencing-an-incident}
 

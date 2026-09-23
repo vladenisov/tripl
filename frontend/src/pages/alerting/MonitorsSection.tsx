@@ -450,6 +450,7 @@ export function MonitorsSection({
           slug={slug}
           destinationId={replayingRule.destination_id}
           rule={replayingRule}
+          scans={scans}
         />
       )}
     </>

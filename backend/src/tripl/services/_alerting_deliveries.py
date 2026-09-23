@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload
 
 from tripl.alert_templates import has_baseline, percent_delta_or_none
 from tripl.models.alert_correlation_state import AlertCorrelationState
@@ -99,6 +100,11 @@ InboxGroupRow = tuple[AlertDeliveryItem, AlertDelivery, AlertDestination, AlertR
 # a second query; do not reach through one of these entities.
 _INBOX_GROUP_SELECT = (
     select(AlertDeliveryItem, AlertDelivery, AlertDestination, AlertRule, ScanConfig)
+    .options(
+        noload(AlertDelivery.items),
+        noload(AlertDestination.rules),
+        noload(AlertRule.filters),
+    )
     .join(AlertDelivery, AlertDelivery.id == AlertDeliveryItem.delivery_id)
     .join(AlertDestination, AlertDestination.id == AlertDelivery.destination_id)
     .join(AlertRule, AlertRule.id == AlertDelivery.rule_id)
@@ -327,6 +333,12 @@ async def retry_delivery(
             status_code=409,
             detail="Only failed deliveries can be retried",
         )
+    destination = await session.get(AlertDestination, delivery.destination_id)
+    if destination is None or not destination.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Alert destination is disabled; enable it before retrying",
+        )
 
     delivery.status = AlertDeliveryStatus.pending.value
     delivery.error_message = None
@@ -386,10 +398,9 @@ async def retry_delivery(
 def _as_utc(value: datetime) -> datetime:
     """Attach UTC to a naive timestamp so it can be compared with ``now``.
 
-    ``TimestampMixin`` and the inbox state columns use a plain
-    ``DateTime(timezone=True)``, and SQLite hands those back NAIVE, so comparing
-    a stored ``muted_until`` against an aware ``datetime.now(UTC)`` raises
-    TypeError instead of answering the question. Everything is stored as UTC.
+    ``TimestampMixin`` and the inbox correlation-state columns still use plain
+    ``DateTime(timezone=True)``. SQLite hands those back naive, unlike the
+    separate ``AlertRule.muted_until`` column which uses ``UtcDateTime``.
     """
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
