@@ -31,8 +31,8 @@ from tripl.schemas.search import (
 from tripl.schemas.text_filters import strip_nul_bytes
 from tripl.services import app_settings_service
 from tripl.services._search_documents import _clean
-from tripl.services.demo.search_embeddings import demo_query_embedding
-from tripl.services.embedding_service import embed_query
+from tripl.services.demo.search_embeddings import demo_query_embedding, load_demo_embedding_fixture
+from tripl.services.embedding_service import embed_query, embedding_provenance, sanitize_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ _SEMANTIC_SCORE_WEIGHT = 2.5
 _IDENTITY_BOOST_MIN = 4.0
 
 # What a result that did NOT match by identity may be reported at, at most
-# (tripl-d5u8).
+# (tripl-d5u8), regardless of whether lexical score or semantic cosine wins.
 #
 # WHY CONFIDENCE COULD NOT BE READ OFF THE SCORE ALONE
 # ----------------------------------------------------
@@ -174,6 +174,26 @@ def sanitize_query(query: str) -> str:
 
 def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", value.casefold()).strip()
+
+
+def _normalized_spans(value: str) -> tuple[str, list[tuple[int, int]]]:
+    """Normalize text while retaining each character's raw source span."""
+    normalized: list[str] = []
+    spans: list[tuple[int, int]] = []
+    whitespace_start: int | None = None
+    for index, char in enumerate(value):
+        if char.isspace():
+            if normalized and whitespace_start is None:
+                whitespace_start = index
+            continue
+        if whitespace_start is not None:
+            normalized.append(" ")
+            spans.append((whitespace_start, index))
+            whitespace_start = None
+        for folded in char.casefold():
+            normalized.append(folded)
+            spans.append((index, index + 1))
+    return "".join(normalized), spans
 
 
 def _tokens(query: str) -> list[str]:
@@ -239,15 +259,17 @@ async def postgres_search(
     # embedding" — the same state an empty provider response produces — so it is
     # logged and the fallback below still runs. A lexical failure is the request
     # failing, and it must surface at the speed it happened: the embed leg is a
-    # blocking HTTP POST with a 30s socket timeout, so waiting for it to settle
-    # before re-raising (what ``gather(..., return_exceptions=True)`` does) held
-    # an immediate SQL error hostage to a hung provider for half a minute.
+    # blocking HTTP POST with its own short query timeout, so waiting for it to
+    # settle before re-raising (what ``gather(..., return_exceptions=True)`` does)
+    # would still hold an immediate SQL error hostage to a stalled provider.
     # Cancelling the embed task cannot strand SQL on this request's AsyncSession,
     # because the thread it wraps touches neither the session nor the lexical
     # rows; the await after the cancel exists to retrieve an exception from a
     # task that had already finished, which asyncio would otherwise log at GC.
     if is_semantic_eligible and ai_config.search_embeddings_enabled:
-        embed_leg = asyncio.ensure_future(asyncio.to_thread(embed_query, query, config=ai_config))
+        embed_leg = asyncio.ensure_future(
+            asyncio.to_thread(embed_query, query, config=ai_config, timeout=3)
+        )
         try:
             lexical_results = await lexical
         except BaseException:
@@ -261,16 +283,26 @@ async def postgres_search(
             logger.warning("Search embedding leg failed; continuing without it", exc_info=True)
     else:
         lexical_results = await lexical
+    fixture_vector = False
     if is_semantic_eligible and not embedding and project_is_demo:
         embedding = demo_query_embedding(query)
+        fixture_vector = embedding is not None
 
     if embedding:
+        embedding = sanitize_embedding(embedding)
+
+    if embedding:
+        # Canned demo queries must only compare with the fixture's own vectors;
+        # live queries must only compare with rows from the current provider.
+        fixture = load_demo_embedding_fixture() if fixture_vector else None
+        model = fixture.model if fixture is not None else embedding_provenance(ai_config)
         semantic_used = True
         semantic_results = await postgres_semantic_search(
             session,
             project_id=project_id,
             branch_id=branch_id,
             embedding=embedding,
+            embedding_model=model,
             entity_types=entity_types,
             include_archived=include_archived,
             limit=limit,
@@ -788,6 +820,7 @@ async def postgres_semantic_search(
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
     embedding: list[float],
+    embedding_model: str,
     entity_types: list[SearchEntityType] | None,
     include_archived: bool,
     limit: int,
@@ -835,6 +868,7 @@ async def postgres_semantic_search(
           AND (:include_archived OR d.archived IS FALSE)
           AND d.embedding IS NOT NULL
           AND d.embedding_status = 'ready'
+          AND d.embedding_model = :embedding_model
           AND (:filter_entity_types IS FALSE OR d.entity_type IN :entity_types)
           -- A nearest neighbour is not automatically a match (tripl-txcz).
           AND (1.0 - (d.embedding <=> CAST(:embedding AS vector))) >= :min_cosine
@@ -848,6 +882,7 @@ async def postgres_semantic_search(
         "project_id": project_id,
         "branch_id": branch_id,
         "embedding": vector,
+        "embedding_model": embedding_model,
         "min_cosine": _SEMANTIC_MIN_COSINE,
         "include_archived": include_archived,
         "filter_entity_types": filter_entity_types,
@@ -1239,23 +1274,25 @@ def finalize_results(items: list[SearchResult], limit: int) -> list[SearchResult
       1.0, which is what the lexical ladder (and the SQLite fallback's tiers)
       express;
     * for a result the semantic leg produced, its cosine similarity, which is
-      already a [0, 1] certainty and needs no rescaling at all.
+      already on a [0, 1] scale and needs no rescaling.
 
     ``max`` rather than a sum or a blend: the two are alternative pieces of
     evidence for the same claim ("this is what you meant"), so a document that
     one leg is sure about is a confident answer even when the other leg is
-    indifferent to it, and neither can drag the other down. The RANKING still
-    sees only the merged score — this function decides what number is painted on
-    a result, never where it sits.
+    indifferent to it. Non-identity hits are capped after combining both legs:
+    a high cosine alone does not prove the hit is the entity the user named.
+    The RANKING still sees only the merged score — this function decides what
+    number is painted on a result, never where it sits.
     """
     ranked = sorted(items, key=lambda item: (-item.score, item.title))
     trimmed = ranked[:limit]
     for item in trimmed:
         score_confidence = min(1.0, max(0.0, item.score) / _FULL_CONFIDENCE_SCORE)
-        if not item.identity_match:
-            score_confidence = min(score_confidence, _PARTIAL_CONFIDENCE_CEILING)
         semantic_confidence = item.semantic_cosine or 0.0
-        item.confidence = round(max(score_confidence, semantic_confidence), 4)
+        confidence = max(score_confidence, semantic_confidence)
+        if not item.identity_match:
+            confidence = min(confidence, _PARTIAL_CONFIDENCE_CEILING)
+        item.confidence = round(confidence, 4)
     return trimmed
 
 
@@ -1426,11 +1463,11 @@ def snippet(body: str, query: str, *, length: int = 180) -> str:
     if not text_body:
         return ""
     query_norm = _normalize(query)
-    body_norm = _normalize(text_body)
+    body_norm, spans = _normalized_spans(text_body)
     idx = body_norm.find(query_norm) if query_norm else -1
     if idx < 0:
         return text_body[:length]
-    start = max(0, idx - 60)
+    start = max(0, spans[idx][0] - 60)
     end = min(len(text_body), start + length)
     prefix = "..." if start > 0 else ""
     suffix = "..." if end < len(text_body) else ""
@@ -1441,9 +1478,11 @@ def highlights(title: str, body: str, query: str) -> list[str]:
     result: list[str] = []
     for token in _tokens(query)[:4]:
         for source in (title, body):
-            source_norm = _normalize(source)
+            source_norm, spans = _normalized_spans(source)
             idx = source_norm.find(token)
             if idx >= 0:
-                result.append(source[max(0, idx - 20) : idx + len(token) + 40].strip())
+                start = max(0, spans[idx][0] - 20)
+                end = spans[idx + len(token) - 1][1] + 40
+                result.append(source[start:end].strip())
                 break
     return result

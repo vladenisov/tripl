@@ -342,6 +342,30 @@ async def test_apply_helper_skips_stamping_when_live_model_differs(fixture_path:
     assert applied == 0
 
 
+async def test_apply_helper_skips_stamping_when_live_model_matches_fixture(
+    fixture_path: Path,
+) -> None:
+    """Live embeddings under the fixture's own model still must not stamp.
+
+    Live rows and live queries match on the embedding provenance hash, which
+    the fixture cannot carry. A stamped row would never match a live query,
+    and the stale-search sweep would pick its branch on every run.
+    """
+    _write_synthetic_fixture(fixture_path, query_items={"purchase funnel": [0.25] * _DIMS})
+    ai_config = replace(
+        env_ai_config(),
+        search_embeddings_enabled=True,
+        search_embedding_model=load_demo_embedding_fixture().model,
+    )
+    applied = await _apply_demo_search_embeddings(
+        cast(AsyncSession, _FakePostgresDemoSession()),
+        project_id=uuid.uuid4(),
+        branch_id=uuid.uuid4(),
+        ai_config=ai_config,
+    )
+    assert applied == 0
+
+
 def test_embedding_state_reusable_keeps_fixture_stamped_rows_when_disabled() -> None:
     fixture_model = "text-embedding-3-small"
     # Keyless demo: a stamped row ('ready' under the fixture's model) survives.
@@ -468,7 +492,7 @@ async def test_postgres_search_serves_lexical_results_when_the_embed_leg_raises(
         lexical_completed.append(True)
         return [hit]
 
-    def failing_embed(query: str, *, config: AiConfig) -> list[float]:
+    def failing_embed(query: str, *, config: AiConfig, timeout: float) -> list[float]:
         embed_failed.set()
         raise ValueError("the provider answered 200 with a body that is not JSON")
 

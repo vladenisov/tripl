@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import logging
+import math
 import urllib.request
 from typing import Any, cast
 
@@ -14,6 +16,32 @@ logger = logging.getLogger(__name__)
 #: Default only. The endpoint actually used is resolved per call from
 #: ``settings.search_embedding_base_url`` — see :func:`embeddings_url`.
 OPENAI_EMBEDDINGS_BASE_URL = "https://api.openai.com/v1"
+
+
+def embedding_provenance(config: AiConfig) -> str:
+    """Stable identity of the embedding space stored in a 128-char DB field."""
+    source = "\n".join(
+        (
+            settings.search_embedding_base_url.rstrip("/"),
+            config.search_embedding_provider,
+            config.search_embedding_model,
+            str(settings.search_embedding_dimensions),
+        )
+    )
+    return "sha256:" + hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def sanitize_embedding(values: list[float]) -> list[float]:
+    """Accept only finite vectors that fit the fixed database column."""
+    try:
+        sanitized = [float(value) for value in values]
+    except TypeError, ValueError:
+        return []
+    if len(sanitized) != settings.search_embedding_dimensions:
+        return []
+    if any(not math.isfinite(value) for value in sanitized):
+        return []
+    return sanitized
 
 
 def embeddings_url() -> str:
@@ -37,12 +65,14 @@ def embeddings_url() -> str:
     return settings.search_embedding_base_url.rstrip("/") + "/embeddings"
 
 
-def embed_query(text: str, *, config: AiConfig | None = None) -> list[float]:
-    embeddings = embed_texts([text], config=config)
+def embed_query(text: str, *, config: AiConfig | None = None, timeout: float = 30) -> list[float]:
+    embeddings = embed_texts([text], config=config, timeout=timeout)
     return embeddings[0] if embeddings else []
 
 
-def embed_texts(texts: list[str], *, config: AiConfig | None = None) -> list[list[float]]:
+def embed_texts(
+    texts: list[str], *, config: AiConfig | None = None, timeout: float = 30
+) -> list[list[float]]:
     cfg = config if config is not None else env_ai_config()
     if not cfg.search_embeddings_enabled:
         return []
@@ -61,8 +91,7 @@ def embed_texts(texts: list[str], *, config: AiConfig | None = None) -> list[lis
         "model": cfg.search_embedding_model,
         "input": [text[:16_000] for text in texts],
     }
-    # Dimensions stay env-only: the pgvector column is sized at migration
-    # time, so a runtime override would silently corrupt the index.
+    # The column is vector(1536); Settings rejects any other width at startup.
     if settings.search_embedding_dimensions > 0:
         payload["dimensions"] = settings.search_embedding_dimensions
 
@@ -81,7 +110,7 @@ def embed_texts(texts: list[str], *, config: AiConfig | None = None) -> list[lis
     # mid-body raises ``IncompleteRead`` out of ``read()``, after the 200 has
     # already been accepted, so nothing downstream would catch it.
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             body = response.read()
     except OSError, http.client.HTTPException:
         logger.exception("Search embedding request failed")

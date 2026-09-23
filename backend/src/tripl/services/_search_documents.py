@@ -127,6 +127,10 @@ def _spaced_identifiers(values: Sequence[object | None]) -> str:
 # remains as a backstop.
 EMBED_TEXT_MAX_CHARS = 6000
 
+# SearchDocument.title and .subtitle are VARCHAR(500) in PostgreSQL. Keep
+# generated labels within that limit before hashing or embedding them.
+SEARCH_LABEL_MAX_CHARS = 500
+
 
 def embed_text_for(*, title: str, subtitle: str, keywords: str, body: str) -> str:
     """Build the text that gets embedded for one search document.
@@ -153,6 +157,10 @@ class BuiltDocument:
     route_path: str
     description: str = ""
     archived: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "title", self.title[:SEARCH_LABEL_MAX_CHARS])
+        object.__setattr__(self, "subtitle", self.subtitle[:SEARCH_LABEL_MAX_CHARS])
 
     @property
     def content_hash(self) -> str:
@@ -199,7 +207,8 @@ class BuiltDocument:
 #: 2 — scan configurations and alert rules became searchable (tripl-dfct). Every
 #:     branch gains documents it did not have, which no content_hash comparison
 #:     could have discovered, so this is exactly the case the stamp exists for.
-DOCUMENT_BUILDER_VERSION = 2
+#: 3 — generated titles and subtitles are capped to their storage column width.
+DOCUMENT_BUILDER_VERSION = 3
 
 
 # Every caller reindexes inside its OWN transaction, right after mutating the

@@ -284,6 +284,16 @@ class Settings(BaseSettings):
             raise ValueError(msg)
         return normalized
 
+    @field_validator("search_embedding_dimensions")
+    @classmethod
+    def _fixed_search_embedding_dimensions(cls, value: int) -> int:
+        if value != 1536:
+            raise ValueError(
+                "SEARCH_EMBEDDING_DIMENSIONS must be 1536: "
+                "search_documents.embedding is vector(1536)"
+            )
+        return value
+
     @field_validator("smtp_security")
     @classmethod
     def _normalize_smtp_security(cls, value: str) -> str:
