@@ -545,7 +545,9 @@ session — so `reserved_catalog_columns` can be reused verbatim on it.
 Metric and anomaly bucket timestamps are UTC-aware in application code,
 including SQLite-backed tests. The six event/catalog metric, breakdown, and
 anomaly bucket model columns use the same UTC conversion contract as production
-PostgreSQL; this model change does not require a database migration.
+PostgreSQL; this model change does not require a database migration. API series
+and anomaly responses serialize these bucket instants as RFC 3339 timestamps
+with an explicit UTC `Z` suffix, for example `2026-09-24T08:00:00Z`.
 
 ### Catalog metric flow
 

@@ -241,7 +241,9 @@ def test_collect_sql_metric_records_a_null_value_bucket_as_absent(
             .all()
         )
         # The 11:00 bucket is missing entirely — not stored as 0.0.
-        assert {(row.bucket, row.value) for row in rows} == {(datetime(2026, 1, 1, 10), 5.0)}
+        assert {(row.bucket, row.value) for row in rows} == {
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 5.0)
+        }
         definition = session.get(MetricDefinition, uuid.UUID(def_id))
         assert definition is not None
         assert definition.last_collection_status == metric_collect.COLLECTION_STATUS_SUCCESS
@@ -290,7 +292,7 @@ def test_collect_sql_metric_null_value_clears_a_previously_stored_bucket(
                 )
             ).scalars()
         )
-        assert buckets == {datetime(2026, 1, 1, 10)}
+        assert buckets == {datetime(2026, 1, 1, 10, tzinfo=UTC)}
 
 
 # ── the API surfaces ─────────────────────────────────────────────────────────

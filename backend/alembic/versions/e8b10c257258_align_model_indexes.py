@@ -51,8 +51,15 @@ def upgrade() -> None:
     op.execute(
         "ALTER INDEX ix_plan_branch_reviewer_branch RENAME TO ix_plan_branch_reviewers_branch_id"
     )
-    for name, table, _columns in _REDUNDANT_INDEXES:
-        op.drop_index(name, table_name=table)
+    op.drop_index("ix_metric_anomaly_scope_bucket", table_name="metric_anomalies")
+    op.drop_index("ix_coverage_metric_config_bucket", table_name="coverage_metrics")
+    op.drop_index(
+        "ix_metric_breakdown_anomaly_scope_bucket", table_name="metric_breakdown_anomalies"
+    )
+    op.drop_index("ix_release_regression_scan_scope", table_name="release_regressions")
+    op.drop_index("ix_alert_pending_item_destination", table_name="alert_pending_items")
+    op.drop_index("ix_event_photo_comment_event", table_name="event_photo_comments")
+    op.drop_index("ix_variable_values_variable", table_name="variable_values")
 
 
 def downgrade() -> None:

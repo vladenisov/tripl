@@ -104,7 +104,7 @@ import inspect
 import re
 import uuid
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -153,8 +153,8 @@ GIVEN = "https://given.example"
 STALE = "https://stale.example"
 SLUG = "windy-ios"
 
-# Hour-aligned and tz-naive, matching the sync sqlite fixtures elsewhere.
-_BUCKET = datetime(2026, 9, 14, 9, 0)
+# Hour-aligned UTC bucket matching persisted values.
+_BUCKET = datetime(2026, 9, 14, 9, 0, tzinfo=UTC)
 
 
 class _ConfigReads:
@@ -514,7 +514,7 @@ _LONG_EVENT_NAME = "Checkout: " + "a very long descriptive segment / " * 12
 # field name overflows a column neither of them could overflow alone.
 _LONG_EVENT_TYPE_NAME = "Screen " + "x" * 243
 
-_NOW = datetime(2026, 9, 14, 9, 30)
+_NOW = datetime(2026, 9, 14, 9, 30, tzinfo=UTC)
 
 
 def _seed_long_named_event(session: Session, *, project_id: uuid.UUID) -> tuple[EventType, Event]:
@@ -1367,11 +1367,9 @@ def fk_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
         engine.dispose()
 
 
-def _naive_now() -> datetime:
-    """A tz-naive "now", matching what these sqlite fixtures store elsewhere."""
-    from datetime import UTC
-
-    return datetime.now(UTC).replace(microsecond=0, tzinfo=None)
+def _utc_now() -> datetime:
+    """Current UTC time for persisted alert state fixtures."""
+    return datetime.now(UTC).replace(microsecond=0)
 
 
 def _metric_states(session: Session) -> list[Any]:
@@ -1528,7 +1526,7 @@ def test_creating_a_scan_config_cannot_move_the_metric_cooldown_anchor(
 
         # The send path stamps this on a successful delivery; do it by hand so
         # the cooldown below is live rather than NULL ("never told them").
-        notified_at = _naive_now()
+        notified_at = _utc_now()
         state.last_notified_at = notified_at
         session.commit()
 
@@ -1580,7 +1578,7 @@ def test_deleting_a_scan_config_no_longer_destroys_the_shared_metric_state(
             len(metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)) == 1
         )
         state = _metric_states(session)[0]
-        notified_at = _naive_now()
+        notified_at = _utc_now()
         state.last_notified_at = notified_at
         session.commit()
 
@@ -1840,7 +1838,7 @@ def test_the_send_stamp_finds_the_project_global_state_and_only_that_one(
         session.add_all([shared, straggler])
         session.commit()
 
-        sent_at = _naive_now()
+        sent_at = _utc_now()
         delivery = AlertDelivery(
             id=uuid.uuid4(),
             project_id=config.project_id,
@@ -1931,7 +1929,7 @@ def test_the_send_stamp_stamps_duplicates_instead_of_raising_after_the_send(
         session.add_all([first, second])
         session.commit()
 
-        sent_at = _naive_now()
+        sent_at = _utc_now()
         delivery = AlertDelivery(
             id=uuid.uuid4(),
             project_id=config.project_id,
@@ -2007,7 +2005,7 @@ def test_dispatch_retires_a_metric_state_an_old_worker_anchored_on_a_config(
     with fk_session_factory() as session:
         config, _destination, rule = _seed(session)
         scope_ref = str(uuid.uuid4())
-        opened_at = _naive_now()
+        opened_at = _utc_now()
 
         def _state(scan_config_id: uuid.UUID | None, scope_type: str) -> Any:
             return AlertRuleState(
@@ -2047,7 +2045,7 @@ def test_dispatch_retires_a_metric_state_an_old_worker_anchored_on_a_config(
             "dispatch has to retire it — and it must retire nothing else"
         )
 
-        rollup = summarize_monitor_states(states, now=_naive_now())
+        rollup = summarize_monitor_states(states, now=_utc_now())
         assert rollup.active_scope_count == 0
         assert rollup.status == "healthy", (
             "one unreachable state left open pins this monitor to 'warning' for "
@@ -2128,7 +2126,7 @@ def test_the_migration_folds_metric_states_onto_one_project_global_row(
         session.delete(config)  # leave exactly the three constructed configs
         session.commit()
 
-        now = _naive_now()
+        now = _utc_now()
         scope_ref = str(uuid.uuid4())
         delivery = AlertDelivery(
             id=uuid.uuid4(),
@@ -2676,8 +2674,8 @@ def test_the_rekey_migration_computes_exactly_the_handle_dispatch_computes() -> 
 
 # 03:00 drops, 11:00 spikes: the filed scenario's two collections, inside one
 # daily window.
-_FLIP_DROP_BUCKET = datetime(2026, 9, 14, 3, 0)
-_FLIP_SPIKE_BUCKET = datetime(2026, 9, 14, 11, 0)
+_FLIP_DROP_BUCKET = datetime(2026, 9, 14, 3, 0, tzinfo=UTC)
+_FLIP_SPIKE_BUCKET = datetime(2026, 9, 14, 11, 0, tzinfo=UTC)
 
 
 def _buffer_scope(

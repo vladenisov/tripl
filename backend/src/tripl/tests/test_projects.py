@@ -380,7 +380,7 @@ async def test_project_summary_counts(client: AsyncClient):
         "scope_ref": uuid.UUID(event_type_id).hex,
         "scope_name": "Page View",
         "state": "latest_scan",
-        "bucket": _METRIC_BUCKET.replace(tzinfo=None).isoformat(),
+        "bucket": _METRIC_BUCKET.isoformat().replace("+00:00", "Z"),
         "actual_count": 42,
         "expected_count": 21.0,
         "z_score": 7.0,

@@ -49,15 +49,9 @@ from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.worker.tasks.metrics import detect as metrics_detect
 from tripl.worker.tasks.metrics.coverage import covered_buckets_from_scan_jobs
 
-# Hourly, tz-naive buckets, matching the sync fixtures' naive bucket columns
-# (``MetricValue.bucket`` / ``EventMetric.bucket`` are plain
-# ``DateTime(timezone=True)``, which sqlite hands back without tzinfo). Anchored
-# to a recent wall-clock hour so seeded buckets stay inside the freshness
-# horizon, exactly as ``test_metric_anomaly_scope._BASE`` does.
+# Hourly UTC buckets, anchored inside the freshness horizon.
 _HOUR = timedelta(hours=1)
-_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(
-    hours=12
-)
+_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=12)
 _SPIKE_HOUR = 9
 _EVAL_FROM = _BASE + _HOUR * 8
 _EVAL_TO = _BASE + _HOUR * 10

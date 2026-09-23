@@ -37,14 +37,13 @@ from tripl.models.project import Project
 from tripl.worker.tasks.metrics import metric_collect
 from tripl.worker.tasks.metrics import schedule as metrics_schedule
 
-# Naive bucket constants match what the fake adapter "returns" from the warehouse
-# and what SQLite reads back (it drops tzinfo on round-trip). The collection
-# WINDOW, by contrast, is UTC-aware in production (``_resolve_value_window`` floors
-# ``datetime.now(UTC)``), and ``_coerce_bucket`` makes every stored bucket aware, so
-# the window-clip comparison runs aware-vs-aware — mirror that here.
+# Naive bucket constants match what the fake adapter "returns" from the warehouse.
+# The collection window and buckets read back from the ORM are UTC-aware.
 B10 = datetime(2026, 1, 1, 10)
 B11 = datetime(2026, 1, 1, 11)
 B12 = datetime(2026, 1, 1, 12)
+B10_UTC = B10.replace(tzinfo=UTC)
+B11_UTC = B11.replace(tzinfo=UTC)
 WINDOW_FROM = datetime(2026, 1, 1, 10, tzinfo=UTC)
 WINDOW_TO = datetime(2026, 1, 1, 12, tzinfo=UTC)
 WINDOW_TO_SHORT = datetime(2026, 1, 1, 11, tzinfo=UTC)
@@ -305,8 +304,8 @@ def test_two_single_metrics_share_one_scan(
         "breakdown_values": 0,
     }
     with sync_session_factory() as session:
-        assert _values_for(session, sum_id) == {(B10, 12.5), (B11, 7.0)}
-        assert _values_for(session, count_id) == {(B10, 3.0), (B11, 4.0)}
+        assert _values_for(session, sum_id) == {(B10_UTC, 12.5), (B11_UTC, 7.0)}
+        assert _values_for(session, count_id) == {(B10_UTC, 3.0), (B11_UTC, 4.0)}
 
 
 def test_successful_empty_batch_advances_every_metric_watermark(
@@ -473,8 +472,8 @@ def test_different_filters_share_one_scan(
     filters = {spec.filter_sql for spec in adapter.seen_specs[0]}
     assert filters == {"(amount > 0)", "(amount < 0)"}
     with sync_session_factory() as session:
-        assert _values_for(session, pos_id) == {(B10, 5.0)}
-        assert _values_for(session, neg_id) == {(B10, 2.0)}
+        assert _values_for(session, pos_id) == {(B10_UTC, 5.0)}
+        assert _values_for(session, neg_id) == {(B10_UTC, 2.0)}
 
 
 # (c) same-table ratio ─────────────────────────────────────────────────────────
@@ -528,7 +527,7 @@ def test_same_table_ratio(
     # Both operands live in one fact table -> one shared scan.
     assert adapter.multi_calls == 1
     with sync_session_factory() as session:
-        assert _values_for(session, def_id) == {(B10, 5.0), (B11, 4.0)}
+        assert _values_for(session, def_id) == {(B10_UTC, 5.0), (B11_UTC, 4.0)}
 
 
 def test_same_table_ratio_writes_breakdown_values(
@@ -597,7 +596,7 @@ def test_same_table_ratio_writes_breakdown_values(
         "breakdown_values": 2,
     }
     with sync_session_factory() as session:
-        assert _values_for(session, def_id) == {(B10, 5.0)}
+        assert _values_for(session, def_id) == {(B10_UTC, 5.0)}
         rows = (
             session.execute(
                 select(MetricValueBreakdown).where(
@@ -672,7 +671,7 @@ def test_cross_table_ratio_divide_by_zero_is_gap(
     # Two fact tables -> two scans (one per table), still one per table not per operand.
     assert adapter.multi_calls == 2
     with sync_session_factory() as session:
-        assert _values_for(session, def_id) == {(B10, 5.0)}
+        assert _values_for(session, def_id) == {(B10_UTC, 5.0)}
 
 
 # (e) breakdown metric (one breakdown query) ────────────────────────────────────
@@ -714,7 +713,7 @@ def test_breakdown_metric_one_breakdown_scan(
     assert adapter.breakdown_calls == 1
     assert result["breakdown_values"] == 2
     with sync_session_factory() as session:
-        assert _values_for(session, def_id) == {(B10, 12.0)}
+        assert _values_for(session, def_id) == {(B10_UTC, 12.0)}
         rows = (
             session.execute(
                 select(MetricValueBreakdown).where(
@@ -771,7 +770,7 @@ def test_one_metric_error_isolated(
     # The bad metric never registered a spec, so the good metric's scan still ran once.
     assert adapter.multi_calls == 1
     with sync_session_factory() as session:
-        assert _values_for(session, good_id) == {(B10, 9.0)}
+        assert _values_for(session, good_id) == {(B10_UTC, 9.0)}
         good_def = session.get(MetricDefinition, good_id)
         bad_def = session.get(MetricDefinition, bad_id)
         assert good_def is not None and good_def.last_collection_status == "success"
@@ -881,7 +880,7 @@ def test_multiple_named_filters_anded(
 
     assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
     with sync_session_factory() as session:
-        assert _values_for(session, def_id) == {(B10, 3.0)}
+        assert _values_for(session, def_id) == {(B10_UTC, 3.0)}
 
 
 def test_free_text_filter_sql(
@@ -911,7 +910,7 @@ def test_free_text_filter_sql(
 
     assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
     with sync_session_factory() as session:
-        assert _values_for(session, def_id) == {(B10, 7.0)}
+        assert _values_for(session, def_id) == {(B10_UTC, 7.0)}
 
 
 def test_named_filters_and_filter_sql_together(
@@ -946,7 +945,7 @@ def test_named_filters_and_filter_sql_together(
 
     assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
     with sync_session_factory() as session:
-        assert _values_for(session, def_id) == {(B10, 2.0)}
+        assert _values_for(session, def_id) == {(B10_UTC, 2.0)}
 
 
 def test_structured_conditions_share_batched_filter_identity(
@@ -993,7 +992,7 @@ def test_structured_conditions_share_batched_filter_identity(
 
     assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
     with sync_session_factory() as session:
-        assert _values_for(session, def_id) == {(B10, 5.0)}
+        assert _values_for(session, def_id) == {(B10_UTC, 5.0)}
 
 
 def test_legacy_single_row_filter_still_works(
@@ -1029,7 +1028,7 @@ def test_legacy_single_row_filter_still_works(
 
     assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
     with sync_session_factory() as session:
-        assert _values_for(session, def_id) == {(B10, 9.0)}
+        assert _values_for(session, def_id) == {(B10_UTC, 9.0)}
 
 
 # ── force: manual "collect now" includes non-active fact metrics ───────────────
@@ -1103,7 +1102,7 @@ def test_force_includes_non_active_fact_metric(
     assert result["collected"] == 1
     assert result["values"] == 2
     with sync_session_factory() as session:
-        assert _values_for(session, metric_id) == {(B10, 3.0), (B11, 4.0)}
+        assert _values_for(session, metric_id) == {(B10_UTC, 3.0), (B11_UTC, 4.0)}
 
 
 # (g) a manual "collect now" sweeps in siblings — their backlog must survive it ─
@@ -1224,7 +1223,7 @@ def test_sibling_failure_is_reported_without_discarding_the_clicked_metric_rows(
     assert result["collected"] == 1
     with sync_session_factory() as session:
         # The clicked metric's own scan succeeded, so its rows stay committed ...
-        assert _values_for(session, clicked_id) == {(B10, 12.5), (B11, 7.0)}
+        assert _values_for(session, clicked_id) == {(B10_UTC, 12.5), (B11_UTC, 7.0)}
         clicked_definition = session.get(MetricDefinition, clicked_id)
         assert clicked_definition is not None
         # ... while it still reports the failure the user needs to see.

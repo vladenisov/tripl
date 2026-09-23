@@ -85,10 +85,8 @@ from tripl.worker.tasks.alerts_messages import _digest_groups, _digest_headline
 from tripl.worker.tasks.metrics import detect as metrics_detect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
 
-# Recent, hour-aligned and tz-naive, matching the sync fixtures' bucket columns.
-_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(
-    hours=12
-)
+# Recent, hour-aligned UTC buckets matching persisted values.
+_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=12)
 _EVAL_FROM = _BASE + timedelta(hours=8)
 _EVAL_TO = _BASE + timedelta(hours=10)
 _SPIKE_HOUR = 9

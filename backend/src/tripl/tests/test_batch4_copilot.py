@@ -111,7 +111,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +121,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, sessionmaker
 
+from tripl.core.bucketing import to_utc
 from tripl.models import Base
 from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery
@@ -276,9 +277,13 @@ def test_a_racing_sibling_config_no_longer_kills_the_whole_collection(
         state = states[0]
         assert state.id == competitor_id, "converged on the row already there"
         assert state.scan_config_id is None
-        assert state.opened_at == peer_opened_at, "the shared cooldown clock was overwritten"
+        assert to_utc(state.opened_at) == peer_opened_at, (
+            "the shared cooldown clock was overwritten"
+        )
         assert state.last_notified_at is None
-        assert state.last_anomaly_bucket == peer_bucket, "a later bucket must not be rewound"
+        assert to_utc(state.last_anomaly_bucket) == peer_bucket, (
+            "a later bucket must not be rewound"
+        )
 
         # The run's transaction is still usable, which is the half the
         # IntegrityError destroyed: everything else this collection did survives.
@@ -350,7 +355,7 @@ def test_an_uncontended_metric_scope_still_opens_its_state_and_alerts(
         assert state.scan_config_id is None, "a metric scope belongs to the project, not a scan"
         assert state.is_active is True
         assert state.opened_at is not None
-        assert state.last_anomaly_bucket == bucket
+        assert to_utc(state.last_anomaly_bucket) == bucket
         assert state.last_notified_at is None, "only a successful send stamps the clock"
 
 
@@ -377,8 +382,8 @@ def test_the_claim_converges_on_both_partitions_and_keeps_them_apart(
     four-column constraint, or a config arm that reached the partial index, would
     make one of these claims adopt the other's row.
     """
-    now = datetime(2026, 9, 18, 12, 0, 0)
-    bucket = datetime(2026, 9, 18, 11, 0, 0)
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=UTC)
+    bucket = datetime(2026, 9, 18, 11, 0, 0, tzinfo=UTC)
     with sync_session_factory() as session:
         config, rule, scope_ref, _bucket = _seed_metric_alerting(session)
 
@@ -410,7 +415,7 @@ def test_the_claim_converges_on_both_partitions_and_keeps_them_apart(
             assert created_again is False, "the second claim must converge, not create"
             assert second is not None and second.id == first.id
             assert second.opened_at == first.opened_at
-            assert second.last_anomaly_bucket == first.last_anomaly_bucket
+            assert to_utc(second.last_anomaly_bucket) == to_utc(first.last_anomaly_bucket)
 
         # Same rule, same scope_ref, different partitions: two rows, no adoption.
         rows = {state.scan_config_id: state for state in _states(session)}
@@ -451,7 +456,7 @@ def test_the_claim_names_the_partial_index_on_postgresql() -> None:
     session.execute = _capture  # type: ignore[method-assign]
 
     rule_id, config_id = uuid.uuid4(), uuid.uuid4()
-    now = datetime(2026, 9, 18, 12, 0, 0)
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=UTC)
     for partition, scope_type in ((None, _METRIC_SCOPE), (config_id, "event")):
         metrics_dispatch._claim_rule_state(
             session,
@@ -615,7 +620,7 @@ def test_a_racing_sibling_config_no_longer_kills_the_incident_row(
         assert state.correlation_group_id == handle
         assert state.id != peer_id, "this run's INSERT landed; the sibling's converged onto it"
         assert state.status == "open"
-        assert state.last_seen_at == bucket
+        assert to_utc(state.last_seen_at) == bucket
 
 
 def test_converging_leaves_the_operators_inbox_decision_alone(
@@ -679,7 +684,7 @@ def test_converging_leaves_the_operators_inbox_decision_alone(
         assert state.note == "these screens are switched off"
         assert state.false_positive_count == 3
         assert state.acted_at == acted_at
-        assert state.last_seen_at == bucket + timedelta(hours=6), "and never rewound"
+        assert to_utc(state.last_seen_at) == bucket + timedelta(hours=6), "and never rewound"
 
 
 def test_an_incident_an_operator_opened_gets_its_first_last_seen(
@@ -723,7 +728,9 @@ def test_an_incident_an_operator_opened_gets_its_first_last_seen(
         session.commit()
 
         state = _correlation_states(session)[0]
-        assert state.last_seen_at == bucket, "a never-seen incident takes the bucket it just saw"
+        assert to_utc(state.last_seen_at) == bucket, (
+            "a never-seen incident takes the bucket it just saw"
+        )
         assert state.status == "acknowledged", "and keeps the decision that created it"
 
 
@@ -774,7 +781,7 @@ def test_the_touch_converges_against_the_project_group_constraint_on_postgresql(
         session,
         project_id=uuid.uuid4(),
         correlation_group_id=uuid.uuid4(),
-        seen_at=datetime(2026, 9, 18, 12, 0, 0),
+        seen_at=datetime(2026, 9, 18, 12, 0, 0, tzinfo=UTC),
     )
 
     claim, _reread = captured

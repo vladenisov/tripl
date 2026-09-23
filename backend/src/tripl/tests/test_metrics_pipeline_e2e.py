@@ -64,12 +64,8 @@ from tripl.worker.tasks.metrics import metric_collect
 # clear spike at hour 9; the evaluation window covers the spike bucket. Anchored
 # to a recent wall-clock hour so the dispatched spike's bucket stays inside the
 # alert-candidate freshness horizon (classify keeps a signal open only while its
-# bucket is newer than now - max(24h, 3*interval)). Kept tz-naive to match the
-# sync fixtures' naive bucket columns; only the anchor moved, so every
-# relative-to-_BASE assertion still holds.
-_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(
-    hours=12
-)
+# bucket is newer than now - max(24h, 3*interval)).
+_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=12)
 _SPIKE_HOUR = 9
 _EVAL_FROM = _BASE + timedelta(hours=8)
 _EVAL_TO = _BASE + timedelta(hours=10)

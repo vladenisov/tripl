@@ -352,6 +352,9 @@ and effective spread, detector kind, z-score, and direction. The detector
 scan reflects the current state of the data rather than accumulating stale
 flags.
 
+Metric series and anomaly API responses return bucket timestamps in UTC RFC
+3339 form with an explicit `Z` suffix, for example `2026-09-24T08:00:00Z`.
+
 These records become the **signals** you see on the monitoring views, and they
 are the candidates the alerting layer evaluates. Schema, distribution, and
 variable-value drift plus release regression feed the same machinery as

@@ -331,7 +331,10 @@ def test_the_sunset_alert_is_scheduled_and_the_name_it_is_scheduled_under_is_reg
     assert _TASK_NAME in celery_app.tasks, (
         "beat names a task the worker will not have registered at run time"
     )
-    assert entry["schedule"] == 24 * 60 * 60.0
+    schedule = entry["schedule"]
+    assert schedule.hour == {6}
+    assert schedule.minute == {0}
+    assert schedule.day_of_week == set(range(7))
 
 
 def test_the_sunset_alert_is_not_scheduled_at_the_weekly_digests_own_cadence() -> None:
@@ -345,7 +348,8 @@ def test_the_sunset_alert_is_not_scheduled_at_the_weekly_digests_own_cadence() -
     """
     sunset = celery_app.conf.beat_schedule[_BEAT_ENTRY]["schedule"]
     weekly = celery_app.conf.beat_schedule["send-weekly-plan-digest"]["schedule"]
-    assert sunset < weekly
+    assert sunset.day_of_week == set(range(7))
+    assert weekly.day_of_week == {1}
 
 
 # ---------------------------------------------------------------------------
