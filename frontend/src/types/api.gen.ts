@@ -8145,7 +8145,7 @@ export interface components {
             /** Log Json */
             log_json?: boolean | null;
             /** Log Level */
-            log_level?: string | null;
+            log_level?: ("CRITICAL" | "ERROR" | "WARNING" | "INFO" | "DEBUG") | null;
             /** Otel Exporter Otlp Endpoint */
             otel_exporter_otlp_endpoint?: string | null;
             /** Otel Service Name */

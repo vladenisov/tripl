@@ -16,7 +16,7 @@ from tripl.schemas.app_settings import (
     ServiceSettingsUpdate,
     SettingsTestResponse,
 )
-from tripl.services import _email_test_send, app_settings_service, llm_service
+from tripl.services import _email_test_send, app_settings_service, audit_service, llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +54,21 @@ async def get_service_settings(
 @router.patch("", response_model=ServiceSettingsResponse)
 async def patch_service_settings(
     session: SessionDep,
-    _current_user: OwnerUserDep,
+    current_user: OwnerUserDep,
     payload: ServiceSettingsUpdate,
 ) -> ServiceSettingsResponse:
+    changes = _flatten_update(payload)
     settings_payload = await app_settings_service.service_settings_payload(
         session,
-        await app_settings_service.update_service_overrides(session, _flatten_update(payload)),
+        await app_settings_service.update_service_overrides(session, changes),
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="settings.update",
+        target_type="settings",
+        target_id=None,
+        payload={"changed_fields": sorted(changes)},
     )
     return ServiceSettingsResponse.model_validate(settings_payload)
 
@@ -88,7 +97,7 @@ async def get_ai_settings(
 @router.put("/ai", response_model=AiSettingsResponse)
 async def put_ai_settings(
     session: SessionDep,
-    _current_user: OwnerUserDep,
+    current_user: OwnerUserDep,
     payload: AiSettingsUpdate,
 ) -> AiSettingsResponse:
     """Upsert AI overrides (partial: only fields present in the request body are
@@ -97,6 +106,14 @@ async def put_ai_settings(
     changes = payload.model_dump(exclude_unset=True)
     settings_payload = await app_settings_service.service_settings_payload(
         session, await app_settings_service.update_ai_overrides(session, changes)
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="settings.ai_update",
+        target_type="settings",
+        target_id=None,
+        payload={"changed_fields": sorted(changes)},
     )
     return _ai_response(settings_payload)
 

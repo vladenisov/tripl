@@ -57,6 +57,10 @@ endpoint sends a heartbeat every 15 seconds, so an edge idle timeout comfortably
 above that value should not close healthy streams. While disconnected, the
 frontend falls back to polling and reconnects with exponential backoff.
 
+If Redis is unavailable, the stream announces `backend: degraded` and remains
+open with heartbeats while the browser polls. Reconnect replay subscribes before
+reading the buffered events so updates published during setup are not lost.
+
 ---
 
 ## No metrics appear after a scan

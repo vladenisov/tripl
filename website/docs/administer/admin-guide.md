@@ -180,7 +180,8 @@ have them log out. Sessions also expire automatically after the configured TTL
 
 API keys are long-lived bearer tokens for non-browser clients — LLM agents and
 CLI scripts. They are managed **per user** at **Settings → API keys** (backed by
-`/api/v1/me/api-keys`). A user only ever sees and revokes **their own** keys;
+`/api/v1/me/api-keys`). Creation and revocation require an interactive session;
+a Bearer API key cannot manage keys. A user only ever sees and revokes **their own** keys;
 there is no cross-user key administration, even for owners.
 
 ### Creating a key
@@ -301,8 +302,10 @@ Sections apply at one of two times, and each section says which above its fields
 
 **Use-time (no restart).** The **Runtime** (query limits, app base URL),
 **Email**, and **AI** sections are resolved override → env value on each call, so
-edits apply immediately. The worker falls back to env-only config if it can't
-read the settings table, so background jobs never fail on a settings read.
+edits apply immediately. If the worker cannot read the settings table, it falls
+back to environment values and increments `tripl_settings_read_failures_total`
+with `section=ai`, `email`, or `runtime`. Alert on this metric so a degraded
+delivery does not go unnoticed.
 
 **Restart-time (next deploy).** The **Security & access** (except
 **Registration**, which applies immediately), **Storage**, and

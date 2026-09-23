@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request, status
 
 from tripl.api.deps import CurrentUserDep, SessionDep, WriteUserDep, require_editor
 from tripl.schemas.api_key import (
@@ -31,10 +31,12 @@ async def list_api_keys(session: SessionDep, current_user: CurrentUserDep) -> li
 
 @router.post("", response_model=ApiKeyCreateResponse, status_code=201)
 async def create_api_key(
+    request: Request,
     session: SessionDep,
     current_user: WriteUserDep,
     data: ApiKeyCreate,
 ) -> ApiKeyCreateResponse:
+    _require_session_auth(request)
     if data.scope == "write":
         require_editor(current_user)
 
@@ -79,15 +81,27 @@ async def create_api_key(
 
 @router.delete("/{key_id}", status_code=204)
 async def revoke_api_key(
-    session: SessionDep, current_user: WriteUserDep, key_id: uuid.UUID
+    request: Request, session: SessionDep, current_user: WriteUserDep, key_id: uuid.UUID
 ) -> None:
-    await api_key_service.revoke_key(session, current_user.id, key_id)
+    _require_session_auth(request)
+    revoked = await api_key_service.revoke_key(session, current_user.id, key_id)
+    if revoked is None:
+        return
+    row, project_slug = revoked
     await audit_service.record(
         session,
         user=current_user,
         action="api_key.revoke",
         target_type="api_key",
         target_id=key_id,
-        target_name="",
-        project_slug=None,
+        target_name=row.name,
+        project_slug=project_slug,
     )
+
+
+def _require_session_auth(request: Request) -> None:
+    if getattr(request.state, "api_key_scope", None) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key management requires a user session",
+        )

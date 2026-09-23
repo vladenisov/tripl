@@ -281,7 +281,7 @@ destinations.
 | `SMTP_PASSWORD` | `""` | SMTP auth password. |
 | `SMTP_SECURITY` | derived | `starttls`, `implicit_tls` or `none`. See below. |
 | `SMTP_USE_TLS` | `true` | **Deprecated.** Only supplies `SMTP_SECURITY`'s default when that is unset. |
-| `SMTP_FROM_ADDRESS` | `""` | Default `From:` address; may carry a display name (`Tripl Alerts <no-reply@example.com>`). Required — password reset mail is dropped without one. Set here it is never checked until a send fails; the same value set in Settings → Email is checked as you save it. |
+| `SMTP_FROM_ADDRESS` | `""` | Default `From:` address; may carry a display name (`Tripl Alerts <no-reply@example.com>`). Required for password-reset mail. Invalid values fail startup or the Settings save, before an alert is sent. |
 
 `SMTP_SECURITY` names the transport, and the transport has to match the port:
 
@@ -312,6 +312,7 @@ who asked for the link, so this is the only place the failure surfaces.
 | `PHOTO_STORAGE_BACKEND` | `local` | `local` (filesystem, served via authenticated API endpoint) or `gcs` (Google Cloud Storage). |
 | `PHOTO_LOCAL_DIR` | `./var/photos` | Directory for the `local` backend. In the shipped image this resolves to `/app/var/photos`, which is writable by the image's `app` user and mounted as the `photos` volume by `compose.yaml`. Point it elsewhere only at another mounted, writable volume, or uploads are lost when the container is recreated. |
 | `PHOTO_MAX_SIZE_MB` | `10` | Max upload size in MB. A request to the photo routes whose body is larger than this plus 1 MiB of multipart framing is refused with `413` without being read past that limit. |
+| `MAX_REQUEST_BODY_MB` | `2` | App-wide JSON/body limit in MiB. The photo upload route uses `PHOTO_MAX_SIZE_MB` plus multipart framing instead. Oversized requests return `413` before parsing or authentication. |
 | `PHOTO_ALLOWED_MIME` | `image/jpeg,image/png,image/gif,image/webp` | Allowed MIME types (comma-separated). |
 | `GCS_PHOTO_BUCKET` | `""` | GCS bucket for the `gcs` backend. |
 | `GCS_PHOTO_CREDENTIALS_PATH` | `""` | Service-account JSON path. Empty falls back to Application Default Credentials. Credentials that cannot sign URLs (Application Default Credentials on Compute Engine or workload identity, `gcloud` user credentials) make photos fall back to the authenticated `/file` endpoint instead of signed URLs. |

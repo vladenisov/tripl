@@ -50,6 +50,7 @@ from tripl.models.chart_annotation import ChartAnnotation
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.services import alerting_service
@@ -295,7 +296,13 @@ async def test_the_spike_marker_names_the_bucket_the_spike_was_injected_into() -
             select(ScanConfig.id).where(ScanConfig.project_id == project.id)
         )
         spike_event_id = await session.scalar(
-            select(Event.id).where(Event.project_id == project.id, Event.name == SPIKE_EVENT_NAME)
+            select(Event.id)
+            .join(PlanBranch, Event.branch_id == PlanBranch.id)
+            .where(
+                Event.project_id == project.id,
+                Event.name == SPIKE_EVENT_NAME,
+                PlanBranch.kind == BranchKind.main,
+            )
         )
         assert scan_config_id is not None
         assert spike_event_id is not None, f"fixture guard: the demo seeds no {SPIKE_EVENT_NAME}"

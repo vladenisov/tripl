@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.api_key import ApiKey
 from tripl.models.domain_enums import ApiKeyScope
+from tripl.models.project import Project
 
 ALLOWED_SCOPES = tuple(scope.value for scope in ApiKeyScope)
 _PREFIX = "tk_"
@@ -97,15 +98,23 @@ async def create_key(
     return row, raw
 
 
-async def revoke_key(session: AsyncSession, user_id: uuid.UUID, key_id: uuid.UUID) -> None:
+async def revoke_key(
+    session: AsyncSession, user_id: uuid.UUID, key_id: uuid.UUID
+) -> tuple[ApiKey, str | None] | None:
     """Mark a key revoked. Idempotent: revoking an already-revoked row is a no-op."""
     row = await session.get(ApiKey, key_id)
     if row is None or row.user_id != user_id:
         raise HTTPException(status_code=404, detail="API key not found")
     if row.revoked_at is not None:
-        return
+        return None
+    project_slug = (
+        await session.scalar(select(Project.slug).where(Project.id == row.project_id))
+        if row.project_id is not None
+        else None
+    )
     row.revoked_at = datetime.now(UTC)
     await session.commit()
+    return row, project_slug
 
 
 async def verify_and_touch(session: AsyncSession, raw_token: str) -> ApiKey | None:

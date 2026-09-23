@@ -66,16 +66,13 @@ async def stream_project_events(
     # was already fenced to its own project by the router-level dependency).
     await get_project_id_by_slug(session, slug)
 
-    available = realtime.backend_available()
     last_event_id = _parse_last_event_id(request)
-    replay = await realtime.replay_buffered_events(slug, last_event_id)
-    messages = realtime.redis_message_iterator(slug) if available else None
-    hello = {"project_slug": slug, "backend": "redis" if available else "degraded"}
-
-    generator = realtime.sse_response_stream(
-        hello_payload=hello,
-        replay=replay,
-        messages=messages,
+    # The response may live for hours; release the transaction and pooled
+    # connection used by authentication and project lookup before streaming.
+    await session.close()
+    generator = realtime.project_response_stream(
+        slug=slug,
+        last_event_id=last_event_id,
         is_disconnected=request.is_disconnected,
         max_messages=max_events,
     )

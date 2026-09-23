@@ -66,6 +66,12 @@ alert_deliveries_total = Counter(
     labelnames=("status",),
     registry=REGISTRY,
 )
+settings_read_failures_total = Counter(
+    "tripl_settings_read_failures_total",
+    "Settings-table read failures that forced environment-only configuration.",
+    labelnames=("section",),
+    registry=REGISTRY,
+)
 alert_delivery_missing_items_total = Counter(
     "tripl_alert_delivery_missing_items_total",
     "Alert deliveries sent with a positive matched count but no surviving items.",

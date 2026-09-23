@@ -1569,6 +1569,11 @@ filterable by action, user, project, and time range. Each entry also records the
 **plan branch** the write was scoped to, so two contradictory edits to the same
 object on two branches are told apart. The rule is exact:
 
+Instance settings changes record the names of changed fields without storing
+their secret values. Scan runs and metrics replays record the resulting job ID;
+branch comments and conflict resolutions, photo and annotation changes, and
+project anomaly settings changes record the acting user as well.
+
 - an entry written through `?branch=<working branch id>` carries that branch's id
   and name, and the row shows a **branch chip**;
 - an entry with **no chip** was written on **main**, *or* is an action with no
