@@ -6,8 +6,8 @@ DB override -> env. Secret overrides are encrypted at rest and never returned
 to clients; clients only see ``*_configured`` booleans.
 
 Both async (API) and sync (Celery worker) accessors are provided. Sync accessors
-raise when the settings table cannot be read, so a delivery is retried rather
-than silently sent with stale environment-only configuration.
+fall back to environment values on DB errors and count each degradation in
+``tripl_settings_read_failures_total`` so operators can detect it.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from tripl import crypto
 from tripl.config import SMTP_SECURITY_NONE, SMTP_SECURITY_STARTTLS, Settings, settings
 from tripl.models.app_setting import AI_SETTINGS_KEY, SERVICE_SETTINGS_KEY, AppSetting
+from tripl.observability.metrics import settings_read_failures_total
 from tripl.services import migration_status_service
 from tripl.services.ai_defaults import (
     DEFAULT_ALERT_EXPLANATION_SYSTEM_PROMPT,
@@ -397,30 +398,47 @@ async def get_service_settings(session: AsyncSession) -> dict[str, Any]:
 
 
 def get_ai_config_sync(session: Session | None = None) -> AiConfig:
-    if session is not None:
-        return build_ai_config(get_service_overrides_sync(session))
-    from tripl.worker.db import SyncSessionLocal
+    try:
+        if session is not None:
+            return build_ai_config(get_service_overrides_sync(session))
+        from tripl.worker.db import SyncSessionLocal
 
-    with SyncSessionLocal() as own_session:
-        return build_ai_config(get_service_overrides_sync(own_session))
+        with SyncSessionLocal() as own_session:
+            return build_ai_config(get_service_overrides_sync(own_session))
+    except Exception:  # noqa: BLE001
+        logger.warning("Falling back to env AI config: app_settings read failed", exc_info=True)
+        settings_read_failures_total.labels(section="ai").inc()
+        return env_ai_config()
 
 
 def get_email_config_sync(session: Session | None = None) -> EmailConfig:
-    if session is not None:
-        return build_email_config(get_service_overrides_sync(session))
-    from tripl.worker.db import SyncSessionLocal
+    try:
+        if session is not None:
+            return build_email_config(get_service_overrides_sync(session))
+        from tripl.worker.db import SyncSessionLocal
 
-    with SyncSessionLocal() as own_session:
-        return build_email_config(get_service_overrides_sync(own_session))
+        with SyncSessionLocal() as own_session:
+            return build_email_config(get_service_overrides_sync(own_session))
+    except Exception:  # noqa: BLE001
+        logger.warning("Falling back to env email config: app_settings read failed", exc_info=True)
+        settings_read_failures_total.labels(section="email").inc()
+        return env_email_config()
 
 
 def get_runtime_config_sync(session: Session | None = None) -> RuntimeConfig:
-    if session is not None:
-        return build_runtime_config(get_service_overrides_sync(session))
-    from tripl.worker.db import SyncSessionLocal
+    try:
+        if session is not None:
+            return build_runtime_config(get_service_overrides_sync(session))
+        from tripl.worker.db import SyncSessionLocal
 
-    with SyncSessionLocal() as own_session:
-        return build_runtime_config(get_service_overrides_sync(own_session))
+        with SyncSessionLocal() as own_session:
+            return build_runtime_config(get_service_overrides_sync(own_session))
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Falling back to env runtime config: app_settings read failed", exc_info=True
+        )
+        settings_read_failures_total.labels(section="runtime").inc()
+        return env_runtime_config()
 
 
 # Fields excluded from the startup apply below because they are resolved live

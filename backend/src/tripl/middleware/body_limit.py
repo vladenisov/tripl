@@ -13,10 +13,6 @@ _PHOTO_UPLOAD = re.compile(r"^/api/v1/projects/[^/]+/events/[^/]+/photos/?$")
 _MIB = 1024 * 1024
 
 
-class _BodyTooLarge(Exception):
-    pass
-
-
 class BodyLimitMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -38,21 +34,38 @@ class BodyLimitMiddleware:
             await self._reject(scope, receive, send)
             return
 
-        received = 0
+        # An SSE GET has no body and must reach the router immediately. Requests
+        # that can carry a body are buffered only up to the cap *before* the
+        # multipart/JSON parser runs. Raising from receive inside Starlette's
+        # multipart parser turns the error into a 400 instead of our 413.
+        if scope["method"] in {"GET", "HEAD", "OPTIONS"} and not (
+            declared or b"transfer-encoding" in headers
+        ):
+            await self.app(scope, receive, send)
+            return
 
-        async def counting_receive() -> Message:
-            nonlocal received
+        received = 0
+        buffered: list[Message] = []
+        while True:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > limit:
-                    raise _BodyTooLarge
-            return message
+                    await self._reject(scope, receive, send)
+                    return
+            buffered.append(message)
+            if message["type"] != "http.request" or not message.get("more_body", False):
+                break
 
-        try:
-            await self.app(scope, counting_receive, send)
-        except _BodyTooLarge:
-            await self._reject(scope, receive, send)
+        pending = iter(buffered)
+
+        async def replay_receive() -> Message:
+            try:
+                return next(pending)
+            except StopIteration:
+                return await receive()
+
+        await self.app(scope, replay_receive, send)
 
     @staticmethod
     async def _reject(scope: Scope, receive: Receive, send: Send) -> None:

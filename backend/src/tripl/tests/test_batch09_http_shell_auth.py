@@ -6,11 +6,11 @@ import ast
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Request, UploadFile
 from httpx import AsyncClient
 from sqlalchemy import select
 
@@ -19,6 +19,8 @@ from tripl.config import Settings, settings
 from tripl.middleware.body_limit import BodyLimitMiddleware
 from tripl.middleware.security_headers import build_security_headers
 from tripl.models.audit_log import AuditLog
+from tripl.observability.metrics import settings_read_failures_total
+from tripl.services import app_settings_service
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -83,6 +85,41 @@ async def test_body_limit_rejects_declared_and_streamed_bodies(
         )
     assert declared.status_code == streamed.status_code == 413
     assert photo_upload.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_chunked_multipart_is_413_before_form_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "photo_max_size_mb", 1)
+    app = FastAPI()
+
+    @app.post("/api/v1/projects/demo/events/event-id/photos")
+    async def upload(file: Annotated[UploadFile, File()]) -> dict[str, str]:
+        return {"filename": file.filename or ""}
+
+    app.add_middleware(BodyLimitMiddleware)
+    boundary = "batch09"
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="large.png"\r\n'
+            "Content-Type: image/png\r\n\r\n"
+        ).encode()
+        for _ in range(40):
+            yield b"x" * 65536
+        yield f"\r\n--{boundary}--\r\n".encode()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/projects/demo/events/event-id/photos",
+            content=chunks(),
+            headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        )
+    assert response.status_code == 413
 
 
 @pytest.mark.asyncio
@@ -176,3 +213,19 @@ async def test_settings_and_key_revocation_have_audit_rows(client: AsyncClient) 
         row.action == "api_key.revoke" and row.target_name == "batch09-audit-key"
         for row in recorded
     )
+
+
+def test_each_sync_settings_fallback_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failed_read(_session: object) -> dict[str, object]:
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr(app_settings_service, "get_service_overrides_sync", failed_read)
+    for section, getter in (
+        ("ai", app_settings_service.get_ai_config_sync),
+        ("email", app_settings_service.get_email_config_sync),
+        ("runtime", app_settings_service.get_runtime_config_sync),
+    ):
+        counter = settings_read_failures_total.labels(section=section)
+        before = counter._value.get()
+        getter(object())  # type: ignore[arg-type]
+        assert counter._value.get() == before + 1

@@ -66,6 +66,12 @@ alert_deliveries_total = Counter(
     labelnames=("status",),
     registry=REGISTRY,
 )
+settings_read_failures_total = Counter(
+    "tripl_settings_read_failures_total",
+    "Settings-table read failures that forced environment-only configuration.",
+    labelnames=("section",),
+    registry=REGISTRY,
+)
 schema_drifts_detected_total = Counter(
     "tripl_schema_drifts_detected_total",
     "Schema drift rows written by the metrics pipeline.",

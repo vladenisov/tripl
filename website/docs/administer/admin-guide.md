@@ -302,9 +302,10 @@ Sections apply at one of two times, and each section says which above its fields
 
 **Use-time (no restart).** The **Runtime** (query limits, app base URL),
 **Email**, and **AI** sections are resolved override → env value on each call, so
-edits apply immediately. If the worker cannot read the settings table, the
-operation fails and can be retried; it does not silently use older environment
-values for AI, email, or alert links.
+edits apply immediately. If the worker cannot read the settings table, it falls
+back to environment values and increments `tripl_settings_read_failures_total`
+with `section=ai`, `email`, or `runtime`. Alert on this metric so a degraded
+delivery does not go unnoticed.
 
 **Restart-time (next deploy).** The **Security & access** (except
 **Registration**, which applies immediately), **Storage**, and
