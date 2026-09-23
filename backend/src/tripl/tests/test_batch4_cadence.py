@@ -764,7 +764,7 @@ def test_the_rule_mute_comment_reads_as_history_and_the_model_agrees() -> None:
     The rule-mute block narrates its own bug: ``AlertRule.muted_until`` shipped
     with a model comment calling worker-side suppression "a separate
     follow-up", so the Mute button wrote a column nothing read. That model
-    comment has since been corrected — it now names both worker readers — while
+    comment has since been corrected — it now names the worker readers — while
     the block here went on saying "the model comment called ... a separate
     follow-up", which reads as the sibling's CURRENT contents rather than as
     the history it is. A reader who followed the pointer found the opposite
@@ -789,17 +789,18 @@ def test_the_rule_mute_comment_reads_as_history_and_the_model_agrees() -> None:
     assert model_module is not None
     model_source = inspect.getsource(model_module)
     # What the block above now asserts about that file, verified instead of
-    # trusted: the stale sentence is gone, and both readers are named.
+    # trusted: the stale sentence is gone, and every reader is named.
     assert "is a separate follow-up" not in model_source
     assert "_prepare_alert_deliveries" in model_source
     assert "alert_flush._build_digest" in model_source
 
-    # "the column's only two worker readers" is a countable claim, and it is
-    # the one a future delivery path would falsify by existing.
+    # All worker readers must stay named in the model comment. The send-time
+    # guard added a third reader after the original dispatch/flush pair.
     worker_root = Path(alert_flush.__file__).resolve().parent.parent
     readers = sorted(
         path.name
         for path in worker_root.rglob("*.py")
         if "rule.muted_until" in path.read_text(encoding="utf-8")
     )
-    assert readers == ["alert_flush.py", "dispatch.py"]
+    assert readers == ["alert_flush.py", "alerts.py", "dispatch.py"]
+    assert "alerts._assert_rule_still_active" in model_source

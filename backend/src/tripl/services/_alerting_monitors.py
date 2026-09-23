@@ -37,10 +37,7 @@ def is_rule_muted(rule: AlertRule, now: datetime) -> bool:
     muted_until = rule.muted_until
     if muted_until is None:
         return False
-    # SQLite (tests) drops tzinfo on round-trip, so normalize before comparing
-    # to avoid an aware/naive TypeError — same handling as monitoring_utils.
-    if muted_until.tzinfo is None:
-        now = now.replace(tzinfo=None)
+    # AlertRule.muted_until uses UtcDateTime, which restores UTC on SQLite too.
     return muted_until > now
 
 

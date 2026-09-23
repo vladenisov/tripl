@@ -128,9 +128,9 @@ missing".
 
 If your agent branches on confidence, know the shape of the scale: `1.0` is reserved
 for a hit whose **identity** is the query (its name, or its keywords, being exactly
-what you searched for). Keyword hits that merely contain the query are capped at
-`0.8` no matter how strong they are, so `>= 0.9` is a reliable test for "this is the
-entity I named" and a poor test for "this is relevant".
+what you searched for). Hits without an identity match are capped at `0.8`,
+including semantic hits. Thus `>= 0.9` indicates an identity match, while a
+lower confidence can still be relevant.
 Event hits also include `event_id`, `name`, `implemented`, and
 `variable_values`. Use search for feature phrases, not exact keys — see
 [Searching events](./searching-events.md).

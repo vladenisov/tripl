@@ -16,13 +16,11 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import math
 import uuid
 
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.config import settings
 from tripl.models.project import Project
 from tripl.models.search_document import SearchDocument
 from tripl.schemas.search import (
@@ -64,6 +62,7 @@ from tripl.services._search_query import (
     token_boundary_regex as _token_boundary_regex,
 )
 from tripl.services.app_settings_service import AiConfig
+from tripl.services.embedding_service import embedding_provenance, sanitize_embedding
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 
@@ -89,7 +88,6 @@ __all__ = [
     "reindex_branch",
     "reindex_project_branch",
     "sanitize_embedding",
-    "search_event_ids",
     "search_project",
 ]
 
@@ -117,7 +115,7 @@ def _doc_to_model(
         content_hash=doc.content_hash,
         builder_version=DOCUMENT_BUILDER_VERSION,
         embedding_status="pending" if ai_config.search_embeddings_enabled else "disabled",
-        embedding_model=ai_config.search_embedding_model
+        embedding_model=embedding_provenance(ai_config)
         if ai_config.search_embeddings_enabled
         else None,
     )
@@ -226,6 +224,14 @@ async def _reindex_branch_documents(
     Returns the document count and the resolved ``AiConfig`` so the caller can
     schedule the fire-and-forget embedding refresh *after* its commit succeeds.
     """
+    # A transaction lock serializes reindexes of the same branch across API
+    # and worker processes. Commit or rollback releases it automatically.
+    if _is_postgres(session):
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": int.from_bytes(branch_id.bytes[:8], signed=True)},
+        )
+
     project_slug = slug or await _project_slug(session, project_id)
     documents = await _build_documents(session, project_id, branch_id, project_slug)
     ai_config = await app_settings_service.get_ai_config(session)
@@ -260,7 +266,7 @@ async def _reindex_branch_documents(
                 status=row.embedding_status,
                 model=row.embedding_model,
                 enabled=ai_config.search_embeddings_enabled,
-                current_model=ai_config.search_embedding_model,
+                current_model=embedding_provenance(ai_config),
                 demo_fixture_model=demo_fixture_model,
             )
         ):
@@ -375,11 +381,14 @@ async def _apply_demo_search_embeddings(
     demo feature-branch index, and manual reindex. A missing or stale fixture
     makes this a no-op and the demo stays lexical-only, exactly as before.
 
-    When live embeddings are enabled under a model DIFFERENT from the
-    fixture's, stamping is skipped entirely: flipping the freshly inserted
-    ``pending`` rows to ``ready`` with fixture vectors would hide them from
-    the embedding worker and cosine-rank live query vectors against another
-    model's vector space. The queued worker embeds them instead.
+    When live embeddings are enabled, stamping is skipped entirely, whatever
+    the model. Live rows and live queries are matched on
+    :func:`~tripl.services.embedding_service.embedding_provenance` (endpoint,
+    provider, model and width), and the fixture records only a model name, so
+    a stamped row could never match a live query vector, and the stale-search
+    sweep would select its branch on every run because the row's
+    ``embedding_model`` never equals the current provenance. The queued
+    worker embeds the pending rows under the current provenance instead.
     """
     if not _is_postgres(session):
         return 0
@@ -394,7 +403,7 @@ async def _apply_demo_search_embeddings(
     fixture = load_demo_embedding_fixture()
     if fixture is None:
         return 0
-    if ai_config.search_embeddings_enabled and ai_config.search_embedding_model != fixture.model:
+    if ai_config.search_embeddings_enabled:
         return 0
     return await apply_demo_embedding_fixture(
         session,
@@ -427,9 +436,7 @@ async def _apply_demo_search_embeddings(
 #: no interactive query retrieves fewer candidates than it does today, and it
 #: equals the page size cap on ``GET /search`` (``Query(le=100)``), so the
 #: largest page the HTTP API can ask for is exactly one window. ``max`` rather
-#: than a plain constant because bulk callers legitimately want more:
-#: :func:`search_event_ids` passes ``limit=10000`` and must keep retrieving
-#: 10000, not 100.
+#: than a plain constant because internal callers may request a larger window.
 #:
 #: AND ONE ROW PAST IT (tripl-wkwv.3)
 #: ----------------------------------
@@ -457,7 +464,7 @@ async def search_project(
     semantic: bool = True,
 ) -> SearchResponse:
     # Sanitize here rather than in the router: this is the single funnel every
-    # caller goes through (HTTP search, ai_service.ask_plan, search_event_ids),
+    # caller goes through (HTTP search and ai_service.ask_plan),
     # and it runs before the dialect split so the lexical SQL, the embedding
     # call, and the demo fixture lookup all see the same cleaned string.
     normalized_query = _sanitize_query(query)
@@ -532,34 +539,6 @@ async def search_project(
         truncated=candidate_count > len(items),
         semantic_used=semantic_used,
     )
-
-
-async def search_event_ids(
-    session: AsyncSession,
-    slug: str,
-    query: str,
-    *,
-    branch_id: uuid.UUID | None = None,
-    include_archived: bool = True,
-    limit: int = 10000,
-) -> list[uuid.UUID]:
-    response = await search_project(
-        session,
-        slug,
-        query,
-        branch_id=branch_id,
-        entity_types=["event", "tag"],
-        include_archived=include_archived,
-        limit=limit,
-    )
-    event_ids: list[uuid.UUID] = []
-    seen: set[uuid.UUID] = set()
-    for item in response.items:
-        event_id = item.parent_event_id if item.parent_event_id is not None else item.entity_id
-        if event_id not in seen:
-            seen.add(event_id)
-            event_ids.append(event_id)
-    return event_ids
 
 
 async def _project_slug(session: AsyncSession, project_id: uuid.UUID) -> str:
@@ -845,12 +824,3 @@ async def _queue_embedding_refresh(
         logger.exception("Failed to queue search embedding refresh")
         return False
     return True
-
-
-def sanitize_embedding(values: list[float]) -> list[float]:
-    sanitized = [float(value) for value in values]
-    if len(sanitized) != settings.search_embedding_dimensions:
-        return []
-    if any(not math.isfinite(value) for value in sanitized):
-        return []
-    return sanitized

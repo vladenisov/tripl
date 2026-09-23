@@ -123,6 +123,7 @@ async def _semantic_hits(session: AsyncSession, corpus: Corpus) -> dict[str, flo
         project_id=corpus.project_id,
         branch_id=corpus.branch_id,
         embedding=_QUERY_VECTOR,
+        embedding_model="relevance-harness",
         entity_types=None,
         include_archived=False,
         limit=50,
@@ -192,10 +193,8 @@ async def test_a_semantic_only_hit_is_not_reported_as_a_weak_answer(
     """The confidence half of tripl-txcz, executed end to end on real SQL.
 
     ``merge_results`` scores a vector-only hit ``cosine * 2.5``, so its score
-    cannot exceed 2.5 and reading confidence off the score alone would report a
-    0.92 cosine at 0.33 — the semantic leg de-weighted in effect. The unit tests
-    in ``test_search.py`` pin the arithmetic; this pins it on results that came
-    out of ``postgres_semantic_search`` rather than out of a constructor.
+    cannot exceed 2.5. Confidence uses the cosine, then caps non-identity hits
+    at 0.8. This pins the rule on rows read from Postgres.
     """
     await _stamp_embeddings(relevance_session, seeded_corpus)
 
@@ -204,6 +203,7 @@ async def test_a_semantic_only_hit_is_not_reported_as_a_weak_answer(
         project_id=seeded_corpus.project_id,
         branch_id=seeded_corpus.branch_id,
         embedding=_QUERY_VECTOR,
+        embedding_model="relevance-harness",
         entity_types=None,
         include_archived=False,
         limit=50,
@@ -211,7 +211,7 @@ async def test_a_semantic_only_hit_is_not_reported_as_a_weak_answer(
     finalized = finalize_results(merge_results([], results, 50), 50)
     confidence = {item.title: item.confidence for item in finalized}
 
-    assert confidence[_STRONG_MATCH] == pytest.approx(_COSINES[_STRONG_MATCH], abs=1e-3)
+    assert confidence[_STRONG_MATCH] == pytest.approx(0.8, abs=1e-3)
     assert confidence[_WEAK_MATCH] == pytest.approx(_COSINES[_WEAK_MATCH], abs=1e-3)
     # The number the old rule would have produced, named so the regression is
     # unmistakable rather than a mystery float.

@@ -1209,11 +1209,8 @@ def test_the_inbox_query_reads_scan_config_columns_and_no_scan_history(
     hand-rolled copy would go on passing after someone changed the real one.
 
     The exact table set is asserted rather than just the absence of
-    ``scan_jobs``, because the standing hazard is a NEW eager collection on any
-    of the five selected entities, not this one collection coming back. The
-    three that remain are bounded fan-outs the alerting genuinely wants
-    (``AlertDelivery.items``, ``AlertDestination.rules``, ``AlertRule.filters``);
-    ``scan_jobs`` was the only one with no ceiling.
+    ``scan_jobs``. Inbox cards read selected entity columns and do not need
+    their relationships; a new eager collection would add SQL here.
     """
     monkeypatch.setattr(app_settings_service, "get_runtime_config_sync", _ConfigReads())
 
@@ -1235,16 +1232,8 @@ def test_the_inbox_query_reads_scan_config_columns_and_no_scan_history(
     assert len(rows) == 1
     assert rendered == ("Main Slack", "Everything", "Scan")
     assert "scan_jobs" not in " ".join(statements)
-    assert _tables_read(statements) == {
-        # The query itself, and AlertDelivery.items.
-        "alert_delivery_items",
-        # AlertDestination.rules.
-        "alert_rules",
-        # AlertRule.filters, once for the rule column and once for that
-        # collection's rules.
-        "alert_rule_filters",
-    }
-    assert len(statements) == 5, statements
+    assert _tables_read(statements) == {"alert_delivery_items"}
+    assert len(statements) == 1, statements
 
 
 def test_deleting_a_scan_config_still_removes_its_jobs(

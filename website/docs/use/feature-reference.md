@@ -652,7 +652,10 @@ still uses it; a storage failure there is logged and never fails the merge.
 An owner may configure a separate **Implementation tracker** for the project.
 When enabled, a successful merge best-effort creates one Jira implementation
 ticket for the added/changed events; a scheduled sync promotes covered events to
-`implemented` when Jira reports the ticket done. Collection completes the
+`implemented` when Jira reports the ticket done. If Jira returns a temporary
+transport or server error while creating the ticket, the worker retries up to
+five times with backoff; each retry first searches for the branch marker to
+adopt an issue already created by an earlier attempt. Collection completes the
 lifecycle on its own: the first data an event receives promotes it from
 `ready_for_dev` or `implemented` to `live`, while a `draft` or `in_review` event
 stays where it is. This is branch workflow

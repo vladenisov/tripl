@@ -15280,7 +15280,8 @@
           "delivery_schedule_cron": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 120
               },
               {
                 "type": "null"
@@ -15382,7 +15383,8 @@
           "email_subject_template": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               {
                 "type": "null"
@@ -15405,7 +15407,8 @@
           "jira_auth_email": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15427,7 +15430,8 @@
           "jira_project_key": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -15438,7 +15442,8 @@
           "jira_issue_type": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -15460,7 +15465,8 @@
           "linear_team_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -15471,7 +15477,8 @@
           "linear_state_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -32529,6 +32536,18 @@
             "type": "string",
             "format": "uuid",
             "title": "Anomaly Id"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
           },
           "scope_type": {
             "$ref": "#/components/schemas/MetricScopeType"

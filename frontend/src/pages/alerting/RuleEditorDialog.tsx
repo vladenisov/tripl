@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react"
 
+import { MAX_ALERT_RULE_NAME_LENGTH } from "@/api/alerting"
 import type { AlertDestination, AlertScopeReadiness, EventType, ScanConfig } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -114,6 +115,7 @@ export function RuleEditorDialog({
                 <Label htmlFor="rule-name">Name</Label>
                 <Input
                   id="rule-name"
+                  maxLength={MAX_ALERT_RULE_NAME_LENGTH}
                   value={ruleForm.name}
                   onChange={event => setRuleForm(current => ({ ...current, name: event.target.value }))}
                   required

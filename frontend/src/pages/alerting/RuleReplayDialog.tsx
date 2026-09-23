@@ -21,7 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import type { AlertMessageFormat, AlertRule, AlertRuleSimulateResponse } from '@/types'
+import type { AlertMessageFormat, AlertRule, AlertRuleSimulateResponse, ScanConfig } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
 import { formatIncidentCount, scopeKindLabel } from '@/lib/alertStatus'
 import { formatDateTime } from '@/lib/datetime'
@@ -132,12 +132,14 @@ export function RuleReplayDialog({
   slug,
   destinationId,
   rule,
+  scans,
 }: {
   open: boolean
   onOpenChange: (value: boolean) => void
   slug: string
   destinationId: string
   rule: AlertRule
+  scans: Pick<ScanConfig, 'id' | 'name'>[]
 }) {
   const [days, setDays] = useState<number>(7)
   const [cooldownText, setCooldownText] = useState<string>('')
@@ -426,11 +428,12 @@ export function RuleReplayDialog({
                   <div role="region" aria-label="Replay firings" tabIndex={0}
                     className="max-h-72 min-w-0 max-w-full overflow-x-auto overflow-y-auto rounded-md border"
                   >
-                    <table className="w-full min-w-[720px] table-fixed text-left text-xs">
+                    <table className="w-full min-w-[840px] table-fixed text-left text-xs">
                       <thead className="bg-muted/50 text-muted-foreground">
                         <tr>
                           <th className="w-40 px-3 py-2 font-medium">When</th>
                           <th className="w-64 px-3 py-2 font-medium">Scope</th>
+                          <th className="w-32 px-3 py-2 font-medium">Scan</th>
                           <th className="w-20 px-3 py-2 font-medium">Dir</th>
                           <th className="w-20 px-3 py-2 text-right font-medium">Actual</th>
                           <th className="w-24 px-3 py-2 text-right font-medium">Expected</th>
@@ -471,6 +474,15 @@ export function RuleReplayDialog({
                                   {firing.drift_type}: {firing.drift_field}
                                 </div>
                               )}
+                            </td>
+                            <td
+                              className="truncate px-3 py-1.5"
+                              title={firing.scan_config_id ?? 'Project-wide'}
+                            >
+                              {firing.scan_config_id === null
+                                ? 'Project-wide'
+                                : (scans.find(scan => scan.id === firing.scan_config_id)?.name
+                                  ?? `Scan ${firing.scan_config_id.slice(0, 8)}`)}
                             </td>
                             <td className="px-3 py-1.5">
                               <Badge

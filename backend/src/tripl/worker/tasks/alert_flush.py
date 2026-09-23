@@ -164,8 +164,9 @@ def _build_digest(
         session.execute(
             select(AlertPendingItem)
             .where(AlertPendingItem.destination_id == destination.id)
-            # Plain FOR UPDATE, deliberately not SKIP LOCKED. The advisory lock
-            # already makes the flusher single-flight, so the only transaction
+            # Plain FOR UPDATE, deliberately not SKIP LOCKED. The window
+            # compare-and-set and row lifecycle provide correctness; on Postgres
+            # the advisory lock also keeps flushers from overlapping. The only transaction
             # that can hold one of these row locks is a ``collect_metrics``
             # mid-upsert — and skipping that row would drop the freshest
             # observation of the very scope that is firing hardest. Waiting for
@@ -566,8 +567,8 @@ def flush_due_alert_digests() -> dict[str, int]:
 
         # Enqueued after the commit, exactly as collect_metrics does it. If a
         # publish is lost the deliveries are already `pending`, so the existing
-        # stranded-delivery reaper ships them within 15 minutes — unbundled,
-        # which is the right degradation: the operator gets every alert.
+        # stranded-delivery reaper ships them within 15 minutes. Digest members
+        # retain their digest layout when the reaper dispatches them.
         for destination_id, delivery_ids in dispatched.items():
             try:
                 _dispatch_digest(

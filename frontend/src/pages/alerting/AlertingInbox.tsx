@@ -782,6 +782,11 @@ function IncidentCard({
             {incidentDirectionGlyph(group.direction)} {reason}
           </Chip>
           <span className="font-medium">{countOf(group.item_count, 'item', 'items')}</span>
+          {group.item_count > 1 && (
+            <span className="text-muted-foreground">
+              · {countOf(group.scope_names.length, 'distinct scope name', 'distinct scope names')} shown
+            </span>
+          )}
           <span className="text-muted-foreground">
             {formatDateTime(group.latest_delivery_at)}
           </span>

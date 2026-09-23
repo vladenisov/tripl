@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
@@ -94,6 +95,7 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
     """
     # Deferred import to avoid a circular import at module load: alerts ->
     # celery_app -> (beat registers tasks) and maintenance both import the app.
+    from tripl.worker.tasks.alert_digest_send import COMBINABLE_CHANNELS, send_alert_digest
     from tripl.worker.tasks.alerts import send_alert_delivery
 
     cutoff = datetime.now(UTC) - timedelta(minutes=STRANDED_DELIVERY_MINUTES)
@@ -206,12 +208,42 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
         # recording it.
         session.commit()
 
+        # Rows minted by one digest flush share destination and transaction
+        # timestamp. Keep stranded members together rather than flattening
+        # each one into an immediate alert. A lone surviving member still goes
+        # through the digest sender and retains its digest layout.
+        queued = [*to_dispatch, *to_auto_retry]
+        queued_rows = {str(row.id): row for row in [*stranded, *recent_failed]}
+        digest_groups: dict[tuple[uuid.UUID, datetime], list[str]] = {}
+        combinable_destinations = {
+            destination_id
+            for destination_id, destination_type in session.execute(
+                select(AlertDestination.id, AlertDestination.type).where(
+                    AlertDestination.id.in_({row.destination_id for row in queued_rows.values()})
+                )
+            )
+            if destination_type in COMBINABLE_CHANNELS
+        }
+        for delivery_id in queued:
+            row = queued_rows[delivery_id]
+            snapshot = row.payload_snapshot
+            if (
+                row.destination_id in combinable_destinations
+                and isinstance(snapshot, dict)
+                and snapshot.get("digest")
+            ):
+                digest_groups.setdefault((row.destination_id, row.created_at), []).append(
+                    delivery_id
+                )
+            else:
+                send_alert_delivery.delay(delivery_id)
+        for delivery_ids in digest_groups.values():
+            send_alert_digest.delay(delivery_ids)
+
         for delivery_id in to_dispatch:
-            send_alert_delivery.delay(delivery_id)
             requeued.append(delivery_id)
 
         for delivery_id in to_auto_retry:
-            send_alert_delivery.delay(delivery_id)
             auto_retried.append(delivery_id)
 
         logger.info(

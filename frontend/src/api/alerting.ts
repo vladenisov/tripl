@@ -59,6 +59,9 @@ export const MAX_BULK_INBOX_ACTION_GROUPS = 200
  */
 export const MAX_INBOX_NOTE_LENGTH = 2000
 
+// Matches AlertRuleCreate/AlertRuleUpdate and the alert_rules.name column.
+export const MAX_ALERT_RULE_NAME_LENGTH = 255
+
 export const alertingApi = {
   listDestinations: (slug: string) =>
     api.get<AlertDestination[]>(`/projects/${slug}/alert-destinations`),
@@ -146,6 +149,7 @@ export const alertingApi = {
     data: {
       name: string
       enabled?: boolean
+      scan_config_id?: string | null
       include_project_total?: boolean
       include_event_types?: boolean
       include_events?: boolean
@@ -177,6 +181,7 @@ export const alertingApi = {
     data: {
       name?: string
       enabled?: boolean
+      scan_config_id?: string | null
       include_project_total?: boolean
       include_event_types?: boolean
       include_events?: boolean
