@@ -381,11 +381,14 @@ async def _apply_demo_search_embeddings(
     demo feature-branch index, and manual reindex. A missing or stale fixture
     makes this a no-op and the demo stays lexical-only, exactly as before.
 
-    When live embeddings are enabled under a model DIFFERENT from the
-    fixture's, stamping is skipped entirely: flipping the freshly inserted
-    ``pending`` rows to ``ready`` with fixture vectors would hide them from
-    the embedding worker and cosine-rank live query vectors against another
-    model's vector space. The queued worker embeds them instead.
+    When live embeddings are enabled, stamping is skipped entirely, whatever
+    the model. Live rows and live queries are matched on
+    :func:`~tripl.services.embedding_service.embedding_provenance` (endpoint,
+    provider, model and width), and the fixture records only a model name, so
+    a stamped row could never match a live query vector, and the stale-search
+    sweep would select its branch on every run because the row's
+    ``embedding_model`` never equals the current provenance. The queued
+    worker embeds the pending rows under the current provenance instead.
     """
     if not _is_postgres(session):
         return 0
@@ -400,7 +403,7 @@ async def _apply_demo_search_embeddings(
     fixture = load_demo_embedding_fixture()
     if fixture is None:
         return 0
-    if ai_config.search_embeddings_enabled and ai_config.search_embedding_model != fixture.model:
+    if ai_config.search_embeddings_enabled:
         return 0
     return await apply_demo_embedding_fixture(
         session,
