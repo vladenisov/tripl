@@ -385,7 +385,7 @@ def _assert_egress_allowed(destination: AlertDestination, project: Project | Non
         and destination.type != AlertDestinationType.demo_sink
     ):
         raise ValueError(
-            "Demo projects cannot send external alerts: destination "
+            "External alert delivery is disabled for demo projects: destination "
             f"{destination.name!r} ({destination.type}) is not a local demo sink. "
             "Nothing was sent."
         )

@@ -161,7 +161,9 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
     # neither mints an ``AlertDelivery`` nor buffers an ``AlertPendingItem``;
     # ``alert_flush._build_digest`` re-checks when the digest is built, so a
     # mute set during a hold window drops the items already buffered along with
-    # the claim instead of releasing them once the mute lapses. The rule's
+    # the claim instead of releasing them once the mute lapses.
+    # ``alerts._assert_rule_still_active`` re-checks queued deliveries just
+    # before outbound send, after rendering may have taken time. The rule's
     # open/close state is updated before the dispatch check, deliberately, so a
     # mute does not leave the monitor stuck "firing" on a stale scope. The
     # API-side predicate is ``_alerting_monitors.is_rule_muted``.

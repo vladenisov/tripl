@@ -129,4 +129,6 @@ async def test_test_send_uses_canonical_egress_guard(monkeypatch: pytest.MonkeyP
         destination.id,  # type: ignore[arg-type]
     )
     assert outcome.response.ok is False
-    assert outcome.response.error == "policy says no egress"
+    assert outcome.response.error == (
+        "Demo projects cannot send external alerts. policy says no egress"
+    )

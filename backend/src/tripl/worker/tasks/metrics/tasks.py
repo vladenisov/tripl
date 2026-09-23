@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
@@ -1333,3 +1334,12 @@ def collect_metrics(
         if adapter is not None:
             adapter.close()
         session.close()
+
+
+def __getattr__(name: str) -> Any:
+    """Expose the task to existing callers without recreating the import cycle."""
+    if name == "send_alert_delivery":
+        from tripl.worker.tasks.alerts import send_alert_delivery
+
+        return send_alert_delivery
+    raise AttributeError(name)

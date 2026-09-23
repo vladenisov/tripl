@@ -326,7 +326,7 @@ async def send_destination_test(
         return DestinationTestOutcome(
             response=AlertDestinationTestResponse(
                 ok=False,
-                error=str(exc),
+                error=f"Demo projects cannot send external alerts. {exc}",
                 # Nothing was sent, so there is no instant to report — but the
                 # key is still present, because the response type says it is.
                 sent_at=None,
