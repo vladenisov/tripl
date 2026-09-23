@@ -65,6 +65,7 @@ const RESULT: AlertRuleSimulateResponse = {
   firings: [
     {
       anomaly_id: 'anomaly-1',
+      scan_config_id: 'scan-1',
       scope_type: 'project_total',
       scope_ref: LONG_SCOPE,
       scope_name: LONG_SCOPE,
@@ -97,6 +98,7 @@ function renderDialog() {
         slug="demo"
         destinationId="destination-1"
         rule={RULE}
+        scans={[{ id: 'scan-1', name: 'iOS primary' }, { id: 'scan-2', name: 'iOS backup' }]}
       />
     </QueryClientProvider>,
   )
@@ -107,6 +109,20 @@ afterEach(() => {
 })
 
 describe('RuleReplayDialog responsive results', () => {
+  it('distinguishes firings of one scope from two scans', async () => {
+    vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue({
+      ...RESULT,
+      firings: [
+        RESULT.firings[0]!,
+        { ...RESULT.firings[0]!, anomaly_id: 'anomaly-2', scan_config_id: 'scan-2' },
+      ],
+    })
+    renderDialog()
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+    expect(await screen.findByText('iOS primary')).toBeInTheDocument()
+    expect(screen.getByText('iOS backup')).toBeInTheDocument()
+  })
+
   it('confines wide replay data to the result viewport without widening the dialog', async () => {
     vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
@@ -122,7 +138,7 @@ describe('RuleReplayDialog responsive results', () => {
 
     const table = scope.closest('table')
     expect(table).not.toBeNull()
-    expect(table).toHaveClass('min-w-[720px]', 'table-fixed')
+    expect(table).toHaveClass('min-w-[840px]', 'table-fixed')
     expect(table?.parentElement).toBe(firingRegion)
     expect(firingRegion).toHaveClass('min-w-0', 'max-w-full', 'overflow-x-auto')
     expect(within(table as HTMLTableElement).getByText(/Jul 19, 2026/)).toHaveClass(

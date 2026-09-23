@@ -8,7 +8,8 @@ warehouse query it issues.
 
 from __future__ import annotations
 
-from tripl.worker.tasks.alerts import send_alert_delivery
+from typing import TYPE_CHECKING, Any
+
 from tripl.worker.tasks.metrics._helpers import (
     ACTIVE_SCAN_JOB_STATUSES,
     MAX_BREAKDOWN_VALUE_LENGTH,
@@ -111,3 +112,15 @@ __all__ = [
     "collect_metrics",
     "send_alert_delivery",
 ]
+
+if TYPE_CHECKING:
+    from tripl.worker.tasks.alerts import send_alert_delivery
+
+
+def __getattr__(name: str) -> Any:
+    """Keep the legacy task alias without importing alerts during registration."""
+    if name == "send_alert_delivery":
+        from tripl.worker.tasks.alerts import send_alert_delivery
+
+        return send_alert_delivery
+    raise AttributeError(name)

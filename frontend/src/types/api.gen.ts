@@ -10159,6 +10159,8 @@ export interface components {
             rendered_item?: string | null;
             /** Sample Value */
             sample_value?: string | null;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
             /** Scope Name */
             scope_name: string;
             /** Scope Ref */

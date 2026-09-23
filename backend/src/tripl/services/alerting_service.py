@@ -30,7 +30,7 @@ from tripl.alerting_matching import (
     simulate_rule_firings,
 )
 from tripl.models.alert_delivery_item import trim_scope_name
-from tripl.models.domain_enums import MetricScopeType
+from tripl.models.domain_enums import DistributionDriftBand, MetricScopeType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project_anomaly_settings import (
     DEFAULT_SIGMA_THRESHOLD,
@@ -66,7 +66,6 @@ from tripl.services._alerting_destinations import (
     get_destination_response,
     get_rule,
     list_destinations,
-    replace_rule_filters,
     rule_to_response,
     update_destination,
     update_rule,
@@ -105,6 +104,12 @@ from tripl.services.project_lookup import get_project_by_slug as _get_project
 # module scope and nothing else on this async request path pulls them in.
 SCOPE_PROJECT_TOTAL = MetricScopeType.project_total.value
 
+# Rechecked against read-only production replay after per-(rule, scan, scope)
+# cooldown counting (2026-09-23). The one live rule produced 331 firings over
+# 30 days at its 100% delta threshold; tightening that same rule to 200% and
+# 300% produced 41 and 15. A 50-firing badge still separates its noisy current
+# configuration from those quieter what-if settings. This is one rule, not a
+# population-wide calibration; repeat the check as more rules are deployed.
 SIMULATE_NOISY_THRESHOLD = 50
 SIMULATE_MAX_DAYS = 90
 
@@ -137,7 +142,6 @@ __all__ = [
     "list_deliveries",
     "list_destinations",
     "mute_monitor",
-    "replace_rule_filters",
     "retry_delivery",
     "rule_to_response",
     "send_destination_test",
@@ -427,7 +431,7 @@ async def _load_distribution_drift_candidates(
                 .join(ScanConfig, ScanConfig.id == DistributionDrift.scan_config_id)
                 .where(
                     ScanConfig.project_id == project_id,
-                    DistributionDrift.band == "significant",
+                    DistributionDrift.band == DistributionDriftBand.significant.value,
                     DistributionDrift.bucket >= window_from,
                     DistributionDrift.bucket < window_to,
                 )
@@ -895,6 +899,7 @@ async def simulate_rule(
         firings.append(
             SimulatedRuleFiring(
                 anomaly_id=anomaly.id,
+                scan_config_id=anomaly.scan_config_id,
                 scope_type=anomaly.scope_type,
                 scope_ref=anomaly.scope_ref,
                 scope_name=scope_name,

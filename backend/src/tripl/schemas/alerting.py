@@ -444,7 +444,7 @@ class AlertDestinationCreate(BaseModel):
     # expression otherwise, read in the project's timezone. The UI's presets
     # ("daily at 09:00") are cron strings it generates, so the wire format has
     # exactly one shape.
-    delivery_schedule_cron: str | None = None
+    delivery_schedule_cron: str | None = Field(None, max_length=120)
     webhook_url: str | None = None
     bot_token: str | None = None
     # ``name`` above was not the only field here written into a bounded VARCHAR
@@ -459,15 +459,9 @@ class AlertDestinationCreate(BaseModel):
     # or drop a trailing slash, so what reaches the column is never longer than
     # the string pydantic measured here.
     #
-    # The other bounded columns are left undeclared on purpose, each already
-    # held under its width by a check of its own: ``jira_auth_email`` (255) by
-    # ``email_validator``'s 254-octet address limit — the same accident
-    # ``email_from_address`` lost in tripl-v422, still intact here because this
-    # field is an address and nothing else; ``delivery_schedule_cron`` (120) by
-    # ``parse_cron``, whose ``MAX_CRON_EXPRESSION_LENGTH`` is that same 120;
-    # ``email_subject_template`` (500) and ``jira_issue_type`` (64) by
-    # ``_validate_single_line``; ``jira_project_key`` (64) and the two Linear id
-    # fields (64) by their regexes.
+    # Declare every bounded destination column on the wire too. This keeps the
+    # OpenAPI contract aligned with PostgreSQL even when another validator also
+    # checks an address, template, cron expression, or identifier.
     chat_id: str | None = Field(None, max_length=255)
     target_url: str | None = None
     webhook_header_name: str | None = Field(None, max_length=255)
@@ -480,15 +474,15 @@ class AlertDestinationCreate(BaseModel):
     # override exists to carry is not the address part. See that helper for why
     # the bound sits on the field rather than inside it.
     email_from_address: str | None = Field(None, max_length=255)
-    email_subject_template: str | None = None
+    email_subject_template: str | None = Field(None, max_length=500)
     jira_base_url: str | None = Field(None, max_length=255)
-    jira_auth_email: str | None = None
+    jira_auth_email: str | None = Field(None, max_length=255)
     jira_api_token: str | None = None
-    jira_project_key: str | None = None
-    jira_issue_type: str | None = None
+    jira_project_key: str | None = Field(None, max_length=64)
+    jira_issue_type: str | None = Field(None, max_length=64)
     linear_api_key: str | None = None
-    linear_team_id: str | None = None
-    linear_state_id: str | None = None
+    linear_team_id: str | None = Field(None, max_length=64)
+    linear_state_id: str | None = Field(None, max_length=64)
     # Same width as ``alert_destinations.linear_label_ids`` (String(1024)), and
     # the entry-count limit does not imply it: ``_LINEAR_LABEL_LIMIT`` is 20 and
     # ``_LINEAR_ID_RE`` allows 64 characters each, so the longest list
@@ -931,7 +925,8 @@ class AlertDeliveryItemResponse(BaseModel):
     drift_field: str | None
     drift_type: AlertDriftType | None
     sample_value: str | None
-    # The incident this row belongs to: one (scan config, rule, direction).
+    # The incident this row belongs to: one
+    # (scan config, rule, scope type, scope ref, direction).
     # It is also the handle the alert inbox acts on, so EVERY item written since
     # tripl-jfm3.91 carries one — a solitary alert had none before and was
     # therefore invisible to the inbox and impossible to acknowledge. Co-firing
@@ -1381,6 +1376,7 @@ class SimulatedRuleFiring(BaseModel):
     """One virtual delivery the rule would have triggered during the window."""
 
     anomaly_id: uuid.UUID
+    scan_config_id: uuid.UUID | None = None
     scope_type: MetricScopeType
     scope_ref: str
     scope_name: str

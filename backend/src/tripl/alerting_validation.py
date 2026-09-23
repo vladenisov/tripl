@@ -114,7 +114,8 @@ def _validate_https_url(
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError(f"{field} must be a valid https URL")
     if allowed_hosts is not None and parsed.hostname not in allowed_hosts:
-        raise ValueError(f"{field} must point to {sorted(allowed_hosts)[0]}")
+        hosts = ", ".join(sorted(allowed_hosts))
+        raise ValueError(f"{field} must point to one of: {hosts}")
     # SSRF guard for free-form destinations (webhook/Jira). Allowlisted channels
     # (Slack) are already constrained to known public hosts.
     if block_private_hosts:

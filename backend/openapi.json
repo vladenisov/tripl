@@ -1034,6 +1034,7 @@
           "delivery_schedule_cron": {
             "anyOf": [
               {
+                "maxLength": 120,
                 "type": "string"
               },
               {
@@ -1068,6 +1069,7 @@
           "email_subject_template": {
             "anyOf": [
               {
+                "maxLength": 500,
                 "type": "string"
               },
               {
@@ -1095,6 +1097,7 @@
           "jira_auth_email": {
             "anyOf": [
               {
+                "maxLength": 255,
                 "type": "string"
               },
               {
@@ -1118,6 +1121,7 @@
           "jira_issue_type": {
             "anyOf": [
               {
+                "maxLength": 64,
                 "type": "string"
               },
               {
@@ -1129,6 +1133,7 @@
           "jira_project_key": {
             "anyOf": [
               {
+                "maxLength": 64,
                 "type": "string"
               },
               {
@@ -1163,6 +1168,7 @@
           "linear_state_id": {
             "anyOf": [
               {
+                "maxLength": 64,
                 "type": "string"
               },
               {
@@ -1174,6 +1180,7 @@
           "linear_team_id": {
             "anyOf": [
               {
+                "maxLength": 64,
                 "type": "string"
               },
               {
@@ -18367,6 +18374,18 @@
               }
             ],
             "title": "Sample Value"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
           },
           "scope_name": {
             "title": "Scope Name",

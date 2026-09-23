@@ -34,6 +34,7 @@ from tripl.json_paths import (
 )
 from tripl.models.coverage_metric import CoverageMetric
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.domain_enums import DistributionDriftBand
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -1229,7 +1230,7 @@ def _collect_distribution_drift_rows(
 
             result = compute_psi(baseline_counts, current_counts)
             top_movers = _serialize_distribution_top_movers(result.top_movers)
-            if result.band == "significant":
+            if result.band == DistributionDriftBand.significant.value:
                 significant_count += 1
             output_rows.append(
                 {
