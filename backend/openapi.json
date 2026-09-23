@@ -13047,8 +13047,13 @@
           "log_level": {
             "anyOf": [
               {
-                "maxLength": 20,
-                "minLength": 1,
+                "enum": [
+                  "CRITICAL",
+                  "ERROR",
+                  "WARNING",
+                  "INFO",
+                  "DEBUG"
+                ],
                 "type": "string"
               },
               {

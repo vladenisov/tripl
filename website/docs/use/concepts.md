@@ -352,7 +352,8 @@ Every workspace member has a **role** that applies across the instance:
 An **API key** lets a script or an AI agent talk to tripl without a human logged
 in. Keys are scoped to be safe: **read** keys can only look, **write** keys can
 edit, and a key can be locked to a single project and given an expiry date. They
-can be revoked at any time. See **[agent-api-guide.md](../integrate/agent-api-guide.md)** for
+can be revoked at any time. Creating and revoking keys requires an interactive
+session; a Bearer key cannot manage keys. See **[agent-api-guide.md](../integrate/agent-api-guide.md)** for
 the details.
 
 ### Audit log

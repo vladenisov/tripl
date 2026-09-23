@@ -6,8 +6,8 @@ DB override -> env. Secret overrides are encrypted at rest and never returned
 to clients; clients only see ``*_configured`` booleans.
 
 Both async (API) and sync (Celery worker) accessors are provided. Sync accessors
-degrade to env-only configuration on DB errors so background jobs never fail
-just because runtime settings cannot be read.
+raise when the settings table cannot be read, so a delivery is retried rather
+than silently sent with stale environment-only configuration.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from dataclasses import dataclass, fields
 from typing import Any, Literal
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -396,45 +397,30 @@ async def get_service_settings(session: AsyncSession) -> dict[str, Any]:
 
 
 def get_ai_config_sync(session: Session | None = None) -> AiConfig:
-    try:
-        if session is not None:
-            return build_ai_config(get_service_overrides_sync(session))
-        from tripl.worker.db import SyncSessionLocal
+    if session is not None:
+        return build_ai_config(get_service_overrides_sync(session))
+    from tripl.worker.db import SyncSessionLocal
 
-        with SyncSessionLocal() as own_session:
-            return build_ai_config(get_service_overrides_sync(own_session))
-    except Exception:  # noqa: BLE001
-        logger.warning("Falling back to env AI config: app_settings read failed", exc_info=True)
-        return env_ai_config()
+    with SyncSessionLocal() as own_session:
+        return build_ai_config(get_service_overrides_sync(own_session))
 
 
 def get_email_config_sync(session: Session | None = None) -> EmailConfig:
-    try:
-        if session is not None:
-            return build_email_config(get_service_overrides_sync(session))
-        from tripl.worker.db import SyncSessionLocal
+    if session is not None:
+        return build_email_config(get_service_overrides_sync(session))
+    from tripl.worker.db import SyncSessionLocal
 
-        with SyncSessionLocal() as own_session:
-            return build_email_config(get_service_overrides_sync(own_session))
-    except Exception:  # noqa: BLE001
-        logger.warning("Falling back to env email config: app_settings read failed", exc_info=True)
-        return env_email_config()
+    with SyncSessionLocal() as own_session:
+        return build_email_config(get_service_overrides_sync(own_session))
 
 
 def get_runtime_config_sync(session: Session | None = None) -> RuntimeConfig:
-    try:
-        if session is not None:
-            return build_runtime_config(get_service_overrides_sync(session))
-        from tripl.worker.db import SyncSessionLocal
+    if session is not None:
+        return build_runtime_config(get_service_overrides_sync(session))
+    from tripl.worker.db import SyncSessionLocal
 
-        with SyncSessionLocal() as own_session:
-            return build_runtime_config(get_service_overrides_sync(own_session))
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "Falling back to env runtime config: app_settings read failed",
-            exc_info=True,
-        )
-        return env_runtime_config()
+    with SyncSessionLocal() as own_session:
+        return build_runtime_config(get_service_overrides_sync(own_session))
 
 
 # Fields excluded from the startup apply below because they are resolved live
@@ -496,6 +482,17 @@ def apply_startup_service_overrides(session: Session | None = None) -> list[str]
         )
         return []
 
+    candidate_values = {
+        field: overrides[field]
+        for field in STARTUP_APPLIED_FIELDS
+        if overrides.get(field) is not None and hasattr(settings, field)
+    }
+    try:
+        validated = Settings.model_validate({**settings.model_dump(), **candidate_values})
+    except ValidationError as exc:
+        logger.error("Ignoring invalid stored service overrides: %s", exc)
+        return []
+
     applied: list[str] = []
     previous: dict[str, Any] = {}
     for field in STARTUP_APPLIED_FIELDS:
@@ -503,7 +500,7 @@ def apply_startup_service_overrides(session: Session | None = None) -> list[str]
         if value is None or not hasattr(settings, field):
             continue
         previous[field] = getattr(settings, field)
-        setattr(settings, field, value)
+        setattr(settings, field, getattr(validated, field))
         applied.append(field)
 
     # A stored override must never be the reason the process cannot boot.
@@ -526,7 +523,7 @@ def apply_startup_service_overrides(session: Session | None = None) -> list[str]
             introduced = [p for p in with_overrides if p not in settings.production_problems()]
             if not introduced:
                 for field in applied:
-                    setattr(settings, field, overrides[field])
+                    setattr(settings, field, getattr(validated, field))
             else:
                 logger.error(
                     "Ignoring %d stored service override(s) — applying them would stop "
@@ -562,15 +559,21 @@ def _reject_startup_breaking_overrides(overrides: dict[str, Any]) -> None:
     saved is its own kind of lie. Rejecting at save time is the honest half:
     they find out while they are still looking at the form.
     """
+    try:
+        candidate = Settings.model_validate(
+            {
+                **settings.model_dump(),
+                **{
+                    field: overrides[field]
+                    for field in STARTUP_APPLIED_FIELDS
+                    if overrides.get(field) is not None
+                },
+            }
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if settings.debug:
         return
-    candidate = settings.model_copy(
-        update={
-            field: overrides[field]
-            for field in STARTUP_APPLIED_FIELDS
-            if overrides.get(field) is not None
-        }
-    )
     # Only what THIS change breaks. A deployment that is already missing, say,
     # SECRET_KEY must not have every unrelated settings save rejected on top.
     introduced = [

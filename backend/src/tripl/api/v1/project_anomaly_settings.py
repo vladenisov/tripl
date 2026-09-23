@@ -32,12 +32,23 @@ async def update_project_anomaly_settings(
     session: SessionDep,
     slug: str,
     data: ProjectAnomalySettingsUpdate,
+    current_user: EditorUserDep,
 ) -> ProjectAnomalySettings:
-    return await project_anomaly_settings_service.update_project_anomaly_settings(
+    updated = await project_anomaly_settings_service.update_project_anomaly_settings(
         session,
         slug,
         data,
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="anomaly_settings.update",
+        target_type="anomaly_settings",
+        target_id=None,
+        project_slug=slug,
+        payload=data.model_dump(exclude_unset=True),
+    )
+    return updated
 
 
 @router.get("/scope-overrides", response_model=AnomalyScopeOverrideListResponse)

@@ -180,20 +180,39 @@ async def create_comment(
     branch_id: uuid.UUID,
     data: BranchCommentCreate,
 ) -> BranchCommentResponse:
-    return await plan_branch_service.create_comment(
+    comment = await plan_branch_service.create_comment(
         session, slug, branch_id, data, user_id=current_user.id
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="plan_branch.comment_create",
+        target_type="plan_branch",
+        target_id=branch_id,
+        project_slug=slug,
+        payload={"comment_id": str(comment.id)},
+    )
+    return comment
 
 
 @router.delete("/{branch_id}/comments/{comment_id}", status_code=204)
 async def delete_comment(
     session: SessionDep,
-    current_user: EditorUserDep,  # noqa: ARG001 — kept for editor-only auth gate
+    current_user: EditorUserDep,
     slug: str,
     branch_id: uuid.UUID,
     comment_id: uuid.UUID,
 ) -> None:
     await plan_branch_service.delete_comment(session, slug, branch_id, comment_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="plan_branch.comment_delete",
+        target_type="plan_branch",
+        target_id=branch_id,
+        project_slug=slug,
+        payload={"comment_id": str(comment_id)},
+    )
 
 
 @router.get("/{branch_id}/diff", response_model=PlanBranchDiff)
@@ -243,20 +262,39 @@ async def save_branch_resolution(
     branch_id: uuid.UUID,
     data: ResolutionCreate,
 ) -> ResolutionResponse:
-    return await plan_branch_conflicts.save_resolution(
+    resolution = await plan_branch_conflicts.save_resolution(
         session, slug, branch_id, data, user_id=current_user.id
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="plan_branch.resolution_save",
+        target_type="plan_branch",
+        target_id=branch_id,
+        project_slug=slug,
+        payload={"resolution_id": str(resolution.id)},
+    )
+    return resolution
 
 
 @router.delete("/{branch_id}/resolutions/{resolution_id}", status_code=204)
 async def delete_branch_resolution(
     session: SessionDep,
-    current_user: EditorUserDep,  # noqa: ARG001 — kept for editor-only auth gate
+    current_user: EditorUserDep,
     slug: str,
     branch_id: uuid.UUID,
     resolution_id: uuid.UUID,
 ) -> None:
     await plan_branch_conflicts.delete_resolution(session, slug, branch_id, resolution_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="plan_branch.resolution_delete",
+        target_type="plan_branch",
+        target_id=branch_id,
+        project_slug=slug,
+        payload={"resolution_id": str(resolution_id)},
+    )
 
 
 @router.post("/{branch_id}/merge", response_model=PlanBranchDetailResponse)

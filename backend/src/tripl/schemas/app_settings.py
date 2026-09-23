@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from tripl.alerting_validation import validate_sender_address
+from tripl.config import validate_csp, validate_http_token
 
 # Mirrors app_settings_service.SettingSource. "default" means the value equals
 # the built-in default — either nothing was delivered for it, or what was
@@ -66,6 +67,16 @@ class SecuritySettingsUpdate(BaseModel):
     rate_limit_trust_forwarded_for: bool | None = None
     registration_mode: RegistrationMode | None = None
 
+    @field_validator("session_cookie_name")
+    @classmethod
+    def _check_cookie_name(cls, value: str | None) -> str | None:
+        return validate_http_token(value) if value is not None else None
+
+    @field_validator("content_security_policy")
+    @classmethod
+    def _check_csp(cls, value: str | None) -> str | None:
+        return validate_csp(value) if value is not None else None
+
 
 class StorageSettings(BaseModel):
     photo_storage_backend: str
@@ -100,11 +111,16 @@ class ObservabilitySettings(BaseModel):
 
 class ObservabilitySettingsUpdate(BaseModel):
     request_id_header: str | None = Field(default=None, min_length=1, max_length=100)
-    log_level: str | None = Field(default=None, min_length=1, max_length=20)
+    log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] | None = None
     log_json: bool | None = None
     prometheus_metrics_enabled: bool | None = None
     otel_exporter_otlp_endpoint: str | None = None
     otel_service_name: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("request_id_header")
+    @classmethod
+    def _check_header_name(cls, value: str | None) -> str | None:
+        return validate_http_token(value) if value is not None else None
 
 
 class EmailSettings(BaseModel):

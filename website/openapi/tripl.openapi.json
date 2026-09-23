@@ -27306,8 +27306,13 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 20,
-                "minLength": 1
+                "enum": [
+                  "CRITICAL",
+                  "ERROR",
+                  "WARNING",
+                  "INFO",
+                  "DEBUG"
+                ]
               },
               {
                 "type": "null"

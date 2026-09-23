@@ -12,7 +12,7 @@ from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.domain_enums import ChartAnnotationScopeType
 from tripl.schemas.chart_annotation import ChartAnnotationCreate, ChartAnnotationResponse
 from tripl.schemas.text_filters import FreeTextFilter
-from tripl.services import chart_annotation_service
+from tripl.services import audit_service, chart_annotation_service
 
 router = APIRouter(
     prefix="/projects/{slug}/annotations",
@@ -70,6 +70,15 @@ async def create_chart_annotation(
         scope_ref=data.scope_ref,
         user_id=current_user.id,
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="chart_annotation.create",
+        target_type="chart_annotation",
+        target_id=annotation.id,
+        target_name=annotation.label,
+        project_slug=slug,
+    )
     return ChartAnnotationResponse.model_validate(annotation)
 
 
@@ -80,5 +89,12 @@ async def delete_chart_annotation(
     annotation_id: uuid.UUID,
     current_user: EditorUserDep,
 ) -> None:
-    del current_user
     await chart_annotation_service.delete_annotation(session, slug, annotation_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="chart_annotation.delete",
+        target_type="chart_annotation",
+        target_id=annotation_id,
+        project_slug=slug,
+    )

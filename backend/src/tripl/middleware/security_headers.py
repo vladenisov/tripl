@@ -20,7 +20,7 @@ _DEFAULT_SPA_CSP = (
     "default-src 'self'; script-src 'self'; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; "
-    "connect-src 'self'; "
+    "connect-src 'self'; frame-src https://www.figma.com https://embed.figma.com; "
     "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 )
 
@@ -48,6 +48,11 @@ def build_security_headers() -> dict[str, str]:
         "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
     }
     csp = settings.content_security_policy or (_DEFAULT_SPA_CSP if settings.serve_frontend else "")
+    if not settings.content_security_policy and settings.photo_storage_backend == "gcs":
+        csp = csp.replace(
+            "img-src 'self' data: blob:",
+            "img-src 'self' data: blob: https://storage.googleapis.com",
+        )
     if csp:
         headers["content-security-policy"] = csp
     if settings.hsts_enabled:
