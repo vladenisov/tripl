@@ -16,7 +16,13 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.config import settings
-from tripl.db_config import MAX_OVERFLOW, POOL_PRE_PING, POOL_RECYCLE_SECONDS, POOL_SIZE
+from tripl.db_config import (
+    MAX_OVERFLOW,
+    POOL_PRE_PING,
+    POOL_RECYCLE_SECONDS,
+    POOL_SIZE,
+    postgres_connect_args,
+)
 
 if TYPE_CHECKING:
     from tripl.core.adapters.base import BaseAdapter
@@ -31,6 +37,7 @@ def _ensure_initialized() -> sessionmaker[Session]:
     if _session_local is None:
         _engine = create_engine(
             settings.sync_database_url,
+            connect_args=postgres_connect_args(settings.sync_database_url),
             echo=settings.debug,
             pool_size=POOL_SIZE,
             max_overflow=MAX_OVERFLOW,

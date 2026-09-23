@@ -154,6 +154,10 @@ class Settings(BaseSettings):
     photo_local_dir: str = "./var/photos"
     photo_max_size_mb: int = 10
     max_request_body_mb: int = Field(default=2, ge=1, le=100)
+    # Daily retention of operational history. Active scans are never pruned.
+    scan_job_retention_days: int = Field(default=90, ge=1)
+    distribution_drift_retention_days: int = Field(default=90, ge=1)
+    distribution_drift_minor_retention_days: int = Field(default=30, ge=1)
     photo_allowed_mime: str = "image/jpeg,image/png,image/gif,image/webp"
     gcs_photo_bucket: str = ""
     # Path to a service-account JSON. Empty falls back to Application Default
@@ -208,9 +212,8 @@ class Settings(BaseSettings):
 
     # OpenTelemetry tracing. Setting `otel_exporter_otlp_endpoint` to a non-
     # empty string opts the API + worker into FastAPI/SQLAlchemy/Celery auto-
-    # instrumentation with an OTLP exporter. No-op when the env is blank or
-    # the opentelemetry-* packages aren't installed (graceful — keeps the
-    # base image lean).
+    # instrumentation with an OTLP exporter. No-op when the env is blank.
+    # Shipped images include the optional OpenTelemetry dependency group.
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "tripl"
 

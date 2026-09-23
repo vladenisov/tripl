@@ -1,10 +1,9 @@
-"""OpenTelemetry tracing setup — graceful no-op when packages aren't installed.
+"""OpenTelemetry tracing setup — inactive until an OTLP endpoint is configured.
 
 Toggle by setting ``OTEL_EXPORTER_OTLP_ENDPOINT`` (env) to an OTLP collector.
-If empty, or if the optional ``opentelemetry-*`` packages aren't on the
-PYTHONPATH, the setup helpers log a debug line and return — the app keeps
-running without traces. Keeps the base image lean and lets ops opt in via
-config alone.
+If empty, the setup helpers return without loading tracing packages. The
+production images install the ``otel`` dependency extra. Missing packages in
+a custom image are logged and leave the app running without traces.
 
 Spans are emitted from:
  - FastAPI requests   (HTTP routing, errors, latency)
@@ -16,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit, urlunsplit
 
 from tripl.config import settings
 
@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 def _tracing_enabled() -> bool:
     return bool(settings.otel_exporter_otlp_endpoint)
+
+
+def _trace_export_endpoint(configured_url: str) -> str:
+    """Use the OTLP/HTTP trace path for a collector base URL."""
+    parsed = urlsplit(configured_url)
+    if parsed.path.strip("/"):
+        return configured_url
+    return urlunsplit((parsed.scheme, parsed.netloc, "/v1/traces", parsed.query, parsed.fragment))
 
 
 def _build_tracer_provider() -> Any:  # pragma: no cover — exercised at runtime only
@@ -47,7 +55,9 @@ def _build_tracer_provider() -> Any:  # pragma: no cover — exercised at runtim
         resource=Resource.create({"service.name": settings.otel_service_name})
     )
     provider.add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint))
+        BatchSpanProcessor(
+            OTLPSpanExporter(endpoint=_trace_export_endpoint(settings.otel_exporter_otlp_endpoint))
+        )
     )
     trace.set_tracer_provider(provider)
     return provider

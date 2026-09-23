@@ -36,6 +36,7 @@ from tripl.alerting_validation import (
 )
 from tripl.config import settings
 from tripl.crypto import decrypt_value
+from tripl.db_config import postgres_connect_args
 from tripl.models.event import Event, EventStatus, event_status_rank
 from tripl.models.implementation_ticket import ImplementationTicket
 from tripl.models.project_tracker_config import ProjectTrackerConfig
@@ -344,7 +345,11 @@ async def _sync_tickets(session: AsyncSession) -> None:
 async def _with_worker_session(run: Callable[[AsyncSession], Awaitable[None]]) -> None:
     """Async-bridge: throwaway NullPool engine that lives and dies inside this
     loop, disposed before it closes. See module docstring for the invariant."""
-    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    engine = create_async_engine(
+        settings.database_url,
+        poolclass=NullPool,
+        connect_args=postgres_connect_args(settings.database_url),
+    )
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         async with session_factory() as session:

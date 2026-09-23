@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tripl.models.base import Base, UUIDMixin
+from tripl.models.base import Base, UtcDateTime, UUIDMixin
 
 
 class EventMetric(UUIDMixin, Base):
@@ -43,7 +43,7 @@ class EventMetric(UUIDMixin, Base):
         ForeignKey("event_types.id", ondelete="SET NULL"),
         nullable=True,
     )
-    bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bucket: Mapped[datetime] = mapped_column(UtcDateTime())
     count: Mapped[int] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

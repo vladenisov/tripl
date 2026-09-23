@@ -179,10 +179,12 @@ Recovery hinges on the durable/ephemeral split:
   [`celery_app.py`](https://github.com/vladenisov/tripl/blob/main/backend/src/tripl/worker/celery_app.py)),
   which re-queues a task when a **worker** crashes mid-execution — but that does
   not protect messages already sitting in the broker if **RabbitMQ itself** is
-  lost. Recurring work is self-healing: `celery-beat` re-enqueues scheduled jobs
-  (metric checks every 5 minutes, stranded-delivery requeue every 5 minutes,
-  schema-drift cleanup daily, the deprecated-event sunset notice daily, weekly
-  plan digest), so a missed tick is picked up on the next interval.
+  lost. `celery-beat` resumes recurring work at the next scheduled time:
+  metric checks and stranded-delivery requeue run every 5 minutes, while
+  maintenance runs at 03:00, 04:00, and 05:00 UTC, and the weekly plan digest
+  runs Monday at 08:00 UTC.
+  A missed tick is **not** replayed. If the broker was down during a scheduled
+  run, check the affected work after it recovers.
 - **`celery-beat` schedule file** lives at `/tmp/celerybeat-schedule` inside the
   beat container and is regenerated on start — nothing to back up.
 
@@ -285,7 +287,12 @@ docker compose logs --tail=50 celery-beat
 
 The Prometheus `/metrics` endpoint is only mounted when
 `PROMETHEUS_METRICS_ENABLED=true` (off by default); expose it behind an
-internal-only path.
+internal-only path. The Compose stack shares a Prometheus multiprocess
+directory between the API and Celery worker and clears its old metric files
+before startup, so the endpoint includes worker-side scan, anomaly, drift,
+alert, and Celery task measurements. If you deploy the processes separately,
+provide the same writable `PROMETHEUS_MULTIPROC_DIR` to both and clear stale
+files at deployment startup.
 
 ## Rollback / downgrade
 
@@ -317,6 +324,12 @@ docker compose run --rm migrate alembic downgrade <target_revision>
 Take a fresh backup first (see [Backup & restore](#postgresql-backup--restore))
 — for non-trivial rollbacks, restoring a pre-upgrade dump is often safer than a
 downgrade migration. Validate the rollback in staging where possible.
+
+The `e8b10c257258` migration aligns model and database indexes: it adds the
+search-document branch index, renames two branch-review indexes, and removes
+seven indexes already covered by unique keys or another index. It does not
+delete application rows. On a large database, allow time for its index changes
+before starting the new API and workers.
 :::
 
 ## Post-deploy verification

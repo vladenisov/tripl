@@ -28,11 +28,11 @@ WORKDIR /app
 ENV UV_LINK_MODE=copy
 COPY backend/pyproject.toml backend/uv.lock backend/.python-version ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --extra otel --no-install-project
 COPY backend/src ./src
 COPY backend/alembic.ini ./alembic.ini
 COPY backend/alembic ./alembic
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra otel
 
 # ---- runtime: API + SPA in one process ----
 FROM python:3.14-slim-trixie AS runtime
@@ -58,6 +58,7 @@ ENV FRONTEND_DIST_DIR=/app/frontend_dist
 RUN groupadd --system --gid 1000 app \
     && useradd --system --uid 1000 --gid 1000 --no-create-home app \
     && mkdir -p /app/var/photos \
+    && mkdir -p /app/var/prometheus \
     && chown -R app:app /app/var
 USER app
 

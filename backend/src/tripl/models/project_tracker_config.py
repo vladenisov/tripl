@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
@@ -33,8 +33,9 @@ class ProjectTrackerConfig(UUIDMixin, Base):
     auth_email: Mapped[str] = mapped_column(String, default="", server_default="")
     api_token_encrypted: Mapped[str] = mapped_column(String, default="", server_default="")
     issue_type: Mapped[str] = mapped_column(String, default="Task", server_default="Task")
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
     )

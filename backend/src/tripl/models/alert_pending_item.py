@@ -105,7 +105,6 @@ class AlertPendingItem(UUIDMixin, TimestampMixin, Base):
             sqlite_where=text("scan_config_id IS NULL"),
         ),
         # The flusher's hot read is "everything buffered for this destination".
-        Index("ix_alert_pending_item_destination", "destination_id"),
         # The age sweep scans by recency; without this it degrades into a full
         # scan of a table that has no other retention.
         Index("ix_alert_pending_item_updated", "updated_at"),

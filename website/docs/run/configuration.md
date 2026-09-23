@@ -51,17 +51,19 @@ running API process enforces the checks.
 
 | Variable | Default | Required in prod? | Purpose |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | `postgresql+asyncpg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Async** SQLAlchemy URL used by the FastAPI app (asyncpg driver). |
-| `SYNC_DATABASE_URL` | `postgresql+psycopg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Sync** SQLAlchemy URL used by Alembic migrations and the Celery worker (psycopg driver). |
+| `DATABASE_URL` | `postgresql+asyncpg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Async** SQLAlchemy URL used by the FastAPI app and Alembic migrations (asyncpg driver). |
+| `SYNC_DATABASE_URL` | `postgresql+psycopg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Sync** SQLAlchemy URL used by the Celery worker (psycopg driver). |
 | `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672//` | Yes (must not keep dev creds) | Celery broker AMQP URL. |
 | `REDIS_URL` | `""` (empty) | No | Cache backend. **Empty disables caching entirely** — every read falls through to PostgreSQL. |
 
 :::danger Async vs sync URLs are not interchangeable
 tripl maintains **two** PostgreSQL URLs pointing at the same database:
 `DATABASE_URL` uses the async `asyncpg` driver for the web app, while
-`SYNC_DATABASE_URL` uses the synchronous `psycopg` driver for Alembic and
+Alembic, while `SYNC_DATABASE_URL` uses the synchronous `psycopg` driver for
 Celery. Keep host, port, database, and credentials identical between them; only
-the `+asyncpg` / `+psycopg` driver suffix differs.
+the `+asyncpg` / `+psycopg` driver suffix differs. Percent-encode reserved
+characters in URL credentials (for example, `@` as `%40`); Alembic preserves
+the encoded URL when loading its configuration.
 :::
 
 In the production [`compose.yaml`](https://github.com/vladenisov/tripl/blob/main/compose.yaml)
@@ -183,12 +185,18 @@ with a shared limiter or LB.
 | `LOG_LEVEL` | `INFO` | No | Log level (uppercased and trimmed). |
 | `LOG_JSON` | `false` | No | Emit one-line JSON logs instead of plain text. Compose/k8s should enable this. |
 | `PROMETHEUS_METRICS_ENABLED` | `false` | No | Exposes the `/metrics` endpoint and Celery task instrumentation. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `""` | No | Setting a non-empty value opts the API and worker into FastAPI/SQLAlchemy/Celery auto-instrumentation via an OTLP exporter. No-op when blank or when the `opentelemetry-*` packages are absent. |
+| `PROMETHEUS_MULTIPROC_DIR` | unset outside Compose | No | Shared writable directory for Prometheus metrics from all API and Celery worker processes. Compose sets `/app/var/prometheus` and mounts it in both services. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `""` | No | Setting a non-empty value opts the API and worker into FastAPI/SQLAlchemy/Celery auto-instrumentation via an OTLP exporter. The production image includes the optional tracing dependencies; a blank endpoint disables export. |
 | `OTEL_SERVICE_NAME` | `tripl` | No | Service name reported by the OTLP exporter. |
 
 :::tip
-`compose.yaml` defaults `LOG_JSON` to `true` (overridable). Expose `/metrics`
-only on an internal-only ingress path or scrape via a sidecar.
+`compose.yaml` defaults `LOG_JSON` to `true` (overridable); the API, Celery
+worker, and beat use the configured log level and format. Expose `/metrics`
+only on an internal-only ingress path or scrape via a sidecar. Compose shares
+the Prometheus multiprocess directory between the API and worker and clears old
+metric files before those processes start. When running without Compose, create
+a writable shared directory and clear stale files before each deployment. Each
+failed Celery task contributes one failure count to `tripl_celery_tasks_total`.
 :::
 
 ---
@@ -335,6 +343,21 @@ command — copy the objects across yourself before retiring a backend.
 | --- | --- | --- |
 | `SCAN_ROW_LIMIT_DEFAULT` | `50000` | Default row cap for scan/replay when no scan-config override is set. |
 | `METRICS_ROW_LIMIT_DEFAULT` | `100000` | Default row cap for metrics queries when no override is set. |
+
+### Operational history retention
+
+The daily maintenance task prunes old completed scan jobs and distribution
+drift records in every project. Scan-job age starts at `completed_at`, so a
+long-running job retains its full configured history after it finishes. Active
+scan jobs remain available. Distribution drift in the `stable` or `minor` band
+has a shorter horizon than significant drift; set the shorter horizon no higher
+than the general one.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SCAN_JOB_RETENTION_DAYS` | `90` | Age limit for completed scan jobs, measured from `completed_at`. |
+| `DISTRIBUTION_DRIFT_RETENTION_DAYS` | `90` | Age limit for significant distribution drift. |
+| `DISTRIBUTION_DRIFT_MINOR_RETENTION_DAYS` | `30` | Age limit for stable and minor distribution drift. |
 
 ---
 

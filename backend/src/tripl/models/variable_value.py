@@ -33,7 +33,6 @@ class VariableValue(UUIDMixin, TimestampMixin, Base):
             "field_definition_id",
             name="uq_variable_value_context",
         ),
-        Index("ix_variable_values_variable", "variable_id"),
         Index("ix_variable_values_event", "event_id"),
         Index("ix_variable_values_project_branch", "project_id", "branch_id"),
     )
