@@ -173,6 +173,12 @@ class CatalogSyncResult:
     # indefinitely. Counted per group, because that is the unit the check runs
     # in: one bad contract does not cost the groups beside it their check.
     contract_checks_failed: int = 0
+    # Single expectations an adapter declined while the rest of the check ran —
+    # an engine-refused pattern, a REPEATED column on BigQuery, a non-finite
+    # bound. A different unit from the line above, so a separate number: one
+    # refused pattern is not a whole event type going unchecked, but it is a
+    # contract that is no longer being evaluated (tripl-0zpq.341).
+    contract_expectations_skipped: int = 0
     replay_branch_id: uuid.UUID | None = None
     # Stays at its zero default on replay: replay has its own sampler in
     # ``tasks`` and reports through ``variable_values_touched``; only scheduled
@@ -627,6 +633,7 @@ def sync_catalog(
             )
             out.contract_violations_detected += contracts.violations_detected
             out.contract_checks_failed += contracts.checks_failed
+            out.contract_expectations_skipped += contracts.expectations_skipped
             et = _ensure_event_type_with_fields(
                 session,
                 config.project_id,
@@ -709,6 +716,7 @@ def sync_catalog(
         )
         out.contract_violations_detected += contracts.violations_detected
         out.contract_checks_failed += contracts.checks_failed
+        out.contract_expectations_skipped += contracts.expectations_skipped
         field_defs = {fd.name: fd for fd in event_type.field_definitions}
         out.single_result = generate_events_fn(
             session,

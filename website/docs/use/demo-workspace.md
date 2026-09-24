@@ -55,7 +55,10 @@ synthetic source:
   event‑volume series and the breakdown and drift work that hangs off it — pauses
   with it, on the same rule, because collecting while the tick is stopped would
   rewrite the demo's own history with the sparse rows the synthetic warehouse
-  keeps outside its newest hours. The **metrics catalog is dispatched by a second
+  keeps outside its newest hours. On resume, the scheduled collection waits for
+  the tick to backfill the paused hours first (normally within a minute), for
+  the same reason. `tripl doctor --include-demo` does not report a demo's idle
+  collection as stale. The **metrics catalog is dispatched by a second
   scheduler that has no such rule**, so a paused demo does not stop collecting
   altogether: its three interval-carrying catalog metrics — *Active Sessions*,
   *Revenue (completed)* and *Average order value*, all daily — keep being
@@ -64,7 +67,10 @@ synthetic source:
   stopped tick is no longer appending, so it runs out of new buckets to compose.)
   An operator can turn this tick off with
   [`DEMO_RUNTIME_ENABLED=false`](../run/configuration.md#demo-workspace); a demo
-  then keeps the data it already has.
+  then keeps the data it already has. With the tick off, nothing backfills
+  paused hours, so the scheduled collection does not wait for a backfill: while
+  the demo is in use it keeps running every six hours and appends the new
+  buckets itself.
 - **The audit log** — the actions *you* take in the demo (edits, collections,
   branch operations, alerting changes) go through the same audited service paths
   as a real project and show up in **Govern → Audit log**. The recipe writes the

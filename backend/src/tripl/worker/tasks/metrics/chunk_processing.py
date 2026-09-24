@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from tripl.core.adapters.base import BaseAdapter
 from tripl.core.analyzers._event_generator_variables import VariableIndex
 from tripl.core.analyzers.event_generator import GenerationResult
+from tripl.core.bucketing import stored_bucket
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
@@ -283,7 +284,7 @@ def process_chunk(
     shadow_agg: dict[tuple[uuid.UUID | None, str], list[object]] = {}
 
     for row in rows:
-        bucket = cast(datetime, row[0])
+        bucket = stored_bucket(row[0])
         data_row = row[1:]  # strip _bucket; _cnt is last but not indexed by col_meta
         cnt = int(cast(int | str | float, row[-1]))
         col_meta: dict[str, dict[str, object]]

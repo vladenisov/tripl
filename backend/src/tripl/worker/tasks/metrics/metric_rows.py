@@ -26,6 +26,7 @@ from tripl.core.analyzers.event_generator import (
     render_default_event_name,
     truncate_event_name,
 )
+from tripl.core.bucketing import stored_bucket
 from tripl.json_paths import (
     build_json_value,
     decode_json_path_value,
@@ -816,7 +817,7 @@ def _collect_metric_breakdown_rows(
     )
 
     for row in rows:
-        bucket = cast(datetime, row[0])
+        bucket = stored_bucket(row[0])
         breakdown_column = str(row[1])
         breakdown_value = _normalize_breakdown_value(row[2])
         is_other = bool(row[3])
@@ -968,7 +969,7 @@ def _collect_app_version_breakdown_rows(
     type_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int] = {}
 
     for row in rows:
-        bucket = cast(datetime, row[0])
+        bucket = stored_bucket(row[0])
         data_row = row[1:]
         if version_idx >= len(data_row) - 1:
             continue
@@ -1160,7 +1161,7 @@ def _collect_distribution_drift_rows(
         bucket_counts[value] = bucket_counts.get(value, 0) + count
 
     for row in rows:
-        bucket = cast(datetime, row[0])
+        bucket = stored_bucket(row[0])
         field_name = str(row[1])
         field_value = _normalize_breakdown_value(row[2])
         data_row = row[4:]
