@@ -1214,11 +1214,10 @@ def test_the_indefinite_mute_is_not_a_lapsed_one() -> None:
     guard and ``require_future_instant`` is handed a None: the first two
     assertions raise instead of building.
 
-    The third and fourth pin the other boundary the guards must not cross. Both
-    inbox bodies document a ``muted_until`` sent with a non-mute action as
-    IGNORED, and ``SchemaDriftActionRequest`` does the same for a
-    ``snoozed_until`` on an accept. Bounding those would turn a field this API
-    has always discarded into a 422 on requests that are working today.
+    The third and fourth pin the other boundary: a ``muted_until`` sent with a
+    non-mute action, or a ``snoozed_until`` on an accept, is refused as a
+    mismatch rather than silently discarded (tripl-0zpq.325), the rule
+    ``EventCommentActionRequest`` already applied.
     """
     assert AlertInboxActionRequest(action="mute", muted_until=None).muted_until is None
     assert (
@@ -1227,8 +1226,10 @@ def test_the_indefinite_mute_is_not_a_lapsed_one() -> None:
     )
 
     lapsed = datetime.now(UTC) - timedelta(days=30)
-    assert AlertInboxActionRequest(action="acknowledge", muted_until=lapsed).muted_until == lapsed
-    assert SchemaDriftActionRequest(action="accept", snoozed_until=lapsed).snoozed_until == lapsed
+    with pytest.raises(ValidationError, match="only meaningful when action is mute"):
+        AlertInboxActionRequest(action="acknowledge", muted_until=lapsed)
+    with pytest.raises(ValidationError, match="only meaningful when action is snooze"):
+        SchemaDriftActionRequest(action="accept", snoozed_until=lapsed)
 
     # And the guard that was already there still fires first: a snooze with no
     # instant at all is still refused for being absent, not for being stale.

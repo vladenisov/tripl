@@ -377,6 +377,10 @@ one of those owners before an authorized editor can merge a branch that adds,
 removes, or edits the type itself — its display name, description, color, or
 order; a branch that changes only the type's fields or events does not ask for
 one); a type with no owners has no owner-approval gate.
+The gate is a review convention for the branch workflow, not an access control:
+any editor can add or remove a type's owners, and an editor can still change the
+type directly on `main`, which asks for no approval (see
+[Security](../run/security.md#roles-and-access-control-rbac) on shared-project editing).
 
 **Deleting an event type is refused with a `409 Conflict` while a scan is bound
 to it.** The binding is what tells the scan where to put the events it collects,
@@ -396,7 +400,9 @@ catalog. Drift kinds are `new_field`, `missing_field`, `type_changed`,
 `enum_violation`, `required_null_violation`, `regex_violation`, and
 `range_violation`. Per drift you can **accept**, **snooze** (defaults to 7 days,
 and the date you pick has to be in the future), mark **false positive**, or
-**reopen**. A resolution note is optional on every one of them, and an action
+**reopen**. Only a snooze takes a `snoozed_until`; sending one with any other
+action is refused with `422` rather than silently ignored. A resolution note is
+optional on every one of them, and an action
 that carries no note **leaves the stored note alone**
 — re-snoozing a drift does not erase the reason somebody recorded last week.
 **Reopen** is the exception and clears the note: a reopened drift has no
@@ -1148,8 +1154,8 @@ the name *is* built from coincide. Naming the **Event type column** in the
 [What the scan form asks](#what-the-scan-form-asks)), and it usually separates
 them — but it is not a guarantee, because an event group rule that rewrites both
 names to one folds them back together anyway.
-**Dead events** (in plan, not seen recently over a
-14-day window) can be selected and archived; archiving targets the project's
+**Dead events** (in plan, no data in the last
+30 days) can be selected and archived; archiving targets the project's
 `main` branch.
 
 **Archiving puts an event away for good.** An archived event is inert: scans stop
@@ -1804,7 +1810,13 @@ matches.**
 A toggleable live panel (header label "Now") of recent activity for the project,
 or workspace-wide when no project is in scope. It shows up to 20 items of type
 `anomaly`, `scan`, `alert`, or `event`, severity-colored, auto-refreshing roughly
-every 60 seconds, with a manual refresh. A completed `scan` item summarizes what
+every 60 seconds, with a manual refresh. An `anomaly` item, from a scan or a
+catalog metric, is dated by the bucket it describes, not by when detection last
+re-scored it. It stays in the feed while that bucket is within the last 7 days,
+or within 3 intervals of the series' own grid when that is longer. A weekly
+series therefore stays visible: its newest reportable anomaly already starts
+more than a week back, because the current week is still settling.
+A completed `scan` item summarizes what
 the run produced — new events, metric points, **new** signals, and rows scanned;
 every figure on the card is that run's delta, not a project total — and
 reads "no new events discovered" when a run on an established catalog finds

@@ -911,10 +911,12 @@ async def get_seasonality_heatmap(
     # Say which interval produced these bins. Below an hour of resolution every
     # bucket floors into hour 0, so the 7x24 grid is 23/24 structurally empty and
     # a reader takes it for missing data rather than a coarser scan
-    # (tripl-jfm3.128).
+    # (tripl-jfm3.128). A 6h scan is not hourly either: its buckets land on
+    # 00/06/12/18, leaving 20 of 24 columns structurally empty, so only an
+    # interval of one hour or finer resolves an hour (tripl-0zpq.199).
     interval_code = scan_config.interval or ""
     try:
-        hourly_resolution = get_interval(interval_code).delta < timedelta(days=1)
+        hourly_resolution = get_interval(interval_code).delta <= timedelta(hours=1)
     except ValueError:
         # Unset or unknown is a configuration problem, not a reason to fail a
         # read-only chart: assume the finer rendering and let the grid speak.

@@ -203,7 +203,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                       <Chip
                         tone="accent"
                         size="xs"
-                        title="Has owners — only they can merge changes to this type"
+                        title="Has owners — a branch that edits this type needs an owner's approval to merge"
                       >
                         gated
                       </Chip>
