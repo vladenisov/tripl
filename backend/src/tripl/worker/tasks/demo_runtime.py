@@ -513,7 +513,6 @@ def _record_scan_job(
                 "variables_created": 0,
                 "columns_analyzed": 10,
                 "scan_rows_processed": buckets_written * sum(b for _e, _t, b, _n in roster),
-                "scan_truncated": False,
                 "buckets_appended": buckets_written,
                 "demo_runtime_tick": True,
             },

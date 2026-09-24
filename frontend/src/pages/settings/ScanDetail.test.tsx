@@ -12,6 +12,7 @@ import {
 import { liveLoopState } from '@/demo/scenarioTestState'
 import type { Project, ScanConfig } from '@/types'
 import { ScanDetail } from './ScanDetail'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -57,6 +58,41 @@ afterEach(() => {
 })
 
 describe('ScanDetail', () => {
+  it('shows Apply groups only to owners', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const auth = (role: 'editor' | 'owner'): AuthContextValue => ({
+      user: {
+        id: 'u-1', email: 'operator@example.com', name: 'Operator', role,
+        created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated', error: null, isLoggingOut: false,
+      logout: async () => {}, refresh: () => {},
+    })
+    const detail = (role: 'editor' | 'owner') => (
+      <AuthContext.Provider value={auth(role)}>
+        <QueryClientProvider client={queryClient}>
+          <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+        </QueryClientProvider>
+      </AuthContext.Provider>
+    )
+
+    const view = render(detail('editor'))
+    expect(await screen.findByText('Recent runs')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Apply groups' })).not.toBeInTheDocument()
+
+    view.rerender(detail('owner'))
+    expect(screen.getByRole('button', { name: 'Apply groups' })).toBeInTheDocument()
+  })
+
   it('shows replay chunk progress for running jobs', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)

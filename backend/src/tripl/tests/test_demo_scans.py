@@ -217,7 +217,7 @@ async def test_demo_rescan_folds_synthetic_events_without_flooding_catalog(
                 for column in adapter.get_columns(config.base_query)
                 if column.name != config.time_column
             ]
-            result, _groups, _rows, _truncated = _scan_with_grouping(
+            result, _groups, _rows = _scan_with_grouping(
                 sync_session,
                 config.project_id,
                 config,

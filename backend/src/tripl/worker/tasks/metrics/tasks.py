@@ -1129,7 +1129,6 @@ def collect_metrics(
             "catalog_scan_window_to": (
                 catalog_scan_window[1].isoformat() if catalog_scan_window else None
             ),
-            "scan_truncated": False,
             "event_metrics": n_ev,
             "type_metrics": n_tp,
             "breakdown_event_metrics": n_breakdown_ev,

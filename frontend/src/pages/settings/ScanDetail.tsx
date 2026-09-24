@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react"
+import { Fragment, useContext, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, ChevronDown, GitMerge, RotateCcw, XCircle } from "lucide-react"
 import { scansApi } from "@/api/scans"
@@ -27,6 +27,7 @@ import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanM
 import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import { projectEventTypesKey } from '@/lib/queryKeys'
+import { AuthContext } from '@/components/auth-context'
 
 function chipList(values: string[]) {
   if (values.length === 0) return <NoneTag />
@@ -123,6 +124,7 @@ export function ScanDetail({
   dataSource?: DataSource | null
 }) {
   const qc = useQueryClient()
+  const canApplyGroups = useContext(AuthContext)?.user?.role === 'owner'
   const { notifyScanRunStarted } = useDemoScenarioActions()
   // Null for every non-demo project — no row is ever the scenario's row.
   const { scanJobId } = useScenarioArtifacts()
@@ -337,7 +339,7 @@ export function ScanDetail({
       <SurfPanel
         title="Recent runs"
         subtitle={recentJobsSubtitle}
-        right={
+        right={canApplyGroups ? (
           <Button
             size="sm"
             variant="outline"
@@ -352,7 +354,7 @@ export function ScanDetail({
             <GitMerge className="size-3" />
             {applyGroupsMut.isPending ? 'Applying…' : 'Apply groups'}
           </Button>
-        }
+        ) : undefined}
       >
         {applyGroupsMut.isError && (
           <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(applyGroupsMut.error)}</p>

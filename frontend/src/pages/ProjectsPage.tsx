@@ -905,7 +905,6 @@ function LatestScanJobSummary({
   // the scan page for the same run.
   const rowsRead =
     job.result_summary?.query_rows_scanned ?? job.result_summary?.scan_rows_processed ?? null
-  const rowsTruncated = job.result_summary?.scan_truncated === true
   // Zero deltas are suppressed, all three alike. A green "+0 events" announced
   // in the success colour that nothing happened, while its zero siblings were
   // correctly silent — the card then read as a positive result at a glance
@@ -933,8 +932,8 @@ function LatestScanJobSummary({
             className="mono tnum"
             title="Warehouse rows this run read from the data source. Not an event count."
           >
-            {rowsRead.toLocaleString()}
-            {rowsTruncated ? '+' : ''} warehouse rows read
+            {rowsRead.toLocaleString()}{' '}
+            warehouse rows read
           </p>
         )}
         {scanError && (

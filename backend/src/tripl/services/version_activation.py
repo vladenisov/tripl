@@ -13,11 +13,14 @@ unit-testable. Buckets are ``datetime`` timestamps throughout.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 
 from tripl.semver import is_prerelease, order_versions
+
+logger = logging.getLogger(__name__)
 
 # The single source of truth for the activation gate. These began life in a
 # decision note that has since been deleted as stale, so the values here ARE the
@@ -51,6 +54,7 @@ def compile_prerelease_pattern(pattern: str | None) -> re.Pattern[str] | None:
     try:
         return re.compile(pattern)
     except re.error:
+        logger.warning("Invalid prerelease pattern in saved scan config: %r", pattern)
         return None
 
 

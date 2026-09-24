@@ -332,15 +332,17 @@ which variables, is a shorter list than "all of them":**
 
 | Run | Retires unused variables? |
 | --- | --- |
-| A scan you start by hand | Always, whatever minted them |
-| A **scheduled monitoring collection** | Always for a variable minted from a path inside a JSON column; for a variable minted from a scalar column, only when the config sets **Limits → Lookback (hours)** |
+| A scan you start by hand | Always for JSON-path variables; for scalar-column variables, only when every scan config in the project declares **Limits → Lookback (hours)** |
+| A **scheduled monitoring collection** | Always for JSON-path variables; for scalar-column variables, only when every scan config in the project declares **Limits → Lookback (hours)** |
 | A **metrics replay** | Never |
 
 Both exceptions are the same rule seen twice: a run only decides a variable is
 unused from a view it can defend.
 
-A manual scan with no lookback reads everything the base query returns, so
-"nothing refers to this" is a claim about all of your data. A scheduled
+A manual scan with no lookback reads everything its base query returns, but the
+variable sweep spans the whole project. A sibling config may have rewritten a
+scalar variable using a narrow collection interval, so the manual scan alone
+cannot justify retiring it. A scheduled
 collection has no such view. It always reads through a window, and with
 **Lookback (hours)** left blank that window is the slice it is collecting —
 usually one or two intervals, often a single hour. What that narrow view can do
@@ -371,15 +373,15 @@ sync the catalog at all — it recomputes counts over a past window and creates 
 events or variables — so it never sees which paths your rows currently carry and
 is in no position to call a variable unused.
 
-:::warning A schedule sweeps scalar-column variables only behind a lookback
+:::warning Scalar-column retirement needs lookbacks on every project scan
 The create page pre-fills **Limits → Lookback (hours)** with 24, but a config
 saved without one shows the field blank, and blank is a legitimate setting: each
-run reads the whole base query. It also means the scheduled runs of a
-**Catalog + monitoring** config judge only the variables minted from JSON paths
+run reads the whole base query. It also means catalog runs across that project
+judge only the variables minted from JSON paths
 — the shape that grows a permanent row per key, a map keyed by free text
 collected hourly, is swept — and leave every variable minted from a scalar
-column alone. If those are the rows piling up, set a lookback wide enough to
-contain your tracking plan, run the scan by hand, or clear the backlog from the
+column alone. If those are the rows piling up, set a representative lookback on
+every project scan config or clear the backlog from the
 danger zone below. *Variables retired* on a
 [run](./feature-reference.md#scan-runs) is present, `0` included, on every
 manual run and every scheduled collection, and absent only on a replay — so on a

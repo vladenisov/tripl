@@ -42,8 +42,8 @@ export function ScanConfigurationTab({
     queryFn: () => dataSourcesApi.list(),
   })
   const { data: eventTypes = [] } = useQuery({
-    queryKey: eventTypesKey(slug, branchId),
-    queryFn: () => eventTypesApi.list(slug, branchId),
+    queryKey: eventTypesKey(slug, null),
+    queryFn: () => eventTypesApi.list(slug, null),
   })
 
   const updateMut = useMutation({
@@ -179,8 +179,8 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
     queryFn: () => dataSourcesApi.list(),
   })
   const { data: eventTypes = [] } = useQuery({
-    queryKey: eventTypesKey(slug, branchId),
-    queryFn: () => eventTypesApi.list(slug, branchId),
+    queryKey: eventTypesKey(slug, null),
+    queryFn: () => eventTypesApi.list(slug, null),
   })
 
   const createMut = useMutation({

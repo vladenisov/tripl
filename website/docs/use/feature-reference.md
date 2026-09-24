@@ -400,6 +400,12 @@ that carries no note **leaves the stored note alone**
 **Reopen** is the exception and clears the note: a reopened drift has no
 resolution to annotate.
 
+Accepting a `new_field` or `type_changed` drift uses the same complex-type
+classification as detection: BigQuery `RECORD`/`STRUCT` becomes a JSON field,
+while scalar types remain scalar. A snoozed drift becomes active again once its
+deadline passes. **Reset drifts** also removes schema-drift rows left behind by
+a deleted scan config, including rows whose scan reference was set to null.
+
 Accepting a `missing_field` drift **deletes the declared field** from the event
 type. tripl refuses that with a `409 Conflict` when a scan on that event
 type builds its event names from the column — the plan cannot name its events
@@ -496,7 +502,9 @@ globally or for one event, snoozed, marked false-positive, or reopened; rows
 that are not asking for attention sit in both panels behind a toggle named for
 what it holds — **Show N resolved**, **Show N snoozed**, or **Show N snoozed or
 resolved** — and a scan reopens an accepted row on its own once it observes a
-value outside the accepted set. The event detail repeats the
+value outside the accepted set. An action without a resolution note preserves
+the existing note; send an explicit null to clear it, or reopen the drift.
+The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and
 delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
 removed scan-owned variable is not recreated. Search matches a variable's
@@ -508,12 +516,13 @@ A catalog run can end by **retiring the scan-created variables nothing refers
 to any more** — no `${token}` in any stored event field or meta value, no
 observed context, no value drift, no per-event override — so a catalog stops
 accumulating rows minted from a JSON column keyed by free text. A scan you start
-by hand always does this, whatever minted the variable. A **scheduled monitoring
+by hand runs this sweep, but scalar-derived variables are deferred if any scan
+config in the project lacks a declared lookback. A **scheduled monitoring
 collection** does it on every run for a variable minted from a path inside a
 JSON column — a key that stopped arriving is exactly what the pass is for, and
 the key's return mints the variable again under a new id — but judges a variable
-minted from a scalar column only when the config sets **Limits → Lookback
-(hours)**: with the field blank the run reads the slice it is collecting, often
+minted from a scalar column only when **every** project scan config sets
+**Limits → Lookback (hours)**: with the field blank a scheduled run reads the slice it is collecting, often
 a single hour, and a scalar column that looks enumerable for one quiet hour is
 rewritten as literals in every event at once, which is not evidence that its
 variable is dead. A **metrics replay** never does it: it syncs no catalog, so it
@@ -1329,6 +1338,13 @@ it can ingest an event. **Create scan** and **Save** stay disabled until it is
 answered, and the preview panel says the same thing rather than asking your
 warehouse a question with no answer.
 
+The event-type picker uses the project's main plan even when you are viewing a
+plan branch. A scan writes catalog changes to main, so create, update and dry-run
+reject an event type from a different project or a branch copy. Scan names must
+also be unique for their data source; a duplicate name returns a conflict rather
+than a server error. A malformed pre-release regex is rejected when the scan is
+saved, instead of being ignored during collection.
+
 **Everything else is a collapsed section.** Each carries one line saying what it
 is for and what happens if you leave it alone. Editing a saved config opens any
 section that already holds a non-default value.
@@ -1465,7 +1481,13 @@ directly to **Review events**, or replay metrics over historical chunks (replay
 requires a time column and an interval). Runs expose status, progress, and
 curated failure detail. A run's **details** list flags warehouse
 columns that carried data but had no matching field in the plan — a real
-coverage gap worth fixing. It stays quiet about columns that were empty for
+coverage gap worth fixing. Run, replay, and apply-groups requests refuse to
+start a second live job for the same scan config. Reaching a configured scan
+row limit fails that run rather than returning a partial successful result;
+successful summaries therefore do not carry a truncation flag. A stale Celery
+connection-test task is no longer used: the data-source connection test runs
+through the API request path.
+It stays quiet about columns that were empty for
 those rows, and about reserved role columns (event type, time, version,
 platform, and any column an event-group rule matches on), which tripl already
 uses elsewhere and never expects to have a plan field. A rule condition reserves
