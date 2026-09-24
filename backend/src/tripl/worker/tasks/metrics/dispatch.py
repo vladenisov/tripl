@@ -54,9 +54,29 @@ def _as_utc(value: datetime | None) -> datetime | None:
     Comparing a naive stored value against ``datetime.now(UTC)`` raises, so the
     mute-expiry checks below normalise first rather than assume the driver.
     """
-    if value is None or value.tzinfo is not None:
-        return value
-    return value.replace(tzinfo=UTC)
+    if value is None:
+        return None
+    return _utc_bucket(value)
+
+
+def _utc_bucket(bucket: datetime) -> datetime:
+    if bucket.tzinfo is None:
+        return bucket.replace(tzinfo=UTC)
+    return bucket.astimezone(UTC)
+
+
+def _bucket_is_newer(bucket: datetime, previous: datetime | None) -> bool:
+    """Compare stored SQLite and PostgreSQL buckets as UTC instants."""
+    if previous is None:
+        return True
+    return _utc_bucket(bucket) > _utc_bucket(previous)
+
+
+def _latest_bucket(bucket: datetime, previous: datetime | None) -> datetime:
+    """Keep the original timestamp representation when advancing state."""
+    if previous is None or _bucket_is_newer(bucket, previous):
+        return bucket
+    return previous
 
 
 def _cooldown_elapsed(
@@ -895,9 +915,8 @@ def _prepare_alert_deliveries(
                         # observation is not lost, through the same ``max`` the
                         # gate below uses — the re-read saw the winner's
                         # committed row, so this can only move forwards.
-                        current_state.last_anomaly_bucket = max(
-                            anomaly.bucket,
-                            current_state.last_anomaly_bucket or anomaly.bucket,
+                        current_state.last_anomaly_bucket = _latest_bucket(
+                            anomaly.bucket, current_state.last_anomaly_bucket
                         )
                 else:
                     if not current_state.is_active:
@@ -925,10 +944,7 @@ def _prepare_alert_deliveries(
                             cooldown_minutes=rule.cooldown_minutes,
                         )
                     elif current_state.last_notified_at is None or (
-                        (
-                            current_state.last_anomaly_bucket is None
-                            or anomaly.bucket > current_state.last_anomaly_bucket
-                        )
+                        (_bucket_is_newer(anomaly.bucket, current_state.last_anomaly_bucket))
                         and (
                             not cooldown_applies
                             or _cooldown_elapsed(
@@ -939,9 +955,8 @@ def _prepare_alert_deliveries(
                         )
                     ):
                         should_send = True
-                    current_state.last_anomaly_bucket = max(
-                        anomaly.bucket,
-                        current_state.last_anomaly_bucket or anomaly.bucket,
+                    current_state.last_anomaly_bucket = _latest_bucket(
+                        anomaly.bucket, current_state.last_anomaly_bucket
                     )
                 if should_send:
                     anomalies_to_send.append(anomaly)

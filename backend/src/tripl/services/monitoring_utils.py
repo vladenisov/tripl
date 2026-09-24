@@ -40,6 +40,13 @@ _SCAN_INTERVAL_DELTAS: dict[str, timedelta] = {
 }
 
 
+def _utc_bucket(bucket: datetime) -> datetime:
+    """SQLite drops timezone metadata from UTC buckets; restore it for comparisons."""
+    if bucket.tzinfo is None:
+        return bucket.replace(tzinfo=UTC)
+    return bucket.astimezone(UTC)
+
+
 def scan_interval_to_timedelta(interval: str | None) -> timedelta | None:
     """Map a ScanInterval value (e.g. ``"1d"``) to a ``timedelta``.
 
@@ -106,7 +113,7 @@ def scan_liveness_cutoff(
     measured against a different window than the decision it feeds is exactly
     how the two signal paths drifted before.
     """
-    reference = now if now is not None else datetime.now(UTC)
+    reference = _utc_bucket(now) if now is not None else datetime.now(UTC)
     window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
     return reference - _freshness_horizon(scan_interval_to_timedelta(interval), window)
 
@@ -128,7 +135,7 @@ def latest_bucket_by_scan(
         if scan_config_id is None or bucket is None:
             continue
         current = latest.get(scan_config_id)
-        if current is None or bucket > current:
+        if current is None or _utc_bucket(bucket) > _utc_bucket(current):
             latest[scan_config_id] = bucket
     return latest
 
@@ -239,13 +246,13 @@ def classify_signal_state(
     if latest_metric_bucket is None:
         return None
 
-    reference = now if now is not None else datetime.now(UTC)
+    reference = _utc_bucket(now) if now is not None else datetime.now(UTC)
     # Absent per-project override, every branch below behaves exactly as it did
     # when the 24h constant was read directly.
     window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
     horizon = _freshness_horizon(interval, window)
 
-    if anomaly_bucket >= latest_metric_bucket - emission_lag:
+    if _utc_bucket(anomaly_bucket) >= _utc_bucket(latest_metric_bucket) - emission_lag:
         latest_scan_cutoff = reference - horizon
         if _bucket_is_recent(anomaly_bucket, latest_scan_cutoff):
             return "latest_scan"
@@ -279,14 +286,8 @@ def classify_signal_state(
 
 
 def _bucket_is_recent(bucket: datetime, cutoff: datetime) -> bool:
-    """Compare a (possibly tz-naive) anomaly bucket against an aware cutoff.
-
-    Mirrors ``classify_signal_state``'s handling so naive timestamps coming
-    back from the DB don't raise on aware/naive comparison.
-    """
-    if bucket.tzinfo is None:
-        cutoff = cutoff.replace(tzinfo=None)
-    return bucket >= cutoff
+    """Compare SQLite and PostgreSQL buckets as UTC instants."""
+    return _utc_bucket(bucket) >= _utc_bucket(cutoff)
 
 
 class _MonitorState(Protocol):

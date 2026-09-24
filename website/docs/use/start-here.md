@@ -71,7 +71,7 @@ carries. Two minutes instead of two days and a duplicate event.
 it for review. Nothing touches the live plan until it's approved and merged —
 so the debate happens on a proposal, not on production.
 
-**Friday.** The weekly digest lands: coverage moved up, two deprecated events
+**Next Monday.** The weekly digest lands: coverage moved up, two deprecated events
 finally stopped firing, and one undocumented event showed up that nobody claims.
 You add it to the plan, or you go find out who's sending it.
 

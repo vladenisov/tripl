@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -20,6 +20,10 @@ class ChartAnnotation(UUIDMixin, TimestampMixin, Base):
     """
 
     __tablename__ = "chart_annotations"
+    __table_args__ = (
+        Index("ix_chart_annotation_project_bucket", "project_id", "bucket"),
+        Index("ix_chart_annotation_scope", "project_id", "scope_type", "scope_ref"),
+    )
 
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     scope_type: Mapped[str | None] = mapped_column(

@@ -15,7 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tripl.models.base import Base, UUIDMixin
+from tripl.models.base import Base, UtcDateTime, UUIDMixin
 from tripl.models.domain_enums import AnomalyDirection, MetricScopeType
 from tripl.models.enum_types import db_enum
 
@@ -29,13 +29,6 @@ class MetricAnomaly(UUIDMixin, Base):
             "scope_ref",
             "bucket",
             name="uq_metric_anomaly_scope_bucket",
-        ),
-        Index(
-            "ix_metric_anomaly_scope_bucket",
-            "scan_config_id",
-            "scope_type",
-            "scope_ref",
-            "bucket",
         ),
         Index("ix_metric_anomaly_event_bucket", "event_id", "bucket"),
         Index("ix_metric_anomaly_type_bucket", "event_type_id", "bucket"),
@@ -78,7 +71,7 @@ class MetricAnomaly(UUIDMixin, Base):
         ForeignKey("event_types.id", ondelete="SET NULL"),
         nullable=True,
     )
-    bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bucket: Mapped[datetime] = mapped_column(UtcDateTime())
     # Float: catalog metrics carry fractional actuals (ratios/averages); volume
     # scopes keep storing whole counts in the same column (tripl-68bc).
     actual_count: Mapped[float] = mapped_column(Float)

@@ -22,10 +22,13 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
+from tripl.config import settings
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
+from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
 from tripl.services.schema_drift_service import DRIFT_RETENTION_DAYS
 from tripl.worker.celery_app import celery_app
@@ -66,6 +69,74 @@ def cleanup_schema_drifts() -> dict[str, object]:
         deleted = int(getattr(result, "rowcount", 0) or 0)
         logger.info("Pruned %d schema_drifts rows older than %s", deleted, cutoff.isoformat())
         return {"deleted": deleted, "cutoff": cutoff.isoformat()}
+    finally:
+        session.close()
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.maintenance.cleanup_scan_jobs",
+)
+def cleanup_scan_jobs() -> dict[str, object]:
+    """Prune old terminal scan history while preserving every active job."""
+    cutoff = datetime.now(UTC) - timedelta(days=settings.scan_job_retention_days)
+    session = _get_sync_session()
+    try:
+        result = session.execute(
+            delete(ScanJob).where(
+                # A scan may run across the retention boundary. Prefer its
+                # completion time; legacy rows lacking it use the last update,
+                # then creation only if both timestamps are absent.
+                func.coalesce(ScanJob.completed_at, ScanJob.updated_at, ScanJob.created_at)
+                < cutoff,
+                ScanJob.status.in_(
+                    (
+                        ScanJobStatus.completed.value,
+                        ScanJobStatus.failed.value,
+                        ScanJobStatus.cancelled.value,
+                    )
+                ),
+            )
+        )
+        session.commit()
+        deleted = int(getattr(result, "rowcount", 0) or 0)
+        logger.info("Pruned %d scan_jobs rows older than %s", deleted, cutoff.isoformat())
+        return {"deleted": deleted, "cutoff": cutoff.isoformat()}
+    finally:
+        session.close()
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.maintenance.cleanup_distribution_drifts",
+)
+def cleanup_distribution_drifts() -> dict[str, object]:
+    """Keep significant drift longer than stable and minor observations."""
+    now = datetime.now(UTC)
+    significant_cutoff = now - timedelta(days=settings.distribution_drift_retention_days)
+    minor_cutoff = now - timedelta(days=settings.distribution_drift_minor_retention_days)
+    session = _get_sync_session()
+    try:
+        significant = session.execute(
+            delete(DistributionDrift).where(
+                DistributionDrift.band == "significant",
+                DistributionDrift.bucket < significant_cutoff,
+            )
+        )
+        minor = session.execute(
+            delete(DistributionDrift).where(
+                DistributionDrift.band.in_(("stable", "minor")),
+                DistributionDrift.bucket < minor_cutoff,
+            )
+        )
+        session.commit()
+        significant_deleted = int(getattr(significant, "rowcount", 0) or 0)
+        minor_deleted = int(getattr(minor, "rowcount", 0) or 0)
+        deleted = significant_deleted + minor_deleted
+        logger.info("Pruned %d distribution_drifts rows", deleted)
+        return {
+            "deleted": deleted,
+            "significant_deleted": significant_deleted,
+            "minor_deleted": minor_deleted,
+        }
     finally:
         session.close()
 

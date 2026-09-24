@@ -89,6 +89,10 @@ x-app-environment: &app-environment
   SMTP_SECURITY: ${SMTP_SECURITY:-}
   SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
   PROMETHEUS_METRICS_ENABLED: ${PROMETHEUS_METRICS_ENABLED:-}
+  PROMETHEUS_MULTIPROC_DIR: /app/var/prometheus
+  SCAN_JOB_RETENTION_DAYS: ${SCAN_JOB_RETENTION_DAYS:-90}
+  DISTRIBUTION_DRIFT_RETENTION_DAYS: ${DISTRIBUTION_DRIFT_RETENTION_DAYS:-90}
+  DISTRIBUTION_DRIFT_MINOR_RETENTION_DAYS: ${DISTRIBUTION_DRIFT_MINOR_RETENTION_DAYS:-30}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
   OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
   LOG_LEVEL: ${LOG_LEVEL:-}
@@ -161,6 +165,14 @@ services:
       postgres:
         condition: service_healthy
 
+  # Clear stale Prometheus worker shards once, before any instrumented process
+  # starts. All API/worker/beat processes share this directory.
+  metrics-init:
+    image: *app-image
+    command: ["sh", "-c", "find /app/var/prometheus -maxdepth 1 -type f -name '*.db' -delete"]
+    volumes:
+      - prometheus-multiproc:/app/var/prometheus
+
   # The ONE app container: JSON API + built SPA on a single port.
   app:
     restart: unless-stopped
@@ -176,6 +188,7 @@ services:
     # that ownership. Back it up together with pgdata18.
     volumes:
       - photos:/app/var/photos
+      - prometheus-multiproc:/app/var/prometheus
     depends_on:
       postgres:
         condition: service_healthy
@@ -185,12 +198,16 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      metrics-init:
+        condition: service_completed_successfully
 
   celery-worker:
     restart: unless-stopped
     image: *app-image
     command: ["celery", "-A", "tripl.worker.celery_app", "worker", "--loglevel=info"]
     environment: *app-environment
+    volumes:
+      - prometheus-multiproc:/app/var/prometheus
     healthcheck:
       disable: true
     depends_on:
@@ -200,18 +217,24 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      metrics-init:
+        condition: service_completed_successfully
 
   celery-beat:
     restart: unless-stopped
     image: *app-image
     command: ["celery", "-A", "tripl.worker.celery_app", "beat", "--loglevel=info", "--schedule", "/tmp/celerybeat-schedule"]
     environment: *app-environment
+    volumes:
+      - prometheus-multiproc:/app/var/prometheus
     healthcheck:
       disable: true
     depends_on:
       rabbitmq:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+      metrics-init:
         condition: service_completed_successfully
 
   # OPTIONAL MCP server for agent runtimes — profile-gated, never starts by
@@ -252,3 +275,4 @@ services:
 volumes:
   pgdata18:
   photos:
+  prometheus-multiproc:

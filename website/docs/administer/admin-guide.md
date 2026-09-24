@@ -497,7 +497,8 @@ How tripl reports its own health.
 - **Metrics & tracing:** Prometheus metrics (`prometheus_metrics_enabled` —
   exposes `/metrics`), OTLP endpoint (`otel_exporter_otlp_endpoint` — setting a
   non-empty value opts the API and worker into OpenTelemetry auto-
-  instrumentation), OTEL service name (`otel_service_name`, default `tripl`).
+  instrumentation; the production image includes the required packages), OTEL
+  service name (`otel_service_name`, default `tripl`).
 
 ### System (read-only)
 
@@ -506,6 +507,10 @@ mode, Database URL, Sync database URL, RabbitMQ URL, Redis URL, Encryption key,
 and the OpenAI fallback key. One further tile, **Schema revision**, reports the
 Alembic revision this instance's database is actually stamped with — the
 `version_num` in its `alembic_version` table — in one of four states:
+
+The first request in each API process loads the shipped migration head in a
+background thread, so reading the migration files does not block other API
+requests on the event loop.
 
 - **the revision string**, in a success tone, when it equals the migration head
   this build ships. The database is at the newest migration the running image

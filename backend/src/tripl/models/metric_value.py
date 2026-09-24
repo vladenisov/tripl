@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, Float, ForeignKey, Index, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tripl.models.base import Base, UUIDMixin
+from tripl.models.base import Base, UtcDateTime, UUIDMixin
 
 
 class MetricValue(UUIDMixin, Base):
@@ -45,7 +45,7 @@ class MetricValue(UUIDMixin, Base):
         ForeignKey("scan_configs.id", ondelete="CASCADE"),
         nullable=True,
     )
-    bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bucket: Mapped[datetime] = mapped_column(UtcDateTime())
     value: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

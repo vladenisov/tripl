@@ -41,7 +41,7 @@ tripl is three cooperating processes plus a database and a message broker:
   warehouses.
 - **celery-beat** — the scheduler. Triggers due metric-collection checks — for
   both event counts and the **metric catalog** (a ~300 s due-check) — and the
-  schema-drift retention cleanup. It also polls implementation tickets, chases
+  schema, distribution-drift, and scan-job retention cleanup. It also polls implementation tickets, chases
   stranded search embeddings, reaps stuck alert deliveries (retrying
   transiently-failed ones for a bounded window), and runs periodic
   alert/maintenance tasks.
@@ -71,11 +71,14 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - DB engine and pool configuration is centralized in `src/tripl/db_config.py`
   (an async pooled engine for the API, a sync pooled engine for Celery; the
   worker→async bridge uses a throwaway NullPool engine — see
-  `worker/search_reindex.py`).
-- Migrations are applied by the deployment entrypoint (the Compose `api` command
-  runs `alembic upgrade head`) before the API starts serving requests, so the
-  schema is current. The app process itself does not run migrations on startup;
-  its lifespan only configures logging and asserts production readiness.
+  `worker/search_reindex.py`). PostgreSQL connections pin the session timezone
+  to UTC for both asyncpg and psycopg.
+- Migrations are applied by the Compose `migrate` one-shot via `alembic upgrade
+  head` before the API and workers start. Alembic uses the asyncpg
+  `DATABASE_URL`; the worker uses the psycopg `SYNC_DATABASE_URL`. Reserved
+  characters in URL credentials are percent-encoded. The app process does not
+  run migrations on startup; its lifespan configures logging and asserts
+  production readiness.
 - **Migrations are executed in CI, not just parsed.** The `migrations` job stands
   up the same `pgvector/pgvector` image the Compose stack uses (the chain enables
   `pg_trgm`, `unaccent` and `vector`, so a stock `postgres` image cannot run it)
@@ -536,8 +539,15 @@ session — so `reserved_catalog_columns` can be reused verbatim on it.
    reindex. A replay skips this whole phase and both of its tails; an undeclared
    window narrows only the sweep, never the reindex.
 4. Counts are aggregated into `event_metrics`.
-5. Anomalies are recalculated into `metric_anomalies`.
-6. Matching alert rules enqueue deliveries.
+ 5. Anomalies are recalculated into `metric_anomalies`.
+ 6. Matching alert rules enqueue deliveries.
+
+Metric and anomaly bucket timestamps are UTC-aware in application code,
+including SQLite-backed tests. The six event/catalog metric, breakdown, and
+anomaly bucket model columns use the same UTC conversion contract as production
+PostgreSQL; this model change does not require a database migration. API series
+and anomaly responses serialize these bucket instants as RFC 3339 timestamps
+with an explicit UTC `Z` suffix, for example `2026-09-24T08:00:00Z`.
 
 ### Catalog metric flow
 
@@ -604,10 +614,12 @@ branch is searchable from the next request.
 
 - **Prometheus** — a `/metrics` endpoint, enabled with
   `PROMETHEUS_METRICS_ENABLED`, exposing scan, anomaly, alert-delivery,
-  schema-drift, and Celery task counters and histograms.
+  schema-drift, and Celery task counters and histograms. Compose provides a
+  shared multiprocess directory for API and worker metrics and clears stale
+  files at deployment startup. A Celery failure is counted once.
 - **OpenTelemetry** — tracing for FastAPI + SQLAlchemy + Celery, enabled with
-  `OTEL_EXPORTER_OTLP_ENDPOINT`. It degrades to a logged no-op when the env var
-  is blank or the `opentelemetry-*` packages aren't installed.
+  `OTEL_EXPORTER_OTLP_ENDPOINT`. The production image includes the tracing
+  dependencies; a blank endpoint leaves tracing disabled.
 
 ---
 

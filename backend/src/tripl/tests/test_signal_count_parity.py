@@ -458,7 +458,7 @@ async def test_ongoing_outage_reaches_a_drilldown_range_that_starts_after_it(
     drilldown = body["latest_signal"]
     assert drilldown is not None, "the drilldown dropped an open signal older than its range"
     assert drilldown["state"] == listed[0].state == "latest_scan"
-    anchor_iso = _LONG_OUTAGE_ANCHOR_BUCKET.replace(tzinfo=None).isoformat()
+    anchor_iso = _LONG_OUTAGE_ANCHOR_BUCKET.isoformat().replace("+00:00", "Z")
     assert drilldown["bucket"] == anchor_iso
 
     # Widening is what makes the signal reachable, so the chart shows the anchor

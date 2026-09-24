@@ -7,13 +7,13 @@ ENV UV_LINK_MODE=copy
 
 COPY pyproject.toml uv.lock .python-version ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --extra otel --no-install-project
 
 COPY src ./src
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --extra otel
 
 FROM base AS dev
 
@@ -42,7 +42,7 @@ ENV UVICORN_WORKERS=4
 # with this ownership, which is what keeps the blobs across a redeploy.
 RUN groupadd --system --gid 1000 app \
     && useradd --system --uid 1000 --gid 1000 --no-create-home app \
-    && mkdir -p /app/var/photos \
+    && mkdir -p /app/var/photos /app/var/prometheus \
     && chown -R app:app /app/var
 USER app
 

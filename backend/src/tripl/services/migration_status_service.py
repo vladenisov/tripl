@@ -14,6 +14,7 @@ and the settings page must never 500 because a revision could not be read.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 from dataclasses import dataclass
@@ -121,4 +122,4 @@ async def get_migration_status(session: AsyncSession) -> MigrationStatus:
     except Exception:  # noqa: BLE001
         logger.warning("Could not read the applied alembic revision", exc_info=True)
         applied = None
-    return _status(applied, head_revision())
+    return _status(applied, await asyncio.to_thread(head_revision))

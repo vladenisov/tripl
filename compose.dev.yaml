@@ -30,6 +30,10 @@ x-backend-environment: &backend-environment
   LOG_JSON: ${LOG_JSON:-false}
   REQUEST_ID_HEADER: ${REQUEST_ID_HEADER:-X-Request-ID}
   PROMETHEUS_METRICS_ENABLED: ${PROMETHEUS_METRICS_ENABLED:-false}
+  PROMETHEUS_MULTIPROC_DIR: /app/var/prometheus
+  SCAN_JOB_RETENTION_DAYS: ${SCAN_JOB_RETENTION_DAYS:-90}
+  DISTRIBUTION_DRIFT_RETENTION_DAYS: ${DISTRIBUTION_DRIFT_RETENTION_DAYS:-90}
+  DISTRIBUTION_DRIFT_MINOR_RETENTION_DAYS: ${DISTRIBUTION_DRIFT_MINOR_RETENTION_DAYS:-30}
   # Demo kill switches: DEMO_ENABLED gates provisioning (create + reset),
   # DEMO_RUNTIME_ENABLED gates the background freshness tick (tripl-2su6.16).
   DEMO_ENABLED: ${DEMO_ENABLED:-true}
@@ -55,6 +59,12 @@ x-backend-environment: &backend-environment
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
 
 services:
+  metrics-init:
+    build: *backend-build
+    command: ["sh", "-c", "mkdir -p /app/var/prometheus && find /app/var/prometheus -maxdepth 1 -type f -name '*.db' -delete"]
+    volumes:
+      - prometheus-multiproc:/app/var/prometheus
+
   postgres:
     image: pgvector/pgvector:0.8.2-pg18-trixie
     environment:
@@ -114,7 +124,11 @@ services:
       <<: *backend-environment
       DEBUG: "true"
       WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - prometheus-multiproc:/app/var/prometheus
     depends_on:
+      metrics-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -150,7 +164,11 @@ services:
     build: *backend-build
     command: ["celery", "-A", "tripl.worker.celery_app", "worker", "--loglevel=info"]
     environment: *backend-environment
+    volumes:
+      - prometheus-multiproc:/app/var/prometheus
     depends_on:
+      metrics-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       rabbitmq:
@@ -190,7 +208,11 @@ services:
     build: *backend-build
     command: ["celery", "-A", "tripl.worker.celery_app", "beat", "--loglevel=info"]
     environment: *backend-environment
+    volumes:
+      - prometheus-multiproc:/app/var/prometheus
     depends_on:
+      metrics-init:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
       # Same reason as celery-worker: wait for the api's inline migration.
@@ -306,3 +328,4 @@ services:
 
 volumes:
   pgdata18:
+  prometheus-multiproc:

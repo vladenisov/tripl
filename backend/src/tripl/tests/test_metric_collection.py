@@ -290,8 +290,8 @@ def test_collect_fact_writes_metric_values(
             .all()
         )
         assert {(row.bucket, row.value) for row in rows} == {
-            (datetime(2026, 1, 1, 10), 12.5),
-            (datetime(2026, 1, 1, 11), 7.0),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 12.5),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), 7.0),
         }
         assert all(row.scan_config_id is None for row in rows)
         definition = session.get(MetricDefinition, uuid.UUID(def_id))
@@ -335,8 +335,8 @@ def test_collect_fact_is_idempotent_on_rerun(
         # index, so ON CONFLICT alone would not dedupe).
         assert len(rows) == 2
         assert {(row.bucket, row.value) for row in rows} == {
-            (datetime(2026, 1, 1, 10), 5.0),
-            (datetime(2026, 1, 1, 11), 6.0),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 5.0),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), 6.0),
         }
 
 
@@ -381,9 +381,8 @@ def test_collect_fact_floors_naive_bucket_to_utc(
             .all()
         )
         assert len(rows) == 1
-        # Floored to the hour boundary (SQLite drops the tzinfo on round-trip, so
-        # the in-process UTC coercion is asserted by ``_coerce_bucket`` directly).
-        assert rows[0].bucket == datetime(2026, 1, 1, 10)
+        # Floored to the hour boundary and restored as UTC on ORM load.
+        assert rows[0].bucket == datetime(2026, 1, 1, 10, tzinfo=UTC)
 
 
 def test_collect_fact_ratio_handles_divide_by_zero(
@@ -459,7 +458,9 @@ def test_collect_fact_ratio_handles_divide_by_zero(
             .scalars()
             .all()
         )
-        assert {(row.bucket, row.value) for row in rows} == {(datetime(2026, 1, 1, 10), 5.0)}
+        assert {(row.bucket, row.value) for row in rows} == {
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 5.0)
+        }
 
 
 def test_collect_fact_ratio_writes_breakdown_values(
@@ -759,8 +760,8 @@ def test_collect_sql_metric_writes_metric_values(
             .all()
         )
         assert {(row.bucket, row.value) for row in rows} == {
-            (datetime(2026, 1, 1, 10), 5.0),
-            (datetime(2026, 1, 1, 11), 9.0),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 5.0),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), 9.0),
         }
 
 
@@ -817,8 +818,8 @@ def test_collect_sql_metric_honors_custom_value_column(
             .all()
         )
         assert {(row.bucket, row.value) for row in rows} == {
-            (datetime(2026, 1, 1, 10), 5.0),
-            (datetime(2026, 1, 1, 11), 9.0),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 5.0),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), 9.0),
         }
 
 
@@ -902,8 +903,8 @@ def test_collect_sql_metric_forced_collects_draft(
             .all()
         )
         assert {(row.bucket, row.value) for row in rows} == {
-            (datetime(2026, 1, 1, 10), 5.0),
-            (datetime(2026, 1, 1, 11), 9.0),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 5.0),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), 9.0),
         }
 
 
@@ -973,8 +974,8 @@ def test_collect_event_composition_single_counts(
             .all()
         )
         assert {(row.bucket, row.value) for row in rows} == {
-            (datetime(2026, 1, 1, 10), 10.0),
-            (datetime(2026, 1, 1, 11), 20.0),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 10.0),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), 20.0),
         }
         # event_composition values are keyed by the source scan grid.
         assert all(row.scan_config_id == scan_config_id for row in rows)
@@ -1045,7 +1046,9 @@ def test_collect_event_composition_ratio_handles_divide_by_zero(
             .scalars()
             .all()
         )
-        assert {(row.bucket, row.value) for row in rows} == {(datetime(2026, 1, 1, 10), 5.0)}
+        assert {(row.bucket, row.value) for row in rows} == {
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 5.0)
+        }
 
 
 def test_collect_event_composition_ratio_clears_out_of_range_denominator_bucket(
@@ -1127,9 +1130,9 @@ def test_collect_event_composition_ratio_clears_out_of_range_denominator_bucket(
             .all()
         )
         assert {(row.bucket, row.value) for row in rows} == {
-            (b10, 0.0),
-            (b11, 2.0),
-            (b12, 4.0),
+            (b10.replace(tzinfo=UTC), 0.0),
+            (b11.replace(tzinfo=UTC), 2.0),
+            (b12.replace(tzinfo=UTC), 4.0),
         }
         # Flip the out-of-range denominator bucket to zero: b10 now divides by zero
         # (-> None, no UPSERT row). Only a union-derived window deletes the stale row.
@@ -1150,8 +1153,8 @@ def test_collect_event_composition_ratio_clears_out_of_range_denominator_bucket(
             .all()
         )
         assert {(row.bucket, row.value) for row in rows} == {
-            (b11, 2.0),
-            (b12, 4.0),
+            (b11.replace(tzinfo=UTC), 2.0),
+            (b12.replace(tzinfo=UTC), 4.0),
         }
 
 
@@ -1239,7 +1242,9 @@ def test_collect_event_composition_per_distinct_user(
             .scalars()
             .all()
         )
-        assert {(row.bucket, row.value) for row in rows} == {(datetime(2026, 1, 1, 10), 5.0)}
+        assert {(row.bucket, row.value) for row in rows} == {
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 5.0)
+        }
 
 
 # ── pure evaluator ─────────────────────────────────────────────────────────────

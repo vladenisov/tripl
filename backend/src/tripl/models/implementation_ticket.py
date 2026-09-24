@@ -36,8 +36,9 @@ class ImplementationTicket(UUIDMixin, Base):
     status: Mapped[str] = mapped_column(String, default="open", server_default="open")
     summary: Mapped[str] = mapped_column(String, default="", server_default="")
     event_ids: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
     )

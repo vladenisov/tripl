@@ -1,22 +1,16 @@
 from celery import Celery
+from celery.schedules import crontab
+from celery.signals import beat_init, setup_logging, worker_init, worker_process_init
 
 from tripl.config import settings
+from tripl.logging_config import configure_logging
+from tripl.observability.metrics import install_celery_instrumentation
+from tripl.observability.tracing import setup_worker_tracing
 from tripl.services.app_settings_service import apply_startup_service_overrides
+from tripl.worker.db import dispose_engine
 
-# Apply persisted Security/Storage/Observability overrides onto `settings` before
-# anything reads them (the prometheus gate below, logging, and task modules).
-# Mirrors the API entry point so the worker honours the same overrides.
-apply_startup_service_overrides()
-
-if settings.prometheus_metrics_enabled:
-    from tripl.observability.metrics import install_celery_instrumentation
-
-    install_celery_instrumentation()
-
-# Opt-in OpenTelemetry tracing for Celery — same env gate as the API.
-from tripl.observability.tracing import setup_worker_tracing  # noqa: E402
-
-setup_worker_tracing()
+# Importing this module in an API request must not read the settings database.
+# Celery's own process-start signals apply persisted overrides instead.
 
 celery_app = Celery("tripl")
 celery_app.conf.broker_url = settings.rabbitmq_url
@@ -57,8 +51,8 @@ celery_app.conf.task_time_limit = 60 * 60  # 60 min
 # while others idle. Safer default for unpredictable task durations.
 celery_app.conf.worker_prefetch_multiplier = 1
 
-# Require deduplication tags to be stable so retried tasks aren't treated as new.
-celery_app.conf.task_default_retry_delay = 30
+# Celery reads default_retry_delay from the Task class, not app configuration.
+celery_app.Task.default_retry_delay = 30
 
 celery_app.conf.beat_schedule = {
     "check-metrics-due": {
@@ -66,31 +60,39 @@ celery_app.conf.beat_schedule = {
         # Scans schedule on interval boundaries (15m, 1h, 6h, …), so 5-minute
         # polling is more than enough and leaves headroom if the dispatcher
         # itself becomes slow against a growing scan_configs table.
-        "schedule": 300.0,
+        "schedule": crontab(minute="*/5"),
     },
     "check-metric-definitions-due": {
         "task": "tripl.worker.tasks.metrics.check_metric_definitions_due",
         # Catalog metrics schedule on interval boundaries (15m, 1h, …) just like
         # scans, so a 5-minute dispatcher tick is plenty. Runs independently of
         # check-metrics-due (separate task + advisory lock).
-        "schedule": 300.0,
+        "schedule": crontab(minute="*/5"),
     },
     "cleanup-schema-drifts": {
         "task": "tripl.worker.tasks.maintenance.cleanup_schema_drifts",
         # Daily prune is plenty — drift rows past retention are filtered
         # out at read time anyway, the cleanup only reclaims storage.
-        "schedule": 24 * 60 * 60.0,
+        "schedule": crontab(hour=3, minute=0),
+    },
+    "cleanup-scan-jobs": {
+        "task": "tripl.worker.tasks.maintenance.cleanup_scan_jobs",
+        "schedule": crontab(hour=4, minute=0),
+    },
+    "cleanup-distribution-drifts": {
+        "task": "tripl.worker.tasks.maintenance.cleanup_distribution_drifts",
+        "schedule": crontab(hour=5, minute=0),
     },
     "requeue-stranded-alert-deliveries": {
         "task": "tripl.worker.tasks.maintenance.requeue_stranded_alert_deliveries",
         # Every 5 minutes — deliveries are only considered stranded after
         # STRANDED_DELIVERY_MINUTES, so this just bounds detection latency for
         # rows the worker/broker failed to dispatch.
-        "schedule": 300.0,
+        "schedule": crontab(minute="*/5"),
     },
     "send-weekly-plan-digest": {
         "task": "tripl.worker.tasks.alerts.send_weekly_plan_digest",
-        "schedule": 7 * 24 * 60 * 60.0,
+        "schedule": crontab(day_of_week=1, hour=8, minute=0),
     },
     "check-deprecated-sunset-events": {
         "task": "tripl.worker.tasks.alerts.check_deprecated_sunset_events",
@@ -117,14 +119,14 @@ celery_app.conf.beat_schedule = {
         # someone acts. At the digest's own cadence it would also arrive in the
         # same week as the line it exists to expand, which is a duplicate
         # rather than a follow-up.
-        "schedule": 24 * 60 * 60.0,
+        "schedule": crontab(hour=6, minute=0),
     },
     "sync-implementation-tickets": {
         "task": "tripl.worker.tasks.implementation_tickets.sync_implementation_tickets",
         # Poll every 5 minutes — implementation tickets close on human timescales
         # (a dev finishing a Jira issue), so tighter polling buys nothing and only
         # adds load against the tracker's REST API.
-        "schedule": 300.0,
+        "schedule": crontab(minute="*/5"),
     },
     "reindex-stale-search-documents": {
         "task": "tripl.worker.tasks.search.reindex_stale_search_documents",
@@ -134,14 +136,14 @@ celery_app.conf.beat_schedule = {
         # API's way — a 10-branch instance is fully converted inside an hour, the
         # same order as the delay main already has (it waits for the next scan).
         # Between bumps the query matches nothing and a pass is one indexed lookup.
-        "schedule": 600.0,
+        "schedule": crontab(minute="*/10"),
     },
     "requeue-stranded-search-embeddings": {
         "task": "tripl.worker.tasks.search.requeue_stranded_search_embeddings",
         # Every 15 minutes — embeddings refresh event-driven after each reindex;
         # this chaser only bounds how long a lost queue message or an exhausted
         # batch retry can leave documents pending (STRANDED_EMBEDDING_MINUTES).
-        "schedule": 900.0,
+        "schedule": crontab(minute="*/15"),
     },
     "flush-due-alert-digests": {
         "task": "tripl.worker.tasks.alert_flush.flush_due_alert_digests",
@@ -156,7 +158,7 @@ celery_app.conf.beat_schedule = {
         # millions), and nothing else at all when none are due. Compare
         # check-metrics-due, which does a grouped max(bucket) over the metrics
         # table every 300s.
-        "schedule": 60.0,
+        "schedule": crontab(minute="*"),
     },
     "advance-demos": {
         "task": "tripl.worker.tasks.demo_runtime.advance_demos",
@@ -165,19 +167,37 @@ celery_app.conf.beat_schedule = {
         # per-demo tick is idempotent so an early/overlapping run is a no-op. A
         # no-op entirely when demo_runtime_enabled is false. Independent of the
         # metrics dispatchers (own task + per-project advisory lock).
-        "schedule": 300.0,
+        "schedule": crontab(minute="*/5"),
     },
 }
 
-# Fork-safety: apply_startup_service_overrides() above reads the DB in the
-# parent (MainProcess), which lazily builds the shared sync Engine + pool BEFORE
-# prefork forks the worker children. Forked children would otherwise inherit that
-# engine and its live Postgres socket, interleaving protocol traffic on ONE
-# shared connection across tasks. Disposing the inherited engine in each child
-# forces the next SyncSessionLocal() to rebuild a fresh, process-owned pool.
-from celery.signals import worker_process_init  # noqa: E402
 
-from tripl.worker.db import dispose_engine  # noqa: E402
+def _configure_worker_runtime(**_kwargs: object) -> None:
+    """Apply persisted settings before worker instrumentation and task execution."""
+    apply_startup_service_overrides()
+    configure_logging()
+    if settings.prometheus_metrics_enabled:
+        install_celery_instrumentation()
+    setup_worker_tracing()
+
+
+def _configure_beat_runtime(**_kwargs: object) -> None:
+    """Apply persisted settings and logging when beat starts."""
+    apply_startup_service_overrides()
+    configure_logging()
+
+
+def _configure_celery_logging(**_kwargs: object) -> None:
+    """Own the root handler so Celery does not replace the configured format."""
+    configure_logging()
+
+
+worker_init.connect(_configure_worker_runtime, weak=False)
+beat_init.connect(_configure_beat_runtime, weak=False)
+setup_logging.connect(_configure_celery_logging, weak=False)
+
+# The worker startup read creates a sync engine in the parent process. Dispose
+# that inherited pool after prefork so each child opens its own connections.
 
 
 @worker_process_init.connect  # type: ignore[untyped-decorator]

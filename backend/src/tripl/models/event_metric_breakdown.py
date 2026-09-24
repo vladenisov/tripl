@@ -15,7 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tripl.models.base import Base, UUIDMixin
+from tripl.models.base import Base, UtcDateTime, UUIDMixin
 
 
 class EventMetricBreakdown(UUIDMixin, Base):
@@ -70,7 +70,7 @@ class EventMetricBreakdown(UUIDMixin, Base):
         ForeignKey("event_types.id", ondelete="SET NULL"),
         nullable=True,
     )
-    bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bucket: Mapped[datetime] = mapped_column(UtcDateTime())
     breakdown_column: Mapped[str] = mapped_column(String(255))
     breakdown_value: Mapped[str] = mapped_column(String(500))
     is_other: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -2,8 +2,9 @@
 
 Surfaces a small set of counters / histograms so an operator can answer
 "are scans running", "are alerts being delivered", "is the worker keeping
-up". Kept in one module so both `tripl.main` (HTTP `/metrics` endpoint) and
-`tripl.worker.celery_app` (Celery signal handlers) hit the same singletons.
+up". Worker processes write to PROMETHEUS_MULTIPROC_DIR; the API reads that
+shared directory at scrape time. Without that environment variable, only
+metrics from the API process are exported.
 
 The endpoint and the Celery handlers are wired up only when
 ``settings.prometheus_metrics_enabled`` is true, so the dev path stays quiet.
@@ -11,6 +12,8 @@ The endpoint and the Celery handlers are wired up only when
 
 from __future__ import annotations
 
+import os
+import socket
 from time import perf_counter
 from typing import Any
 
@@ -18,15 +21,28 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
     Counter,
-    Gauge,
     Histogram,
     generate_latest,
+    multiprocess,
+    values,
 )
 
-# Dedicated registry so we don't ship the default-process collectors
-# (cpu/memory/fd) that conflict with anything else colocated in the
-# container. Operators who want process metrics can opt-in by mounting
-# node_exporter / cadvisor next to the app.
+
+def _process_identifier() -> str:
+    """Name this process's shard uniquely across containers sharing the directory."""
+    return f"{socket.gethostname()}-{os.getpid()}"
+
+
+# The API, worker and beat containers share PROMETHEUS_MULTIPROC_DIR but not a
+# PID namespace, so the library's default os.getpid() shard names collide across
+# containers and two processes would append to one mmap file. The container
+# hostname keeps them apart. Must be set before the first metric below.
+if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+    values.ValueClass = values.MultiProcessValue(process_identifier=_process_identifier)  # type: ignore[no-untyped-call]
+
+# Dedicated registry for the single-process fallback. In multiprocess mode,
+# metric objects still write to their process files, but scraping requires a
+# fresh registry with MultiProcessCollector to avoid duplicate series.
 REGISTRY = CollectorRegistry()
 
 # Celery task instrumentation. `task` label is the dotted task name
@@ -84,22 +100,21 @@ schema_drifts_detected_total = Counter(
     registry=REGISTRY,
 )
 
-# Gauges intended to be sampled (no labels).
-metric_check_interval_seconds = Gauge(
-    "tripl_metric_check_interval_seconds",
-    "Configured interval between metric-due checks (beat schedule).",
-    registry=REGISTRY,
-)
-
 
 def render_metrics() -> tuple[bytes, str]:
     """Return ``(body, content_type)`` for the Prometheus exposition format."""
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)  # type: ignore[no-untyped-call]
+        return generate_latest(registry), CONTENT_TYPE_LATEST
     return generate_latest(REGISTRY), CONTENT_TYPE_LATEST
 
 
 # ---------------------------------------------------------------------------
 # Celery wire-up
 # ---------------------------------------------------------------------------
+
+_celery_instrumentation_installed = False
 
 
 def install_celery_instrumentation() -> None:
@@ -108,16 +123,19 @@ def install_celery_instrumentation() -> None:
     Called from `tripl.worker.celery_app` only when metrics are enabled —
     keeps the dev runner free of the import cost when it's not needed.
     """
-    from celery.signals import task_failure, task_postrun, task_prerun
+    global _celery_instrumentation_installed
+
+    if _celery_instrumentation_installed:
+        return
+
+    from celery.signals import task_postrun, task_prerun
 
     # Map task_id -> start time so prerun + postrun can pair up across signals.
     _starts: dict[str, float] = {}
 
-    @task_prerun.connect  # type: ignore[untyped-decorator]
     def _on_prerun(task_id: str = "", task: Any = None, **_: Any) -> None:
         _starts[task_id] = perf_counter()
 
-    @task_postrun.connect  # type: ignore[untyped-decorator]
     def _on_postrun(
         task_id: str = "",
         task: Any = None,
@@ -130,7 +148,8 @@ def install_celery_instrumentation() -> None:
             celery_task_seconds.labels(task=task_name).observe(perf_counter() - start)
         celery_tasks_total.labels(task=task_name, status=state.lower()).inc()
 
-    @task_failure.connect  # type: ignore[untyped-decorator]
-    def _on_failure(task_id: str = "", sender: Any = None, **_: Any) -> None:
-        task_name = getattr(sender, "name", "<unknown>")
-        celery_tasks_total.labels(task=task_name, status="failure").inc()
+    # Celery's default weak references would discard these local closures as
+    # soon as this installer returns, leaving the worker without task metrics.
+    task_prerun.connect(_on_prerun, weak=False)
+    task_postrun.connect(_on_postrun, weak=False)
+    _celery_instrumentation_installed = True

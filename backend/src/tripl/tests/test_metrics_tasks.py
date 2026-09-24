@@ -14,6 +14,7 @@ from tripl.core.analyzers._event_generator_variables import (
     VariableIndex,
 )
 from tripl.core.analyzers.event_generator import GenerationResult
+from tripl.core.bucketing import to_utc
 from tripl.models import Base
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -115,10 +116,8 @@ def _create_scan_config(session: Session, *, with_event_type: bool = False) -> S
 # bucket stays inside the wall-clock signal freshness horizon. Callers that assert
 # an OPEN signal / queued alert pass base=_ANOMALY_BASE; the other callers keep the
 # historical 2026-01-01 anchor (behaviourally identical for them — they do not
-# assert on signal freshness). Kept tz-naive to match the fixture's naive columns.
-_ANOMALY_BASE = datetime.now(UTC).replace(
-    minute=0, second=0, microsecond=0, tzinfo=None
-) - timedelta(hours=11)
+# assert on signal freshness). Persisted buckets are UTC aware.
+_ANOMALY_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=11)
 
 
 def _seed_anomaly_scan_state(
@@ -3694,7 +3693,7 @@ def test_reactivation_inside_the_cooldown_reopens_the_state_without_alerting(
         # reads as quiet while it is silenced.
         assert state.is_active is True
         assert state.closed_at is None
-        assert state.last_anomaly_bucket == head - timedelta(hours=2)
+        assert to_utc(state.last_anomaly_bucket) == head - timedelta(hours=2)
 
 
 def test_reactivation_after_the_cooldown_alerts_again(
@@ -5013,9 +5012,9 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
             .all()
         )
         assert [m.bucket for m in login_metrics] == [
-            datetime(2026, 1, 1, 8),
-            datetime(2026, 1, 1, 9),
-            datetime(2026, 1, 1, 10),
+            datetime(2026, 1, 1, 8, tzinfo=UTC),
+            datetime(2026, 1, 1, 9, tzinfo=UTC),
+            datetime(2026, 1, 1, 10, tzinfo=UTC),
         ]
         assert [m.count for m in login_metrics] == [8, 9, 10]
         type_metrics = (
@@ -5192,9 +5191,9 @@ def test_collect_metrics_resumes_running_replay_from_completed_chunks(
             .all()
         )
         assert [(m.bucket, m.count) for m in login_metrics] == [
-            (datetime(2026, 1, 1, 8), 8),
-            (datetime(2026, 1, 1, 9), 9),
-            (datetime(2026, 1, 1, 10), 10),
+            (datetime(2026, 1, 1, 8, tzinfo=UTC), 8),
+            (datetime(2026, 1, 1, 9, tzinfo=UTC), 9),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), 10),
         ]
 
 
@@ -7432,11 +7431,10 @@ _OUTAGE_MIN_EXPECTED = 50
 _OUTAGE_DEATH_HOUR = 24 * 28 + 2
 _OUTAGE_HORIZON_HOURS = _OUTAGE_DEATH_HOUR + 24
 # A whole number of days back from midnight, so the hour offsets below really are
-# clock hours; recent enough that the 180-day age-out never fires, and tz-naive to
-# match the fixture's naive columns.
-_OUTAGE_BASE = datetime.now(UTC).replace(
-    hour=0, minute=0, second=0, microsecond=0, tzinfo=None
-) - timedelta(days=30)
+# clock hours; recent enough that the 180-day age-out never fires.
+_OUTAGE_BASE = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+    days=30
+)
 
 
 def _quiet_night_count(hour: int) -> int:

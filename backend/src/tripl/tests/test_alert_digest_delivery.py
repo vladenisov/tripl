@@ -42,10 +42,8 @@ from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import alert_flush
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
 
-# Recent, hour-aligned and tz-naive, matching the sync fixtures' bucket columns.
-_BUCKET = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(
-    hours=2
-)
+# Recent, hour-aligned UTC bucket matching persisted values.
+_BUCKET = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=2)
 # Fires every minute, so any flush with a watermark in the past is due. Used
 # wherever the test is about the flush mechanism rather than about cron itself.
 _ALWAYS_DUE = "* * * * *"
