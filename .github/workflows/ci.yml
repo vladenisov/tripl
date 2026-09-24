@@ -48,7 +48,7 @@ jobs:
       # the digest concurrency gate each need a real PostgreSQL, so all three run
       # in their own jobs (below) rather than skipping noisily here.
       - name: Pytest
-        run: uv run pytest -q -m "not conformance and not relevance and not pg_concurrency"
+        run: uv run pytest -q --durations=30 -m "not conformance and not relevance and not pg_concurrency"
 
   # The two client packages. NEITHER ran in PR CI before tripl-ey6j.1 —
   # mcp-server's suite executed only in publish-mcp.yml, at tag time, and cli/
