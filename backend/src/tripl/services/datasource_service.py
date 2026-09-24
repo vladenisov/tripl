@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from tripl import cache
 from tripl.core.adapters.errors import WarehouseCapabilityError
@@ -158,6 +159,13 @@ async def update_data_source(
     update_dict = data.model_dump(exclude_unset=True)
     _reject_synthetic_conversion(ds, update_dict)
 
+    if "name" in update_dict and update_dict["name"] != ds.name:
+        existing = await session.execute(
+            select(DataSource.id).where(DataSource.name == update_dict["name"])
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(status_code=409, detail="Data source with this name already exists")
+
     # Handle password separately
     if "password" in update_dict:
         password = update_dict.pop("password")
@@ -208,6 +216,7 @@ async def _refresh_main_search_indexes(session: AsyncSession, project_ids: list[
             main_branch_id = await resolve_branch_id(session, project_id, None)
             await reindex_project_branch(session, project_id=project_id, branch_id=main_branch_id)
         except Exception:
+            await session.rollback()
             # Fault-isolated per project, because this runs AFTER the destructive
             # commit: the source is already gone, nothing will retry, and one
             # project's rebuild failing must not strand the projects behind it in
@@ -223,7 +232,7 @@ async def _refresh_main_search_indexes(session: AsyncSession, project_ids: list[
 async def delete_data_source(session: AsyncSession, ds_id: uuid.UUID) -> None:
     from tripl.services._alerting_destinations import disable_rules_bound_to_scan
 
-    ds = await _fetch_data_source(session, ds_id)
+    ds = await _fetch_data_source(session, ds_id, with_scan_configs=True)
     # Deleting a source takes its scan configs with it (``DataSource.scan_configs``
     # is delete-orphan), which never passes through ``delete_scan_config`` and so
     # never reached the unbind step. The FK is ON DELETE SET NULL and NULL means
@@ -253,8 +262,13 @@ async def delete_data_source(session: AsyncSession, ds_id: uuid.UUID) -> None:
     await _refresh_main_search_indexes(session, affected_projects)
 
 
-async def _fetch_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource:
-    result = await session.execute(select(DataSource).where(DataSource.id == ds_id))
+async def _fetch_data_source(
+    session: AsyncSession, ds_id: uuid.UUID, *, with_scan_configs: bool = False
+) -> DataSource:
+    query = select(DataSource).where(DataSource.id == ds_id)
+    if with_scan_configs:
+        query = query.options(selectinload(DataSource.scan_configs))
+    result = await session.execute(query)
     ds = result.scalar_one_or_none()
     if ds is None:
         raise HTTPException(status_code=404, detail="Data source not found")
@@ -325,10 +339,11 @@ _UNREACHABLE_HINTS = (
     "refused",
     "getaddrinfo",
     "could not connect",
-    "connection",
-    "name or service",
-    "host",
-    "port",
+    "connection failed",
+    "name or service not known",
+    "no route to host",
+    "network unreachable",
+    "could not translate host name",
 )
 _AUTH_HINTS = ("auth", "password", "access denied", "credential", "permission")
 
@@ -360,14 +375,14 @@ def _friendly_test_error(exc: Exception) -> str:
         return f"{_TEST_FAILED}: {exc}"
 
     text = str(exc).lower()
+    if any(hint in text for hint in _AUTH_HINTS):
+        return f"{_TEST_FAILED}: authentication was rejected — check the credentials."
     if any(hint in text for hint in _TIMEOUT_HINTS):
         return f"{_TEST_FAILED}: the data source did not respond in time."
     if any(hint in text for hint in _UNREACHABLE_HINTS):
         return (
             f"{_TEST_FAILED}: could not reach the data source — check the host, port, and network."
         )
-    if any(hint in text for hint in _AUTH_HINTS):
-        return f"{_TEST_FAILED}: authentication was rejected — check the credentials."
     return f"{_TEST_FAILED}. Check the connection settings and try again."
 
 

@@ -44,6 +44,7 @@ async def get_project_anomaly_settings(
 
 
 _PAIRED_TIMING_FIELDS = ("anomaly_ingestion_settling_minutes", "recent_signal_window_hours")
+_PAIRED_HISTORY_FIELDS = ("min_history_buckets", "baseline_window_buckets")
 
 
 def _reject_incoherent_timings(
@@ -77,6 +78,22 @@ def _reject_incoherent_timings(
         raise HTTPException(status_code=422, detail=conflict)
 
 
+def _reject_incoherent_history(patch: Mapping[str, Any], settings: ProjectAnomalySettings) -> None:
+    if not any(field in patch for field in _PAIRED_HISTORY_FIELDS):
+        return
+    minimum = patch.get("min_history_buckets", settings.min_history_buckets)
+    window = patch.get("baseline_window_buckets", settings.baseline_window_buckets)
+    if minimum > window:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"min_history_buckets ({minimum}) must not exceed "
+                f"baseline_window_buckets ({window}); otherwise rolling anomaly scoring "
+                "cannot collect enough baseline buckets."
+            ),
+        )
+
+
 async def update_project_anomaly_settings(
     session: AsyncSession,
     slug: str,
@@ -84,8 +101,9 @@ async def update_project_anomaly_settings(
 ) -> ProjectAnomalySettings:
     project_id = await get_project_id_by_slug(session, slug)
     settings = await _ensure_settings(session, project_id)
-    patch = data.model_dump(exclude_unset=True)
+    patch = data.model_dump(exclude_unset=True, exclude_none=True)
     _reject_incoherent_timings(patch, settings)
+    _reject_incoherent_history(patch, settings)
     for key, value in patch.items():
         setattr(settings, key, value)
     await session.commit()

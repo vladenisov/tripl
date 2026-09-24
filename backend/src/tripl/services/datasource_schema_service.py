@@ -2,17 +2,35 @@ import asyncio
 import logging
 import uuid
 
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.data_source import DataSource
+from tripl.models.project import Project
+from tripl.models.user import User
 from tripl.schemas.data_source_schema import (
     ColumnSchema,
     DataSourceSchemaResponse,
     TableSchema,
 )
+from tripl.services import project_service
 from tripl.services.datasource_service import _fetch_data_source
 
 logger = logging.getLogger(__name__)
+
+
+async def authorize_schema_access(session: AsyncSession, ds_id: uuid.UUID, user: User) -> None:
+    """Project-owned catalogs require the same editor scope as project mutations."""
+    source = await _fetch_data_source(session, ds_id)
+    if source.project_id is None:
+        return
+    slug = await session.scalar(select(Project.slug).where(Project.id == source.project_id))
+    if slug is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    scope = await project_service.get_project_mutation_scope(session, slug)
+    if not scope.allows(user):
+        raise HTTPException(status_code=403, detail="No access to this project's data source")
 
 
 def _run_schema_introspection(ds: DataSource) -> DataSourceSchemaResponse:

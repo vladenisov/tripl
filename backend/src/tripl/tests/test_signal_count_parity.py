@@ -11,13 +11,9 @@ children included, NO incident dedup — so the badge equals the page's headline
 count. (Pre-fix the badge counted only deduped project_total+event_type incidents and
 so undercounted a busy project: 3 on the badge vs 270 on the page.)
 
-SQLite harness note: the two code paths stringify a UUID ``scope_ref`` differently.
-The sidebar path uses ``cast(uuid, String)`` -> bare 32-char hex on SQLite, while the
-page path keeps a native UUID and does ``str(uuid)`` -> hyphenated. Both forms are
-identical on Postgres (production); only SQLite diverges. So a single seeded anomaly
-row cannot classify open on both paths at once here. Instead we seed two
-structurally-identical projects (one per encoding) and assert both paths collapse the
-same incident shape to the same number — that is the parity claim.
+Both code paths now stringify the native UUID in Python, so the seeded anomaly
+references use the detector's hyphenated UUID format on SQLite and PostgreSQL.
+We seed structurally identical projects for the page and sidebar paths.
 """
 
 from __future__ import annotations
@@ -53,10 +49,9 @@ from tripl.tests.test_project_lookup_perf import captured_sql
 _BUCKET = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
 
 
-def _scope_ref(value: str, *, hyphenated: bool) -> str:
-    """Encode a UUID the way the target code path stores/reads scope_ref on SQLite."""
-    parsed = uuid.UUID(value)
-    return str(parsed) if hyphenated else parsed.hex
+def _scope_ref(value: str) -> str:
+    """Use the detector-written, hyphenated UUID representation."""
+    return str(uuid.UUID(value))
 
 
 def _anomaly(
@@ -131,7 +126,7 @@ async def _create_scan(client: AsyncClient, slug: str, data_source_id: str, name
     return resp.json()["id"]
 
 
-async def _seed_project(client: AsyncClient, slug: str, *, hyphenated: bool) -> None:
+async def _seed_project(client: AsyncClient, slug: str) -> None:
     """Seed a project with three open signals across two scans:
 
     * Scan A: a project_total parent AND an event_type child on the same
@@ -159,7 +154,7 @@ async def _seed_project(client: AsyncClient, slug: str, *, hyphenated: bool) -> 
             _anomaly(
                 scan_config_id=scan_a,
                 scope_type="project_total",
-                scope_ref=_scope_ref(scan_a, hyphenated=hyphenated),
+                scope_ref=_scope_ref(scan_a),
                 event_type_id=None,
             )
         )
@@ -167,7 +162,7 @@ async def _seed_project(client: AsyncClient, slug: str, *, hyphenated: bool) -> 
             _anomaly(
                 scan_config_id=scan_a,
                 scope_type="event_type",
-                scope_ref=_scope_ref(event_type_a, hyphenated=hyphenated),
+                scope_ref=_scope_ref(event_type_a),
                 event_type_id=event_type_a,
             )
         )
@@ -177,7 +172,7 @@ async def _seed_project(client: AsyncClient, slug: str, *, hyphenated: bool) -> 
             _anomaly(
                 scan_config_id=scan_b,
                 scope_type="event_type",
-                scope_ref=_scope_ref(event_type_b, hyphenated=hyphenated),
+                scope_ref=_scope_ref(event_type_b),
                 event_type_id=event_type_b,
             )
         )
@@ -188,7 +183,7 @@ async def _seed_project(client: AsyncClient, slug: str, *, hyphenated: bool) -> 
 async def test_sidebar_count_matches_page_signal_list(client: AsyncClient) -> None:
     # Page path: get_active_signals stringifies scope_ref as str(uuid) (hyphenated).
     page_slug = "signal-parity-page"
-    await _seed_project(client, page_slug, hyphenated=True)
+    await _seed_project(client, page_slug)
     async with TestSessionLocal() as session:
         page_signals = await get_active_signals(session, page_slug, expanded=True)
 
@@ -208,9 +203,9 @@ async def test_sidebar_count_matches_page_signal_list(client: AsyncClient) -> No
     )
     assert page_significant_count == 3
 
-    # Sidebar path: monitoring_signal_count uses cast(uuid, String) (bare hex here).
+    # Sidebar path: monitoring_signal_count uses the same UUID encoding.
     sidebar_slug = "signal-parity-sidebar"
-    await _seed_project(client, sidebar_slug, hyphenated=False)
+    await _seed_project(client, sidebar_slug)
     resp = await client.get(f"/api/v1/projects/{sidebar_slug}")
     assert resp.status_code == 200
     sidebar_count = resp.json()["summary"]["monitoring_signal_count"]
@@ -235,7 +230,6 @@ async def _seed_ongoing_outage(
     client: AsyncClient,
     slug: str,
     *,
-    hyphenated: bool,
     scan_alive: bool = True,
     anchor: datetime = _OUTAGE_ANCHOR_BUCKET,
     last_stored_bucket: datetime | None = None,
@@ -293,7 +287,7 @@ async def _seed_ongoing_outage(
         outage = _anomaly(
             scan_config_id=scan_id,
             scope_type="event_type",
-            scope_ref=_scope_ref(dead_type, hyphenated=hyphenated),
+            scope_ref=_scope_ref(dead_type),
             event_type_id=dead_type,
         )
         outage.bucket = anchor
@@ -315,7 +309,7 @@ async def test_ongoing_outage_stays_open_on_both_surfaces(client: AsyncClient) -
     must keep reporting it, and report the SAME number.
     """
     page_slug = "outage-open-page"
-    await _seed_ongoing_outage(client, page_slug, hyphenated=True)
+    await _seed_ongoing_outage(client, page_slug)
     async with TestSessionLocal() as session:
         page_signals = await get_active_signals(session, page_slug, expanded=True)
 
@@ -335,7 +329,7 @@ async def test_ongoing_outage_stays_open_on_both_surfaces(client: AsyncClient) -
     assert page_significant_count == 1
 
     sidebar_slug = "outage-open-sidebar"
-    await _seed_ongoing_outage(client, sidebar_slug, hyphenated=False)
+    await _seed_ongoing_outage(client, sidebar_slug)
     resp = await client.get(f"/api/v1/projects/{sidebar_slug}")
     assert resp.status_code == 200
     sidebar_count = resp.json()["summary"]["monitoring_signal_count"]
@@ -355,7 +349,7 @@ async def test_ongoing_outage_is_still_a_signal_on_the_drilldown(client: AsyncCl
     they open saying nothing at all.
     """
     slug = "outage-open-drilldown"
-    await _seed_ongoing_outage(client, slug, hyphenated=True)
+    await _seed_ongoing_outage(client, slug)
 
     async with TestSessionLocal() as session:
         listed = await get_active_signals(session, slug, expanded=True)
@@ -378,7 +372,7 @@ async def test_outage_on_a_stopped_scan_closes_on_the_drilldown(client: AsyncCli
     from pinning its final anomaly red forever.
     """
     slug = "outage-stopped-drilldown"
-    await _seed_ongoing_outage(client, slug, hyphenated=True, scan_alive=False)
+    await _seed_ongoing_outage(client, slug, scan_alive=False)
 
     async with TestSessionLocal() as session:
         event_type_ids = [
@@ -435,7 +429,6 @@ async def test_ongoing_outage_reaches_a_drilldown_range_that_starts_after_it(
     await _seed_ongoing_outage(
         client,
         slug,
-        hyphenated=True,
         anchor=_LONG_OUTAGE_ANCHOR_BUCKET,
         last_stored_bucket=last_stored_bucket,
     )
@@ -494,7 +487,6 @@ async def test_a_closed_anomaly_before_the_range_leaves_the_drilldown_range_alon
     await _seed_ongoing_outage(
         client,
         slug,
-        hyphenated=True,
         scan_alive=False,
         anchor=_LONG_OUTAGE_ANCHOR_BUCKET,
     )
@@ -526,9 +518,9 @@ async def test_outage_on_a_stopped_scan_closes_on_both_surfaces(client: AsyncCli
     what the latest-scan freshness cap exists to prevent.
     """
     page_slug = "outage-stopped-page"
-    await _seed_ongoing_outage(client, page_slug, hyphenated=True, scan_alive=False)
+    await _seed_ongoing_outage(client, page_slug, scan_alive=False)
     sidebar_slug = "outage-stopped-sidebar"
-    await _seed_ongoing_outage(client, sidebar_slug, hyphenated=False, scan_alive=False)
+    await _seed_ongoing_outage(client, sidebar_slug, scan_alive=False)
 
     async with TestSessionLocal() as session:
         page_signals = await get_active_signals(session, page_slug, expanded=True)
@@ -562,7 +554,7 @@ async def test_a_zero_baseline_anchor_closes_on_every_surface(client: AsyncClien
     whether detection is noisy could only ever grow.
     """
     page_slug = "zero-baseline-page"
-    await _seed_ongoing_outage(client, page_slug, hyphenated=True, expected_count=0)
+    await _seed_ongoing_outage(client, page_slug, expected_count=0)
     async with TestSessionLocal() as session:
         page_signals = await get_active_signals(session, page_slug, expanded=True)
 
@@ -573,7 +565,7 @@ async def test_a_zero_baseline_anchor_closes_on_every_surface(client: AsyncClien
     # this pins that the two surfaces still agree rather than that the badge
     # moved — parity is what this module exists to hold.
     sidebar_slug = "zero-baseline-sidebar"
-    await _seed_ongoing_outage(client, sidebar_slug, hyphenated=False, expected_count=0)
+    await _seed_ongoing_outage(client, sidebar_slug, expected_count=0)
     resp = await client.get(f"/api/v1/projects/{sidebar_slug}")
     assert resp.status_code == 200
     assert resp.json()["summary"]["monitoring_signal_count"] == 0
@@ -603,7 +595,6 @@ async def test_a_zero_baseline_anchor_does_not_widen_the_drilldown_range(
     await _seed_ongoing_outage(
         client,
         slug,
-        hyphenated=True,
         anchor=_LONG_OUTAGE_ANCHOR_BUCKET,
         expected_count=0,
     )
@@ -641,7 +632,6 @@ async def test_a_spike_from_a_zero_baseline_is_still_a_signal(client: AsyncClien
     await _seed_ongoing_outage(
         client,
         fresh_slug,
-        hyphenated=True,
         anchor=_BUCKET,
         actual_count=5,
         expected_count=0,
@@ -660,7 +650,6 @@ async def test_a_spike_from_a_zero_baseline_is_still_a_signal(client: AsyncClien
     await _seed_ongoing_outage(
         client,
         aged_slug,
-        hyphenated=True,
         actual_count=5,
         expected_count=0,
     )

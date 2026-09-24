@@ -51,6 +51,8 @@ When a series is too young to have three full seasonal cycles (a brand-new scan,
 
 Both are counted in **buckets**, not hours, and the settings page says so under them: *a bucket is one collection interval of the series being scored*. So 14 buckets of baseline is 14 hours on an hourly scan and 14 days on a daily catalog metric.
 
+**Min history (buckets)** cannot exceed **Baseline window (buckets)**: a longer minimum would prevent the rolling baseline from ever scoring. When updating monitoring settings through the API, an explicit `null` leaves that setting unchanged; send a concrete value to change it.
+
 ### Seasonal decomposition and the trend-shift detector
 
 On top of the per-bucket phase check, the detector runs a second, slower-moving test built on **seasonal decomposition** (STL for a single season, MSTL when both a daily and a weekly season are present). Decomposition splits the series into three layers: a smooth **trend**, the repeating **seasonal** shape, and the left-over **residual** noise.

@@ -29230,7 +29230,8 @@
           "tracker_type": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "const": "jira"
               },
               {
                 "type": "null"

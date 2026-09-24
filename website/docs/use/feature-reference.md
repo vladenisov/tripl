@@ -650,6 +650,8 @@ deleted after the merge commits, unless another attachment, on any branch,
 still uses it; a storage failure there is logged and never fails the merge.
 
 An owner may configure a separate **Implementation tracker** for the project.
+The implementation tracker currently supports Jira only. The API rejects other
+`tracker_type` values instead of accepting a setting that the ticket worker cannot use.
 When enabled, a successful merge best-effort creates one Jira implementation
 ticket for the added/changed events; a scheduled sync promotes covered events to
 `implemented` when Jira reports the ticket done. If Jira returns a temporary
@@ -700,7 +702,10 @@ the working naming rule for scan-targeted event types.
 slug, and description; set the project-wide number of app releases retained as
 explicit version series; rebuild its search index; or use owner-only destructive
 resets. Version retention applies to event monitoring and standalone catalog
-metrics alike, with older releases combined into **Other**. **Reset anomalies**
+metrics alike. Renaming the slug refreshes search links for the project's plan
+branches so palette and Ask AI results point at the new route. Deleting a project
+or resetting its demo clears its slug-specific catalog and monitoring caches.
+Older releases are combined into **Other**. **Reset anomalies**
 removes metric and breakdown anomaly records (and
 their derived active signals) across every scan/catalog metric. **Reset drifts**
 removes schema and distribution drift, but not variable-value drift. Both can be

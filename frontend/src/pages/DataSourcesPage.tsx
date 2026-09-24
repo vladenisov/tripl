@@ -139,6 +139,14 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     mutationFn: (id: string) => {
       const editDbType = editingDs?.db_type
       if (!editDbType) throw new Error('No data source is being edited')
+      if (editingDs.is_synthetic) {
+        return dataSourcesApi.update(id, {
+          name: editName,
+          timeout_seconds: editCore.timeoutSeconds.trim()
+            ? Number(editCore.timeoutSeconds)
+            : null,
+        })
+      }
       const connectionSettings = buildConnectionSettings(editDbType, editSettings)
       return dataSourcesApi.update(id, {
         name: editName,
@@ -356,24 +364,40 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
               </div>
               {editingDs && (
                 <>
-                  {/* Same component as the create dialog, so a BigQuery source is
-                      edited as project id / dataset / service-account JSON — not
-                      as host / port / username. */}
-                  <ConnectionCoreFields
-                    idPrefix="edit-ds"
-                    dbType={editingDs.db_type}
-                    value={editCore}
-                    onChange={patchEditCore}
-                    mode="edit"
-                    secretSet={editingDs.password_set}
-                  />
-                  <ConnectionSettingsFields
-                    idPrefix="edit-ds"
-                    dbType={editingDs.db_type}
-                    value={editSettings}
-                    onChange={patchEditSettings}
-                    sslkeySet={editingDs.connection_settings?.sslkey_set ?? false}
-                  />
+                  {editingDs.is_synthetic ? (
+                    <div className="grid gap-2">
+                      <p className="text-sm text-muted-foreground">
+                        Demo sources have no warehouse connection to configure.
+                      </p>
+                      <Label htmlFor="edit-ds-timeout">Timeout, s</Label>
+                      <Input
+                        id="edit-ds-timeout"
+                        type="number"
+                        min={1}
+                        value={editCore.timeoutSeconds}
+                        onChange={(e) => patchEditCore({ timeoutSeconds: e.target.value })}
+                        placeholder="300"
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <ConnectionCoreFields
+                        idPrefix="edit-ds"
+                        dbType={editingDs.db_type}
+                        value={editCore}
+                        onChange={patchEditCore}
+                        mode="edit"
+                        secretSet={editingDs.password_set}
+                      />
+                      <ConnectionSettingsFields
+                        idPrefix="edit-ds"
+                        dbType={editingDs.db_type}
+                        value={editSettings}
+                        onChange={patchEditSettings}
+                        sslkeySet={editingDs.connection_settings?.sslkey_set ?? false}
+                      />
+                    </>
+                  )}
                 </>
               )}
               {updateMut.isError && (

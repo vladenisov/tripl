@@ -69,5 +69,5 @@ class DataSource(UUIDMixin, TimestampMixin, Base):
     last_test_message: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
     scan_configs: Mapped[list[ScanConfig]] = relationship(
-        back_populates="data_source", cascade="all, delete-orphan", lazy="selectin"
+        back_populates="data_source", cascade="all, delete-orphan"
     )
