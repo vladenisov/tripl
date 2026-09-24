@@ -1319,6 +1319,12 @@ class _SampledRows:
     involved, so this is the whole of what it needs.
     """
 
+    # The fallback records skipped contracts on the adapter (tripl-0zpq.341), so
+    # the double borrows that bookkeeping from BaseAdapter as well.
+    _skipped_field_contracts = None
+    _field_contract_is_inert = BaseAdapter._field_contract_is_inert
+    _skip_field_contract = BaseAdapter._skip_field_contract
+
     def __init__(self, column_names: list[str], rows: list[tuple[object, ...]]) -> None:
         self._column_names = column_names
         self._rows = rows
@@ -2355,7 +2361,7 @@ def test_the_regex_divergence_is_declared_where_the_contract_lives() -> None:
     """
     contract = inspect.getdoc(BaseAdapter)
     assert contract is not None
-    assert "the two known" in contract
+    assert "the known divergences" in contract
     assert "The first is the regex dialect." in contract
     assert "contract_regex_is_compilable" in contract
 

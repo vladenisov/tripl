@@ -26,7 +26,7 @@ from tripl.core.analyzers.event_generator import (
     render_default_event_name,
     truncate_event_name,
 )
-from tripl.core.bucketing import stored_bucket
+from tripl.core.bucketing import stored_bucket, to_utc
 from tripl.json_paths import (
     build_json_value,
     decode_json_path_value,
@@ -1138,6 +1138,13 @@ def _collect_distribution_drift_rows(
         ", ".join(distribution_fields),
     )
 
+    # Buckets below are ``stored_bucket`` values, aware UTC (tripl-0zpq.348), so
+    # the window they are compared against is stamped the same way. Only the
+    # comparison bounds: the adapter above gets the window exactly as the caller
+    # passed it, like every other collector query.
+    window_from = to_utc(time_from)
+    window_to = to_utc(time_to)
+
     # Pre-grouped by scope and then by bucket, NOT flat. The analysis below needs
     # one bucket's values and its handful of predecessors at a time; against a
     # flat dict that is a full rescan per (scope, bucket) pair, and the fetch is
@@ -1199,7 +1206,7 @@ def _collect_distribution_drift_rows(
         by_bucket = grouped[(event_type_id, field_name)]
         ordered_buckets = sorted(by_bucket)
         for index, bucket in enumerate(ordered_buckets):
-            if bucket < time_from or bucket >= time_to:
+            if bucket < window_from or bucket >= window_to:
                 continue
 
             baseline_from = bucket - interval_delta * baseline_window_buckets
