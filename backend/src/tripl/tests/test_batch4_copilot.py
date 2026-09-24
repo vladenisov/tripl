@@ -680,10 +680,10 @@ def test_converging_leaves_the_operators_inbox_decision_alone(
         assert len(states) == 1, "converged, did not mint a second row"
         state = states[0]
         assert state.status == "muted", "a collection may not end a mute"
-        assert state.muted_until == muted_until
+        assert to_utc(state.muted_until) == muted_until
         assert state.note == "these screens are switched off"
         assert state.false_positive_count == 3
-        assert state.acted_at == acted_at
+        assert to_utc(state.acted_at) == acted_at
         assert to_utc(state.last_seen_at) == bucket + timedelta(hours=6), "and never rewound"
 
 

@@ -14,6 +14,7 @@ from tripl.core.analyzers._event_generator_variables import (
     VariableIndex,
 )
 from tripl.core.analyzers.event_generator import GenerationResult
+from tripl.core.bucketing import to_utc
 from tripl.models import Base
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -3692,7 +3693,7 @@ def test_reactivation_inside_the_cooldown_reopens_the_state_without_alerting(
         # reads as quiet while it is silenced.
         assert state.is_active is True
         assert state.closed_at is None
-        assert state.last_anomaly_bucket == head - timedelta(hours=2)
+        assert to_utc(state.last_anomaly_bucket) == head - timedelta(hours=2)
 
 
 def test_reactivation_after_the_cooldown_alerts_again(

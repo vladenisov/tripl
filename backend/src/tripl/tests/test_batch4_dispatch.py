@@ -122,6 +122,7 @@ from tripl.alerting_matching import (
 from tripl.core.analyzers import _event_generator_merge, _event_generator_merge_refs
 from tripl.core.analyzers._event_generator_merge_refs import move_dangling_event_references
 from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+from tripl.core.bucketing import to_utc
 from tripl.models import Base
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import SCOPE_NAME_MAX_LEN, AlertDeliveryItem, trim_scope_name
@@ -1876,7 +1877,7 @@ def test_the_send_stamp_finds_the_project_global_state_and_only_that_one(
         alerts_task._stamp_rule_state(session, stored)
         session.commit()
 
-        assert session.get(AlertRuleState, shared.id).last_notified_at == sent_at
+        assert to_utc(session.get(AlertRuleState, shared.id).last_notified_at) == sent_at
         assert session.get(AlertRuleState, straggler.id).last_notified_at is None
 
 
@@ -1969,7 +1970,7 @@ def test_the_send_stamp_stamps_duplicates_instead_of_raising_after_the_send(
 
         for state_id in (first.id, second.id):
             stamped = session.get(AlertRuleState, state_id)
-            assert stamped.last_notified_at == sent_at
+            assert to_utc(stamped.last_notified_at) == sent_at
             assert stamped.last_notified_delivery_id == delivery.id
 
 
@@ -2195,11 +2196,11 @@ def test_the_migration_folds_metric_states_onto_one_project_global_row(
         ).scalar_one()
         assert survivor.scan_config_id is None
         assert survivor.is_active is False, "the stale open flags must not be OR'd in"
-        assert survivor.last_notified_at == newest_notified
+        assert to_utc(survivor.last_notified_at) == newest_notified
         assert survivor.last_notified_delivery_id == delivery.id, (
             "the stamp and the delivery it names have to come from the same row"
         )
-        assert survivor.last_anomaly_bucket == now
+        assert to_utc(survivor.last_anomaly_bucket) == now
 
 
 def test_the_migration_folds_buffered_metric_rows_and_sums_their_counts(
@@ -2251,7 +2252,7 @@ def test_the_migration_folds_buffered_metric_rows_and_sums_their_counts(
         assert removed == 1
         survivor = session.execute(select(AlertPendingItem)).scalars().one()
         assert survivor.scan_config_id is None
-        assert survivor.bucket == newest_bucket
+        assert to_utc(survivor.bucket) == newest_bucket
         assert survivor.observation_count == 7
 
 
@@ -2788,7 +2789,7 @@ def test_a_scope_that_flips_direction_buffers_a_line_for_each_incident(
             "two buffered lines; folding them loses one of them"
         )
         assert [row.actual_count for row in rows] == [20.0, 400.0]
-        assert [row.bucket for row in rows] == [_FLIP_DROP_BUCKET, _FLIP_SPIKE_BUCKET], (
+        assert [to_utc(row.bucket) for row in rows] == [_FLIP_DROP_BUCKET, _FLIP_SPIKE_BUCKET], (
             "the later collection must not rewrite the earlier incident's row"
         )
         assert [row.observation_count for row in rows] == [1, 1], (
@@ -2966,7 +2967,7 @@ def test_a_scope_that_keeps_firing_the_same_way_still_collapses_onto_one_line(
         rows = _buffered(session)
         assert len(rows) == 1, "a scope re-firing the SAME way still occupies one line"
         assert rows[0].actual_count == 5.0
-        assert rows[0].bucket == _FLIP_SPIKE_BUCKET
+        assert to_utc(rows[0].bucket) == _FLIP_SPIKE_BUCKET
         assert rows[0].observation_count == 2
 
 
