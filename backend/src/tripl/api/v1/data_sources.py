@@ -1,7 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query
 
 from tripl.api.deps import (
     CurrentUserDep,
@@ -11,7 +10,6 @@ from tripl.api.deps import (
     get_owner_user,
 )
 from tripl.models.domain_enums import UserRole
-from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.schemas.data_source import (
     ConnectionSettingsResponse,
@@ -27,7 +25,6 @@ from tripl.services import (
     datasource_schema_service,
     datasource_service,
     metrics_service,
-    project_service,
 )
 
 router = APIRouter(
@@ -146,14 +143,7 @@ async def get_data_source_stats(
 async def get_data_source_schema(
     session: SessionDep, ds_id: uuid.UUID, current_user: CurrentUserDep
 ) -> DataSourceSchemaResponse:
-    source = await datasource_service.get_data_source(session, ds_id)
-    if source.project_id is not None:
-        slug = await session.scalar(select(Project.slug).where(Project.id == source.project_id))
-        if slug is None:
-            raise HTTPException(status_code=404, detail="Project not found")
-        scope = await project_service.get_project_mutation_scope(session, slug)
-        if not scope.allows(current_user):
-            raise HTTPException(status_code=403, detail="No access to this project's data source")
+    await datasource_schema_service.authorize_schema_access(session, ds_id, current_user)
     return await datasource_schema_service.get_schema_tables(session, ds_id)
 
 
