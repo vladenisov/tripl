@@ -97,6 +97,10 @@ def pair_renames[KeyT: NaturalKey](
     * **A row main never had at the base.** A rename moves a row that existed
       when the branch was cut; anything else is main's own edit racing the
       branch's, which conflict detection judges rather than this.
+    * **A key main re-used for another identity.** ``old_key`` must hold the
+      same ``source_name`` on the base and on main; a base key main has since
+      handed to a different row is main's rename, not the branch's
+      (tripl-0zpq.293).
     * **A move onto a name a STAYING main row still holds.** The branch renamed
       A to B while main independently grew its own B: honouring the rename would
       put two rows on one name. Dropping one such move can strand another that
@@ -140,6 +144,17 @@ def pair_renames[KeyT: NaturalKey](
     for identity, old_key in main_by_identity.items():
         new_key = branch_by_identity.get(identity)
         if new_key is None or new_key == old_key or old_key not in base:
+            continue
+        # The base row under ``old_key`` has to carry the identity main's row
+        # carries there now. Otherwise the key was re-used on MAIN after the
+        # cut: main deleted ``c`` (S2) and renamed ``a`` (S1) to ``c`` — retire
+        # v1, promote v2 — and a branch that touched neither still holds S1
+        # under ``a``. Paired, that reads as the branch renaming ``c`` to ``a``,
+        # and the merge would rename main's row back and re-key base-``c`` onto
+        # it, undoing main's rename and resurrecting what main deleted
+        # (tripl-0zpq.293). A true branch rename moves a row that still wears
+        # its base identity on main.
+        if base[old_key] != identity[1]:
             continue
         moves[old_key] = new_key
 

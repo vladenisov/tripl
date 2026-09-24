@@ -115,8 +115,9 @@ async def create_comment(
         # A reply joins its parent's thread wherever that hangs, so a thread
         # stays on one anchor. Both bulk moves rely on that — the branch
         # merge's and ``_merge_event_into_group``'s, each one UPDATE by anchor —
-        # and so does deleting a branch: whole threads go, not a parent on one
-        # row with its answers stranded on another.
+        # and so does every door that deletes a branch row: whole threads move
+        # to its twin, or go with the row, not a parent on one row with its
+        # answers stranded on another (tripl-0zpq.289).
         #
         # Not a guarantee under concurrency. Nothing here waits for a merge of
         # this event's branch: while one is in flight, its uncommitted move has

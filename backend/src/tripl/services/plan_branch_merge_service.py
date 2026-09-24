@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import lazyload, selectinload
@@ -37,6 +37,7 @@ from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
 from tripl.services._branch_counterparts import main_counterparts
+from tripl.services._branch_event_threads import move_event_threads
 from tripl.services._celery_dispatch import dispatch
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services._plan_branch_renames import pair_renames, rekey_in_place
@@ -680,17 +681,10 @@ async def _move_event_threads_to_main(
     not guess. An event the merge itself deletes from main takes main's thread
     with it through the same cascade as a delete on main.
     """
-    for branch_event_id, main_event_id in main_event_id_by_branch_event_id.items():
-        await session.execute(
-            update(EventPhotoComment)
-            .where(
-                EventPhotoComment.event_id == branch_event_id,
-                EventPhotoComment.photo_id.is_(None),
-            )
-            # Re-anchored, not edited: named explicitly so the column's onupdate
-            # does not stamp the merge time on every row that moved.
-            .values(event_id=main_event_id, updated_at=EventPhotoComment.updated_at)
-        )
+    # The UPDATE itself is shared with every door that deletes a branch row
+    # which has a main twin, so the two can never disagree about what a moved
+    # thread looks like (tripl-0zpq.289).
+    await move_event_threads(session, target_by_event_id=main_event_id_by_branch_event_id)
 
 
 async def _apply_merge(

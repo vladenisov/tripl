@@ -57,6 +57,7 @@ from tripl.models.variable_event_value_override import VariableEventValueOverrid
 from tripl.schemas.plan_branch import BranchRevertRequest, PlanBranchDiff
 from tripl.schemas.plan_revision import PlanDiffEntry
 from tripl.services import plan_branch_service
+from tripl.services._branch_event_threads import rescue_branch_event_threads
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.plan_revision_service import with_snapshot_defaults
 from tripl.services.project_lookup import get_project_by_slug
@@ -1086,10 +1087,14 @@ async def _apply_revert(
         # references to it are DROPPED, the same rule the CRUD delete doors use.
         # An event_type takes its events with it through the database cascade
         # that no service can see, which is why it is expanded here (tripl-a64t).
+        doomed_event_ids = await _doomed_event_ids(session, data.entity_type, entity)
         await drop_dangling_event_references(
-            session,
-            project_id=project_id,
-            event_ids=await _doomed_event_ids(session, data.entity_type, entity),
+            session, project_id=project_id, event_ids=doomed_event_ids
+        )
+        # The discussion is not plan content, so reverting the row must not
+        # take the part its main twin shows as well (tripl-0zpq.289).
+        await rescue_branch_event_threads(
+            session, project_id=project_id, event_ids=doomed_event_ids
         )
         await session.delete(entity)
         return

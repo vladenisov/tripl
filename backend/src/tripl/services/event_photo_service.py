@@ -31,6 +31,11 @@ _FIGMA_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Every blob ``upload_photo`` writes lives under this prefix, and the orphan
+# sweep lists nothing else: a bucket or directory may be shared with objects
+# tripl did not write (tripl-0zpq.291).
+PHOTO_KEY_PREFIX = "events/"
+
 _EXT_BY_MIME = {
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",
@@ -190,7 +195,7 @@ async def upload_photo(
 
     photo_id = uuid.uuid4()
     ext = _resolve_extension(normalized_ct, original_filename)
-    storage_key = f"events/{event.id}/{photo_id}{ext}"
+    storage_key = f"{PHOTO_KEY_PREFIX}{event.id}/{photo_id}{ext}"
 
     await storage.save(storage_key, data, normalized_ct)
 

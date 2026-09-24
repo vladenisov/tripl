@@ -1059,6 +1059,13 @@ async def delete_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) 
         .all()
     )
     await drop_dangling_event_references(session, project_id=project_id, event_ids=doomed_event_ids)
+    # A thread on a branch row whose main twin appeared later is shown on that
+    # twin as well, so it is main's to keep, not the cascade's to take
+    # (tripl-0zpq.289). Local import: ``_branch_counterparts`` imports this
+    # module, so a top-level import here would be circular.
+    from tripl.services._branch_event_threads import rescue_branch_event_threads
+
+    await rescue_branch_event_threads(session, project_id=project_id, event_ids=doomed_event_ids)
     await session.delete(branch)
     await session.commit()
 

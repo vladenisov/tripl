@@ -45,6 +45,7 @@ from tripl.schemas.event import (
     EventUpdate,
 )
 from tripl.services._branch_counterparts import attach_main_last_seen, metrics_row_for
+from tripl.services._branch_event_threads import rescue_branch_event_threads
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.event_comment_service import (
     events_with_open_questions,
@@ -1818,6 +1819,10 @@ async def delete_event(
     # anomalies are the sharp one — a NULL event_id satisfies every event filter,
     # so deleting an event used to UN-suppress its alerts (tripl-xjuv).
     await drop_dangling_event_references(session, project_id=project_id, event_ids=[event.id])
+    # A branch row's own discussion is shown through its main twin too; hand it
+    # over rather than let the cascade take it (tripl-0zpq.289).
+    if not is_main:
+        await rescue_branch_event_threads(session, project_id=project_id, event_ids=[event.id])
     await session.delete(event)
     await session.flush()
     _, ai_config = await _reindex_branch_documents(
@@ -1872,6 +1877,10 @@ async def bulk_delete_events(
     await drop_dangling_event_references(
         session, project_id=project_id, event_ids=list(data.event_ids)
     )
+    if not is_main:
+        await rescue_branch_event_threads(
+            session, project_id=project_id, event_ids=list(data.event_ids)
+        )
     # Single DELETE with IN-list; child rows go via FK ondelete=CASCADE in the DB.
     await session.execute(
         delete(Event).where(

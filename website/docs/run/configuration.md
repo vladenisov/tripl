@@ -326,6 +326,21 @@ who asked for the link, so this is the only place the failure surfaces.
 | `GCS_PHOTO_CREDENTIALS_PATH` | `""` | Service-account JSON path. Empty falls back to Application Default Credentials. Credentials that cannot sign URLs (Application Default Credentials on Compute Engine or workload identity, `gcloud` user credentials) make photos fall back to the authenticated `/file` endpoint instead of signed URLs. |
 | `GCS_PHOTO_PUBLIC` | `false` | Return public URLs instead of time-limited signed URLs. |
 | `GCS_PHOTO_SIGNED_URL_TTL_SECONDS` | `3600` | Signed-URL lifetime when not public. |
+| `PHOTO_ORPHAN_SWEEP_GRACE_HOURS` | `24` | Minimum age, in hours, of a photo file the daily orphan sweep may delete. See below. |
+
+**Orphan photo sweep.** Deleting an event, an event type, a project or a plan
+branch removes the photo rows attached to it but not their files. Every day at
+05:30 UTC a Celery task deletes photo files that no photo row references any
+more and that are older than `PHOTO_ORPHAN_SWEEP_GRACE_HOURS`. Newer files are
+never touched, because an upload writes its file before it saves the row. When
+no photo row at all references a backend, the sweep skips that backend and logs
+a warning instead of deleting: that is what an empty or half-restored database
+looks like, not a directory of orphans. Only
+keys under `events/` are considered, so other files in the directory or bucket
+are left alone. The sweep covers the `local` backend and, when `GCS_PHOTO_BUCKET`
+is set, the `gcs` backend, including rows written before a backend switch. It
+runs on `celery-worker`, which therefore mounts the same `photos` volume as
+`app`. A worker without that mount sees an empty directory and deletes nothing.
 
 **Switching `PHOTO_STORAGE_BACKEND` does not move anything.** Every photo row
 records the backend its file was written to, and that is the backend it is read

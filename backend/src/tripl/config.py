@@ -165,6 +165,11 @@ class Settings(BaseSettings):
     gcs_photo_credentials_path: str = ""
     gcs_photo_public: bool = False
     gcs_photo_signed_url_ttl_seconds: int = 3600
+    # Daily sweep of photo blobs no event_photos row references. A blob younger
+    # than this is left alone, because an upload writes its blob before the row
+    # commits and a branch creation copies keys inside a transaction the sweep
+    # cannot see yet (tripl-0zpq.291).
+    photo_orphan_sweep_grace_hours: int = Field(default=24, ge=1)
 
     # Request ID and structured logging.
     request_id_header: str = "X-Request-ID"
