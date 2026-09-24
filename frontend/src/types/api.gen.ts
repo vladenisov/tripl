@@ -8953,7 +8953,7 @@ export interface components {
             /** Project Key */
             project_key?: string | null;
             /** Tracker Type */
-            tracker_type?: string | null;
+            tracker_type?: "jira" | null;
         };
         /** ProjectUpdate */
         ProjectUpdate: {

@@ -102,6 +102,11 @@ instance
 anyone who can reach the URL can sign up, join as **editor**, and immediately
 read the whole tracking plan and this member roster — and **edit any shared
 project**. Data source connection details (host, port, username) are owner-only.
+Warehouse table and column names are available to editors authoring scans and
+metrics. For a source owned by a project, the editor must also be allowed to
+edit that project; workspace-global sources remain shared. A failed connection
+test distinguishes an authentication failure from a network failure, and
+renaming a source to an existing name returns a conflict error.
 Decide the policy before you expose the instance; see
 [Security & access](#security--access) and
 [Security & Hardening](../run/security.md#self-service-registration).

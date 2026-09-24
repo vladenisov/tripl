@@ -76,6 +76,18 @@ const POSTGRES_SOURCE: DataSource = {
   },
 }
 
+const SYNTHETIC_SOURCE: DataSource = {
+  ...DATA_SOURCE,
+  id: 'ds-demo',
+  name: 'Demo source',
+  db_type: 'synthetic',
+  is_synthetic: true,
+  host: '',
+  port: 0,
+  database_name: '',
+  username: '',
+}
+
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -661,6 +673,25 @@ describe('DataSourcesPage', () => {
     expect(patchPayload).not.toHaveProperty('username')
     expect(patchPayload?.host).toBe('my-gcp-project')
     expect(patchPayload?.database_name).toBe('analytics')
+  })
+
+  it('renames a synthetic source without sending locked connection fields', async () => {
+    let patchPayload: Record<string, unknown> | undefined
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      editFetchMock(SYNTHETIC_SOURCE, (payload) => { patchPayload = payload }),
+    )
+
+    renderDataSourcesPage('/settings/data-sources/ds-demo', 'owner')
+
+    expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Host')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Port')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed demo' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patchPayload).toBeDefined())
+    expect(patchPayload).toEqual({ name: 'Renamed demo', timeout_seconds: null })
   })
 
   it('sends a new BigQuery service account key only once the operator types one', async () => {

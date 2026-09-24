@@ -15030,6 +15030,7 @@
           "tracker_type": {
             "anyOf": [
               {
+                "const": "jira",
                 "type": "string"
               },
               {

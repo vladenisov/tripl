@@ -399,6 +399,7 @@ async def reset_demo_project(
 
     await cache.delete_prefix(cache.prefix_projects())
     await cache.delete_prefix(cache.prefix_data_sources())
+    await project_service._invalidate_slug_caches(slug)
     return await project_service.get_project(session, slug)
 
 

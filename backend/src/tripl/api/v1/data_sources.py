@@ -1,6 +1,7 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 
 from tripl.api.deps import (
     CurrentUserDep,
@@ -10,6 +11,7 @@ from tripl.api.deps import (
     get_owner_user,
 )
 from tripl.models.domain_enums import UserRole
+from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.schemas.data_source import (
     ConnectionSettingsResponse,
@@ -25,6 +27,7 @@ from tripl.services import (
     datasource_schema_service,
     datasource_service,
     metrics_service,
+    project_service,
 )
 
 router = APIRouter(
@@ -39,6 +42,8 @@ _owner_required = [Depends(get_owner_user)]
 # the response is a map of the customer's warehouse (tripl-jfm3.83). That made it
 # a wider disclosure than the host/port this router already redacts, and it is
 # reachable by anyone who can register once the instance is in "open" mode.
+# Project-owned sources also require permission to edit their owning project;
+# workspace-global sources remain available to all editors.
 _editor_required = [Depends(get_editor_user)]
 
 
@@ -138,7 +143,17 @@ async def get_data_source_stats(
 @router.get(
     "/{ds_id}/schema", response_model=DataSourceSchemaResponse, dependencies=_editor_required
 )
-async def get_data_source_schema(session: SessionDep, ds_id: uuid.UUID) -> DataSourceSchemaResponse:
+async def get_data_source_schema(
+    session: SessionDep, ds_id: uuid.UUID, current_user: CurrentUserDep
+) -> DataSourceSchemaResponse:
+    source = await datasource_service.get_data_source(session, ds_id)
+    if source.project_id is not None:
+        slug = await session.scalar(select(Project.slug).where(Project.id == source.project_id))
+        if slug is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        scope = await project_service.get_project_mutation_scope(session, slug)
+        if not scope.allows(current_user):
+            raise HTTPException(status_code=403, detail="No access to this project's data source")
     return await datasource_schema_service.get_schema_tables(session, ds_id)
 
 
