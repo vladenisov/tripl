@@ -304,6 +304,11 @@ class FactOperand(BaseModel):
         }
 
 
+# The value column a ``sql`` metric projects when ``value_column`` is None. Must
+# match ``metric_collect.SQL_VALUE_COLUMN``, the fallback the collector applies.
+DEFAULT_SQL_VALUE_COLUMN = "value"
+
+
 class SqlConfig(BaseModel):
     """Config JSON for a ``sql`` metric: a user-authored per-bucket SELECT/CTE."""
 
@@ -345,22 +350,13 @@ class SqlConfig(BaseModel):
         with ``SELECT * FROM b``: the columns exist in the result, but the outer
         projection does not mention them, so the textual check cannot see them.
 
-        ASYMMETRY, on purpose. The time column is always explicit config, so a
-        SELECT that does not project it is a typo and is refused here. The value
-        column is refused only when the caller NAMED one; when ``value_column``
-        is None the metric is leaning on the documented ``value`` convention, and
-        tightening that at this boundary would start 422-ing saves for a long
-        tail of stored metrics — including this repo's own fixtures — that the
-        collector's rule has silently condemned for as long as it has existed.
-        Closing that half means correcting those callers first, and teaching the
-        worker to report the refusal as a ``ScanError`` rather than as an
-        internal one.
+        Both columns are held to it (tripl-nluj). The time column is always
+        explicit config; the value column is the one the caller named, or the
+        documented ``value`` convention when ``value_column`` is None — the same
+        fallback ``_collect_sql`` applies, so a save no longer accepts a SELECT
+        the collector will refuse on its first tick. The time column is checked
+        first so a SELECT missing both is reported under the explicit setting.
         """
-        if self.value_column is not None:
-            validate_select_sql(
-                self.metric_sql, value_column=self.value_column, time_column=self.time_column
-            )
-            return self
         try:
             # Both arguments are the time column: the safety subset has already
             # passed on this exact string (field validators run first, and
@@ -373,6 +369,11 @@ class SqlConfig(BaseModel):
         except ValueError:
             msg = f"Metric SQL must project the time column {self.time_column!r}"
             raise ValueError(msg) from None
+        validate_select_sql(
+            self.metric_sql,
+            value_column=self.value_column or DEFAULT_SQL_VALUE_COLUMN,
+            time_column=self.time_column,
+        )
         return self
 
 

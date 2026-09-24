@@ -719,8 +719,19 @@ def plan_events(
             plan.events_grouped += 1
             event_name = group_match.event_name
             if group_match.field_value_overrides:
+                # A JSON column keeps its template (tripl-p5ac): the regex literal
+                # would replace every ``${col.path}`` token at once, and
+                # ``_move_variable_contexts`` then deletes each context whose
+                # target value no longer names its variable. The rule still
+                # groups the row; it just does not rewrite the blob.
                 field_values = [
-                    (fd_id, col_name, group_match.field_value_overrides.get(col_name, value))
+                    (
+                        fd_id,
+                        col_name,
+                        value
+                        if col_meta[col_name]["is_json"]
+                        else group_match.field_value_overrides.get(col_name, value),
+                    )
                     for fd_id, col_name, value in field_values
                 ]
 

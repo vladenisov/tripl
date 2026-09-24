@@ -169,7 +169,7 @@ async def _create_sql_metric(
         "display_name": name.upper(),
         "data_source_id": data_source_id,
         "interval": "1d",
-        "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+        "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         **extra,
     }
     resp = await client.post(_metrics_url(slug), json=payload)
@@ -427,7 +427,9 @@ class TestCreateHappyPaths:
                 "data_source_id": data_source["id"],
                 "interval": "1d",
                 "config": {
-                    "metric_sql": "SELECT toDate(t) AS bucket, count() AS v FROM e GROUP BY bucket",
+                    "metric_sql": (
+                        "SELECT toDate(t) AS bucket, count() AS value FROM e GROUP BY bucket"
+                    ),
                     "time_column": "t",
                 },
             },
@@ -512,7 +514,7 @@ class TestCreateHappyPaths:
                 "data_source_id": data_source["id"],
                 "interval": "1d",
                 "config": {
-                    "metric_sql": "SELECT 1 AS v, now() AS t",
+                    "metric_sql": "SELECT 1 AS value, now() AS t",
                     "time_column": "t",
                     "value_column": "not a column!!",
                 },
@@ -564,7 +566,7 @@ class TestListFilterPagination:
                     "display_name": f"Metric {idx}",
                     "data_source_id": data_source_id,
                     "interval": "1d",
-                    "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                    "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
                 },
             )
             assert resp.status_code == 201, resp.text
@@ -625,7 +627,7 @@ class TestNameUniqueness:
             "display_name": "Dup",
             "data_source_id": data_source["id"],
             "interval": "1d",
-            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         }
         first = await client.post(_metrics_url(project["slug"]), json=payload)
         assert first.status_code == 201
@@ -912,7 +914,7 @@ class TestConfigValidation:
                 "name": "no_ds",
                 "display_name": "No DS",
                 "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
             },
         )
         assert resp.status_code == 422
@@ -960,7 +962,7 @@ class TestUpdateDeleteReorder:
                 "display_name": name.upper(),
                 "data_source_id": data_source_id,
                 "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
             },
         )
         assert resp.status_code == 201, resp.text
@@ -1121,7 +1123,7 @@ class TestSchemaSecurityValidation:
                 "display_name": "Inj Breakdown",
                 "data_source_id": data_source["id"],
                 "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
                 "breakdown_columns": ["good_col", "bad-col"],
             },
         )
@@ -1138,7 +1140,7 @@ class TestSchemaSecurityValidation:
                 "display_name": "Inj AppVer",
                 "data_source_id": data_source["id"],
                 "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
                 "app_version_column": "app version",
             },
         )
@@ -2148,7 +2150,7 @@ class TestUpdateDefinition:
                     "data_source_id": other_ds["id"],
                     "interval": "6h",
                     "config": {
-                        "metric_sql": "SELECT toStartOfHour(t) AS bucket, count() AS v FROM e",
+                        "metric_sql": "SELECT toStartOfHour(t) AS bucket, count() AS value FROM e",
                         "time_column": "bucket",
                     },
                 }
@@ -2348,7 +2350,7 @@ class TestUpdateDefinition:
                     "data_source_id": data_source["id"],
                     "interval": "1d",
                     "config": {
-                        "metric_sql": "SELECT t AS bucket, count() AS v FROM e2",
+                        "metric_sql": "SELECT t AS bucket, count() AS value FROM e2",
                         "time_column": "bucket",
                     },
                 }
@@ -2410,7 +2412,7 @@ class TestUpdateDefinition:
                     "name": "renamed_in_definition",
                     "data_source_id": data_source["id"],
                     "interval": "1d",
-                    "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                    "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
                 },
             },
         )
