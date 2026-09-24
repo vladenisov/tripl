@@ -37,14 +37,31 @@ _auth_utils.SCRYPT_MAXMEM = _auth_utils._scrypt_maxmem(
     _auth_utils.SCRYPT_N, _auth_utils.SCRYPT_R, _auth_utils.SCRYPT_P
 )
 
+import tripl.services.app_settings_service as _app_settings  # noqa: E402
 from tripl.database import get_session  # noqa: E402
+
+# ``tripl.main`` applies persisted service overrides at import, reading
+# app_settings through the SYNC engine, which points at a PostgreSQL the suite
+# does not have. It degrades correctly, but logs a full connection traceback;
+# under xdist that output escapes capture and reads like a failure at the end of
+# every run. The import sees a no-op, and the real function is put back for the
+# tests that exercise it (test_app_settings).
+_real_apply_startup_service_overrides = _app_settings.apply_startup_service_overrides
+_app_settings.apply_startup_service_overrides = lambda session=None: []
 from tripl.main import app  # noqa: E402
+
+_app_settings.apply_startup_service_overrides = _real_apply_startup_service_overrides
 from tripl.middleware.rate_limit import (  # noqa: E402
     login_rate_limiter,
     register_rate_limiter,
     status_rate_limiter,
 )
 from tripl.models import Base  # noqa: E402
+from tripl.models.data_source import TestStatus  # noqa: E402
+
+# A model enum whose name starts with "Test"; test modules that import it made
+# pytest try to collect it and warn once per worker.
+TestStatus.__test__ = False  # type: ignore[attr-defined]
 from tripl.tests._sqlite import enable_sqlite_foreign_keys  # noqa: E402
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
