@@ -1,14 +1,14 @@
 """Guard against drift between this backend's scheduler and the CLI's copy of it.
 
 ``tripl doctor`` reports the metrics scheduler's retry backoff and judges scan
-staleness, and to do that ``cli/`` MIRRORS six facts declared here. The mirror is
+staleness, and to do that ``cli/`` MIRRORS five facts declared here. The mirror is
 deliberate — the cli package has no backend dependency, because it installs on an
 operator's laptop — but until this file nothing tied the copies together: the
 CLI's own pinning test compares its formula to literals inside its own package,
 so it cannot see the backend at all, and its CI job runs from ``cli/``. A backend
 change therefore left every CLI test green while ``deferred_by_seconds_estimate``,
-the published backoff table in ``website/docs/run/cli.md`` and the demo staleness
-allowance all quietly became wrong (tripl-ey6j.8).
+the published backoff table in ``website/docs/run/cli.md`` and the (since removed,
+tripl-0zpq.343) demo staleness allowance all quietly became wrong (tripl-ey6j.8).
 
 The guard lives HERE rather than in ``cli/tests/`` because this is the suite whose
 CI job has the whole repository checked out. It reads the two CLI modules as text
@@ -28,7 +28,6 @@ import pytest
 
 from tripl.core.intervals import INTERVALS
 from tripl.worker.tasks.metrics.schedule import (
-    DEMO_COLLECTION_COOLDOWN_HOURS,
     FAILURE_BACKOFF_AFTER,
     FAILURE_BACKOFF_CEILING,
     FAILURE_BACKOFF_MAX_INTERVALS,
@@ -75,12 +74,6 @@ _MIRRORED: tuple[tuple[Path, str, object, str], ...] = (
         "DISPATCHER_MODE",
         METRICS_COLLECTION_MODE,
         f"{_TASKS}::METRICS_COLLECTION_MODE",
-    ),
-    (
-        _SCAN_CHECKS,
-        "DEMO_COOLDOWN_SECONDS",
-        DEMO_COLLECTION_COOLDOWN_HOURS * 3600,
-        f"{_SCHEDULE}::DEMO_COLLECTION_COOLDOWN_HOURS * 3600",
     ),
     (
         _MODEL,
@@ -176,7 +169,7 @@ def test_cli_mirror_matches_backend(
         f"tripl doctor mirrors a scheduler fact that this backend has changed:\n"
         f"  {relative}::{name} = {cli_value!r}\n"
         f"  {origin} = {backend_value!r}\n"
-        "Update the CLI copy to match. doctor's backoff estimate, its demo staleness "
-        "allowance and the backoff table published in website/docs/run/cli.md are all "
+        "Update the CLI copy to match. doctor's backoff estimate "
+        "and the backoff table published in website/docs/run/cli.md are all "
         "computed from that copy, so leaving it stale makes doctor confidently wrong."
     )

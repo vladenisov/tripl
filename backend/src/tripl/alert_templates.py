@@ -300,6 +300,16 @@ METRIC_UNIT_PERCENT = "%"
 # What the percent parenthetical says when there is nothing to divide by.
 NO_BASELINE_LABEL = "no baseline"
 
+# The ``local_notice`` a ``demo_sink`` delivery carries in its payload snapshot.
+# One constant for both writers — the demo seeder that records the initial
+# delivery and the worker's demo_sink dispatch branch (send, retry, simulate) —
+# so a freshly seeded delivery and a retried one always describe themselves the
+# same way (tripl-0zpq.320).
+DEMO_SINK_LOCAL_NOTICE = (
+    "Simulated local delivery (demo_sink) — rendered and recorded locally with "
+    "no external message sent."
+)
+
 
 @dataclass(frozen=True)
 class AlertTemplateContext:

@@ -895,7 +895,10 @@ then reveals kind-specific config:
 
 Shared fields are name, display name, description, color, unit, owner/review,
 status, breakdown columns/limit, optional version/platform columns, and the
-anomaly-detection toggle. A metric is monitored only while it is **active** and
+anomaly-detection toggle. With a breakdown limit, the values that stay explicit
+are ranked once over each collection's whole window, so a long replay split into
+chunks keeps the same values in every chunk instead of demoting a value into
+**Other** part-way through the series. A metric is monitored only while it is **active** and
 its anomaly-detection toggle is on. Turning that toggle off — or moving the
 metric out of `active` — stops it being scored and closes its signal on every
 surface at once: the catalog row, the metric's own detail page, the Anomalies

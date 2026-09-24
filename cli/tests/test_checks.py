@@ -814,9 +814,14 @@ def test_a_real_project_idle_for_four_hours_is_still_reported(now: datetime) -> 
     assert check.status is Severity.FAIL
 
 
-def test_a_demo_silent_past_its_cooldown_is_still_reported(now: datetime) -> None:
-    """The allowance is one cooldown plus one interval, not an exemption."""
-    long_idle = [make_job(at=now - timedelta(hours=12), time_to=now - timedelta(hours=12))]
+def test_a_demo_silent_past_its_cooldown_is_not_reported(now: datetime) -> None:
+    """A demo nobody opens stops collecting on purpose (tripl-0zpq.343).
+
+    The scheduler's pause gate stops a demo's dispatcher entirely, and no field
+    the API exposes tells that pause from a dead scheduler, so a demo's silence
+    is not judged at all. Its failures still are.
+    """
+    long_idle = [make_job(at=now - timedelta(hours=72), time_to=now - timedelta(hours=72))]
 
     check = scan_check(
         build_snapshot(
@@ -827,7 +832,8 @@ def test_a_demo_silent_past_its_cooldown_is_still_reported(now: datetime) -> Non
         )
     )
 
-    assert "scan_not_dispatched" in codes(check)
+    assert codes(check) == []
+    assert check.status is Severity.PASS
 
 
 def test_an_unknown_interval_does_not_hide_a_config_that_is_failing(now: datetime) -> None:

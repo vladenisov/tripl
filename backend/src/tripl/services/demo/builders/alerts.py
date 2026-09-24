@@ -28,10 +28,10 @@ from statistics import median
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.alert_templates import percent_delta_of
+from tripl.alert_templates import DEMO_SINK_LOCAL_NOTICE
 from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
-from tripl.models.alert_delivery_item import AlertDeliveryItem, trim_scope_name
+from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
@@ -50,7 +50,10 @@ from tripl.models.metric_value import MetricValue
 from tripl.models.project import Project
 from tripl.schemas.alerting import SimulatedRuleFiring
 from tripl.services.alerting_rendering import render_firings_message
-from tripl.services.demo.builders.warehouse import SPIKE_EVENT_NAME
+from tripl.services.demo.builders.warehouse import (
+    SPIKE_ANNOTATION_LABEL,
+    SPIKE_EVENT_NAME,
+)
 from tripl.services.demo.scenario import DemoContext
 
 # Deterministic namespace so the seeded inbox correlation-group id is stable for
@@ -69,10 +72,6 @@ _METRIC_ANOMALY_RECENT_BUCKETS = 7
 _METRIC_ANOMALY_MIN_POINTS = 3
 _METRIC_ANOMALY_Z_SCORE = 3.0
 _METRIC_ANOMALY_MIN_STDDEV = 0.001
-_LOCAL_NOTICE = (
-    "Simulated local delivery (demo_sink) — rendered and recorded locally with "
-    "no external message sent."
-)
 
 # One FAILED earlier attempt at the same incident. The Audit table only offers
 # Retry on a failed row, and the local sink cannot fail, so without a seeded
@@ -183,7 +182,7 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
             "delivery_mode": "local_sink",
             "is_local": True,
             "simulated": True,
-            "local_notice": _LOCAL_NOTICE,
+            "local_notice": DEMO_SINK_LOCAL_NOTICE,
         },
     )
     session.add(delivery)
@@ -206,7 +205,7 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
             "delivery_mode": "local_sink",
             "is_local": True,
             "simulated": True,
-            "local_notice": _LOCAL_NOTICE,
+            "local_notice": DEMO_SINK_LOCAL_NOTICE,
         },
     )
     session.add(failed_delivery)
@@ -281,6 +280,11 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
     # keeps the row valid for a context assembled without the warehouse builder;
     # inside the recipe that cannot happen, because the early return at the top
     # of this builder already requires the scan config warehouse writes.
+    #
+    # The demo runtime's retention pass deletes this row once its bucket falls
+    # behind the retention cutoff — the same cutoff that prunes the anomaly it
+    # explains. The runtime appends plain noise with no new spike, so an aging
+    # demo retires the story rather than re-injecting it (tripl-0zpq.322).
     spike_event_id = ctx.event_ids.get(SPIKE_EVENT_NAME)
     session.add(
         ChartAnnotation(
@@ -288,7 +292,7 @@ async def build_alerts(session: AsyncSession, ctx: DemoContext) -> None:
             scope_type=(ChartAnnotationScopeType.event.value if spike_event_id else None),
             scope_ref=str(spike_event_id) if spike_event_id else None,
             bucket=ctx.spike_bucket or ctx.now,
-            label="Injected demo spike",
+            label=SPIKE_ANNOTATION_LABEL,
             description=(
                 "Controlled demo scenario: a synthetic traffic spike was injected "
                 "into this series to drive the seeded anomaly and the local alert "
@@ -319,10 +323,11 @@ def _delivery_item(
         delivery_id=delivery_id,
         scope_type=firing.scope_type.value,
         scope_ref=firing.scope_ref,
-        # Already inside ``SCOPE_NAME_MAX_LEN``: ``_build_firings`` runs every
-        # label through ``trim_scope_name`` before it builds the firing, so the
-        # message rendered from these firings and the column written from them
-        # carry the same string. Trimmed there rather than here deliberately —
+        # Already inside ``SCOPE_NAME_MAX_LEN``: ``_build_firings`` builds every
+        # firing through ``SimulatedRuleFiring.from_candidate``, which runs the
+        # label through ``trim_scope_name``, so the message rendered from these
+        # firings and the column written from them carry the same string.
+        # Trimmed there rather than here deliberately —
         # re-trimming an already-trimmed label is a no-op, but trimming ONLY
         # here would let the two diverge.
         scope_name=firing.scope_name,
@@ -515,60 +520,35 @@ async def _build_firings(
 
     firings: list[SimulatedRuleFiring] = []
     for anomaly in anomalies:
-        # Trimmed here, at the ONE construction site, the way
-        # ``alerting_service.simulate_rule`` trims the firings it builds and for
-        # the same reason: this list feeds both ``render_firings_message`` (which
-        # becomes ``payload_snapshot["rendered_message"]``) and, through
-        # ``_delivery_item``, the ``scope_name`` column — so trimming only at the
-        # item would leave the seeded message naming a scope the item does not.
+        # Built by ``SimulatedRuleFiring.from_candidate``, the constructor
+        # ``alerting_service.simulate_rule`` uses too, so the field list exists
+        # once: a field added to the DTO reaches the demo and the live replay
+        # together (tripl-0zpq.324). It also trims the scope name and computes
+        # the delta through the shared ``percent_delta_of``.
         #
-        # Nothing the demo seeds overflows 255 today: ``_resolve_scope_name``
-        # returns the project name, a seeded event/event-type/metric display
-        # name, or the scope ref, and the seeder writes all of them. But it reads
-        # them back out of the DB by id, so its inputs are ``Event.name``
-        # (String(500)) and ``EventType.display_name`` — the same wider sources
-        # ``trim_scope_name`` exists for — and this is the last
-        # ``AlertDeliveryItem`` writer outside the guard the rest of the batch
-        # added (``alert_payload``, ``_event_generator_merge``,
-        # ``_event_generator_merge_refs``, ``dispatch``). A demo recipe that one
-        # day seeds a realistically long event name would otherwise reproduce
-        # tripl-0zpq.253 inside ``create_demo_project``, where the whole seed is
-        # one transaction and the Postgres "value too long" would roll all of it
-        # back.
-        scope_name = trim_scope_name(
-            _resolve_scope_name(
-                anomaly,
-                project=project,
-                event_names=event_names,
-                event_type_names=event_type_names,
-                metric_names=metric_names,
-            )
-        )
-        absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
-        # The same definition live dispatch stores and the real simulator
-        # replays (``alert_templates.percent_delta_of``), not a local copy of
-        # it. Demo data only, but the demo is the first alerting surface a new
-        # user reads, and a fourth copy of this expression is precisely how the
-        # signed-baseline fix (tripl-0zpq.102) reached some readers and not
-        # others.
-        percent_delta = percent_delta_of(anomaly.actual_count, anomaly.expected_count)
+        # The trim matters here: this list feeds both ``render_firings_message``
+        # (``payload_snapshot["rendered_message"]``) and, through
+        # ``_delivery_item``, the ``scope_name`` column. ``_resolve_scope_name``
+        # reads ``Event.name`` (String(500)) and ``EventType.display_name`` back
+        # out of the DB, and a demo recipe that one day seeds a realistically
+        # long event name would otherwise reproduce tripl-0zpq.253 inside
+        # ``create_demo_project``, where the Postgres "value too long" would
+        # roll the whole seed back.
+        #
         # SQLite drops tz on round-trip while freshly-built rows stay tz-aware;
         # normalise so every firing bucket is comparable (max/last_seen_at).
         bucket = anomaly.bucket if anomaly.bucket.tzinfo else anomaly.bucket.replace(tzinfo=UTC)
         firings.append(
-            SimulatedRuleFiring(
-                anomaly_id=anomaly.id,
-                scope_type=anomaly.scope_type,
-                scope_ref=anomaly.scope_ref,
-                scope_name=scope_name,
-                event_type_id=anomaly.event_type_id,
-                event_id=anomaly.event_id,
+            SimulatedRuleFiring.from_candidate(
+                anomaly,
+                scope_name=_resolve_scope_name(
+                    anomaly,
+                    project=project,
+                    event_names=event_names,
+                    event_type_names=event_type_names,
+                    metric_names=metric_names,
+                ),
                 bucket=bucket,
-                direction=anomaly.direction,
-                actual_count=anomaly.actual_count,
-                expected_count=anomaly.expected_count,
-                absolute_delta=absolute_delta,
-                percent_delta=percent_delta,
             )
         )
     return firings

@@ -4,6 +4,8 @@ import abc
 import logging
 import math
 import re
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -219,6 +221,21 @@ def field_contract_verdict(
     )
 
 
+def rank_top_n_once(
+    adapter: BaseAdapter, time_from: datetime, time_to: datetime
+) -> AbstractContextManager[None]:
+    """``adapter.top_n_ranking_window(time_from, time_to)`` for a chunk loop.
+
+    The chunk loops in ``worker/tasks/metrics/`` enter this rather than the
+    method so a stand-in that is not a :class:`BaseAdapter` — a test double
+    answering canned rows — needs no top-N machinery: it has no pre-query to
+    share, and gets a no-op (tripl-0zpq.346).
+    """
+    if isinstance(adapter, BaseAdapter):
+        return adapter.top_n_ranking_window(time_from, time_to)
+    return nullcontext()
+
+
 class BaseAdapter(abc.ABC):
     """What every warehouse adapter must implement, and what callers may assume.
 
@@ -257,6 +274,26 @@ class BaseAdapter(abc.ABC):
       values at the cutoff, so ranking the same window twice, as a retried
       chunk or a replay does, can keep a different set than the first pass did
       and silently reshape the stored series.
+    * "The requested window" is the CALLER's whole collection window, not the
+      chunk (tripl-0zpq.346). Ranked per chunk, a chunked collection kept
+      ``{a,b,c,d}`` for its first week and ``{a,b,e,f}`` for its last, so one
+      series stored real rows for ``c`` early and none late — its counts sat
+      inside ``'Other'`` there with nothing recording the demotion. A chunk
+      loop therefore runs inside :meth:`top_n_ranking_window`, which makes
+      every top-N pre-query rank over the loop's whole window, once, and hand
+      the same set to every chunk. Outside that context the pre-query ranks
+      over the method's own ``time_from`` / ``time_to``, as before.
+    * "The caller" is the METRIC (or scan config) whose series is being
+      written, never a batch of them. The batched fact path shares one
+      breakdown scan between metrics, but it keys that scan on each limited
+      metric's own window and ranks over that window, so the set a metric keeps
+      does not depend on which group-mates happen to lag, and it matches the
+      per-metric collectors that stay as its conformance oracle.
+    * The ranking pre-query is the one statement of a chunked collection that
+      spans the whole window: chunking bounds the bucketed scans, not the
+      ranking. That is the price of one consistent set per collection; it is a
+      single ``GROUP BY`` over the breakdown column(s) — no bucketing, no
+      aggregates — and runs once per distinct pre-query, not once per chunk.
     * ``_is_other`` / ``is_other`` is the integer 1 on the rollup row and 0
       elsewhere in all four implementations, not a boolean.
 
@@ -292,20 +329,15 @@ class BaseAdapter(abc.ABC):
       END)``, and ``sumIf`` under a sentinel that fires only when NOTHING
       matched — so on them the cell is that engine's own ``sum`` over an input
       holding no non-NULL value: NULL under standard SQL, and therefore a gap.
-    * The four do NOT agree on that last case, and the outlier is the in-memory
-      adapter. ``synthetic._aggregate`` answers ``0.0`` for ``sum`` over a
-      matching set with no non-NULL measure (``return 0.0 if agg is
-      MetricAggregation.sum else None``), so the demo warehouse STORES a zero
-      where the SQL engines leave a gap; ``avg`` / ``min`` / ``max`` return
-      ``None`` there and do agree, and ``count_distinct`` counts 0 on all four.
-      It is reachable: ``amount`` is in ``synthetic._EVENTS_NULLABLE`` and every
-      screen-view row carries NULL in it, so a filtered ``sum`` over a bucket of
-      those rows hits it. It is NOT fixed here — the behaviour predates this
-      section (it is on ``main``) and this batch left it alone — so it is
-      written down rather than claimed away. Nothing pins the SQL side of the
-      comparison either: the conformance fixture keeps all-NULL breakdown groups
-      out by construction (``tests/conformance/dataset.py``). A fifth adapter
-      should follow the SQL engines, not this one.
+    * All four agree on that last case, the in-memory adapter included:
+      ``synthetic._aggregate`` answers ``None`` for ``sum`` / ``avg`` / ``min``
+      / ``max`` over a set with no non-NULL measure, and ``count_distinct``
+      counts 0 on all four. It used to answer ``0.0`` for ``sum`` alone, so the
+      demo warehouse stored a zero where the SQL engines leave a gap — reachable,
+      because ``amount`` is in ``synthetic._EVENTS_NULLABLE`` and every
+      screen-view row carries NULL in it (tripl-0zpq.345). Nothing pins the SQL
+      side of the comparison by execution: the conformance fixture keeps all-NULL
+      breakdown groups out by construction (``tests/conformance/dataset.py``).
     * A spec with no ``filter_sql`` is unconditional and none of this applies.
 
     Field contracts (``validate_field_contracts``)
@@ -357,8 +389,8 @@ class BaseAdapter(abc.ABC):
     "unbounded below", and inverts the contract for a ``+inf`` one, where every
     row is below the bound and the honest reading is "everything is bad".
 
-    What an engine can compile is NOT itself shared, and the two known
-    divergences are declared rather than accidental.
+    What an engine can compile is NOT itself shared, and the known divergences
+    are declared rather than accidental.
 
     The first is the regex dialect. A ``contract_regex`` is screened at save time
     by Python's ``re`` (``schemas/field_definition``) and then compiled by
@@ -370,8 +402,10 @@ class BaseAdapter(abc.ABC):
     statement, which took every other expectation riding in that statement, and
     the collection around it, down with it. :meth:`contract_regex_is_compilable`
     asks the engine itself, once per distinct pattern per adapter, BEFORE the
-    pattern reaches a statement; a refusal makes that one expectation inert here
-    and says so in the log. The divergence itself is not fixable and is not worth
+    pattern reaches a statement; a refusal makes that one expectation inert here,
+    says so in the log, and records it (:meth:`_skip_field_contract`) so the run
+    summary reports it as ``contract_expectations_skipped``. The divergence
+    itself is not fixable and is not worth
     faking: see that method for why a portable-subset screen was rejected, and
     ``PostgresAdapter``'s class docstring for the cases where all three dialects
     compile a pattern and disagree about what it MEANS, which no probe can catch.
@@ -386,9 +420,24 @@ class BaseAdapter(abc.ABC):
     (``['a','b']`` against ``{a,b}``), so there is no shared answer to converge
     on. The failure MODE is shared instead, which is the part that was broken:
     BigQuery raised out of ``validate_field_contracts`` before any SQL existed,
-    and now skips that one expectation, logs it, and runs the rest.
+    and now skips that one expectation, logs it, records it for the caller the
+    same way, and runs the rest.
     ``required_null_violation`` stays legal on such a column everywhere — it is
     pure NULL logic and needs no rendering.
+
+    The third is PostgreSQL's range comparison domain (tripl-0zpq.349). The
+    fallback, ClickHouse and BigQuery parse the value into float64 and compare
+    there; PostgreSQL compares in exact ``numeric``, because float8's input
+    function raises 22003 on overflow AND underflow-to-zero and one such row
+    would abort the statement every expectation shares. Exact and rounded
+    comparison give different verdicts only near a bound or outside float64's
+    range: ``'9007199254740993'`` against ``max_value=9007199254740992.0`` is BAD
+    on PostgreSQL and in range elsewhere (both round to the same double), and
+    ``'-1e-400'`` against ``min_value=0.0`` is BAD on PostgreSQL and in range in
+    the fallback (``-0.0``). A numeric string longer than
+    ``postgres._FINITE_NUMBER_RE`` admits (510 integer or 1275 fractional
+    digits) is BAD on PostgreSQL alone as well. Closing it would mean casting
+    ``numeric`` to float8, which is exactly the raise being avoided.
 
     Deciding in Python rather than in each dialect is what keeps the engines
     from disagreeing about a borderline rate: the comparison used to be written
@@ -408,6 +457,97 @@ class BaseAdapter(abc.ABC):
     counting in the warehouse. The fallback is the exception it cannot help
     being: it counts the rows it sampled, so there ``limit`` bounds both.
     """
+
+    # Set only inside ``top_n_ranking_window`` (tripl-0zpq.346).
+    _top_n_ranking_window: tuple[datetime, datetime] | None = None
+    _top_n_ranking_cache: dict[object, object] | None = None
+
+    @contextmanager
+    def top_n_ranking_window(self, time_from: datetime, time_to: datetime) -> Iterator[None]:
+        """Rank every top-N pre-query over ``[time_from, time_to)``, once.
+
+        Wrap a chunk loop in this so each chunk folds the SAME surviving values
+        into ``'Other'`` — see the top-N section of the class docstring. Each
+        distinct pre-query (base query, time column, breakdown columns, limit,
+        ranking window) runs once for the whole block and is reused by every
+        later chunk.
+
+        Nested blocks switch the window but keep the OUTERMOST block's cache,
+        which is safe because the window is part of every cache key. The
+        batched fact path relies on that: one outer block spans its chunk loop
+        and each limited breakdown scan re-enters with its metric's own window,
+        so each window is still ranked once rather than once per chunk.
+        """
+        previous = (self._top_n_ranking_window, self._top_n_ranking_cache)
+        self._top_n_ranking_window = (time_from, time_to)
+        if self._top_n_ranking_cache is None:
+            self._top_n_ranking_cache = {}
+        try:
+            yield
+        finally:
+            self._top_n_ranking_window, self._top_n_ranking_cache = previous
+
+    def _ranking_window(self, time_from: datetime, time_to: datetime) -> tuple[datetime, datetime]:
+        """The window a top-N pre-query ranks over: the caller's, else the call's."""
+        return self._top_n_ranking_window or (time_from, time_to)
+
+    def _ranked_once[RankT](self, key: object, rank: Callable[[], RankT]) -> RankT:
+        """Run ``rank`` once per ``key`` inside ``top_n_ranking_window``.
+
+        Outside the context there is nothing to share, so ``rank`` simply runs.
+        """
+        cache = self._top_n_ranking_cache
+        if cache is None:
+            return rank()
+        if key not in cache:
+            cache[key] = rank()
+        return cache[key]  # type: ignore[return-value]
+
+    def _top_breakdown_values_multi(
+        self,
+        base_query: str,
+        time_column: str,
+        breakdown_columns: list[str],
+        time_from: datetime,
+        time_to: datetime,
+        limit: int,
+    ) -> dict[str, list[str]]:
+        """Each column's surviving top-N values, ranked over the ranking window.
+
+        The SQL adapters' shared seam: it resolves the window (the caller's
+        whole one inside :meth:`top_n_ranking_window`) and runs the engine's
+        :meth:`_query_top_breakdown_values_multi` once per distinct pre-query
+        there (tripl-0zpq.346).
+        """
+        rank_from, rank_to = self._ranking_window(time_from, time_to)
+        key = (
+            "top_breakdown_values",
+            base_query,
+            time_column,
+            tuple(breakdown_columns),
+            limit,
+            rank_from,
+            rank_to,
+        )
+        ranked = self._ranked_once(
+            key,
+            lambda: self._query_top_breakdown_values_multi(
+                base_query, time_column, breakdown_columns, rank_from, rank_to, limit
+            ),
+        )
+        return {column: list(values) for column, values in ranked.items()}
+
+    def _query_top_breakdown_values_multi(
+        self,
+        base_query: str,
+        time_column: str,
+        breakdown_columns: list[str],
+        time_from: datetime,
+        time_to: datetime,
+        limit: int,
+    ) -> dict[str, list[str]]:
+        """The engine's top-N pre-query over exactly ``[time_from, time_to)``."""
+        raise NotImplementedError
 
     @abc.abstractmethod
     def test_connection(self) -> bool: ...
@@ -512,7 +652,7 @@ class BaseAdapter(abc.ABC):
         The gate every implementation puts in front of a ``regex_violation``
         expectation, so that a pattern this engine refuses is inert here instead
         of fatal to the whole scan — the third fixed rule in the field contract
-        section of this class. Which patterns those are is the first of the two
+        section of this class. Which patterns those are is the first of the
         declared divergences documented there.
 
         Asking the engine is the whole design. The alternative was a static
@@ -582,6 +722,64 @@ class BaseAdapter(abc.ABC):
         cache[pattern] = True
         return True
 
+    #: Expectations this adapter declined to evaluate since the caller last
+    #: asked, in the order it declined them. ``None`` at class level for the same
+    #: reason as ``_contract_regex_support``: a dict or list declared here would
+    #: be shared by every instance, and an adapter built with ``object.__new__``
+    #: never runs an ``__init__`` that could create it.
+    _skipped_field_contracts: list[FieldContractExpectation] | None = None
+
+    def _skip_field_contract(self, expectation: FieldContractExpectation) -> None:
+        """Record that ``expectation`` is being dropped from this scan unevaluated.
+
+        Called at every place an implementation of ``validate_field_contracts``
+        declines ONE expectation it was handed and still runs the rest: a
+        pattern this engine will not compile, a non-finite range bound, a column
+        this engine cannot render (BigQuery's REPEATED), a column absent from the
+        result. Each of those used to leave nothing but a log line, so a contract
+        that silently stopped being evaluated reported exactly like one that was
+        being met (tripl-0zpq.341 / tripl-0zpq.358). The caller reads the record
+        through :meth:`take_skipped_field_contracts` and reports it.
+
+        The "says nothing" inert cases — an empty enum, a pattern-less regex, a
+        range with no bound — are NOT recorded: they are ordinary configuration
+        states that no engine could check, not checks that stopped running.
+        """
+        skipped = self._skipped_field_contracts
+        if skipped is None:
+            skipped = []
+            self._skipped_field_contracts = skipped
+        skipped.append(expectation)
+
+    def _field_contract_is_inert(self, expectation: FieldContractExpectation) -> bool:
+        """:func:`field_contract_is_inert`, recording the one inert case that is a skip.
+
+        A range bound that is not a finite number is the only shared inert case
+        that is not a configuration state (see that function), so it is the only
+        one :meth:`_skip_field_contract` hears about.
+        """
+        if not field_contract_is_inert(expectation):
+            return False
+        if expectation.drift_type == "range_violation" and any(
+            bound is not None and not math.isfinite(float(bound))
+            for bound in (expectation.min_value, expectation.max_value)
+        ):
+            self._skip_field_contract(expectation)
+        return True
+
+    def take_skipped_field_contracts(self) -> list[FieldContractExpectation]:
+        """The expectations skipped since the last call, and forget them.
+
+        ``worker/tasks/metrics/schema_drift`` calls this after every
+        ``validate_field_contracts`` call and reports the count as
+        ``contract_expectations_skipped`` beside ``contract_checks_failed``: the
+        latter counts event-type groups whose whole check could not run, this
+        counts single expectations dropped from a check that did run.
+        """
+        skipped = self._skipped_field_contracts or []
+        self._skipped_field_contracts = None
+        return skipped
+
     def _probe_contract_regex(self, pattern: str) -> None:
         """Ask this engine to compile ``pattern``; raise if it will not.
 
@@ -648,10 +846,11 @@ class BaseAdapter(abc.ABC):
 
         violations: list[FieldContractViolation] = []
         for expectation in expectations:
-            if field_contract_is_inert(expectation):
+            if self._field_contract_is_inert(expectation):
                 continue
             field_index = index_by_name.get(expectation.field_name)
             if field_index is None:
+                self._skip_field_contract(expectation)
                 continue
             bad_count = 0
             total_count = 0
@@ -680,6 +879,7 @@ class BaseAdapter(abc.ABC):
                 # is the one it can no longer fail on; closing that needs a
                 # reference whose probe is ``re`` — not a comment here.
                 if not self.contract_regex_is_compilable(expectation.regex):
+                    self._skip_field_contract(expectation)
                     continue
                 regex = re.compile(expectation.regex)
 
