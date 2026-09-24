@@ -4,7 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
-from tripl.alert_templates import percent_delta_or_none
+from tripl.alert_templates import percent_delta_of, percent_delta_or_none
+from tripl.alerting_matching import AlertMatchCandidate
 from tripl.alerting_validation import (
     _validate_https_url,
     normalize_optional_secret,
@@ -28,6 +29,7 @@ from tripl.alerting_validation import (
 )
 from tripl.core.alert_schedule import parse_cron
 from tripl.models.alert_delivery import AlertDeliveryStatus
+from tripl.models.alert_delivery_item import trim_scope_name
 from tripl.models.alert_destination import AlertDestinationType
 from tripl.models.alert_rule import DEFAULT_MIN_PERCENT_DELTA
 from tripl.models.domain_enums import (
@@ -1412,6 +1414,55 @@ class SimulatedRuleFiring(BaseModel):
     # and nowhere else.
     percent_delta: float
     rendered_item: str | None = None
+
+    @classmethod
+    def from_candidate(
+        cls,
+        candidate: AlertMatchCandidate,
+        *,
+        scope_name: str,
+        bucket: datetime | None = None,
+    ) -> SimulatedRuleFiring:
+        """The one place a firing's fields are read off a matched candidate.
+
+        Both builders of this DTO go through here — the rule simulator
+        (``alerting_service.simulate_rule``) and the demo seeder
+        (``demo.builders.alerts._build_firings``). They used to be two
+        hand-maintained constructor calls, and they had already drifted: the
+        seeder never passed the drift fields, so a field added here reached the
+        live replay and silently not the demo (tripl-0zpq.324).
+
+        ``scope_name`` is resolved by the caller (each has its own name source)
+        and trimmed here the way the live send path trims it. The delta goes
+        through the shared ``percent_delta_of``. The drift fields and
+        ``window_from`` are read with ``getattr`` because ``AlertMatchCandidate``
+        is a Protocol whose ``MetricAnomaly`` members carry none of them.
+        ``bucket`` overrides the candidate's when the caller has to normalise it
+        (the demo seeder re-attaches the UTC zone SQLite drops).
+        """
+        return cls(
+            anomaly_id=candidate.id,
+            scan_config_id=candidate.scan_config_id,
+            scope_type=candidate.scope_type,
+            scope_ref=candidate.scope_ref,
+            scope_name=trim_scope_name(scope_name),
+            event_type_id=candidate.event_type_id,
+            event_id=candidate.event_id,
+            drift_field=getattr(candidate, "drift_field", None),
+            drift_type=getattr(candidate, "drift_type", None),
+            sample_value=getattr(candidate, "sample_value", None),
+            bucket=candidate.bucket if bucket is None else bucket,
+            # ``bucket`` is the window's END; this carries the START for the
+            # release-regression family, so the preview prints the same
+            # "over the 51h rollout overlap" clause the delivered item does
+            # (tripl-0zpq.165).
+            window_from=getattr(candidate, "window_from", None),
+            direction=candidate.direction,
+            actual_count=candidate.actual_count,
+            expected_count=candidate.expected_count,
+            absolute_delta=abs(candidate.actual_count - candidate.expected_count),
+            percent_delta=percent_delta_of(candidate.actual_count, candidate.expected_count),
+        )
 
     @field_serializer("percent_delta")
     def encode_percent_delta(self, value: float) -> float | None:

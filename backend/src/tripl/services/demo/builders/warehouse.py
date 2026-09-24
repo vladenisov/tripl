@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,21 @@ from tripl.services.project_service import demo_data_source_name
 # The single-bucket spike is injected on this event's newest bucket; it is the
 # only deviation the real detector turns into an anomaly per scope.
 SPIKE_EVENT_NAME = "Home Screen View"
+# The label of the chart annotation the alerts builder pins to that spike. Shared
+# with the demo runtime, whose retention pass retires the marker together with
+# the anomaly it explains (tripl-0zpq.322).
+SPIKE_ANNOTATION_LABEL = "Injected demo spike"
+
+# The dead-event example: this authored event's warehouse volume dried up this
+# many days ago — old enough to surface in the dead-events review. Owned here,
+# not by the governance builder that stamps ``last_seen_at``, because this
+# builder runs first and must stop the event's volume at that same instant: a
+# series with traffic in the last hour contradicted "dead for 45 days"
+# (tripl-0zpq.245). The synthetic warehouse mirrors it with a ``retired`` roster
+# row, so a live collection cannot revive the event either, and the demo runtime
+# tick advances only series that have seeded rows, so it never starts one.
+DEAD_EVENT_NAME = "Subscription Cancelled"
+DEAD_EVENT_AGE_DAYS = 45
 
 # Columns the demo scan reads from the synthetic ``events`` table: everything the
 # curated plan models as a field, the reserved metric dimensions, and the
@@ -158,8 +173,9 @@ async def _build_scan_config(session: AsyncSession, ctx: DemoContext) -> None:
         #
         # The demo still tells its distribution-drift story: builders/monitoring
         # seeds DistributionDrift rows for ``platform`` directly, with PSI from
-        # the real ``compute_psi``, so the panel has 14 days of history without
-        # the config claiming a field it may not claim.
+        # the real ``compute_psi``, so the panel has one daily point per day of
+        # ``noise.DEMO_DRIFT_SPAN_DAYS`` (8, the first a zero-PSI baseline;
+        # tripl-0zpq.252) without the config claiming a field it may not claim.
         distribution_drift_fields=[],
         metric_breakdown_columns=[],
         # Platform + app-version observation are CONFIGURED here (the synthetic
@@ -196,7 +212,14 @@ async def _build_event_metrics(session: AsyncSession, ctx: DemoContext) -> None:
         # random uuid — reproducible across reseeds and processes.
         noise_seed = noise.derive_seed(ctx.seed, spec.name) % 997
         is_spike = spec.name == SPIKE_EVENT_NAME
+        # The dead example has no volume after it was last seen, which with a
+        # 45-day age is the whole seeded history (tripl-0zpq.245).
+        dead_after = (
+            ctx.now - timedelta(days=DEAD_EVENT_AGE_DAYS) if spec.name == DEAD_EVENT_NAME else None
+        )
         for idx, bucket in enumerate(buckets):
+            if dead_after is not None and bucket > dead_after:
+                continue
             count = noise.hourly_volume(spec.base, bucket, idx, noise_seed, total_buckets)
             if is_spike and bucket == spike_bucket:
                 count *= noise.DEMO_SPIKE_MULTIPLIER

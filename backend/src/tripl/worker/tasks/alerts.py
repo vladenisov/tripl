@@ -12,6 +12,7 @@ from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
     ALERT_MESSAGE_FORMAT_TELEGRAM_HTML,
     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
+    DEMO_SINK_LOCAL_NOTICE,
 )
 from tripl.alerting_matching import SCOPE_METRIC
 from tripl.alerting_validation import (
@@ -1348,10 +1349,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             payload_snapshot["delivery_mode"] = "local_sink"
             payload_snapshot["is_local"] = True
             payload_snapshot["simulated"] = True
-            payload_snapshot["local_notice"] = (
-                "Simulated local delivery (demo_sink) — rendered and recorded "
-                "locally with no external message sent."
-            )
+            payload_snapshot["local_notice"] = DEMO_SINK_LOCAL_NOTICE
             delivery.payload_snapshot = payload_snapshot
         else:
             raise ValueError(f"Unsupported destination type {destination.type}")
