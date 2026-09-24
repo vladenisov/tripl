@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.coverage_metric import CoverageMetric
@@ -86,14 +86,21 @@ def _not_an_archived_identity(project_id: uuid.UUID) -> ColumnElement[bool]:
     archived type-A event with identity X must not hide a type-B candidate X the
     collector keeps upserting. The candidate's type id is the one the scan
     resolved on main, so in practice this matches main's archived rows, which
-    is exactly the population the collector consults.
+    is exactly the population the collector consults. A candidate whose type
+    is NULL keeps the project-wide match.
     """
     return ~(
         select(Event.id)
         .where(
             Event.project_id == project_id,
             Event.status == EventStatus.archived,
-            Event.event_type_id == ShadowEventCandidate.event_type_id,
+            # A candidate with no resolved type (every row written before the
+            # collector began recording one) keeps the project-wide match; those
+            # legacy rows are the population this filter exists for.
+            or_(
+                ShadowEventCandidate.event_type_id.is_(None),
+                Event.event_type_id == ShadowEventCandidate.event_type_id,
+            ),
             # `source_name or name`, matching how the collector builds the
             # archived identity set (generation.py
             # `_archived_identities_by_event_type`) and how `events_by_name` is
