@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
 import { DemoProvisioningDialog } from './DemoProvisioningDialog'
+import { expectNoAxeViolations } from '@/test/axe'
 
 function renderDialog(props: Partial<React.ComponentProps<typeof DemoProvisioningDialog>> = {}) {
   return render(
@@ -128,5 +129,16 @@ describe('DemoProvisioningDialog', () => {
 
     expect(screen.getByText(/may still be finishing on the server/i)).toBeInTheDocument()
     expect(screen.queryByText(/rolled back/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('DemoProvisioningDialog accessibility', () => {
+  it.each([
+    ['provisioning', {}],
+    ['failed', { status: 'error' as const, error: new ApiError('boom', 500) }],
+    ['timed out', { timedOut: true }],
+  ])('has no axe violations while %s', async (_state, props) => {
+    renderDialog(props)
+    await expectNoAxeViolations(document.body)
   })
 })

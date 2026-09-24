@@ -44,6 +44,8 @@ function wrapper({ children }: { children: ReactNode }) {
         Routes,
         null,
         createElement(Route, { path: '/p/:slug/events/:tab/bulk', element: children }),
+        // Where a successful save navigates.
+        createElement(Route, { path: '/p/:slug/events', element: null }),
       ),
     ),
   )

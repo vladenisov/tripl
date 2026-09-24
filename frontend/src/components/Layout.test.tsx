@@ -7,6 +7,7 @@ import { alertingApi } from '@/api/alerting'
 import { metricsApi } from '@/api/metrics'
 import { projectsApi } from '@/api/projects'
 import Layout from './Layout'
+import { expectNoAxeViolations } from '@/test/axe'
 
 vi.mock('@/api/alerting', () => ({
   alertingApi: { listDeliveries: vi.fn() },
@@ -329,4 +330,12 @@ describe("Layout after a demo is deleted (tripl-jfm3.74)", () => {
       expect(screen.queryByRole('navigation', { name: 'sidebar' })).toBeNull()
     },
   )
+})
+
+describe('Layout accessibility', () => {
+  it('has no axe violations with the demo banner and scenario strip', async () => {
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body', { isDemo: true })
+    await screen.findByText('Events body')
+    await expectNoAxeViolations(document.body, { page: true })
+  })
 })

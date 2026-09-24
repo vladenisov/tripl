@@ -749,6 +749,12 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # The JavaScript a first page load fetches (entry + modulepreloads) has a
+      # ratcheting byte budget, and chunks split out to load on demand must stay
+      # off that path. Budgets live in scripts/check-bundle-budget.mjs.
+      - name: Bundle budget
+        run: pnpm check:bundle
+
       - name: Test
         run: pnpm test
 

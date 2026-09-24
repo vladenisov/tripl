@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ProductTour } from './ProductTour'
 import { buildTourSteps } from './tourSteps'
+import { expectNoAxeViolations } from '@/test/axe'
 
 // Derived, not hardcoded: adding a tour step must not break these tests.
 const TOTAL_STEPS = buildTourSteps('acme').length
@@ -42,11 +43,27 @@ describe('ProductTour — progress survives the navigation it asks for (tripl-2s
     expect(screen.getByText(/^Step 2 of/)).toBeInTheDocument()
   })
 
-  it('keeps your place when the dialog is merely dismissed', () => {
+  it('keeps your place when Next is pressed', () => {
     renderTour()
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }))
     expect(screen.getByText(/^Step 2 of/)).toBeInTheDocument()
     expect(window.localStorage.getItem('tripl-tour:acme')).toBe('1')
+  })
+
+  it.each([
+    ['Escape', () => fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })],
+    ['the close button', () => fireEvent.click(screen.getByRole('button', { name: /^close$/i }))],
+  ])('keeps your place when the dialog is dismissed with %s', (_how, dismiss) => {
+    const onOpenChange = vi.fn()
+    const { unmount } = renderTour(onOpenChange)
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }))
+
+    dismiss()
+
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+    unmount()
+    renderTour()
+    expect(screen.getByText(/^Step 2 of/)).toBeInTheDocument()
   })
 
   it('starts over once the tour is finished', () => {
@@ -126,5 +143,12 @@ describe('ProductTour', () => {
     }
     expect(screen.queryByRole('button', { name: /^next$/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /finish/i })).toBeInTheDocument()
+  })
+})
+
+describe('ProductTour accessibility', () => {
+  it('has no axe violations on the open dialog', async () => {
+    renderTour()
+    await expectNoAxeViolations(document.body)
   })
 })
