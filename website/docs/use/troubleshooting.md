@@ -88,7 +88,10 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
    minutes; it is not stuck.
 4. **The time column doesn't actually constrain the window.** Metrics are
    bucketed on `time_column`. If the column isn't a usable timestamp in the
-   warehouse, the windowed query returns nothing to bucket.
+   warehouse, the windowed query returns nothing to bucket. A `sql` metric's
+   outer SELECT must also name both its `time_column` and its value column —
+   `value_column`, or `value` when that is left unset — or saving it is
+   refused with a message naming the missing column.
 5. **The worker can't reach the warehouse.** `collect_metrics` connects to your
    data source the same way a scan does; a broken connection fails the run (see
    [A scan run fails](#a-scan-run-fails--a-data-source-connection-test-fails)).

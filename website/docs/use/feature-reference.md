@@ -621,7 +621,13 @@ the diff. The message names each pair. On the branch or on `main`, rename or
 remove one of each and merge. The merge base cannot be edited — it is the
 snapshot of `main` taken when the branch was created — so when that is the side
 still holding a pair, clean `main` first and then recreate the branch from
-current `main` and redo its edits there. A branch copy of an event reads its
+current `main` and redo its edits there. A variable renamed on the branch onto
+the name of a variable the branch deleted merges as that rename: the deleted
+variable goes, and the renamed one keeps its id, its scan identity and its
+observed values. When the deleted variable has no scan identity, or `main`
+changed it after the branch was cut, the merge cannot tell the rename from an
+edit of that variable and answers `409`; rename one of them and merge again.
+Events keep answering `409` to the same shape. A branch copy of an event reads its
 metrics and **last seen** through its `main` twin (the event with the same type
 name and identity), so the branch shows what the live plan collected rather than
 blanks. Removals that are the machine's doing — a scan-minted variable still

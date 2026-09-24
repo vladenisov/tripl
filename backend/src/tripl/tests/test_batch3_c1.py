@@ -377,7 +377,7 @@ async def test_sql_collect_now_dispatches_the_manual_backfill_flag(
             "display_name": "Batch3 SQL",
             "data_source_id": data_source["id"],
             "interval": "1d",
-            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         },
     )
     assert created.status_code == 201, created.text

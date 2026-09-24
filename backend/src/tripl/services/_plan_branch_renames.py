@@ -48,6 +48,8 @@ def pair_renames[KeyT: NaturalKey](
     base: Mapping[KeyT, str | None],
     main: Mapping[KeyT, str | None],
     branch: Mapping[KeyT, str | None],
+    *,
+    vacate_removed: bool = False,
 ) -> dict[KeyT, KeyT]:
     """Match main's rows to the branch rows they were renamed into.
 
@@ -103,6 +105,17 @@ def pair_renames[KeyT: NaturalKey](
       was only legal because its destination was being vacated, so the check
       repeats until it stops finding any.
 
+    ``vacate_removed`` relaxes that last rule for one shape only (tripl-ifuv):
+    the branch DELETED the row holding the destination and moved another row
+    onto its name. The occupant counts as leaving when it was there at the cut
+    under the identity it still carries on main, that identity is non-empty, and
+    no branch row carries it any more. Anything short of that — an occupant with
+    no ``source_name``, one main re-identified since the cut, one main grew after
+    it, or an identity the branch still holds — stays blocked, because there the
+    branch row at that name could just as well be the occupant edited. A caller
+    that passes it MUST delete, and flush, every displaced occupant (a
+    destination main holds that is not itself moving) before writing the moves.
+
     The key type is the caller's own, not widened to ``NaturalKey``, so the
     result can be used to re-key the very maps it was derived from — with
     ``rekey_in_place``, because the result may now be a permutation.
@@ -147,7 +160,23 @@ def pair_renames[KeyT: NaturalKey](
     # row that is there is itself moving away. Removing a move makes its source a
     # staying row, which can block a move that was previously fine, so this runs
     # to a fixed point rather than once.
-    while blocked := [old for old, new in moves.items() if new in main and new not in moves]:
+    branch_identities = {
+        (key[:-1], source_name) for key, source_name in branch.items() if source_name
+    }
+
+    def vacated(key: KeyT) -> bool:
+        occupant = main.get(key)
+        return (
+            vacate_removed
+            and bool(occupant)
+            and key in base
+            and base[key] == occupant
+            and (key[:-1], occupant) not in branch_identities
+        )
+
+    while blocked := [
+        old for old, new in moves.items() if new in main and new not in moves and not vacated(new)
+    ]:
         for old in blocked:
             del moves[old]
     return moves
@@ -223,7 +252,15 @@ def snapshot_rename_pairs(
     for entity_type, identities_of in _PAIRED_ENTITY_TYPES:
         base = identities_of(base_payload)
         branch = identities_of(branch_payload)
-        for old_key, new_key in pair_renames(base, identities_of(main_payload), branch).items():
+        # Same pairing the merge performs, including its variable-only vacating
+        # rule (tripl-ifuv), so the diff never promises what the merge refuses.
+        renames = pair_renames(
+            base,
+            identities_of(main_payload),
+            branch,
+            vacate_removed=entity_type == "variable",
+        )
+        for old_key, new_key in renames.items():
             if old_key in branch or new_key in base:
                 continue
             pairs.append(

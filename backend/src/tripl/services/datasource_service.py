@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -184,10 +185,31 @@ async def update_data_source(
     for key, value in update_dict.items():
         setattr(ds, key, value)
 
-    await session.commit()
+    new_name = update_dict.get("name")
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        # tripl-0zpq.370: the pre-check above is a plain SELECT holding nothing,
+        # so two concurrent renames to the same free name both pass it and the
+        # loser meets uq_data_source_name at the commit. Rolled back, the name
+        # is looked up again: if another source now holds it, this is that race
+        # and gets the pre-check's 409. Any other integrity failure is re-raised.
+        await session.rollback()
+        if new_name is not None and await _name_taken_by_other(session, new_name, ds_id):
+            raise HTTPException(
+                status_code=409, detail="Data source with this name already exists"
+            ) from exc
+        raise
     await session.refresh(ds)
     await cache.delete_prefix(cache.prefix_data_sources())
     return _to_response(ds)
+
+
+async def _name_taken_by_other(session: AsyncSession, name: str, ds_id: uuid.UUID) -> bool:
+    result = await session.execute(
+        select(DataSource.id).where(DataSource.name == name, DataSource.id != ds_id)
+    )
+    return result.first() is not None
 
 
 async def _refresh_main_search_indexes(session: AsyncSession, project_ids: list[uuid.UUID]) -> None:
