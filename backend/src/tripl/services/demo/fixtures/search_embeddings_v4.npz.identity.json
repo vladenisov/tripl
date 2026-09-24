@@ -62,6 +62,7 @@
  "tag\u001f#onboarding\u001fPromo Applied": "c3c37cc156d5195987374e86577fc6a2ab07e03a50f5023807a937419e91953b",
  "tag\u001f#onboarding\u001fSkip Onboarding Click": "5b18d5dd3e728eabb3d72751a0fc66a34a031ca1e110f8be75d0a1aa3e5728c6",
  "tag\u001f#onboarding\u001fTrial Started": "cba90cbcd3525ad608bba2586b2863414809de7eee4a1d44030bbad1abb0edbd",
+ "variable\u001f${platform}\u001fstring": "fa06fe946084436d93dccc38d079cb74e09a752a18f0f0d3d375e76bf4328c3e",
  "variable\u001f${product_id}\u001fstring": "16593b3af06f20a4d89c90c6e343d54797ea9b9392ac66d7b6532b99f8d280ae",
  "variable\u001f${session_id}\u001fstring": "4cd9f15f1450c3f01aa3e00793abf7a71caaa9050ea0e2e8f91fbaa94ebb44c1",
  "variable\u001f${user_id}\u001fstring": "ecf0ae3857dd31d197f3f278d1e7bd04f23454d484ae5fd6ba3ab622ca3c3204"
