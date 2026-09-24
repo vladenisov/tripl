@@ -19,6 +19,8 @@ import json
 import re
 from typing import Any
 
+from tripl.json_paths import format_json_path_value
+
 NAME_FORMAT_PATTERN = re.compile(r"\{([^}]+)\}")
 
 # The OTHER grammar: ``${variable}`` references inside a stored field value.
@@ -110,9 +112,10 @@ def resolve_dotted_keys(fmt: str, values_by_field: dict[str, str]) -> dict[str, 
     """Field-name values plus ``{col.path}`` keys walked out of JSON values.
 
     A dotted key like ``page_data.extra.variant`` resolves by parsing the
-    ``page_data`` field value as JSON and walking ``extra.variant``; values
-    that are missing, non-scalar or unparseable (e.g. still templated with
-    ``${var}``) stay unresolved.
+    ``page_data`` field value as JSON and walking ``extra.variant``, and renders
+    the value found there exactly as the scan does. Paths that are missing, and
+    values that are unparseable (e.g. still templated with ``${var}``), stay
+    unresolved.
     """
     resolved = dict(values_by_field)
     for key in format_keys(fmt):
@@ -126,14 +129,17 @@ def resolve_dotted_keys(fmt: str, values_by_field: dict[str, str]) -> dict[str, 
             node: Any = json.loads(raw)
         except ValueError, TypeError:
             continue
+        found = True
         for segment in path.split("."):
             if not isinstance(node, dict) or segment not in node:
-                node = None
+                found = False
                 break
             node = node[segment]
-        if node is None or isinstance(node, (dict, list)):
+        if not found:
             continue
-        if isinstance(node, float) and node.is_integer():
-            node = int(node)
-        resolved[key] = str(node)
+        # The scan renders a JSON path value with ``format_json_path_value``, so
+        # the API must too: ``true``/``false``/``null`` and a container's JSON,
+        # never Python's ``True`` or an unresolved key, or a hand-made event and
+        # its scanned twin get two different identities (tripl-0zpq.98).
+        resolved[key] = format_json_path_value(node)
     return resolved

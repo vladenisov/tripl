@@ -199,8 +199,9 @@ NON_FK_EVENT_REFERENCES: dict[tuple[str, str], str] = {
         "DELETE: _event_reference_cleanup. Two-key delete on both paths."
     ),
     ("alert_delivery_items", "scope_ref"): (
-        "str(event.id) copied off the anomaly. Handled: rewritten to str(target.id) alongside "
-        "event_id in _merge_event_into_group."
+        "str(event.id) copied off the anomaly for event-scope items; other scopes carry their "
+        "own id (a value drift's is the drift id). Handled: _merge_event_into_group rewrites it "
+        "to str(target.id) only where it equals str(source.id), and re-points event_id for all."
     ),
     ("alert_delivery_items", "details_path"): (
         "Frozen '/monitoring/event/{event_id}' link. NOT rewritten by the merge — a delivered "

@@ -258,6 +258,7 @@ def _detect_path_pattern(
             else:
                 var_name = f"{column_name}_segment_{i}"
                 inferred_type = "string"
+            var_name = _position_unique_name(var_name, i, variables)
             template_parts.append(f"${{{var_name}}}")
             distinct_values = _distinct_values(position_values)
             variables.append(
@@ -275,6 +276,20 @@ def _detect_path_pattern(
     template = "/".join(template_parts)
     coverage = len(matching_paths) / len(paths) * 100
     return DetectedPattern(template=template, variables=variables, coverage_pct=coverage)
+
+
+def _position_unique_name(name: str, position: int, taken: list[DetectedVariable]) -> str:
+    """Keep two variable positions of one pattern from sharing a name.
+
+    ``/users/123/posts/456`` has two numeric positions, and both would be named
+    ``{column}_id``. The planner dedups needs by name, so user ids and post ids
+    became one variable with one merged value list (tripl-0zpq.97). The first
+    position keeps the plain name, so existing single-position variables are
+    unchanged; a later clash gets its position index.
+    """
+    if any(variable.name == name for variable in taken):
+        return f"{name}_{position}"
+    return name
 
 
 def _detect_generic_string_pattern(
@@ -316,6 +331,7 @@ def _detect_generic_string_pattern(
                 else:
                     var_name = f"{column_name}_part_{i}"
                     inferred_type = "string"
+                var_name = _position_unique_name(var_name, i, variables)
                 template_parts.append(f"${{{var_name}}}")
                 distinct_values = _distinct_values(position_values)
                 variables.append(

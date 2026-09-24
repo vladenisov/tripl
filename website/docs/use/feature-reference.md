@@ -157,7 +157,9 @@ convenience: the formatted name is also the event's *scan identity*, the key
 collection matches on, so an event authored under a different name would never
 merge with the traffic it describes. The rows the name is built from are marked
 **names the event** and are required, and the form lists any that are still
-empty.
+empty. A placeholder that reads into a JSON field value, such as
+`{payload.is_premium}`, is rendered the way a scan renders it: `true`, `false`
+and `null`, and nested objects as JSON.
 
 The rule follows the type onto a plan branch. A branch carries its own copy of
 every event type while the scan names the `main` copy, so a branch copy

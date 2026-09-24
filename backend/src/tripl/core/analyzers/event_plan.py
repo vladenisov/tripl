@@ -47,6 +47,7 @@ from tripl.core.analyzers.cardinality import BreakdownAnalysis
 from tripl.core.analyzers.variable_detector import DetectedPattern, detect_variables
 from tripl.core.name_template import NAME_FORMAT_PATTERN, NameFormatError, format_keys
 from tripl.json_paths import build_json_value, decode_json_path_value, format_json_path_value
+from tripl.models.variable import VARIABLE_NAME_MAX_LENGTH
 from tripl.models.variable_value import VariableValueKind
 
 logger = logging.getLogger(__name__)
@@ -183,9 +184,14 @@ def name_format_base_columns(event_name_format: str | None) -> set[str]:
     exactly as it kills ``{action}`` (tripl-3mmh), and reserving ``event`` away
     from ``catalog_sync`` does the same thing by another route (tripl-lpin).
 
-    The base column is also the only thing a ``missing_field`` drift can name:
-    the detector builds those from ``{fd.name for fd in field_definitions}``,
-    which are always top-level column names, never dotted paths.
+    The FULL key is included as well, because a dot does not make a name a
+    path: a ClickHouse ``Nested`` column comes back as a column literally named
+    ``params.screen`` and its FieldDefinition is stored under that name. A
+    format ``{params.screen}`` over such a column needs ``params.screen`` itself
+    unreserved and undeletable; reducing it to ``params`` alone left it
+    reserved, so every run failed on the missing placeholder (tripl-0zpq.95).
+    Returning both is safe either way: the full key of a JSON path names no
+    top-level column, and the base of a real dotted column names none either.
 
     Lives beside ``event_name_format_columns`` because both consumers already
     import from here — ``services.scan_config_lookup`` (which guards field
@@ -193,7 +199,8 @@ def name_format_base_columns(event_name_format: str | None) -> set[str]:
     Putting it in ``services`` would make the sync worker import an async-session
     module for one pure string helper.
     """
-    return {key.split(".", 1)[0] for key in event_name_format_columns(event_name_format)}
+    keys = event_name_format_columns(event_name_format)
+    return {key.split(".", 1)[0] for key in keys} | set(keys)
 
 
 def json_name_format_keys(
@@ -367,12 +374,26 @@ def plan_column_meta(
     details: list[str] = []
     columns_analyzed = 0
 
-    def need_variable(name: str, inferred_type: str) -> None:
+    def need_variable(name: str, inferred_type: str) -> bool:
+        # A token the variables table cannot store would fail the INSERT with a
+        # DataError on PostgreSQL (SQLite ignores VARCHAR length), and that error
+        # would fail the whole run on every tick while the key stays in the
+        # window. A JSON map keyed by user-typed text produces such keys, so the
+        # token is dropped and reported instead (tripl-0zpq.82).
+        if len(name) > VARIABLE_NAME_MAX_LENGTH:
+            message = (
+                f"Skipped variable {name[:60]!r}…: longer than "
+                f"{VARIABLE_NAME_MAX_LENGTH} characters"
+            )
+            if message not in details:
+                details.append(message)
+            return False
         key = (name, inferred_type)
         if key in seen_variables:
-            return
+            return True
         seen_variables.add(key)
         variables_needed.append(VariableNeed(name=name, inferred_type=inferred_type))
+        return True
 
     # Columns referenced by the event-name format are the event's identity, so they must be
     # enumerated (one event per distinct value) even when high-cardinality — otherwise they
@@ -434,7 +455,8 @@ def plan_column_meta(
                 if full_path in json_value_index:
                     passthrough_paths.append(full_path)
                     continue
-                need_variable(full_path, "string")
+                if not need_variable(full_path, "string"):
+                    continue
                 # ``observed_count`` is "distinct values this SAMPLE showed", not
                 # a warehouse-wide count — the sampler stops at its own limit, so
                 # the kind it implies is a floor. An honest floor still beats the
@@ -488,7 +510,8 @@ def plan_column_meta(
                     )
                 regular_variable_observations: list[VariableObservation] = []
                 for var in pattern.variables:
-                    need_variable(var.name, var.inferred_type)
+                    if not need_variable(var.name, var.inferred_type):
+                        continue
                     observed_count = var.distinct_count or len(var.values)
                     value_kind = _value_kind_for(observed_count, cardinality_threshold)
                     regular_variable_observations.append(

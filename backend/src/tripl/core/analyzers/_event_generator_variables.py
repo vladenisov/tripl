@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, lazyload
 
 from tripl.core.name_template import VARIABLE_TOKEN_PATTERN
 from tripl.models.event import Event
@@ -154,7 +154,15 @@ def build_variable_index(
     project_id: uuid.UUID,
     branch_id: uuid.UUID | None,
 ) -> VariableIndex:
-    query = select(Variable).where(Variable.project_id == project_id)
+    # lazyload: the index reads names, bindings and flags only, and
+    # ``Variable.value_contexts`` is ``lazy="selectin"``, which would pull the
+    # project's whole context table (and its field definitions) into memory on
+    # every run (tripl-0zpq.87, as tripl-xkbb did at the other selects).
+    query = (
+        select(Variable)
+        .where(Variable.project_id == project_id)
+        .options(lazyload(Variable.value_contexts))
+    )
     if branch_id is not None:
         query = query.where(Variable.branch_id == branch_id)
     return VariableIndex(session.execute(query).scalars().all())
@@ -606,6 +614,38 @@ def derive_display_name(token: str, index: VariableIndex) -> str:
     return token
 
 
+def _backfill_source_name(session: Session, variable: Variable, token: str) -> None:
+    """Stamp *token* as the adopted variable's scan identity, unless another holds it.
+
+    ``source_name`` is unique per project and branch. A variable renamed through
+    the API keeps its old ``source_name``, so a hand-made variable adopted by that
+    same token must not claim it: the flush would violate
+    ``uq_variable_project_source_name`` and fail every run that plans the column
+    (tripl-0zpq.81). The adoption itself still stands for this run.
+    """
+    holder = session.scalar(
+        select(Variable.id).where(
+            Variable.project_id == variable.project_id,
+            Variable.branch_id == variable.branch_id,
+            Variable.source_name == token,
+            Variable.id != variable.id,
+        )
+    )
+    if holder is not None:
+        return
+    session.flush()
+    try:
+        with session.begin_nested():
+            variable.source_name = token
+            session.flush()
+    except IntegrityError:
+        # A concurrent writer took the token between the check and the flush.
+        logger.info(
+            "source_name already held; leaving the adopted variable unstamped",
+            extra={"variable_id": str(variable.id), "token": token},
+        )
+
+
 def ensure_variable(
     session: Session,
     project_id: uuid.UUID,
@@ -632,8 +672,7 @@ def ensure_variable(
         # Backfill source_name for manually-created variables adopted by their
         # display name or binding, so later scans keep matching them.
         if existing.source_name is None:
-            existing.source_name = name
-            session.flush()
+            _backfill_source_name(session, existing, name)
             index.add(existing)
         return 0
 
@@ -653,7 +692,10 @@ def ensure_variable(
     # Race-safe insert: two concurrent scan workers can discover the same
     # variable in the same bucket and attempt to insert simultaneously.
     # Keep this operation isolated in a SAVEPOINT so an IntegrityError does not
-    # poison the outer transaction.
+    # poison the outer transaction. The caller's pending work is flushed first:
+    # ``begin_nested`` would otherwise flush it inside the ``try`` and a
+    # violation of the caller's would be swallowed as this insert's.
+    session.flush()
     try:
         with session.begin_nested():
             session.add(var)

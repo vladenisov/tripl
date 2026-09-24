@@ -26,7 +26,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from tripl.core.analyzers._event_generator_merge import (
@@ -159,6 +159,37 @@ class GenerationResult:
     snapshot: dict[str, Any] | None = None
 
 
+# Namespace for the catalog writers' advisory lock, so its keys cannot collide
+# with the single-key per-project lock the demo runtime takes.
+_CATALOG_LOCK_NAMESPACE = 0x74726C63
+
+
+def lock_project_catalog(session: Session, project_id: uuid.UUID) -> None:
+    """Serialise catalog writers of one project until the caller's transaction ends.
+
+    Several scan configs of one project can sync the same event type in the same
+    beat tick. Each deletes stale ``variable_values`` rows it read earlier and
+    inserts fresh ones, so without a lock the second writer's INSERT meets the
+    first one's committed row on ``uq_variable_value_context`` and its whole
+    collection fails (tripl-0zpq.83). The lock is taken before the variable index
+    is read, so the second writer plans against what the first committed.
+    ``ensure_event_type_with_fields`` takes it too, because it inserts shared
+    event types and field definitions before this function runs: a writer that
+    inserted those and then waited here would deadlock against the holder.
+    Advisory locks are re-entrant within a session, so the second call is free.
+
+    No-op off PostgreSQL: SQLite tests are single-connection.
+    """
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    key = int.from_bytes(project_id.bytes[:4], "big", signed=True)
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(:namespace, :key)"),
+        {"namespace": _CATALOG_LOCK_NAMESPACE, "key": key},
+    )
+
+
 def generate_events(
     session: Session,
     project_id: uuid.UUID,
@@ -194,6 +225,7 @@ def generate_events(
     the same zero-observation contexts as before.
     """
     result = GenerationResult()
+    lock_project_catalog(session, project_id)
     # The scan writes to the project's main branch (Variable inserts default
     # ``branch_id`` to it); resolve it once so variable existence checks are
     # scoped to the same branch (see ``_ensure_variable``).
