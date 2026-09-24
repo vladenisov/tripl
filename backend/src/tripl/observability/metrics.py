@@ -13,6 +13,7 @@ The endpoint and the Celery handlers are wired up only when
 from __future__ import annotations
 
 import os
+import socket
 from time import perf_counter
 from typing import Any
 
@@ -23,7 +24,21 @@ from prometheus_client import (
     Histogram,
     generate_latest,
     multiprocess,
+    values,
 )
+
+
+def _process_identifier() -> str:
+    """Name this process's shard uniquely across containers sharing the directory."""
+    return f"{socket.gethostname()}-{os.getpid()}"
+
+
+# The API, worker and beat containers share PROMETHEUS_MULTIPROC_DIR but not a
+# PID namespace, so the library's default os.getpid() shard names collide across
+# containers and two processes would append to one mmap file. The container
+# hostname keeps them apart. Must be set before the first metric below.
+if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+    values.ValueClass = values.MultiProcessValue(process_identifier=_process_identifier)  # type: ignore[no-untyped-call]
 
 # Dedicated registry for the single-process fallback. In multiprocess mode,
 # metric objects still write to their process files, but scraping requires a

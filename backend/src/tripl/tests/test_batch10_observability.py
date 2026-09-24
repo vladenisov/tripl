@@ -39,6 +39,30 @@ def test_worker_counter_is_visible_to_api_process(tmp_path: Path, monkeypatch) -
     assert b'tripl_scan_runs_total{status="batch10_worker"} 3.0' in body
 
 
+def test_multiprocess_shard_names_carry_the_hostname(tmp_path: Path) -> None:
+    """Containers share the directory but not PIDs, so shards must not be named by PID alone."""
+    env = os.environ.copy()
+    env["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3] / "src")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os, socket; "
+            "from tripl.observability.metrics import scan_runs_total; "
+            "scan_runs_total.labels(status='batch10_shard').inc(); "
+            "print(f'{socket.gethostname()}-{os.getpid()}')",
+        ],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    identifier = completed.stdout.strip()
+
+    assert [path.name for path in tmp_path.iterdir()] == [f"counter_{identifier}.db"]
+
+
 def test_failed_celery_task_is_counted_once() -> None:
     install_celery_instrumentation()
     install_celery_instrumentation()
