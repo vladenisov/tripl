@@ -779,7 +779,11 @@ it charts the scan that *does* have volume for that tab rather than rendering an
 empty card. A project whose event types are split across several scans — one per
 event type is a common shape — would otherwise show nothing on every tab but the
 default scan's own. Either way the chart names the scan it charted, so the two
-surfaces never disagree silently. A new project also shows a **Get started**
+surfaces never disagree silently. On a working branch the Dynamics chart applies
+the page's tag, status and search filters to the branch's own events — the ones
+the table lists — and charts the volume their main-branch counterparts collected,
+so a tag or status changed on the branch selects the same events in the chart as
+in the table. A new project also shows a **Get started**
 checklist (Plan → Observe → Govern) that ticks steps off automatically from real
 project state and hides itself once you are set up. It is role-aware: connecting a
 data source is owner-only, so for an editor that step is shown as **Owner only**

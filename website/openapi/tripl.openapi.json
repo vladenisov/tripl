@@ -9151,6 +9151,24 @@
               ],
               "title": "To"
             }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            },
+            "description": "Plan branch id (UUID) to read and write instead of the main branch."
           }
         ],
         "responses": {
@@ -20460,9 +20478,15 @@
             "default": "#6366f1"
           },
           "order": {
-            "type": "integer",
-            "title": "Order",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
           },
           "unit": {
             "anyOf": [
@@ -22965,9 +22989,15 @@
             "default": "#6366f1"
           },
           "order": {
-            "type": "integer",
-            "title": "Order",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
           },
           "unit": {
             "anyOf": [
@@ -26571,6 +26601,10 @@
               }
             ]
           },
+          "sigma_threshold": {
+            "type": "number",
+            "title": "Sigma Threshold"
+          },
           "data": {
             "items": {
               "$ref": "#/components/schemas/MetricSeriesPoint"
@@ -26590,6 +26624,7 @@
         "type": "object",
         "required": [
           "metric_id",
+          "sigma_threshold",
           "data"
         ],
         "title": "MetricSeriesResponse"
@@ -32779,9 +32814,15 @@
             "default": "#6366f1"
           },
           "order": {
-            "type": "integer",
-            "title": "Order",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
           },
           "unit": {
             "anyOf": [

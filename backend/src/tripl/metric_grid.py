@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from sqlalchemy import ColumnExpressionArgument, Row, Select, and_, func, select
+from sqlalchemy.orm import InstrumentedAttribute
 
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
@@ -126,3 +127,55 @@ def metric_grids(rows: Iterable[MetricGridRow]) -> dict[uuid.UUID, MetricGrid]:
         )
         for metric_definition_id, project_id, interval, scan_config_id in rows
     }
+
+
+def grid_population_filter(
+    scan_config_column: InstrumentedAttribute[uuid.UUID | None],
+    *,
+    interval: str | None,
+    scan_config_id: uuid.UUID | None,
+) -> ColumnExpressionArgument[bool]:
+    """Restrict value rows to the metric's grid POPULATION.
+
+    The population is every source config collecting the metric ON THE
+    RESOLVED GRID'S INTERVAL — not the single config :func:`metric_grid_stmt`
+    names. Every reader SUMS across it: the series read
+    (``metric_series_service._load_metric_values``), the open-anchor probe, the
+    breakdown read, and the detector (``detect._load_metric_value_points``), so
+    the line a chart draws and the ``expected_count`` / ``stddev`` band drawn
+    around it describe one series. ``scan_config_column`` is
+    ``MetricValue.scan_config_id`` or ``MetricValueBreakdown.scan_config_id`` —
+    the breakdown rows are written per source config exactly like the totals.
+
+    NOT the single resolved config: an ``event_composition`` metric stores one
+    value series per source scan (``metric_collect._compose_grid_region`` writes
+    a row set per config that collected the numerator), so two LIVE configs may
+    legally hold the same bucket — one event type collected by an iOS scan and
+    an Android scan is the ordinary shape. Filtering to one of them plots an
+    ADDEND, and ``metric_grid_stmt`` picks that one with an
+    ``ORDER BY bucket DESC`` tie-break that is undefined between two
+    equally-current configs, so which addend could also flap.
+
+    NOT every config either: two grids of DIFFERENT intervals are not addable (a
+    1h count and a 1d count are not the same unit), and mixing them added an
+    hour's count to a day's at every shared midnight. The interval is the line
+    between "another source of this series" and "a retired grid".
+
+    ``scan_config_id is None`` means the metric is ``sql``/``fact`` (or the
+    metric row vanished mid-run): those rows are written with a NULL
+    ``scan_config_id`` exclusively, so the IS NULL branch is exact rather than
+    merely narrower and the interval never enters.
+
+    KNOWN OPEN (tripl-0zpq.115 follow-up): two configs scanning the SAME
+    warehouse rows on the same interval are summed, i.e. double-counted. Nothing
+    stored tells them apart from two configs covering disjoint traffic, so the
+    read cannot decide it — that is a collection-side question.
+
+    One definition for the async read path and the sync worker (tripl-67he):
+    the two used to spell it separately, which is how the read and the detector
+    drifted in the first place.
+    """
+    if scan_config_id is None:
+        return scan_config_column.is_(None)
+    on_grid = ScanConfig.interval.is_(None) if interval is None else ScanConfig.interval == interval
+    return scan_config_column.in_(select(ScanConfig.id).where(on_grid).scalar_subquery())

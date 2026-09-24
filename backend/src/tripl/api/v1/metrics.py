@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from tripl.api.deps import SessionDep
+from tripl.api.deps import BranchIdDep, SessionDep
 from tripl.models.domain_enums import MetricScopeType
 from tripl.models.event import EventStatus
 from tripl.schemas.event_metric import (
@@ -48,6 +48,9 @@ EventIds = Annotated[list[uuid.UUID] | None, Query(alias="event_id")]
 async def get_events_metrics(
     session: SessionDep,
     slug: str,
+    # ``?branch=``: evaluate the tag / status / search filter on that branch's
+    # events, which the Events page lists, not on main's (tripl-vk1p).
+    branch_id: BranchIdDep,
     event_type_id: uuid.UUID | None = None,
     # FreeTextFilter: binds into an ILIKE, so a NUL aborts inside asyncpg
     # before SQL runs (tripl-8wez).
@@ -69,6 +72,7 @@ async def get_events_metrics(
         status=[member.value for member in status] if status else None,
         time_from=time_from,
         time_to=time_to,
+        branch_id=branch_id,
     )
 
 

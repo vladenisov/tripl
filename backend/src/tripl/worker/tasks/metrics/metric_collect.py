@@ -1459,6 +1459,15 @@ class _FactBatchContext:
     """Lazily-built fact-table / data-source / adapter caches for one batch."""
 
     session: Session
+    #: Fact tables that already passed ``_load_fact_table``'s project scope for
+    #: the metric that resolved them. Keyed by id alone, which is sound only
+    #: because :meth:`resolve` re-applies the scope on every cache HIT: one batch
+    #: mixes projects (``schedule.check_metric_definitions_due`` groups fact
+    #: metrics by interval alone), so an entry cached under project A used to be
+    #: served to project B's metric past the check that would refuse it
+    #: (tripl-m81e). The out-of-resolve readers in
+    #: ``_run_fact_interval_group`` only index ids a successful ``resolve``
+    #: registered, so every entry they read has already been scoped.
     fact_tables: dict[uuid.UUID, FactTable] = field(default_factory=dict)
     adapters: dict[uuid.UUID, BaseAdapter] = field(default_factory=dict)
     columns: dict[uuid.UUID, set[str]] = field(default_factory=dict)
@@ -1476,7 +1485,9 @@ class _FactBatchContext:
         self, fact_table_id: uuid.UUID | None, *, project_id: uuid.UUID
     ) -> tuple[FactTable, BaseAdapter]:
         fact_table = self.fact_tables.get(fact_table_id) if fact_table_id else None
-        if fact_table is None:
+        # A cached table is reused only for its own project; for any other the
+        # load runs again and ``_load_fact_table`` refuses it (tripl-m81e).
+        if fact_table is None or fact_table.project_id != project_id:
             fact_table = _load_fact_table(self.session, fact_table_id, project_id=project_id)
             self.fact_tables[fact_table.id] = fact_table
         # ``_load_fact_table`` rejects a fact table without a bound data source.

@@ -249,6 +249,10 @@ describe('MetricForm validation', () => {
         display_name: 'Order count',
       }),
     )
+    // No `order`: the contract lists it optional and the backend appends a
+    // metric that names no position (tripl-cyby).
+    const payload = vi.mocked(metricsCatalogApi.create).mock.calls[0][1]
+    expect(payload).not.toHaveProperty('order')
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
