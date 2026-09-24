@@ -127,6 +127,14 @@ async def _build_observed_values(session: AsyncSession, ctx: DemoContext) -> Non
             6102,
             ["sess_aaa", "sess_bbb", "sess_ccc"],
         ),
+        (
+            "platform",
+            "Home Screen View",
+            "screen_view.platform",
+            "platform",
+            14823,
+            ["android", "ios", "web"],
+        ),
     )
     for var_name, event_name, field_key, source_column, observed_count, values in observed:
         session.add(
