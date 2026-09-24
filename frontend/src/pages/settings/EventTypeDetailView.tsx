@@ -417,7 +417,7 @@ function MergeGateChip({ slug, eventType }: { slug: string; eventType: EventType
       size="sm"
       title={
         gated
-          ? 'Has owners — only they can merge changes to this type'
+          ? "Has owners — a branch that edits this type needs an owner's approval to merge"
           : 'No owners — anyone can merge changes to this type'
       }
     >

@@ -1050,7 +1050,12 @@ does, but the API takes the instant you send it, and an instant already behind
 the clock is now refused rather than stored — the same refusal muting a **rule**
 has always given, so the two Mute buttons no longer disagree about it. A silence
 that ended before it began would have left the incident reading `open` the
-moment it was written: accepted, recorded, and silencing nothing.
+moment it was written: accepted, recorded, and silencing nothing. The reverse
+mismatch is refused too: a `muted_until` sent with any action other than
+**mute** (acknowledge, resolve, reopen, …) returns `422` instead of being
+silently dropped, on the single-incident and the bulk routes alike. The same
+rule applies to `snoozed_until` on schema-drift, variable-value-drift and
+comment-thread actions: it is accepted only with **snooze**.
 
 **A rule has 1h / 24h / 7d and no indefinite option**, on purpose. Muting a rule
 silences every scope it watches, not one, and a rule you never want to hear from

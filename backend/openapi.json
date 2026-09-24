@@ -23320,7 +23320,7 @@
         ]
       },
       "patch": {
-        "description": "Owner-only: min_approvals/block_self_approval govern what editors may\nmerge, so editors must not be able to loosen the policy on themselves.",
+        "description": "Owner-only: min_approvals/block_self_approval govern what editors may\nmerge, so editors must not be able to loosen the policy on themselves.\n\nThis protects the merge POLICY, not the plan: editors can still manage\nevent-type owners and write ``main`` directly, so the owner-approval gate\nis a branch-review convention rather than an access control\n(tripl-0zpq.233).",
         "operationId": "update_project_branch_settings_api_v1_projects__slug__branch_settings_patch",
         "parameters": [
           {
