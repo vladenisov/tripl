@@ -37,6 +37,7 @@ from tripl.models.variable_event_value_override import VariableEventValueOverrid
 from tripl.services._origin_pairing import pair_rows
 from tripl.services.plan_revision_service import build_plan_snapshot, plan_snapshot_hash
 from tripl.tests.conftest import TestSessionLocal
+from tripl.tests.conftest import engine as test_engine
 from tripl.tests.test_plan_branches import _approve_and_merge, _create_branch, _seed_plan
 
 # --- helpers --------------------------------------------------------------------
@@ -598,10 +599,7 @@ def test_pair_rows_leaves_several_unplaced_namesakes_ambiguous_unless_origins_ar
         assert list(pairing.ambiguous) == ["dup"]
 
 
-def test_the_migration_links_only_copies_a_name_pairs_unambiguously() -> None:
-    """The backfill on branches already open: a copy is linked when its name
-    holds one row on the branch and one on main; a branch left with namesakes is
-    not ``origin_ids_complete``; merged branches are left alone."""
+def _origin_migration() -> Any:
     path = (
         Path(__file__).resolve().parents[3]
         / "alembic"
@@ -612,107 +610,374 @@ def test_the_migration_links_only_copies_a_name_pairs_unambiguously() -> None:
     assert spec is not None and spec.loader is not None
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
+    return migration
+
+
+def _base_event(event_id: uuid.UUID, name: str) -> dict[str, Any]:
+    return {"id": str(event_id), "event_type_name": "track", "name": name}
+
+
+def test_the_migration_links_copies_to_their_base_rows_only_where_a_name_pairs() -> None:
+    """The backfill on branches already open pairs each branch against its merge
+    BASE, not main as it is now: a copy is linked to the base row's id when its
+    name holds one row on the branch and one in the base. A branch whose main
+    renamed or deleted a row before the migration, and that holds a namesake of
+    it, is not ``origin_ids_complete``; neither is one without a usable base.
+    Merged branches are left alone."""
+    migration = _origin_migration()
+    u = {name: uuid.uuid4() for name in ("p", "rev", "rev_old")}
+    b = {name: uuid.uuid4() for name in ("main", "clean", "dups", "moved", "nobase", "old", "done")}
+    # Base rows: main's ids at the cut. Main has since deleted "solo" and added a
+    # new "solo" (another id), and renamed "moved" to "moved_on".
+    base_solo, base_pair, base_moved = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    base_rel = uuid.uuid4()
+    main_solo_now = uuid.uuid4()
 
     metadata = sa.MetaData()
     branches = sa.Table(
         "plan_branches",
         metadata,
-        sa.Column("id", sa.String, primary_key=True),
-        sa.Column("project_id", sa.String),
+        sa.Column("id", sa.Uuid, primary_key=True),
+        sa.Column("project_id", sa.Uuid),
         sa.Column("kind", sa.String),
         sa.Column("status", sa.String),
+        sa.Column("base_revision_id", sa.Uuid, nullable=True),
         sa.Column("origin_ids_complete", sa.Boolean, default=False),
+    )
+    revisions = sa.Table(
+        "plan_revisions",
+        metadata,
+        sa.Column("id", sa.Uuid, primary_key=True),
+        sa.Column("payload", sa.JSON),
     )
     types = sa.Table(
         "event_types",
         metadata,
-        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("id", sa.Uuid, primary_key=True),
         sa.Column("name", sa.String),
     )
-    sa.Table(
+    fields = sa.Table(
         "field_definitions",
         metadata,
-        sa.Column("id", sa.String, primary_key=True),
+        sa.Column("id", sa.Uuid, primary_key=True),
         sa.Column("name", sa.String),
     )
     events = sa.Table(
         "events",
         metadata,
-        sa.Column("id", sa.String, primary_key=True),
-        sa.Column("project_id", sa.String),
-        sa.Column("branch_id", sa.String),
-        sa.Column("event_type_id", sa.String),
+        sa.Column("id", sa.Uuid, primary_key=True),
+        sa.Column("project_id", sa.Uuid),
+        sa.Column("branch_id", sa.Uuid),
+        sa.Column("event_type_id", sa.Uuid),
         sa.Column("name", sa.String),
-        sa.Column("origin_id", sa.String, nullable=True),
+        sa.Column("origin_id", sa.Uuid, nullable=True),
     )
-    sa.Table(
+    relations = sa.Table(
         "event_type_relations",
         metadata,
-        sa.Column("id", sa.String, primary_key=True),
-        sa.Column("project_id", sa.String),
-        sa.Column("branch_id", sa.String),
-        sa.Column("source_event_type_id", sa.String),
-        sa.Column("target_event_type_id", sa.String),
-        sa.Column("source_field_id", sa.String),
-        sa.Column("target_field_id", sa.String),
-        sa.Column("origin_id", sa.String, nullable=True),
+        sa.Column("id", sa.Uuid, primary_key=True),
+        sa.Column("project_id", sa.Uuid),
+        sa.Column("branch_id", sa.Uuid),
+        sa.Column("source_event_type_id", sa.Uuid),
+        sa.Column("target_event_type_id", sa.Uuid),
+        sa.Column("source_field_id", sa.Uuid),
+        sa.Column("target_field_id", sa.Uuid),
+        sa.Column("origin_id", sa.Uuid, nullable=True),
     )
+    base_payload = {
+        "snapshot_version": 2,
+        "events": [
+            _base_event(base_solo, "solo"),
+            _base_event(base_pair, "pair"),
+            _base_event(base_moved, "moved"),
+        ],
+        "relations": [
+            {
+                "id": str(base_rel),
+                "source_event_type_name": "track",
+                "source_field_name": "f",
+                "target_event_type_name": "track",
+                "target_field_name": "f",
+            }
+        ],
+    }
+    # An older base without ids: nothing to link to.
+    old_payload = {
+        "snapshot_version": 2,
+        "events": [{"event_type_name": "track", "name": "solo"}],
+        "relations": [],
+    }
     engine = sa.create_engine("sqlite://")
     metadata.create_all(engine)
     with engine.begin() as connection:
         connection.execute(
-            branches.insert(),
+            revisions.insert(),
             [
-                {"id": "main", "project_id": "p", "kind": "main", "status": "merged"},
-                {"id": "clean", "project_id": "p", "kind": "working", "status": "draft"},
-                {"id": "dups", "project_id": "p", "kind": "working", "status": "approved"},
-                {"id": "done", "project_id": "p", "kind": "working", "status": "merged"},
+                {"id": u["rev"], "payload": base_payload},
+                {"id": u["rev_old"], "payload": old_payload},
             ],
         )
         connection.execute(
-            types.insert(),
-            [{"id": f"t-{b}", "name": "track"} for b in ("main", "clean", "dups", "done")],
+            branches.insert(),
+            [
+                {"id": b["main"], "kind": "main", "status": "merged", "base_revision_id": None},
+                {
+                    "id": b["clean"],
+                    "kind": "working",
+                    "status": "draft",
+                    "base_revision_id": u["rev"],
+                },
+                {
+                    "id": b["dups"],
+                    "kind": "working",
+                    "status": "approved",
+                    "base_revision_id": u["rev"],
+                },
+                {
+                    "id": b["moved"],
+                    "kind": "working",
+                    "status": "draft",
+                    "base_revision_id": u["rev"],
+                },
+                {"id": b["nobase"], "kind": "working", "status": "draft", "base_revision_id": None},
+                {
+                    "id": b["old"],
+                    "kind": "working",
+                    "status": "draft",
+                    "base_revision_id": u["rev_old"],
+                },
+                {
+                    "id": b["done"],
+                    "kind": "working",
+                    "status": "merged",
+                    "base_revision_id": u["rev"],
+                },
+            ],
         )
+        type_ids = {name: uuid.uuid4() for name in b}
+        field_ids = {name: uuid.uuid4() for name in b}
+        connection.execute(types.insert(), [{"id": type_ids[n], "name": "track"} for n in b])
+        connection.execute(fields.insert(), [{"id": field_ids[n], "name": "f"} for n in b])
+        ids: dict[str, uuid.UUID] = {}
         rows = [
             ("m-solo", "main", "solo"),
             ("m-pair", "main", "pair"),
+            ("m-moved", "main", "moved_on"),
             ("c-solo", "clean", "solo"),
             ("c-pair", "clean", "pair"),
+            ("c-moved", "clean", "moved"),
             ("c-new", "clean", "authored"),
             ("d-solo", "dups", "solo"),
             ("d-pair-1", "dups", "pair"),
             ("d-pair-2", "dups", "pair"),
+            ("v-solo", "moved", "solo"),
+            ("v-moved", "moved", "moved"),
+            ("v-moved-namesake", "moved", "moved"),
+            ("n-solo", "nobase", "solo"),
+            ("o-solo", "old", "solo"),
             ("x-solo", "done", "solo"),
         ]
+        for row_id, _branch, _name in rows:
+            ids[row_id] = main_solo_now if row_id == "m-solo" else uuid.uuid4()
         connection.execute(
             events.insert(),
             [
                 {
-                    "id": row_id,
-                    "project_id": "p",
-                    "branch_id": branch,
-                    "event_type_id": f"t-{branch}",
+                    "id": ids[row_id],
+                    "branch_id": b[branch],
+                    "event_type_id": type_ids[branch],
                     "name": name,
                 }
                 for row_id, branch, name in rows
             ],
         )
+        relation_ids = {branch: uuid.uuid4() for branch in ("main", "clean")}
+        connection.execute(
+            relations.insert(),
+            [
+                {
+                    "id": relation_ids[branch],
+                    "branch_id": b[branch],
+                    "source_event_type_id": type_ids[branch],
+                    "target_event_type_id": type_ids[branch],
+                    "source_field_id": field_ids[branch],
+                    "target_field_id": field_ids[branch],
+                }
+                for branch in relation_ids
+            ],
+        )
         migration._backfill(connection)
         origins = dict(connection.execute(sa.select(events.c.id, events.c.origin_id)).all())
+        relation_origins = dict(
+            connection.execute(sa.select(relations.c.id, relations.c.origin_id)).all()
+        )
         complete = dict(
             connection.execute(sa.select(branches.c.id, branches.c.origin_ids_complete)).all()
         )
-    assert origins == {
+    by_name = {row_id: origins[ids[row_id]] for row_id in ids}
+    assert by_name == {
         "m-solo": None,
         "m-pair": None,
-        "c-solo": "m-solo",
-        "c-pair": "m-pair",
+        "m-moved": None,
+        # The base row's id — not the "solo" main holds today.
+        "c-solo": base_solo,
+        "c-pair": base_pair,
+        # Main renamed this row after the cut; the base still names it.
+        "c-moved": base_moved,
         "c-new": None,
-        "d-solo": "m-solo",
+        "d-solo": base_solo,
         "d-pair-1": None,
         "d-pair-2": None,
+        "v-solo": base_solo,
+        "v-moved": None,
+        "v-moved-namesake": None,
+        "n-solo": None,
+        "o-solo": None,
         "x-solo": None,
     }
-    assert complete["clean"] is True
-    assert complete["dups"] is False
-    assert not complete["done"]
+    assert relation_origins == {relation_ids["main"]: None, relation_ids["clean"]: base_rel}
+    assert complete[b["clean"]] is True
+    assert complete[b["dups"]] is False
+    assert complete[b["moved"]] is False
+    assert complete[b["nobase"]] is False
+    assert complete[b["old"]] is False
+    assert not complete[b["done"]]
+
+
+async def _as_before_the_migration(branch_id: str) -> None:
+    """Put an API-built branch back in the state an open branch had before
+    ``b7d2e94f1a36``: no origin ids, not complete."""
+    async with TestSessionLocal() as session:
+        branch = uuid.UUID(branch_id)
+        await session.execute(update(Event).where(Event.branch_id == branch).values(origin_id=None))
+        await session.execute(
+            update(EventTypeRelation)
+            .where(EventTypeRelation.branch_id == branch)
+            .values(origin_id=None)
+        )
+        await session.execute(
+            update(PlanBranch).where(PlanBranch.id == branch).values(origin_ids_complete=False)
+        )
+        await session.commit()
+
+
+async def _run_origin_backfill() -> None:
+    migration = _origin_migration()
+    async with test_engine.begin() as connection:
+        await connection.run_sync(migration._backfill)
+
+
+async def _main_events_named(slug: str, *names: str) -> list[tuple[str, str, str]]:
+    main_branch_id = await _main_branch_of(slug)
+    async with TestSessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Event.id, Event.name, Event.description).where(
+                    Event.branch_id == main_branch_id, Event.name.in_(names)
+                )
+            )
+        ).all()
+    return sorted((str(row_id), name, description) for row_id, name, description in rows)
+
+
+@pytest.mark.asyncio
+async def test_merge_keeps_main_s_renamed_row_when_the_branch_added_a_namesake_before_the_migration(
+    client: AsyncClient,
+) -> None:
+    """Main renamed a row after the cut and before the migration; the branch
+    added a namesake of its copy. Backfilled against main as it is now, the
+    branch was called complete with no origins, so the merge read the base row
+    as deleted on the branch and deleted main's renamed row."""
+    slug = "origin-migrate-main-renamed"
+    et_id = await _seed_plan(client, slug)
+    kept = await _post_event(client, slug, et_id, "dup", description="kept")
+    branch_id = await _create_branch(client, slug)
+    await _as_before_the_migration(branch_id)
+    renamed = await client.patch(f"/api/v1/projects/{slug}/events/{kept}", json={"name": "dup_v2"})
+    assert renamed.status_code == 200, renamed.text
+    branch_et_id = await _branch_type_id(branch_id)
+    # A namesake with the copy's own content, so whichever of the two the
+    # natural-key pairing picks, the branch changed nothing under the base row.
+    await _add_a_twin_of_the_copy(client, slug, branch_id, branch_et_id, "dup")
+
+    await _run_origin_backfill()
+    await _merged(client, slug, branch_id)
+
+    survivor = await _event(kept)
+    assert survivor is not None and survivor.name == "dup_v2"
+
+
+@pytest.mark.asyncio
+async def test_merge_does_not_resurrect_a_row_main_deleted_before_the_migration(
+    client: AsyncClient,
+) -> None:
+    """Main deleted a row after the cut and before the migration; the branch
+    added a namesake of its copy. Called complete with no origins, the merge
+    created both branch rows on main — the deleted one among them."""
+    slug = "origin-migrate-main-deleted"
+    et_id = await _seed_plan(client, slug)
+    gone = await _post_event(client, slug, et_id, "dup", description="deleted on main")
+    branch_id = await _create_branch(client, slug)
+    await _as_before_the_migration(branch_id)
+    deleted = await client.delete(f"/api/v1/projects/{slug}/events/{gone}")
+    assert deleted.status_code == 204, deleted.text
+    branch_et_id = await _branch_type_id(branch_id)
+    # As in the rename test: the copy's own content, so the pairing's pick
+    # does not matter and a re-created row is told by its description.
+    await _add_a_twin_of_the_copy(client, slug, branch_id, branch_et_id, "dup")
+
+    await _run_origin_backfill()
+    await _merged(client, slug, branch_id)
+
+    assert [description for _id, _name, description in await _main_events_named(slug, "dup")].count(
+        "deleted on main"
+    ) == 0
+
+
+async def _add_a_twin_of_the_copy(
+    client: AsyncClient, slug: str, branch_id: str, branch_et_id: str, name: str
+) -> None:
+    """Add on the branch a namesake of its one copy named ``name``, equal to
+    it in every field the conflict scan and the merge compare."""
+    twin_id = await _post_event(client, slug, branch_et_id, name, branch_id=branch_id)
+    async with TestSessionLocal() as session:
+        copy = await session.scalar(
+            select(Event).where(
+                Event.branch_id == uuid.UUID(branch_id),
+                Event.name == name,
+                Event.id != uuid.UUID(twin_id),
+            )
+        )
+        assert copy is not None
+        await session.execute(
+            update(Event)
+            .where(Event.id == uuid.UUID(twin_id))
+            .values(
+                {
+                    attr: getattr(copy, attr)
+                    for attr in (
+                        "source_name",
+                        "title",
+                        "description",
+                        "status",
+                        "sunset_at",
+                        "order",
+                        "owner_id",
+                        "reviewed",
+                        "metric_breakdown_columns",
+                    )
+                }
+            )
+        )
+        await session.commit()
+
+
+async def _branch_type_id(branch_id: str) -> str:
+    async with TestSessionLocal() as session:
+        type_id = await session.scalar(
+            select(EventType.id).where(
+                EventType.branch_id == uuid.UUID(branch_id), EventType.name == "track"
+            )
+        )
+    assert type_id is not None
+    return str(type_id)

@@ -108,10 +108,10 @@ def _without_origin_ids(payload: dict[str, Any]) -> dict[str, Any]:
     """The payload with the branch copies' ``origin_id`` left out.
 
     ``origin_id`` is bookkeeping — which main row a copy came from — not plan
-    content, and it is not stable under a reviewer's feet: the migration that
-    introduced it backfilled it onto branches already approved, and main
-    deleting a row clears it (``ON DELETE SET NULL``). Hashed, either would void
-    every approval on the branch with nothing to review (tripl-0zpq.292).
+    content, and hashing it would void approvals with nothing to review: the
+    migration that introduced it backfilled it onto branches already approved
+    (tripl-0zpq.292). It is deliberately not a foreign key, so main deleting
+    the row a copy came from leaves the copy's ``origin_id`` in place.
     """
     projected = payload
     for key in _ORIGIN_CARRYING_SETS:
@@ -1222,11 +1222,14 @@ def _diff_by_key(
     entries: list[PlanDiffEntry] = []
 
     # ``collision_items`` is a THIRD side read for nothing but this count: main
-    # as it stands now, which a base-to-branch diff never looks at. A key main
-    # alone holds twice is the case the warning most needs to reach — the merge
-    # matches the branch's row against main's, keeps one main row per key, and
-    # so writes the branch's change onto whichever of main's rows it kept. Read
-    # off the two sides alone, that diff called the key safe.
+    # as it stands now, which a base-to-branch diff never looks at. The merge
+    # pairs main's rows with the base by their own ids, and the branch's by
+    # origin id, so a key main holds twice is safe wherever the ids place the
+    # branch's rows. The rows that reach this function are the ones they do not
+    # (a branch opened before origin ids, left incomplete by the migration):
+    # there the merge falls back to one row per key and can write the branch's
+    # change onto either of main's namesakes. Read off the two sides alone, that
+    # diff called the key safe.
     shared_keys: set[object] = set()
     if entity_type in _SHARED_KEY_TYPES:
         for items in (old_items, new_items, collision_items):

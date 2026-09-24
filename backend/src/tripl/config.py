@@ -167,8 +167,10 @@ class Settings(BaseSettings):
     gcs_photo_signed_url_ttl_seconds: int = 3600
     # Daily sweep of photo blobs no event_photos row references. A blob younger
     # than this is left alone, because an upload writes its blob before the row
-    # commits and a branch creation copies keys inside a transaction the sweep
-    # cannot see yet (tripl-0zpq.291).
+    # commits (tripl-0zpq.291). The age is the blob's write time, not its last
+    # reference, so it does not cover a branch creation copying an OLD key in a
+    # transaction the sweep cannot see while the last committed row holding that
+    # key is deleted: that narrow window can still lose the blob.
     photo_orphan_sweep_grace_hours: int = Field(default=24, ge=1)
 
     # Request ID and structured logging.

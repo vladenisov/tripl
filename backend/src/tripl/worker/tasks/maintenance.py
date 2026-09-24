@@ -367,13 +367,18 @@ def sweep_orphan_photo_blobs() -> dict[str, object]:
     rows holding one key each see the other and both keep the blob. This sweep
     is the backstop that makes every such leak temporary.
 
-    The grace period is what makes it safe against writes in flight.
-    ``upload_photo`` writes the blob BEFORE it commits the row, and a branch
-    creation copies ``storage_key`` onto new rows inside a transaction this
-    session cannot see yet; a blob younger than
+    The grace period covers uploads in flight: ``upload_photo`` writes the
+    blob BEFORE it commits the row, and a blob younger than
     ``photo_orphan_sweep_grace_hours`` is never touched. Each candidate is also
     re-checked against the table right before it is deleted, so a row
     committed while the listing ran still keeps its blob.
+
+    Known limit: the grace is measured from the blob's write time, not from its
+    last reference. A branch creation copies ``storage_key`` onto new rows
+    inside a transaction this session cannot see; if the last committed row
+    holding an OLD key is deleted while that transaction is still open, the
+    sweep sees no reference and may delete the blob the copy is about to
+    commit. The window is the length of one ``create_branch`` transaction.
 
     Any row holding the key keeps it, in any project and on any branch — the
     same rule as ``event_photo_service._blob_is_referenced``. Only keys under
