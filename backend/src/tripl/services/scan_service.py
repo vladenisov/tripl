@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl import cache
 from tripl.core.bucketing import floor_to_bucket
 from tripl.models.data_source import DataSource, DBType
+from tripl.models.event_type import EventType
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_dry_run_job import ScanDryRunJob
@@ -73,6 +74,41 @@ async def _verify_data_source(
     return ds
 
 
+async def _verify_main_event_type(
+    session: AsyncSession, project_id: uuid.UUID, event_type_id: uuid.UUID | None
+) -> None:
+    if event_type_id is None:
+        return
+    main_branch_id = await resolve_branch_id(session, project_id, None)
+    event_type = await session.scalar(
+        select(EventType.id).where(
+            EventType.id == event_type_id,
+            EventType.project_id == project_id,
+            EventType.branch_id == main_branch_id,
+        )
+    )
+    if event_type is None:
+        raise HTTPException(
+            status_code=422, detail="event_type_id must belong to this project's main branch"
+        )
+
+
+async def _reject_duplicate_name(
+    session: AsyncSession,
+    data_source_id: uuid.UUID,
+    name: str,
+    *,
+    exclude_scan_id: uuid.UUID | None = None,
+) -> None:
+    query = select(ScanConfig.id).where(
+        ScanConfig.data_source_id == data_source_id, ScanConfig.name == name
+    )
+    if exclude_scan_id is not None:
+        query = query.where(ScanConfig.id != exclude_scan_id)
+    if await session.scalar(query) is not None:
+        raise HTTPException(status_code=409, detail="Scan config with this name already exists")
+
+
 async def list_scan_configs(session: AsyncSession, slug: str) -> list[ScanConfig]:
     project_id = await get_project_id_by_slug(session, slug)
     result = await session.execute(
@@ -99,16 +135,8 @@ async def create_scan_config(
 ) -> ScanConfig:
     project_id = await get_project_id_by_slug(session, slug)
     await _verify_data_source(session, data.data_source_id, project_id)
-
-    existing = await session.execute(
-        select(ScanConfig).where(
-            ScanConfig.project_id == project_id,
-            ScanConfig.data_source_id == data.data_source_id,
-            ScanConfig.name == data.name,
-        )
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Scan config with this name already exists")
+    await _verify_main_event_type(session, project_id, data.event_type_id)
+    await _reject_duplicate_name(session, data.data_source_id, data.name)
 
     payload = data.model_dump()
     project_keep_releases = (
@@ -135,6 +163,13 @@ async def update_scan_config(
 ) -> ScanConfig:
     config = await get_scan_config(session, slug, scan_id)
     update_dict = data.model_dump(exclude_unset=True)
+    await _verify_main_event_type(
+        session, config.project_id, update_dict.get("event_type_id", config.event_type_id)
+    )
+    if "name" in update_dict:
+        await _reject_duplicate_name(
+            session, config.data_source_id, update_dict["name"], exclude_scan_id=config.id
+        )
     project_keep_releases = (
         await session.execute(
             select(Project.app_version_keep_releases).where(Project.id == config.project_id)
@@ -186,6 +221,7 @@ async def trigger_event_groups_apply(
     config = await get_scan_config(session, slug, scan_id)
     if not config.event_group_rules:
         raise HTTPException(status_code=400, detail="Scan config has no event group rules")
+    await _reject_if_already_running(session, config.id)
 
     job = ScanJob(
         scan_config_id=config.id,
@@ -282,6 +318,7 @@ async def trigger_dry_run(
         # Saved-config path. Scoping the config to the project is the check that
         # keeps a dry-run from executing another project's SQL.
         config = await get_scan_config(session, slug, data.scan_config_id)
+        await _verify_main_event_type(session, project_id, config.event_type_id)
         job = ScanDryRunJob(
             project_id=project_id,
             scan_config_id=config.id,
@@ -299,6 +336,7 @@ async def trigger_dry_run(
         )
     else:
         await _verify_data_source(session, data.data_source_id, project_id)
+        await _verify_main_event_type(session, project_id, data.event_type_id)
         job = ScanDryRunJob(
             project_id=project_id,
             data_source_id=data.data_source_id,
@@ -439,6 +477,7 @@ async def trigger_metrics_replay(
             status_code=400,
             detail="Scan config requires time_column and interval to replay metrics",
         )
+    await _reject_if_already_running(session, config.id)
 
     # The worker refuses a period reaching into the interval that is still
     # filling — it holds no complete bucket to replay — and it refuses it AFTER

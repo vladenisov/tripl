@@ -4,8 +4,7 @@ import uuid
 import pytest
 from cryptography.fernet import Fernet
 from httpx import AsyncClient
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
 
 from tripl import config, crypto
 from tripl.core.adapters import bigquery as bigquery_module
@@ -14,7 +13,6 @@ from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.postgres import _resolve_sslmode
 from tripl.core.adapters.registry import build_adapter
 from tripl.crypto import decrypt_value, encrypt_value
-from tripl.models import Base
 from tripl.models.audit_log import AuditLog
 from tripl.models.data_source import DataSource
 from tripl.schemas.data_source import (
@@ -28,7 +26,6 @@ from tripl.schemas.data_source_schema import (
 )
 from tripl.services import datasource_schema_service, datasource_service
 from tripl.tests.conftest import TestSessionLocal
-from tripl.worker.tasks import scan as scan_tasks
 
 
 async def _scan_titles(client: AsyncClient, slug: str, query: str) -> list[str]:
@@ -959,16 +956,8 @@ class TestConnectionErrorSanitization:
         assert quoted_in_docs in message
 
 
-class TestConnectionProbeMessageHasOneOwner:
-    """``last_test_message`` is written by two probes; both must word it the same.
-
-    The in-request probe (``datasource_service``) and the Celery probe
-    (``worker.tasks.scan.test_connection``) sanitised separately until tripl-rcn8,
-    so one failed connection test persisted two different strings depending on
-    which path ran — and the worker's copy opened with "Scan failed", a prefix
-    ``worker.tasks._errors`` GUARANTEES for the scan path (the frontend keys on it)
-    and which is the wrong sentence under a Test connection button.
-    """
+class TestConnectionProbeErrorSanitization:
+    """The in-request connection probe sanitizes driver errors."""
 
     PROBE_FAILURES = [
         pytest.param(
@@ -1002,42 +991,6 @@ class TestConnectionProbeMessageHasOneOwner:
             password_encrypted="",
         )
 
-    def _worker_probe(
-        self, tmp_path, monkeypatch: pytest.MonkeyPatch, exc: Exception
-    ) -> tuple[str, str]:
-        """Run the Celery probe against a throwaway sqlite DB.
-
-        Returns (returned error, persisted ``last_test_message``) — the task writes
-        the field and hands the caller a copy, and both are user-facing.
-        """
-        engine = create_engine(f"sqlite:///{tmp_path / 'probe.db'}")
-        try:
-            Base.metadata.create_all(engine)
-            session_factory = sessionmaker(engine, expire_on_commit=False)
-            ds_id = uuid.uuid4()
-            with session_factory() as session:
-                session.add(self._data_source(ds_id))
-                session.commit()
-
-            def failing_build(ds: DataSource) -> object:
-                raise exc
-
-            monkeypatch.setitem(
-                scan_tasks.test_connection.run.__globals__, "_get_sync_session", session_factory
-            )
-            monkeypatch.setitem(
-                scan_tasks.test_connection.run.__globals__, "_build_adapter", failing_build
-            )
-            monkeypatch.setattr(scan_tasks.cache, "sync_delete_prefix", lambda prefix: None)
-
-            result = scan_tasks.test_connection.run(str(ds_id))
-
-            with session_factory() as session:
-                ds = session.get(DataSource, ds_id)
-                return str(result["error"]), str(ds.last_test_message)
-        finally:
-            engine.dispose()
-
     def _http_probe(self, monkeypatch: pytest.MonkeyPatch, exc: Exception) -> str:
         def failing_build(ds: DataSource) -> object:
             raise exc
@@ -1047,22 +1000,8 @@ class TestConnectionProbeMessageHasOneOwner:
         return message
 
     @pytest.mark.parametrize("exc", PROBE_FAILURES)
-    def test_both_probes_persist_the_same_message(
-        self, exc: Exception, tmp_path, monkeypatch: pytest.MonkeyPatch
-    ):
-        http_message = self._http_probe(monkeypatch, exc)
-        worker_error, worker_message = self._worker_probe(tmp_path, monkeypatch, exc)
-
-        assert worker_message == http_message
-        assert worker_error == http_message
-
-    @pytest.mark.parametrize("exc", PROBE_FAILURES)
-    def test_neither_probe_calls_a_connection_test_a_scan(
-        self, exc: Exception, tmp_path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """The scan sanitiser's prefix is load-bearing for scans and wrong here: a
-        source that has never been scanned would report that a scan of it failed."""
-        _, worker_message = self._worker_probe(tmp_path, monkeypatch, exc)
-
-        assert worker_message.startswith("Connection test failed")
-        assert "scan" not in worker_message.lower()
+    def test_probe_error_is_sanitized(self, exc: Exception, monkeypatch: pytest.MonkeyPatch):
+        message = self._http_probe(monkeypatch, exc)
+        assert message.startswith("Connection test failed")
+        assert "scan" not in message.lower()
+        assert "warehouse.internal" not in message

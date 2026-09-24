@@ -36,7 +36,6 @@ export interface ScanJobResultSummary {
   alerts_queued?: number
   scan_row_limit?: number
   scan_rows_processed?: number
-  scan_truncated?: boolean
   metrics_row_limit?: number
   query_rows_scanned?: number
   replay_chunk_interval?: string

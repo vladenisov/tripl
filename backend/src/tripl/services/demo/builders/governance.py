@@ -115,7 +115,6 @@ async def _build_scan_history(session: AsyncSession, ctx: DemoContext) -> None:
             "variables_created": 0,
             "columns_analyzed": len(SCAN_COLUMNS),
             "scan_rows_processed": rows,
-            "scan_truncated": False,
             "scan_window_from": window_from.isoformat(),
             "scan_window_to": window_to.isoformat(),
             "details": [],

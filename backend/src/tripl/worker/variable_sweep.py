@@ -63,9 +63,12 @@ that is the split ``include_scalar_derived`` carries (tripl-bwo8):
   a gate on the whole call left the whole growth unswept for the sake of two
   rows.
 
-``run_scan`` passes neither concern: an unset ``scan_lookback_hours`` leaves its
-window ``None`` and it sees the whole table, so it sweeps everything on every
-run. See ``collect_metrics`` for the scheduled caller's gate.
+The sweep covers the whole project, while each caller sees only one config's
+warehouse query. If any project config has no declared lookback, its scheduled
+catalog pass may have replaced a scalar token using a narrow interval. Neither
+a sibling config's full-table manual scan nor its declared lookback can prove
+that token obsolete, so both callers defer all scalar-derived variables until
+every config declares a representative window.
 """
 
 from __future__ import annotations
@@ -83,6 +86,7 @@ from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.scan_config import ScanConfig
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
@@ -176,8 +180,9 @@ def retire_unused_variables(
     from a path inside a JSON-typed column (:func:`is_json_derived` against the
     branch's FieldDefinitions) and DEFERS the rest — leaves them in place,
     unjudged, for a caller that can defend the window (the module docstring
-    has the split). The default sweeps everything, which is what ``run_scan``
-    and the danger-zone endpoint mean.
+    has the split). Even when a caller permits scalars, an unset lookback on
+    any project config defers them: this sweep is project-wide and cannot prove
+    which config rewrote a given variable's stored values.
 
     Returns the number of rows this call ACTUALLY deleted, for the scan's own
     report — summed from the statements' rowcounts, not from the length of the
@@ -215,6 +220,17 @@ def retire_unused_variables(
     )
     if not variables:
         return 0
+
+    if include_scalar_derived:
+        unbounded_config = session.execute(
+            select(ScanConfig.id)
+            .where(
+                ScanConfig.project_id == project_id,
+                ScanConfig.scan_lookback_hours.is_(None),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        include_scalar_derived = unbounded_config is None
 
     deferred = 0
     if not include_scalar_derived:

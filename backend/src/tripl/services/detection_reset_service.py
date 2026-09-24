@@ -34,6 +34,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from tripl.core.analyzers.anomaly_detector import SCOPE_METRIC
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
@@ -132,14 +133,16 @@ async def reset_project_drifts(
     """Delete schema + distribution drifts in *project_id* within the period.
 
     Schema drifts filter ``detected_at``; distribution drifts filter ``bucket``.
-    Both are scoped via ``scan_config_id`` -> the project's scan configs. Returns
-    per-table deleted counts. Commits; idempotent.
+    Schema drifts are scoped via their event type, including rows whose deleted
+    scan config left ``scan_config_id`` null. Distribution drifts are scoped via
+    the project's scan configs. Returns per-table deleted counts. Commits;
+    idempotent.
     """
     schema_result = await session.execute(
         delete(SchemaDrift)
         .where(
-            SchemaDrift.scan_config_id.in_(
-                select(ScanConfig.id).where(ScanConfig.project_id == project_id)
+            SchemaDrift.event_type_id.in_(
+                select(EventType.id).where(EventType.project_id == project_id)
             ),
             *_period_conditions(SchemaDrift.detected_at, before=before, after=after),
         )

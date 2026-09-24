@@ -415,7 +415,6 @@ describe('ProjectsPage', () => {
                 completed_at: '2026-06-10T08:02:00Z',
                 result_summary: {
                   scan_rows_processed: 12345,
-                  scan_truncated: false,
                 },
                 error_message: null,
                 created_at: '2026-06-10T08:02:00Z',
@@ -497,7 +496,6 @@ describe('ProjectsPage', () => {
                   signals_added: 0,
                   alerts_queued: 0,
                   scan_rows_processed: 8261,
-                  scan_truncated: false,
                 },
                 error_message: null,
                 created_at: '2026-06-10T08:02:00Z',
@@ -569,7 +567,6 @@ describe('ProjectsPage', () => {
                 result_summary: {
                   scan_rows_processed: 900,
                   query_rows_scanned: 12345,
-                  scan_truncated: false,
                 },
                 error_message: null,
                 created_at: '2026-06-10T08:02:00Z',
@@ -638,7 +635,6 @@ describe('ProjectsPage', () => {
                 result_summary: {
                   events_created: 0,
                   scan_rows_processed: 8261,
-                  scan_truncated: false,
                 },
                 error_message: null,
                 created_at: '2026-06-10T09:00:00Z',

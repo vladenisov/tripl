@@ -402,22 +402,25 @@ photos, comments) and merge back via a
    and the reindex; a replay skips catalog sync entirely, so it holds no fresh
    evidence about which paths a row still carries and is in no position to call
    a variable unused — and lets **whether the catalog window was DECLARED**
-   decide how much of the catalog that sweep may judge (tripl-bh1q, tripl-bwo8):
+   decide how much of the catalog that sweep may judge (tripl-bh1q, tripl-bwo8).
+   The sweep is project-wide, so a scalar-derived variable is deferred whenever
+   **any** scan config in that project has no declared `scan_lookback_hours`,
+   even when the current scan uses a full-table query or declares its own
+   lookback:
 
    - a **JSON-derived** variable — `source_name` a path whose dotted prefix
      names a `FieldDefinition` that is `json`-typed on every event type of the
      branch declaring it (`variable_retirement.is_json_derived` over
      `variable_sweep._json_column_names`) — is judged on every run;
-   - a **scalar-derived** variable is judged only when `resolve_lookback_window`
-     returned a window rather than `None`, i.e. the config sets
-     `scan_lookback_hours`; otherwise
-     `retire_unused_variables(include_scalar_derived=False)` leaves it in place,
+   - a **scalar-derived** variable is judged only when the current collection
+     has a declared lookback and every project config declares one; otherwise
+     `retire_unused_variables` leaves it in place,
      unjudged, and counts it as `deferred` in the log. On this path the catalog
      view is *always* windowed (the task returns early without a `time_column`)
      and the fallback is `(time_from_dt, time_to_dt)`, one interval in steady
      state. `run_scan` has no such fallback: an unset lookback leaves its window
-     `None` and it reads the whole table, which is why the manual path needs no
-     gate.
+     `None` and it reads the whole table, but its project-wide sweep still
+     defers scalar-derived variables when a sibling config has no lookback.
 
    The split exists because a too-narrow view does not merely *mis-report* — it
    rewrites the evidence the sweep reads, and how much it rewrites depends on
@@ -438,7 +441,8 @@ photos, comments) and merge back via a
    and documented for users: `scan_lookback_hours` is nullable and defaults to
    `None` in every request schema — the create page pre-fills 24, a config saved
    without one shows the field blank — so a config that never had one typed into
-   it never has its scalar-derived variables swept on a schedule.
+   it prevents scalar-derived retirement across the project until every config
+   has a declared lookback.
 
    `collect_metrics` also stamps the count onto `ScanJob.result_summary` the
    moment the delete commits, ~400 lines before the full summary is assembled.
@@ -449,8 +453,8 @@ photos, comments) and merge back via a
    `variables_retired` is therefore **absent** only on a replay, the one run
    that did not sweep, so a reader cannot mistake "did not look" for "found
    nothing"; every other run emits it, `run_scan` unconditionally, where `0`
-   honestly means "swept, found nothing" — and on a scheduled run with no
-   declared lookback, "swept" covers the JSON-derived rows alone.
+   honestly means "swept, found nothing" — and whenever the project-wide gate
+   defers scalar-derived variables, "swept" covers the JSON-derived rows alone.
 7. `ScanJob.result_summary` is filled in for the UI.
 
 Steps 4 and 5 are two modules, not one. `core/analyzers/event_plan.plan_events`

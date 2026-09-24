@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from tripl import cache
+from tripl.core.warehouse_types import is_complex_type
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.plan_branch import BranchKind, PlanBranch
@@ -50,14 +51,9 @@ def _active_drift_predicates(now: datetime) -> list[ColumnElement[bool]]:
 
 
 def _logical_type_from_observed(observed_type: str | None) -> str:
-    value = (observed_type or "").lower()
-    if any(marker in value for marker in ("json", "object", "tuple", "map")):
-        return "json"
-    if any(marker in value for marker in ("int", "float", "decimal", "numeric", "double")):
-        return "number"
-    if "bool" in value:
-        return "boolean"
-    return "string"
+    # Match the detector's `_infer_logical_field_type`: accepts must write the
+    # same auto-managed type that a fresh scan would infer from this column.
+    return "json" if is_complex_type(observed_type or "") else "string"
 
 
 async def _reject_if_name_format_needs(

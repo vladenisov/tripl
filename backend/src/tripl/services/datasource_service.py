@@ -358,11 +358,8 @@ _TEST_FAILED = "Connection test failed"
 def _friendly_test_error(exc: Exception) -> str:
     """Map a raw connection-probe exception to a safe, user-facing message.
 
-    THE owner of ``DataSource.last_test_message`` wording. Both probe paths route
-    through here — the in-request one below and the Celery task
-    ``worker.tasks.scan.test_connection`` — so one failed probe persists one
-    string no matter which path ran. They used to sanitise separately, and the
-    worker's copy told the operator their *scan* had failed (tripl-rcn8).
+    THE owner of ``DataSource.last_test_message`` wording for the in-request
+    connection probe. The unused Celery probe was removed (tripl-0zpq.50).
 
     Never echoes host/port/driver/credential internals — those go to logs only.
     """

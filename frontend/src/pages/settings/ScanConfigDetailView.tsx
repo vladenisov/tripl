@@ -7,7 +7,6 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
-import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import { scanJobsHaveActiveWork } from './scans/scanUtils'
 import type { DataSource, ScanConfig, ScanJob } from '@/types'
@@ -30,7 +29,6 @@ type DetailTab = 'overview' | 'configuration'
 export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanConfigId: string }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const branchId = useActiveBranchId()
   const { notifyScanRunStarted } = useDemoScenarioActions()
   const [tab, setTab] = useState<DetailTab>('overview')
 
@@ -49,8 +47,8 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
     queryFn: () => dataSourcesApi.list(),
   })
   const { data: eventTypes = [] } = useQuery({
-    queryKey: eventTypesKey(slug, branchId),
-    queryFn: () => eventTypesApi.list(slug, branchId),
+    queryKey: eventTypesKey(slug, null),
+    queryFn: () => eventTypesApi.list(slug, null),
   })
 
   const sc = scanConfigs.find(s => s.id === scanConfigId)

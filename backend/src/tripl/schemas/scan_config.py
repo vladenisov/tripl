@@ -109,6 +109,15 @@ def check_replay_chunk_against_interval(
         raise ValueError("replay_chunk_interval must be greater than or equal to interval")
 
 
+def validate_prerelease_pattern(value: str | None) -> str | None:
+    if value is not None:
+        try:
+            re.compile(value)
+        except re.error as exc:
+            raise ValueError(f"invalid prerelease pattern: {exc}") from exc
+    return value
+
+
 class ScanConfigCreate(BaseModel):
     data_source_id: uuid.UUID
     event_type_id: uuid.UUID | None = None
@@ -146,6 +155,10 @@ class ScanConfigCreate(BaseModel):
     app_version_prerelease_pattern: str | None = Field(default=None, min_length=1, max_length=255)
     app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, min_length=1, max_length=255)
+
+    _validate_prerelease_pattern = field_validator("app_version_prerelease_pattern")(
+        validate_prerelease_pattern
+    )
 
     @field_validator("base_query")
     @classmethod
@@ -261,6 +274,10 @@ class ScanConfigUpdate(BaseModel):
     app_version_prerelease_pattern: str | None = Field(default=None, max_length=255)
     app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, max_length=255)
+
+    _validate_prerelease_pattern = field_validator("app_version_prerelease_pattern")(
+        validate_prerelease_pattern
+    )
 
     @model_validator(mode="before")
     @classmethod

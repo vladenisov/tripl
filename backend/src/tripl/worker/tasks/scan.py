@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl import cache, realtime
+from tripl import realtime
 from tripl.core.adapters.base import BaseAdapter, ColumnInfo
 from tripl.core.analyzers.cardinality import (
     analyze_cardinality,
@@ -28,7 +28,7 @@ from tripl.core.analyzers.event_generator import (
 )
 from tripl.core.analyzers.preview import build_json_paths_payload, build_preview_payload
 from tripl.json_paths import group_json_value_paths
-from tripl.models.data_source import DataSource, TestStatus
+from tripl.models.data_source import DataSource
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.project import Project
@@ -248,7 +248,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             # Event type column groups rows into different event types.
             # Use GROUPING SETS to get per-group cardinalities in one query.
             logger.info("Using grouped scan with GROUPING SETS")
-            result, group_results, scan_rows_processed, scan_truncated = _scan_with_grouping(
+            result, group_results, scan_rows_processed = _scan_with_grouping(
                 session,
                 config.project_id,
                 config,
@@ -299,7 +299,6 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             )
             group_results = None
             scan_rows_processed = len(analysis.rows)
-            scan_truncated = analysis.row_limit_reached
         else:
             raise ScanError(NO_EVENT_NAMING_MSG)
 
@@ -360,11 +359,6 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 job_id,
                 closed_status,
             )
-        if scan_truncated:
-            result.details.append(
-                "Scan output may be truncated by row limit; "
-                "increase scan_row_limit to avoid partial generation"
-            )
         job.result_summary = {
             "events_created": result.events_created,
             "events_skipped": result.events_skipped,
@@ -391,7 +385,6 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             "scan_window_from": scan_window[0].isoformat() if scan_window else None,
             "scan_window_to": scan_window[1].isoformat() if scan_window else None,
             "scan_rows_processed": scan_rows_processed,
-            "scan_truncated": scan_truncated,
             "details": result.details,
             "generation_snapshot": _serialize_generation_snapshot(
                 result,
@@ -458,7 +451,7 @@ def _scan_with_grouping(
     columns: list[ColumnInfo],
     scan_window: TimeWindow | None,
     row_limit: int,
-) -> tuple[GenerationResult, dict[str, GenerationResult], int, bool]:
+) -> tuple[GenerationResult, dict[str, GenerationResult], int]:
     """Handle scans where event_type_column groups rows into different event types.
 
     Uses GROUPING SETS to compute per-group cardinalities in a single query,
@@ -490,7 +483,6 @@ def _scan_with_grouping(
         raise ScanError(msg)
     logger.info(f"Grouped scan: {len(group_values)} groups found for {col_name!r}")
     scan_rows_processed = sum(len(analysis.rows) for analysis in grouped_results.values())
-    scan_truncated = any(analysis.row_limit_reached for analysis in grouped_results.values())
 
     combined = GenerationResult()
     per_group_results: dict[str, GenerationResult] = {}
@@ -542,7 +534,7 @@ def _scan_with_grouping(
         combined.details.extend(result.details)
         per_group_results[et_value] = result
 
-    return combined, per_group_results, scan_rows_processed, scan_truncated
+    return combined, per_group_results, scan_rows_processed
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
@@ -710,68 +702,6 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             logger.exception("Failed to update event group apply job status after error")
         raise
     finally:
-        session.close()
-
-
-@celery_app.task(  # type: ignore[untyped-decorator]
-    name="tripl.worker.tasks.scan.test_connection",
-    bind=True,
-    max_retries=0,
-)
-def test_connection(self: object, data_source_id: str) -> dict[str, object]:
-    """Test connectivity to a data source and persist the probe result.
-
-    Wording of the persisted message is owned by the data-source sanitiser, not by
-    this module's ``user_facing_error`` — see the except branch below (tripl-rcn8).
-    """
-    # Deferred: ``datasource_service`` is a request-path module (FastAPI, async
-    # session). The probe is the one worker path that needs it, so importing it
-    # here keeps it out of every Celery worker's start-up import graph.
-    from tripl.services.datasource_service import _friendly_test_error
-
-    session = _get_sync_session()
-    adapter: BaseAdapter | None = None
-    try:
-        ds = session.get(DataSource, uuid.UUID(data_source_id))
-        if ds is None:
-            return {"success": False, "error": f"DataSource {data_source_id} not found"}
-
-        ok = False
-        error: str | None = None
-        message = ""
-        try:
-            adapter = _build_adapter(ds)
-            ok = bool(adapter.test_connection())
-            message = "Connection successful" if ok else "Connection probe returned no rows"
-        except Exception as e:  # noqa: BLE001
-            # The raw probe error embeds host/port/driver detail; keep that in
-            # the logs only and surface a sanitized summary on every user-facing
-            # field (last_test_message and the returned error).
-            #
-            # Sanitised with the DATA-SOURCE rule, not this module's
-            # ``user_facing_error``: that one guarantees a "Scan failed" prefix
-            # (the frontend keys on it) and this is a connection probe, not a
-            # scan. ``last_test_message`` is also written by the in-request path
-            # in ``datasource_service``; two sanitisers on one field meant the
-            # same failure persisted two different strings depending on which
-            # path ran, so the field has exactly one owner now (tripl-rcn8).
-            logger.exception("Data source connection test failed for %s", data_source_id)
-            error = _friendly_test_error(e)
-            message = error
-
-        ds.last_test_at = datetime.now(UTC)
-        ds.last_test_status = TestStatus.success.value if ok else TestStatus.failed.value
-        ds.last_test_message = message
-        session.commit()
-        # The data-sources list is cached for 300s including these volatile
-        # last_test_* fields; invalidate the same prefix the API path uses so
-        # the list reflects the worker probe immediately (sync variant — don't
-        # bridge back to asyncio from a Celery worker).
-        cache.sync_delete_prefix(cache.prefix_data_sources())
-        return {"success": ok, "error": error}
-    finally:
-        if adapter is not None:
-            adapter.close()
         session.close()
 
 

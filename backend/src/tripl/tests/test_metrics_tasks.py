@@ -9687,6 +9687,7 @@ def test_the_sweep_reports_the_rows_it_deleted_not_the_rows_it_planned(
     """
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
+        config.scan_lookback_hours = 24
         fossil = _seed_scan_created_variable(session, config, source_name="payload.user.adana")
         project_id = config.project_id
         fossil_id = fossil.id
@@ -9943,8 +9944,13 @@ def test_the_sweep_defers_scalar_derived_rows_and_says_how_many(
     record = records[0]
     assert (record.retired, record.planned, record.scanned, record.deferred) == (1, 1, 1, 1)
 
-    # The caller that can defend the window takes what this one deferred.
+    # The project can defend scalar retirement only once every config declares
+    # a representative window; another config's full-table run is insufficient.
     with sync_session_factory() as session:
+        config = session.get(ScanConfig, config.id)
+        assert config is not None
+        config.scan_lookback_hours = 24
+        session.commit()
         assert (
             variable_sweep.retire_unused_variables(session, project_id=project_id, branch_id=None)
             == 1
