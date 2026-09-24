@@ -865,6 +865,7 @@ function FeatureBranchDetail({
         name: entry.name,
         parent: entry.parent,
         field: field ?? null,
+        entity_id: entry.entity_id ?? null,
       }),
     onSuccess: invalidate,
   })

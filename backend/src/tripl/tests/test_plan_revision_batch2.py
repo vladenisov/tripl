@@ -463,29 +463,29 @@ def test_an_entry_whose_key_more_than_one_row_holds_says_so(
 
 
 @pytest.mark.parametrize(("collection", "row", "warning"), _SHARED_KEY_KINDS)
-def test_a_key_only_main_holds_twice_still_warns(
+def test_a_key_only_main_holds_twice_no_longer_warns(
     collection: str, row: Callable[[str], dict[str, Any]], warning: str
 ) -> None:
     """Copilot on PR #164: the duplicate is on MAIN, where a branch diff never
-    looks — the base holds one row and so does the branch. That is the case the
-    warning most needs to reach, since the merge keeps one main row per key and
-    writes the branch's change onto whichever it kept."""
+    looks — the base holds one row and so does the branch. The merge used to
+    keep one main row per key and write the branch's change onto whichever it
+    kept, so this diff had to warn.
+
+    It no longer has to: the merge pairs main's rows with the base by their own
+    ids, which the base recorded, so the row the branch changed lands on the
+    main row it was cut from however many namesakes main has grown since
+    (tripl-0zpq.292). A warning here would send the analyst to rename a row for
+    nothing."""
     original = row("original")
     base, branch = [original], [_copy(original, description="edited")]
     main = [original, row("added on main after the cut")]
-
-    without_main = compute_plan_diff_entries(
-        _payload(**{collection: base}), _payload(**{collection: branch})
-    )
-    (blind,) = without_main
-    assert blind.warnings == []
 
     (entry,) = compute_plan_diff_entries(
         _payload(**{collection: base}),
         _payload(**{collection: branch}),
         key_collisions_from=_payload(**{collection: main}),
     )
-    assert (entry.kind, entry.warnings) == ("changed", [warning])
+    assert (entry.kind, entry.warnings) == ("changed", [])
 
 
 @pytest.mark.parametrize(("collection", "row", "warning"), _SHARED_KEY_KINDS)

@@ -14,6 +14,10 @@
   unreachable" while 98 of the previous 100 deliveries sent — caught live
   2026-08-31) was otherwise lost until a human clicked Retry; the reaper
   re-enqueues such rows within the same dispatch-attempts budget.
+- delete photo blobs no ``event_photos`` row references. Inline deletion alone
+  leaks them: an event, project or branch delete removes photo rows by FK
+  cascade without a storage call, and two concurrent ``delete_photo`` calls can
+  each see the other's row and both keep the blob (tripl-0zpq.291).
 """
 
 from __future__ import annotations
@@ -28,9 +32,12 @@ from tripl.config import settings
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.event_photo import EventPhoto
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
+from tripl.services.event_photo_service import PHOTO_KEY_PREFIX
 from tripl.services.schema_drift_service import DRIFT_RETENTION_DAYS
+from tripl.storage import storage_for
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
 from tripl.worker.tasks._errors import is_transient_send_error
@@ -331,5 +338,117 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
             "auto_retried": len(auto_retried),
             "cutoff": cutoff.isoformat(),
         }
+    finally:
+        session.close()
+
+
+def _photo_backends_to_sweep() -> list[str]:
+    """The photo backends this process can reach, whatever new uploads use.
+
+    Rows written before a backend switch still point at the old store
+    (tripl-0zpq.295), so its orphans are swept too. GCS only when a bucket is
+    configured: without one the driver cannot even be built.
+    """
+    backends = ["local"]
+    if settings.gcs_photo_bucket:
+        backends.append("gcs")
+    return backends
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.maintenance.sweep_orphan_photo_blobs",
+)
+def sweep_orphan_photo_blobs() -> dict[str, object]:
+    """Delete photo blobs no ``event_photos`` row references, once they are old.
+
+    Inline deletion cannot be the whole story (tripl-0zpq.291): deleting an
+    event, a project or a branch removes photo rows by FK cascade and never
+    calls storage, and two concurrent ``delete_photo`` calls on the last two
+    rows holding one key each see the other and both keep the blob. This sweep
+    is the backstop that makes every such leak temporary.
+
+    The grace period covers uploads in flight: ``upload_photo`` writes the
+    blob BEFORE it commits the row, and a blob younger than
+    ``photo_orphan_sweep_grace_hours`` is never touched. Each candidate is also
+    re-checked against the table right before it is deleted, so a row
+    committed while the listing ran still keeps its blob.
+
+    Known limit: the grace is measured from the blob's write time, not from its
+    last reference. A branch creation copies ``storage_key`` onto new rows
+    inside a transaction this session cannot see; if the last committed row
+    holding an OLD key is deleted while that transaction is still open, the
+    sweep sees no reference and may delete the blob the copy is about to
+    commit. The window is the length of one ``create_branch`` transaction.
+
+    Any row holding the key keeps it, in any project and on any branch — the
+    same rule as ``event_photo_service._blob_is_referenced``. Only keys under
+    ``PHOTO_KEY_PREFIX`` are considered, because the directory or bucket may
+    hold objects tripl did not write. A backend without a listing API is
+    skipped and logged.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=settings.photo_orphan_sweep_grace_hours)
+    session = _get_sync_session()
+    deleted: list[str] = []
+    skipped: list[str] = []
+    try:
+        for backend in _photo_backends_to_sweep():
+            try:
+                storage = storage_for(backend)
+                listed = [
+                    obj for obj in storage.list_objects(PHOTO_KEY_PREFIX) if obj.written_at < cutoff
+                ]
+            except Exception:
+                logger.exception("Cannot list the %s photo backend; orphan sweep skips it", backend)
+                skipped.append(backend)
+                continue
+            if not listed:
+                continue
+            referenced = set(
+                session.execute(
+                    select(EventPhoto.storage_key).where(
+                        EventPhoto.storage_backend == backend,
+                        EventPhoto.storage_key.is_not(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not referenced:
+                # Old blobs on disk and not one row pointing at this backend is
+                # what an empty or half-restored database looks like, not a set
+                # of orphans. Deleting here would wipe every photo, so the sweep
+                # refuses and says so; a real "no photos left" state costs only
+                # the disk the leftovers use.
+                logger.warning(
+                    "Orphan photo sweep skipped %s: %d old blob(s) but no event_photos row "
+                    "references this backend",
+                    backend,
+                    len(listed),
+                )
+                skipped.append(backend)
+                continue
+            for obj in listed:
+                if obj.key in referenced:
+                    continue
+                # Re-read, not trusted from the set above: a row committed
+                # since then — a branch copy, a merge — owns the blob now.
+                still_referenced = session.scalar(
+                    select(func.count())
+                    .select_from(EventPhoto)
+                    .where(
+                        EventPhoto.storage_backend == backend,
+                        EventPhoto.storage_key == obj.key,
+                    )
+                )
+                if still_referenced:
+                    continue
+                try:
+                    storage.delete_blocking(obj.key)
+                except Exception:
+                    logger.exception("Failed to delete orphan photo blob %s:%s", backend, obj.key)
+                    continue
+                deleted.append(f"{backend}:{obj.key}")
+        logger.info("Swept %d orphan photo blob(s) older than %s", len(deleted), cutoff.isoformat())
+        return {"deleted": deleted, "skipped_backends": skipped, "cutoff": cutoff.isoformat()}
     finally:
         session.close()

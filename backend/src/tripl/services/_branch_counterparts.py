@@ -7,10 +7,12 @@ ever see main. So a branch copy of a live event read "never seen, no volume"
 on every page, and an analyst on a branch could not tell a dead event from a
 busy one (tripl-kjhi.9).
 
-The pairing here is the one the merge already uses: same event type NAME (a
-branch type has its own id too), and the same scan identity — ``source_name``
-where the row has one, ``name`` where it does not, on both sides. Nothing is
-written back; the branch row only reads through to its twin.
+A branch copy's twin is the main row it was copied from (``origin_id``,
+tripl-0zpq.292). Only a row without one — created on the branch — or a copy
+whose origin main has since deleted pairs the old way: same event type NAME
+(a branch type has its own id too), and the same scan identity —
+``source_name`` where the row has one, ``name`` where it does not, on both
+sides. Nothing is written back; the branch row only reads through to its twin.
 """
 
 from __future__ import annotations
@@ -43,6 +45,33 @@ async def main_counterparts(
     branch_events = [ev for ev in events if ev.branch_id != main_branch_id]
     if not branch_events:
         return {}
+    # The row the copy was made from, when there is one. Keyed by type and
+    # identity instead, two main rows sharing that key answered for each other:
+    # the discussion, the metrics and the merge's thread move all read through
+    # whichever of them the key kept (tripl-0zpq.292).
+    out: dict[uuid.UUID, Event] = {}
+    origin_ids = {ev.origin_id for ev in branch_events if ev.origin_id is not None}
+    if origin_ids:
+        origins = {
+            row.id: row
+            for row in (
+                await session.execute(
+                    select(Event).where(
+                        Event.id.in_(origin_ids),
+                        Event.branch_id == main_branch_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        for ev in branch_events:
+            origin = origins.get(ev.origin_id) if ev.origin_id is not None else None
+            if origin is not None:
+                out[ev.id] = origin
+    branch_events = [ev for ev in branch_events if ev.id not in out]
+    if not branch_events:
+        return out
     type_names: dict[uuid.UUID, str] = {
         type_id: name
         for type_id, name in (
@@ -66,7 +95,7 @@ async def main_counterparts(
         ).all()
     }
     if not main_type_by_name:
-        return {}
+        return out
     identities = {_identity(ev) for ev in branch_events}
     main_rows = (
         (
@@ -99,7 +128,6 @@ async def main_counterparts(
     main_by_key: dict[tuple[str, str], Event] = {}
     for row in main_rows:
         main_by_key.setdefault((main_type_name[row.event_type_id], _identity(row)), row)
-    out: dict[uuid.UUID, Event] = {}
     for ev in branch_events:
         twin = main_by_key.get((type_names.get(ev.event_type_id, ""), _identity(ev)))
         if twin is not None:

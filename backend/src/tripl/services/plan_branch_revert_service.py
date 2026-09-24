@@ -57,7 +57,9 @@ from tripl.models.variable_event_value_override import VariableEventValueOverrid
 from tripl.schemas.plan_branch import BranchRevertRequest, PlanBranchDiff
 from tripl.schemas.plan_revision import PlanDiffEntry
 from tripl.services import plan_branch_service
+from tripl.services._branch_event_threads import rescue_branch_event_threads
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
+from tripl.services._plan_branch_locks import hold_branch_for_plan_write
 from tripl.services.plan_revision_service import with_snapshot_defaults
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.services.variable_service import rewrite_variable_token_references
@@ -156,7 +158,11 @@ def _one(rows: list[Any], data: BranchRevertRequest) -> Any:
 
 
 async def _load_branch(session: AsyncSession, project: Project, branch_id: uuid.UUID) -> PlanBranch:
-    branch = await session.get(PlanBranch, branch_id)
+    # Held FOR SHARE to the revert's commit, not read plainly: a revert is a
+    # plan write on the branch like any other, so one that arrives during a
+    # merge of it waits and then sees ``merged`` below, and a merge that
+    # arrives during it waits for it before snapshotting (tripl-0zpq.288).
+    branch = await hold_branch_for_plan_write(session, branch_id)
     if branch is None or branch.project_id != project.id:
         raise HTTPException(status_code=404, detail="Branch not found")
     if branch.kind == BranchKind.main:
@@ -205,17 +211,42 @@ async def _base_payload(session: AsyncSession, branch: PlanBranch) -> dict[str, 
 
 
 def _find_entry(diff: PlanBranchDiff, data: BranchRevertRequest) -> PlanDiffEntry:
-    for entry in diff.entries:
-        if (
-            entry.entity_type == data.entity_type
-            and entry.name == data.name
-            and entry.parent == data.parent
-        ):
-            return entry
-    raise HTTPException(status_code=404, detail="That change is not in this branch's diff")
+    """The diff entry the request names.
+
+    By its ``entity_id`` as well when the request carries one: two namesakes
+    can each have an entry under the same name — one deleted, the other edited
+    — and the name alone would pick whichever the diff listed first
+    (tripl-0zpq.292). Without an id, a name several entries share is refused
+    rather than guessed.
+    """
+    matches = [
+        entry
+        for entry in diff.entries
+        if entry.entity_type == data.entity_type
+        and entry.name == data.name
+        and entry.parent == data.parent
+        and (data.entity_id is None or entry.entity_id == data.entity_id)
+    ]
+    if not matches:
+        raise HTTPException(status_code=404, detail="That change is not in this branch's diff")
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"More than one change on this branch is called '{data.name}'. "
+                "Name the one to revert by its entity_id."
+            ),
+        )
+    return matches[0]
 
 
-def _base_item(base_payload: dict[str, Any], data: BranchRevertRequest) -> dict[str, Any]:
+def _base_item(
+    base_payload: dict[str, Any],
+    data: BranchRevertRequest,
+    *,
+    base_id: str | None = None,
+    claimed: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     """The entity's state in the base snapshot, keyed the way the diff keys it.
 
     Events and relations carry no uniqueness on that key, and a stored base is
@@ -224,12 +255,13 @@ def _base_item(base_payload: dict[str, Any], data: BranchRevertRequest) -> dict[
     list first: the fields of a row the reviewer never looked at, written onto
     the survivor, or a rebuild of the wrong one of two deleted rows.
 
-    Nothing here can tell those rows apart. A branch copy does not record which
-    base row it came from, so neither the diff entry nor the request can name
-    one base row among several that share the key. Several are therefore
-    refused, the way ``_one`` refuses several branch rows: restoring from an
-    arbitrary namesake writes values nobody reviewed. Renaming on the branch
-    does not lift it, because the base is a frozen payload.
+    A branch copy now records the base row it came from (``origin_id``,
+    tripl-0zpq.292), so ``base_id`` — that origin, or the id a ``removed``
+    entry carries — names the one row directly. Without it, base rows another
+    branch copy already stands for (``claimed``) are left out, the way the
+    diff's own pairing leaves them out. Several left over are refused, the
+    way ``_one`` refuses several branch rows: restoring from an arbitrary
+    namesake writes values nobody reviewed.
     """
     matches: list[dict[str, Any]]
     if data.entity_type == "event_type":
@@ -268,6 +300,12 @@ def _base_item(base_payload: dict[str, Any], data: BranchRevertRequest) -> dict[
             )
             == data.name
         ]
+    if base_id is not None:
+        by_id = [item for item in matches if str(item.get("id")) == base_id]
+        if len(by_id) == 1:
+            return by_id[0]
+    if len(matches) > 1 and claimed:
+        matches = [item for item in matches if str(item.get("id")) not in claimed]
     if not matches:
         raise HTTPException(
             status_code=409,
@@ -317,7 +355,13 @@ async def _find_entity(
     branch_id: uuid.UUID,
     data: BranchRevertRequest,
 ) -> Any:
-    """The branch-side row the change lives on."""
+    """The branch-side row the change lives on.
+
+    By the entry's ``entity_id`` when the request carries one, for the two
+    entity types whose name may be shared (tripl-0zpq.292).
+    """
+    if data.entity_id is not None and data.entity_type in ("event", "relation"):
+        return await _entity_by_id(session, project_id, branch_id, data)
     if data.entity_type == "relation":
         relations = (
             (
@@ -400,6 +444,133 @@ async def _find_entity(
         )
 
     return _one(list((await session.execute(query)).scalars().all()), data)
+
+
+async def _entity_by_id(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    data: BranchRevertRequest,
+) -> Any:
+    """The branch's event or relation with the entry's ``entity_id``, or 404."""
+    try:
+        entity_id = uuid.UUID(str(data.entity_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Entity not found on this branch") from None
+    query: Any
+    if data.entity_type == "relation":
+        query = (
+            select(EventTypeRelation)
+            .where(
+                EventTypeRelation.id == entity_id,
+                EventTypeRelation.project_id == project_id,
+                EventTypeRelation.branch_id == branch_id,
+            )
+            .options(
+                selectinload(EventTypeRelation.source_event_type),
+                selectinload(EventTypeRelation.target_event_type),
+                selectinload(EventTypeRelation.source_field),
+                selectinload(EventTypeRelation.target_field),
+            )
+        )
+    else:
+        query = (
+            select(Event)
+            .where(
+                Event.id == entity_id,
+                Event.project_id == project_id,
+                Event.branch_id == branch_id,
+            )
+            .options(
+                selectinload(Event.field_values),
+                selectinload(Event.meta_values),
+                selectinload(Event.tags),
+            )
+        )
+    entity = (await session.execute(query)).scalar_one_or_none()
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found on this branch")
+    return entity
+
+
+async def _origins_on_branch(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    data: BranchRevertRequest,
+    *,
+    exclude_id: uuid.UUID | None = None,
+) -> frozenset[str]:
+    """The base rows other branch rows under the entry's name already stand for.
+
+    Only events and relations share names; for them these are the ``origin_id``
+    of every branch row the diff pairs to a base row by id, which a revert
+    looking for the base side of an entry by NAME has to leave out
+    (tripl-0zpq.292).
+    """
+    if data.entity_type == "event":
+        rows = (
+            await session.execute(
+                select(Event.id, Event.origin_id)
+                .join(EventType, Event.event_type_id == EventType.id)
+                .where(
+                    Event.project_id == project_id,
+                    Event.branch_id == branch_id,
+                    Event.name == data.name,
+                    EventType.name == data.parent,
+                    Event.origin_id.is_not(None),
+                )
+            )
+        ).all()
+        return frozenset(str(origin) for row_id, origin in rows if row_id != exclude_id)
+    if data.entity_type == "relation":
+        relations = (
+            (
+                await session.execute(
+                    select(EventTypeRelation)
+                    .where(
+                        EventTypeRelation.project_id == project_id,
+                        EventTypeRelation.branch_id == branch_id,
+                        EventTypeRelation.origin_id.is_not(None),
+                    )
+                    .options(
+                        selectinload(EventTypeRelation.source_event_type),
+                        selectinload(EventTypeRelation.target_event_type),
+                        selectinload(EventTypeRelation.source_field),
+                        selectinload(EventTypeRelation.target_field),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return frozenset(
+            str(relation.origin_id)
+            for relation in relations
+            if relation.id != exclude_id
+            and _relation_name(
+                relation.source_event_type.name,
+                relation.source_field.name,
+                relation.target_event_type.name,
+                relation.target_field.name,
+            )
+            == data.name
+        )
+    return frozenset()
+
+
+def _origin_of(base_item: dict[str, Any]) -> uuid.UUID | None:
+    """The main row a base snapshot entry stands for, for a rebuilt copy's origin.
+
+    The base recorded main's ids at the cut. The row may have gone from main
+    since; ``origin_id`` is deliberately no foreign key, so the rebuilt copy
+    still names it, and the merge then reads main's deletion as main's
+    (``Event.origin_id``).
+    """
+    try:
+        return uuid.UUID(str(base_item.get("id")))
+    except ValueError:
+        return None
 
 
 async def _restore_event_children(
@@ -507,6 +678,7 @@ async def _restore_variable_overrides(
     branch_id: uuid.UUID,
     variable: Variable,
     base_item: dict[str, Any],
+    base_payload: dict[str, Any],
 ) -> None:
     rows = (
         (
@@ -519,22 +691,54 @@ async def _restore_variable_overrides(
         .tuples()
         .all()
     )
-    event_by_key: dict[tuple[str, str], Event] = {}
-    ambiguous: set[tuple[str, str]] = set()
+    events_by_key: dict[tuple[str, str], list[Event]] = {}
     for event, et_name in rows:
-        key = (et_name, event.name)
-        if key in event_by_key:
-            ambiguous.add(key)
-        event_by_key[key] = event
+        events_by_key.setdefault((et_name, event.name), []).append(event)
+    base_events_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for base_event in base_payload.get("events", []):
+        base_events_by_key.setdefault(
+            (base_event.get("event_type_name", ""), base_event.get("name", "")), []
+        ).append(base_event)
     base_overrides = base_item.get("event_value_overrides") or []
-    # Overrides point at their event by name, and event names are not unique —
-    # attaching one to an arbitrary namesake would silently override the wrong
-    # event's values.
-    clashing = sorted(
-        f"{o['event_type_name']}.{o['event_name']}"
+
+    # Overrides point at their event by name, and event names are not unique.
+    # Both sides are asked (tripl-0zpq.292). In the BASE, several events under
+    # the name means nothing says which of them held the override — the
+    # snapshot records it by name only. On the BRANCH, the copy of the base's
+    # one event is found by its origin id, and only a name the ids leave
+    # several rows under is refused: attaching the override to an arbitrary
+    # namesake would silently override the wrong event's values.
+    def target(key: tuple[str, str]) -> Event | None | str:
+        candidates = events_by_key.get(key, [])
+        base_rows = base_events_by_key.get(key, [])
+        if len(base_rows) > 1:
+            return "base"
+        if len(base_rows) == 1:
+            origin = str(base_rows[0].get("id"))
+            copies = [event for event in candidates if str(event.origin_id) == origin]
+            if len(copies) == 1:
+                return copies[0]
+        if len(candidates) > 1:
+            return "branch"
+        return candidates[0] if candidates else None
+
+    targets = {
+        (o["event_type_name"], o["event_name"]): target((o["event_type_name"], o["event_name"]))
         for o in base_overrides
-        if (o["event_type_name"], o["event_name"]) in ambiguous
+    }
+    base_clashing = sorted(
+        f"{key[0]}.{key[1]}" for key, found in targets.items() if found == "base"
     )
+    if base_clashing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"More than one event in this branch's base snapshot is called "
+                f"{', '.join(base_clashing)}, so it is ambiguous which one the override "
+                "belonged to. Set the overrides by hand instead."
+            ),
+        )
+    clashing = sorted(f"{key[0]}.{key[1]}" for key, found in targets.items() if found == "branch")
     if clashing:
         raise HTTPException(
             status_code=409,
@@ -543,13 +747,7 @@ async def _restore_variable_overrides(
                 "override cannot be attached unambiguously. Rename one of them, then revert."
             ),
         )
-    missing = sorted(
-        {
-            f"{o['event_type_name']}.{o['event_name']}"
-            for o in base_overrides
-            if (o["event_type_name"], o["event_name"]) not in event_by_key
-        }
-    )
+    missing = sorted(f"{key[0]}.{key[1]}" for key, found in targets.items() if found is None)
     if missing:
         raise HTTPException(
             status_code=409,
@@ -565,14 +763,15 @@ async def _restore_variable_overrides(
         )
     )
     for override in base_overrides:
-        event = event_by_key[(override["event_type_name"], override["event_name"])]
+        found = targets[(override["event_type_name"], override["event_name"])]
+        assert isinstance(found, Event)
         session.add(
             VariableEventValueOverride(
                 id=uuid.uuid4(),
                 project_id=project_id,
                 branch_id=branch_id,
                 variable_id=variable.id,
-                event_id=event.id,
+                event_id=found.id,
                 values=list(override.get("values") or []),
             )
         )
@@ -667,6 +866,26 @@ async def _row_renamed_from(
     merge pair these?", which also depends on main, and a revert touches only the
     branch. A rename main happens to have raced is still a rename here.
     """
+    if data.entity_type == "event" and base_item.get("id") is not None:
+        # The copy of this very base row, still on the branch under another
+        # name: its origin id says so outright, scan identity or not
+        # (tripl-0zpq.292). Only a copy that lost its origin — or a base row
+        # without one — goes on to the identity match below.
+        try:
+            base_row_id = uuid.UUID(str(base_item["id"]))
+        except ValueError:
+            base_row_id = None
+        if base_row_id is not None:
+            copy = await session.scalar(
+                select(Event).where(
+                    Event.project_id == project_id,
+                    Event.branch_id == branch_id,
+                    Event.origin_id == base_row_id,
+                )
+            )
+            if copy is not None:
+                return copy
+
     source_name = base_item.get("source_name")
     if not source_name:
         return None
@@ -852,6 +1071,10 @@ async def _recreate_entity(
             owner_id=uuid.UUID(owner_id) if owner_id else None,
             reviewed=base_item.get("reviewed", False),
             metric_breakdown_columns=list(base_item.get("metric_breakdown_columns") or []),
+            # Linked back to the main row it stands for, so the diff and the
+            # merge pair the rebuilt row with that row again rather than with
+            # whichever namesake the key finds (tripl-0zpq.292).
+            origin_id=_origin_of(base_item),
         )
         session.add(event)
         await session.flush()
@@ -884,7 +1107,9 @@ async def _recreate_entity(
         )
         session.add(variable)
         await session.flush()
-        await _restore_variable_overrides(session, project_id, branch_id, variable, base_item)
+        await _restore_variable_overrides(
+            session, project_id, branch_id, variable, base_item, base_payload
+        )
         return
 
     if data.entity_type == "meta_field":
@@ -950,6 +1175,7 @@ async def _recreate_entity(
             target_field_id=target_field.id,
             relation_type=_required(base_item, "relation_type"),
             description=base_item.get("description") or "",
+            origin_id=_origin_of(base_item),
         )
     )
 
@@ -1001,7 +1227,9 @@ async def _restore_field(
             return
 
     if data.entity_type == "variable" and field == "event_value_overrides":
-        await _restore_variable_overrides(session, project_id, branch_id, entity, base_item)
+        await _restore_variable_overrides(
+            session, project_id, branch_id, entity, base_item, base_payload
+        )
         return
 
     # Photos are the known gap: their bytes live in object storage, so putting a
@@ -1031,7 +1259,12 @@ async def _apply_revert(
                     "one by one. Revert the whole entity to bring it back."
                 ),
             )
-        base_item = _base_item(base_payload, data)
+        base_item = _base_item(
+            base_payload,
+            data,
+            base_id=data.entity_id,
+            claimed=await _origins_on_branch(session, project_id, branch_id, data),
+        )
         # A removal that is really the old half of a rename puts the name back on
         # the row that moved; rebuilding it from the snapshot would duplicate a
         # row the branch still has (tripl-hjxy). Every other field the branch
@@ -1086,10 +1319,14 @@ async def _apply_revert(
         # references to it are DROPPED, the same rule the CRUD delete doors use.
         # An event_type takes its events with it through the database cascade
         # that no service can see, which is why it is expanded here (tripl-a64t).
+        doomed_event_ids = await _doomed_event_ids(session, data.entity_type, entity)
         await drop_dangling_event_references(
-            session,
-            project_id=project_id,
-            event_ids=await _doomed_event_ids(session, data.entity_type, entity),
+            session, project_id=project_id, event_ids=doomed_event_ids
+        )
+        # The discussion is not plan content, so reverting the row must not
+        # take the part its main twin shows as well (tripl-0zpq.289).
+        await rescue_branch_event_threads(
+            session, project_id=project_id, event_ids=doomed_event_ids
         )
         await session.delete(entity)
         return
@@ -1100,7 +1337,15 @@ async def _apply_revert(
     fields = [data.field] if data.field is not None else changed_fields
 
     entity = await _find_entity(session, project_id, branch_id, data)
-    base_item = _base_item(base_payload, data)
+    origin_id = getattr(entity, "origin_id", None)
+    base_item = _base_item(
+        base_payload,
+        data,
+        base_id=str(origin_id) if origin_id is not None else None,
+        claimed=await _origins_on_branch(
+            session, project_id, branch_id, data, exclude_id=entity.id
+        ),
+    )
     for field in fields:
         await _restore_field(
             session, project_id, branch_id, entity, base_item, base_payload, data, field

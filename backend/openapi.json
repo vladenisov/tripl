@@ -4280,8 +4280,20 @@
         "type": "string"
       },
       "BranchRevertRequest": {
-        "description": "Undo one entry of the branch's diff.\n\nThe entry is addressed the way the diff names it \u2014 entity type, natural name\nand parent \u2014 rather than by id, so the request describes a *change* rather\nthan a row. ``field`` narrows the revert to one changed field; omitted, the\nwhole entity goes back to its base state.",
+        "description": "Undo one entry of the branch's diff.\n\nThe entry is addressed the way the diff names it \u2014 entity type, natural name\nand parent \u2014 so the request describes a *change* rather than a row, plus\nthe entry's own ``entity_id`` where a name may be shared (events and\nrelations). ``field`` narrows the revert to one changed field; omitted, the\nwhole entity goes back to its base state.",
         "properties": {
+          "entity_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
           "entity_type": {
             "enum": [
               "event_type",

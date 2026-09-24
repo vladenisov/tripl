@@ -265,3 +265,17 @@ wrong; a digest cannot be recomputed backwards, which is why the release takes
 the re-approval rather than trying to. Branches with no multi-value meta field,
 and every approval given after the upgrade, are unaffected.
 :::
+
+:::note One-off: approvals may need redoing on branches with same-named events or relations
+The release that records which main row each branch copy came from (branch copy
+origin ids) also fixes the order two **namesakes** — two events of one event
+type sharing a name, or two relations linking the same pair of fields — take in
+the plan snapshot, and the order of two variable overrides on such events.
+Before it, namesakes came back in whatever order the database returned them, so their
+place in the approval digest was never fixed; now they are ordered by id. An
+approval recorded **before** that upgrade, on a branch holding namesakes, can
+therefore read as `stale` afterwards even though nobody edited the plan, and the
+branch needs approving again before it will merge. Nothing is lost and no data
+is wrong; a digest cannot be recomputed backwards. Branches without namesakes,
+and every approval given after the upgrade, are unaffected.
+:::

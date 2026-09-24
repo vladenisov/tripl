@@ -9,6 +9,7 @@ from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.event_type import EventTypeCreate, EventTypeResponse, EventTypeUpdate
+from tripl.services._branch_event_threads import rescue_branch_event_threads
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
@@ -226,6 +227,9 @@ async def delete_event_type(
         .all()
     )
     await drop_dangling_event_references(session, project_id=project_id, event_ids=doomed_event_ids)
+    # Same door for the events' discussions: on a branch, a row whose main twin
+    # shows its thread hands it over before the cascade (tripl-0zpq.289).
+    await rescue_branch_event_threads(session, project_id=project_id, event_ids=doomed_event_ids)
     await session.delete(et)
     await session.commit()
     await reindex_project_branch(

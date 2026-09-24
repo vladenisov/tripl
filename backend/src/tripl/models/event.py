@@ -116,6 +116,23 @@ class Event(UUIDMixin, TimestampMixin, Base):
     superseded_by_event_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("events.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # The MAIN row this branch copy was made from — stamped by
+    # ``deep_copy_plan_to_branch`` (and by a revert that rebuilds the copy), so
+    # it is NULL on every main row and on every row created on a branch. Events
+    # carry no uniqueness on (type, name), so two main rows can share that key
+    # (namesakes); the natural key cannot say which of them a branch copy came
+    # from, and the diff, merge, revert and the discussion twin all paired by
+    # it, landing a change on whichever namesake sorted last (tripl-0zpq.292,
+    # tripl-0zpq.149). They pair by this id first and fall back to the natural
+    # key only for rows without one.
+    #
+    # Deliberately NOT a foreign key. ``ON DELETE SET NULL`` would erase the one
+    # fact the merge needs once main deletes the row: the copy would become
+    # indistinguishable from a row authored on the branch, and merging it would
+    # either bring back what main deleted or fall back to guessing by name. The
+    # base snapshot still records the id, so a dangling origin keeps pairing the
+    # copy with its base row, and the merge sees main's deletion as main's.
+    origin_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metric_breakdown_columns: Mapped[list[str]] = mapped_column(
         JSON,

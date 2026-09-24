@@ -83,6 +83,12 @@ celery_app.conf.beat_schedule = {
         "task": "tripl.worker.tasks.maintenance.cleanup_distribution_drifts",
         "schedule": crontab(hour=5, minute=0),
     },
+    "sweep-orphan-photo-blobs": {
+        "task": "tripl.worker.tasks.maintenance.sweep_orphan_photo_blobs",
+        # Daily: an orphan costs only storage, and PHOTO_ORPHAN_SWEEP_GRACE_HOURS
+        # already holds every blob back for a day (tripl-0zpq.291).
+        "schedule": crontab(hour=5, minute=30),
+    },
     "requeue-stranded-alert-deliveries": {
         "task": "tripl.worker.tasks.maintenance.requeue_stranded_alert_deliveries",
         # Every 5 minutes — deliveries are only considered stranded after
