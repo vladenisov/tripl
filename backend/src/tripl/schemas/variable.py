@@ -35,6 +35,26 @@ def _validate_bindings(bindings: list[str] | None) -> list[str] | None:
     return bindings
 
 
+# What a scan itself can write as a binding: the token grammar ``${...}``
+# admits anything but ``}``, and a JSON map keyed by user-typed text mints keys
+# such as ``props.$os`` or ``props.utm source``. An update resends the
+# variable's stored bindings, so the schema accepts that grammar and the
+# service applies ``BINDING_PATTERN`` only to bindings the update ADDS
+# (tripl-0zpq.265).
+_STORED_BINDING_PATTERN = re.compile(r"^[^}\x00-\x1f\x7f]+$")
+
+
+def _validate_update_bindings(bindings: list[str] | None) -> list[str] | None:
+    if bindings is None:
+        return None
+    for binding in bindings:
+        if not _STORED_BINDING_PATTERN.match(binding):
+            raise ValueError(f"Invalid binding path: {binding!r}")
+    if len(set(bindings)) != len(bindings):
+        raise ValueError("Duplicate binding paths")
+    return bindings
+
+
 class VariableType(StrEnum):
     string = "string"
     number = "number"
@@ -80,10 +100,11 @@ _VARIABLE_NOT_NULL_UPDATE_FIELDS = frozenset(
 
 
 class VariableUpdate(BaseModel):
-    # Dots stay permitted at the schema level so legacy scan-created dotted
-    # names remain loadable; the service enforces the strict (dot-free)
-    # pattern when the name actually changes.
-    name: str | None = Field(None, min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.]*$")
+    # No pattern here: the edit form resends the stored name, and a scan-created
+    # name can be anything the scan writes (``userId``, ``params.screenName``).
+    # The service enforces the strict pattern only when the name actually
+    # changes (tripl-0zpq.265).
+    name: str | None = Field(None, min_length=1, max_length=100)
     variable_type: VariableType | None = None
     description: str | None = None
     allowed_values: list[str] | None = Field(None, max_length=500)
@@ -95,7 +116,7 @@ class VariableUpdate(BaseModel):
     def _reject_explicit_nulls(cls, data: object) -> object:
         return reject_explicit_nulls(data, _VARIABLE_NOT_NULL_UPDATE_FIELDS)
 
-    _check_bindings = field_validator("bindings")(_validate_bindings)
+    _check_bindings = field_validator("bindings")(_validate_update_bindings)
 
 
 class VariableResponse(BaseModel):

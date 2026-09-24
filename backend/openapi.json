@@ -19555,7 +19555,6 @@
               {
                 "maxLength": 100,
                 "minLength": 1,
-                "pattern": "^[a-z][a-z0-9_.]*$",
                 "type": "string"
               },
               {

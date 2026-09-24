@@ -29,6 +29,11 @@ class VariableType(enum.StrEnum):
     number_array = "number_array"
 
 
+# Width of ``variables.name`` and ``variables.source_name``. The scan checks
+# tokens against it before inserting, because PostgreSQL refuses a longer value.
+VARIABLE_NAME_MAX_LENGTH = 100
+
+
 class Variable(UUIDMixin, Base):
     __tablename__ = "variables"
     __table_args__ = (
@@ -42,8 +47,8 @@ class Variable(UUIDMixin, Base):
     branch_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("plan_branches.id", ondelete="CASCADE"), index=True, default=default_branch_id
     )
-    name: Mapped[str] = mapped_column(String(100))
-    source_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    name: Mapped[str] = mapped_column(String(VARIABLE_NAME_MAX_LENGTH))
+    source_name: Mapped[str | None] = mapped_column(String(VARIABLE_NAME_MAX_LENGTH), nullable=True)
     variable_type: Mapped[str] = mapped_column(
         db_enum(VariableType, "variable_type"), default=VariableType.string.value
     )

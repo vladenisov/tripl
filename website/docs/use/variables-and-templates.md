@@ -37,6 +37,17 @@ Only the name and type are required. **You do not have to fill in bindings** —
 a scan matches a variable by its name first, so a variable named after the
 column it stands for needs no binding at all.
 
+Each token belongs to one variable. Creating or editing a variable is refused
+with a conflict when a new binding is already another variable's name, binding
+or scan source, and when a new or changed name is already another variable's
+binding or scan source (a variable renamed after a scan keeps its original
+source). Editing a variable does not re-check the bindings it already has, so
+scan-created bindings such as `props.$os` and names such as `userId` save
+unchanged; only newly added bindings must be a column or dotted path.
+
+A scan skips, and reports in the run details, any variable token longer than
+100 characters, such as a JSON key typed by a user.
+
 ### A binding and a `${token}` are not the same thing
 
 They are written the same way and they are frequently the same string, which is
@@ -306,8 +317,11 @@ Two details worth knowing:
   asserting a reference that is no longer there;
 - where both events already carried an entry for the same variable, the
   surviving event's own override or drift decision wins. Observed contexts are
-  combined instead: the higher observation count, and the union of the sampled
-  values under the usual cap.
+  combined instead: the observation count becomes the number of distinct values
+  across both sides (never less than the larger of the two counts), and the
+  values are unioned. A low-cardinality context keeps every value until the
+  union outgrows the cardinality threshold; it then becomes high-cardinality and
+  its values are sampled.
 
 ## Exclude instead of deleting scan-owned variables
 

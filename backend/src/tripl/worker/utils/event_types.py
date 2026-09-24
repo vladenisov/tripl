@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.cardinality import _is_json_type
+from tripl.core.analyzers.event_generator import lock_project_catalog
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.worker.plan_scope import main_branch_id
@@ -125,6 +126,8 @@ def ensure_event_type_with_fields(
     rejection = event_type_name_rejection(et_name)
     if rejection is not None:
         raise ScanError(rejection)
+    # Before the first shared insert; see ``lock_project_catalog``.
+    lock_project_catalog(session, project_id)
 
     # Scans and metrics collection target the main plan; a working branch
     # deep-copies event types under the same names, so the lookup must be

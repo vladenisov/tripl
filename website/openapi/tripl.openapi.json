@@ -33759,8 +33759,7 @@
               {
                 "type": "string",
                 "maxLength": 100,
-                "minLength": 1,
-                "pattern": "^[a-z][a-z0-9_.]*$"
+                "minLength": 1
               },
               {
                 "type": "null"
