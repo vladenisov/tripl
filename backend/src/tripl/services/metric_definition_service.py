@@ -1070,9 +1070,9 @@ async def create_metric_definition(
 
     create_values = data.to_create_values()
     if not create_values.get("order"):
-        # 0 is the schema default and what the catalog form always sends (it has
-        # no order field), so it means "no position asked for" → append. An
-        # explicit non-zero order is still honoured verbatim.
+        # Omitted (None) or 0 — what clients predating tripl-cyby still send —
+        # means "no position asked for" → append. An explicit non-zero order is
+        # still honoured verbatim.
         create_values["order"] = await _next_metric_order(session, project_id)
 
     metric = MetricDefinition(project_id=project_id, **create_values)

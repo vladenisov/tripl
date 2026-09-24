@@ -5614,11 +5614,8 @@ export interface components {
             numerator_event_id?: string | null;
             /** Numerator Event Type Id */
             numerator_event_type_id?: string | null;
-            /**
-             * Order
-             * @default 0
-             */
-            order: number;
+            /** Order */
+            order?: number | null;
             /** Owner Id */
             owner_id?: string | null;
             /** Platform Column */
@@ -6574,11 +6571,8 @@ export interface components {
             /** Name */
             name: string;
             numerator?: components["schemas"]["FactOperand"] | null;
-            /**
-             * Order
-             * @default 0
-             */
-            order: number;
+            /** Order */
+            order?: number | null;
             /** Owner Id */
             owner_id?: string | null;
             /** Platform Column */
@@ -7889,6 +7883,8 @@ export interface components {
              * @default metric
              */
             scope: string;
+            /** Sigma Threshold */
+            sigma_threshold: number;
         };
         /** MetricSignalResponse */
         MetricSignalResponse: {
@@ -10225,11 +10221,8 @@ export interface components {
             kind: "sql";
             /** Name */
             name: string;
-            /**
-             * Order
-             * @default 0
-             */
-            order: number;
+            /** Order */
+            order?: number | null;
             /** Owner Id */
             owner_id?: string | null;
             /** Platform Column */
@@ -14243,6 +14236,8 @@ export interface operations {
                 status?: components["schemas"]["EventStatus"][] | null;
                 from?: string | null;
                 to?: string | null;
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
             };
             header?: never;
             path: {

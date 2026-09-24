@@ -30,7 +30,7 @@ from tripl.core.analyzers.anomaly_detector import (
 )
 from tripl.core.bucketing import to_utc
 from tripl.core.intervals import get_interval
-from tripl.metric_grid import MetricGrid, metric_grid_stmt, metric_grids
+from tripl.metric_grid import MetricGrid, grid_population_filter, metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricKind
@@ -903,45 +903,18 @@ def _collect_breakdown_scope_keys(
 def _metric_grid_population(grid: MetricGrid | None) -> ColumnExpressionArgument[bool]:
     """The ``MetricValue`` rows that ARE this metric's series.
 
-    Every source config collecting the metric ON THE RESOLVED GRID'S INTERVAL,
-    not the single config :mod:`tripl.metric_grid` named. That set is what
-    :func:`_load_metric_value_points` sums, what
-    :func:`_metric_source_config_ids` reads coverage back for, and — because a
-    ``metric``-scope ``MetricAnomaly`` carries a NULL ``scan_config_id`` and so
-    describes whatever was scored — what the series read must plot. Its async
-    mirror is ``metric_series_service._grid_population_filter``; the two must
-    stay in step and belong together in :mod:`tripl.metric_grid`, next to the
-    grid rule they extend.
-
-    Interval, not config id, because an ``event_composition`` metric legitimately
-    has more than one LIVE source: ``EventMetric`` is keyed on (scan_config_id,
-    event_id, bucket) and ``_collect_event_composition`` writes one
-    ``MetricValue`` row set per source grid, so one event type collected by two
-    scans contributes two addends of one total. Narrowing to the grid's own
-    config would score one addend, chosen by ``metric_grid_stmt``'s
-    ``ORDER BY bucket DESC`` tie-break, which is undefined between two
-    equally-current configs and so could flap between runs.
-
-    But NOT every config regardless of interval, which is what this used to do:
-    a retired 1h grid and a live 1d grid are different units, and summing them
-    per bucket added an hour's count to a day's at every shared midnight while
-    the series was scored on the 1d delta. The interval is the line between
-    "another source of this series" and "a retired grid".
-
-    ``scan_config_id is None`` on the grid means ``sql``/``fact``: those rows are
-    written with a NULL ``scan_config_id`` exclusively, so the IS NULL branch is
-    exact rather than merely narrower and the interval never enters. A ``None``
-    grid (the metric row vanished mid-run) takes the same branch and matches
-    nothing, which is the safe answer.
+    What :func:`_load_metric_value_points` sums, what
+    :func:`_metric_source_config_ids` reads coverage back for, and what the
+    series read plots. The rule lives in
+    :func:`tripl.metric_grid.grid_population_filter`, shared with the read path
+    (tripl-67he). A ``None`` grid (the metric row vanished mid-run) takes the
+    IS NULL branch and matches nothing, which is the safe answer.
     """
-    if grid is None or grid.scan_config_id is None:
-        return MetricValue.scan_config_id.is_(None)
-    on_grid = (
-        ScanConfig.interval.is_(None)
-        if grid.interval is None
-        else ScanConfig.interval == grid.interval
+    return grid_population_filter(
+        MetricValue.scan_config_id,
+        interval=None if grid is None else grid.interval,
+        scan_config_id=None if grid is None else grid.scan_config_id,
     )
-    return MetricValue.scan_config_id.in_(select(ScanConfig.id).where(on_grid).scalar_subquery())
 
 
 def _load_metric_value_points(

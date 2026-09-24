@@ -385,11 +385,14 @@ class _MetricDefinitionBase(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     description: str = ""
     color: str = Field(default="#6366f1", pattern=r"^#[0-9a-fA-F]{6}$")
-    # Catalog position. 0 means "wherever" — the form has no order field and
-    # always sends it — so the service appends instead, giving the new metric
+    # Catalog position. Omitted (or 0, what older clients send) means "no
+    # position asked for", so the service appends, giving the new metric
     # ``max(order) + 1``. Without that every metric shared order 0 and the
-    # catalog could not be reordered at all (tripl-0zpq.175).
-    order: int = 0
+    # catalog could not be reordered at all (tripl-0zpq.175). ``None`` rather
+    # than a 0 default so the generated contract lists it as optional instead
+    # of forcing every caller to send the value that means "I did not choose"
+    # (tripl-cyby).
+    order: int | None = None
     unit: str | None = Field(default=None, max_length=50)
     status: MetricStatus = MetricStatus.draft
     owner_id: uuid.UUID | None = None

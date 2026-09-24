@@ -892,15 +892,6 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
       description,
       display_name: displayName.trim(),
       name: name.trim(),
-      // Always 0 in practice — this builder only runs on the create branch, so
-      // `metric` is undefined — and 0 is exactly what the backend wants: it
-      // reads it as "append to the end of the catalog" and assigns the real
-      // slot itself (`_MetricDefinitionBase.order`). Sent rather than omitted
-      // because openapi-typescript emits a DEFAULTED property as a required TS
-      // one, so api.gen.ts types `order: number` on every *MetricCreate even
-      // though the contract does not list it in `required`; dropping it here
-      // fails tsc until the backend field loses its default (tripl-0zpq.175).
-      order: metric?.order ?? 0,
       platform_column: platformColumn.trim() || null,
       reviewed: metric?.reviewed ?? false,
       status,

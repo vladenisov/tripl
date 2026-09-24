@@ -28,14 +28,19 @@ vi.mock('@/components/ui/chart-lazy', () => ({
     data,
     forecast,
     valueFormatter,
+    sigmaThreshold,
   }: {
     data?: Array<{ bucket: string }>
     forecast?: unknown[]
     valueFormatter?: (value: number) => string
+    sigmaThreshold?: number
   }) => (
     <div
       data-testid="metrics-chart"
       data-forecast-count={forecast?.length ?? 0}
+      // The band multiplier the page handed the chart (tripl-2yww); the chart's
+      // own honouring of it is pinned in chart.test.tsx.
+      data-sigma-threshold={sigmaThreshold ?? ''}
       data-points={data?.length ?? 0}
       data-first-bucket={data?.[0]?.bucket ?? ''}
       // Probe the optional formatter: percent metrics turn 0.08 into '8%'.
@@ -417,6 +422,7 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
             metricPoint('2026-01-02T10:00:00Z', 3),
           ],
           forecast,
+          sigma_threshold: 6,
         })
       }
       if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
@@ -432,6 +438,16 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
   // always re-query the testid rather than holding a stale node reference.
   const chartPoints = () => screen.getByTestId('metrics-chart').getAttribute('data-points')
   const chartForecastCount = () => screen.getByTestId('metrics-chart').getAttribute('data-forecast-count')
+
+  it('hands the chart the sigma threshold the payload serves (tripl-2yww)', async () => {
+    installProjectTotalFetch()
+    renderMonitoringPage()
+
+    // 6, not undefined: dropping `sigmaThreshold={metrics?.sigma_threshold}`
+    // from the render site sends the band back to the chart's default of 4.
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-sigma-threshold', '6'))
+  })
 
   it('defaults to 7d hours and follows later range changes', async () => {
     const fetchSpy = installProjectTotalFetch()
@@ -692,6 +708,7 @@ function installEventDetailFetch(
     /** The event `superseded_by_event_id` points at. `null` answers 404, the
      *  same as a successor the reader cannot see. */
     successor?: Record<string, unknown> | null
+    sigmaThreshold?: number
   } = {},
 ) {
   const metricsData = opts.metricsData ?? [metricPoint('2026-01-02T00:00:00Z', 200)]
@@ -725,6 +742,7 @@ function installEventDetailFetch(
         latest_signal: latestSignal,
         data: metricsData,
         forecast: [],
+        ...(opts.sigmaThreshold === undefined ? {} : { sigma_threshold: opts.sigmaThreshold }),
       })
     }
     if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
@@ -846,6 +864,16 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     const miniChart = within(await screen.findByTestId('signal-volume-chart'))
       .getByTestId('metrics-chart')
     expect(miniChart).toHaveAttribute('data-points', '2')
+  })
+
+  it('hands the signal mini-chart the served sigma threshold (tripl-2yww)', async () => {
+    installEventDetailFetch({ latestSignal: dropToZeroSignal(), sigmaThreshold: 6 })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const miniChart = within(await screen.findByTestId('signal-volume-chart'))
+      .getByTestId('metrics-chart')
+    expect(miniChart).toHaveAttribute('data-sigma-threshold', '6')
   })
 
   it('names the baseline instead of titling a chart that cannot draw one (tripl-v2lm)', async () => {
@@ -1496,6 +1524,17 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     const from = new Date(range.get('from')!).getTime()
     const to = new Date(range.get('to')!).getTime()
     expect(to - from).toBe(30 * 24 * 60 * 60 * 1000)
+  })
+
+  it('threads the metric series sigma threshold into the chart (tripl-4cgl)', async () => {
+    // A project that moved its sigma to 6: `adaptMetricSeries` has to carry the
+    // served value, or the catalog metric's band falls back to 4 while the
+    // event charts on the same page draw 6.
+    installMetricDetailFetch('1h', {}, { sigma_threshold: 6 })
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-sigma-threshold', '6'))
   })
 
   it('keeps the hourly default for sub-daily metrics', async () => {
