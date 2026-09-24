@@ -47,8 +47,15 @@ jobs:
       # The conformance gates need real warehouses, and the relevance harness and
       # the digest concurrency gate each need a real PostgreSQL, so all three run
       # in their own jobs (below) rather than skipping noisily here.
+      #
+      # -n auto: pytest-xdist, one worker per runner core. Each worker is its own
+      # process with its own in-memory SQLite database (the conftest engine is
+      # per process), so tests stay isolated. worksteal rebalances the long demo
+      # and anomaly tests that would otherwise pile up on one worker. The final
+      # summary line still counts every selected test: compare it with
+      # `pytest --collect-only -q` under the same -m expression (tripl-la1i).
       - name: Pytest
-        run: uv run pytest -q -m "not conformance and not relevance and not pg_concurrency"
+        run: uv run pytest -q -n auto --dist worksteal --durations=30 -m "not conformance and not relevance and not pg_concurrency"
 
   # The two client packages. NEITHER ran in PR CI before tripl-ey6j.1 —
   # mcp-server's suite executed only in publish-mcp.yml, at tag time, and cli/

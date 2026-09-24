@@ -1,10 +1,12 @@
 import smtplib
 import socket
 from collections.abc import AsyncGenerator, Iterator
+from typing import Any
 
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import Connection, Row
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tripl.config import REGISTRATION_OPEN, settings
@@ -20,6 +22,20 @@ settings.rate_limit_enabled = False
 # assert the closed behaviour set the mode themselves via monkeypatch or a
 # persisted override.
 settings.registration_mode = REGISTRATION_OPEN
+
+# Cheap scrypt for the suite. Production's N=2**16 costs ~64MB and a noticeable
+# fraction of a second per hash, and almost every test pays it several times:
+# the ``client`` fixture registers a user, most suites register more and log
+# in. The algorithm, the stored format and the rehash-on-login path are all
+# unchanged — only the cost parameter drops. It must be set before
+# ``tripl.main`` is imported, because ``auth_service`` hashes its timing-dummy
+# password at import time. Nothing in the suite asserts the production cost.
+import tripl.auth_utils as _auth_utils  # noqa: E402
+
+_auth_utils.SCRYPT_N = 2**10
+_auth_utils.SCRYPT_MAXMEM = _auth_utils._scrypt_maxmem(
+    _auth_utils.SCRYPT_N, _auth_utils.SCRYPT_R, _auth_utils.SCRYPT_P
+)
 
 from tripl.database import get_session  # noqa: E402
 from tripl.main import app  # noqa: E402
@@ -57,13 +73,60 @@ async def _dispose_engine() -> AsyncGenerator[None]:
     await engine.dispose()
 
 
+#: ``sqlite_master`` as ``create_all`` left it: every table and index with its
+#: DDL. ``None`` until the first test in this process builds the schema.
+_pristine_schema: tuple[Row[Any], ...] | None = None
+
+
+def _schema_fingerprint(conn: Connection) -> tuple[Row[Any], ...]:
+    return tuple(
+        conn.exec_driver_sql(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+        ).all()
+    )
+
+
+def _build_schema(conn: Connection) -> tuple[Row[Any], ...]:
+    Base.metadata.drop_all(conn)
+    Base.metadata.create_all(conn)
+    return _schema_fingerprint(conn)
+
+
+def _empty_all_tables(conn: Connection) -> None:
+    # Children before parents, with foreign_keys=ON left as it is: no row that
+    # references another survives to its parent's DELETE, so no ON DELETE action
+    # fires and no constraint can trip.
+    for table in reversed(Base.metadata.sorted_tables):
+        conn.execute(table.delete())
+
+
 @pytest.fixture(autouse=True)
-async def setup_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def setup_db() -> AsyncGenerator[None]:
+    """Give every test an empty database with the full schema.
+
+    This used to run ``create_all`` before and ``drop_all`` after EVERY test,
+    rebuilding every table and index ~4,400 times per run (tripl-la1i). The
+    schema is now built once per process (per xdist worker, each of which has
+    its own in-memory database) and a test is isolated by deleting every row
+    afterwards — what a fresh schema gave it: the same tables and indexes, no
+    rows, and rowids that restart at 1 (no model uses AUTOINCREMENT).
+
+    A test that changes the schema of the shared database itself (drops an
+    index, creates a table) would leak that through a DELETE-only reset, so
+    ``sqlite_master`` is compared after every test and any drift gets the old
+    full ``drop_all`` + ``create_all``. Tests that build their own sync engines
+    keep their own lifecycles and are unaffected.
+    """
+    global _pristine_schema
+    if _pristine_schema is None:
+        async with engine.begin() as conn:
+            _pristine_schema = await conn.run_sync(_build_schema)
     yield
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        if await conn.run_sync(_schema_fingerprint) == _pristine_schema:
+            await conn.run_sync(_empty_all_tables)
+        else:
+            _pristine_schema = await conn.run_sync(_build_schema)
 
 
 @pytest.fixture(autouse=True)
