@@ -592,7 +592,15 @@ gets the route's `403` instead. Reads, and a search reindex, still work on
 either. Photo and Figma spec writes, which address the event by its id rather
 than by `?branch=`, answer the same `409` on such a branch's event; comments,
 on a photo or on the event, are discussion rather than plan content and still
-work there. Catalog rows, diff rows and the command palette carry the
+work there. A write that arrives while the branch is being merged waits for the
+merge to finish and is then refused with the same `409`; a merge that starts
+while a write to its branch is in progress waits for that write, and so merges
+exactly what was approved or refuses the now-stale approval. An edit to main
+made during any merge likewise waits and applies on top of the merged plan, and
+a merge that starts during an edit to main waits and then reports it as a
+conflict where it clashes with the branch, instead of overwriting it. A comment
+posted on a branch's event during its merge waits too, and joins its thread on
+main. Catalog rows, diff rows and the command palette carry the
 branch in the link (`?branch=`), and an entity page opened that way shows a
 banner naming the branch it belongs to, so a link handed to a developer opens
 the right copy. A diff row also carries **warnings** for an event authored on

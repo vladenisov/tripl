@@ -35,6 +35,7 @@ from tripl.models.event_photo_comment import (
 from tripl.models.event_type import EventType
 from tripl.schemas.event_photo import EventCommentActionRequest
 from tripl.services._branch_counterparts import main_counterparts
+from tripl.services._plan_branch_locks import hold_branch_for_plan_write
 from tripl.services.project_service import get_project_id_by_slug
 
 
@@ -97,6 +98,33 @@ async def list_comments(
     return list(rows.scalars().all())
 
 
+async def _wait_out_a_merge_of_the_events_branch(
+    session: AsyncSession, slug: str, event_id: uuid.UUID
+) -> None:
+    """Hold the event's working branch row FOR SHARE before the thread is resolved.
+
+    A merge holds that row FOR UPDATE from its first read to its commit, and it
+    moves the branch row's threads to main in between. Resolving the twin and
+    the parent before the merge commits sees the pre-merge anchors, so a reply
+    landed on the branch row while its question moved to main (tripl-0zpq.290).
+    Waiting here puts every read below after the merge: the twin exists, the
+    question is on it, and the reply follows it there. Same lock as a plan
+    write's (``_plan_branch_locks``), so a comment and a merge are ordered the
+    same way an edit and a merge are.
+
+    Main's row is not held: nothing moves main's threads, and a comment is not
+    plan content, so it has no reason to wait for a merge into main. Neither is
+    a merged or closed branch refused: discussion stays open on both. An event
+    the caller cannot see is left to ``event_thread``'s 404.
+    """
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await session.scalar(
+        select(Event.branch_id).where(Event.id == event_id, Event.project_id == project_id)
+    )
+    if branch_id is not None:
+        await hold_branch_for_plan_write(session, branch_id, working_only=True)
+
+
 async def create_comment(
     session: AsyncSession,
     slug: str,
@@ -106,6 +134,7 @@ async def create_comment(
     parent_id: uuid.UUID | None,
     user_id: uuid.UUID | None,
 ) -> EventPhotoComment:
+    await _wait_out_a_merge_of_the_events_branch(session, slug, event_id)
     thread = await event_thread(session, slug, event_id)
     anchor_id = thread.home.id
     if parent_id is not None:
@@ -119,12 +148,10 @@ async def create_comment(
         # to its twin, or go with the row, not a parent on one row with its
         # answers stranded on another (tripl-0zpq.289).
         #
-        # Not a guarantee under concurrency. Nothing here waits for a merge of
-        # this event's branch: while one is in flight, its uncommitted move has
-        # already taken the parent to main but this read still sees it on the
-        # branch row, so the reply lands there. Once the merge commits, the
-        # question is on main and its answer on the branch row, which main does
-        # not read and the branch's deletion takes with it (tripl-0zpq.290).
+        # Holds under concurrency with a merge too: the branch row was held
+        # above before the parent was read, so a merge in flight has committed
+        # its move by now and the parent is read where the merge left it
+        # (tripl-0zpq.290).
         anchor_id = parent.event_id
 
     comment = EventPhotoComment(

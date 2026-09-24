@@ -15,7 +15,8 @@ from tripl.models.domain_enums import EventPhotoKind
 from tripl.models.event import Event
 from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
-from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
+from tripl.models.plan_branch import BranchKind, BranchStatus
+from tripl.services._plan_branch_locks import hold_branch_for_plan_write
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.storage import PhotoStorage, get_photo_storage, storage_for
 
@@ -141,15 +142,17 @@ async def _get_plan_writable_event(session: AsyncSession, slug: str, event_id: u
     and drifted from the revision it merged (tripl-0zpq.145). Same statuses and
     same wording, read off the event's own branch. Main is stored with
     ``status="merged"``, so it is split off by kind first. Like the ``?branch=``
-    refusal, the status is read when the write arrives and nothing is locked
-    (tripl-0zpq.288).
+    refusal, the branch row is re-read ``FOR SHARE`` and held to the write's
+    commit, main's included: a write arriving during a merge of its branch
+    waits and then sees ``merged`` (tripl-0zpq.288), and one arriving on main
+    during any merge waits and applies after it (tripl-0zpq.294).
 
     Comments do not come through here: discussion is not plan content, and
     approval hashes strip it. The routes' editor gate has already run, so a
     caller it refuses gets its 403, never this 409.
     """
     event = await _get_event(session, slug, event_id)
-    branch = await session.get(PlanBranch, event.branch_id)
+    branch = await hold_branch_for_plan_write(session, event.branch_id)
     if branch is None or branch.kind == BranchKind.main.value:
         return event
     if branch.status == BranchStatus.merged.value:

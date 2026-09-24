@@ -59,6 +59,7 @@ from tripl.schemas.plan_revision import PlanDiffEntry
 from tripl.services import plan_branch_service
 from tripl.services._branch_event_threads import rescue_branch_event_threads
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
+from tripl.services._plan_branch_locks import hold_branch_for_plan_write
 from tripl.services.plan_revision_service import with_snapshot_defaults
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.services.variable_service import rewrite_variable_token_references
@@ -157,7 +158,11 @@ def _one(rows: list[Any], data: BranchRevertRequest) -> Any:
 
 
 async def _load_branch(session: AsyncSession, project: Project, branch_id: uuid.UUID) -> PlanBranch:
-    branch = await session.get(PlanBranch, branch_id)
+    # Held FOR SHARE to the revert's commit, not read plainly: a revert is a
+    # plan write on the branch like any other, so one that arrives during a
+    # merge of it waits and then sees ``merged`` below, and a merge that
+    # arrives during it waits for it before snapshotting (tripl-0zpq.288).
+    branch = await hold_branch_for_plan_write(session, branch_id)
     if branch is None or branch.project_id != project.id:
         raise HTTPException(status_code=404, detail="Branch not found")
     if branch.kind == BranchKind.main:

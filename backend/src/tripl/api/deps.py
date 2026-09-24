@@ -14,6 +14,10 @@ from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.services import api_key_service, project_service
+from tripl.services._plan_branch_locks import (
+    hold_branch_for_plan_write,
+    hold_main_plan_for_write,
+)
 from tripl.services.auth_service import get_user_by_session_token
 from tripl.services.project_service import get_project_id_by_slug
 
@@ -275,6 +279,18 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # go. Named by handler because this module cannot import the routers that
 # import it. test_branch_context_batch2 fails if the name stops matching.
 _DERIVED_DATA_HANDLERS = frozenset({"tripl.api.v1.search.reindex_project_search"})
+# Write-gated routes that change no plan row, so they take no plan lock
+# (tripl-0zpq.288, .294): the AI describe suggestions. They are still refused
+# on a merged or closed branch (see above), but holding the branch row across
+# an LLM call would only make a merge wait for a request that writes nothing.
+# Named by handler for the same reason as above; test_batch18_merge_races_pg
+# fails if a name stops matching a route.
+_LOCK_FREE_WRITE_HANDLERS = frozenset(
+    {
+        "tripl.api.v1.ai.describe_event",
+        "tripl.api.v1.ai.describe_event_type",
+    }
+)
 
 
 def _write_gates_in(dependant: Dependant) -> list[_WriteGate]:
@@ -328,6 +344,19 @@ def _is_a_write(request: Request) -> bool:
     return bool(_write_gates_in(dependant))
 
 
+def _writes_the_plan(request: Request) -> bool:
+    """Whether this request must hold its branch's plan lock (tripl-0zpq.288).
+
+    Every write, as :func:`_is_a_write` decides it, less the handlers in
+    :data:`_LOCK_FREE_WRITE_HANDLERS`.
+    """
+    if not _is_a_write(request):
+        return False
+    endpoint = getattr(request.scope.get("route"), "endpoint", None)
+    handler = f"{getattr(endpoint, '__module__', '')}.{getattr(endpoint, '__qualname__', '')}"
+    return handler not in _LOCK_FREE_WRITE_HANDLERS
+
+
 async def _refuse_writes_to_a_read_only_branch(
     request: Request, session: AsyncSession, user: User, plan_branch: PlanBranch
 ) -> None:
@@ -337,9 +366,11 @@ async def _refuse_writes_to_a_read_only_branch(
     other write landed, so a merged branch kept drifting from the revision it
     merged. The docs said such writes are refused, which is why the UI offers no
     Edit on these branches (tripl-0zpq.145). 409 matches the revert refusal for
-    the same state. The status is read when the request arrives and nothing is
-    locked, so a write already past this check when a merge or a close commits
-    still lands; this check does not close that race (tripl-0zpq.288).
+    the same state. For a write, :func:`get_branch_id_override` has re-read
+    the row ``FOR SHARE`` before this runs, so a write that arrived during a
+    merge has waited for it and sees ``merged`` here (tripl-0zpq.288). A close
+    takes no row lock, so a write already past this check when a close commits
+    still lands; a closed branch can be reopened, so nothing is lost.
 
     Authorization answers first. FastAPI runs a route's dependencies in the
     order its signature declares them, and most event write routes, two
@@ -363,6 +394,20 @@ async def _refuse_writes_to_a_read_only_branch(
     else:
         detail = f"Branch '{plan_branch.name}' is closed; reopen it before editing its plan"
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+async def _hold_main_for_a_plan_write(request: Request, session: AsyncSession) -> None:
+    """Hold main's branch row for a write to main (tripl-0zpq.294).
+
+    A merge takes main's row before it reads main for its conflict check, so a
+    main edit arriving mid-merge waits and applies on top of the merged plan,
+    and a merge arriving mid-edit waits and then sees the edit, as a conflict
+    where it clashes with the branch. Without a ``slug`` there is no project,
+    and so no main, to hold.
+    """
+    slug = request.path_params.get("slug")
+    if slug and _writes_the_plan(request):
+        await hold_main_plan_for_write(session, slug)
 
 
 async def get_branch_id_override(
@@ -408,6 +453,7 @@ async def get_branch_id_override(
     if not branch:
         # Unbound rather than bound-to-None: a route with no ``?branch=`` is
         # main, which is what the contextvar's default already says.
+        await _hold_main_for_a_plan_write(request, session)
         yield None
         return
     try:
@@ -454,8 +500,24 @@ async def get_branch_id_override(
         # deleted from the live plan (tripl-0zpq.121, tripl-0zpq.215).
         # Normalising here, in the one place that resolves ``?branch=``, makes
         # the request exactly what it is with no ``?branch=`` at all.
+        await _hold_main_for_a_plan_write(request, session)
         yield None
         return
+    if _writes_the_plan(request):
+        # Re-read under FOR SHARE, in the session the route writes through, so
+        # the lock lasts until the write commits: a merge of this branch that is
+        # in flight is waited for, and its ``merged`` is what the refusal below
+        # reads; a merge that starts later waits for this write before it
+        # snapshots the branch (tripl-0zpq.288). ``_plan_branch_locks`` holds
+        # the deadlock audit.
+        locked = await hold_branch_for_plan_write(session, plan_branch.id)
+        if locked is None:
+            # Deleted while this request waited for the lock.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Branch not found",
+            )
+        plan_branch = locked
     await _refuse_writes_to_a_read_only_branch(request, session, user, plan_branch)
     # The name comes free — the query above already loads the whole row — and it
     # is what keeps an audit entry readable after the branch is deleted.

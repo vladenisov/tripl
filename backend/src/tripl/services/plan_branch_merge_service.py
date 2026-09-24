@@ -40,6 +40,7 @@ from tripl.services._branch_counterparts import main_counterparts
 from tripl.services._branch_event_threads import move_event_threads
 from tripl.services._celery_dispatch import dispatch
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
+from tripl.services._plan_branch_locks import lock_main_plan_for_merge
 from tripl.services._plan_branch_renames import pair_renames, rekey_in_place
 from tripl.services.event_photo_service import PHOTO_KIND_PHOTO, delete_unreferenced_blobs
 from tripl.services.event_type_owner_service import load_owner_user_ids
@@ -2130,6 +2131,21 @@ async def merge_branch(
         raise HTTPException(status_code=409, detail="Branch must be approved before merging")
 
     main_branch_id = await ensure_main_branch_id(session, project.id)
+    # Main is locked from here to the commit, BEFORE main_payload is read for
+    # the conflict check (tripl-0zpq.294). Without it a main edit committed
+    # between that read and ``_apply_merge`` was invisible to the check, and
+    # the apply step, which compares the branch against the BASE, wrote the
+    # branch's value over it: no conflict, no warning, no trail. Plan writes to
+    # main hold main's row FOR SHARE (``api.deps.get_branch_id_override``, the
+    # photo path), so each one now either commits before this lock is granted,
+    # and the check below sees it, or waits until this merge commits and
+    # applies on top of it. A lock rather than re-checking main's fingerprint
+    # before the apply: a recheck still leaves the gap between the recheck and
+    # the apply, and would fail a merge the user can only retry, while the lock
+    # is one statement whose effect a two-session test can pin. Taken after the
+    # branch's own lock, the order every merge uses; ``_plan_branch_locks``
+    # holds the deadlock audit. A no-op off PostgreSQL.
+    await lock_main_plan_for_merge(session, main_branch_id)
     base_payload: dict[str, Any] = {}
     if branch.base_revision_id is not None:
         base_rev = await session.get(PlanRevision, branch.base_revision_id)
