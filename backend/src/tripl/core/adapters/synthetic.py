@@ -531,41 +531,208 @@ def _split_comparison(atom: str) -> tuple[str, str, str]:
     raise SyntheticCapabilityError(msg)
 
 
-def _trailing_where_predicate(base_query: str) -> str | None:
-    """The top-level ``WHERE`` predicate of ``base_query``, or ``None``.
+#: Clause keywords that may follow a top-level ``WHERE`` and end its predicate.
+#: Without them the whole tail was read as the predicate, so ``WHERE status =
+#: 'completed' ORDER BY created_at`` failed every collection on the source with
+#: ``Unsupported filter literal: "'completed' ORDER BY created_at"`` — naming a
+#: "literal" that is not one (tripl-0zpq.350).
+#:
+#: IGNORED clauses change neither which rows exist nor what any of them holds as
+#: far as a table-scan method is concerned: this adapter imposes its own order
+#: (by time column) and its own cap (the ``limit`` argument) on every answer,
+#: and it already ignores the same clauses on a query with no ``WHERE`` at all.
+#: ``OFFSET`` / ``FETCH`` ride with ``LIMIT`` because they are its other spelling.
+_TRAILING_CLAUSES_IGNORED: frozenset[str] = frozenset({"order", "limit", "offset", "fetch"})
 
-    Depth-aware over parentheses and blind to string literals, because both
-    shapes really occur: the per-metric fact collector emits ``SELECT * FROM
-    (<source>) AS _filtered WHERE <combined>`` and ``<source>`` may itself be a
-    CTE carrying its own ``WHERE`` — at depth >= 1, and therefore not this one.
+#: REFUSED clauses reshape the row set — grouping, filtering groups, or combining
+#: statements — so evaluating the predicate and dropping them would answer a
+#: different question. They are refused BY NAME, so the message says what to
+#: change.
+_TRAILING_CLAUSES_REFUSED: frozenset[str] = frozenset(
+    {"group", "having", "window", "qualify", "union", "intersect", "except"}
+)
+_TRAILING_CLAUSES: frozenset[str] = _TRAILING_CLAUSES_IGNORED | _TRAILING_CLAUSES_REFUSED
+_CLAUSE_NAMES: dict[str, str] = {"group": "GROUP BY"}
 
-    More than one ``WHERE`` at depth 0 is REFUSED rather than resolved by taking
-    the last (the obvious alternative). Two top-level ``WHERE`` clauses mean a
-    set operation this adapter does not model, and applying the second one to
-    every row would answer a different question silently — which is the whole
-    failure mode this function exists to end.
+#: One SQL word, matched on the lower-cased literal mask.
+_SQL_WORD_RE = re.compile(r"(?<![a-z0-9_])[a-z_][a-z0-9_]*")
+
+#: ``SELECT <projection> FROM (`` at the very start of a statement — the shape
+#: ``_fact_conditions._resolve_fact_operand_query`` wraps a fact source in, and
+#: the one every warehouse adapter wraps ``base_query`` in too. Matched on the
+#: literal mask, lower-cased; the projection may contain neither a parenthesis
+#: nor a second ``FROM``, so a function call or an earlier statement (``… UNION
+#: SELECT * FROM (``) is not mistaken for this shape.
+_DERIVED_SOURCE_RE = re.compile(r"\s*select\s+(?:(?!\bfrom\b)[^()])*\bfrom\s*\(")
+
+#: ``WITH <name> AS (`` at the very start of a statement: a single CTE whose body
+#: is then read by a plain ``SELECT … FROM <name>``.
+_CTE_SOURCE_RE = re.compile(r"\s*with\s+([a-z_][a-z0-9_]*)\s+as\s*\(")
+
+#: What may follow a derived source's closing parenthesis (or the CTE's
+#: ``FROM <name>``): an optional alias, then the end of the statement or a
+#: clause this module reads. Anything else — a JOIN, a comma, a second source —
+#: is not the single-source shape and falls through to the refusal below.
+_SOURCE_TAIL_RE = re.compile(
+    r"\s*(?:as\s+)?(?:[a-z_][a-z0-9_]*)?\s*"
+    r"(?:\Z|(?=(?:where|order|limit|offset|fetch|group|having|window|qualify)\b))"
+)
+
+
+def _matching_paren(masked: str, open_index: int) -> int | None:
+    """Index of the ``)`` closing the ``(`` at ``masked[open_index]``, or ``None``."""
+    depth = 0
+    for index in range(open_index, len(masked)):
+        char = masked[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _single_source_span(masked: str) -> tuple[int, int] | None:
+    """The ``[start, end)`` span of the ONE inner statement ``masked`` reads from.
+
+    Two shapes, both of which really reach this adapter: ``SELECT * FROM
+    (<inner>) AS alias [WHERE …]`` (the per-metric fact wrapper, and every
+    ``_src`` wrapper) and ``WITH name AS (<inner>) SELECT * FROM name [WHERE …]``
+    (a CTE-backed fact table). ``None`` for anything else, including a CTE list
+    of more than one entry.
+    """
+    lowered = masked.lower()
+    derived = _DERIVED_SOURCE_RE.match(lowered)
+    if derived is not None:
+        open_index = derived.end() - 1
+        close = _matching_paren(masked, open_index)
+        if close is not None and _SOURCE_TAIL_RE.match(lowered, close + 1):
+            return open_index + 1, close
+        return None
+    cte = _CTE_SOURCE_RE.match(lowered)
+    if cte is None:
+        return None
+    open_index = cte.end() - 1
+    close = _matching_paren(masked, open_index)
+    if close is None:
+        return None
+    reader = rf"\s*select\s+(?:(?!\bfrom\b)[^()])*\bfrom\s+{re.escape(cte.group(1))}\b"
+    body = re.compile(reader).match(lowered, close + 1)
+    if body is None or not _SOURCE_TAIL_RE.match(lowered, body.end()):
+        return None
+    return open_index + 1, close
+
+
+def _where_predicates(base_query: str) -> list[str]:
+    """Every ``WHERE`` predicate that narrows the rows ``base_query`` reads.
+
+    The outer statement's own top-level predicate, ANDed (by the caller) with
+    the predicates of the single inner statement it reads from, recursively. The
+    recursion is what makes the per-metric fact path agree with the batched one:
+    ``_fact_conditions._resolve_fact_operand_query`` wraps the fact table's
+    stored SQL as ``SELECT * FROM (<fact sql>) AS _filtered WHERE <combined>``,
+    which puts the fact table's OWN ``WHERE`` at paren depth 1. Reading depth 0
+    only, as this module used to, applied ``<combined>`` alone and silently
+    dropped the fact table's predicate — on the demo's ``… FROM orders WHERE
+    currency = 'USD'`` with a ``status = 'completed'`` filter the per-metric sum
+    was 7303.86 against the batched (and correct) 4908.56, and a CTE-backed fact
+    source (``WITH completed AS (… WHERE status = 'completed') SELECT * FROM
+    completed``) scanned the whole table on both paths (tripl-0zpq.344, the
+    shape tripl-0zpq.71 was filed about).
+
+    A ``WHERE`` at depth >= 1 that is NOT inside that one recognised inner
+    statement — a subquery in the projection, a join, a CTE list — is REFUSED:
+    returning the table without it would answer a different question silently,
+    which this module never does.
     """
     masked = _mask_string_literals(base_query)
+    span = _single_source_span(masked)
+    predicates: list[str] = []
+    if span is not None:
+        predicates.extend(_where_predicates(base_query[span[0] : span[1]]))
     lowered = masked.lower()
     depth = 0
-    positions: list[int] = []
     for index, char in enumerate(masked):
         if char == "(":
             depth += 1
         elif char == ")":
             depth -= 1
         elif (
-            depth == 0
+            depth > 0
+            and (span is None or not span[0] <= index < span[1])
             and lowered.startswith(_WHERE_KEYWORD, index)
             and _has_word_boundaries(masked, index, index + len(_WHERE_KEYWORD))
         ):
+            msg = (
+                "The synthetic warehouse cannot evaluate a WHERE clause nested inside a "
+                "subquery it does not read from; use a plain table scan, a single "
+                "SELECT * FROM (...) wrapper, or a single CTE"
+            )
+            raise SyntheticCapabilityError(msg)
+    own = _trailing_where_predicate(base_query)
+    if own is not None:
+        predicates.append(own)
+    return predicates
+
+
+def _trailing_where_predicate(base_query: str) -> str | None:
+    """The top-level ``WHERE`` predicate of ``base_query``, or ``None``.
+
+    Depth-aware over parentheses and blind to string literals: a ``WHERE`` at
+    depth >= 1 is not this one (``_where_predicates`` reads the inner statement
+    separately, or refuses it).
+
+    More than one ``WHERE`` at depth 0 is REFUSED rather than resolved by taking
+    the last (the obvious alternative). Two top-level ``WHERE`` clauses mean a
+    set operation this adapter does not model, and applying the second one to
+    every row would answer a different question silently — which is the whole
+    failure mode this function exists to end.
+
+    The predicate ends at the first top-level clause keyword after it (see
+    ``_TRAILING_CLAUSES_IGNORED`` / ``_TRAILING_CLAUSES_REFUSED``) rather than at
+    the end of the string.
+    """
+    masked = _mask_string_literals(base_query)
+    lowered = masked.lower()
+    depth_at: list[int] = []
+    depth = 0
+    for char in masked:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        depth_at.append(depth)
+    positions: list[int] = []
+    clause_after: tuple[int, str] | None = None
+    # Whole words only, found on the mask, so neither a value (``'order'``) nor
+    # a longer identifier (``order_id``) can end the predicate.
+    for match in _SQL_WORD_RE.finditer(lowered):
+        index = match.start()
+        if depth_at[index] != 0:
+            continue
+        word = match.group(0)
+        if word == _WHERE_KEYWORD:
             positions.append(index)
+        elif positions and clause_after is None and word in _TRAILING_CLAUSES:
+            clause_after = (index, word)
     if not positions:
         return None
     if len(positions) > 1:
         msg = "The synthetic warehouse cannot evaluate a query with two top-level WHERE clauses"
         raise SyntheticCapabilityError(msg)
-    predicate = base_query[positions[0] + len(_WHERE_KEYWORD) :].strip()
+    predicate_end = len(base_query)
+    if clause_after is not None:
+        clause_index, clause = clause_after
+        if clause in _TRAILING_CLAUSES_REFUSED:
+            msg = (
+                "The synthetic warehouse cannot evaluate a query with a "
+                f"{_CLAUSE_NAMES.get(clause, clause.upper())} clause after its WHERE; it "
+                "only reads plain table scans"
+            )
+            raise SyntheticCapabilityError(msg)
+        predicate_end = clause_index
+    predicate = base_query[positions[0] + len(_WHERE_KEYWORD) : predicate_end].strip()
     if not predicate:
         msg = "The synthetic warehouse cannot evaluate an empty WHERE clause"
         raise SyntheticCapabilityError(msg)
@@ -1047,7 +1214,9 @@ class SyntheticAdapter(BaseAdapter):
         windowed = self._windowed_rows(
             self._scan_rows(base_query, table), time_column, time_from, time_to
         )
-        top = self._top_values(windowed, breakdown, values_limit)
+        top = self._ranked_top_values(
+            base_query, table, time_column, windowed, breakdown, values_limit
+        )
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
             bucket = self._bucket_start(row[time_column], interval)
@@ -1086,7 +1255,9 @@ class SyntheticAdapter(BaseAdapter):
         )
         out: list[tuple[object, ...]] = []
         for breakdown in breakdowns:
-            top = self._top_values(windowed, breakdown, values_limit)
+            top = self._ranked_top_values(
+                base_query, table, time_column, windowed, breakdown, values_limit
+            )
             groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
             for row in windowed:
                 bucket = self._bucket_start(row[time_column], interval)
@@ -1153,7 +1324,9 @@ class SyntheticAdapter(BaseAdapter):
         windowed = self._windowed_rows(
             self._scan_rows(base_query, table), time_column, time_from, time_to
         )
-        top = self._top_values(windowed, breakdown, values_limit)
+        top = self._ranked_top_values(
+            base_query, table, time_column, windowed, breakdown, values_limit
+        )
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
             bucket = self._bucket_start(row[time_column], interval)
@@ -1224,7 +1397,9 @@ class SyntheticAdapter(BaseAdapter):
         windowed = self._windowed_rows(
             self._scan_rows(base_query, table), time_column, time_from, time_to
         )
-        top = self._top_values(windowed, breakdown, values_limit)
+        top = self._ranked_top_values(
+            base_query, table, time_column, windowed, breakdown, values_limit
+        )
         groups: dict[tuple[datetime, str, int], list[dict[str, object]]] = {}
         for row in windowed:
             bucket = self._bucket_start(row[time_column], interval)
@@ -1266,7 +1441,9 @@ class SyntheticAdapter(BaseAdapter):
 
         The single seam through which every TABLE-SCAN method reads the dataset,
         so the two ways the metric collector delivers a row filter produce the
-        same rows. (``_active_sessions_rows`` reads ``self._events`` directly and
+        same rows — including the fact table's OWN ``WHERE``, which the
+        per-metric wrapper puts one paren level down (``_where_predicates``,
+        tripl-0zpq.344). (``_active_sessions_rows`` reads ``self._events`` directly and
         does not come through here: it serves an exactly-recognized statement,
         which by definition has no WHERE to honour.)
 
@@ -1289,10 +1466,14 @@ class SyntheticAdapter(BaseAdapter):
         into a visibly broken feature.
         """
         rows = self._rows_for_table(table)
-        predicate = _trailing_where_predicate(base_query)
-        if predicate is None:
+        predicates = _where_predicates(base_query)
+        if not predicates:
             return rows
-        return [row for row in rows if self._row_matches_filter(table, row, predicate)]
+        return [
+            row
+            for row in rows
+            if all(self._row_matches_filter(table, row, predicate) for predicate in predicates)
+        ]
 
     def _table_for_query(self, base_query: str) -> str:
         # Table selection is one of the three things parsed out of base_query: a
@@ -1435,6 +1616,37 @@ class SyntheticAdapter(BaseAdapter):
             key=lambda kv: (kv[0][0], _bval(kv[0][1]), tuple(_bval(v) for v in kv[0][3:])),
         )
 
+    def _ranked_top_values(
+        self,
+        base_query: str,
+        table: str,
+        time_column: str,
+        windowed: list[dict[str, object]],
+        breakdown: str,
+        values_limit: int | None,
+    ) -> set[str] | None:
+        """``_top_values`` ranked over the caller's whole window when one is set.
+
+        Inside ``top_n_ranking_window`` the ranking reads the rows of THAT window,
+        once per (query, column, limit, window), so every chunk of one collection folds
+        the same values into ``'Other'`` (tripl-0zpq.346). Outside it, the rows
+        this call already windowed are ranked, as before.
+        """
+        window = self._top_n_ranking_window
+        if window is None:
+            return self._top_values(windowed, breakdown, values_limit)
+        rank_from, rank_to = window
+        return self._ranked_once(
+            ("top_values", base_query, time_column, breakdown, values_limit, rank_from, rank_to),
+            lambda: self._top_values(
+                self._windowed_rows(
+                    self._scan_rows(base_query, table), time_column, rank_from, rank_to
+                ),
+                breakdown,
+                values_limit,
+            ),
+        )
+
     def _top_values(
         self, windowed: list[dict[str, object]], breakdown: str, values_limit: int | None
     ) -> set[str] | None:
@@ -1477,7 +1689,15 @@ class SyntheticAdapter(BaseAdapter):
             return len({value for value in raw if value is not None})
         present = [float(value) for value in raw if value is not None]  # type: ignore[arg-type]
         if not present:
-            return 0.0 if agg is MetricAggregation.sum else None
+            # NULL for ``sum`` too, not ``0.0``: standard SQL ``sum`` over an input
+            # holding no non-NULL value is NULL, and all three SQL adapters hand
+            # that back untouched, so on them such a bucket is a GAP in the stored
+            # series. This used to answer ``0.0`` for ``sum`` alone, which made the
+            # demo warehouse store a zero where every real engine stores nothing,
+            # contradicting the conditional-aggregate contract on ``BaseAdapter``
+            # (tripl-0zpq.345). Only ``count`` / ``count_distinct`` — handled
+            # above — are 0 over such a set.
+            return None
         if agg is MetricAggregation.sum:
             return float(sum(present))
         if agg is MetricAggregation.avg:

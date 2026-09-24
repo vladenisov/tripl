@@ -139,6 +139,14 @@ Notes:
   pytest` needs **no** Postgres, RabbitMQ, or warehouse running. `pytest-asyncio`
   is in `auto` mode and the loop scope is session-wide (see
   `[tool.pytest.ini_options]` in `backend/pyproject.toml`).
+- The schema is built once per test process and every row is deleted after each
+  test (see `setup_db` in `src/tripl/tests/conftest.py`); a test that alters the
+  shared schema itself triggers a full rebuild. The conftest also lowers the
+  scrypt cost for the suite, so password hashing does not dominate run time.
+- CI runs the suite in parallel with `pytest-xdist` (`uv run pytest -n auto
+  --dist worksteal ...`). Each worker has its own in-memory database, so
+  `-n auto` works locally too; on a small machine prefer `-n 2` or plain
+  `uv run pytest`.
 - Ruff is configured for `target-version = py314`, `line-length = 100`, rule set
   `E, F, I, UP, B, SIM`, and excludes generated migrations under
   `alembic/versions`.

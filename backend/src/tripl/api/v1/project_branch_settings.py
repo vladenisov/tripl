@@ -29,7 +29,12 @@ async def update_project_branch_settings(
     data: ProjectBranchSettingsUpdate,
 ) -> ProjectBranchSettings:
     """Owner-only: min_approvals/block_self_approval govern what editors may
-    merge, so editors must not be able to loosen the policy on themselves."""
+    merge, so editors must not be able to loosen the policy on themselves.
+
+    This protects the merge POLICY, not the plan: editors can still manage
+    event-type owners and write ``main`` directly, so the owner-approval gate
+    is a branch-review convention rather than an access control
+    (tripl-0zpq.233)."""
     settings = await project_branch_settings_service.update_project_branch_settings(
         session,
         slug,

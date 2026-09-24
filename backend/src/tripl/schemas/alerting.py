@@ -1149,8 +1149,8 @@ class AlertInboxActionRequest(BaseModel):
     action: AlertInboxAction
     note: str | None = Field(None, max_length=2000)
     # ``None`` on a ``mute`` is the INDEFINITE mute — "muted until I unmute" —
-    # not a missing field; see ``validate_action``. Every other action nulls the
-    # column anyway, so a value sent with them is ignored.
+    # not a missing field; see ``validate_action``. A value sent with any other
+    # action is refused rather than discarded (tripl-0zpq.325).
     muted_until: datetime | None = None
 
     @model_validator(mode="after")
@@ -1206,6 +1206,13 @@ class AlertInboxActionRequest(BaseModel):
             # the route audits through ``model_dump``, is the UTC value this
             # check passed on rather than a floating wall time.
             self.muted_until = require_future_instant(self.muted_until, field_name="muted_until")
+        # An end date on an acknowledge, a resolve or a reopen is a client that
+        # meant to mute; every action but ``mute`` nulls the column, so taking
+        # it would answer 200 and do something else. Refused, as
+        # ``EventCommentActionRequest`` refuses a stray ``snoozed_until`` —
+        # one rule across the four action bodies (tripl-0zpq.325).
+        if self.action != "mute" and self.muted_until is not None:
+            raise ValueError("muted_until is only meaningful when action is mute")
         return self
 
 
@@ -1309,6 +1316,9 @@ class AlertInboxBulkActionRequest(BaseModel):
         # and not one of them actually silenced (tripl-0zpq.273).
         if self.action == "mute" and self.muted_until is not None:
             self.muted_until = require_future_instant(self.muted_until, field_name="muted_until")
+        # Same refusal as the single-incident body (tripl-0zpq.325).
+        if self.action != "mute" and self.muted_until is not None:
+            raise ValueError("muted_until is only meaningful when action is mute")
         # ``false_positive`` is refused in bulk, and this is the ONLY action that
         # is. Direction is part of the correlation key (see
         # worker/tasks/metrics/dispatch.py), so ONE scope's spike and ONE scope's

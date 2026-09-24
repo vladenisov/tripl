@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.coverage_metric import CoverageMetric
@@ -78,15 +78,29 @@ def _not_an_archived_identity(project_id: uuid.UUID) -> ColumnElement[bool]:
     definition not an unmapped event. The collector stopped writing these
     (tripl-w3ms), but rows written before that shipped would otherwise sit in the
     inbox forever: accepting one only 409s on the duplicate source identity, so
-    there is no way for the user to clear it. Deliberately not branch-scoped —
-    this listing has no branch, and an event archived on any branch is still one
-    somebody chose to retire.
+    there is no way for the user to clear it.
+
+    Correlated on ``event_type_id`` as well (tripl-0zpq.223): a scan identity is
+    one per event TYPE (``uq_event_scan_identity``), and the collector's archived
+    set is keyed per type (``_archived_identities_by_event_type``), so an
+    archived type-A event with identity X must not hide a type-B candidate X the
+    collector keeps upserting. The candidate's type id is the one the scan
+    resolved on main, so in practice this matches main's archived rows, which
+    is exactly the population the collector consults. A candidate whose type
+    is NULL keeps the project-wide match.
     """
     return ~(
         select(Event.id)
         .where(
             Event.project_id == project_id,
             Event.status == EventStatus.archived,
+            # A candidate with no resolved type (every row written before the
+            # collector began recording one) keeps the project-wide match; those
+            # legacy rows are the population this filter exists for.
+            or_(
+                ShadowEventCandidate.event_type_id.is_(None),
+                Event.event_type_id == ShadowEventCandidate.event_type_id,
+            ),
             # `source_name or name`, matching how the collector builds the
             # archived identity set (generation.py
             # `_archived_identities_by_event_type`) and how `events_by_name` is
@@ -321,10 +335,15 @@ async def accept_shadow_event(
             branch_id=resolved_branch_id,
             event_type_id=event_type_id,
         )
+    # Per event type, like every other statement of the identity rule
+    # (``uq_event_scan_identity``, ``_guard_scan_identity``): a type-A event
+    # holding identity X does not stop a type-B event from taking it
+    # (tripl-0zpq.223).
     existing = await session.scalar(
         select(Event.id).where(
             Event.project_id == project_id,
             Event.branch_id == resolved_branch_id,
+            Event.event_type_id == event_type_id,
             Event.source_name == candidate.event_name,
         )
     )

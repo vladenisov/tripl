@@ -314,7 +314,10 @@ Two details worth knowing:
 - a context moves only when the surviving event's value for that field still
   names the variable. A group rule that rewrites a field value to the pattern it
   matched removes the reference, so the context is dropped rather than left
-  asserting a reference that is no longer there;
+  asserting a reference that is no longer there. A JSON column is never
+  rewritten that way: a rule condition on the column itself still groups the
+  event, but its value keeps the template, so every `${column.path}` context
+  moves with it;
 - where both events already carried an entry for the same variable, the
   surviving event's own override or drift decision wins. Observed contexts are
   combined instead: the observation count becomes the number of distinct values

@@ -88,7 +88,12 @@ def _bump_event_last_seen(
                 Event.id.in_([event_id for event_id, _bucket in batch]),
                 (Event.last_seen_at.is_(None)) | (Event.last_seen_at < bucket_case),
             )
-            .values(last_seen_at=bucket_case)
+            # updated_at pinned to itself: TimestampMixin's onupdate would
+            # otherwise stamp now() on every bump, and this bookkeeping write
+            # is not a plan edit — the activity rail orders events by
+            # updated_at and re-announced every live event each tick
+            # (tripl-0zpq.194).
+            .values(last_seen_at=bucket_case, updated_at=Event.updated_at)
             .execution_options(synchronize_session=False)
         )
 

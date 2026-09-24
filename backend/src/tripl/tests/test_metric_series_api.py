@@ -91,7 +91,7 @@ async def _create_sql_metric(
         "display_name": name.upper(),
         "data_source_id": data_source_id,
         "interval": "1h",
-        "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+        "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         # ACTIVE, because these tests seed values and anomalies and then assert a
         # SIGNAL. ``MetricDefinitionCreate.status`` defaults to ``draft``, and a
         # draft metric is neither collected (``check_metric_definitions_due``

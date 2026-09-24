@@ -170,7 +170,7 @@ async def _create_sql_metric(
         "display_name": name.upper(),
         "data_source_id": data_source_id,
         "interval": "1d",
-        "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+        "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         **extra,
     }
     resp = await client.post(_metrics_url(slug), json=payload)
@@ -426,7 +426,7 @@ class TestLegacyConfigShapeIsNotADefinitionChange:
                     "data_source_id": data_source["id"],
                     "interval": "1d",
                     "config": {
-                        "metric_sql": "SELECT 2 AS v, now() AS t",
+                        "metric_sql": "SELECT 2 AS value, now() AS t",
                         "time_column": "t",
                     },
                 }
@@ -456,7 +456,7 @@ class TestDefinitionChangeDuringCollection:
                     "data_source_id": data_source["id"],
                     "interval": "1d",
                     "config": {
-                        "metric_sql": "SELECT 99 AS v, now() AS t",
+                        "metric_sql": "SELECT 99 AS value, now() AS t",
                         "time_column": "t",
                     },
                 },
@@ -468,7 +468,7 @@ class TestDefinitionChangeDuringCollection:
         # Nothing was applied: not the definition, not the presentation field
         # that travelled with it, and above all not the clear.
         stored = await _stored_metric(metric["id"])
-        assert stored.config["metric_sql"] == "SELECT 1 AS v, now() AS t"
+        assert stored.config["metric_sql"] == "SELECT 1 AS value, now() AS t"
         assert stored.display_name == metric["display_name"]
         # The guard the worker and the scheduler share is still standing.
         assert stored.last_collection_status == COLLECTION_STATUS_RUNNING
@@ -886,7 +886,7 @@ class TestForeignDataSourceRefusalNamesTheRealCause:
                 "display_name": "Borrowed",
                 "data_source_id": borrowed["id"],
                 "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
             },
         )
 
@@ -1080,30 +1080,32 @@ class TestSqlMetricMustProjectTheTimeColumnItNames:
         assert resp.status_code == 422, resp.text
         assert "value column" in resp.text
 
-    async def test_an_unnamed_value_column_is_still_left_to_the_worker(
+    async def test_an_unnamed_value_column_must_project_the_value_convention(
         self, client: AsyncClient, project: dict, data_source: dict
     ):
-        """The deliberate asymmetry, pinned so it is a decision and not a gap.
+        """``value_column`` unset means the documented ``value`` column (tripl-nluj).
 
-        ``value_column`` unset means the metric leans on the documented ``value``
-        convention. Refusing that here too would 422 a long tail of stored
-        metrics — this suite's own sql fixtures included — that the collector's
-        rule has silently condemned for as long as it has existed. Closing that
-        half means correcting those callers first and teaching the worker to
-        raise ``ScanError``; until then this shape saves and the worker decides.
+        The save used to let this shape through and leave it to the worker,
+        which refused it on every tick. Now the save holds it to the same
+        fallback the collector applies.
         """
-        resp = await client.post(
-            _metrics_url(project["slug"]),
-            json={
-                "kind": "sql",
-                "name": "conventional_value_column",
-                "display_name": "Conventional",
-                "data_source_id": data_source["id"],
-                "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
-            },
-        )
-        assert resp.status_code == 201, resp.text
+
+        async def save(name: str, metric_sql: str) -> int:
+            resp = await client.post(
+                _metrics_url(project["slug"]),
+                json={
+                    "kind": "sql",
+                    "name": name,
+                    "display_name": "Conventional",
+                    "data_source_id": data_source["id"],
+                    "interval": "1d",
+                    "config": {"metric_sql": metric_sql, "time_column": "t"},
+                },
+            )
+            return resp.status_code
+
+        assert await save("unprojected_value", "SELECT 1 AS v, now() AS t") == 422
+        assert await save("conventional_value", "SELECT 1 AS value, now() AS t") == 201
 
 
 class TestFactMetricDimensionsAreCheckedAgainstTheFactTable:
@@ -1345,7 +1347,7 @@ class TestDataSourceScopeIsOneSharedRule:
                 "display_name": "Borrowed",
                 "data_source_id": data_source_id,
                 "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
             },
         )
 

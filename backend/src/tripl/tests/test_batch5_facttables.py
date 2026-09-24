@@ -663,7 +663,7 @@ async def test_saving_a_sql_metric_against_another_projects_data_source_is_refus
             "display_name": "Cross project SQL",
             "data_source_id": data_source["id"],
             "interval": "1d",
-            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         },
     )
 
@@ -708,7 +708,7 @@ async def test_repointing_a_sql_metric_at_another_projects_data_source_is_refuse
             "display_name": "Repoint scope SQL",
             "data_source_id": own_source["id"],
             "interval": "1d",
-            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         },
     )
     assert created.status_code == 201, created.text
@@ -722,7 +722,7 @@ async def test_repointing_a_sql_metric_at_another_projects_data_source_is_refuse
                 "kind": "sql",
                 "data_source_id": other_source["id"],
                 "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
             }
         },
     )
@@ -891,7 +891,7 @@ async def test_a_shared_warehouse_no_project_scans_can_back_a_sql_metric(
             "display_name": "Metrics-only warehouse",
             "data_source_id": data_source["id"],
             "interval": "1d",
-            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         },
     )
 
@@ -921,7 +921,7 @@ async def test_editing_a_metric_on_a_shared_warehouse_is_not_refused_by_the_scop
                 "display_name": "Editable",
                 "data_source_id": data_source["id"],
                 "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
             },
         )
     ).json()
@@ -934,7 +934,7 @@ async def test_editing_a_metric_on_a_shared_warehouse_is_not_refused_by_the_scop
                 "kind": "sql",
                 "data_source_id": data_source["id"],
                 "interval": "1d",
-                "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
             },
         },
     )
@@ -972,7 +972,7 @@ async def test_a_data_source_owned_by_another_project_is_refused_even_if_nobody_
             "display_name": "Borrowed",
             "data_source_id": data_source["id"],
             "interval": "1d",
-            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         },
     )
 

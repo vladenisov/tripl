@@ -19,7 +19,6 @@ from tripl.core.adapters.base import (
     SchemaColumn,
     SchemaTable,
     contract_bound_literal,
-    field_contract_is_inert,
     field_contract_verdict,
 )
 from tripl.core.adapters.measure_validator import (
@@ -560,7 +559,7 @@ class ClickHouseAdapter(BaseAdapter):
         threshold nor the comparison appears here either: see the field contract
         section of ``BaseAdapter`` for both rules.
         """
-        if field_contract_is_inert(expectation):
+        if self._field_contract_is_inert(expectation):
             return None
 
         column = self._validate_column(expectation.field_name)
@@ -585,6 +584,7 @@ class ClickHouseAdapter(BaseAdapter):
             # offered to this engine before it is compiled into a statement every
             # other contract in the scan is riding in.
             if not self.contract_regex_is_compilable(expectation.regex):
+                self._skip_field_contract(expectation)
                 return None
             pattern = self._quote_string(expectation.regex)
             bad_condition = f"{present_condition} AND NOT match({value_expr}, {pattern})"
@@ -694,7 +694,7 @@ class ClickHouseAdapter(BaseAdapter):
         # which is what the LIMIT clause it replaces did.
         return violations[: max(0, int(limit))]
 
-    def _top_breakdown_values_multi(
+    def _query_top_breakdown_values_multi(
         self,
         base_query: str,
         time_column: str,
