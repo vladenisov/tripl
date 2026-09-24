@@ -404,7 +404,7 @@ Accepting a `new_field` or `type_changed` drift uses the same complex-type
 classification as detection: BigQuery `RECORD`/`STRUCT` becomes a JSON field,
 while scalar types remain scalar. A snoozed drift becomes active again once its
 deadline passes. **Reset drifts** also removes schema-drift rows left behind by
-a deleted scan config, including rows whose scan reference was set to null.
+a deleted scan, including rows whose scan reference was set to null.
 
 Accepting a `missing_field` drift **deletes the declared field** from the event
 type. tripl refuses that with a `409 Conflict` when a scan on that event
@@ -521,7 +521,7 @@ config in the project lacks a declared lookback. A **scheduled monitoring
 collection** does it on every run for a variable minted from a path inside a
 JSON column — a key that stopped arriving is exactly what the pass is for, and
 the key's return mints the variable again under a new id — but judges a variable
-minted from a scalar column only when **every** project scan config sets
+minted from a scalar column only when **every** scan in the project sets
 **Limits → Lookback (hours)**: with the field blank a scheduled run reads the slice it is collecting, often
 a single hour, and a scalar column that looks enumerable for one quiet hour is
 rewritten as literals in every event at once, which is not evidence that its
@@ -1482,7 +1482,7 @@ requires a time column and an interval). Runs expose status, progress, and
 curated failure detail. A run's **details** list flags warehouse
 columns that carried data but had no matching field in the plan — a real
 coverage gap worth fixing. Run, replay, and apply-groups requests refuse to
-start a second live job for the same scan config. Reaching a configured scan
+start a second live job for the same scan. Reaching a configured scan
 row limit fails that run rather than returning a partial successful result;
 successful summaries therefore do not carry a truncation flag. A stale Celery
 connection-test task is no longer used: the data-source connection test runs

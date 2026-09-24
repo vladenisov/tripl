@@ -453,12 +453,14 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/scans']}>
-          <Routes>
-            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
-            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/scans']}>
+            <Routes>
+              <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+              <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 
