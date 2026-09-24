@@ -22,7 +22,6 @@ from tripl.core.adapters.base import (
     SchemaColumn,
     SchemaTable,
     contract_bound_literal,
-    field_contract_is_inert,
     field_contract_verdict,
 )
 from tripl.core.adapters.errors import WarehouseCapabilityError
@@ -256,17 +255,37 @@ def _validated_search_path(search_path: str) -> str:
 #: Syntax alone is not enough: ``1e999999999`` is a perfectly well-formed number
 #: that no Postgres numeric type can hold, so an unbounded pattern still let the
 #: cast raise. ``numeric`` holds at most 131072 digits before and 16383 after the
-#: decimal point; capping each run at 255 digits and the exponent at four digits
-#: caps what can reach the cast at 10^10254 with at most 10254 fractional places,
-#: an order of magnitude inside both limits. 255 is not a round number picked at
-#: random — POSIX ARE bounds (``{m,n}``) only accept counts from 0 to 255, so a
-#: wider run cannot be spelled as one repetition in a pattern Postgres will compile.
+#: decimal point. POSIX ARE bounds (``{m,n}``) only accept counts from 0 to 255, so
+#: a wider run is spelled as consecutive runs of at most 255 each.
+#:
+#: The widths are those of the float8 domain the OTHER engines parse in, which is
+#: what this guard is standing in for (tripl-0zpq.349): a double prints with at
+#: most 309 integer digits (``1.8e308``) and at most 1074 fractional places (the
+#: smallest subnormal, ``5e-324``, written out in full). So the integer run takes
+#: up to 510 digits and the fractional run up to 1275. A single 255-digit cap,
+#: as this used to be, turned a 256-digit number — which Python's ``float`` and
+#: ClickHouse's ``toFloat64OrNull`` both parse — into BAD on PostgreSQL alone.
+#: With the four-digit exponent that caps
+#: what reaches the cast at 10^10509 with at most 11274 fractional places, inside
+#: both ``numeric`` limits.
 #:
 #: Residual, by design: a literal with more digits than that, or a five-digit
 #: exponent, matches no arm of the CASE, stays NULL and is reported BAD by the
 #: ``COALESCE(NOT (...), TRUE)`` below. That is the verdict the guard already gives
 #: ``'twelve'``, and it never raises — which is the property that matters here.
-_FINITE_NUMBER_RE = r"^[+-]?([0-9]{1,255}(\.[0-9]{0,255})?|\.[0-9]{1,255})([eE][+-]?[0-9]{1,4})?$"
+#:
+#: Spelled as up to N exact 255-digit blocks and then one ``{m,255}`` tail rather
+#: than as N adjacent ``{0,255}`` runs: the adjacent form is ambiguous about where
+#: one run ends, which costs PostgreSQL's DFA nothing but sends a backtracking
+#: engine (Python's ``re``, which the tests match it with) exponential on a long
+#: non-matching input.
+_INTEGER_DIGITS = "([0-9]{255})?[0-9]{1,255}"
+_FRACTION_DIGITS = "([0-9]{255}){0,4}[0-9]{0,255}"
+_LEADING_FRACTION_DIGITS = "([0-9]{255}){0,4}[0-9]{1,255}"
+_FINITE_NUMBER_RE = (
+    rf"^[+-]?({_INTEGER_DIGITS}(\.{_FRACTION_DIGITS})?|\.{_LEADING_FRACTION_DIGITS})"
+    r"([eE][+-]?[0-9]{1,4})?$"
+)
 
 #: The non-finite spellings ``float()`` and ``toFloat64OrNull`` both accept, matched
 #: case-insensitively (``~*``). They are handled apart from the cast because
@@ -891,7 +910,7 @@ class PostgresAdapter(BaseAdapter):
         are is ``field_contract_is_inert``'s to say, not this branch's; see the
         field contract section of ``BaseAdapter``.
         """
-        if field_contract_is_inert(expectation):
+        if self._field_contract_is_inert(expectation):
             return None
 
         quoted = _quote_ident(self._validate_column(expectation.field_name))
@@ -914,6 +933,7 @@ class PostgresAdapter(BaseAdapter):
             # hazard this class has documented all along. Ask first, and a
             # pattern this server will not take drops only its own expectation.
             if not self.contract_regex_is_compilable(expectation.regex):
+                self._skip_field_contract(expectation)
                 return None
             pattern = self._quote_string(expectation.regex)
             return f"{present} AND NOT ({value_expr} ~ {pattern})"
@@ -929,14 +949,24 @@ class PostgresAdapter(BaseAdapter):
             # '1e400' and '1e-400' cleared the old syntax-only guard and then
             # aborted the statement — and every expectation shares one statement
             # (they are columns of one aggregate in validate_field_contracts), so
-            # one event row could take down a whole config's contract check. The
-            # other two
-            # engines never raise: base.py's fallback reads those as inf and 0.0,
-            # ClickHouse's toFloat64OrNull the same. numeric compares exact
-            # decimals and has no float range to leave, so it agrees with them on
-            # the verdict without the raise. 'Infinity'::numeric needs PostgreSQL
-            # 14, which test_connection() already refuses to go below for
-            # date_bin (_MIN_SERVER_VERSION).
+            # one event row could take down a whole config's contract check.
+            # numeric has no float range to leave, so it never raises here.
+            #
+            # It does NOT always agree with the other engines on the verdict, and
+            # this comment used to say it did (tripl-0zpq.349). base.py's fallback,
+            # ClickHouse's toFloat64OrNull and BigQuery's SAFE_CAST all compare in
+            # float64, which rounds; numeric compares exact decimals. So a value
+            # and a bound that are different decimals but the same double disagree:
+            # '9007199254740993' against max 9007199254740992.0 is BAD here and in
+            # range on the other three, and '-1e-400' against min 0.0 is BAD here
+            # (exactly below zero) while the fallback reads it as -0.0, in range.
+            # Only values within one float64 rounding step of a bound, or beyond
+            # float64's range, are affected. It is declared in the field contract
+            # section of BaseAdapter and in warehouse-parity.md rather than closed:
+            # comparing as float8 means casting numeric to float8, which raises
+            # 22003 on exactly the overflow and underflow this branch removes.
+            # 'Infinity'::numeric needs PostgreSQL 14, which test_connection()
+            # already refuses to go below for date_bin (_MIN_SERVER_VERSION).
             numeric_expr = (
                 f"CASE WHEN {value_expr} ~ '{_FINITE_NUMBER_RE}' "
                 f"THEN {value_expr}::numeric "
@@ -1622,7 +1652,7 @@ class PostgresAdapter(BaseAdapter):
         )
         return col_names, json_value_names, [(row[0], row[2], row[3], *row[4:]) for row in rows]
 
-    def _top_breakdown_values_multi(
+    def _query_top_breakdown_values_multi(
         self,
         base_query: str,
         time_column: str,

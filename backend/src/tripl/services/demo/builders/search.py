@@ -1,8 +1,10 @@
 """Search builder: index the seeded plan for this branch.
 
 Runs last so every seeded entity is indexable. No commit — the caller owns the
-phase-2 transaction boundary. Embeddings are not scheduled (no worker in the
-demo path).
+phase-2 transaction boundary, so ``commit=False`` is load-bearing: the default
+reindex commits twice, which used to persist the whole seed before
+``create_demo_project`` checked for a cancel (tripl-0zpq.243). Embeddings are not
+scheduled (no worker in the demo path).
 """
 
 from __future__ import annotations
@@ -20,4 +22,5 @@ async def build_search(session: AsyncSession, ctx: DemoContext) -> None:
         branch_id=ctx.branch_id,
         slug=ctx.slug,
         schedule_embeddings=False,
+        commit=False,
     )

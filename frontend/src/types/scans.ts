@@ -29,6 +29,8 @@ export interface ScanJobResultSummary {
   significant_distribution_drifts?: number
   distribution_drifts_deleted?: number
   contract_violations_detected?: number
+  contract_checks_failed?: number
+  contract_expectations_skipped?: number
   anomalies_detected?: number
   breakdown_anomalies_detected?: number
   signals_added?: number

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 
 # Default freshness window for an open signal. Projects can override it via
 # ProjectAnomalySettings.recent_signal_window_hours, which reaches this module as
@@ -23,10 +23,11 @@ RECENT_SIGNAL_WINDOW = timedelta(hours=24)
 #
 # Both are ``max(recent_window, N * interval)``, so sub-daily scans keep exactly
 # the configured window and only long grids move. ``worker.tasks.metrics.signals``
-# IMPORTS this rather than keeping its own copy: it used to mirror it, and the
-# mirror drifted twice (tripl-l429.14, tripl-l429.19). ``test_monitors_summary``
-# pins the two as the same object, not merely as equal values — equality is what
-# a fresh copy also satisfies on the day it is written.
+# does NOT import this name: it reaches the constant only through
+# ``classify_signal_state``, so there is no second copy to drift. It used to keep
+# a mirror, and the mirror drifted twice (tripl-l429.14, tripl-l429.19);
+# ``test_monitors_summary`` pins that the name is absent from ``signals`` so a
+# re-introduced copy fails loudly (tripl-0zpq.170).
 LATEST_SCAN_STALE_INTERVALS = 3
 
 # ScanInterval enum string (e.g. "1d") -> wall-clock duration. Keyed by string so
@@ -296,6 +297,13 @@ class _MonitorState(Protocol):
     last_notified_at: datetime | None
 
 
+# Resolves the grid one alert state's series is scored on (its scan config's
+# interval, or a catalog metric's own grid), or None when it has none.
+# Typed on ``Any`` because callers hand in their concrete ORM row type, which a
+# callable parameterised on the protocol would not accept (contravariance).
+MonitorStateInterval = Callable[[Any], timedelta | None]
+
+
 @dataclass(frozen=True)
 class MonitorRollup:
     status: str  # "firing" | "warning" | "healthy"
@@ -309,25 +317,49 @@ def summarize_monitor_states(
     states: Sequence[_MonitorState],
     *,
     now: datetime,
+    interval_of: MonitorStateInterval | None = None,
 ) -> MonitorRollup:
     """Roll a rule's per-scope alert states into a single monitor status.
 
-    * firing  — at least one active scope with an anomaly inside the recent window
+    * firing  — at least one active scope with an anomaly inside the freshness
+      horizon alert dispatch judges it by
     * warning — active scopes exist, but none have a recent anomaly (stale/open)
     * healthy — no active scopes
 
     Deliberately NOT narrowed by the project's configured open-signal window:
-    this summarizes ALERT state, and alert dispatch stays on the fixed window
+    this summarizes ALERT state, and alert dispatch ignores that setting too
     (see ``worker.tasks.metrics.signals._get_latest_active_anomalies``), so a
     monitor must not read "healthy" while its rule is still delivering.
+
+    It DOES follow dispatch's interval floor: dispatch keeps a scope open for
+    ``max(24h, 3 x interval)`` of its own grid, so a daily or weekly anomaly it
+    is still delivering sits well past a bare 24 hours. Judging that against
+    ``now - 24h`` read "warning" — firing_count 0, the sidebar badge off —
+    while the alert was being sent (tripl-0zpq.162). ``interval_of`` resolves
+    each state's grid; a caller that passes nothing, or a state it cannot
+    resolve, falls back to the bare 24-hour window.
+
+    It does NOT follow dispatch's still-running-outage re-check
+    (``_outage_is_still_running``): dispatch keeps a zero-actual outage anchor
+    live for as long as its scan keeps collecting, while this rollup sees only
+    ``last_anomaly_bucket`` (the onset, which never advances). A monitor on an
+    outage older than the horizon therefore reads "warning" while dispatch still
+    holds the state active. Closing that gap needs the anchor's counts and the
+    scan's latest bucket, which ``AlertRuleState`` does not carry.
     """
-    firing_cutoff = now - RECENT_SIGNAL_WINDOW
     active = [state for state in states if state.is_active]
     firing = [
         state
         for state in active
         if state.last_anomaly_bucket is not None
-        and _bucket_is_recent(state.last_anomaly_bucket, firing_cutoff)
+        and _bucket_is_recent(
+            state.last_anomaly_bucket,
+            now
+            - _freshness_horizon(
+                interval_of(state) if interval_of is not None else None,
+                RECENT_SIGNAL_WINDOW,
+            ),
+        )
     ]
     if firing:
         status = "firing"

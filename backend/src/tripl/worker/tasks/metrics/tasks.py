@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl import cache, realtime
+from tripl.core.adapters.base import rank_top_n_once
 from tripl.core.analyzers.cardinality import (
     _is_json_type,
     analyze_cardinality,
@@ -680,6 +681,7 @@ def collect_metrics(
         single_result = catalog.single_result
         contract_violations_detected = catalog.contract_violations_detected
         contract_checks_failed = catalog.contract_checks_failed
+        contract_expectations_skipped = catalog.contract_expectations_skipped
         replay_branch_id = catalog.replay_branch_id
         replay_variables_by_token = catalog.replay_variables_by_token
         replay_events = catalog.replay_events
@@ -873,7 +875,9 @@ def collect_metrics(
             all_details.append(retired_details_line(variables_retired))
 
         # Per-chunk accumulators. Each chunk runs its own bounded warehouse query,
-        # delete, and UPSERT so a long replay never scans the whole range at once.
+        # delete, and UPSERT so a long replay never scans the whole range at once
+        # — except for the top-N ranking pre-query below, which is deliberately
+        # the one statement spanning the whole window (tripl-0zpq.346).
         metrics_deleted = 0
         breakdown_metrics_deleted = 0
         distribution_drifts_deleted = 0
@@ -891,80 +895,29 @@ def collect_metrics(
         archived_volume = 0
         archived_identities_seen: set[str] = set()
 
-        for chunk_index, (chunk_from, chunk_to) in enumerate(chunks, start=1):
-            if is_replay and chunk_index <= resume_completed_chunks:
-                continue
+        # Top-N breakdown values are ranked ONCE over the whole collection window
+        # and shared by every chunk, not re-ranked per chunk (tripl-0zpq.346).
+        # That pre-query is an un-bucketed GROUP BY over the breakdown columns and
+        # is NOT bounded by ``replay_chunk_interval``: on a long replay it is the
+        # one statement that reads the whole range.
+        with rank_top_n_once(adapter, time_from_dt, time_to_dt):
+            for chunk_index, (chunk_from, chunk_to) in enumerate(chunks, start=1):
+                if is_replay and chunk_index <= resume_completed_chunks:
+                    continue
 
-            # Cooperative cancellation: a user "stop" sets status=cancelled. Bail
-            # out at the chunk boundary, leaving already-written metrics intact
-            # and the job in its cancelled state (don't mark it completed/failed).
-            if job is not None:
-                current_status = session.execute(
-                    select(ScanJob.status).where(ScanJob.id == job.id)
-                ).scalar()
-                if current_status == ScanJobStatus.cancelled.value:
-                    logger.info(
-                        "collect_metrics for %s cancelled mid-run; stopping", scan_config_id
-                    )
-                    return {"cancelled": True, "scan_config_id": scan_config_id}
+                # Cooperative cancellation: a user "stop" sets status=cancelled. Bail
+                # out at the chunk boundary, leaving already-written metrics intact
+                # and the job in its cancelled state (don't mark it completed/failed).
+                if job is not None:
+                    current_status = session.execute(
+                        select(ScanJob.status).where(ScanJob.id == job.id)
+                    ).scalar()
+                    if current_status == ScanJobStatus.cancelled.value:
+                        logger.info(
+                            "collect_metrics for %s cancelled mid-run; stopping", scan_config_id
+                        )
+                        return {"cancelled": True, "scan_config_id": scan_config_id}
 
-            if is_replay:
-                _heartbeat_replay_progress(
-                    session,
-                    job,
-                    time_from_dt=time_from_dt,
-                    time_to_dt=time_to_dt,
-                    replay_chunk_interval=config.replay_chunk_interval,
-                    total_chunks=len(chunks),
-                    completed_chunks=chunk_index - 1,
-                    phase="collecting",
-                    current_chunk_index=chunk_index,
-                    current_chunk=(chunk_from, chunk_to),
-                )
-
-            chunk_stats = process_chunk(
-                session,
-                adapter=adapter,
-                config=config,
-                interval_code=interval_spec.code,
-                interval_delta=delta,
-                regular_cols=regular_cols,
-                json_cols=json_cols,
-                json_value_path_map=json_value_path_map,
-                metrics_row_limit=metrics_row_limit,
-                is_replay=is_replay,
-                gen_results=gen_results,
-                single_result=single_result,
-                et_by_name=et_by_name,
-                et_col_idx=et_col_idx,
-                reg_index=reg_index,
-                json_index=json_index,
-                n_reg=n_reg,
-                replay_variables_by_token=replay_variables_by_token,
-                replay_variable_samples=replay_variable_samples,
-                chunk_from=chunk_from,
-                chunk_to=chunk_to,
-                upsert_event_metrics_rows_fn=_upsert_event_metrics_rows,
-            )
-            query_rows_scanned += chunk_stats.rows_scanned
-            metrics_deleted += chunk_stats.metrics_deleted
-            breakdown_metrics_deleted += chunk_stats.breakdown_metrics_deleted
-            distribution_drifts_deleted += chunk_stats.distribution_drifts_deleted
-            n_ev += chunk_stats.n_ev
-            n_tp += chunk_stats.n_tp
-            n_breakdown_ev += chunk_stats.n_breakdown_ev
-            n_breakdown_tp += chunk_stats.n_breakdown_tp
-            n_distribution_drifts += chunk_stats.n_distribution_drifts
-            significant_distribution_drifts += chunk_stats.significant_distribution_drifts
-            archived_volume += chunk_stats.archived_volume
-            archived_identities_seen |= chunk_stats.archived_identities_seen
-
-            # Heartbeat: bump the job row after each chunk so the scheduler's
-            # staleness reaper sees forward progress. Without this, updated_at
-            # stays frozen at started_at for the whole run (chunk writes only
-            # touch metric rows, not the job), and a long replay over millions
-            # of rows gets false-failed mid-flight.
-            if job is not None:
                 if is_replay:
                     _heartbeat_replay_progress(
                         session,
@@ -973,12 +926,69 @@ def collect_metrics(
                         time_to_dt=time_to_dt,
                         replay_chunk_interval=config.replay_chunk_interval,
                         total_chunks=len(chunks),
-                        completed_chunks=chunk_index,
+                        completed_chunks=chunk_index - 1,
                         phase="collecting",
+                        current_chunk_index=chunk_index,
+                        current_chunk=(chunk_from, chunk_to),
                     )
-                else:
-                    job.updated_at = datetime.now(UTC)
-                    session.commit()
+
+                chunk_stats = process_chunk(
+                    session,
+                    adapter=adapter,
+                    config=config,
+                    interval_code=interval_spec.code,
+                    interval_delta=delta,
+                    regular_cols=regular_cols,
+                    json_cols=json_cols,
+                    json_value_path_map=json_value_path_map,
+                    metrics_row_limit=metrics_row_limit,
+                    is_replay=is_replay,
+                    gen_results=gen_results,
+                    single_result=single_result,
+                    et_by_name=et_by_name,
+                    et_col_idx=et_col_idx,
+                    reg_index=reg_index,
+                    json_index=json_index,
+                    n_reg=n_reg,
+                    replay_variables_by_token=replay_variables_by_token,
+                    replay_variable_samples=replay_variable_samples,
+                    chunk_from=chunk_from,
+                    chunk_to=chunk_to,
+                    upsert_event_metrics_rows_fn=_upsert_event_metrics_rows,
+                )
+                query_rows_scanned += chunk_stats.rows_scanned
+                metrics_deleted += chunk_stats.metrics_deleted
+                breakdown_metrics_deleted += chunk_stats.breakdown_metrics_deleted
+                distribution_drifts_deleted += chunk_stats.distribution_drifts_deleted
+                n_ev += chunk_stats.n_ev
+                n_tp += chunk_stats.n_tp
+                n_breakdown_ev += chunk_stats.n_breakdown_ev
+                n_breakdown_tp += chunk_stats.n_breakdown_tp
+                n_distribution_drifts += chunk_stats.n_distribution_drifts
+                significant_distribution_drifts += chunk_stats.significant_distribution_drifts
+                archived_volume += chunk_stats.archived_volume
+                archived_identities_seen |= chunk_stats.archived_identities_seen
+
+                # Heartbeat: bump the job row after each chunk so the scheduler's
+                # staleness reaper sees forward progress. Without this, updated_at
+                # stays frozen at started_at for the whole run (chunk writes only
+                # touch metric rows, not the job), and a long replay over millions
+                # of rows gets false-failed mid-flight.
+                if job is not None:
+                    if is_replay:
+                        _heartbeat_replay_progress(
+                            session,
+                            job,
+                            time_from_dt=time_from_dt,
+                            time_to_dt=time_to_dt,
+                            replay_chunk_interval=config.replay_chunk_interval,
+                            total_chunks=len(chunks),
+                            completed_chunks=chunk_index,
+                            phase="collecting",
+                        )
+                    else:
+                        job.updated_at = datetime.now(UTC)
+                        session.commit()
 
         if is_replay:
             _heartbeat_replay_progress(
@@ -1144,8 +1154,15 @@ def collect_metrics(
             # means: "no violations" and "no check" are the same number
             # otherwise, and the swallow in
             # ``schema_drift._detect_field_contract_violations`` is only
-            # acceptable while this number is reported (tripl-0zpq.54).
+            # acceptable while this number is reported (tripl-0zpq.54). It
+            # counts whole checks that raised, not single expectations the
+            # adapter declined while the rest ran; those are the next line.
             "contract_checks_failed": contract_checks_failed,
+            # Single expectations dropped unevaluated — an engine-refused regex,
+            # a REPEATED column on BigQuery, a non-finite bound. Before this they
+            # were a worker log line only, so "could not check" read as "clean"
+            # (tripl-0zpq.341 / tripl-0zpq.358).
+            "contract_expectations_skipped": contract_expectations_skipped,
             "anomalies_detected": anomalies_detected,
             "breakdown_anomalies_detected": breakdown_anomalies_detected,
             "release_regressions_detected": release_regressions_detected,

@@ -1050,7 +1050,12 @@ does, but the API takes the instant you send it, and an instant already behind
 the clock is now refused rather than stored — the same refusal muting a **rule**
 has always given, so the two Mute buttons no longer disagree about it. A silence
 that ended before it began would have left the incident reading `open` the
-moment it was written: accepted, recorded, and silencing nothing.
+moment it was written: accepted, recorded, and silencing nothing. The reverse
+mismatch is refused too: a `muted_until` sent with any action other than
+**mute** (acknowledge, resolve, reopen, …) returns `422` instead of being
+silently dropped, on the single-incident and the bulk routes alike. The same
+rule applies to `snoozed_until` on schema-drift, variable-value-drift and
+comment-thread actions: it is accepted only with **snooze**.
 
 **A rule has 1h / 24h / 7d and no indefinite option**, on purpose. Muting a rule
 silences every scope it watches, not one, and a rule you never want to hear from
@@ -1066,7 +1071,7 @@ Which lever fits which intent:
 | This is over | **Resolve** | Until this incident ends | Same suppression; a different statement to whoever reads the row next |
 | Do not tell me before *T*, whatever the signal does | **Mute 1h / 24h / 7d** | Exactly that long | The only decision that outlives the incident |
 | Do not tell me until I say so | **Mute indefinitely** (Inbox only) | Until you press **Reopen** | Outlives everything except Reopen |
-| The detector is wrong about this scope | **False positive** | Until this incident ends | **Permanently** raises that scope's `sigma_threshold` (+0.5, capped at 10) and `min_expected_count` (+5, capped at 1000), compounding on repeat clicks. It never decays; it is listed and removable under **Settings → Monitoring → Scope overrides**. Volume scopes only — on a schema drift, distribution drift or release regression it suppresses like an acknowledge and tunes nothing, because those are not scored by these two knobs, and the confirmation says how many scopes it actually tightened |
+| The detector is wrong about this scope | **False positive** | Until this incident ends | **Permanently** raises that scope's `sigma_threshold` (+0.5, capped at 10) and `min_expected_count` (+5, capped at 1000), compounding on repeat clicks. It never decays; it is listed and removable under **Settings → Monitoring → Scope overrides**. Volume scopes only — on a schema drift, distribution drift or release regression it suppresses like an acknowledge and tunes nothing, because those are not scored by these per-scope knobs (a release regression does read the project-wide `sigma_threshold`, but never a scope override), and the confirmation says how many scopes it actually tightened |
 | This event must never reach this channel again | A rule **filter**, `event` `not_in` […] | Permanent, per rule, no expiry | Excludes that event's *own* signals only. The project-total and event-type rollups it feeds carry no `event_id`, and a filter on a field a signal does not carry passes through — so those keep alerting. An `event_type` filter reaches the same rows from the other side: an event-anchored signal is narrowed by its event's type, resolved at match time, even though the stored row's own `event_type_id` is NULL |
 | This event should not be monitored at all | **Archive** the event | Until you un-archive it | Takes it out of detection entirely: no metric points scored, no signals raised, so there is nothing left to alert on |
 

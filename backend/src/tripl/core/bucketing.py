@@ -44,7 +44,7 @@ has no DST transitions, so a fixed-width bin never straddles a clock change.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from tripl.core.intervals import IntervalUnit, get_interval
 
@@ -67,6 +67,44 @@ def to_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def stored_bucket(value: object) -> datetime:
+    """A warehouse ``_bucket`` cell as the aware UTC instant it is STORED at.
+
+    The one conversion every writer of a bucketed row applies before the value
+    reaches a ``DateTime(timezone=True)`` column (``EventMetric.bucket``,
+    ``MetricValueBreakdown.bucket``, ``DistributionDrift`` …). Those writers used
+    to ``cast(datetime, row[0])`` — a typing no-op — and hand whatever the driver
+    decoded to SQLAlchemy. A naive value written to a ``timestamptz`` is read in
+    the DATABASE SESSION's timezone, so the stored instant depended on a server
+    setting rather than on the bucket (tripl-0zpq.348). ``db_config`` now pins
+    the application's own sessions to UTC, and this closes the other half: a
+    naive cell is stamped UTC here, a ``date`` becomes that day at 00:00 UTC, and
+    an aware one is converted, whatever adapter produced it.
+
+    ``datetime`` is tested BEFORE ``date`` because it is a subclass of it. A
+    value that is no kind of date raises instead of being coerced: it means the
+    row layout changed and column 0 stopped being the bucket.
+
+    Rows already stored are NOT rewritten by this. A BigQuery ``DATETIME`` /
+    ``DATE`` bucket used to reach the database naive (``BigQueryAdapter`` now
+    normalizes it too, ``_as_utc_bucket``), so on an install whose database
+    session timezone was not UTC when those rows were written they sit at
+    ``wall clock - offset`` while every new row lands at ``wall clock``. The
+    unique key then sees two rows for one logical bucket at the edges of an
+    overlapping re-collection. ``TIMESTAMP`` buckets, and every install whose
+    database session ran in UTC (the default of a PostgreSQL image initialised
+    without a ``TZ``, as ``compose.yaml`` starts it), are unaffected; the check
+    and the remedy for the rest are in ``website/docs/develop/warehouse-parity.md``
+    ("BigQuery ``DATETIME`` is zone-less").
+    """
+    if isinstance(value, datetime):
+        return to_utc(value)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+    msg = f"Expected a bucket datetime in column 0, got {type(value).__name__}: {value!r}"
+    raise TypeError(msg)
 
 
 def bucket_origin(interval_code: str) -> datetime:

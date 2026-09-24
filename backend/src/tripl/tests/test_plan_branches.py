@@ -2728,15 +2728,16 @@ async def test_merge_moving_a_rename_onto_a_deleted_variables_name_is_a_409(
 ) -> None:
     """The ambiguous shape must fail whole rather than half-succeed.
 
-    Base and main both hold ``cart_total``/``cart_total_raw`` and
-    ``cart_count``/``cart_count_raw``. The branch DELETES ``cart_count`` and
-    RENAMES ``cart_total`` into the name it vacated. ``pair_renames`` proposes
-    that move and then drops it — main's own ``cart_count`` is not itself moving
-    away, and a destination is only free when its occupant is going somewhere —
-    so no rename is applied and the merge's two arms disagree about who owns
-    ``cart_total_raw``. SQLAlchemy runs a mapper's saves ahead of its deletes
-    inside one flush, so the disagreement is an IntegrityError, and losing
-    nothing while telling the user to rename the clashing entity is the answer.
+    Base and main both hold ``cart_total``/``cart_total_raw`` and a
+    ``cart_count`` with NO ``source_name``. The branch DELETES ``cart_count`` and
+    RENAMES ``cart_total`` into the name it vacated. With an identity on the
+    occupant that shape now merges (tripl-ifuv, pinned in
+    ``test_leftovers_variables``); without one nothing proves the branch's
+    ``cart_count`` is not the occupant edited, so ``pair_renames`` still drops
+    the move, the merge's two arms disagree about who owns ``cart_total_raw``,
+    and SQLAlchemy — which runs a mapper's saves ahead of its deletes inside one
+    flush — turns that into an IntegrityError. Losing nothing while telling the
+    user to rename the clashing entity is the answer.
 
     Two separate failures hide behind this 409 and both are asserted here.
 
@@ -2754,7 +2755,7 @@ async def test_merge_moving_a_rename_onto_a_deleted_variables_name_is_a_409(
     await _seed_plan(client, "merge-delete-then-rename")
     main_ids = await _seed_main_variables(
         "merge-delete-then-rename",
-        {"cart_total": "cart_total_raw", "cart_count": "cart_count_raw"},
+        {"cart_total": "cart_total_raw", "cart_count": ""},
     )
     await _attach_variable_values("merge-delete-then-rename", main_ids)
     main_branch_id = await _main_branch_id()
@@ -2771,7 +2772,7 @@ async def test_merge_moving_a_rename_onto_a_deleted_variables_name_is_a_409(
             .scalars()
             .all()
         }
-        await session.delete(branch_rows["cart_count_raw"])
+        await session.delete(branch_rows[""])
         # The delete has to land before the rename: inside the branch the same
         # non-deferrable ``uq_variable_project_name`` refuses both at once, which
         # is the constraint the merge is about to run into from the other side.
@@ -2787,7 +2788,7 @@ async def test_merge_moving_a_rename_onto_a_deleted_variables_name_is_a_409(
     # Nothing moved and nothing went: both rows, both names, both ids.
     assert {source: v.name for source, v in merged.items()} == {
         "cart_total_raw": "cart_total",
-        "cart_count_raw": "cart_count",
+        "": "cart_count",
     }
     assert {source: v.id for source, v in merged.items()} == main_ids
 

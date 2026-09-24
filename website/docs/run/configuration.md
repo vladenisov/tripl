@@ -209,7 +209,7 @@ Two independent switches control the generated demo project. Both default to
 | Variable | Default | Required in prod? | Purpose |
 | --- | --- | --- | --- |
 | `DEMO_ENABLED` | `true` | No | Master kill switch for demo **provisioning**. When `false`, `POST /projects/demo` **and** demo reset are refused with `403 Demo provisioning is disabled`. |
-| `DEMO_RUNTIME_ENABLED` | `true` | No | Gates the `advance_demos` beat task that keeps an existing demo fresh (new buckets, jobs, and signals). When `false` that task is a no-op and existing demos keep the data they already have. |
+| `DEMO_RUNTIME_ENABLED` | `true` | No | Gates the `advance_demos` beat task that keeps an existing demo fresh (new buckets, jobs, and signals). When `false` that task is a no-op and existing demos keep the data they already have; the scheduled scan collection of a demo in use still runs on its 6-hour demo cadence and appends new buckets itself. |
 
 :::note A demo's two refresh paths run at different rates
 `advance_demos` runs **hourly**: it appends the newest bucket, re-runs the real

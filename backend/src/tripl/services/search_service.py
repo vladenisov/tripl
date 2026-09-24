@@ -322,20 +322,33 @@ async def reindex_project_branch(
     branch_id: uuid.UUID,
     slug: str | None = None,
     schedule_embeddings: bool = True,
+    commit: bool = True,
 ) -> ReindexOutcome:
+    """Rebuild a branch's search documents.
+
+    ``commit=False`` leaves both writes flushed but uncommitted, for a caller
+    that owns the transaction: demo provisioning seeds a whole project in one
+    phase-2 transaction and must still be able to roll it back when the user
+    cancels (tripl-0zpq.243). Such a caller must not also schedule embeddings —
+    the queued worker would read the branch before the rows are committed.
+    """
     count, ai_config = await _reindex_branch_documents(
         session,
         project_id=project_id,
         branch_id=branch_id,
         slug=slug,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
 
-    if await _apply_demo_search_embeddings(
-        session,
-        project_id=project_id,
-        branch_id=branch_id,
-        ai_config=ai_config,
+    if (
+        await _apply_demo_search_embeddings(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            ai_config=ai_config,
+        )
+        and commit
     ):
         await session.commit()
 

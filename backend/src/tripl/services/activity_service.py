@@ -3,32 +3,85 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import ColumnElement, and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
+    SCOPE_METRIC,
     SCOPE_PROJECT_TOTAL,
 )
+from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
+from tripl.models.domain_enums import ScanInterval
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_definition import MetricDefinition
 from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
 from tripl.schemas.activity import ActivityItemResponse
+from tripl.services.monitoring_utils import (
+    LATEST_SCAN_STALE_INTERVALS,
+    scan_interval_to_timedelta,
+)
 from tripl.services.project_lookup import get_project_id_by_slug
 
 # The activity rail surfaces "recent" signals, not the full anomaly history.
 # Without a window, weeks-old high-z anomalies stay ordered at the top of the
 # feed on every page and read as live/streaming events. Bound the query to a
 # recent window measured against wall-clock now so only fresh anomalies show.
+#
+# Measured on ``MetricAnomaly.bucket``, never ``created_at`` (tripl-0zpq.193):
+# the detector deletes and re-inserts its trailing re-evaluation window every
+# tick, so ``created_at`` is "last re-scored", not "happened". Keyed on it, a
+# 26-day-old daily anomaly read "just now" on every collection and a replay
+# re-dated three months of anomalies into the rail.
+#
+# The window is floored at ``LATEST_SCAN_STALE_INTERVALS`` buckets of the
+# series' own grid, the same floor the freshness horizon uses. Ingestion
+# settling withholds at least one trailing bucket from emission, so the newest
+# anomaly a weekly series can produce STARTS more than 7 days ago: a bare
+# ``bucket >= now - 7d`` would hide every weekly anomaly from the rail for good.
 ANOMALY_RECENCY_WINDOW = timedelta(days=7)
+
+
+def _recency_window(interval: str | None) -> timedelta:
+    """How far back an anomaly bucket on ``interval``'s grid still counts as recent."""
+    delta = scan_interval_to_timedelta(interval)
+    if delta is None:
+        return ANOMALY_RECENCY_WINDOW
+    return max(ANOMALY_RECENCY_WINDOW, LATEST_SCAN_STALE_INTERVALS * delta)
+
+
+def _scan_recency_clause(now: datetime) -> ColumnElement[bool]:
+    """``bucket`` inside the recency window of its scan config's own grid.
+
+    Expects ``ScanConfig`` joined. Grids whose floor never binds share the plain
+    7-day cutoff; each coarser grid gets its own wider one.
+    """
+    wider: dict[timedelta, list[str]] = {}
+    for interval in ScanInterval:
+        window = _recency_window(interval.value)
+        if window > ANOMALY_RECENCY_WINDOW:
+            wider.setdefault(window, []).append(interval.value)
+    return or_(
+        MetricAnomaly.bucket >= now - ANOMALY_RECENCY_WINDOW,
+        *(
+            and_(ScanConfig.interval.in_(intervals), MetricAnomaly.bucket >= now - window)
+            for window, intervals in wider.items()
+        ),
+    )
+
+
+def _utc_sort_key(value: datetime) -> datetime:
+    """SQLite hands naive timestamps back; compare every item as a UTC instant."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 async def list_activity(
@@ -46,7 +99,7 @@ async def list_activity(
     items.extend(await _alert_delivery_items(session, slug=slug, limit=limit))
     items.extend(await _event_items(session, slug=slug, limit=limit))
 
-    return sorted(items, key=lambda item: item.occurred_at, reverse=True)[:limit]
+    return sorted(items, key=lambda item: _utc_sort_key(item.occurred_at), reverse=True)[:limit]
 
 
 async def _anomaly_items(
@@ -55,6 +108,7 @@ async def _anomaly_items(
     slug: str | None,
     limit: int,
 ) -> list[ActivityItemResponse]:
+    now = datetime.now(UTC)
     stmt = (
         select(
             MetricAnomaly.id,
@@ -67,7 +121,6 @@ async def _anomaly_items(
             MetricAnomaly.expected_count,
             MetricAnomaly.z_score,
             MetricAnomaly.direction,
-            MetricAnomaly.created_at,
             Project.id.label("project_id"),
             Project.slug,
             Project.name.label("project_name"),
@@ -79,8 +132,8 @@ async def _anomaly_items(
         .join(Project, Project.id == ScanConfig.project_id)
         .outerjoin(Event, Event.id == MetricAnomaly.event_id)
         .outerjoin(EventType, EventType.id == MetricAnomaly.event_type_id)
-        .where(MetricAnomaly.created_at >= datetime.now(UTC) - ANOMALY_RECENCY_WINDOW)
-        .order_by(desc(MetricAnomaly.created_at), desc(MetricAnomaly.id))
+        .where(_scan_recency_clause(now))
+        .order_by(desc(MetricAnomaly.bucket), desc(MetricAnomaly.id))
         .limit(limit)
     )
     if slug is not None:
@@ -127,7 +180,7 @@ async def _anomaly_items(
                 detail=(
                     f"{int(row.actual_count):,} actual vs {expected:,} expected · z={z_score:.1f}"
                 ),
-                occurred_at=row.created_at,
+                occurred_at=row.bucket,
                 target_path=_monitoring_path(
                     row.slug,
                     row.scope_type,
@@ -137,7 +190,120 @@ async def _anomaly_items(
                 ),
             )
         )
+    items.extend(await _metric_anomaly_items(session, slug=slug, limit=limit, now=now))
     return items
+
+
+async def _metric_anomaly_items(
+    session: AsyncSession,
+    *,
+    slug: str | None,
+    limit: int,
+    now: datetime,
+) -> list[ActivityItemResponse]:
+    """Catalog-metric anomalies, which the scan-config query above cannot reach.
+
+    A ``metric``-scope row carries a NULL ``scan_config_id`` and is keyed by
+    ``scope_ref = str(metric_definition_id)`` (``models.metric_anomaly``), so
+    the inner join through ScanConfig dropped every one of them and a spiking
+    catalog metric never reached the rail (tripl-0zpq.302, tripl-0zpq.195).
+    Project is reached through ``MetricDefinition.project_id`` instead. The
+    metric ids are resolved first and matched on ``scope_ref`` in Python-side
+    string form, the way ``metrics_insights_service`` loads metric scopes,
+    because ``scope_ref`` is a string and a SQL cast of a UUID column does not
+    render the same text on SQLite and PostgreSQL.
+
+    Each metric's recency window is floored on its own resolved grid
+    (``metric_grid``), so a weekly metric's newest emittable anomaly, which
+    starts more than 7 days back, still reaches the rail.
+    """
+    metric_stmt = select(
+        MetricDefinition.id,
+        MetricDefinition.display_name,
+        Project.id.label("project_id"),
+        Project.slug,
+        Project.name.label("project_name"),
+    ).join(Project, Project.id == MetricDefinition.project_id)
+    if slug is not None:
+        metric_stmt = metric_stmt.where(Project.slug == slug)
+    metrics = {str(row.id): row for row in (await session.execute(metric_stmt)).all()}
+    if not metrics:
+        return []
+    grids = metric_grids(
+        (
+            await session.execute(
+                metric_grid_stmt(MetricDefinition.id.in_([row.id for row in metrics.values()]))
+            )
+        ).all()
+    )
+    refs_by_window: dict[timedelta, list[str]] = {}
+    for scope_ref, metric in metrics.items():
+        grid = grids.get(metric.id)
+        window = _recency_window(grid.interval if grid is not None else None)
+        refs_by_window.setdefault(window, []).append(scope_ref)
+
+    rows = (
+        await session.execute(
+            select(
+                MetricAnomaly.id,
+                MetricAnomaly.scope_ref,
+                MetricAnomaly.bucket,
+                MetricAnomaly.actual_count,
+                MetricAnomaly.expected_count,
+                MetricAnomaly.z_score,
+                MetricAnomaly.direction,
+            )
+            .where(
+                MetricAnomaly.scope_type == SCOPE_METRIC,
+                or_(
+                    *(
+                        and_(
+                            MetricAnomaly.scope_ref.in_(scope_refs),
+                            MetricAnomaly.bucket >= now - window,
+                        )
+                        for window, scope_refs in refs_by_window.items()
+                    )
+                ),
+            )
+            .order_by(desc(MetricAnomaly.bucket), desc(MetricAnomaly.id))
+            .limit(limit)
+        )
+    ).all()
+
+    items: list[ActivityItemResponse] = []
+    for row in rows:
+        metric = metrics[row.scope_ref]
+        z_score = float(row.z_score)
+        direction = str(row.direction)
+        items.append(
+            ActivityItemResponse(
+                id=f"anomaly:{row.id}",
+                project_id=metric.project_id,
+                project_slug=metric.slug,
+                project_name=metric.project_name,
+                type="anomaly",
+                severity="high" if abs(z_score) >= 4 else "medium",
+                title=f"{direction.capitalize()} on {metric.display_name}",
+                # Catalog metrics carry fractional values (ratios, averages), so
+                # int() would print a collapsed 0.04 ratio as "0 actual vs 0
+                # expected" (tripl-0zpq.195).
+                detail=(
+                    f"{_format_metric_value(row.actual_count)} actual vs "
+                    f"{_format_metric_value(row.expected_count)} expected · z={z_score:.1f}"
+                ),
+                occurred_at=row.bucket,
+                target_path=f"/p/{metric.slug}/monitoring/metric/{metric.id}",
+            )
+        )
+    return items
+
+
+def _format_metric_value(value: float) -> str:
+    """Whole numbers with thousands separators; small fractions to 3 significant digits."""
+    number = float(value)
+    if number.is_integer() or abs(number) >= 100:
+        return f"{round(number):,}"
+    return f"{number:.3g}"
 
 
 async def _scan_job_items(

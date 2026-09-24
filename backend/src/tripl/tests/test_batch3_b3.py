@@ -14,7 +14,7 @@ seen one step earlier and is red on revert on any database.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
@@ -626,6 +626,15 @@ def _drift_bucket(hour: int) -> datetime:
     return _DRIFT_BASE + timedelta(hours=hour)
 
 
+def _stored_drift_bucket(hour: int) -> datetime:
+    """The bucket a drift row carries: the naive warehouse cell as aware UTC.
+
+    The fake adapter hands back naive buckets, the shape a driver decodes, and
+    the collector stores them through ``stored_bucket`` (tripl-0zpq.348).
+    """
+    return _drift_bucket(hour).replace(tzinfo=UTC)
+
+
 def _drift_row(hour: int, value: str, event_type: str, count: int) -> tuple[object, ...]:
     # (bucket, field_name, field_value, is_json, country, event_type, count)
     return (_drift_bucket(hour), "country", value, False, value, event_type, count)
@@ -736,7 +745,7 @@ def test_distribution_drift_rows_match_per_scope_baselines() -> None:
         expected = compute_psi(baseline, current)
         where = f"{event_type_id} @ {hour}"
         assert row["event_type_id"] == event_type_id, where
-        assert row["bucket"] == _drift_bucket(hour), where
+        assert row["bucket"] == _stored_drift_bucket(hour), where
         assert row["field_name"] == "country", where
         assert row["scan_config_id"] == config.id, where
         assert row["baseline_total"] == expected.baseline_total, where
@@ -758,7 +767,7 @@ def test_distribution_drift_rows_match_per_scope_baselines() -> None:
     # The scan-wide scope is the sum of the typed ones plus the rows whose event
     # type is unknown to the plan.
     scan_wide = {row["bucket"]: row for row in rows if row["event_type_id"] is None}
-    assert scan_wide[datetime(2026, 1, 1, 10)]["current_total"] == 40 + 5 + 18 + 2
+    assert scan_wide[_stored_drift_bucket(10)]["current_total"] == 40 + 5 + 18 + 2
 
 
 def test_distribution_drift_skips_a_scope_without_enough_history() -> None:
@@ -769,11 +778,11 @@ def test_distribution_drift_skips_a_scope_without_enough_history() -> None:
 
     emitted = {(row["event_type_id"], row["bucket"]) for row in rows}
     # Only bucket 09 is populated inside logout's baseline window at bucket 10.
-    assert (_TYPE_B, datetime(2026, 1, 1, 10)) not in emitted
+    assert (_TYPE_B, _stored_drift_bucket(10)) not in emitted
     # purchase has one predecessor (bucket 08) and it falls outside the window.
     assert not any(row["event_type_id"] == _TYPE_C for row in rows)
     # Bucket 13 is at/after time_to.
-    assert not any(row["bucket"] == datetime(2026, 1, 1, 13) for row in rows)
+    assert not any(row["bucket"] == _stored_drift_bucket(13) for row in rows)
 
 
 _EQUALITY_CHECKS = [0]

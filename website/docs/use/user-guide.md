@@ -486,7 +486,7 @@ see, across tabs:
   native bucket is not a forecast for the whole aggregate bucket. You can also
   add **annotations** to mark deploys, releases, or incidents directly on the
   chart.
-- **Heatmap** — activity by hour of day and day of week.
+- **Heatmap** — activity by hour of day and day of week. It needs a scan that collects hourly or finer; on a 6-hour, daily or weekly scan the tab explains that there is no hour-of-day detail instead of drawing a mostly empty grid.
 - **Distribution** — whether a field's mix of values is drifting (reported as a
   PSI score and a band of *normal / minor / significant*).
 - **Breakdowns** *(event-level)* — splits an event's volume into one series per

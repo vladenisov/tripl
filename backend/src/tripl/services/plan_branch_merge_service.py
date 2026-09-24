@@ -1064,8 +1064,23 @@ async def _apply_merge(
             {(name,): variable.get("source_name") for name, variable in base_var_by_name.items()},
             {(name,): variable.source_name for name, variable in main_var_by_name.items()},
             {(name,): variable.source_name for name, variable in branch_var_by_name.items()},
+            vacate_removed=True,
         ).items()
     }
+    # A move onto a name a non-moving main row holds is only proposed when the
+    # branch deleted that row (tripl-ifuv). It has to go FIRST and be flushed on
+    # its own: SQLAlchemy orders a mapper's saves ahead of its deletes, so left
+    # to the removal loop below it would still hold the name and the
+    # ``source_name`` slot when the renamed row's UPDATE goes out.
+    displaced = [
+        main_var_by_name.pop(new_name)
+        for new_name in var_renames.values()
+        if new_name in main_var_by_name and new_name not in var_renames
+    ]
+    if displaced:
+        for occupant in displaced:
+            await session.delete(occupant)
+        await session.flush()
     if var_renames:
         await _rename_main_variables(session, main_var_by_name, var_renames)
         rekey_in_place(main_var_by_name, var_renames)
@@ -1129,9 +1144,13 @@ async def _apply_merge(
     # row's scan identity, and the next scan matching warehouse data onto the
     # wrong history. Nothing in ``build_plan_snapshot`` would show it.
     #
-    # A merge that genuinely wants both — the deletion and the move onto the
-    # freed name — is ambiguous, and 409 asking the user to rename the clashing
-    # entity is the honest answer. Cycles do NOT rely on this order: the parking
+    # The one unambiguous version of that shape — the branch deleted ``b``, whose
+    # identity S2 no branch row carries any more, and ``b`` still wears S2 on
+    # main as it did at the cut — is now paired, and its occupant deleted and
+    # flushed ahead of the rename above (tripl-ifuv). Every other merge that
+    # wants both the deletion and the move onto the freed name is still
+    # ambiguous, and 409 asking the user to rename the clashing entity is the
+    # honest answer. Cycles do NOT rely on this order: the parking
     # pass in ``_rename_main_variables`` is what makes a swap or a rotation work,
     # and it operates on names before either arm runs (tripl-htcz).
     for name, m_v in list(main_var_by_name.items()):

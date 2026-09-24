@@ -15,7 +15,6 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.alert_templates import percent_delta_of
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
     SCOPE_METRIC,
@@ -29,7 +28,6 @@ from tripl.alerting_matching import (
     rule_matches_anomaly,
     simulate_rule_firings,
 )
-from tripl.models.alert_delivery_item import trim_scope_name
 from tripl.models.domain_enums import DistributionDriftBand, MetricScopeType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project_anomaly_settings import (
@@ -869,68 +867,22 @@ async def simulate_rule(
     scope_names = await _build_scope_name_map(session, fired)
     metric_units = await _build_metric_unit_map(session, fired)
 
-    firings: list[SimulatedRuleFiring] = []
-    for anomaly in fired:
-        absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
-        # Through the SHARED definition, never restated here. This replay is the
-        # rule simulator: whatever the live send path would have stored is the
-        # only answer it may give, and the two drifted the moment
-        # ``dispatch._create_deliveries`` learned that a negative expectation is
-        # a real baseline and this copy did not — the simulator reported 0.0% on
-        # a signed catalog metric where dispatch reported 200%, for the same
-        # anomaly and the same rule (tripl-0zpq.102). A simulator that disagrees
-        # with the thing it simulates is worse than no simulator, which is the
-        # whole reason ``tripl.alerting_matching`` exists for the predicates;
-        # ``alert_templates.percent_delta_of`` is the same guarantee for the
-        # number. Readers of it go through ``format_percent_delta`` (rendered
-        # preview) or the frontend's ``lib/percentDelta`` (replay table).
-        percent_delta = percent_delta_of(anomaly.actual_count, anomaly.expected_count)
-        # Trimmed the way the live path trims it: ``alert_payload`` runs every
-        # name through ``trim_scope_name`` before it reaches the 255-character
-        # ``scope_name`` column, so a preview that showed the untrimmed label
-        # would disagree with the message the send actually delivers — the one
-        # thing this module exists to prevent.
-        scope_name = trim_scope_name(
-            scope_names.get(
-                (anomaly.scope_type, anomaly.scope_ref),
-                anomaly.scope_ref,
-            )
+    # Every field is read off the candidate by ``SimulatedRuleFiring.from_candidate``,
+    # the constructor the demo seeder shares, so the replay and the demo cannot
+    # disagree about a firing's shape (tripl-0zpq.324). It also owns the two
+    # guarantees this loop used to spell out: the delta goes through the SHARED
+    # ``alert_templates.percent_delta_of`` (the simulator reporting 0.0% where
+    # dispatch reported 200% for the same signed catalog metric was
+    # tripl-0zpq.102), and the name is trimmed with ``trim_scope_name`` the way
+    # ``alert_payload`` trims it before the 255-character column, so the preview
+    # shows the label the send actually delivers.
+    firings: list[SimulatedRuleFiring] = [
+        SimulatedRuleFiring.from_candidate(
+            anomaly,
+            scope_name=scope_names.get((anomaly.scope_type, anomaly.scope_ref), anomaly.scope_ref),
         )
-        firings.append(
-            SimulatedRuleFiring(
-                anomaly_id=anomaly.id,
-                scan_config_id=anomaly.scan_config_id,
-                scope_type=anomaly.scope_type,
-                scope_ref=anomaly.scope_ref,
-                scope_name=scope_name,
-                event_type_id=anomaly.event_type_id,
-                event_id=anomaly.event_id,
-                drift_field=getattr(anomaly, "drift_field", None),
-                drift_type=getattr(anomaly, "drift_type", None),
-                sample_value=getattr(anomaly, "sample_value", None),
-                bucket=anomaly.bucket,
-                # ``bucket`` above is the window's END; this is the hop that
-                # carries the START off the candidate and onto the DTO the
-                # preview renders from. Only ``_load_release_regression_candidates``
-                # fills it, and without this line every simulated firing takes
-                # the field's ``None`` default: the preview drops " over the 51h
-                # rollout overlap" while the delivered item keeps it, about the
-                # same firing, because ``alert_templates._format_window_span``
-                # is written to return None rather than to fail.
-                #
-                # ``getattr`` because ``AlertMatchCandidate`` is a Protocol and
-                # its ``MetricAnomaly`` members carry no window — the same form
-                # the send side uses for the same field
-                # (``dispatch._create_deliveries`` and ``_buffer_pending_items``),
-                # and the same form the three drift fields above use here.
-                window_from=getattr(anomaly, "window_from", None),
-                direction=anomaly.direction,
-                actual_count=anomaly.actual_count,
-                expected_count=anomaly.expected_count,
-                absolute_delta=absolute_delta,
-                percent_delta=percent_delta,
-            )
-        )
+        for anomaly in fired
+    ]
 
     rendered_items, rendered_message = _render_firings_message(
         rule,
