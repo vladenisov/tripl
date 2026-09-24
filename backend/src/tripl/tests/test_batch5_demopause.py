@@ -169,6 +169,31 @@ def _seed_scan_config(
     return _Seeded(project_id=project.id, scan_config_id=config.id)
 
 
+def _simulate_backfill_tick(session: Session, scan_config_id: uuid.UUID) -> None:
+    """What ``advance_demos`` does on the first tick after a resume.
+
+    It backfills the paused hours, so the newest stored bucket catches up to the
+    present. Without it the dispatcher now declines a resumed demo whose window
+    would still reach back to pause start (tripl-0zpq.342); these tests are about
+    the pause gate, so they let the backfill win the race. Two hours back keeps
+    the config due (its progress end sits one interval below the boundary).
+    """
+    current_hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    event_type_id = session.execute(
+        select(EventMetric.event_type_id).where(EventMetric.scan_config_id == scan_config_id)
+    ).scalar_one()
+    session.add(
+        EventMetric(
+            id=uuid.uuid4(),
+            scan_config_id=scan_config_id,
+            event_id=None,
+            event_type_id=event_type_id,
+            bucket=current_hour - timedelta(hours=2),
+            count=4200,
+        )
+    )
+
+
 def _run_dispatcher(
     sync_session_factory: sessionmaker[Session], monkeypatch: MonkeyPatch
 ) -> tuple[dict[str, int], list[tuple[str, str]]]:
@@ -232,6 +257,7 @@ def test_check_metrics_due_skips_a_paused_demo_and_resumes_on_access(
         project = session.get(Project, seeded.project_id)
         assert project is not None
         project.demo_last_accessed_at = datetime.now(UTC)
+        _simulate_backfill_tick(session, seeded.scan_config_id)
         session.commit()
 
     result2, dispatched2 = _run_dispatcher(sync_session_factory, monkeypatch)
@@ -302,6 +328,7 @@ def test_a_paused_demo_is_skipped_before_its_cooldown_history_is_read(
         project = session.get(Project, seeded.project_id)
         assert project is not None
         project.demo_last_accessed_at = datetime.now(UTC)
+        _simulate_backfill_tick(session, seeded.scan_config_id)
         session.commit()
 
     _active_result, active_dispatched = _run_dispatcher(sync_session_factory, monkeypatch)

@@ -20,7 +20,6 @@ from tripl.core.adapters.base import (
     SchemaTable,
     clamp_field_contract_threshold,
     contract_bound_literal,
-    field_contract_is_inert,
 )
 from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.measure_validator import (
@@ -170,6 +169,21 @@ def _as_utc_bucket(value: object) -> object:
     here with one means the row layout changed and column 0 stopped being the bucket;
     inventing a datetime for it would hide that, and the caller that compares it
     against the chunk window will say so far more clearly.
+
+    This moves the STORED instant of a ``DATETIME`` / ``DATE`` bucket, and rows
+    already written are not rewritten (tripl-0zpq.348). Before it, the naive
+    value reached a ``timestamptz`` column and was read in the app database
+    session's timezone; now it is the same wall clock stamped UTC. Where that
+    session ran in UTC — the default of a PostgreSQL image initialised without a
+    ``TZ``, and what ``db_config.postgres_connect_args`` now pins — the two are
+    the same instant and nothing changes. Where it did not, historical rows for
+    such a config sit ``offset`` away from new ones, the unique key sees two rows
+    for one logical bucket at the edges of an overlapping re-collection, and the
+    documented remedy is a full-history re-collection of that config
+    (``website/docs/develop/warehouse-parity.md``, "BigQuery ``DATETIME`` is
+    zone-less"). ``TIMESTAMP`` buckets were aware all along and do not move. The
+    writers normalize again on their side (``core.bucketing.stored_bucket``), so
+    the answer no longer depends on every adapter remembering to.
     """
     if isinstance(value, datetime):
         return to_utc(value)
@@ -1164,7 +1178,7 @@ class BigQueryAdapter(BaseAdapter):
         not. See the field contract section of ``BaseAdapter``, where both
         divergences are declared.
         """
-        if field_contract_is_inert(expectation):
+        if self._field_contract_is_inert(expectation):
             return None
 
         column = self._validate_column(expectation.field_name)
@@ -1194,6 +1208,7 @@ class BigQueryAdapter(BaseAdapter):
                 column,
                 expectation.drift_type,
             )
+            self._skip_field_contract(expectation)
             return None
 
         if expectation.drift_type == "required_null_violation":
@@ -1219,6 +1234,7 @@ class BigQueryAdapter(BaseAdapter):
             # save gate screens with accepts. Offered to the engine before it
             # rides into the job that reads the window.
             if not self.contract_regex_is_compilable(expectation.regex):
+                self._skip_field_contract(expectation)
                 return None
             pattern = self._quote_string(expectation.regex)
             bad = f"{present} AND NOT REGEXP_CONTAINS({value_expr}, {pattern})"
@@ -1331,6 +1347,7 @@ class BigQueryAdapter(BaseAdapter):
                 # reference to a column that does not exist and failing the entire scan —
                 # a stale contract on a dropped column must not take the other contracts
                 # down with it.
+                self._skip_field_contract(expectation)
                 continue
             fragments = self._contract_fragments(expectation, index=index)
             if fragments is None:
@@ -1915,7 +1932,7 @@ class BigQueryAdapter(BaseAdapter):
         )
         return col_names, json_value_names, [(row[0], row[2], row[3], *row[4:]) for row in rows]
 
-    def _top_breakdown_values_multi(
+    def _query_top_breakdown_values_multi(
         self,
         base_query: str,
         time_column: str,

@@ -608,7 +608,13 @@ def lint_dialect_sql(sql: str, dialect: SqlDialect) -> str | None:
     A PRE-FLIGHT diagnostic, not a security control: it runs *after* the read-only
     gate and can only reject more, never admit more. Its job is to turn "a starter
     query that cannot run on the warehouse you picked" into a sentence the user can
-    act on, before a save or a worker collection, instead of a driver stack trace.
+    act on, instead of a driver stack trace.
+
+    It runs in exactly ONE place: ``services/metric_preview_service`` (the metric
+    preview). Neither the save path (``schemas/metric_definition``, which runs the
+    read-only gate only) nor the worker's collection calls it, so it is an
+    affordance for whoever previews, not an enforcement point: a metric saved
+    without a preview can still fail in a worker (tripl-0zpq.355).
 
     Every rule is a function that provably does NOT resolve on the target dialect,
     checked against live engines so a valid query is never flagged. In particular:

@@ -26,6 +26,7 @@ from tripl.core.analyzers.event_generator import (
     render_default_event_name,
     truncate_event_name,
 )
+from tripl.core.bucketing import stored_bucket, to_utc
 from tripl.json_paths import (
     build_json_value,
     decode_json_path_value,
@@ -816,7 +817,7 @@ def _collect_metric_breakdown_rows(
     )
 
     for row in rows:
-        bucket = cast(datetime, row[0])
+        bucket = stored_bucket(row[0])
         breakdown_column = str(row[1])
         breakdown_value = _normalize_breakdown_value(row[2])
         is_other = bool(row[3])
@@ -968,7 +969,7 @@ def _collect_app_version_breakdown_rows(
     type_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int] = {}
 
     for row in rows:
-        bucket = cast(datetime, row[0])
+        bucket = stored_bucket(row[0])
         data_row = row[1:]
         if version_idx >= len(data_row) - 1:
             continue
@@ -1137,6 +1138,13 @@ def _collect_distribution_drift_rows(
         ", ".join(distribution_fields),
     )
 
+    # Buckets below are ``stored_bucket`` values, aware UTC (tripl-0zpq.348), so
+    # the window they are compared against is stamped the same way. Only the
+    # comparison bounds: the adapter above gets the window exactly as the caller
+    # passed it, like every other collector query.
+    window_from = to_utc(time_from)
+    window_to = to_utc(time_to)
+
     # Pre-grouped by scope and then by bucket, NOT flat. The analysis below needs
     # one bucket's values and its handful of predecessors at a time; against a
     # flat dict that is a full rescan per (scope, bucket) pair, and the fetch is
@@ -1160,7 +1168,7 @@ def _collect_distribution_drift_rows(
         bucket_counts[value] = bucket_counts.get(value, 0) + count
 
     for row in rows:
-        bucket = cast(datetime, row[0])
+        bucket = stored_bucket(row[0])
         field_name = str(row[1])
         field_value = _normalize_breakdown_value(row[2])
         data_row = row[4:]
@@ -1198,7 +1206,7 @@ def _collect_distribution_drift_rows(
         by_bucket = grouped[(event_type_id, field_name)]
         ordered_buckets = sorted(by_bucket)
         for index, bucket in enumerate(ordered_buckets):
-            if bucket < time_from or bucket >= time_to:
+            if bucket < window_from or bucket >= window_to:
                 continue
 
             baseline_from = bucket - interval_delta * baseline_window_buckets

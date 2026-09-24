@@ -64,15 +64,14 @@ GENERIC_SCAN_ERROR = "Scan failed due to an internal error."
 STALE_INTERVALS = 3
 NEVER_COLLECTED_INTERVALS = 2
 
-# backend/src/tripl/worker/tasks/metrics/schedule.py::DEMO_COLLECTION_COOLDOWN_HOURS.
-# A DEMO project's scheduled collection is deliberately skipped while its newest
-# dispatcher job is younger than this, because a demo pays 67-141 s per run
-# against an in-memory dataset and gains nothing from hourly detail. The demo
-# recipe creates its scan config with interval "1h", so the plain 3-interval
-# staleness rule would call a perfectly healthy demo broken for half of every
-# cooldown period - and a doctor that cries wolf on the one project every new
-# operator opens first is a doctor nobody keeps running.
-DEMO_COOLDOWN_SECONDS = 6 * 3600
+# A DEMO project's scheduled collection is NOT judged for staleness at all
+# (tripl-0zpq.343). The scheduler throttles a demo to one collection per
+# cooldown and stops collecting entirely while nobody has opened the demo
+# (backend/src/tripl/worker/tasks/_demo_pause.py), and nothing the API exposes
+# tells a deliberately paused demo from a dead beat scheduler. A doctor that
+# reported FAIL on every idle demo - the project every new operator opens
+# first - would be a doctor nobody keeps running. A demo's FAILING runs are
+# still reported: a paused demo creates no jobs, so it cannot fail.
 
 
 @dataclass(frozen=True)
@@ -353,14 +352,8 @@ def _config_findings(
     dispatched = dispatcher_jobs(jobs)
     streak = streak if streak is not None else consecutive_failure_streak(jobs)
     data_source_id = text_of(config, "data_source_id")
-    # A demo's dispatcher jobs legitimately arrive one cooldown apart, so the
-    # window in which silence is normal is the cooldown plus one interval, not
-    # three intervals. Real projects are unaffected.
     stale_after = STALE_INTERVALS * seconds
     never_after = NEVER_COLLECTED_INTERVALS * seconds
-    if is_demo:
-        stale_after = max(stale_after, DEMO_COOLDOWN_SECONDS + seconds)
-        never_after = max(never_after, DEMO_COOLDOWN_SECONDS + seconds)
 
     if not dispatched:
         # "Ever" is a claim about all history, and we hold one window of it. When
@@ -388,7 +381,9 @@ def _config_findings(
             ]
         created = parse_time(config.get("created_at"))
         age = (now - created).total_seconds() if created is not None else None
-        if age is not None and age > never_after:
+        # Not for a demo: one nobody opened may never have been collected, and
+        # that is the pause working, not a dead scheduler (tripl-0zpq.343).
+        if not is_demo and age is not None and age > never_after:
             findings.append(
                 Finding(
                     code="scan_never_collected",
@@ -456,7 +451,9 @@ def _config_findings(
     else:
         dispatched_at = parse_time(newest.get("created_at"))
         idle = (now - dispatched_at).total_seconds() if dispatched_at is not None else 0.0
-        if dispatched_at is not None and idle > stale_after:
+        # Never for a demo (tripl-0zpq.343): its silence is the pause gate
+        # working, and nothing exposed can tell it from a dead scheduler.
+        if not is_demo and dispatched_at is not None and idle > stale_after:
             # Suppressed above when the config is already failing: one root
             # cause, one finding. A failing config is trivially also "not
             # recently dispatched", and printing both invites the operator to
@@ -483,10 +480,10 @@ def _config_findings(
         watermark = parse_time(as_dict((completed or {}).get("result_summary")).get("time_to"))
         if watermark is not None:
             behind = (now - watermark).total_seconds()
-            # stale_after, not the raw 3 intervals: a demo's scheduled collection
-            # advances this watermark once per cooldown, so the same allowance
-            # that governs dispatch has to govern what it writes.
-            if behind > stale_after:
+            # Not for a demo: a paused demo's watermark freezes with its
+            # collection, and its synthetic source is never "producing no rows"
+            # (tripl-0zpq.343).
+            if not is_demo and behind > stale_after:
                 findings.append(
                     Finding(
                         code="scan_watermark_stale",
