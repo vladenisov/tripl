@@ -53,6 +53,7 @@ import { dataSourceHealthLexeme } from '@/lib/statusLexicon'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDate } from '@/lib/datetime'
 import { dataSourcesKey } from '@/lib/queryKeys'
+import { isOwner } from '@/lib/permissions'
 
 const EMPTY_DATA_SOURCES: DataSource[] = []
 
@@ -111,7 +112,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setEditSettings((prev) => ({ ...prev, ...patch }))
 
   const [testingId, setTestingId] = useState<string | null>(null)
-  const canManageDataSources = user?.role === 'owner'
+  const canManageDataSources = isOwner(user?.role)
 
   const dataSourcesQuery = useQuery({
     queryKey: dataSourcesKey(),

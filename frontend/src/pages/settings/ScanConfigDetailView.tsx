@@ -23,6 +23,8 @@ import { BackLink, SrcIcon } from './scans/scanLayout'
 import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
 import { deriveScanRunInfo } from './scans/scanUtils'
 import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
+import { useCanWrite, useIsOwner } from '@/lib/permissions'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 type DetailTab = 'overview' | 'configuration'
 
@@ -31,6 +33,8 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   const qc = useQueryClient()
   const { notifyScanRunStarted } = useDemoScenarioActions()
   const [tab, setTab] = useState<DetailTab>('overview')
+  const canRun = useCanWrite()
+  const isOwner = useIsOwner()
 
   const {
     data: scanConfigs = [],
@@ -65,6 +69,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   })
 
   const runMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => scansApi.run(slug, scanConfigId),
     onSuccess: (job) => {
       // The demo's runtime tick manufactures scan jobs continuously, so only the
@@ -148,20 +153,26 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             <ScanCausalNote variant="config" config={sc} />
           </div>
         </div>
-        <ScenarioCoachMark step="live-loop/run-scan">
-          <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
-            <Play className="size-3" />
-            {runMut.isPending ? 'Starting…' : 'Run now'}
+        {/* Run is an editor's action, editing the configuration an owner's
+            (DATA-6); the Configuration tab itself stays open to read. */}
+        {canRun && (
+          <ScenarioCoachMark step="live-loop/run-scan">
+            <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
+              <Play className="size-3" />
+              {runMut.isPending ? 'Starting…' : 'Run now'}
+            </Button>
+          </ScenarioCoachMark>
+        )}
+        {isOwner && (
+          <Button
+            variant={tab === 'configuration' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setTab('configuration')}
+          >
+            <Sliders className="size-3.5" />
+            Edit
           </Button>
-        </ScenarioCoachMark>
-        <Button
-          variant={tab === 'configuration' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setTab('configuration')}
-        >
-          <Sliders className="size-3.5" />
-          Edit
-        </Button>
+        )}
       </div>
 
       {runMut.isError && (

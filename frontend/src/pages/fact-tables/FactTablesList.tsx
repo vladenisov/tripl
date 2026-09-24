@@ -12,6 +12,7 @@ import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatRelativeTime } from '@/lib/datetime'
 import type { FactTableListItem } from '@/types'
 import { dataSourcesKey } from '@/lib/queryKeys'
+import { useCanWrite } from '@/lib/permissions'
 
 const FACT_TABLE_GRID = 'grid grid-cols-[1.7fr_1fr_1fr_84px] items-center gap-3 px-4'
 
@@ -23,6 +24,7 @@ const FACT_TABLE_GRID = 'grid grid-cols-[1.7fr_1fr_1fr_84px] items-center gap-3 
  * than as a standalone surface.
  */
 export function FactTablesList({ slug }: { slug?: string }) {
+  const canWrite = useCanWrite()
   const factTablesQuery = useQuery({
     queryKey: ['fact-tables', slug],
     queryFn: () => factTablesApi.list(slug!),
@@ -89,7 +91,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
               title="No fact tables yet"
               description="A fact table wraps a read-only SELECT or WITH ... SELECT into a reusable, column-introspected source. Define one, then build fact metrics that aggregate its columns."
               action={
-                slug ? (
+                slug && canWrite ? (
                   <Button asChild size="sm">
                     <Link to={`/p/${slug}/metrics/fact-tables/new`} className="no-underline">
                       <Plus className="h-3.5 w-3.5" />

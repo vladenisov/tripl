@@ -224,11 +224,59 @@ describe('ProjectGeneralSection', () => {
 
     renderSection(authValue('editor'))
 
-    // Wait for the project to load (Delete row always renders), then confirm the
-    // owner-only reset actions are absent.
-    await screen.findByRole('button', { name: /Delete project/ })
+    // Wait for the project to load, then confirm the whole owner-only danger
+    // zone is absent rather than a card of buttons the editor can never press.
+    await screen.findByLabelText('Name')
     expect(screen.queryByRole('button', { name: 'Reset anomalies' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reset drifts' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Delete project/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Danger zone')).not.toBeInTheDocument()
+  })
+
+  it('lets the editor who created the project edit it', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) {
+        return jsonResponse({ ...PROJECT, created_by_user_id: 'editor-1' })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection(authValue('editor'))
+
+    expect(await screen.findByLabelText('Name')).toBeEnabled()
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  })
+
+  it("renders another editor's project read-only and says who can edit it", async () => {
+    // `_require_project_manager`: only the creator or an owner may PATCH, so
+    // live fields here were a form whose Save could only answer 403.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) {
+        return jsonResponse({ ...PROJECT, created_by_user_id: 'someone-else' })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection(authValue('editor'))
+
+    expect(await screen.findByLabelText('Name')).toBeDisabled()
+    expect(screen.getByLabelText('Releases to keep')).toBeDisabled()
+    expect(screen.getByRole('note')).toHaveTextContent(/creator or an owner/)
+    // Reindex is a plain project mutation, which shared projects allow editors.
+    expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeEnabled()
+  })
+
+  it('tells a viewer once why the form is read-only', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection(authValue('viewer'))
+
+    expect(await screen.findByLabelText('Name')).toBeDisabled()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeDisabled()
   })
 
   it('resets anomalies with the chosen period after confirmation', async () => {

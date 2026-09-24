@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button'
 import { PageHead } from '@/components/settings/kit'
 import { FactTablesList } from '@/pages/fact-tables/FactTablesList'
 import { MetricsCatalog } from './MetricsCatalog'
+import { useCanWrite } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 export type MetricsTab = 'catalog' | 'fact-tables'
 
@@ -22,8 +24,11 @@ const TABS: { id: MetricsTab; label: string; path: (slug: string) => string }[] 
  */
 export default function MetricsPage({ tab = 'catalog' }: { tab?: MetricsTab }) {
   const { slug } = useParams<{ slug: string }>()
+  const canWrite = useCanWrite()
 
-  const action =
+  // Creating a metric or fact table is an editor's job; a viewer gets the
+  // catalog and one line saying why there is no New button.
+  const action = !canWrite ? undefined :
     slug && tab === 'fact-tables' ? (
       <Button asChild size="sm">
         <Link to={`/p/${slug}/metrics/fact-tables/new`} className="no-underline">
@@ -46,6 +51,8 @@ export default function MetricsPage({ tab = 'catalog' }: { tab?: MetricsTab }) {
         <PageHead eyebrow="Observe" title="Metrics" right={action} />
         <MetricsTabs slug={slug} tab={tab} />
       </div>
+
+      {!canWrite && <ReadOnlyNotice />}
 
       {tab === 'fact-tables' ? <FactTablesList slug={slug} /> : <MetricsCatalog slug={slug} />}
     </div>

@@ -8,6 +8,7 @@ import { sectionPathForUrl, visibleGroupsAll } from './nav'
 import { SettingsCommandPalette } from './settings-palette'
 import { UnsavedChangesProvider, type UnsavedWork } from './unsaved-changes'
 import type { Project } from '@/types'
+import { isOwner as isOwnerRole } from '@/lib/permissions'
 
 const RAIL_TITLE_ID = 'settings-rail-title'
 
@@ -50,7 +51,7 @@ export function SettingsLayout({
   const auth = useAuth()
   const navigate = useNavigate()
   const { confirm, dialog } = useConfirm()
-  const isOwner = auth.user?.role === 'owner'
+  const isOwner = isOwnerRole(auth.user?.role)
 
   // Personalize group sub-labels with live identity, matching the mockup
   // (Project → project name, Account → "You · <name>"). Workspace stays

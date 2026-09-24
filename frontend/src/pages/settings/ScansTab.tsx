@@ -26,6 +26,8 @@ import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
 import { countOf, pluralize } from "@/lib/plural"
 import { dataSourcesKey, projectEventTypesKey } from '@/lib/queryKeys'
+import { useCanWrite, useIsOwner } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 interface RecentRun {
   jobId: string
@@ -48,6 +50,10 @@ export function ScansTab({ slug }: { slug: string }) {
   const { notifyScanRunStarted } = useDemoScenarioActions()
   // Null for every non-demo project — no run row is ever the scenario's row.
   const { scanJobId } = useScenarioArtifacts()
+  // Authoring a scan (and its SQL) is OwnerUserDep; running one is an editor's
+  // job (DATA-6). Each control below is offered only to a role that can use it.
+  const isOwner = useIsOwner()
+  const canRun = useCanWrite()
   const [view, setView] = useState<'list' | 'new'>('list')
   // Captured once at mount so the 24h window stays stable across re-renders
   // (keeps the rows-scanned KPI pure rather than reading the wall clock in render).
@@ -188,7 +194,7 @@ export function ScansTab({ slug }: { slug: string }) {
   // "Run again" derive their busy state from this id.
   const pendingScanId = runScan.isPending ? runScan.variables : undefined
 
-  if (view === 'new') {
+  if (view === 'new' && isOwner) {
     return <ScanCreatePage slug={slug} onBack={() => setView('list')} />
   }
 
@@ -212,16 +218,26 @@ export function ScansTab({ slug }: { slug: string }) {
             what anomaly detection and alerts are built on.
           </p>
         </div>
-        <Button
-          size="sm"
-          disabled={dataSources.length === 0}
-          title={dataSources.length === 0 ? 'Add a data source first' : ''}
-          onClick={() => setView('new')}
-        >
-          <Plus className="size-3.5" />
-          New scan
-        </Button>
+        {isOwner && (
+          <Button
+            size="sm"
+            disabled={dataSources.length === 0}
+            title={dataSources.length === 0 ? 'Add a data source first' : ''}
+            onClick={() => setView('new')}
+          >
+            <Plus className="size-3.5" />
+            New scan
+          </Button>
+        )}
       </div>
+
+      {!isOwner && (
+        <ReadOnlyNotice>
+          {canRun
+            ? 'Creating and changing scans is done by an owner. You can run the scans below.'
+            : undefined}
+        </ReadOnlyNotice>
+      )}
 
       {/* Collapses before the labels do: "Warehouse rows read · 24h" wraps to
           three lines in a fixed third of a phone viewport. Same convention as
@@ -240,16 +256,24 @@ export function ScansTab({ slug }: { slug: string }) {
         <EmptyState
           icon={Search}
           title="No data sources"
-          description="Add a data source connection first to create a scan."
+          description={
+            isOwner
+              ? 'Add a data source connection first to create a scan.'
+              : 'An owner has to add a data source connection before scans can be created.'
+          }
           action={
             // The empty state used to name the page that fixes it and leave the
-            // reader to find it; the link IS the remedy now (tripl-eadx).
-            <Button asChild size="sm">
-              <Link to="/settings/data-sources">
-                <Plus className="size-3.5" />
-                Add connection
-              </Link>
-            </Button>
+            // reader to find it; the link IS the remedy now (tripl-eadx). Only
+            // for an owner: data sources are owner-only, and anyone else landed
+            // on a page with nothing they could add.
+            isOwner ? (
+              <Button asChild size="sm">
+                <Link to="/settings/data-sources">
+                  <Plus className="size-3.5" />
+                  Add connection
+                </Link>
+              </Button>
+            ) : undefined
           }
         />
       )}
@@ -312,7 +336,7 @@ export function ScansTab({ slug }: { slug: string }) {
                     intervalLabel={INTERVAL_LABEL}
                     detailHref={detailHref}
                     onNavigate={() => navigate(detailHref)}
-                    onRun={() => runScan.mutate(sc.id)}
+                    onRun={canRun ? () => runScan.mutate(sc.id) : undefined}
                     runPending={pendingScanId === sc.id}
                     // The step-1 CTA opens this list; point the coach at the first
                     // row's Run control (inert unless the demo scenario is active).
@@ -377,15 +401,17 @@ export function ScansTab({ slug }: { slug: string }) {
                             failed last {run.failingStreak} runs
                           </span>
                         )}
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          disabled={pendingScanId === run.scanId}
-                          onClick={() => runScan.mutate(run.scanId)}
-                        >
-                          <RotateCw className="size-3" aria-hidden="true" />
-                          {pendingScanId === run.scanId ? 'Starting…' : 'Run again'}
-                        </Button>
+                        {canRun && (
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            disabled={pendingScanId === run.scanId}
+                            onClick={() => runScan.mutate(run.scanId)}
+                          >
+                            <RotateCw className="size-3" aria-hidden="true" />
+                            {pendingScanId === run.scanId ? 'Starting…' : 'Run again'}
+                          </Button>
+                        )}
                       </div>
                     ) : (
                       <>

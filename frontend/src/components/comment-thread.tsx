@@ -5,6 +5,7 @@ import { Loader2, MessageCircle, Trash2 } from 'lucide-react'
 import { formatDateTime } from '@/lib/datetime'
 import { isThreadUnanswered, threadStateLabel } from '@/components/commentThreadState'
 import type { EventCommentAction, EventCommentStatus } from '@/types'
+import { useCanWrite } from '@/lib/permissions'
 
 /**
  * The shape the thread renders. Both anchors — a photo and an event — keep
@@ -91,6 +92,9 @@ export function CommentThread({
   onAction,
 }: CommentThreadProps) {
   const queryClient = useQueryClient()
+  // Every comment write (post, reply, resolve, delete) is EditorUserDep on the
+  // backend, so a viewer reads the thread and is offered none of them.
+  const canWrite = useCanWrite()
   const [body, setBody] = useState(initialBody)
   const [replyTo, setReplyTo] = useState<string | null>(null)
 
@@ -168,12 +172,12 @@ export function CommentThread({
               key={comment.id}
               comment={comment}
               replies={repliesByParent.get(comment.id) ?? []}
-              onReply={() => setReplyTo(comment.id)}
-              onDelete={id => deleteMut.mutate(id)}
+              onReply={canWrite ? () => setReplyTo(comment.id) : undefined}
+              onDelete={canWrite ? id => deleteMut.mutate(id) : undefined}
               replyingTo={replyTo}
               authorName={authorName}
               onAction={
-                onAction
+                onAction && canWrite
                   ? (action, snoozedUntil) =>
                       actionMut.mutate({ commentId: comment.id, action, snoozedUntil })
                   : undefined
@@ -183,47 +187,53 @@ export function CommentThread({
           ))
         )}
       </div>
-      <div className="mt-3 flex flex-col gap-2 border-t pt-3">
-        {replyTo && (
-          <div className="flex items-center justify-between rounded bg-muted px-2 py-1 text-xs">
-            <span>Replying to comment</span>
-            <button
+      {!canWrite ? (
+        <p className="mt-3 border-t pt-3 text-xs text-muted-foreground">
+          Read-only: commenting is done by an editor or owner.
+        </p>
+      ) : (
+        <div className="mt-3 flex flex-col gap-2 border-t pt-3">
+          {replyTo && (
+            <div className="flex items-center justify-between rounded bg-muted px-2 py-1 text-xs">
+              <span>Replying to comment</span>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => setReplyTo(null)}
+              >
+                cancel
+              </button>
+            </div>
+          )}
+          <label htmlFor={composerId} className="sr-only">Write a comment</label>
+          <textarea
+            id={composerId}
+            value={body}
+            onChange={event => setBody(event.target.value)}
+            // Enter belongs to the text — a comment is often several lines — so
+            // the shortcut is the one every chat box uses.
+            onKeyDown={event => {
+              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault()
+                submit()
+              }
+            }}
+            placeholder="Write a comment…"
+            className="min-h-[60px] w-full rounded-md border bg-background px-2 py-1 text-sm"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
               type="button"
-              className="text-muted-foreground hover:text-foreground"
-              onClick={() => setReplyTo(null)}
+              size="sm"
+              onClick={submit}
+              disabled={!body.trim() || createMut.isPending}
             >
-              cancel
-            </button>
+              {createMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {replyTo ? 'Reply' : 'Comment'}
+            </Button>
           </div>
-        )}
-        <label htmlFor={composerId} className="sr-only">Write a comment</label>
-        <textarea
-          id={composerId}
-          value={body}
-          onChange={event => setBody(event.target.value)}
-          // Enter belongs to the text — a comment is often several lines — so
-          // the shortcut is the one every chat box uses.
-          onKeyDown={event => {
-            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault()
-              submit()
-            }
-          }}
-          placeholder="Write a comment…"
-          className="min-h-[60px] w-full rounded-md border bg-background px-2 py-1 text-sm"
-        />
-        <div className="flex items-center justify-end gap-2">
-          <Button
-            type="button"
-            size="sm"
-            onClick={submit}
-            disabled={!body.trim() || createMut.isPending}
-          >
-            {createMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            {replyTo ? 'Reply' : 'Comment'}
-          </Button>
         </div>
-      </div>
+      )}
     </div>
   )
 }
@@ -240,8 +250,9 @@ function CommentItem({
 }: {
   comment: ThreadComment
   replies: ThreadComment[]
-  onReply: () => void
-  onDelete: (id: string) => void
+  /** Omitted for a viewer, as is `onDelete`: both are editor actions. */
+  onReply?: () => void
+  onDelete?: (id: string) => void
   replyingTo: string | null
   authorName?: (comment: ThreadComment) => string
   onAction?: (action: EventCommentAction, snoozedUntil?: string) => void
@@ -297,17 +308,21 @@ function CommentItem({
                 reopen
               </button>
             ))}
-            <button type="button" className="hover:text-foreground" onClick={onReply}>
-              {replyingTo === comment.id ? 'replying…' : 'reply'}
-            </button>
-            <button
-              type="button"
-              aria-label="Delete comment"
-              className="hover:text-destructive"
-              onClick={() => onDelete(comment.id)}
-            >
-              <Trash2 className="h-3 w-3" aria-hidden="true" />
-            </button>
+            {onReply && (
+              <button type="button" className="hover:text-foreground" onClick={onReply}>
+                {replyingTo === comment.id ? 'replying…' : 'reply'}
+              </button>
+            )}
+            {onDelete && (
+              <button
+                type="button"
+                aria-label="Delete comment"
+                className="hover:text-destructive"
+                onClick={() => onDelete(comment.id)}
+              >
+                <Trash2 className="h-3 w-3" aria-hidden="true" />
+              </button>
+            )}
           </div>
         </div>
         <p className="whitespace-pre-wrap text-sm">{comment.body}</p>
@@ -321,14 +336,16 @@ function CommentItem({
                   {authorName ? `${authorName(reply)} · ` : ''}
                   {formatDateTime(reply.created_at)}
                 </span>
-                <button
-                  type="button"
-                  aria-label="Delete comment"
-                  className="hover:text-destructive"
-                  onClick={() => onDelete(reply.id)}
-                >
-                  <Trash2 className="h-3 w-3" aria-hidden="true" />
-                </button>
+                {onDelete && (
+                  <button
+                    type="button"
+                    aria-label="Delete comment"
+                    className="hover:text-destructive"
+                    onClick={() => onDelete(reply.id)}
+                  >
+                    <Trash2 className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                )}
               </div>
               <p className="whitespace-pre-wrap text-sm">{reply.body}</p>
             </div>

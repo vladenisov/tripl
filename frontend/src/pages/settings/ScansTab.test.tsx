@@ -10,7 +10,8 @@ import {
   writeScenarioState,
 } from '@/demo/scenarioModel'
 import { liveLoopState } from '@/demo/scenarioTestState'
-import type { Project } from '@/types'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import type { Project, Role } from '@/types'
 import { ScansTab } from './ScansTab'
 
 const navigateMock = vi.fn()
@@ -171,13 +172,34 @@ function setupFetchWithJobs(jobs: unknown[], runCalls?: { method: string; url: s
 // The scan rows now carry a real <Link> to the detail page, so the tab needs a
 // router. useNavigate is still the mock above — Link resolves its href through
 // react-router's own internals, which the mock does not intercept.
-function renderTab() {
+function authAs(role: Role): AuthContextValue {
+  return {
+    user: {
+      id: `${role}-1`,
+      email: `${role}@example.com`,
+      name: role,
+      role,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+/** As an owner unless a test says otherwise: authoring a scan is owner-only. */
+function renderTab(role: Role = 'owner') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/scans']}>
-        <ScansTab slug="demo" />
-      </MemoryRouter>
+      <AuthContext.Provider value={authAs(role)}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
+          <ScansTab slug="demo" />
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -189,6 +211,25 @@ afterEach(() => {
 })
 
 describe('ScansTab', () => {
+  it('offers an editor Run now but no scan authoring (DATA-6)', async () => {
+    setupFetch()
+    renderTab('editor')
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/done by an owner/)
+    expect(await screen.findByRole('button', { name: 'Run Main events scan now' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New scan/ })).not.toBeInTheDocument()
+  })
+
+  it('offers a viewer neither authoring nor runs (DATA-6)', async () => {
+    setupFetchWithJobs([failedJob('job-f1', '2026-01-01T00:00:00Z')])
+    renderTab('viewer')
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/viewer role/)
+    await screen.findByText('Recent runs')
+    expect(screen.queryByRole('button', { name: /Run .* now|Run again/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New scan/ })).not.toBeInTheDocument()
+  })
+
   it('renders the scan list with KPIs and config rows', async () => {
     setupFetch()
     renderTab()
@@ -532,11 +573,13 @@ describe('ScansTab — coached demo scenario', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/p/${SLUG}/scans`]}>
-          <DemoScenarioProvider project={project} pollIntervalMs={10}>
-            <ScansTab slug={SLUG} />
-          </DemoScenarioProvider>
-        </MemoryRouter>
+        <AuthContext.Provider value={authAs('owner')}>
+          <MemoryRouter initialEntries={[`/p/${SLUG}/scans`]}>
+            <DemoScenarioProvider project={project} pollIntervalMs={10}>
+              <ScansTab slug={SLUG} />
+            </DemoScenarioProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
   }

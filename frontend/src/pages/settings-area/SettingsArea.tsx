@@ -7,6 +7,7 @@ import { SCard } from '@/components/settings/kit'
 import { SettingsLayout } from '@/components/settings/SettingsLayout'
 import { SETTINGS_STORAGE_KEY } from '@/components/settings/nav'
 import type { Project } from '@/types'
+import { isOwner as isOwnerRole } from '@/lib/permissions'
 
 const ProjectGeneralSection = lazy(() => import('./ProjectGeneralSection'))
 const PlanRulesSection = lazy(() => import('./PlanRulesSection'))
@@ -60,7 +61,7 @@ function SectionFallback() {
  */
 export default function SettingsArea({ section }: { section: string }) {
   const auth = useAuth()
-  const isOwner = auth.user?.role === 'owner'
+  const isOwner = isOwnerRole(auth.user?.role)
   const [pickedSlug, setPickedSlug] = useState<string | null>(null)
   const slug = useSettingsSlug(pickedSlug)
   const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: projectsApi.list })

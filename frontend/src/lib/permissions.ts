@@ -1,7 +1,7 @@
 import { useContext } from 'react'
 
 import { AuthContext } from '@/components/auth-context'
-import type { Role } from '@/types'
+import type { AuthUser, Project, Role } from '@/types'
 
 /**
  * May this role write?
@@ -39,6 +39,65 @@ export function useCanWrite(): boolean {
 }
 
 /**
+ * Is this role the instance owner?
+ *
+ * Mirrors `require_owner` in backend/src/tripl/api/deps.py (`role != "owner"` is
+ * rejected). Unlike {@link canWrite} this IS an allow-list, because the backend's
+ * rule is one: exactly one role passes. A missing role is therefore "not an
+ * owner" — owner-only surfaces (data sources, scan authoring, project deletion)
+ * stay hidden until the session says otherwise, as they always have.
+ */
+export function isOwner(role: Role | null | undefined): boolean {
+  return role === 'owner'
+}
+
+/** {@link isOwner} for the signed-in user, read the same way as {@link useCanWrite}. */
+export function useIsOwner(): boolean {
+  const auth = useContext(AuthContext)
+  return isOwner(auth?.user?.role)
+}
+
+/**
+ * May this user edit the project itself (name, slug, retention) or manage the
+ * demo it is?
+ *
+ * Mirrors the backend's pair of gates on `PATCH /projects/{slug}` and the demo
+ * reset/delete routes: `EditorUserDep` (not a viewer) AND `_is_project_manager`
+ * (an owner, or the user who created the project). A creator who has since been
+ * demoted to viewer fails the first half, which is why the role is checked and
+ * not only the id.
+ */
+export function canManageProject(
+  user: Pick<AuthUser, 'id' | 'role'> | null | undefined,
+  project: Pick<Project, 'created_by_user_id'> | null | undefined,
+): boolean {
+  if (!user) return false
+  if (isOwner(user.role)) return true
+  return (
+    canWrite(user.role) &&
+    project?.created_by_user_id != null &&
+    project.created_by_user_id === user.id
+  )
+}
+
+/** {@link canManageProject} for the signed-in user. */
+export function useCanManageProject(
+  project: Pick<Project, 'created_by_user_id'> | null | undefined,
+): boolean {
+  const auth = useContext(AuthContext)
+  return canManageProject(auth?.user, project)
+}
+
+/**
+ * The reason on a control only an owner can use, for the few places where the
+ * control stays visible (disabled) because its presence explains something.
+ * `action` completes "Only an owner can …".
+ */
+export function ownerOnlyReason(action: string): string {
+  return `Only an owner can ${action}.`
+}
+
+/**
  * Why the write controls are missing — said ONCE per section.
  *
  * Deliberately not attached to individual controls: the alerting page carries
@@ -49,3 +108,10 @@ export function useCanWrite(): boolean {
  */
 export const VIEWER_READ_ONLY_NOTICE =
   'Read-only: your account has the viewer role. Acting on incidents, changing destinations and rules, and retrying deliveries are done by an editor or owner.'
+
+/**
+ * The same notice for a surface that is not alerting: says what the role is and
+ * who can act, without listing one page's jobs on another.
+ */
+export const VIEWER_READ_ONLY_HINT =
+  'Read-only: your account has the viewer role. Changes here are made by an editor or owner.'

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import MonitorDetailPage from './MonitorDetailPage'
 import { INDEFINITE_MUTE, MUTE_PRESETS, muteChoiceName } from '@/lib/mutePresets'
 import { formatCooldown } from './alerting/constants'
@@ -101,17 +102,35 @@ function mockApi(options: MockOptions = {}) {
   })
 }
 
-function renderDetail() {
+function renderDetail(auth: AuthContextValue | null = null) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/monitors/rule-1']}>
-        <Routes>
-          <Route path="/p/:slug/monitors/:monitorId" element={<MonitorDetailPage />} />
-        </Routes>
-      </MemoryRouter>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={['/p/demo/monitors/rule-1']}>
+          <Routes>
+            <Route path="/p/:slug/monitors/:monitorId" element={<MonitorDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
+}
+
+const VIEWER: AuthContextValue = {
+  user: {
+    id: 'viewer-1',
+    email: 'viewer@example.com',
+    name: 'Viewer',
+    role: 'viewer',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  status: 'authenticated',
+  error: null,
+  isLoggingOut: false,
+  logout: async () => {},
+  refresh: () => {},
 }
 
 afterEach(() => {
@@ -182,6 +201,20 @@ describe('MonitorDetailPage', () => {
       'href',
       '/p/demo/monitors',
     )
+  })
+
+  it('offers a viewer no mute or retry, and says who can (MON-6)', async () => {
+    mockApi()
+
+    renderDetail(VIEWER)
+
+    // The failed delivery is on screen; only its Retry is withheld.
+    expect(await screen.findByText('hourly events scan')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: expectedMutePresetName(RULE, '1h') }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
   })
 
   // The Condition panel described everything that narrows a rule except the

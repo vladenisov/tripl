@@ -13,6 +13,9 @@ import { ChevronLeft, Loader2, Plus } from 'lucide-react'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard } from './eventFormLayout'
 import { nameFormatBaseColumns } from './utils'
 import { bulkUnsupportedReason, parseBulkDraft, type BulkRow } from './bulkEventDraft'
+import { useCanWrite } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 const EMPTY_EVENT_TYPES: EventType[] = []
 
@@ -57,6 +60,9 @@ export default function EventBulkForm() {
   const navigate = useNavigate()
   const branchId = useActiveBranchId()
   const qc = useQueryClient()
+  // Creating events is an editor action; a viewer who lands here by URL is
+  // told so up front rather than after pasting a list.
+  const canWrite = useCanWrite()
 
   // `null` is "not chosen yet": until the reader picks, the type the route names
   // (`/events/se/bulk`) is the choice, as on the single-event form
@@ -133,6 +139,7 @@ export default function EventBulkForm() {
   const ready = rows.filter(row => row.status === 'ready')
 
   const createMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       eventsApi.bulkCreate(
         slug!,
@@ -192,6 +199,7 @@ export default function EventBulkForm() {
           <ChevronLeft size={13} /> Events
         </button>
         <h1 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">Add many events</h1>
+        {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         <SurfCard title="What to create">
           <EvField label="Event type" htmlFor="bulk-event-type" required last={false}>
@@ -344,7 +352,7 @@ export default function EventBulkForm() {
           <button
             type="button"
             onClick={() => createMut.mutate()}
-            disabled={ready.length === 0 || createMut.isPending}
+            disabled={!canWrite || ready.length === 0 || createMut.isPending}
             className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
             style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
           >

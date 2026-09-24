@@ -30,6 +30,8 @@ import {
 import { useBranchContext } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { formatRelativeTime } from '@/lib/datetime'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { canManageProject } from '@/lib/permissions'
 import { getErrorMessage } from '@/lib/utils'
 import type { Project } from '@/types'
 import { ProductTour } from './ProductTour'
@@ -83,11 +85,12 @@ export function DemoBanner({ project }: { project: Project }) {
   const [limitsOpen, setLimitsOpen] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
 
-  const canManage =
-    user?.role === 'owner' ||
-    (user?.id != null && user.id === project.created_by_user_id)
+  // The backend's own pair of gates (EditorUserDep + `_require_demo_manager`):
+  // a creator since demoted to viewer is refused, so they are not offered it.
+  const canManage = canManageProject(user, project)
 
   const resetMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.resetDemo(project.slug),
     onSuccess: () => {
       // A re-seed rewrites every entity with a NEW id, so anything still holding
@@ -111,6 +114,7 @@ export function DemoBanner({ project }: { project: Project }) {
   })
 
   const deleteMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.deleteDemo(project.slug),
     onSuccess: () => {
       // The project is gone; leave no branch selection behind pointing into it.

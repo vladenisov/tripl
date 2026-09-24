@@ -8,6 +8,7 @@ import {
   initialScenarioState,
   readScenarioState,
 } from '@/demo/scenarioModel'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { Project, ScanConfig } from '@/types'
 import { ScanConfigDetail } from './ScanConfigDetailView'
 
@@ -115,18 +116,53 @@ function setupFetch(runCalls: { method: string; url: string }[] = []) {
   })
 }
 
-function renderDetail(project: Project) {
+function renderDetail(project: Project, auth: AuthContextValue | null = null) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1`]}>
-        <DemoScenarioProvider project={project} pollIntervalMs={10}>
-          <ScanConfigDetail slug={SLUG} scanConfigId="scan-1" />
-        </DemoScenarioProvider>
-      </MemoryRouter>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1`]}>
+          <DemoScenarioProvider project={project} pollIntervalMs={10}>
+            <ScanConfigDetail slug={SLUG} scanConfigId="scan-1" />
+          </DemoScenarioProvider>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
+
+describe('ScanConfigDetail — role gating (DATA-6)', () => {
+  it('lets an editor run the scan but shows the configuration read-only', async () => {
+    setupFetch()
+    renderDetail(demoProject({ is_demo: false }), {
+      user: {
+        id: 'editor-1',
+        email: 'editor@example.com',
+        name: 'Editor',
+        role: 'editor',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+    })
+
+    expect(await screen.findByRole('button', { name: /Run now/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }))
+    const panel = await screen.findByRole('tabpanel')
+    expect(within(panel).getByRole('note')).toHaveTextContent(
+      'Only an owner can change, replay or delete a scan.',
+    )
+    expect(within(panel).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: /Delete/ })).not.toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: /Replay/ })).not.toBeInTheDocument()
+  })
+})
 
 afterEach(() => {
   vi.restoreAllMocks()

@@ -23,6 +23,9 @@ import {
   TextArea,
   TextInput,
 } from '@/components/settings/kit'
+import { canManageProject, canWrite, isOwner } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 function DangerRow({
   title,
@@ -280,6 +283,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   }
 
   const updateMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.update(slug, { name, slug: slugDraft, description, timezone }),
     onSuccess: (project) => {
       qc.invalidateQueries({ queryKey: ['projects'] })
@@ -294,10 +298,12 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     },
   })
   const reindexMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => searchApi.reindex(slug),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['commandPaletteSearch'] }),
   })
   const versionPolicyMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       projectsApi.update(slug, {
         app_version_keep_releases: Number(appVersionKeepReleases),
@@ -400,8 +406,15 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     slugDraft === projectQuery.data.slug &&
     description === (projectQuery.data.description ?? '') &&
     timezone === (projectQuery.data.timezone ?? 'UTC')
-  const canEdit = user?.role === 'owner' || user?.role === 'editor'
-  const canDelete = user?.role === 'owner'
+  // PATCH /projects/{slug} takes an editor AND the project's creator or an
+  // owner (`_require_project_manager`); an editor on someone else's project
+  // gets the same read-only form a viewer does, with a line saying why.
+  const canEdit = canManageProject(user, projectQuery.data)
+  // Reindex only needs project mutation access, which the backend also grants
+  // editors on shared projects — so it stays on the plain write gate and the
+  // rarer refusal (another editor's own project) is reported inline.
+  const canReindex = canWrite(user?.role)
+  const canDelete = isOwner(user?.role)
   const appVersionKeepReleasesNumber = Number(appVersionKeepReleases)
   const versionPolicyInvalid =
     !Number.isInteger(appVersionKeepReleasesNumber) ||
@@ -445,6 +458,13 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
 
       {projectQuery.data && (
         <>
+          {!canEdit && (
+            <ReadOnlyNotice className="mb-4">
+              {canWrite(user?.role)
+                ? 'Read-only: only the project’s creator or an owner can change its details and version policy.'
+                : undefined}
+            </ReadOnlyNotice>
+          )}
           <SCard
             title="Project details"
             footer={
@@ -575,7 +595,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
                 variant="outline"
                 size="sm"
                 onClick={() => reindexMut.mutate()}
-                disabled={!canEdit || reindexMut.isPending}
+                disabled={!canReindex || reindexMut.isPending}
               >
                 <RefreshCw className={reindexMut.isPending ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
                 {reindexMut.isPending ? 'Rebuilding…' : 'Rebuild index'}
@@ -583,119 +603,119 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
             </div>
           </SCard>
 
-          <SCard title="Danger zone" tone="danger" icon={<TriangleAlert className="h-[15px] w-[15px]" />}>
-            {canDelete && (
-              <>
-                <DangerResetRow
-                  title="Reset anomalies"
-                  hint="Delete anomaly detections (and the signals derived from them) across the whole project for the chosen period."
-                  buttonLabel="Reset anomalies"
-                  period={anomaliesPeriod}
-                  onPeriodChange={setAnomaliesPeriod}
-                  onReset={() => {
-                    void handleResetAnomalies()
-                  }}
-                  busy={resetAnomaliesMut.isPending}
-                  feedback={
-                    resetAnomaliesMut.isSuccess ? (
-                      <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
-                        {summarizeAnomalyCounts(resetAnomaliesMut.data)}
-                      </div>
-                    ) : resetAnomaliesMut.isError ? (
-                      <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
-                        {getErrorMessage(resetAnomaliesMut.error)}
-                      </div>
-                    ) : null
-                  }
-                />
-                <DangerResetRow
-                  title="Reset drifts"
-                  hint="Delete schema and distribution drift detections across the whole project for the chosen period."
-                  buttonLabel="Reset drifts"
-                  period={driftsPeriod}
-                  onPeriodChange={setDriftsPeriod}
-                  onReset={() => {
-                    void handleResetDrifts()
-                  }}
-                  busy={resetDriftsMut.isPending}
-                  feedback={
-                    resetDriftsMut.isSuccess ? (
-                      <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
-                        {summarizeDriftCounts(resetDriftsMut.data)}
-                      </div>
-                    ) : resetDriftsMut.isError ? (
-                      <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
-                        {getErrorMessage(resetDriftsMut.error)}
-                      </div>
-                    ) : null
-                  }
-                />
-                <DangerRetireVariablesRow
-                  onPreview={() => previewRetirementMut.mutate()}
-                  onRetire={() => {
-                    void handleRetireVariables()
-                  }}
-                  busy={previewRetirementMut.isPending || retireVariablesMut.isPending}
-                  preview={retirementPreview}
-                  feedback={
-                    retireVariablesMut.isSuccess ? (
-                      <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
-                        {summarizeRetirement(retireVariablesMut.data, true)}
-                      </div>
-                    ) : retireVariablesMut.isError ? (
-                      <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
-                        {getErrorMessage(retireVariablesMut.error)}
-                      </div>
-                    ) : previewRetirementMut.isError ? (
-                      <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
-                        {getErrorMessage(previewRetirementMut.error)}
-                      </div>
-                    ) : retirementPreview ? (
-                      <div className="mt-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                        {summarizeRetirement(retirementPreview, false)}
-                      </div>
-                    ) : null
-                  }
-                />
-              </>
-            )}
-            <DangerRow
-              title="Archive project"
-              hint="Hide from the workspace and stop ingesting. Reversible."
-              action={
-                <Button variant="outline" size="sm" disabled>
-                  Archive
-                </Button>
-              }
-            />
-            <DangerRow
-              title="Transfer ownership"
-              hint="Move this project to another workspace member."
-              action={
-                <Button variant="outline" size="sm" disabled>
-                  Transfer
-                </Button>
-              }
-            />
-            <DangerRow
-              title="Delete project"
-              hint="Permanently remove the plan, history and all ingested events. Cannot be undone."
-              last
-              action={
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  disabled={!canDelete || deleteMut.isPending}
-                  onClick={() => {
-                    void handleDelete()
-                  }}
-                >
-                  <Trash2 className="h-3 w-3" />
-                  {deleteMut.isPending ? 'Deleting…' : 'Delete project'}
-                </Button>
-              }
-            />
-          </SCard>
+          {/* Every row here is owner-only (or not built yet), so a non-owner is
+              not shown a card of buttons they can never press. */}
+          {canDelete && (
+            <SCard title="Danger zone" tone="danger" icon={<TriangleAlert className="h-[15px] w-[15px]" />}>
+                  <DangerResetRow
+                    title="Reset anomalies"
+                    hint="Delete anomaly detections (and the signals derived from them) across the whole project for the chosen period."
+                    buttonLabel="Reset anomalies"
+                    period={anomaliesPeriod}
+                    onPeriodChange={setAnomaliesPeriod}
+                    onReset={() => {
+                      void handleResetAnomalies()
+                    }}
+                    busy={resetAnomaliesMut.isPending}
+                    feedback={
+                      resetAnomaliesMut.isSuccess ? (
+                        <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
+                          {summarizeAnomalyCounts(resetAnomaliesMut.data)}
+                        </div>
+                      ) : resetAnomaliesMut.isError ? (
+                        <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                          {getErrorMessage(resetAnomaliesMut.error)}
+                        </div>
+                      ) : null
+                    }
+                  />
+                  <DangerResetRow
+                    title="Reset drifts"
+                    hint="Delete schema and distribution drift detections across the whole project for the chosen period."
+                    buttonLabel="Reset drifts"
+                    period={driftsPeriod}
+                    onPeriodChange={setDriftsPeriod}
+                    onReset={() => {
+                      void handleResetDrifts()
+                    }}
+                    busy={resetDriftsMut.isPending}
+                    feedback={
+                      resetDriftsMut.isSuccess ? (
+                        <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
+                          {summarizeDriftCounts(resetDriftsMut.data)}
+                        </div>
+                      ) : resetDriftsMut.isError ? (
+                        <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                          {getErrorMessage(resetDriftsMut.error)}
+                        </div>
+                      ) : null
+                    }
+                  />
+                  <DangerRetireVariablesRow
+                    onPreview={() => previewRetirementMut.mutate()}
+                    onRetire={() => {
+                      void handleRetireVariables()
+                    }}
+                    busy={previewRetirementMut.isPending || retireVariablesMut.isPending}
+                    preview={retirementPreview}
+                    feedback={
+                      retireVariablesMut.isSuccess ? (
+                        <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
+                          {summarizeRetirement(retireVariablesMut.data, true)}
+                        </div>
+                      ) : retireVariablesMut.isError ? (
+                        <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                          {getErrorMessage(retireVariablesMut.error)}
+                        </div>
+                      ) : previewRetirementMut.isError ? (
+                        <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                          {getErrorMessage(previewRetirementMut.error)}
+                        </div>
+                      ) : retirementPreview ? (
+                        <div className="mt-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                          {summarizeRetirement(retirementPreview, false)}
+                        </div>
+                      ) : null
+                    }
+                  />
+              <DangerRow
+                title="Archive project"
+                hint="Hide from the workspace and stop ingesting. Reversible."
+                action={
+                  <Button variant="outline" size="sm" disabled>
+                    Archive
+                  </Button>
+                }
+              />
+              <DangerRow
+                title="Transfer ownership"
+                hint="Move this project to another workspace member."
+                action={
+                  <Button variant="outline" size="sm" disabled>
+                    Transfer
+                  </Button>
+                }
+              />
+              <DangerRow
+                title="Delete project"
+                hint="Permanently remove the plan, history and all ingested events. Cannot be undone."
+                last
+                action={
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={deleteMut.isPending}
+                    onClick={() => {
+                      void handleDelete()
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    {deleteMut.isPending ? 'Deleting…' : 'Delete project'}
+                  </Button>
+                }
+              />
+            </SCard>
+          )}
         </>
       )}
     </div>

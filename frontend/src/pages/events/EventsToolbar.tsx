@@ -102,8 +102,9 @@ export function EventsToolbar({
    *  file that reads like "nothing matched". */
   canExport: boolean
   isExporting: boolean
-  onNewEvent: () => void
-  onBulkNew: () => void
+  /** Omitted for a viewer: creating events is an editor's job (EVT-9). */
+  onNewEvent?: () => void
+  onBulkNew?: () => void
 }) {
   const singleStatus = filterStatuses.length === 1 ? filterStatuses[0] : undefined
   return (
@@ -288,24 +289,30 @@ export function EventsToolbar({
               <Download className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
               {isExporting ? 'Exporting…' : 'Export CSV'}
             </DropdownMenuItem>
-            <DropdownMenuItem
-              className="text-[12.5px]"
-              onSelect={onBulkNew}
-              title="Create a run of events from a pasted list"
-            >
-              <ListPlus className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-              Add many events…
-            </DropdownMenuItem>
+            {onBulkNew && (
+              <DropdownMenuItem
+                className="text-[12.5px]"
+                onSelect={onBulkNew}
+                title="Create a run of events from a pasted list"
+              >
+                <ListPlus className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+                Add many events…
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <ToolbarDivider />
+        {onNewEvent && (
+          <>
+            <ToolbarDivider />
 
-        {/* Primary — create */}
-        <Button onClick={onNewEvent} size="sm" className="h-8 text-xs">
-          <Plus className="h-3.5 w-3.5" />
-          New Event
-        </Button>
+            {/* Primary — create */}
+            <Button onClick={onNewEvent} size="sm" className="h-8 text-xs">
+              <Plus className="h-3.5 w-3.5" />
+              New Event
+            </Button>
+          </>
+        )}
       </div>
     </div>
   )

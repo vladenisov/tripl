@@ -20,6 +20,9 @@ import {
 } from './ScanFormSections'
 import { scanFormBlocker, useScanForm } from './useScanForm'
 import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
+import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 // ─── Configuration tab (page-style edit, each SCard has its own Save footer) ───
 export function ScanConfigurationTab({
@@ -36,6 +39,9 @@ export function ScanConfigurationTab({
   const { confirm, dialog } = useConfirm()
   const [replayOpen, setReplayOpen] = useState(false)
   const form = useScanForm(slug, scanConfig)
+  // Update, preview, replay and delete are all OwnerUserDep: anyone else reads
+  // the configuration with every control disabled and no Save (DATA-6).
+  const canEdit = useIsOwner()
 
   const { data: dataSources = [] } = useQuery({
     queryKey: dataSourcesKey(),
@@ -47,6 +53,7 @@ export function ScanConfigurationTab({
   })
 
   const updateMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => scansApi.update(slug, scanConfig.id, form.toBackendPayload()),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['scans', slug] }),
   })
@@ -96,7 +103,7 @@ export function ScanConfigurationTab({
     dataSources: dataSources as DataSource[],
     eventTypes: eventTypes as EventType[],
     sourceLocked: true,
-    footerFor,
+    footerFor: canEdit ? footerFor : undefined,
   }
 
   return (
@@ -107,63 +114,74 @@ export function ScanConfigurationTab({
           <ErrorState compact title="Could not save scan" error={updateMut.error} />
         </div>
       )}
-      <ScanEssentialsSection {...sectionProps} />
-      <EventNamingSection {...sectionProps} />
-      <AppVersionSection {...sectionProps} />
-      <MetricsDriftSection {...sectionProps} />
-      <LimitsSection {...sectionProps} />
+      {!canEdit && (
+        <ReadOnlyNotice className="mb-5">
+          {ownerOnlyReason('change, replay or delete a scan')}
+        </ReadOnlyNotice>
+      )}
+      {/* `disabled` on a fieldset reaches every native control inside it;
+          `contents` keeps it out of the layout. */}
+      <fieldset disabled={!canEdit} className="contents">
+        <ScanEssentialsSection {...sectionProps} />
+        <EventNamingSection {...sectionProps} />
+        <AppVersionSection {...sectionProps} />
+        <MetricsDriftSection {...sectionProps} />
+        <LimitsSection {...sectionProps} />
+      </fieldset>
 
-      <SCard title="Danger zone" tone="danger">
-        <div
-          className="flex items-center gap-[18px] border-b px-[18px] py-3.5"
-          style={{ borderColor: 'var(--border-subtle)' }}
-        >
-          <div className="flex-1">
-            <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              Run a one-off replay
-            </div>
-            <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              Re-scan a historical time range into events and metrics.
-            </div>
-          </div>
-          <Button
-            type="button"
-            variant={replayOpen ? 'default' : 'outline'}
-            size="sm"
-            disabled={!canReplay}
-            title={canReplay ? 'Replay metrics for a past period' : 'Requires time column and interval'}
-            onClick={() => setReplayOpen((o) => !o)}
+      {canEdit && (
+        <SCard title="Danger zone" tone="danger">
+          <div
+            className="flex items-center gap-[18px] border-b px-[18px] py-3.5"
+            style={{ borderColor: 'var(--border-subtle)' }}
           >
-            <RotateCcw className="size-3" />
-            Replay…
-          </Button>
-        </div>
-        {replayOpen && (
-          <div className="border-b px-[18px] py-3.5" style={{ borderColor: 'var(--border-subtle)' }}>
-            <ReplayDialog slug={slug} scanConfig={scanConfig} open={replayOpen} onOpenChange={setReplayOpen} />
-          </div>
-        )}
-        <div className="flex items-center gap-[18px] px-[18px] py-3.5">
-          <div className="flex-1">
-            <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              Delete scan
+            <div className="flex-1">
+              <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+                Run a one-off replay
+              </div>
+              <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                Re-scan a historical time range into events and metrics.
+              </div>
             </div>
-            <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              Stops adding events from this query. Events already in your plan are kept.
-            </div>
+            <Button
+              type="button"
+              variant={replayOpen ? 'default' : 'outline'}
+              size="sm"
+              disabled={!canReplay}
+              title={canReplay ? 'Replay metrics for a past period' : 'Requires time column and interval'}
+              onClick={() => setReplayOpen((o) => !o)}
+            >
+              <RotateCcw className="size-3" />
+              Replay…
+            </Button>
           </div>
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            disabled={deleteMut.isPending}
-            onClick={handleDelete}
-          >
-            <Trash2 className="size-3" />
-            Delete
-          </Button>
-        </div>
-      </SCard>
+          {replayOpen && (
+            <div className="border-b px-[18px] py-3.5" style={{ borderColor: 'var(--border-subtle)' }}>
+              <ReplayDialog slug={slug} scanConfig={scanConfig} open={replayOpen} onOpenChange={setReplayOpen} />
+            </div>
+          )}
+          <div className="flex items-center gap-[18px] px-[18px] py-3.5">
+            <div className="flex-1">
+              <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+                Delete scan
+              </div>
+              <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                Stops adding events from this query. Events already in your plan are kept.
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleteMut.isPending}
+              onClick={handleDelete}
+            >
+              <Trash2 className="size-3" />
+              Delete
+            </Button>
+          </div>
+        </SCard>
+      )}
     </div>
   )
 }

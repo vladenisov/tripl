@@ -12,6 +12,7 @@ import {
   type ScenarioState,
 } from '@/demo/scenarioModel'
 import { liveLoopState } from '@/demo/scenarioTestState'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
 const { toastSuccess, toastError } = vi.hoisted(() => ({
@@ -1493,21 +1494,50 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     })
   }
 
-  function renderMetricDetail() {
+  function renderMetricDetail(auth: AuthContextValue | null = null) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
     const result = render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
-          <Routes>
-            <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={auth}>
+          <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
+            <Routes>
+              <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
     return { ...result, queryClient }
   }
+
+  it('offers a viewer no edit, collect, delete or annotation controls (MON-6)', async () => {
+    installMetricDetailFetch('1h')
+    renderMetricDetail({
+      user: {
+        id: 'viewer-1',
+        email: 'viewer@example.com',
+        name: 'Viewer',
+        role: 'viewer',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+    })
+
+    await screen.findByTestId('metrics-chart')
+    expect(await screen.findByRole('heading', { name: 'Annotations' })).toBeInTheDocument()
+    expect(screen.getByText(/Adding and removing them is done by an editor or owner/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Collect now|Refresh source metrics/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Label')).not.toBeInTheDocument()
+  })
 
   it('keeps the 30d range and defaults granularity to the interval for 1d metrics (tripl-4m86)', async () => {
     const fetchSpy = installMetricDetailFetch('1d')

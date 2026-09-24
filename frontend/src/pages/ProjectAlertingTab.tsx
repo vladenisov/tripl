@@ -67,6 +67,7 @@ import {
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
 import { projectEventTypesKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 // The page does four jobs — triage incidents, tune what routes, configure the
 // channels it routes to, audit delivery — and stacking them on one scroll made
@@ -835,6 +836,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
    * either all moved or none of it did.
    */
   const inboxBulkActionMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: ({ correlationGroupIds, action, mutedUntil, note }: InboxBulkActionVariables) =>
       alertingApi.applyInboxBulkAction(slug, {
         correlation_group_ids: correlationGroupIds,

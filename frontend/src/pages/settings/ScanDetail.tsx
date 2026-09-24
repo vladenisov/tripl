@@ -1,4 +1,4 @@
-import { Fragment, useContext, useState } from "react"
+import { Fragment, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, ChevronDown, GitMerge, RotateCcw, XCircle } from "lucide-react"
 import { scansApi } from "@/api/scans"
@@ -27,7 +27,7 @@ import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanM
 import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import { projectEventTypesKey } from '@/lib/queryKeys'
-import { AuthContext } from '@/components/auth-context'
+import { useCanWrite, useIsOwner } from '@/lib/permissions'
 
 function chipList(values: string[]) {
   if (values.length === 0) return <NoneTag />
@@ -124,7 +124,9 @@ export function ScanDetail({
   dataSource?: DataSource | null
 }) {
   const qc = useQueryClient()
-  const canApplyGroups = useContext(AuthContext)?.user?.role === 'owner'
+  const canApplyGroups = useIsOwner()
+  // Retry and Stop are run/cancel, which the backend gives any editor.
+  const canRun = useCanWrite()
   const { notifyScanRunStarted } = useDemoScenarioActions()
   // Null for every non-demo project — no row is ever the scenario's row.
   const { scanJobId } = useScenarioArtifacts()
@@ -217,9 +219,9 @@ export function ScanDetail({
       watched={job.id === scanJobId}
       expanded={expandedJobId === job.id}
       onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
-      onCancel={() => cancelMut.mutate(job.id)}
+      onCancel={canRun ? () => cancelMut.mutate(job.id) : undefined}
       cancelPending={cancelMut.isPending && cancelMut.variables === job.id}
-      onRetry={() => retryMut.mutate()}
+      onRetry={canRun ? () => retryMut.mutate() : undefined}
       retryPending={retryMut.isPending}
     />
   )
@@ -480,9 +482,10 @@ function JobRow({
   watched: boolean
   expanded: boolean
   onToggle: () => void
-  onCancel: () => void
+  /** Omitted for a viewer, as is `onRetry`: both are editor actions. */
+  onCancel?: () => void
   cancelPending: boolean
-  onRetry: () => void
+  onRetry?: () => void
   retryPending: boolean
 }) {
   const durationSec = jobDurationSeconds(job)
@@ -520,7 +523,7 @@ function JobRow({
           </td>
           <td className="px-2">
             <div className="flex items-center justify-end gap-1">
-              {isActive && (
+              {isActive && onCancel && (
                 <Button
                   variant="ghost"
                   size="icon"
@@ -533,7 +536,7 @@ function JobRow({
                   <Ban className="size-3" aria-hidden="true" />
                 </Button>
               )}
-              {job.status === 'failed' && (
+              {job.status === 'failed' && onRetry && (
                 <Button
                   variant="ghost"
                   size="icon"

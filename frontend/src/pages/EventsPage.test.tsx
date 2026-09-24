@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import EventsPage from './EventsPage'
 import EventEditPage from './events/EventForm'
 
@@ -75,22 +76,45 @@ function LocationProbe() {
   )
 }
 
-function renderEventsPage(initialEntries: string[] = ['/p/demo/events']) {
+function viewerAuth(): AuthContextValue {
+  return {
+    user: {
+      id: 'viewer-1',
+      email: 'viewer@example.com',
+      name: 'Viewer',
+      role: 'viewer',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+function renderEventsPage(
+  initialEntries: string[] = ['/p/demo/events'],
+  auth: AuthContextValue | null = null,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={initialEntries}>
-        <LocationProbe />
-        <Routes>
-          <Route path="/p/:slug/events" element={<EventsPage />} />
-          <Route path="/p/:slug/events/:tab/new" element={<EventEditPage />} />
-          <Route path="/p/:slug/events/:tab/:eventId/edit" element={<EventEditPage />} />
-          <Route path="/p/:slug/events/:tab" element={<EventsPage />} />
-          <Route path="/p/:slug/events/:tab/:eventId" element={<EventsPage />} />
-        </Routes>
-      </MemoryRouter>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={initialEntries}>
+          <LocationProbe />
+          <Routes>
+            <Route path="/p/:slug/events" element={<EventsPage />} />
+            <Route path="/p/:slug/events/:tab/new" element={<EventEditPage />} />
+            <Route path="/p/:slug/events/:tab/:eventId/edit" element={<EventEditPage />} />
+            <Route path="/p/:slug/events/:tab" element={<EventsPage />} />
+            <Route path="/p/:slug/events/:tab/:eventId" element={<EventsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -466,6 +490,77 @@ describe('EventsPage', () => {
     })
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'All' })).not.toBeInTheDocument()
+  })
+
+  it('offers a viewer no create, select, reorder or edit controls (EVT-9)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events-metrics')) {
+        return mockJsonResponse({
+          scope: 'events_total',
+          scan_config_id: null,
+          event_id: null,
+          event_type_id: null,
+          interval: '1h',
+          latest_signal: null,
+          data: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/events/window-metrics') && init?.method === 'POST') {
+        return mockJsonResponse([])
+      }
+      if (url.includes('/api/v1/projects/demo/anomalies/signals')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events')) {
+        return mockJsonResponse({
+          items: [makeEvent({ id: 'event-1', name: 'Homepage View', status: 'live' })],
+          total: 1,
+        })
+      }
+      return mockJsonResponse({})
+    })
+
+    renderEventsPage(['/p/demo/events'], viewerAuth())
+
+    expect(await screen.findByText('Homepage View')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expectAbsent('button', 'New Event')
+    expectAbsent('checkbox', 'Select Homepage View')
+    expectAbsent('checkbox', 'Select all visible events')
+    expectAbsent('button', 'Drag to reorder Homepage View')
+    expectAbsent('button', 'Edit Homepage View')
+  })
+
+  it('shows a viewer the event form read-only, with no Save (EVT-9)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/api/v1/projects/demo/branches')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/events/ev-1/comments')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events/ev-1')) {
+        return mockJsonResponse(makeEvent({ id: 'ev-1', name: 'checkout_started' }))
+      }
+      if (url.includes('/api/v1/projects/demo/events')) return mockJsonResponse({ items: [], total: 0 })
+      return mockJsonResponse({})
+    })
+
+    renderEventsPage(['/p/demo/events/all/ev-1/edit'], viewerAuth())
+
+    expect(await screen.findByRole('heading', { name: 'Event' })).toBeInTheDocument()
+    expect(screen.getAllByRole('note')[0]).toHaveTextContent(/viewer role/)
+    expect(screen.getByRole('group')).toBeDisabled()
+    expectAbsent('button', 'Save event')
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
+    // The discussion is readable, but the composer is an editor's.
+    expect(screen.queryByLabelText('Write a comment')).not.toBeInTheDocument()
   })
 
   it('supports selecting multiple events and bulk deleting them', async () => {

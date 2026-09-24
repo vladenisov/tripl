@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { VIEWER_READ_ONLY_NOTICE, canWrite } from './permissions'
+import {
+  VIEWER_READ_ONLY_NOTICE,
+  canManageProject,
+  canWrite,
+  isOwner,
+  ownerOnlyReason,
+} from './permissions'
 
 describe('canWrite', () => {
   it('lets an owner and an editor write', () => {
@@ -33,5 +39,56 @@ describe('VIEWER_READ_ONLY_NOTICE', () => {
     expect(VIEWER_READ_ONLY_NOTICE).toMatch(/incidents/)
     expect(VIEWER_READ_ONLY_NOTICE).toMatch(/destinations and rules/)
     expect(VIEWER_READ_ONLY_NOTICE).toMatch(/retrying deliveries/)
+  })
+})
+
+describe('isOwner', () => {
+  it('passes exactly the owner, as require_owner does', () => {
+    expect(isOwner('owner')).toBe(true)
+    expect(isOwner('editor')).toBe(false)
+    expect(isOwner('viewer')).toBe(false)
+  })
+
+  it('reads a missing role as not an owner', () => {
+    // Unlike canWrite this is an allow-list on the backend too, so an
+    // owner-only surface stays hidden until the session says otherwise.
+    expect(isOwner(null)).toBe(false)
+    expect(isOwner(undefined)).toBe(false)
+  })
+})
+
+describe('canManageProject', () => {
+  const project = { created_by_user_id: 'u-1' }
+
+  it('lets an owner manage any project', () => {
+    expect(canManageProject({ id: 'u-9', role: 'owner' }, project)).toBe(true)
+  })
+
+  it('lets the editor who created the project manage it', () => {
+    expect(canManageProject({ id: 'u-1', role: 'editor' }, project)).toBe(true)
+  })
+
+  it("stops an editor on someone else's project, as _require_project_manager does", () => {
+    expect(canManageProject({ id: 'u-2', role: 'editor' }, project)).toBe(false)
+  })
+
+  it('stops a creator who has since been demoted to viewer', () => {
+    // The routes take EditorUserDep before they look at the creator.
+    expect(canManageProject({ id: 'u-1', role: 'viewer' }, project)).toBe(false)
+  })
+
+  it('treats a project with no recorded creator as owner-managed', () => {
+    expect(canManageProject({ id: 'u-1', role: 'editor' }, { created_by_user_id: null })).toBe(false)
+    expect(canManageProject({ id: 'u-1', role: 'editor' }, undefined)).toBe(false)
+  })
+
+  it('refuses without a user', () => {
+    expect(canManageProject(null, project)).toBe(false)
+  })
+})
+
+describe('ownerOnlyReason', () => {
+  it('names the role that can act', () => {
+    expect(ownerOnlyReason('edit scans')).toBe('Only an owner can edit scans.')
   })
 })
