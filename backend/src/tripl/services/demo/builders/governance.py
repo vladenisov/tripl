@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.core.bucketing import to_utc
 from tripl.models.coverage_metric import CoverageMetric
 from tripl.models.event import Event
 from tripl.models.scan_job import ScanJob, ScanJobStatus
@@ -37,7 +38,11 @@ from tripl.models.shadow_event_candidate import (
     ShadowEventCandidate,
 )
 from tripl.services.demo import noise
-from tripl.services.demo.builders.warehouse import SCAN_COLUMNS
+from tripl.services.demo.builders.warehouse import (
+    DEAD_EVENT_AGE_DAYS,
+    DEAD_EVENT_NAME,
+    SCAN_COLUMNS,
+)
 from tripl.services.demo.scenario import DemoContext
 
 # Coverage rate: plan events account for ~94% of scanned volume; the ~6% tail is
@@ -46,19 +51,6 @@ _COVERAGE_MATCH_RATE = 0.94
 # Only the recent slice gets coverage rows (the reconciliation view is windowed);
 # keeps the seed bounded while still reconciling with the volume chart.
 _COVERAGE_DAYS = 14
-# The dead-event example: this authored event's warehouse volume dried up this
-# many days ago — old enough to surface in the dead-events review.
-_DEAD_EVENT_NAME = "Subscription Cancelled"
-_DEAD_EVENT_AGE_DAYS = 45
-# The dead-events query applies a grace period — an event created inside the
-# review window legitimately has no data yet — so it also requires
-# ``created_at < cutoff``. Every other demo event is staggered across the ~3-week
-# history, which is INSIDE the 30-day window, so the deliberately-planted dead
-# example was silently unflaggable and Coverage always claimed zero gaps
-# (tripl-jfm3.58). Backdating its authoring instant well ahead of its last
-# sighting also makes the row self-consistent: an event cannot be seen before it
-# was written down.
-_DEAD_EVENT_FIRST_SEEN_LEAD_DAYS = 30
 
 # How long ago each backfilled completed run started (one per scan interval).
 _COMPLETED_RUN_OFFSETS = (timedelta(hours=3), timedelta(hours=2), timedelta(hours=1))
@@ -234,12 +226,21 @@ async def _build_shadow_candidates(session: AsyncSession, ctx: DemoContext) -> N
 
 async def _build_dead_event(session: AsyncSession, ctx: DemoContext) -> None:
     """Age out one authored event's warehouse volume so it surfaces as dead."""
-    event_id = ctx.event_ids.get(_DEAD_EVENT_NAME)
+    event_id = ctx.event_ids.get(DEAD_EVENT_NAME)
     if event_id is None:
         return
     event = await session.get(Event, event_id)
     if event is not None:
-        last_seen = ctx.now - timedelta(days=_DEAD_EVENT_AGE_DAYS)
+        last_seen = ctx.now - timedelta(days=DEAD_EVENT_AGE_DAYS)
         event.last_seen_at = last_seen
-        event.created_at = last_seen - timedelta(days=_DEAD_EVENT_FIRST_SEEN_LEAD_DAYS)
+        # ``list_dead_events`` gates only NEVER-seen events on ``created_at``, so
+        # no grace-period backdating is needed to surface this one. The row must
+        # still be self-consistent — an event cannot be seen before it was
+        # written down — so first-seen moves back only as far as the last
+        # sighting, not a further 30 days ahead of every other event
+        # (tripl-0zpq.245). ``created_at`` may come back from the database, and
+        # SQLite drops the offset, so compare through ``to_utc`` — a naive value
+        # cannot be compared with the aware ``last_seen`` at all.
+        if to_utc(event.created_at) > last_seen:
+            event.created_at = last_seen
     await session.flush()

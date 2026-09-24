@@ -47,10 +47,15 @@ synthetic source:
 - **Anomaly detection & drift** — anomalies are produced by the real detector and
   distribution drift by the real PSI computation over the stored series.
 - **Reconciliation & coverage** — coverage reconciles with scanned volume, and
-  shadow / dead‑event candidates are coherent with the data.
+  shadow / dead‑event candidates are coherent with the data. The planted dead
+  event, `Subscription Cancelled`, has no volume after it was last seen 45 days
+  ago — not in the seeded history, not in the synthetic warehouse — so running a
+  scan or collection does not bring it back to life.
 - **A continuous runtime clock** — a bounded, idempotent background tick keeps an
   active demo fresh over time (new buckets, jobs and signals), with retention caps
-  so it never grows without bound. A demo nobody has opened for **six hours**
+  so it never grows without bound. The runtime adds ordinary traffic only, so
+  the seeded *Injected demo spike* chart marker is removed together with the
+  anomaly it explains once both age past the retention window. A demo nobody has opened for **six hours**
   pauses, and resumes on your next visit; the scheduled **scan** collection — the
   event‑volume series and the breakdown and drift work that hangs off it — pauses
   with it, on the same rule, because collecting while the tick is stopped would
@@ -186,13 +191,15 @@ The demo offers two guides, and they do different jobs.
 - **Cancel** — closing the creation dialog, pressing Escape, or clicking Cancel
   asks the server to abandon the provision, not just the browser to stop
   listening. If it is still seeding, the workspace is discarded and nothing is
-  added to your projects. If the seed had already finished, the dialog says so
+  added to your projects or left behind in the audit log. If the seed had already finished, the dialog says so
   plainly and the demo appears in your list — delete it from its banner if you
   do not want it.
 - **How many** — you can hold up to **three** demo workspaces at a time. Beyond
   the first, generating another asks for confirmation and points at Reset; each
   extra demo is named `Demo Project 2`, `Demo Project 3`, … so they are
-  distinguishable in the workspace list.
+  distinguishable in the workspace list. A new demo takes the lowest name you
+  are not already using, so after deleting `Demo Project` the next one is named
+  `Demo Project` again rather than repeating a name you still have.
 - **Reset** — re‑seed the demo in place under the same URL, preserving ownership
   and its name. Reset re‑runs the current recipe, so it is also how you refresh a
   demo built from an older one. It re‑seeds everything in one transaction and

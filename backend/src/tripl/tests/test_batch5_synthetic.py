@@ -627,7 +627,8 @@ def test_demo_seeds_only_complete_daily_buckets() -> None:
     }
     session = _RecordingSession()
     adapter = _adapter(anchor=now)
-    catalog._build_adapter_derived_values(session, ctx, metric_defs, adapter)
+    series = catalog._derive_adapter_series(adapter, ctx.now, ACTIVE_SESSIONS_METRIC_SQL)
+    catalog._add_adapter_derived_values(session, metric_defs, series)
 
     end_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     buckets_by_metric: dict[uuid.UUID, list[datetime]] = {}

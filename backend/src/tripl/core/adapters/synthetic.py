@@ -193,6 +193,13 @@ class SyntheticEventDef(NamedTuple):
     amount: float | None
     currency: str | None
     ongoing_base: int
+    # A retired identity stays on the roster (it keeps its fold rule and its
+    # authored ``ongoing_base``, which the roster test pins to the plan) but emits
+    # no rows at all. The demo's planted dead event is one: its volume dried up
+    # 45 days ago, and an hourly emission meant the first collection bumped its
+    # ``last_seen_at`` and promoted it back to live (tripl-0zpq.245). Mirrors
+    # ``services.demo.builders.warehouse.DEAD_EVENT_NAME``.
+    retired: bool = False
 
 
 # The synthetic warehouse's event roster. It MIRRORS
@@ -264,7 +271,15 @@ _EVENT_DEFS: tuple[SyntheticEventDef, ...] = (
     ),
     SyntheticEventDef("purchase", "Promo Applied", "paywall", None, "prod_monthly", None, None, 35),
     SyntheticEventDef(
-        "purchase", "Subscription Cancelled", "paywall", None, "prod_annual", None, None, 22
+        "purchase",
+        "Subscription Cancelled",
+        "paywall",
+        None,
+        "prod_annual",
+        None,
+        None,
+        22,
+        retired=True,
     ),
 )
 
@@ -691,6 +706,8 @@ def _ongoing_hour_rows(
     """One ongoing-window hour: each event at its seeded ``ongoing_base`` volume."""
     out: list[dict[str, object]] = []
     for event_def in _EVENT_DEFS:
+        if event_def.retired:
+            continue
         event_name = event_def.event_name
         count = _ongoing_hourly_count(seed, event_def.ongoing_base, event_name, bucket)
         for k in range(count):
@@ -707,6 +724,10 @@ def _sampled_hour_rows(
     n_events = 3 + _digest_int(seed, "ev_count", epoch_hour) % 6
     for j in range(n_events):
         event_def = _EVENT_DEFS[_digest_int(seed, "ev_def", epoch_hour, j) % len(_EVENT_DEFS)]
+        # Skipped rather than re-drawn from a shorter roster, so every other
+        # identity keeps exactly the rows it had before it was retired.
+        if event_def.retired:
+            continue
         out.append(_event_row(seed, bucket, event_def, session_span, day_ordinal, epoch_hour, j))
     return out
 

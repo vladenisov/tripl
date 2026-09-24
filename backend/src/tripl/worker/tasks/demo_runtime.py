@@ -71,6 +71,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SeriesPoint,
     detect_anomalies,
 )
+from tripl.models.chart_annotation import ChartAnnotation
 from tripl.models.coverage_metric import CoverageMetric
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.domain_enums import ProjectGenerationStatus
@@ -87,7 +88,10 @@ from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
 from tripl.services.demo import noise
 from tripl.services.demo.builders.plan import event_specs
-from tripl.services.demo.builders.warehouse import SPIKE_EVENT_NAME
+from tripl.services.demo.builders.warehouse import (
+    SPIKE_ANNOTATION_LABEL,
+    SPIKE_EVENT_NAME,
+)
 from tripl.services.demo.scenario import DEMO_SEED
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
@@ -704,6 +708,19 @@ def _prune_retention(
     )
     session.execute(
         delete(ScanJob).where(ScanJob.scan_config_id == scan_config_id, ScanJob.created_at < cutoff)
+    )
+    # The seeded "Injected demo spike" marker retires with the anomaly it
+    # explains: pruned at the same cutoff, so an aging demo never keeps a label
+    # pinned over a stretch of plain noise with nothing under it. The runtime
+    # appends no new spike, so re-dating the marker would label nothing either
+    # (tripl-0zpq.322). Matched on the seeder's label, so an annotation the user
+    # wrote in the demo is left alone.
+    session.execute(
+        delete(ChartAnnotation).where(
+            ChartAnnotation.project_id == project_id,
+            ChartAnnotation.label == SPIKE_ANNOTATION_LABEL,
+            ChartAnnotation.bucket < cutoff,
+        )
     )
     # Catalog metric values for THIS project (both scan-scoped and NULL-scoped).
     metric_ids = (
