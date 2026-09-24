@@ -53,7 +53,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.analyzers.anomaly_detector import ForecastPoint, SeriesPoint
@@ -63,6 +63,7 @@ from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
 from tripl.models.scan_config import ScanConfig
 from tripl.services import metric_series_service, metrics_service
 from tripl.tests.conftest import TestSessionLocal
@@ -190,6 +191,23 @@ async def _seed_count_shaped_metric(
     return metric_id
 
 
+async def _metric_value_scan_config_id(metric_id: str) -> uuid.UUID | None:
+    """The scan config the count-shaped metric's anchoring value was stored under.
+
+    Breakdown rows are read on the metric's grid population (tripl-kom5), so a
+    breakdown seeded for a scan-bound metric must carry that metric's config,
+    exactly as its value rows do.
+    """
+    async with TestSessionLocal() as session:
+        return (
+            await session.execute(
+                select(MetricValue.scan_config_id)
+                .where(MetricValue.metric_definition_id == uuid.UUID(metric_id))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+
 class TestBreakdownValueKind:
     async def test_fractional_breakdown_keeps_its_gaps_instead_of_dropping_to_zero(
         self, client: AsyncClient, project: dict, data_source: dict
@@ -243,6 +261,7 @@ class TestBreakdownValueKind:
                 ("country", "US", B0, 3.0),
                 ("country", "US", B2, 5.0),
             ],
+            scan_config_id=await _metric_value_scan_config_id(metric_id),
         )
 
         resp = await client.get(f"{_metrics_url(slug)}/{metric_id}/breakdowns")
@@ -328,6 +347,7 @@ class TestVersionFold:
                 ("app_version", "1.1.0", B0, 3.0),
                 ("app_version", "2.0.0", B0, 4.0),
             ],
+            scan_config_id=await _metric_value_scan_config_id(metric_id),
         )
 
         resp = await client.get(f"{_metrics_url(slug)}/{metric_id}/versions")

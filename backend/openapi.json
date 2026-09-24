@@ -6240,9 +6240,15 @@
             "title": "Numerator Event Type Id"
           },
           "order": {
-            "default": 0,
-            "title": "Order",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
           },
           "owner_id": {
             "anyOf": [
@@ -8727,9 +8733,15 @@
             ]
           },
           "order": {
-            "default": 0,
-            "title": "Order",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
           },
           "owner_id": {
             "anyOf": [
@@ -12341,10 +12353,15 @@
             "default": "metric",
             "title": "Scope",
             "type": "string"
+          },
+          "sigma_threshold": {
+            "title": "Sigma Threshold",
+            "type": "number"
           }
         },
         "required": [
           "metric_id",
+          "sigma_threshold",
           "data"
         ],
         "title": "MetricSeriesResponse",
@@ -18562,9 +18579,15 @@
             "type": "string"
           },
           "order": {
-            "default": 0,
-            "title": "Order",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
           },
           "owner_id": {
             "anyOf": [
@@ -26231,6 +26254,24 @@
                 }
               ],
               "title": "To"
+            }
+          },
+          {
+            "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+            "in": "query",
+            "name": "branch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
             }
           }
         ],

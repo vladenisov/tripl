@@ -220,13 +220,9 @@ function adaptMetricSeries(res: MetricSeriesResponse): EventMetricsResponse {
     // metric scope; event-scope forecasts come from their own endpoint and are
     // left untouched.
     forecast: [],
-    // No `sigma_threshold` key on purpose: MetricSeriesResponse has no such
-    // field, and synthesising one here would invent a multiplier the detector
-    // never used. Absent, MetricsChart falls back to DEFAULT_SIGMA_THRESHOLD,
-    // which equals the detector's default — right for a project still on 4.0,
-    // wrong for one that moved its sigma or a scope the false-positive ratchet
-    // tightened. Closing that needs `get_metric_series` to resolve the project
-    // sigma plus the metric-scope override and serve it (tripl-0zpq.119).
+    // The project sigma narrowed by this metric's false-positive override,
+    // the multiplier the detector scored it with (tripl-4cgl).
+    sigma_threshold: res.sigma_threshold,
   }
 }
 
@@ -1200,9 +1196,8 @@ export default function MonitoringDetailPage() {
                   seriesLabel={metricSeriesLabel}
                   valueFormatter={metricValueFormatter}
                   // The sigma the detector scored THIS scope with, so the band
-                  // and the "±Nσ" tooltip agree with the dots inside them. Left
-                  // undefined by the metric scope (see `adaptMetricSeries`), and
-                  // the chart falls back to its default there.
+                  // and the "±Nσ" tooltip agree with the dots inside them. The
+                  // metric scope serves it too (`adaptMetricSeries`, tripl-4cgl).
                   sigmaThreshold={metrics?.sigma_threshold}
                 />
               )}

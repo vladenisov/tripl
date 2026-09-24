@@ -121,7 +121,7 @@ In plain terms: on a series running around 1,000 events, a phase baseline won't 
 - **The trend effect-size gate** requires a visible level shift, not just a
   statistically tidy one. Smooth fractional ramps of at least four steps are
   deferred from per-bucket detection to this trend path so they surface once.
-- **The sigma threshold** is the headline sensitivity dial: it sets how many "normal wobbles" of deviation are required before anything is flagged.
+- **The sigma threshold** is the headline sensitivity dial: it sets how many "normal wobbles" of deviation are required before anything is flagged. Every chart draws its confidence band with the same multiplier the detector used for that scope — the project setting, or the scope's own tightened value once the false-positive ratchet has raised it — so "outside the band" always means "flagged". That includes catalog metrics.
 
 ### A worked example
 

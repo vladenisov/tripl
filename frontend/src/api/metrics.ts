@@ -1,4 +1,4 @@
-import { api } from './client'
+import { api, withBranch } from './client'
 import type {
   AppVersionAdoptionResponse,
   AppVersionSeriesResponse,
@@ -25,7 +25,9 @@ export interface EventsMetricsParams {
 }
 
 export const metricsApi = {
-  getEventsMetrics: (slug: string, params?: EventsMetricsParams) => {
+  // `branchId` scopes the tag / status / search filter to that branch's events;
+  // their metrics are read through each copy's main twin (tripl-vk1p).
+  getEventsMetrics: (slug: string, params?: EventsMetricsParams, branchId?: string | null) => {
     const sp = new URLSearchParams()
     if (params?.event_type_id) sp.set('event_type_id', params.event_type_id)
     if (params?.search) sp.set('search', params.search)
@@ -36,7 +38,9 @@ export const metricsApi = {
     if (params?.from) sp.set('from', params.from)
     if (params?.to) sp.set('to', params.to)
     const qs = sp.toString()
-    return api.get<EventMetricsResponse>(`/projects/${slug}/events-metrics${qs ? `?${qs}` : ''}`)
+    return api.get<EventMetricsResponse>(
+      withBranch(`/projects/${slug}/events-metrics${qs ? `?${qs}` : ''}`, branchId),
+    )
   },
 
   getProjectTotalMetrics: (

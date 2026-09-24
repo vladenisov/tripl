@@ -148,17 +148,10 @@ function useChartContainerReady() {
 // counts, so a payload without a threshold drew a band a quarter too narrow and
 // made unflagged buckets look flagged (tripl-0zpq.299).
 //
-// What actually gets past this fallback, as of tripl-0zpq.299: the event,
-// event-type and project-total series each resolve a real per-scope sigma
-// (`metrics_service._apply_scope_sigma_override` over
-// `_get_project_sigma_threshold`) and MonitoringDetailPage now threads it in
-// here, so a project that moved its sigma gets the band the detector used. Two
-// scopes still draw at 4.0 whatever the project setting says, for two different
-// reasons: the events-total card, whose endpoint never fills
-// `EventMetricsResponse.sigma_threshold` so the payload carries the schema
-// default (its count-only series draws no band anyway), and the catalog-metric
-// series, whose `MetricSeriesResponse` carries no such field at all, so this
-// constant applies (see `adaptMetricSeries`, tripl-0zpq.119).
+// Every scope now serves a real per-scope sigma (event, event-type and
+// project-total since tripl-0zpq.299; events-total since tripl-e443; the catalog
+// metric since tripl-4cgl, threaded through `adaptMetricSeries`), so this
+// constant only covers a payload that predates the field.
 const DEFAULT_SIGMA_THRESHOLD = 4
 
 interface ChartDataPoint {

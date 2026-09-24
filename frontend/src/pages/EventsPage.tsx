@@ -527,6 +527,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               activeTabSignal={activeTabSignal}
               isOpen={isTabChartOpen}
               onOpenChange={setIsTabChartOpen}
+              branchId={branchId}
               filters={{
                 filterEtId,
                 debouncedSearch,

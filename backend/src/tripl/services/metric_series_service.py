@@ -22,7 +22,7 @@ GRID-POPULATION (ticket tripl-0zpq.115): one chart must describe ONE population.
 An anomaly row carries no ``scan_config_id``, so the band it draws is whatever
 the detector scored; the value line therefore has to be read the way the
 detector reads it — SUMMED per bucket over every source config on the metric's
-resolved grid interval (:func:`_grid_population_filter`, mirrored by
+resolved grid interval (:func:`tripl.metric_grid.grid_population_filter`, shared with
 ``detect._metric_grid_population``). Reading a single config plots one addend of
 the band around it; reading every config mixes intervals that are not addable.
 """
@@ -47,7 +47,7 @@ from tripl.core.analyzers.anomaly_detector import (
     forecast_next_buckets,
 )
 from tripl.core.intervals import get_interval
-from tripl.metric_grid import metric_grid_stmt, metric_grids
+from tripl.metric_grid import grid_population_filter, metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import is_metric_monitored
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.fact_table import FactTable
@@ -72,7 +72,9 @@ from tripl.semver import (
 )
 from tripl.services.metrics_service import (
     _FORECAST_MAX_POINTS,
+    _apply_scope_sigma_override,
     _get_project_recent_signal_window,
+    _get_project_sigma_threshold,
     _resolve_project,
     _retained_versions,
     _served_stddev,
@@ -123,52 +125,14 @@ def _grid_population_filter(
     interval: str | None,
     scan_config_id: uuid.UUID | None,
 ) -> ColumnExpressionArgument[bool]:
-    """Restrict ``MetricValue`` rows to the metric's grid POPULATION.
+    """``MetricValue`` rows on the metric's grid population.
 
-    The population is every source config collecting this metric ON THE
-    RESOLVED GRID'S INTERVAL — not the single config :mod:`tripl.metric_grid`
-    named. Callers SUM across it, which is the same population and the same
-    reduction the detector scores (``detect._load_metric_value_points``), so the
-    line a chart draws and the ``expected_count`` / ``stddev`` band drawn around
-    it describe one series. A ``MetricAnomaly`` row carries no
-    ``scan_config_id``, so there is no narrower population it could be matched
-    against.
-
-    NOT the single resolved config: an ``event_composition`` metric stores one
-    value series per source scan (``metric_collect._compose_grid_region`` writes
-    a row set per config that collected the numerator) and ``MetricValue``'s
-    unique key is ``(metric_definition_id, scan_config_id, bucket)``, so two
-    LIVE configs may legally hold the same bucket — one event type collected by
-    an iOS scan and an Android scan is the ordinary shape. Filtering to one of
-    them plots an ADDEND of the band around it, and ``metric_grid_stmt`` picks
-    that one with an ``ORDER BY bucket DESC`` tie-break that is undefined
-    between two equally-current configs, so which addend could also flap.
-
-    NOT every config either: two grids of DIFFERENT intervals are not addable (a
-    1h count and a 1d count are not the same unit), and mixing them anchored
-    ``expand_series`` on the OLDEST grid's first bucket, which dropped the live
-    grid's values and invented zeros in their place. The interval is the line
-    between "another source of this series" and "a retired grid".
-
-    ``scan_config_id is None`` means the metric is ``sql``/``fact``: those rows
-    are written with a NULL ``scan_config_id`` exclusively, so the IS NULL
-    branch is exact rather than merely narrower and the interval never enters.
-
-    KNOWN OPEN (tripl-0zpq.115 follow-up): two configs scanning the SAME
-    warehouse rows on the same interval are summed, i.e. double-counted. Nothing
-    stored tells them apart from two configs covering disjoint traffic, so the
-    read cannot decide it — that is a collection-side question, and this
-    predicate deliberately matches the detector rather than guessing differently
-    from it.
-
-    Mirrored by ``detect._metric_grid_population``, the worker's sync half; the
-    two must stay in step and belong together in :mod:`tripl.metric_grid`, next
-    to the grid rule they extend.
+    The rule and its reasoning live in :func:`tripl.metric_grid.grid_population_filter`,
+    shared with the detector (tripl-67he).
     """
-    if scan_config_id is None:
-        return MetricValue.scan_config_id.is_(None)
-    on_grid = ScanConfig.interval.is_(None) if interval is None else ScanConfig.interval == interval
-    return MetricValue.scan_config_id.in_(select(ScanConfig.id).where(on_grid).scalar_subquery())
+    return grid_population_filter(
+        MetricValue.scan_config_id, interval=interval, scan_config_id=scan_config_id
+    )
 
 
 async def _load_metric_values(
@@ -593,6 +557,17 @@ async def get_metric_series(
             if monitored
             else None
         ),
+        # Override first, project setting behind it — the detector's two-step
+        # for a ``metric`` scope, whose overrides are stored with no
+        # ``scan_config_id`` (tripl-4cgl).
+        sigma_threshold=await _apply_scope_sigma_override(
+            session,
+            project_id=project.id,
+            scan_config_id=None,
+            scope_type=SCOPE_METRIC,
+            scope_ref=str(metric.id),
+            fallback=await _get_project_sigma_threshold(session, project.id),
+        ),
         data=data,
         forecast=await _forecast_off_event_loop(data=data, interval=interval),
     )
@@ -605,7 +580,16 @@ async def _load_breakdown_value_rows(
     breakdown_column: str,
     time_from: datetime | None,
     time_to: datetime | None,
+    interval: str | None,
+    scan_config_id: uuid.UUID | None,
 ) -> dict[tuple[str, bool], list[tuple[datetime, float]]]:
+    """Per-segment value rows, SUMMED per bucket over the metric's grid population.
+
+    The same population as the Series tab's line (tripl-kom5): without the grid
+    filter a metric collected on two intervals summed the retired grid's
+    segments in, so the Breakdowns and version tabs disagreed with the series
+    line beside them. See :func:`tripl.metric_grid.grid_population_filter`.
+    """
     query = (
         select(
             MetricValueBreakdown.breakdown_value,
@@ -616,6 +600,11 @@ async def _load_breakdown_value_rows(
         .where(
             MetricValueBreakdown.metric_definition_id == metric_id,
             MetricValueBreakdown.breakdown_column == breakdown_column,
+            grid_population_filter(
+                MetricValueBreakdown.scan_config_id,
+                interval=interval,
+                scan_config_id=scan_config_id,
+            ),
         )
         .group_by(
             MetricValueBreakdown.breakdown_value,
@@ -679,6 +668,8 @@ async def get_metric_breakdowns(
         breakdown_column=selected_column,
         time_from=time_from,
         time_to=time_to,
+        interval=interval,
+        scan_config_id=scan_config_id,
     )
     series: list[MetricBreakdownSeries] = []
     # ``count_shaped``, like the series and version reads: a fractional metric's
@@ -1065,6 +1056,8 @@ async def get_metric_version_series(
         breakdown_column=metric.app_version_column,
         time_from=time_from,
         time_to=time_to,
+        interval=interval,
+        scan_config_id=scan_config_id,
     )
     maturity_scan_config_id = await _resolve_maturity_scan_config_id(
         session,

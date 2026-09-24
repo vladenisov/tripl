@@ -73,6 +73,7 @@ from tripl.services.monitoring_utils import (
     scan_interval_to_timedelta,
     scan_liveness_cutoff,
 )
+from tripl.services.plan_branch_service import ensure_main_branch_id, resolve_branch_id
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.services.version_activation import (
     DEFAULT_ACTIVE_SHARE_MIN,
@@ -1827,6 +1828,49 @@ async def _main_branch_event_type_id(
     return twin_id or event_type_id
 
 
+async def _branch_filtered_metric_event_ids(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    event_type_id: uuid.UUID | None,
+    search: str | None,
+    status: list[str] | None,
+    tag: str | None,
+) -> list[uuid.UUID] | None:
+    """Main-twin ids of the WORKING-BRANCH events the filters select, or None on main.
+
+    ``event_metrics`` rows only ever reference main events, so the filters used
+    to be evaluated against main's rows — and on a branch an analyst who had
+    re-tagged or re-statused an event there got a chart for a different set of
+    events than the table beside it lists (tripl-vk1p). The filters are
+    evaluated on the branch's own rows instead, and each selected copy reads its
+    metrics through its main twin (``_branch_counterparts.main_counterparts``,
+    the pairing every other branch read uses). A copy with no twin was added on
+    the branch and has no metrics yet.
+
+    ``None`` when no branch was named or it IS main: the caller's main-row
+    filters already describe the page there.
+    """
+    if branch_id is None:
+        return None
+    resolved = await resolve_branch_id(session, project_id, branch_id)
+    if resolved == await ensure_main_branch_id(session, project_id):
+        return None
+    criteria = [Event.project_id == project_id, Event.branch_id == resolved]
+    if event_type_id:
+        criteria.append(Event.event_type_id == event_type_id)
+    if search:
+        criteria.append(Event.name.ilike(f"%{search}%"))
+    if status:
+        criteria.append(Event.status.in_(status))
+    if tag:
+        criteria.append(Event.id.in_(select(EventTag.event_id).where(EventTag.name == tag)))
+    branch_events = list((await session.execute(select(Event).where(*criteria))).scalars())
+    twins = await main_counterparts(session, project_id=project_id, events=branch_events)
+    return sorted({twin.id for twin in twins.values()})
+
+
 async def get_events_metrics(
     session: AsyncSession,
     slug: str,
@@ -1836,8 +1880,13 @@ async def get_events_metrics(
     status: list[str] | None = None,
     time_from: datetime | None = None,
     time_to: datetime | None = None,
+    branch_id: uuid.UUID | None = None,
 ) -> EventMetricsResponse:
     project = await _resolve_project(session, slug)
+    # Filled on every return, like every sibling metrics endpoint (tripl-e443):
+    # the points below carry no band today, but a served field left at the
+    # schema default claims a threshold the project may not use.
+    sigma_threshold = await _get_project_sigma_threshold(session, project.id)
 
     # Every filter the series is built from, collected once: the scan resolution
     # below has to see EXACTLY the rows the sum will see, or it can pick a scan
@@ -1846,18 +1895,31 @@ async def get_events_metrics(
         Event.project_id == project.id,
         EventMetric.event_id.is_not(None),
     ]
-    if event_type_id:
-        # On a branch the caller sends the branch copy's type id, which no
-        # metric row carries; resolve it to main's twin first (tripl-0zpq.111).
-        metrics_type_id = await _main_branch_event_type_id(session, project.id, event_type_id)
-        conditions.append(Event.event_type_id == metrics_type_id)
-    if search:
-        conditions.append(Event.name.ilike(f"%{search}%"))
-    if status:
-        conditions.append(Event.status.in_(status))
-    if tag:
-        tagged_event_ids = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
-        conditions.append(Event.id.in_(tagged_event_ids))
+    branch_filter_ids = await _branch_filtered_metric_event_ids(
+        session,
+        project_id=project.id,
+        branch_id=branch_id,
+        event_type_id=event_type_id,
+        search=search,
+        status=status,
+        tag=tag,
+    )
+    if branch_filter_ids is not None:
+        conditions.append(EventMetric.event_id.in_(branch_filter_ids))
+    else:
+        if event_type_id:
+            # A caller that names no branch may still send a branch copy's type
+            # id, which no metric row carries; resolve it to main's twin first
+            # (tripl-0zpq.111).
+            metrics_type_id = await _main_branch_event_type_id(session, project.id, event_type_id)
+            conditions.append(Event.event_type_id == metrics_type_id)
+        if search:
+            conditions.append(Event.name.ilike(f"%{search}%"))
+        if status:
+            conditions.append(Event.status.in_(status))
+        if tag:
+            tagged_event_ids = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
+            conditions.append(Event.id.in_(tagged_event_ids))
     if time_from:
         conditions.append(EventMetric.bucket >= time_from)
     if time_to:
@@ -1865,7 +1927,7 @@ async def get_events_metrics(
 
     config = await _resolve_events_metrics_scan_config(session, project.id, conditions)
     if config is None:
-        return EventMetricsResponse(scope="events_total", data=[])
+        return EventMetricsResponse(scope="events_total", data=[], sigma_threshold=sigma_threshold)
     scan_config_id = config.id
 
     query = (
@@ -1879,17 +1941,12 @@ async def get_events_metrics(
 
     interval = await _get_scan_config_interval(session, scan_config_id) if rows else None
 
-    # No ``sigma_threshold``: the only route here that leaves it at the schema
-    # default. These points are bare ``(bucket, count)`` — no ``expected_count``
-    # and no ``stddev`` — so the UI draws no confidence band off this response
-    # and has nothing to multiply. Serving the project sigma anyway would cost a
-    # query for a number nothing reads; if this tab ever grows a band, resolve it
-    # the way ``get_event_metrics`` does rather than trusting the default.
     return EventMetricsResponse(
         scope="events_total",
         scan_config_id=scan_config_id,
         scan_config_name=config.name,
         interval=interval,
+        sigma_threshold=sigma_threshold,
         data=[EventMetricPoint(bucket=bucket, count=count) for bucket, count in rows],
     )
 

@@ -54,6 +54,7 @@ export function TabMetricsCard({
   isOpen,
   onOpenChange,
   filters,
+  branchId,
 }: {
   slug: string
   activeEt: EventType | null
@@ -62,6 +63,9 @@ export function TabMetricsCard({
   isOpen: boolean
   onOpenChange: (open: boolean) => void
   filters: TabMetricsFilters
+  // The active plan branch: the tag / status filter must select the events the
+  // table beside it lists, not main's (tripl-vk1p).
+  branchId?: string | null
 }) {
   const [rangeDays, setRangeDays] = useState(TAB_METRICS_RANGE_DAYS_DEFAULT)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
@@ -74,6 +78,7 @@ export function TabMetricsCard({
     queryKey: [
       'eventsMetrics',
       slug,
+      branchId ?? null,
       filters.filterEtId,
       filters.debouncedSearch,
       filters.queryStatuses,
@@ -89,7 +94,7 @@ export function TabMetricsCard({
         tag: filters.filterTag || undefined,
         from: range.from,
         to: range.to,
-      }),
+      }, branchId),
     enabled: !!slug,
     refetchInterval,
     placeholderData: (prev) => prev,

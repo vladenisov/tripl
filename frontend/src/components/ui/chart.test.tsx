@@ -494,8 +494,7 @@ describe('MetricsChart served sigma threshold', () => {
   })
 
   it('falls back to the client default when the payload serves no threshold', () => {
-    // The catalog-metric scope, whose MetricSeriesResponse has no
-    // `sigma_threshold` at all, so `adaptMetricSeries` leaves it undefined.
+    // An older payload that predates the served `sigma_threshold`.
     const rows = renderCharted(
       <MetricsChart granularity="day" data={[flagged]} sigmaThreshold={undefined} />,
     )
