@@ -14,9 +14,10 @@ the half a schema cannot do — actually running the statement against the real
 warehouse.
 
 * ``preview_sql_metric`` runs a user-authored ``sql``-kind SELECT through the
-  SAME safety gate (``validate_select_sql``), dialect lint (``lint_dialect_sql``)
-  and time-window wrapping (``get_preview_rows``) the worker's ``_collect_sql``
-  uses.
+  SAME safety gate (``validate_select_sql``) and time-window wrapping
+  (``get_preview_rows``) the worker's ``_collect_sql`` uses, plus the dialect lint
+  (``lint_dialect_sql``), which ONLY this preview runs — neither the save path
+  nor the worker's collection calls it (tripl-0zpq.355).
 * ``preview_fact_operand`` compiles a draft ``fact`` operand's row filter with
   the worker's OWN ``_resolve_fact_operand_query`` (fed the very config dict a
   save would persist) and executes the result, bounded to one row.

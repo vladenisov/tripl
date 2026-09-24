@@ -251,6 +251,26 @@ Path rules:
   columns are shape-enumerated by the scan but have **no value extractor** — no
   dotted path under them is selectable (caveat [8]).
 
+### Top-N breakdowns rank over the whole collection window
+
+A breakdown with a values limit keeps its top values and folds the rest into
+`Other`. Every engine ranks those values by row count over the **whole window
+of one collection**, not over each chunk of it, so a chunked replay keeps one
+set of explicit values from its first chunk to its last. "The window" is always
+the window of the metric (or scan config) being written. The batched fact path
+shares one breakdown scan between metrics, but a limited breakdown shares it
+only with metrics that have the same window, and ranks over that window. The set
+a metric keeps therefore does not depend on which other metrics in its group
+happen to be behind, and it matches the per-metric collectors.
+
+Chunking (`replay_chunk_interval`) bounds the bucketed scans, **not** this
+ranking. The ranking pre-query is the one statement of a chunked collection that
+reads the whole window. It is a single `GROUP BY` over the breakdown column,
+with no time buckets and no aggregates, and it runs once per collection rather
+than once per chunk. It is still a scan of the whole range, so on a very long
+replay over a large table it can be the statement that reaches the data
+source's timeout (see [The query timed out](#the-query-timed-out)).
+
 ### Exact versus bounded
 
 The distinction this page turns on:
@@ -296,10 +316,10 @@ is a shipping warehouse.
 | Event metrics (bucketed counts) | `get_time_bucketed_counts` | full | full | full | full |
 | Event metric breakdowns (single) | `get_time_bucketed_breakdown_counts` | full | full | full | full |
 | Event metric breakdowns (multi) | `…_breakdown_counts_multi` | full | full | full | full |
-| Top-N + `Other` folding | `values_limit` on breakdown methods | full | full | full | full |
+| Top-N + `Other` folding (ranked once over the caller's whole window, not per chunk) | `values_limit` on breakdown methods, `top_n_ranking_window` | full | full | full | full |
 | SQL metrics (free-text) | `get_preview_rows` | full [9] | full [9] | full [9] | bounded [10] |
 | SQL metric starter templates | frontend `metricTemplates.ts` | full | full | full | n/a |
-| Dialect pre-flight lint (preview + collect) | `lint_dialect_sql` | full | full | full | full |
+| Dialect pre-flight lint (metric preview only [9]) | `lint_dialect_sql` | full | full | full | full |
 | Fact metrics (aggregate) | `get_time_bucketed_aggregate` | full | full | full | full |
 | Fact metric breakdowns | `get_time_bucketed_aggregate_breakdown` | full | full | full | full |
 | Fact ratio metrics (one scan) | `get_time_bucketed_multi_aggregate` | full | full | full | full |
@@ -307,7 +327,7 @@ is a shipping warehouse.
 | Structured fact filters | `AggregateSpec.filter_sql` | full | full | full | bounded [10] |
 | Schema drift | derived from scan output | full | full | full | full |
 | Value / distribution drift | derived from scan output | full | full | full | full |
-| **Field contracts** (required/enum/regex/range) | `validate_field_contracts` | **full** | **full** (warehouse-side, full window) | **full** (warehouse-side, full window) | bounded [10] |
+| **Field contracts** (required/enum/regex/range) | `validate_field_contracts` | **full** | **full** (warehouse-side, full window) | **full** (warehouse-side, full window; range compares in exact decimal, see "PostgreSQL range contracts compare exactly") | bounded [10] |
 | Anomaly detection | none (post-hoc) | full [11] | full [11] | full [11] | full [11] |
 | Alerts | none (post-hoc) | full [11] | full [11] | full [11] | full [11] |
 | Query timeout | data source `timeout_seconds` | full | full [2] | full | **n/a — accepted and ignored [10]** |
@@ -464,12 +484,18 @@ so it is bounded by `METRIC_QUERY_ROW_LIMIT` (100,000 rows) *per replay chunk* �
 a real bound, but a per-chunk one, and the query is expected to pre-aggregate.
 Portability is the author's responsibility: tripl does not translate the SQL
 between dialects and does not intend to. What tripl *does* do is run
-`lint_dialect_sql` against the selected warehouse's dialect at preview time and
-again at collection, so a query that provably cannot resolve on that warehouse —
-the `date_trunc('day', ts)` string-first form on BigQuery, for instance — is
-caught with an actionable message before it is saved, not by a driver stack trace
-in a worker. The lint runs *after* the read-only gate and can only ever reject
-more, never admit more.
+`lint_dialect_sql` against the selected warehouse's dialect in one place: the
+metric preview, after the read-only gate. A query that provably cannot resolve
+on that warehouse — the `date_trunc('day', ts)` string-first form on BigQuery,
+for instance — gets an actionable message in the preview instead of a driver
+error. The lint can only ever reject more, never admit more.
+
+The lint helps you in the preview. It does not enforce anything. Saving a metric
+runs only the read-only safety gate, and collection does not run the lint either.
+A metric saved without a preview, which is how the REST API, the CLI and agents
+usually save one, can still fail in a worker with the warehouse's own
+(sanitised) error on every scheduled run. Preview a free-text SQL metric before
+you save it.
 
 **[10] The synthetic adapter is a fixture, not a warehouse.**
 `test_connection` is an honest *local* check — both in-memory tables hold rows —
@@ -493,13 +519,25 @@ than a guess:
 - **A row filter is read, not ignored.** Both ways a fact filter arrives are
   honoured: `AggregateSpec.filter_sql` on the batched path, and the top-level
   `WHERE` of a `SELECT * FROM (<source>) AS _filtered WHERE …` wrapper on the
-  per-metric path, so the two paths agree. What it can evaluate is a column
+  per-metric path. The fact table's *own* `WHERE` is honoured on both paths
+  too, so the two paths agree. That includes a `WHERE` inside the wrapped source
+  and a `WHERE` inside a single CTE (`WITH x AS (… WHERE …) SELECT * FROM x`).
+  A `WHERE` nested anywhere else, such as a subquery in the projection or a
+  second CTE, is refused rather than dropped. What it can evaluate is a column
   compared to a string or numeric literal, combined with `AND`/`OR` and
   parentheses, in ClickHouse's *or* PostgreSQL's quoting; a function call, a
-  subquery or a timestamp condition is refused.
+  subquery or a timestamp condition is refused. A trailing `ORDER BY`, `LIMIT`,
+  `OFFSET` or `FETCH` after the `WHERE` is ignored, as it already is without a
+  `WHERE`, because the adapter applies its own ordering and row cap. A trailing
+  `GROUP BY`, `HAVING`, `WINDOW`, `QUALIFY` or set operation is refused by name.
 - **There is no query timer.** The data source's timeout is accepted and ignored:
   the dataset is built in the constructor and every scan is an in-memory pass over
   at most the row cap.
+
+Its aggregates follow the SQL engines. In particular, `sum` over a bucket whose
+rows all have a NULL measure is NULL, not `0`, so the bucket is a gap in the
+stored series as it is on ClickHouse, PostgreSQL and BigQuery. The demo used to
+store a zero there.
 
 **[11] Anomalies and alerts are warehouse-agnostic.**
 They are computed after collection, in Python, from the `MetricValue` rows already
@@ -714,7 +752,11 @@ was cancelled", or a scan/collection that fails after roughly the source's
 timeout.
 
 Narrow the time window, reduce the columns the base query selects, or raise the
-data source's **Timeout, s**. On BigQuery the job is cancelled server-side, so it
+data source's **Timeout, s**. A smaller replay chunk does not help if the
+statement that timed out is a breakdown's top-N ranking: that one query reads
+the whole replay window by design (see
+[Top-N breakdowns rank over the whole collection window](#top-n-breakdowns-rank-over-the-whole-collection-window)),
+so narrow the replay window instead. On BigQuery the job is cancelled server-side, so it
 stops billing; on PostgreSQL `statement_timeout` aborts it. Pressing **Stop** on a
 running job takes effect at the next chunk boundary, not mid-query — see
 caveat [12].
@@ -885,14 +927,46 @@ evaluated. The engine is asked rather than screened against a "portable subset",
 because a static screen would have to reject the lookahead a PostgreSQL-only
 project is entitled to write.
 
-The cost of a refusal is small but **quiet**: the only record is a worker warning
-naming the column — `Field contract skipped: … cannot compile the pattern …`. A
-contract that silently stops being evaluated looks exactly like a contract that
-is being met, so if a contract you rely on stops producing drifts on ClickHouse
-or BigQuery, read the worker log for that line before concluding the data is
+A refusal is counted, not only logged. The worker logs a warning naming the
+column (`Field contract skipped: … cannot compile the pattern …`), and the
+collection's run summary reports every expectation dropped this way as
+`contract_expectations_skipped`, next to `contract_violations_detected` and
+`contract_checks_failed`. The same counter covers the other single-expectation
+skips: an enum, regex or range contract on a BigQuery `REPEATED` column, a range
+bound that is not a finite number, and, on BigQuery and the sampled fallback, a
+contract on a column missing from the result. `contract_checks_failed` counts something else: event types whose whole
+contract check raised. A contract that silently stops being evaluated looks
+exactly like a contract that is being met, so if a contract you rely on stops
+producing drifts, check `contract_expectations_skipped` in the run summary
+before concluding the data is
 clean. Saving the pattern does not warn you either: the save-time check is a typo
 screen against Python's own `re` and deliberately not a portability guarantee, so
 a pattern can save here and still be one an engine refuses.
+
+### PostgreSQL range contracts compare exactly
+
+A range contract compares each value against its bounds. The Python fallback,
+ClickHouse (`toFloat64OrNull`) and BigQuery (`SAFE_CAST(… AS FLOAT64)`) parse
+the value as a 64-bit float and compare the float. PostgreSQL compares in exact
+`numeric`. It cannot use `double precision`, because PostgreSQL's float parser
+raises an error on overflow (`1e400`) and on underflow to zero (`1e-400`), and
+one such row would fail every contract in the scan.
+
+Exact and rounded comparisons give the same verdict except in three cases:
+
+- **A value within one float rounding step of a bound.** `9007199254740993`
+  against a maximum of `9007199254740992.0` is out of range on PostgreSQL. The
+  other engines round both numbers to the same float, so the value is in range.
+- **A value beyond float range.** `-1e-400` against a minimum of `0.0` is out of
+  range on PostgreSQL. The fallback reads it as `-0.0`, which is in range.
+- **A very long number.** PostgreSQL treats a number with more than 510 integer
+  digits or more than 1275 fractional digits as unparseable, so the row is out of
+  range. That is well beyond anything a float can express, but the fallback and
+  ClickHouse still parse it.
+
+Each case needs a value right at a bound or an extreme number. If a contract on PostgreSQL
+reports a violation that the same data does not produce on another warehouse,
+check whether the sample value falls into one of these cases.
 
 ### BigQuery `DATETIME` is zone-less
 
@@ -907,7 +981,30 @@ naive one and a `DATE` bucket to a `date`, so the bucket column's Python type
 would otherwise depend on a column type the caller never sees. Every bucketed
 rowset is normalized to an aware UTC `datetime` before it leaves the adapter — a
 `DATE` bucket becoming that date at 00:00 UTC — because the readers compare it
-against an aware window bound and persist it into a `timestamptz`.
+against an aware window bound and persist it into a `timestamptz`. The metric
+writers normalize the bucket again on their own side
+(`core.bucketing.stored_bucket`), so a naive bucket from any adapter is stored as
+UTC rather than in the database session's timezone, and tripl pins its own
+application database sessions to `TimeZone=UTC` as well.
+
+**Rows stored before this normalization are not rewritten.** Before it, a
+`DATETIME` or `DATE` bucket reached the application database naive, and
+PostgreSQL stored it in the *session* timezone. If that timezone was UTC — the
+default for a PostgreSQL container initialised without a `TZ`, which is how
+`compose.yaml` starts it — old and new rows are the same instants and there is
+nothing to do. If it was not, a BigQuery scan config whose time column is
+`DATETIME` or `DATE` has its older event, breakdown, coverage and distribution
+buckets shifted by the UTC offset. Fact and SQL metric values are not affected:
+their writer always stamped a naive bucket as UTC.
+The next collection stores new buckets at the right instants, so rows at the
+edges of an overlapping window can exist twice for one logical bucket. To check,
+run `SHOW TimeZone;` against the application database with the role tripl
+connects as, and inspect a few `event_metrics.bucket` values for such a config:
+on an hourly or daily grid they should fall on whole UTC hours. To repair
+shifted rows, re-collect the config's whole history with a metrics replay whose
+window starts before its first stored bucket. Collection deletes the rows inside its
+window before writing, so that removes the shifted rows. `TIMESTAMP` columns were
+never affected.
 
 ---
 

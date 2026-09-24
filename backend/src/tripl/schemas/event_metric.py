@@ -111,8 +111,9 @@ class SeasonalityHeatmapResponse(BaseModel):
     max_count: int
     total_count: int
     #: The scan interval the cells were binned from, and whether that interval
-    #: actually resolves an hour. A daily or weekly scan puts EVERY bucket in
-    #: hour 0, so 23 of each row's 24 cells are structurally empty — a 7x24 grid
+    #: actually resolves an hour (an interval of one hour or finer). A daily or
+    #: weekly scan puts EVERY bucket in hour 0, and a 6h scan fills only 4 of
+    #: 24 columns (tripl-0zpq.199), so most cells are structurally empty — a 7x24 grid
     #: then reads as missing data instead of as a coarser interval
     #: (tripl-jfm3.128). Clients render the weekday strip alone when this is
     #: false rather than drawing a grid that can never fill.

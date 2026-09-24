@@ -265,7 +265,9 @@ does, tripl keeps a metric series per release. One project-level **Releases to
 keep** setting under **Settings → Project → General** controls how many latest
 releases stay explicit across event monitoring, adoption, project totals, and
 SQL/fact/event-composition metrics; older releases fold into a single
-**"Other"** bucket. Event scans also watch for a **release regression**: an
+**"Other"** bucket. "Latest" follows version order: SemVer precedence, and
+plain dotted numbers that are not strict SemVer (`15.8`, `15.10`, `1.2.3.4`)
+compared numerically, so `15.10` is newer than `15.9`. Event scans also watch for a **release regression**: an
 event that disappeared or fired far less in the newest release than in the one
 before it.
 

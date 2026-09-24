@@ -18,6 +18,8 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from tripl.config import settings
+from tripl.core.adapters.synthetic import SYNTHETIC_ONGOING_HOURS
 from tripl.core.bucketing import floor_to_bucket
 from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import get_interval
@@ -49,6 +51,7 @@ from tripl.worker.tasks.metrics.metric_collect import (
 from tripl.worker.tasks.metrics.tasks import (
     _RECENT_JOB_SCAN_LIMIT,
     METRICS_COLLECTION_MODE,
+    SCHEDULED_RESUME_OVERLAP_BUCKETS,
     _is_dispatcher_collection_job,
     _last_collected_window_to,
     collect_metrics,
@@ -245,6 +248,56 @@ def _scan_config_collection_due(
     return _due(None) and _due(_last_collected_window_to(session, scan_config_id))
 
 
+def _demo_resume_window_exceeds_full_volume(
+    session: Session,
+    scan_config_id: uuid.UUID,
+    *,
+    last_bucket: datetime | None,
+    delta: timedelta,
+    now: datetime,
+) -> bool:
+    """Whether a demo collection dispatched NOW would reach behind the synthetic
+    warehouse's full-volume hours (tripl-0zpq.342).
+
+    The collector resumes ``SCHEDULED_RESUME_OVERLAP_BUCKETS`` behind
+    ``collection_progress_to`` and runs to the current boundary, deleting each
+    window before rewriting it. The synthetic adapter serves only its newest
+    ``SYNTHETIC_ONGOING_HOURS`` at full volume and a sampled trickle before that,
+    so any window reaching further back rewrites real history at sampled volume.
+
+    That happens right after a pause ends: the pause froze both progress
+    signals, and until ``advance_demos`` backfills the missed buckets the resume
+    point still sits at pause start. Which beat tick runs first is a race, so
+    the window is checked here instead of relying on the backfill winning it.
+    Computed conservatively (to the current boundary, not the settled end), so a
+    true answer never lets a too-wide window through. ``None`` progress — never
+    collected — is the default backfill's business and is not declined here.
+
+    The gate only makes sense while the tick that closes the gap can run, and
+    while the gap CAN close. With ``DEMO_RUNTIME_ENABLED=false`` nothing
+    backfills, and only collections move progress, so the next dispatch — at
+    least ``DEMO_COLLECTION_COOLDOWN_HOURS`` later — always reaches further back
+    than the full-volume hours; likewise an interval whose resume overlap alone
+    spans them. Declining there would stop scheduled collection for good, so
+    both fall back to collecting as before.
+    """
+    if not settings.demo_runtime_enabled:
+        return False
+    overlap = delta * SCHEDULED_RESUME_OVERLAP_BUCKETS
+    if overlap >= timedelta(hours=SYNTHETIC_ONGOING_HOURS):
+        return False
+    progress_to = collection_progress_to(
+        last_bucket=last_bucket,
+        watermark=_last_collected_window_to(session, scan_config_id),
+        delta=delta,
+    )
+    if progress_to is None:
+        return False
+    window_from = progress_to - overlap
+    reach = _floor_to_interval(now, delta) - window_from
+    return reach > timedelta(hours=SYNTHETIC_ONGOING_HOURS)
+
+
 # A single Postgres session-level advisory lock serialises the whole dispatcher
 # across worker processes. With concurrency=N, a backlog of redelivered
 # ``check_metrics_due`` messages (e.g. accumulated while the worker was busy or
@@ -418,6 +471,24 @@ def check_metrics_due() -> dict[str, int]:
                         "no activity within the demo idle window"
                     )
                     should_run = False
+
+            if (
+                should_run
+                and demo_activity is not None
+                and _demo_resume_window_exceeds_full_volume(
+                    session, config.id, last_bucket=last_bucket, delta=delta, now=now
+                )
+            ):
+                # Just resumed, and ``advance_demos`` has not backfilled the
+                # paused hours yet: the window would reach behind the synthetic
+                # adapter's full-volume hours and rewrite them at sampled volume
+                # (tripl-0zpq.342). The backfill tick (60 s) closes the gap, and
+                # the next dispatcher tick then collects the normal overlap.
+                logger.info(
+                    f"Skipping collect_metrics for demo {config.name!r}: waiting for "
+                    "the demo tick to backfill the paused hours"
+                )
+                should_run = False
 
             if should_run and demo_activity is not None:
                 age_hours = _hours_since_last_scheduled_collection(session, config.id, now=now)

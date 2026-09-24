@@ -17,6 +17,10 @@ _SEMVER_RE = re.compile(
     r"$"
 )
 _NUMERIC_IDENTIFIER_RE = re.compile(r"^(0|[1-9]\d*)$")
+# A version that is not strict SemVer but is still a plain dotted number —
+# ``15.8``, ``15.10``, ``1.2.3.4``, ``1.02.0``. Compared numerically segment by
+# segment rather than as text (tripl-0zpq.106).
+_DOTTED_NUMERIC_RE = re.compile(r"^[vV]?\d+(?:\.\d+)*$")
 
 # How many latest releases (by SemVer order) to retain as explicit series in
 # app-version breakdowns; older releases roll up into the shared "Other" bucket.
@@ -50,12 +54,20 @@ class ParsedVersion:
     patch: int | None
     prerelease: tuple[PrereleaseIdentifier, ...]
     build: tuple[str, ...]
+    # Numeric segments of a dotted-numeric fallback (``"15.8"`` -> ``(15, 8)``);
+    # ``None`` for SemVer (see ``release``) and for free-text fallbacks.
+    numeric_segments: tuple[int, ...] | None = None
 
     @property
     def release(self) -> tuple[int, int, int] | None:
         if self.major is None or self.minor is None or self.patch is None:
             return None
         return (self.major, self.minor, self.patch)
+
+    @property
+    def numeric_release(self) -> tuple[int, ...] | None:
+        """Numeric release segments for SemVer AND dotted-numeric fallbacks."""
+        return self.release if self.is_semver else self.numeric_segments
 
 
 def parse_version(version: str) -> ParsedVersion:
@@ -86,8 +98,15 @@ def compare_versions(left: str, right: str) -> int:
     """Compare two version strings.
 
     Returns -1 when ``left < right``, 1 when ``left > right``, and 0 when both
-    values have the same SemVer precedence or the same lexical fallback value.
-    Valid SemVer values sort after non-SemVer fallbacks.
+    values have the same precedence or the same lexical fallback value.
+
+    Numbered versions — SemVer, and dotted numbers that are not strict SemVer
+    (``15.8``, ``15.10``, ``1.2.3.4``) — compare by their numeric segments, a
+    missing segment reading as ``0``: ``15.9 < 15.10`` and ``15.7.4 < 15.8``
+    (tripl-0zpq.106; a plain text comparison had both backwards and let a
+    two-part marketing release sort below every three-part one). A SemVer
+    prerelease still sorts below the bare release it precedes. Free-text
+    versions (``beta``) compare as text and sort below every numbered one.
     """
     return _compare_parsed(parse_version(left), parse_version(right), total=False)
 
@@ -139,6 +158,9 @@ def latest_previous_versions(versions: Iterable[str]) -> tuple[str | None, str |
 
 
 def _fallback_version(raw: str, normalized: str) -> ParsedVersion:
+    numeric_segments = None
+    if _DOTTED_NUMERIC_RE.fullmatch(normalized) is not None:
+        numeric_segments = tuple(int(part) for part in normalized.lstrip("vV").split("."))
     return ParsedVersion(
         raw=raw,
         normalized=normalized,
@@ -148,6 +170,7 @@ def _fallback_version(raw: str, normalized: str) -> ParsedVersion:
         patch=None,
         prerelease=(),
         build=(),
+        numeric_segments=numeric_segments,
     )
 
 
@@ -180,8 +203,27 @@ def _compare_parsed(left: ParsedVersion, right: ParsedVersion, *, total: bool) -
             right.raw,
         )
 
-    if left.is_semver != right.is_semver:
-        return 1 if left.is_semver else -1
+    left_numeric = left.numeric_release
+    right_numeric = right.numeric_release
+    if left_numeric is not None and right_numeric is not None:
+        # At least one side is a dotted-numeric fallback: compare the numbers,
+        # padded with zeros so ``15.8`` meets ``15.8.0`` as an equal release
+        # (tripl-0zpq.106). A SemVer prerelease still ranks below its release.
+        result = _compare_padded(left_numeric, right_numeric) or _compare_prerelease(
+            left.prerelease, right.prerelease
+        )
+        if result != 0 or not total:
+            return result
+        # Same precedence: a deterministic tie-break, SemVer after the fallback.
+        if left.is_semver != right.is_semver:
+            return 1 if left.is_semver else -1
+        return _compare_text(left.normalized, right.normalized) or _compare_text(
+            left.raw,
+            right.raw,
+        )
+
+    if (left_numeric is None) != (right_numeric is None):
+        return 1 if left_numeric is not None else -1
 
     result = _compare_text(left.normalized, right.normalized)
     if result != 0 or not total:
@@ -234,6 +276,14 @@ def _compare_tuple(left: tuple[int, ...], right: tuple[int, ...]) -> int:
         if result != 0:
             return result
     return 0
+
+
+def _compare_padded(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    width = max(len(left), len(right))
+    return _compare_tuple(
+        left + (0,) * (width - len(left)),
+        right + (0,) * (width - len(right)),
+    )
 
 
 def _compare_int(left: int | None, right: int | None) -> int:

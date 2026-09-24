@@ -82,6 +82,36 @@ async def override_get_session() -> AsyncGenerator[AsyncSession]:
 app.dependency_overrides[get_session] = override_get_session
 
 
+# Names the suite uses as "a public destination": RFC 2606 example domains and
+# Atlassian Cloud hosts. The SSRF guard (``reject_private_host``) resolves them
+# and fails CLOSED, so on a runner without outbound DNS the webhook/Jira tests
+# turned 200/201 into 422 "could not be resolved" (tripl-0zpq.308).
+_HERMETIC_DNS_SUFFIXES = ("example.com", "example.net", "example.org", "atlassian.net")
+# A public address (example.com's long-standing one), so the guard passes.
+HERMETIC_DNS_ADDRESS = "93.184.216.34"
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _hermetic_getaddrinfo(host: object, *args: object, **kwargs: object) -> object:
+    name = host.decode() if isinstance(host, bytes) else host
+    if isinstance(name, str):
+        name = name.rstrip(".").lower()
+        if any(name == s or name.endswith("." + s) for s in _HERMETIC_DNS_SUFFIXES):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (HERMETIC_DNS_ADDRESS, 0))]
+    return _real_getaddrinfo(host, *args, **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve the suite's placeholder public hosts without the live resolver.
+
+    Every other name still goes to the real resolver, so nothing that expects a
+    lookup to FAIL changes, and a test that patches ``getaddrinfo`` itself
+    (e.g. to a metadata IP) still wins, being applied after this fixture.
+    """
+    monkeypatch.setattr(socket, "getaddrinfo", _hermetic_getaddrinfo)
+
+
 class NetworkAccessError(RuntimeError):
     """Raised by the ``deny_network`` tripwire on any outbound attempt."""
 

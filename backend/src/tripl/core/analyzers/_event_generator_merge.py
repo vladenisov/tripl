@@ -22,6 +22,7 @@ from tripl.core.analyzers._event_identity import (
     scan_identity_winner_order,
 )
 from tripl.models.alert_delivery_item import AlertDeliveryItem, trim_scope_name
+from tripl.models.domain_enums import FieldDefinitionType
 from tripl.models.event import Event
 from tripl.models.event import EventStatus as _ES
 from tripl.models.event import event_status_rank as _rank
@@ -294,6 +295,11 @@ def _merge_existing_grouped_events(
         return 0
 
     field_name_by_id = {fd.id: name for name, fd in field_definitions.items()}
+    # Same rule as ``plan_events`` (tripl-p5ac): an override never lands on a
+    # JSON field, whose stored value is the template naming every path variable.
+    json_field_names = {
+        name for name, fd in field_definitions.items() if fd.field_type == FieldDefinitionType.json
+    }
     merged = 0
 
     for identity, source in list(existing_by_identity.items()):
@@ -321,7 +327,11 @@ def _merge_existing_grouped_events(
                 source=source,
                 group_name=match.event_name,
                 field_name_by_id=field_name_by_id,
-                field_value_overrides=match.field_value_overrides,
+                field_value_overrides={
+                    key: literal
+                    for key, literal in match.field_value_overrides.items()
+                    if key not in json_field_names
+                },
                 order=next_event_order,
             )
             if created:

@@ -430,6 +430,9 @@ def _scope_results(
 
         if ratio < settings.missing_ratio:
             kind = KIND_MISSING
+        # ``settings.sigma`` is the project's ``sigma_threshold`` (default 4.0),
+        # not DEFAULT_SIGMA, whenever the project has detection settings — the
+        # docs say so (tripl-0zpq.104).
         elif ratio <= settings.drop_ratio and observed < expected - settings.sigma * math.sqrt(
             expected
         ):

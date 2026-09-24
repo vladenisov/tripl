@@ -741,6 +741,7 @@ def _collect_scope_ids(
                     EventMetric.bucket < evaluation_end,
                     Event.status != "archived",
                 )
+                .distinct()
             ).scalars()
             if value is not None
         }
@@ -757,6 +758,7 @@ def _collect_scope_ids(
                     MetricAnomaly.bucket < evaluation_end,
                     Event.status != "archived",
                 )
+                .distinct()
             ).scalars()
             if value is not None
         )
@@ -764,25 +766,29 @@ def _collect_scope_ids(
         ids = {
             value
             for value in session.execute(
-                select(metric_column).where(
+                select(metric_column)
+                .where(
                     EventMetric.scan_config_id == scan_config_id,
                     metric_column.is_not(None),
                     EventMetric.bucket >= history_from,
                     EventMetric.bucket < evaluation_end,
                 )
+                .distinct()
             ).scalars()
             if value is not None
         }
         ids.update(
             value
             for value in session.execute(
-                select(anomaly_column).where(
+                select(anomaly_column)
+                .where(
                     MetricAnomaly.scan_config_id == scan_config_id,
                     MetricAnomaly.scope_type == scope_type,
                     anomaly_column.is_not(None),
                     MetricAnomaly.bucket >= evaluation_start,
                     MetricAnomaly.bucket < evaluation_end,
                 )
+                .distinct()
             ).scalars()
             if value is not None
         )
@@ -799,7 +805,15 @@ def _collect_breakdown_scope_keys(
     scope_type: str,
     app_version_column: str | None = None,
     kind: MetricBreakdownAnomalyKind = MetricBreakdownAnomalyKind.volume,
+    breakdown_column: str | None = None,
 ) -> set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]]:
+    """Every breakdown scope with history or a stored anomaly in the window.
+
+    DISTINCT in SQL and narrowed in SQL (``breakdown_column`` keeps only that
+    column, ``app_version_column`` drops that one), so a scan with a few thousand
+    events no longer materialises one row per stored BUCKET — up to 534 per key
+    — just to build a set (tripl-0zpq.9).
+    """
     metric_id_column = (
         EventMetricBreakdown.event_type_id
         if scope_type == SCOPE_EVENT_TYPE
@@ -836,6 +850,25 @@ def _collect_breakdown_scope_keys(
         MetricBreakdownAnomaly.bucket < evaluation_end,
     )
 
+    if breakdown_column is not None:
+        metric_query = metric_query.where(EventMetricBreakdown.breakdown_column == breakdown_column)
+        anomaly_query = anomaly_query.where(
+            MetricBreakdownAnomaly.breakdown_column == breakdown_column
+        )
+    if app_version_column:
+        # App-version series describe rollout adoption rather than a stable
+        # cohort: each release naturally ramps up and then declines as the next
+        # one ships, and running the generic per-breakdown detector on those
+        # lifecycle curves creates noise. Dedicated release-regression detection
+        # handles version correctness; every other breakdown column stays
+        # monitored here.
+        metric_query = metric_query.where(
+            EventMetricBreakdown.breakdown_column != app_version_column
+        )
+        anomaly_query = anomaly_query.where(
+            MetricBreakdownAnomaly.breakdown_column != app_version_column
+        )
+
     if scope_type == SCOPE_PROJECT_TOTAL:
         metric_query = metric_query.where(
             EventMetricBreakdown.event_id.is_(None),
@@ -858,26 +891,13 @@ def _collect_breakdown_scope_keys(
         anomaly_query = anomaly_query.where(anomaly_id_column.is_not(None))
 
     keys: set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]] = set()
-    for event_id, event_type_id, column, value, is_other in session.execute(metric_query).all():
-        if scope_type == SCOPE_PROJECT_TOTAL:
-            keys.add((None, None, column, value, bool(is_other)))
-        else:
-            keys.add((event_id, event_type_id, column, value, bool(is_other)))
-    for event_id, event_type_id, column, value, is_other in session.execute(anomaly_query).all():
-        if scope_type == SCOPE_PROJECT_TOTAL:
-            keys.add((None, None, column, value, bool(is_other)))
-        else:
-            keys.add((event_id, event_type_id, column, value, bool(is_other)))
-
-    if not app_version_column:
-        return keys
-
-    # App-version series describe rollout adoption rather than a stable cohort:
-    # each release naturally ramps up and then declines as the next one ships.
-    # Running the generic per-breakdown detector on those lifecycle curves
-    # creates noise. Dedicated release-regression detection handles version
-    # correctness; every other breakdown column stays monitored here.
-    return {key for key in keys if key[2] != app_version_column}
+    for query in (metric_query.distinct(), anomaly_query.distinct()):
+        for event_id, event_type_id, column, value, is_other in session.execute(query).all():
+            if scope_type == SCOPE_PROJECT_TOTAL:
+                keys.add((None, None, column, value, bool(is_other)))
+            else:
+                keys.add((event_id, event_type_id, column, value, bool(is_other)))
+    return keys
 
 
 def _metric_grid_population(grid: MetricGrid | None) -> ColumnExpressionArgument[bool]:
@@ -1249,8 +1269,21 @@ def _recalculate_project_metric_anomalies(
     # memoized so a project whose metrics share a source pays one pair of
     # queries rather than one per metric.
     source_coverage: dict[tuple[uuid.UUID, timedelta], set[datetime]] = {}
+    # Every monitored metric's grid in ONE window-function query — the batch
+    # ``metric_grid_stmt`` exists for — rather than one per metric
+    # (tripl-0zpq.9). Same population as ``metrics`` above, so every metric
+    # finds its entry; a metric that vanished between the two reads gets None,
+    # exactly what the per-metric lookup answered.
+    grids = metric_grids(
+        session.execute(
+            metric_grid_stmt(
+                MetricDefinition.project_id == config.project_id,
+                *monitored_metric_criteria(),
+            )
+        ).all()
+    )
     for metric in metrics:
-        grid = _resolve_metric_grid(session, metric)
+        grid = grids.get(metric.id)
         if grid is None or grid.interval is None:
             continue
         interval_spec = get_interval(grid.interval)
@@ -1738,6 +1771,7 @@ def _recalculate_platform_parity_anomalies(
             evaluation_end=evaluation_end,
             scope_type=scope_type,
             kind=MetricBreakdownAnomalyKind.parity,
+            breakdown_column=platform_column,
         )
         # One scope's total series is shared by all of its platform values.
         totals_by_scope: dict[str, list[SeriesPoint]] = {}

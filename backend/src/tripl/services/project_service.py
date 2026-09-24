@@ -38,6 +38,7 @@ from tripl.schemas.project import (
     ProjectUpdate,
 )
 from tripl.services import alerting_service, plan_branch_service
+from tripl.services._monitor_state_intervals import load_monitor_state_intervals
 from tripl.services.metrics_insights_service import (
     _count_active_metric_signals_by_project,
     is_significant_signal,
@@ -281,9 +282,13 @@ async def _populate_firing_monitor_counts(
     for state in states:
         states_by_rule[state.rule_id].append(state)
 
+    # Same per-grid horizon as the Monitors screen and dispatch (tripl-0zpq.162).
+    interval_of = await load_monitor_state_intervals(session, states)
     now = datetime.now(UTC)
     for project_id, rule_id in rule_rows:
-        rollup = summarize_monitor_states(states_by_rule.get(rule_id, []), now=now)
+        rollup = summarize_monitor_states(
+            states_by_rule.get(rule_id, []), now=now, interval_of=interval_of
+        )
         if rollup.status == "firing":
             summaries[project_id].firing_monitor_count += 1
 

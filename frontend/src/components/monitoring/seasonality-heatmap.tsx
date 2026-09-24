@@ -136,9 +136,10 @@ export function SeasonalityHeatmap({
     )
   }
 
-  // A daily or weekly scan floors every bucket into hour 0, so 23 of each row's
-  // 24 cells can never hold anything. Drawing the grid anyway reads as missing
-  // data — say what is actually true instead (tripl-jfm3.128).
+  // A daily or weekly scan floors every bucket into hour 0, and a 6h scan fills
+  // only 4 of 24 columns (tripl-0zpq.199), so most cells can never hold
+  // anything. Drawing the grid anyway reads as missing data — say what is
+  // actually true instead (tripl-jfm3.128).
   if (data.hourly_resolution === false) {
     return (
       <Card>
@@ -146,7 +147,7 @@ export function SeasonalityHeatmap({
           <h2 className="text-sm font-semibold">Hour × weekday heatmap</h2>
           <p className="text-sm text-muted-foreground">
             This scan collects every <span className="font-medium">{data.interval}</span>, so
-            there is no hour-of-day detail to plot — every bucket falls on one hour.
+            there is no hour-of-day detail to plot — every bucket falls on a few fixed hours.
             Set the scan to an hourly (or finer) interval to see this heatmap.
           </p>
         </CardContent>

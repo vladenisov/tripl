@@ -380,15 +380,38 @@ def _detect_event_type_drift(
 class FieldContractOutcome:
     """What one event type's contract check produced — including whether it ran.
 
-    Two numbers rather than one because "checked, found nothing" and "could not
+    Three numbers rather than one because "checked, found nothing" and "could not
     check" are different answers that both used to report 0 violations, and the
     second one is the one an operator has to be told about: a contract that
     silently stops being evaluated looks exactly like a contract that is being
     met.
+
+    "Could not check" comes in two units, and they are kept apart rather than
+    summed. ``checks_failed`` is 0 or 1: the whole check for this event type
+    raised and nothing was evaluated. ``expectations_skipped`` counts single
+    expectations the adapter declined while it evaluated the rest — a pattern
+    the engine's regex library refuses, a REPEATED column BigQuery cannot render,
+    a non-finite range bound — which used to leave nothing but a worker log line
+    (tripl-0zpq.341 / tripl-0zpq.358). Folding them into ``checks_failed`` would
+    make one refused pattern read as a whole event type going unchecked.
     """
 
     violations_detected: int = 0
     checks_failed: int = 0
+    expectations_skipped: int = 0
+
+
+def _take_skipped_field_contracts(adapter: BaseAdapter) -> int:
+    """How many expectations ``adapter`` declined since the last call.
+
+    Read through ``getattr`` because the check below is also driven by
+    duck-typed adapters that only implement ``validate_field_contracts``; one
+    that cannot report a skip has, as far as this caller can know, skipped none.
+    """
+    take = getattr(adapter, "take_skipped_field_contracts", None)
+    if take is None:
+        return 0
+    return len(take())
 
 
 def _detect_field_contract_violations(
@@ -437,6 +460,11 @@ def _detect_field_contract_violations(
       ``tasks``). A swallow that reports nothing is the anti-pattern; this one
       reports every time it fires.
 
+    ``contract_checks_failed`` counts only that whole-check failure. A single
+    expectation the adapter declined while the rest ran is not an exception and
+    never reaches the ``except``; it is read back from the adapter and reported
+    separately as ``contract_expectations_skipped`` (see ``FieldContractOutcome``).
+
     The ``try`` wraps the warehouse call ONLY. A failure writing the drift rows
     belongs to the session, and the task's rollback has to see it: swallowing
     that would report violations the database does not hold.
@@ -453,6 +481,9 @@ def _detect_field_contract_violations(
     if not expectations:
         return FieldContractOutcome()
 
+    # Drained before the call as well as after it, so a skip left behind by an
+    # earlier caller of this adapter is not reported against this event type.
+    _take_skipped_field_contracts(adapter)
     try:
         violations = adapter.validate_field_contracts(
             base_query,
@@ -473,8 +504,12 @@ def _detect_field_contract_violations(
             event_type.id,
             len(expectations),
         )
+        # A skip recorded before the raise belongs to a check that did not run;
+        # ``checks_failed`` already says so, and counting it twice would not.
+        _take_skipped_field_contracts(adapter)
         return FieldContractOutcome(checks_failed=1)
 
+    skipped = _take_skipped_field_contracts(adapter)
     drift_items = _contract_violation_drift_items(violations)
     _upsert_schema_drifts(
         session,
@@ -482,4 +517,4 @@ def _detect_field_contract_violations(
         scan_config_id=scan_config_id,
         drift_items=drift_items,
     )
-    return FieldContractOutcome(violations_detected=len(drift_items))
+    return FieldContractOutcome(violations_detected=len(drift_items), expectations_skipped=skipped)

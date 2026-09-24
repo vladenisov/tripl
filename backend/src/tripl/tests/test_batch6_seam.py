@@ -128,7 +128,7 @@ async def _create_sql_metric(client: AsyncClient, slug: str, data_source_id: str
             "display_name": "Seam metric",
             "data_source_id": data_source_id,
             "interval": "1d",
-            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         },
     )
     assert resp.status_code == 201, resp.text
@@ -260,7 +260,7 @@ async def test_the_metric_door_and_the_fact_table_door_agree_on_one_source(
             "display_name": "Cross project",
             "data_source_id": data_source["id"],
             "interval": "1d",
-            "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+            "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         },
     )
     fact_resp = await client.post(
