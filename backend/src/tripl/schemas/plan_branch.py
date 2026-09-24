@@ -170,8 +170,9 @@ class BranchRevertRequest(BaseModel):
     """Undo one entry of the branch's diff.
 
     The entry is addressed the way the diff names it — entity type, natural name
-    and parent — rather than by id, so the request describes a *change* rather
-    than a row. ``field`` narrows the revert to one changed field; omitted, the
+    and parent — so the request describes a *change* rather than a row, plus
+    the entry's own ``entity_id`` where a name may be shared (events and
+    relations). ``field`` narrows the revert to one changed field; omitted, the
     whole entity goes back to its base state.
     """
 
@@ -179,6 +180,12 @@ class BranchRevertRequest(BaseModel):
     name: str
     parent: str | None = None
     field: str | None = None
+    # The diff entry's own ``entity_id``. Events and relations may share a name
+    # (namesakes), and then the name alone cannot say which entry is meant;
+    # with the id the revert acts on exactly that row (tripl-0zpq.292). Omitted,
+    # the entry is found by name as before, and a name several entries share
+    # is refused.
+    entity_id: str | None = Field(default=None, max_length=64)
 
 
 # --- inline 3-way merge conflict resolution ---------------------------------

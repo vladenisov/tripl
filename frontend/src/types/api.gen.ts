@@ -4901,11 +4901,14 @@ export interface components {
          * @description Undo one entry of the branch's diff.
          *
          *     The entry is addressed the way the diff names it — entity type, natural name
-         *     and parent — rather than by id, so the request describes a *change* rather
-         *     than a row. ``field`` narrows the revert to one changed field; omitted, the
+         *     and parent — so the request describes a *change* rather than a row, plus
+         *     the entry's own ``entity_id`` where a name may be shared (events and
+         *     relations). ``field`` narrows the revert to one changed field; omitted, the
          *     whole entity goes back to its base state.
          */
         BranchRevertRequest: {
+            /** Entity Id */
+            entity_id?: string | null;
             /**
              * Entity Type
              * @enum {string}

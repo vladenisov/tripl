@@ -293,9 +293,14 @@ async def _diff_counts_for_branches(
             counts[branch.id] = (len(reviewable(legacy_entries)), False)
             continue
         ahead_entries = compute_plan_diff_entries(
-            base_payload, branch_snapshot, key_collisions_from=main_snapshot
+            base_payload,
+            branch_snapshot,
+            key_collisions_from=main_snapshot,
+            origins_complete=branch.origin_ids_complete,
         )
-        behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
+        behind_entries = compute_plan_diff_entries(
+            base_payload, main_snapshot, origins_complete=True
+        )
         mark_housekeeping(ahead_entries, behind_entries=behind_entries, main_payload=main_snapshot)
         counts[branch.id] = (len(reviewable(ahead_entries)), len(behind_entries) > 0)
     return counts
@@ -631,6 +636,10 @@ async def deep_copy_plan_to_branch(
             metric_breakdown_columns=list(ev.metric_breakdown_columns or []),
             owner_id=ev.owner_id,
             reviewed=ev.reviewed,
+            # Which main row this copy is, so rows sharing a (type, name) can be
+            # told apart by the diff, the merge, a revert and the discussion
+            # twin (tripl-0zpq.292). A copy of a copy keeps the first origin.
+            origin_id=ev.origin_id or ev.id,
             # superseded_by_event_id is set AFTER the flush below: the FK is
             # immediate on Postgres and, with no mapped relationship, the
             # unit of work will not order two rows of the same table by a
@@ -841,6 +850,8 @@ async def deep_copy_plan_to_branch(
                 target_field_id=fd_map[rel.target_field_id],
                 relation_type=rel.relation_type,
                 description=rel.description,
+                # As ``origin_id`` on the events above (tripl-0zpq.292).
+                origin_id=rel.origin_id or rel.id,
             )
         )
 
@@ -1290,9 +1301,14 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
             # Visible entries are changes authored on the branch, not changes
             # that landed on main after the branch was opened.
             entries = compute_plan_diff_entries(
-                base_payload, branch_snapshot, key_collisions_from=main_snapshot
+                base_payload,
+                branch_snapshot,
+                key_collisions_from=main_snapshot,
+                origins_complete=branch.origin_ids_complete,
             )
-            behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
+            behind_entries = compute_plan_diff_entries(
+                base_payload, main_snapshot, origins_complete=True
+            )
             behind_base = len(behind_entries) > 0
             mark_housekeeping(entries, behind_entries=behind_entries, main_payload=main_snapshot)
             # The MERGE's own pairing, read through the same function the merge

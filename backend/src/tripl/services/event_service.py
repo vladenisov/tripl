@@ -620,9 +620,9 @@ def _twin_reads_for_branch_rows(
 
     ONE twin, the SAME one for both expressions: the lowest id among the main
     rows that answer the key. Nothing stops main from holding two rows under one
-    (event type, identity), and nothing refuses that state: the plan diff warns
-    about it and the merge goes through (tripl-0zpq.149 waits on tripl-0zpq.292
-    for the origin id that would tell the pair apart) — and while the last-seen
+    (event type, identity), and nothing refuses that state — a branch COPY
+    now reads the main row it came from (``origin_id``, tripl-0zpq.292), but a
+    row created on the branch still pairs by key — and while the last-seen
     read took
     ``max()`` over the pair and the metric id took the lowest id, the "Silent >
     N days" filter and the "Busiest first" sort could answer about two different
@@ -658,12 +658,29 @@ def _twin_reads_for_branch_rows(
         .correlate(Event)
         .scalar_subquery()
     )
+    # A branch copy's twin is the main row it was copied from; only a row
+    # without a live origin — authored on the branch, or copied from a row main
+    # has since deleted — pairs by type name and identity. The same rule, in
+    # the same order, as ``main_counterparts`` (tripl-0zpq.292).
+    origin_row = aliased(Event)
+    origin_is_live = (
+        select(origin_row.id)
+        .where(origin_row.id == Event.origin_id, origin_row.branch_id == main_branch_id)
+        .correlate(Event)
+        .exists()
+    )
     paired = (
         twin.project_id == project_id,
         twin.branch_id == main_branch_id,
-        twin_type.name == branch_type_name,
-        func.coalesce(func.nullif(twin.source_name, ""), twin.name)
-        == func.coalesce(func.nullif(Event.source_name, ""), Event.name),
+        or_(
+            twin.id == Event.origin_id,
+            and_(
+                ~origin_is_live,
+                twin_type.name == branch_type_name,
+                func.coalesce(func.nullif(twin.source_name, ""), twin.name)
+                == func.coalesce(func.nullif(Event.source_name, ""), Event.name),
+            ),
+        ),
     )
     twin_last_seen = (
         select(twin.last_seen_at)

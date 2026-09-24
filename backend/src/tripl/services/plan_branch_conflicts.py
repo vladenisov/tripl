@@ -17,6 +17,7 @@ from tripl.schemas.plan_branch import (
     ResolutionCreate,
     ResolutionResponse,
 )
+from tripl.services._origin_pairing import pair_rows, snapshot_id, snapshot_ref
 from tripl.services.plan_branch_service import (
     _get_branch,
     _reject_main,
@@ -155,10 +156,21 @@ def _conflict_set(
     key_fn: Callable[[dict[str, Any]], Any],
     name_fn: Callable[[dict[str, Any]], str],
     change_keys: tuple[str, ...] | list[str],
+    anchored: bool = False,
+    theirs_origins_complete: bool = False,
 ) -> list[dict[str, Any]]:
-    base_by = {key_fn(item): item for item in base_items}
-    ours_by = {key_fn(item): item for item in ours_items}
-    theirs_by = {key_fn(item): item for item in theirs_items}
+    if anchored:
+        base_by, ours_by, theirs_by = _anchored_slots(
+            base_items,
+            ours_items,
+            theirs_items,
+            key_fn,
+            theirs_origins_complete=theirs_origins_complete,
+        )
+    else:
+        base_by = {key_fn(item): item for item in base_items}
+        ours_by = {key_fn(item): item for item in ours_items}
+        theirs_by = {key_fn(item): item for item in theirs_items}
 
     conflicts: list[dict[str, Any]] = []
     for key in set(ours_by) | set(theirs_by) | set(base_by):
@@ -182,6 +194,62 @@ def _conflict_set(
             display = name_fn(o or t or b or {})
             conflicts.append({"entity_type": entity_type, "name": display})
     return conflicts
+
+
+def _anchored_slots(
+    base_items: list[dict[str, Any]],
+    ours_items: list[dict[str, Any]],
+    theirs_items: list[dict[str, Any]],
+    key_fn: Callable[[dict[str, Any]], Any],
+    *,
+    theirs_origins_complete: bool,
+) -> tuple[dict[Any, dict[str, Any]], dict[Any, dict[str, Any]], dict[Any, dict[str, Any]]]:
+    """The three sides keyed by (natural key, base row id), not by the key alone.
+
+    For entities whose natural key several rows may share (events, relations).
+    Keyed one row per key, two namesakes collapsed to whichever was listed last
+    on each side, so main's edit to one and the branch's edit to the other read
+    as a conflict, and two edits to the SAME one could compare two different
+    rows and pass — after which the merge, which pairs by origin id, wrote the
+    branch's value over main's (tripl-0zpq.292). Each side is placed against
+    the base with ``pair_rows``: main's rows by their own ids, the branch's by
+    their origin ids. A key the branch's pairing leaves ambiguous (a branch
+    opened before origin ids) falls back to the old one-row-per-key slot on
+    all three sides; so does a row added on a side, so that two sides adding
+    one name still meet.
+    """
+    pairings = [
+        pair_rows(
+            base_items,
+            side,
+            key_of_old=key_fn,
+            key_of_new=key_fn,
+            id_of_old=snapshot_id,
+            ref_of_new=snapshot_ref,
+            unplaced_are_new=complete,
+        )
+        for side, complete in ((ours_items, True), (theirs_items, theirs_origins_complete))
+    ]
+    collapsed = {key for pairing in pairings for key in pairing.ambiguous}
+
+    def base_slot(item: dict[str, Any]) -> tuple[Any, Any]:
+        key = key_fn(item)
+        return (key, None) if key in collapsed else (key, snapshot_id(item))
+
+    base_by = {base_slot(item): item for item in base_items}
+    sides: list[dict[Any, dict[str, Any]]] = []
+    for pairing in pairings:
+        by_slot: dict[Any, dict[str, Any]] = {}
+        for base_item, item in pairing.pairs:
+            by_slot[base_slot(base_item)] = item
+        for item in [
+            *pairing.added,
+            *(item for _, item in pairing.renamed),
+            *(item for _, items in pairing.ambiguous.values() for item in items),
+        ]:
+            by_slot[(key_fn(item), None)] = item
+        sides.append(by_slot)
+    return base_by, sides[0], sides[1]
 
 
 def _event_type_add_remove_conflicts(
@@ -380,7 +448,11 @@ def _definition_dependency_conflicts(
 
 
 def _detect_merge_conflicts(
-    base: dict[str, Any], ours: dict[str, Any], theirs: dict[str, Any]
+    base: dict[str, Any],
+    ours: dict[str, Any],
+    theirs: dict[str, Any],
+    *,
+    theirs_origins_complete: bool = False,
 ) -> list[dict[str, Any]]:
     conflicts: list[dict[str, Any]] = []
     conflicts.extend(_event_type_add_remove_conflicts(base, ours, theirs))
@@ -404,6 +476,8 @@ def _detect_merge_conflicts(
             key_fn=lambda x: (x["event_type_name"], x["name"]),
             name_fn=lambda x: f"{x['event_type_name']}.{x['name']}",
             change_keys=_EV_CHANGE_KEYS,
+            anchored=True,
+            theirs_origins_complete=theirs_origins_complete,
         )
     )
     conflicts.extend(
@@ -445,6 +519,8 @@ def _detect_merge_conflicts(
                 f"->{x['target_event_type_name']}.{x['target_field_name']}"
             ),
             change_keys=_REL_CHANGE_KEYS,
+            anchored=True,
+            theirs_origins_complete=theirs_origins_complete,
         )
     )
     conflicts.extend(_definition_dependency_conflicts(base, ours, theirs))

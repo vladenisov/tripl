@@ -330,17 +330,18 @@ async def test_an_event_that_lands_nowhere_on_main_keeps_or_drops_its_thread(
     """Pins the two cases the move deliberately leaves alone, with a main row
     beside them that a move guessing its target would pick.
 
-    * Main RENAMED the event after the cut. No scan identity ties the renamed
-      row to the branch's copy, so the branch row lands nowhere and its thread
-      stays with the branch — main's change stands, the rule the photo threads
-      follow. The renamed row is the obvious wrong guess — the branch row was
-      copied from it — so it must gain nothing.
+    * Main DELETED the event after the cut. The branch row lands nowhere and its
+      thread stays with the branch — main's change stands, the rule the photo
+      threads follow. (This used to be a main-side RENAME, which no scan
+      identity tied to the copy; since origin ids the copy reads through to
+      the row main renamed, which is the row it was copied from, so a rename
+      no longer lands nowhere — test_batch18_origin_id pins that.)
     * The branch deleted the event: the merge deletes main's row, and main's
       thread goes with it through the same cascade as a delete on main.
     """
     slug = "evc-lands-nowhere"
     main_et_id = await _seed_plan(client, slug)
-    # "purchase:success": main renames it after the cut, the branch keeps it.
+    # "purchase:success": main deletes it after the cut, the branch keeps it.
     success_main_id = await _event_id(client, slug, "purchase:success")
     # "purchase:failed": the branch deletes it, so the merge deletes main's row.
     failed = await client.post(
@@ -354,10 +355,8 @@ async def test_an_event_that_lands_nowhere_on_main_keeps_or_drops_its_thread(
     success_branch_id = await _event_id(client, slug, "purchase:success", branch=branch_id)
     failed_branch_id = await _event_id(client, slug, "purchase:failed", branch=branch_id)
 
-    renamed_on_main = await client.patch(
-        f"/api/v1/projects/{slug}/events/{success_main_id}", json={"name": "purchase:succeeded"}
-    )
-    assert renamed_on_main.status_code == 200, renamed_on_main.text
+    deleted_on_main = await client.delete(f"/api/v1/projects/{slug}/events/{success_main_id}")
+    assert deleted_on_main.status_code == 204, deleted_on_main.text
     deleted_on_branch = await client.delete(
         f"/api/v1/projects/{slug}/events/{failed_branch_id}?branch={branch_id}"
     )
@@ -369,11 +368,10 @@ async def test_an_event_that_lands_nowhere_on_main_keeps_or_drops_its_thread(
 
     merged = await _approve_and_merge(client, slug, branch_id)
     assert merged.status_code == 200, merged.text
-    # Main's rename and the branch's deletion both stand.
-    assert await _question_counts(client, slug) == {"purchase:succeeded": 0}
+    # Main's deletion and the branch's deletion both stand.
+    assert await _question_counts(client, slug) == {}
 
     assert set(await _thread(client, slug, success_branch_id)) == {orphan["id"]}
-    assert await _thread(client, slug, success_main_id) == {}
     async with TestSessionLocal() as session:
         assert await session.get(EventPhotoComment, uuid.UUID(on_failed["id"])) is None
         stayed = await session.get(EventPhotoComment, uuid.UUID(orphan["id"]))
@@ -472,14 +470,19 @@ async def test_a_thread_about_a_namesake_main_deleted_stays_with_the_branch(
 
 
 @pytest.mark.asyncio
-async def test_a_thread_whose_name_main_holds_twice_stays_with_the_branch(
+async def test_a_thread_on_the_row_that_replaces_two_namesakes_follows_it_to_main(
     client: AsyncClient,
 ) -> None:
     """The branch folds main's two ``checkout:tap`` into one it authors itself,
     and asks about it: no scan identity ties the new row to either of main's,
-    so the thread hangs on the branch row. Main still holds both after the
-    merge, and taking "the" row under that type and name picked whichever of
-    them the query happened to return last."""
+    so the thread hangs on the branch row.
+
+    Main used to keep both namesakes after the merge — it deleted a main row
+    only when its NAME vanished from the branch — so the thread had to stay
+    with the branch rather than land on an arbitrary one of them. The copies
+    now name the main rows they came from, so the merge deletes exactly those
+    two and creates the authored row, and the thread moves onto it
+    (tripl-0zpq.149, tripl-0zpq.292)."""
     slug = "evc-namesakes-on-main"
     main_et_id = await _seed_plan(client, slug)
     first_id = await _insert_main_event(main_et_id, name="checkout:tap", source_name="tap:one")
@@ -496,6 +499,19 @@ async def test_a_thread_whose_name_main_holds_twice_stays_with_the_branch(
 
     merged = await _approve_and_merge(client, slug, branch_id)
     assert merged.status_code == 200, merged.text
-    assert (await _stored_comment(question["id"])).event_id == uuid.UUID(authored)
-    assert await _thread(client, slug, first_id) == {}
-    assert await _thread(client, slug, second_id) == {}
+    async with TestSessionLocal() as session:
+        taps = (
+            (
+                await session.execute(
+                    select(Event.id).where(
+                        Event.event_type_id == uuid.UUID(main_et_id),
+                        Event.name == "checkout:tap",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(taps) == 1
+    assert taps[0] not in {uuid.UUID(first_id), uuid.UUID(second_id)}
+    assert (await _stored_comment(question["id"])).event_id == taps[0]

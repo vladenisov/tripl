@@ -2806,7 +2806,7 @@ async def test_merge_moving_a_rename_onto_a_deleted_variables_name_is_a_409(
 
 
 @pytest.mark.asyncio
-async def test_merge_moving_a_rename_onto_a_deleted_events_name_is_a_409(
+async def test_merge_moving_a_rename_onto_a_deleted_events_name_lands_row_by_row(
     client: AsyncClient,
 ) -> None:
     """The event twin of the variable case above, pinned by ``uq_event_scan_identity``.
@@ -2821,9 +2821,14 @@ async def test_merge_moving_a_rename_onto_a_deleted_events_name_is_a_409(
     removal arm afterwards. Until events had a constraint that flush SUCCEEDED:
     the row the user kept was deleted with everything hanging off it, the row
     the user deleted survived wearing the kept row's scan identity, and no
-    snapshot diff showed either half. Now the two arms' disagreement is an
-    IntegrityError and ``_commit_merged_plan`` a 409 that loses nothing
-    (tripl-8tdl).
+    snapshot diff showed either half. ``uq_event_scan_identity`` then turned
+    the two arms' disagreement into a 409 that lost nothing (tripl-8tdl).
+
+    The branch copies now name the main rows they came from (``origin_id``),
+    so there is nothing left to disagree about: the copy of ``purchase:success``
+    was renamed, the copy of ``purchase:completed`` was deleted, and the merge
+    does exactly that to exactly those rows — the kept row keeps its id and its
+    identity under the new name, the deleted one goes (tripl-0zpq.292).
     """
     slug = "merge-delete-then-rename-event"
     et_id = await _seed_plan(client, slug)
@@ -2871,8 +2876,7 @@ async def test_merge_moving_a_rename_onto_a_deleted_events_name_is_a_409(
     assert renamed.status_code == 200, renamed.text
 
     resp = await _approve_and_merge(client, slug, branch_id)
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"]["merge_constraint_violation"] is True
+    assert resp.status_code == 200, resp.text
 
     async with TestSessionLocal() as session:
         merged = (
@@ -2880,13 +2884,10 @@ async def test_merge_moving_a_rename_onto_a_deleted_events_name_is_a_409(
             .scalars()
             .all()
         )
-    # Nothing moved and nothing went: both rows, both names, both identities,
-    # both ids.
-    assert {e.source_name: e.name for e in merged} == {
-        "purchase_success_raw": "purchase:success",
-        "purchase_completed_raw": "purchase:completed",
-    }
-    assert {e.name: e.id for e in merged} == main_ids
+    # The kept row, renamed in place with its identity; the deleted row gone.
+    assert [(e.id, e.name, e.source_name) for e in merged] == [
+        (main_ids["purchase:success"], "purchase:completed", "purchase_success_raw")
+    ]
 
 
 @pytest.mark.asyncio

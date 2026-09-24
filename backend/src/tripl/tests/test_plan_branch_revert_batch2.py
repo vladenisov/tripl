@@ -631,15 +631,16 @@ async def _dups_on_branch(branch_id: str) -> list[tuple[str, str]]:
 
 
 @pytest.mark.asyncio
-async def test_reverting_a_change_no_single_namesake_explains_is_refused(
+async def test_reverting_a_change_to_one_namesake_restores_that_namesake(
     client: AsyncClient,
 ) -> None:
-    """Two base rows, one branch row that matches neither.
+    """Two base rows, the branch deletes one and edits the other.
 
-    No base row is THE before of that change, yet the revert copied the fields
-    of whichever the payload listed first onto the survivor — values the
-    reviewer was shown only as one of two. ``_one`` passes here, because the
-    branch holds a single ``dup``; the base side is what has to refuse.
+    Before origin ids no base row was THE before of that change, and the revert
+    refused rather than copy the fields of whichever the payload listed first.
+    The copy now names the base row it came from, so the diff shows a removal
+    and an edit, and reverting the edit restores that row's own values
+    (tripl-0zpq.292).
     """
     slug = "revert-namesake-group-change"
     branch_id = await _namesakes(client, slug)
@@ -650,8 +651,9 @@ async def test_reverting_a_change_no_single_namesake_explains_is_refused(
         json={"description": "edited on the branch"},
     )
     assert edit.status_code == 200, edit.text
-    [entry] = await _event_entries(client, slug, branch_id)
-    assert entry["kind"] == "changed"
+    entries = {e["kind"]: e for e in await _event_entries(client, slug, branch_id)}
+    assert set(entries) == {"changed", "removed"}
+    assert entries["changed"]["entity_id"] == ids["first"]
 
     resp = await _revert(
         client,
@@ -660,33 +662,44 @@ async def test_reverting_a_change_no_single_namesake_explains_is_refused(
         entity_type="event",
         name="dup",
         parent="track",
-        field="description",
+        entity_id=entries["changed"]["entity_id"],
     )
-    assert resp.status_code == 409, resp.text
-    assert "base snapshot is called 'dup'" in resp.json()["detail"]
-    assert [description for description, _ in await _dups_on_branch(branch_id)] == [
-        "edited on the branch"
-    ]
+    assert resp.status_code == 200, resp.text
+    assert [description for description, _ in await _dups_on_branch(branch_id)] == ["first"]
 
 
 @pytest.mark.asyncio
-async def test_reverting_the_removal_of_namesakes_is_refused(client: AsyncClient) -> None:
-    """Both ``dup`` rows deleted: the removal arm of the same base-side refusal.
+async def test_reverting_the_removal_of_namesakes_rebuilds_each_one(client: AsyncClient) -> None:
+    """Both ``dup`` rows deleted: each removal names its own base row.
 
-    The revert rebuilt whichever namesake the payload listed first, from
-    nothing the request or the diff entry chose. Nothing is rebuilt now.
+    The revert used to refuse, because the name could not say which namesake to
+    rebuild. The removed entry now carries that base row's id, so each revert
+    rebuilds exactly its row, linked back to it, and the diff comes out level
+    (tripl-0zpq.292).
     """
     slug = "revert-namesake-removals"
     branch_id = await _namesakes(client, slug)
     for _description, event_id in await _dups_on_branch(branch_id):
         await _delete_event(client, slug, branch_id, event_id)
     removals = await _event_entries(client, slug, branch_id)
-    assert removals and {e["kind"] for e in removals} == {"removed"}
+    assert len(removals) == 2 and {e["kind"] for e in removals} == {"removed"}
 
-    resp = await _revert(client, slug, branch_id, entity_type="event", name="dup", parent="track")
-    assert resp.status_code == 409, resp.text
-    assert "base snapshot is called 'dup'" in resp.json()["detail"]
-    assert await _dups_on_branch(branch_id) == []
+    for removal in removals:
+        resp = await _revert(
+            client,
+            slug,
+            branch_id,
+            entity_type="event",
+            name="dup",
+            parent="track",
+            entity_id=removal["entity_id"],
+        )
+        assert resp.status_code == 200, resp.text
+    assert [description for description, _ in await _dups_on_branch(branch_id)] == [
+        "first",
+        "second",
+    ]
+    assert await _event_entries(client, slug, branch_id) == []
 
 
 # --- tripl-0zpq.155: an event's type is its key, not a changed field ------------

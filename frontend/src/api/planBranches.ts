@@ -88,6 +88,9 @@ export const planBranchesApi = {
       name: string
       parent?: string | null
       field?: string | null
+      /** The diff entry's own `entity_id`: two events (or relations) may share a
+       * name, and then only the id says which entry is meant. */
+      entity_id?: string | null
     },
   ) =>
     api.post<PlanBranchDiffSummary>(

@@ -607,26 +607,21 @@ the right copy. A diff row also carries **warnings** for an event authored on
 the branch without a scan identity — e.g.
 `No scan identity: the naming rule 'track:{name}' needs name.` — so a reviewer
 sees it before the merge lands an event that would never match its traffic.
-Rows that share a name — two events called `purchase:success` under `track`,
-which nothing forbids, or two relations between the same two fields — are
-matched by that name like every other row, by the diff, the merge and a revert
-alike, so the diff shows at most one row for the name and a change to one of
-them can show on, or land on, the other: deleting one of two such events can
-read as an edit to the survivor, or as nothing when the two were identical. A
-diff row for such a name carries a warning to rename one of the events, or
-remove one of the relations, before changing either — and **the merge itself is
-refused with a `409 Conflict`** while any of the three sides it reads (the
-branch, `main`, or the merge base) still holds two rows under one name. Merging
-anyway wrote whichever branch copy won onto whichever `main` namesake won and
-left `main` holding both, which is the one outcome nobody can undo by reading
-the diff. The message names each pair. On the branch or on `main`, rename or
-remove one of each and merge. The merge base cannot be edited — it is the
-snapshot of `main` taken when the branch was created — so when that is the side
-still holding a pair, clean `main` first and then recreate the branch from
-current `main` and redo its edits there. A branch copy of an event reads its
-metrics and **last seen** through its `main` twin (the event with the same type
-name and identity), so the branch shows what the live plan collected rather than
-blanks. Removals that are the machine's doing — a scan-minted variable still
+Rows may share a name — two events called `purchase:success` under `track`,
+which nothing forbids, or two relations between the same two fields. Every
+branch copy remembers the `main` row it was made from, so the diff, the conflict
+check, the merge and a revert follow each copy to its own row: deleting one of
+two such events on a branch deletes exactly that one from `main` when the
+branch merges, an edit lands on the row it was made to, and a branch that
+deletes both copies and authors one event in their place leaves `main` with
+just that event. Rows created on the branch are matched to `main` by name, as
+before. A branch opened before this was tracked may still hold namesakes it
+cannot tell apart; its diff row for such a name carries a warning to rename one
+of the events, or remove one of the relations, before changing either. A branch
+copy of an event reads its metrics, **last seen** and discussion through the
+`main` event it was copied from (for an event created on the branch, the `main`
+event with the same type name and identity), so the branch shows what the live
+plan collected rather than blanks. Removals that are the machine's doing — a scan-minted variable still
 exactly as the scan wrote it being retired (no binding beyond the scan's own, no
 documented values or per-event overrides, not renamed, not excluded from scans,
 not the removed half of a rename, and not named by a `${token}` in any field or

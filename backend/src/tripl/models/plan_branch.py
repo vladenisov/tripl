@@ -5,7 +5,17 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint, insert, select
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    insert,
+    select,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -82,6 +92,17 @@ class PlanBranch(UUIDMixin, TimestampMixin, Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # Whether every branch row that stands for a main row records which one
+    # (``Event.origin_id``, ``EventTypeRelation.origin_id``). True for every
+    # branch ``deep_copy_plan_to_branch`` fills; a branch opened before origin
+    # ids is True only when the migration could link every copy. Where it is
+    # True, a base row no copy names was deleted on the branch and a row with no
+    # origin was authored there, so several of them under one name are still
+    # told apart; where it is False, such a name keeps the one-row-per-name
+    # handling it always had (tripl-0zpq.292).
+    origin_ids_complete: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="false", nullable=False
     )
     merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     merged_by: Mapped[uuid.UUID | None] = mapped_column(

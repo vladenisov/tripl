@@ -23,6 +23,7 @@ from typing import NamedTuple
 from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
 from tripl.models.event import Event
@@ -325,6 +326,18 @@ async def events_with_open_questions(
     ).all()
     if not keys:
         return {anchor for anchor in anchors if anchor is not None}
+    # A copy matches through the main row it was made from and nothing else;
+    # only a row without a live origin matches by key — the rule
+    # ``main_counterparts`` reads the thread by. By key alone, a question on one
+    # of two namesakes listed the other one's copy too, beside a count of ?0
+    # (tripl-0zpq.292).
+    origin_row = aliased(Event)
+    origin_is_live = (
+        select(origin_row.id)
+        .where(origin_row.id == Event.origin_id, origin_row.branch_id == main_branch_id)
+        .correlate(Event)
+        .exists()
+    )
     branch_ids = (
         (
             await session.execute(
@@ -334,7 +347,15 @@ async def events_with_open_questions(
                 .where(
                     Event.project_id == project_id,
                     Event.branch_id == branch_id,
-                    tuple_(EventType.name, _identity_column()).in_([tuple(k) for k in keys]),
+                    or_(
+                        Event.origin_id.in_(anchors),
+                        and_(
+                            ~origin_is_live,
+                            tuple_(EventType.name, _identity_column()).in_(
+                                [tuple(k) for k in keys]
+                            ),
+                        ),
+                    ),
                 )
             )
         )

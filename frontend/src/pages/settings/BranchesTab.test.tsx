@@ -578,6 +578,7 @@ describe('BranchesTab', () => {
         name: 'purchase',
         parent: 'track',
         field: 'description',
+        entity_id: 'ev-1',
       }),
     )
   })
@@ -629,6 +630,7 @@ describe('BranchesTab', () => {
         name: 'legacy_event',
         parent: 'track',
         field: null,
+        entity_id: 'ev-old',
       }),
     )
   })
@@ -1333,6 +1335,7 @@ describe('BranchesTab', () => {
         name: 'variant',
         parent: null,
         field: null,
+        entity_id: null,
       }),
     )
   })
@@ -1476,6 +1479,7 @@ describe('BranchesTab', () => {
         name: 'variant',
         parent: null,
         field: null,
+        entity_id: null,
       }),
     )
   })
