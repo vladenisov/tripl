@@ -120,13 +120,19 @@ class DemoCancelResponse(BaseModel):
     """Outcome of asking an in-flight demo provision to abandon itself.
 
     ``cancelled`` is only true when a still-seeding shell was found and flagged;
-    the provision then deletes itself instead of promoting. When it is false the
-    create had already finished (or never started), so the caller must be told
-    plainly that the demo will appear rather than pretending it was stopped.
+    the provision then deletes itself instead of promoting.
+
+    When it is false there was nothing to stop, and ``state`` says which of two
+    very different things that means (DEMO-28): ``finished`` — a demo of this
+    user's became ready moments ago, so it WILL be in their projects list and
+    the caller should say so — or ``none`` — no recent demo exists, the create
+    never got far enough (or failed on its own), and the caller must not promise
+    anything will appear. ``stopped`` always pairs with ``cancelled=true``.
     """
 
     cancelled: bool
     slug: str | None = None
+    state: Literal["stopped", "finished", "none"]
 
 
 class AnomalyResetCounts(BaseModel):

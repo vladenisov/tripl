@@ -1,7 +1,8 @@
 /**
  * The persistent scenario strip (tripl-2su6.21.3, chapters in tripl-odrj.4).
  *
- * Mounted beside the demo banner on every surface, so the active chapter's
+ * Mounted inside the demo banner's row on every surface (LIVE-9: one bar, not
+ * two stacked blocks), so the active chapter's
  * step chain stays visible while the user walks the app. It renders nothing but
  * what the context already decided: the chapter, the step, the deep link,
  * whether a watch is in flight, and why live-loop went backwards. When a
@@ -10,9 +11,9 @@
  * into a real project.
  */
 
-import { useEffect, useState, type CSSProperties } from 'react'
-import { Link, useLocation } from 'react-router-dom'
-import { ArrowRight, Eye, Plus, RotateCcw, X } from 'lucide-react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { Link, useLocation, useParams } from 'react-router-dom'
+import { ArrowRight, Eye, EyeOff, Plus, RotateCcw, X } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Button } from '@/components/ui/button'
@@ -26,6 +27,7 @@ import {
   type ScenarioHint,
   type ScenarioStep,
 } from './scenarioModel'
+import { useWelcomeDismissed } from './welcomeDismissal'
 
 const REGION_LABEL = 'Demo scenario'
 
@@ -51,15 +53,33 @@ function useDeferredFlag(value: boolean, delayMs: number): boolean {
   return value && deferred
 }
 
-const SHELL_CLASS = 'mb-4 rounded-lg border px-3.5 py-2.5'
-const SHELL_STYLE: CSSProperties = {
-  background: 'var(--accent-soft)',
-  borderColor: 'var(--border-subtle)',
+/**
+ * The strip is a segment of the demo banner's row, not a card of its own
+ * (LIVE-9): the two stacked pushed the page's title far down every screen. On
+ * one line from `lg` up — the long text shrinks and truncates instead of
+ * wrapping — and a full-width block in the phone panel, which wraps.
+ * `data-demo-scenario` is how the banner knows the slot is filled, to give up
+ * its own labels only then.
+ */
+function StripShell({ children }: { children: ReactNode }) {
+  return (
+    <section
+      aria-label={REGION_LABEL}
+      data-demo-scenario=""
+      className="flex min-w-0 grow basis-full flex-wrap items-center gap-x-2 gap-y-1.5 border-t pt-1.5 lg:basis-0 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-3"
+      style={{ borderColor: 'var(--warning)' }}
+    >
+      {children}
+    </section>
+  )
 }
+
+/** Visible from `2xl`, or in the phone panel; an icon alone in between. */
+const STRIP_LABEL = 'lg:sr-only 2xl:not-sr-only'
 
 function ChapterProgress({ index, total }: { index: number; total: number }) {
   return (
-    <div className="flex items-center gap-1" aria-hidden="true">
+    <div className="flex items-center gap-1 lg:hidden xl:flex" aria-hidden="true">
       {Array.from({ length: total }, (_, position) => (
         <span
           key={position}
@@ -82,7 +102,10 @@ interface ActiveStripProps {
   targetMissing: boolean
   /** On-surface callouts are silenced — offer the way back. */
   hintsMuted: boolean
+  /** The step has an on-surface mark to silence. */
+  hasMark: boolean
   onShowHints: () => void
+  onHideHints: () => void
   onDismiss: () => void
 }
 
@@ -95,84 +118,114 @@ function ActiveStrip({
   isWatching,
   targetMissing,
   hintsMuted,
+  hasMark,
   onShowHints,
+  onHideHints,
   onDismiss,
 }: ActiveStripProps) {
   return (
-    <section aria-label={REGION_LABEL} className={SHELL_CLASS} style={SHELL_STYLE}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <Chip tone="accent" size="xs">
-          {CHAPTER_TITLES[chapter]}
+    <StripShell>
+      <Chip tone="accent" size="xs" className="shrink-0">
+        {CHAPTER_TITLES[chapter]}
+      </Chip>
+      <ChapterProgress index={index} total={total} />
+
+      {/* Grows from a zero basis, so on the one-line row it takes what is
+          left rather than pushing the controls onto a second line. */}
+      <div
+        aria-live="polite"
+        className="flex min-w-0 grow basis-full flex-wrap items-center gap-x-2 gap-y-1 lg:basis-0 lg:flex-nowrap"
+      >
+        <span className="flex shrink-0 items-center gap-1.5 text-[12px] font-medium whitespace-nowrap">
+          <Dot tone="accent" pulse={isWatching} />
+          {step.title}
+        </span>
+        <Chip tone="neutral" size="xs" className="shrink-0">
+          Step {index + 1} of {total}
         </Chip>
-        <ChapterProgress index={index} total={total} />
-
-        <div
-          aria-live="polite"
-          className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
+        {/* Cut to the row's width on a desktop, whole in the DOM (and so to a
+            screen reader), and whole on hover. */}
+        <span
+          className="min-w-0 text-[11.5px] leading-[1.45] lg:truncate"
+          style={{ color: 'var(--fg-muted)' }}
+          title={step.instruction}
         >
-          <span className="flex items-center gap-1.5 text-[12px] font-medium">
-            <Dot tone="accent" pulse={isWatching} />
-            {step.title}
-          </span>
-          <Chip tone="neutral" size="xs">
-            Step {index + 1} of {total}
-          </Chip>
-          <span className="text-[11.5px] leading-[1.45]" style={{ color: 'var(--fg-muted)' }}>
-            {step.instruction}
-          </span>
-        </div>
+          {step.instruction}
+        </span>
+      </div>
 
-        <div className="ml-auto flex items-center gap-1.5">
-          {/* When the on-surface mark is missing, the CTA is the only pointer
-              left — pulse it so the eye lands somewhere. */}
-          <Button asChild size="xs" className={targetMissing ? 'pulse-dot' : undefined}>
-            <Link to={step.to}>
-              {step.ctaLabel}
-              <ArrowRight className="h-3 w-3" />
-            </Link>
-          </Button>
-          {/* "Hide hints" is the coach card's only control and it used to be a
-              one-way door: nothing turned the marks back on for the rest of the
-              chapter (tripl-gr0x). */}
-          {hintsMuted && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              onClick={onShowHints}
-              style={{ color: 'var(--fg-subtle)' }}
-            >
-              <Eye className="h-3 w-3" />
-              Show hints
-            </Button>
-          )}
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        {/* When the on-surface mark is missing, the CTA is the only pointer
+            left — pulse it so the eye lands somewhere. */}
+        <Button asChild size="xs" className={targetMissing ? 'pulse-dot' : undefined}>
+          <Link to={step.to}>
+            {step.ctaLabel}
+            <ArrowRight className="h-3 w-3" />
+          </Link>
+        </Button>
+        {/* "Hide hints" is the coach card's only control and it used to be a
+            one-way door: nothing turned the marks back on for the rest of the
+            chapter (tripl-gr0x). */}
+        {hintsMuted && (
           <Button
             type="button"
             variant="ghost"
             size="xs"
-            onClick={onDismiss}
+            onClick={onShowHints}
             style={{ color: 'var(--fg-subtle)' }}
           >
-            <X className="h-3 w-3" />
-            Dismiss
+            <Eye className="h-3 w-3" aria-hidden="true" />
+            Show hints
           </Button>
-        </div>
+        )}
+        {/* The same toggle the coach card offers, here in the normal tab
+            order: the card is portalled to the end of <body>, so a keyboard
+            user had to Tab through the whole page to reach it (DEMO-12). */}
+        {!hintsMuted && hasMark && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={onHideHints}
+            style={{ color: 'var(--fg-subtle)' }}
+            // An aria-label rather than a hidden span: a name is built from
+            // each element's trimmed text, so " on the page" in a span came
+            // out as "Hide hintson the page".
+            aria-label="Hide hints on the page"
+            title="Hide hints on the page"
+          >
+            <EyeOff className="h-3 w-3" aria-hidden="true" />
+            <span className={STRIP_LABEL}>Hide hints</span>
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={onDismiss}
+          style={{ color: 'var(--fg-subtle)' }}
+          title="Dismiss"
+        >
+          <X className="h-3 w-3" aria-hidden="true" />
+          <span className={STRIP_LABEL}>Dismiss</span>
+        </Button>
       </div>
 
       {/* Announced on its own: a regression is news, and the step text it sits
-          under may not have changed. */}
+          under may not have changed. A line of its own under the row: the
+          exception may cost height, the normal state does not. */}
       {hint && (
-        <p role="status" className="mt-1.5 text-[11.5px]" style={{ color: 'var(--warning)' }}>
+        <p role="status" className="basis-full text-[11.5px]" style={{ color: 'var(--warning)' }}>
           {SCENARIO_HINT_COPY[hint]}
         </p>
       )}
 
       {targetMissing && (
-        <p className="mt-1.5 text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+        <p className="basis-full text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
           {MISSING_TARGET_COPY}
         </p>
       )}
-    </section>
+    </StripShell>
   )
 }
 
@@ -192,57 +245,59 @@ function CompletedStrip({
   onDismiss,
 }: CompletedStripProps) {
   return (
-    <section aria-label={REGION_LABEL} className={SHELL_CLASS} style={SHELL_STYLE}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <Dot tone="success" />
-        <p aria-live="polite" className="text-[12px] font-medium">
-          Chapter complete: {CHAPTER_TITLES[chapter]}.{' '}
-          <span className="font-normal" style={{ color: 'var(--fg-muted)' }}>
-            {nextChapter
-              ? 'Keep going — the next chapter picks up from here.'
-              : 'That was the last one — you have walked the whole product. Point it at your own warehouse next.'}
-          </span>
-        </p>
-        <div className="ml-auto flex items-center gap-1.5">
-          {nextChapter ? (
-            <Button asChild size="xs">
-              {/* Starting on click, before the Link navigates, so the user lands
-                  on the new chapter's surface with its first step already live. */}
-              <Link to={nextChapter.to} onClick={() => onStartNext(nextChapter.id)}>
-                Next: {nextChapter.title}
-                <ArrowRight className="h-3 w-3" />
-              </Link>
-            </Button>
-          ) : (
-            /* The moment of highest intent used to end in Restart + Dismiss, with
-               nothing in the whole demo pointing at the real product (tripl-1mzh).
-               The dashboard, not Data sources: creating the project comes first,
-               and a demo-scoped link straight to the global connection page was
-               deliberately removed by tripl-q7i1.7. */
-            <Button asChild size="xs">
-              <Link to="/workspace">
-                <Plus className="h-3 w-3" />
-                Create a real project
-              </Link>
-            </Button>
-          )}
-          <Button type="button" variant="outline" size="xs" onClick={onRestart}>
-            <RotateCcw className="h-3 w-3" />
-            Restart chapter
+    <StripShell>
+      <Dot tone="success" />
+      <p
+        aria-live="polite"
+        className="min-w-0 grow basis-full text-[12px] font-medium lg:basis-0 lg:truncate"
+      >
+        Chapter complete: {CHAPTER_TITLES[chapter]}.{' '}
+        <span className="font-normal" style={{ color: 'var(--fg-muted)' }}>
+          {nextChapter
+            ? 'Keep going — the next chapter picks up from here.'
+            : 'That was the last one — you have walked the whole product. Point it at your own warehouse next.'}
+        </span>
+      </p>
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        {nextChapter ? (
+          <Button asChild size="xs">
+            {/* Starting on click, before the Link navigates, so the user lands
+                on the new chapter's surface with its first step already live. */}
+            <Link to={nextChapter.to} onClick={() => onStartNext(nextChapter.id)}>
+              Next: {nextChapter.title}
+              <ArrowRight className="h-3 w-3" />
+            </Link>
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            onClick={onDismiss}
-            style={{ color: 'var(--fg-subtle)' }}
-          >
-            <X className="h-3 w-3" />
-            Dismiss
+        ) : (
+          /* The moment of highest intent used to end in Restart + Dismiss, with
+             nothing in the whole demo pointing at the real product (tripl-1mzh).
+             The dashboard, not Data sources: creating the project comes first,
+             and a demo-scoped link straight to the global connection page was
+             deliberately removed by tripl-q7i1.7. */
+          <Button asChild size="xs">
+            <Link to="/workspace">
+              <Plus className="h-3 w-3" />
+              Create a real project
+            </Link>
           </Button>
-        </div>
+        )}
+        <Button type="button" variant="outline" size="xs" onClick={onRestart} title="Restart chapter">
+          <RotateCcw className="h-3 w-3" aria-hidden="true" />
+          <span className={STRIP_LABEL}>Restart chapter</span>
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={onDismiss}
+          style={{ color: 'var(--fg-subtle)' }}
+          title="Dismiss"
+        >
+          <X className="h-3 w-3" aria-hidden="true" />
+          <span className={STRIP_LABEL}>Dismiss</span>
+        </Button>
       </div>
-    </section>
+    </StripShell>
   )
 }
 
@@ -260,9 +315,12 @@ function CompletedStrip({
 export function DemoScenarioStrip() {
   const { active, state, activeChapter, step, steps, nextChapter, isWatching, hintsMuted } =
     useDemoScenario()
-  const { startChapter, restartChapter, dismissChapter, unmuteHints } = useDemoScenarioActions()
+  const { startChapter, restartChapter, dismissChapter, muteHints, unmuteHints } =
+    useDemoScenarioActions()
   const { present } = useCoachPresence()
   const location = useLocation()
+  const { slug } = useParams()
+  const welcomeDismissed = useWelcomeDismissed(slug ?? '')
 
   // The user is standing on the step's own surface (query params aside), yet no
   // coach mark for the step is mounted — the control is filtered out, on another
@@ -278,6 +336,18 @@ export function DemoScenarioStrip() {
     !present.has(step.id)
   const showTargetMissing = useDeferredFlag(targetMissing, MISSING_TARGET_DELAY_MS)
 
+  // First visit (LIVE-9): the Overview's welcome panel already offers every
+  // chapter, and banner + strip + panel stacked three demo blocks above the
+  // page title. Until the user engages, the panel stands in for the strip
+  // there instead of beside it. Engaging is more than leaving the first step:
+  // a user who picked "Run the live loop" or pressed Restart is on that very
+  // step too, and must keep the strip that coaches it.
+  const welcomeShowing =
+    slug !== undefined && !welcomeDismissed && location.pathname === `/p/${slug}/overview`
+  const untouched =
+    !state.engaged && activeChapter === 'live-loop' && step.id === 'live-loop/run-scan'
+  if (welcomeShowing && untouched) return null
+
   if (active && activeChapter) {
     return (
       <ActiveStrip
@@ -289,7 +359,9 @@ export function DemoScenarioStrip() {
         isWatching={isWatching}
         targetMissing={showTargetMissing}
         hintsMuted={hintsMuted}
+        hasMark={step.coach !== undefined}
         onShowHints={unmuteHints}
+        onHideHints={muteHints}
         onDismiss={() => dismissChapter(activeChapter)}
       />
     )

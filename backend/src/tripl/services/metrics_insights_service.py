@@ -588,6 +588,7 @@ async def _attach_derived_fields(
         )
         event_type_names = {row_id: name for row_id, name in rows.all()}
     metric_names: dict[uuid.UUID, str] = {}
+    metric_units: dict[uuid.UUID, str | None] = {}
     # Shape, not just name: the magnitude below divides a fractional series by
     # its real baseline and a count by a floored one (tripl-yf8c).
     fractional_metric_ids: set[uuid.UUID] = set()
@@ -599,6 +600,7 @@ async def _attach_derived_fields(
         ).scalars()
         for metric in metrics:
             metric_names[metric.id] = metric.display_name
+            metric_units[metric.id] = metric.unit
             if not is_count_shaped(metric):
                 fractional_metric_ids.add(metric.id)
 
@@ -623,10 +625,20 @@ async def _attach_derived_fields(
         except ValueError:
             return True
 
+    def unit_of(signal: MetricSignalResponse) -> str | None:
+        """Only a catalog metric carries a unit; every other scope counts events."""
+        if signal.scope_type != SCOPE_METRIC:
+            return None
+        try:
+            return metric_units.get(uuid.UUID(signal.scope_ref))
+        except ValueError:
+            return None
+
     return [
         signal.model_copy(
             update={
                 "scope_name": resolve(signal),
+                "unit": unit_of(signal),
                 "relative_effect": relative_effect(
                     signal.actual_count,
                     signal.expected_count,

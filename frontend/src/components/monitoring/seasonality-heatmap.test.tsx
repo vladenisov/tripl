@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -153,5 +153,67 @@ describe('SeasonalityHeatmap', () => {
     rerender(heatmapTree(client, 30, monthWindow))
     await waitFor(() => expect(fetchHeatmap).toHaveBeenCalledTimes(2))
     expect(fetchHeatmap).toHaveBeenLastCalledWith('demo', 'scan-1', expect.objectContaining(monthWindow))
+  })
+  it('keeps the anomaly ring off the faded fill and adds a non-colour mark (MON-18)', async () => {
+    vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
+      heatmap([
+        // The quiet slot is the one whose anomaly used to vanish: its fill sits
+        // at the bottom of the ramp, and the ring shared that opacity.
+        cell({ weekday: 1, hour: 3, count: 2, anomaly_count: 1 }),
+        cell({ weekday: 3, hour: 14, count: 800 }),
+      ]),
+    )
+
+    const { container } = renderHeatmap()
+    await screen.findByText('Hour × weekday heatmap')
+
+    const flagged = container.querySelector<HTMLElement>('[data-anomaly="true"]')
+    expect(flagged).not.toBeNull()
+    // The ringed wrapper is never faded; only its fill layer is.
+    expect(flagged?.style.opacity).toBe('')
+    expect(flagged?.querySelector('[data-count="2"]')).not.toBeNull()
+    expect(screen.getAllByTestId('heatmap-anomaly-mark')).toHaveLength(1)
+    expect(screen.getByText(/Tue 03:00 — 2 events · 1 anomaly bucket/)).toBeInTheDocument()
+  })
+
+  it('paints the anomaly ring above the fill so a busy slot keeps it', async () => {
+    vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
+      heatmap([
+        // The busiest slot: its fill sits near full opacity, and an inset ring
+        // on the wrapper painted beneath that fill.
+        cell({ weekday: 3, hour: 14, count: 800, anomaly_count: 2 }),
+        cell({ weekday: 1, hour: 3, count: 2 }),
+      ]),
+    )
+
+    const { container } = renderHeatmap()
+    await screen.findByText('Hour × weekday heatmap')
+
+    const flagged = container.querySelector<HTMLElement>('[data-anomaly="true"]')
+    expect(flagged).not.toBeNull()
+    // No box-shadow ring on the wrapper: it would sit under the fill child.
+    expect(flagged?.className).not.toMatch(/\bring-/)
+    const fill = flagged?.querySelector<HTMLElement>('[data-count="800"]')
+    const ring = screen.getByTestId('heatmap-anomaly-ring')
+    expect(fill).not.toBeNull()
+    expect(ring.parentElement).toBe(flagged)
+    expect(ring.className).toMatch(/ring-destructive/)
+    // Later sibling of the absolutely positioned fill = painted on top of it.
+    expect(fill!.compareDocumentPosition(ring) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(ring.style.opacity).toBe('')
+  })
+
+  it('shows an error with a retry instead of "not enough data" when the request fails (MON-30)', async () => {
+    const fetchHeatmap = vi.mocked(eventMetricsApi.getSeasonalityHeatmap)
+    fetchHeatmap.mockReset()
+    fetchHeatmap.mockRejectedValueOnce(new Error('upstream timeout'))
+    fetchHeatmap.mockResolvedValue(heatmap([cell({ weekday: 0, hour: 0, count: 5 })]))
+    renderHeatmap()
+
+    expect(await screen.findByText('Seasonality heatmap unavailable')).toBeInTheDocument()
+    expect(screen.queryByText(/Not enough data/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Hour × weekday heatmap')).toBeInTheDocument()
   })
 })

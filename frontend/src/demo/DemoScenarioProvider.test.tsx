@@ -285,6 +285,30 @@ describe('DemoScenarioProvider — notify- and visit-driven chapters', () => {
     expect(readScenarioState(SLUG).chapters.variables?.step).toBe('variables/inspect-values')
   })
 
+  it('persists an arrival advance made in the same commit as a project switch (DEMO-14)', () => {
+    const OTHER = 'other'
+    writeScenarioState(OTHER, chapterState('variables', 'variables/open-variables'))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const tree = (project: Project) => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[`/p/${OTHER}/settings/variables`]}>
+          <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
+            <Probe />
+          </DemoScenarioProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    const view = render(tree(demoProject()))
+
+    // The switch lands straight on the other demo's current deep-link surface:
+    // the step advances in the very commit that loaded it.
+    view.rerender(tree(demoProject({ id: 'p-2', slug: OTHER })))
+
+    expect(step()).toBe('variables/inspect-values')
+    // And storage has it, so a reload does not lose the advance.
+    expect(readScenarioState(OTHER).chapters.variables?.step).toBe('variables/inspect-values')
+  })
+
   it('completes a mutation step through notifyStepCompleted', () => {
     writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/save'))
     renderProvider(demoProject())
@@ -363,6 +387,35 @@ describe('DemoScenarioProvider — eligibility and controls', () => {
 
     fireEvent.click(screen.getByText('restart live-loop'))
     expect(screen.getByTestId('muted').textContent).toBe('false')
+  })
+
+  it('keeps "Hide hints" for the session, per project, across a remount (DEMO-15)', () => {
+    const first = renderProvider(demoProject())
+    fireEvent.click(screen.getByText('mute'))
+    expect(screen.getByTestId('muted').textContent).toBe('true')
+    first.unmount()
+
+    renderProvider(demoProject())
+    expect(screen.getByTestId('muted').textContent).toBe('true')
+  })
+
+  it('adopts progress another tab made instead of overwriting it (DEMO-16)', () => {
+    renderProvider(demoProject())
+    expect(step()).toBe('live-loop/run-scan')
+
+    // The other tab starts edit-event and persists it; this tab only hears the
+    // storage event.
+    const otherTab = chapterState('edit-event', 'edit-event/save')
+    act(() => {
+      writeScenarioState(SLUG, otherTab)
+      window.dispatchEvent(new StorageEvent('storage', { key: `tripl-demo-scenario:${SLUG}` }))
+    })
+
+    expect(chapter()).toBe('edit-event')
+    expect(step()).toBe('edit-event/save')
+    // And this tab's next write builds on it rather than on its stale copy.
+    fireEvent.click(screen.getByText('save event'))
+    expect(readScenarioState(SLUG).chapters['edit-event']?.status).toBe('completed')
   })
 
   it('does not poll while nothing the user started is in flight', () => {

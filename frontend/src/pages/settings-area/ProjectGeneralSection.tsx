@@ -1,7 +1,7 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, RotateCcw, Save, Trash2, TriangleAlert } from 'lucide-react'
+import { RefreshCw, Save, Trash2, TriangleAlert } from 'lucide-react'
 import {
   projectsApi,
   type AnomalyResetCounts,
@@ -39,43 +39,19 @@ import {
   TextInput,
 } from '@/components/settings/kit'
 import { canManageProject, canWrite, canWriteProject, isOwner } from '@/lib/permissions'
+import { SLUG_ERROR, SLUG_HINT, isValidSlug } from '@/lib/slug'
+import { forgetDemoLocalState } from '@/demo/demoLocalState'
+import { deleteProjectConfirmation } from '@/lib/projectDeletion'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-
-function DangerRow({
-  title,
-  hint,
-  action,
-  last,
-}: {
-  title: string
-  hint: string
-  action: ReactNode
-  last?: boolean
-}) {
-  return (
-    <div
-      className="flex items-center gap-[18px] px-[18px] py-[14px]"
-      style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium">{title}</div>
-        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-          {hint}
-        </div>
-      </div>
-      {action}
-    </div>
-  )
-}
-
-/** Danger-zone reset windows. Each maps to a `before` cutoff (older rows go). */
-const RESET_PERIODS: { value: string; label: string; days: number | null }[] = [
-  { value: '7d', label: 'Older than 7 days', days: 7 },
-  { value: '30d', label: 'Older than 30 days', days: 30 },
-  { value: '90d', label: 'Older than 90 days', days: 90 },
-  { value: 'all', label: 'All time', days: null },
-]
+import {
+  RESET_PERIODS,
+  SAVED_FEEDBACK_MS,
+  timeZoneOptions,
+  useTransientFlag,
+} from './projectGeneralFields'
+import { DANGER_ROW_CLASS, DangerResetRow, DangerRetireVariablesRow, DangerRow } from './ProjectDangerRows'
+import { SaveStatus } from './SaveStatus'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const MAX_APP_VERSION_KEEP_RELEASES = 100
@@ -136,59 +112,6 @@ function summarizeDriftCounts(counts: DriftResetCounts): string {
   return `Cleared ${counts.schema_drifts} schema drifts and ${counts.distribution_drifts} distribution drifts.`
 }
 
-/**
- * A danger-zone row that clears a category of detections over a chosen period.
- * The period selector sits next to a destructive button; confirmation and the
- * mutation are owned by the caller. Feedback (counts / error) renders under it.
- */
-function DangerResetRow({
-  title,
-  hint,
-  buttonLabel,
-  period,
-  onPeriodChange,
-  onReset,
-  busy,
-  feedback,
-}: {
-  title: string
-  hint: string
-  buttonLabel: string
-  period: string
-  onPeriodChange: (value: string) => void
-  onReset: () => void
-  busy: boolean
-  feedback: ReactNode
-}) {
-  return (
-    <div
-      className="flex items-center gap-[18px] px-[18px] py-[14px]"
-      style={{ borderBottom: '1px solid var(--border-subtle)' }}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium">{title}</div>
-        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-          {hint}
-        </div>
-        {feedback}
-      </div>
-      <div className="flex items-center gap-2">
-        <Select
-          aria-label={`${title} period`}
-          value={period}
-          onChange={onPeriodChange}
-          options={RESET_PERIODS}
-          disabled={busy}
-        />
-        <Button variant="destructive" size="sm" disabled={busy} onClick={onReset}>
-          <RotateCcw className="h-3 w-3" />
-          {busy ? 'Resetting…' : buttonLabel}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
 function summarizeRetirement(counts: VariableRetirementCounts, committed: boolean): string {
   const kept = [
     counts.kept_referenced && `${counts.kept_referenced} still referenced`,
@@ -204,68 +127,30 @@ function summarizeRetirement(counts: VariableRetirementCounts, committed: boolea
 }
 
 /**
- * The retirement row is two buttons, not one: a preview that commits nothing,
- * and a destructive apply that only lights up once the preview has said how
- * many rows it would take. Scans mint variables and, before this shipped, never
- * retired one, so a project can arrive here carrying four figures of them — the
- * count IS the decision, and asking for it separately is what makes the second
- * click informed rather than brave.
- */
-function DangerRetireVariablesRow({
-  onPreview,
-  onRetire,
-  busy,
-  preview,
-  feedback,
-}: {
-  onPreview: () => void
-  onRetire: () => void
-  busy: boolean
-  preview: VariableRetirementCounts | undefined
-  feedback: ReactNode
-}) {
-  return (
-    <div
-      className="flex items-center gap-[18px] px-[18px] py-[14px]"
-      style={{ borderBottom: '1px solid var(--border-subtle)' }}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium">Retire unused variables</div>
-        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-          Delete variables a scan created that no event field value references and that carry no
-          observed values, drift or documented values. Nothing edited by hand is touched.
-        </div>
-        {feedback}
-      </div>
-      <div className="flex items-center gap-2">
-        <Button variant="outline" size="sm" disabled={busy} onClick={onPreview}>
-          {busy ? 'Checking…' : 'Preview'}
-        </Button>
-        <Button
-          variant="destructive"
-          size="sm"
-          disabled={busy || !preview || preview.retirable === 0}
-          onClick={onRetire}
-        >
-          <Trash2 className="h-3 w-3" />
-          Retire
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-/**
  * Project · General. Identity (name / slug / description) and the search-index
  * rebuild reuse the real projectsApi + searchApi wiring lifted from GeneralTab.
  * A header cross-link jumps to Project operations (the in-app /p/:slug/settings
  * surfaces) so the two project-config halves stay reachable, and the danger zone
- * keeps the wired Delete plus not-yet-wired Archive / Transfer actions.
+ * holds the owner-only resets and Delete. Archive and Transfer ownership rows
+ * used to sit there as permanently disabled buttons with no backend behind them
+ * and no word on why, which read as a permissions problem (WS-11); they return
+ * when the features do.
  */
 const UNSAVED_PROJECT_MESSAGE =
   'Project details you edited here have not been saved. Leaving this page drops them.'
 
-export default function ProjectGeneralSection({ slug }: { slug: string | undefined }) {
+export default function ProjectGeneralSection({
+  slug,
+  onSlugChanged,
+}: {
+  slug: string | undefined
+  /**
+   * Called with the new slug after a save renames the project, so whoever
+   * chose `slug` rebinds to it. Without it the section kept requesting the old
+   * address and fell over with "Failed to load project" (WS-8).
+   */
+  onSlugChanged?: (slug: string) => void
+}) {
   if (!slug) {
     return (
       <div className="text-sm" style={{ color: 'var(--fg-subtle)' }}>
@@ -273,10 +158,16 @@ export default function ProjectGeneralSection({ slug }: { slug: string | undefin
       </div>
     )
   }
-  return <ProjectGeneralBody slug={slug} />
+  return <ProjectGeneralBody slug={slug} onSlugChanged={onSlugChanged} />
 }
 
-function ProjectGeneralBody({ slug }: { slug: string }) {
+function ProjectGeneralBody({
+  slug,
+  onSlugChanged,
+}: {
+  slug: string
+  onSlugChanged?: (slug: string) => void
+}) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const { user } = useAuth()
@@ -290,6 +181,8 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const [appVersionKeepReleases, setAppVersionKeepReleases] = useState('')
   const [timezone, setTimezone] = useState('UTC')
   const [hydratedFor, setHydratedFor] = useState<string | null>(null)
+  const [detailsSaved, markDetailsSaved, clearDetailsSaved] = useTransientFlag(SAVED_FEEDBACK_MS)
+  const [versionSaved, markVersionSaved, clearVersionSaved] = useTransientFlag(SAVED_FEEDBACK_MS)
 
   if (projectQuery.data && hydratedFor !== projectQuery.data.id) {
     setName(projectQuery.data.name)
@@ -303,16 +196,25 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const updateMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.update(slug, { name, slug: slugDraft, description, timezone }),
+    onMutate: clearDetailsSaved,
     onSuccess: (project) => {
-      qc.invalidateQueries({ queryKey: projectsKey() })
-      qc.invalidateQueries({ queryKey: projectRootKey() })
       if (project.slug !== slug) {
+        // The old address is gone. Drop its cache entry before the refresh
+        // below, or the refresh asks the server for it and gets a 404.
+        qc.removeQueries({ queryKey: projectKey(slug) })
         try {
           localStorage.setItem('tripl-last-project-slug', project.slug)
         } catch {
           /* ignore */
         }
+        onSlugChanged?.(project.slug)
       }
+      // The saved project is the answer: with it in the cache the form is
+      // pristine at once, so "Saved" shows without waiting for a refetch.
+      qc.setQueryData(projectKey(project.slug), project)
+      qc.invalidateQueries({ queryKey: projectsKey() })
+      qc.invalidateQueries({ queryKey: projectRootKey() })
+      markDetailsSaved()
     },
   })
   const reindexMut = useMutation({
@@ -326,18 +228,27 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
       projectsApi.update(slug, {
         app_version_keep_releases: Number(appVersionKeepReleases),
       }),
-    onSuccess: () => {
+    onMutate: clearVersionSaved,
+    onSuccess: (project) => {
+      qc.setQueryData(projectKey(project.slug), project)
       qc.invalidateQueries({ queryKey: projectsKey() })
       qc.invalidateQueries({ queryKey: projectRootKey() })
+      markVersionSaved()
     },
   })
+  // The delete dialog renders a failure in place (WS-9), so no toast as well.
   const deleteMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.del(slug),
     onSuccess: () => {
+      // A demo's tour, scenario and welcome state is keyed by slug and would
+      // otherwise outlive it (DEMO-17); harmless for any other project.
+      forgetDemoLocalState(slug)
       qc.invalidateQueries({ queryKey: projectsKey() })
       // The project is gone, and any draft of its details with it: nothing for
       // the unsaved-changes guard to ask about.
       navigate('/', { replace: true, state: LEAVE_CONFIRMED })
+      qc.removeQueries({ queryKey: projectKey(slug) })
     },
   })
 
@@ -412,20 +323,23 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     if (ok) resetDriftsMut.mutate(resetPeriodPayload(driftsPeriod))
   }
 
-  const handleDelete = async () => {
-    const projectName = projectQuery.data?.name ?? slug
-    const ok = await confirm({
-      title: 'Delete project',
-      message: `Permanently delete "${projectName}"? All event types, events, fields, metrics, monitors, and history are removed. This cannot be undone.`,
-      confirmLabel: 'Delete project',
-      variant: 'danger',
-    })
-    if (ok) deleteMut.mutate()
+  const handleDelete = () => {
+    // A failure from an earlier attempt belongs to that attempt.
+    deleteMut.reset()
+    void confirm(
+      deleteProjectConfirmation(
+        { name: projectQuery.data?.name ?? slug, slug },
+        () => deleteMut.mutateAsync(),
+      ),
+    )
   }
 
-  const slugError = !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slugDraft)
-    ? 'Slug must be lowercase letters, digits, and hyphens'
-    : null
+  const slugError = isValidSlug(slugDraft) ? null : SLUG_ERROR
+  // The select offers only zones the browser knows plus the stored value, so
+  // there is nothing to refuse here: a stored zone the browser does not list
+  // was accepted by the server and is only flagged "(not recognised)".
+  const timezoneOptions = useMemo(() => timeZoneOptions(timezone), [timezone])
+
   const isPristine =
     !!projectQuery.data &&
     name === projectQuery.data.name &&
@@ -508,9 +422,12 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
             title="Project details"
             footer={
               <>
-                <span className="flex-1 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                  {updateMut.isError ? getErrorMessage(updateMut.error) : ''}
-                </span>
+                {/* Red and announced: a 403 or a 409 for a taken slug used to
+                    render in hint grey, where it read like advice (WS-15). */}
+                <SaveStatus
+                  error={updateMut.isError ? updateMut.error : null}
+                  saved={detailsSaved && isPristine}
+                />
                 <Button
                   size="sm"
                   onClick={() => {
@@ -533,7 +450,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
               hint={
                 slugError && slugDraft.length > 0
                   ? slugError
-                  : 'Used in URLs. Lowercase, digits and hyphens. Changing it rewrites project URLs.'
+                  : `${SLUG_HINT} Changing it rewrites project URLs.`
               }
               htmlFor="proj-slug"
             >
@@ -552,15 +469,14 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
             <Field
               label="Timezone"
               htmlFor="proj-timezone"
-              hint="The clock alert delivery schedules are read in. An IANA zone name, e.g. Europe/Moscow."
+              hint="The clock alert delivery schedules are read in. Type to jump, e.g. Europe/Moscow."
               last
             >
-              <TextInput
+              <Select
                 id="proj-timezone"
                 value={timezone}
                 onChange={setTimezone}
-                mono
-                placeholder="UTC"
+                options={timezoneOptions}
                 disabled={!canEdit}
               />
             </Field>
@@ -571,9 +487,10 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
             description="One release-retention policy for event monitoring and catalog metrics."
             footer={
               <>
-                <span className="flex-1 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                  {versionPolicyMut.isError ? getErrorMessage(versionPolicyMut.error) : ''}
-                </span>
+                <SaveStatus
+                  error={versionPolicyMut.isError ? versionPolicyMut.error : null}
+                  saved={versionSaved && versionPolicyPristine}
+                />
                 <Button
                   size="sm"
                   onClick={() => versionPolicyMut.mutate()}
@@ -611,7 +528,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
           </SCard>
 
           <SCard title="Search index">
-            <div className="flex items-center gap-[18px] px-[18px] py-[14px]">
+            <div className={DANGER_ROW_CLASS}>
               <div className="min-w-0 flex-1">
                 <div className="text-[13px] font-medium">Rebuild search index</div>
                 <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
@@ -642,8 +559,8 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
             </div>
           </SCard>
 
-          {/* Every row here is owner-only (or not built yet), so a non-owner is
-              not shown a card of buttons they can never press. */}
+          {/* Every row here is owner-only, so a non-owner is not shown a card
+              of buttons they can never press. */}
           {canDelete && (
             <SCard title="Danger zone" tone="danger" icon={<TriangleAlert className="h-[15px] w-[15px]" />}>
                   <DangerResetRow
@@ -724,24 +641,6 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
                     }
                   />
               <DangerRow
-                title="Archive project"
-                hint="Hide from the workspace and stop ingesting. Reversible."
-                action={
-                  <Button variant="outline" size="sm" disabled>
-                    Archive
-                  </Button>
-                }
-              />
-              <DangerRow
-                title="Transfer ownership"
-                hint="Move this project to another workspace member."
-                action={
-                  <Button variant="outline" size="sm" disabled>
-                    Transfer
-                  </Button>
-                }
-              />
-              <DangerRow
                 title="Delete project"
                 hint="Permanently remove the plan, history and all ingested events. Cannot be undone."
                 last
@@ -750,9 +649,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
                     variant="destructive"
                     size="sm"
                     disabled={deleteMut.isPending}
-                    onClick={() => {
-                      void handleDelete()
-                    }}
+                    onClick={handleDelete}
                   >
                     <Trash2 className="h-3 w-3" />
                     {deleteMut.isPending ? 'Deleting…' : 'Delete project'}

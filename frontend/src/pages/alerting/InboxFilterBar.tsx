@@ -1,6 +1,9 @@
 import { useEffect, useId, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { scopeKindLabel } from '@/lib/alertStatus'
 import type { MetricScopeType } from '@/types'
@@ -15,8 +18,17 @@ import {
   type InboxFilterState,
 } from './inboxFilters'
 
-const CONTROL_CLASS =
-  'h-8 rounded-md border border-input bg-transparent px-2 text-xs disabled:opacity-50'
+// The design-system controls, as the Delivery log's filter bar beside this one
+// uses them — the hand-rolled `<input>`/`<select>` this bar had drew their own
+// focus ring, a native dropdown in dark mode and a different height, so the two
+// filter bars on one page looked like two products (ALR-49). Sized down only in
+// text: the h-9 default is also the touch target a phone needs.
+const CONTROL_CLASS = 'text-xs'
+const LABEL_CLASS = 'text-[10.5px] font-normal text-muted-foreground'
+
+// Radix Select cannot carry an empty value, which is what "not filtering" is in
+// `InboxFilterState`. One sentinel, translated at the edge in both directions.
+const ANY = 'any'
 
 export interface InboxFilterBarProps {
   value: InboxFilterState
@@ -46,7 +58,8 @@ export function InboxFilterBar({ value, onChange }: InboxFilterBarProps) {
   const [scopeDraft, setScopeDraft] = useState(value.scope)
   const debouncedScope = useDebouncedValue(scopeDraft, SEARCH_DEBOUNCE_MS)
   // Adjust-during-render with an equality guard — this repo's idiom for "a prop
-  // moved underneath local state" (see ProjectAlertingTab.tsx:160). The
+  // moved underneath local state" (see useDirtySinceOpen in
+  // hooks/useUnsavedChangesGuard.tsx). The
   // committed value can change without this box being typed in: a shared link,
   // the Clear button, the browser's Back.
   const [committedScope, setCommittedScope] = useState(value.scope)
@@ -73,13 +86,13 @@ export function InboxFilterBar({ value, onChange }: InboxFilterBarProps) {
   return (
     <div className="flex flex-wrap items-end gap-x-3 gap-y-2 rounded-md border border-dashed p-3">
       <div className="flex flex-col gap-1">
-        <label htmlFor={fromId} className="text-[10.5px] text-muted-foreground">
+        <Label htmlFor={fromId} className={LABEL_CLASS}>
           Last fired from
-        </label>
-        <input
+        </Label>
+        <Input
           id={fromId}
           type="date"
-          className={CONTROL_CLASS}
+          className={`${CONTROL_CLASS} w-auto`}
           min={earliest}
           max={value.firedTo || undefined}
           value={value.firedFrom}
@@ -87,63 +100,69 @@ export function InboxFilterBar({ value, onChange }: InboxFilterBarProps) {
         />
       </div>
       <div className="flex flex-col gap-1">
-        <label htmlFor={toId} className="text-[10.5px] text-muted-foreground">
+        <Label htmlFor={toId} className={LABEL_CLASS}>
           to
-        </label>
-        <input
+        </Label>
+        <Input
           id={toId}
           type="date"
-          className={CONTROL_CLASS}
+          className={`${CONTROL_CLASS} w-auto`}
           min={value.firedFrom || earliest}
           value={value.firedTo}
           onChange={event => onChange({ ...value, firedTo: event.target.value })}
         />
       </div>
       <div className="flex flex-col gap-1">
-        <label htmlFor={kindId} className="text-[10.5px] text-muted-foreground">
+        <Label htmlFor={kindId} className={LABEL_CLASS}>
           Kind
-        </label>
-        <select
-          id={kindId}
-          className={CONTROL_CLASS}
-          value={value.scopeType}
-          onChange={event =>
-            onChange({ ...value, scopeType: event.target.value as MetricScopeType | '' })
+        </Label>
+        <Select
+          value={value.scopeType || ANY}
+          onValueChange={next =>
+            onChange({ ...value, scopeType: next === ANY ? '' : (next as MetricScopeType) })
           }
         >
-          <option value="">Any kind</option>
-          {INBOX_SCOPE_TYPES.map(scopeType => (
-            <option key={scopeType} value={scopeType}>
-              {scopeKindLabel(scopeType)}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger id={kindId} className={`${CONTROL_CLASS} w-44`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ANY}>Any kind</SelectItem>
+            {INBOX_SCOPE_TYPES.map(scopeType => (
+              <SelectItem key={scopeType} value={scopeType}>
+                {scopeKindLabel(scopeType)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       <div className="flex flex-col gap-1">
-        <label htmlFor={directionId} className="text-[10.5px] text-muted-foreground">
+        <Label htmlFor={directionId} className={LABEL_CLASS}>
           Direction
-        </label>
-        <select
-          id={directionId}
-          className={CONTROL_CLASS}
-          value={value.direction}
-          onChange={event =>
-            onChange({ ...value, direction: event.target.value as InboxDirection | '' })
+        </Label>
+        <Select
+          value={value.direction || ANY}
+          onValueChange={next =>
+            onChange({ ...value, direction: next === ANY ? '' : (next as InboxDirection) })
           }
         >
-          <option value="">Either way</option>
-          <option value="drop">drop ↓</option>
-          <option value="spike">spike ↑</option>
-        </select>
+          <SelectTrigger id={directionId} className={`${CONTROL_CLASS} w-32`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ANY}>Either way</SelectItem>
+            <SelectItem value="drop">drop ↓</SelectItem>
+            <SelectItem value="spike">spike ↑</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <div className="flex min-w-[180px] flex-1 flex-col gap-1">
-        <label htmlFor={scopeId} className="text-[10.5px] text-muted-foreground">
+        <Label htmlFor={scopeId} className={LABEL_CLASS}>
           Scope
-        </label>
-        <input
+        </Label>
+        <Input
           id={scopeId}
           type="search"
-          className={`${CONTROL_CLASS} w-full`}
+          className={CONTROL_CLASS}
           placeholder="Event or scope name"
           maxLength={200}
           value={scopeDraft}
@@ -154,8 +173,16 @@ export function InboxFilterBar({ value, onChange }: InboxFilterBarProps) {
         <Button
           type="button"
           variant="outline"
-          size="xs"
-          onClick={() => onChange(EMPTY_INBOX_FILTERS)}
+          size="sm"
+          className="h-9 text-xs"
+          onClick={() => {
+            // The draft too, not only the committed value (ALR-50). A scope
+            // typed inside the debounce window has not reached `value.scope`
+            // yet, so the resync above sees '' → '' and keeps the draft — and
+            // the debounce then re-applied the very filter this just cleared.
+            setScopeDraft('')
+            onChange(EMPTY_INBOX_FILTERS)
+          }}
         >
           Clear filters
         </Button>

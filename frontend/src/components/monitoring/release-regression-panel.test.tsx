@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
@@ -219,5 +219,24 @@ describe('ReleaseRegressionPanel', () => {
 
     expect(await screen.findByText(/Fewer than two released versions/i)).toBeInTheDocument()
     expect(screen.getByText(/baseline release has no volume/i)).toBeInTheDocument()
+  })
+  it('reports a failed request as an error, not as "no comparison has run" (MON-30)', async () => {
+    const fetchRegressions = vi.mocked(eventMetricsApi.getReleaseRegressions)
+    fetchRegressions.mockReset()
+    fetchRegressions.mockRejectedValueOnce(new Error('upstream timeout'))
+    fetchRegressions.mockResolvedValue({
+      scan_config_id: 'scan-1',
+      app_version_column: 'app_version',
+      latest_version: '2.1.0',
+      items: [regression({})],
+      comparability: [verdict()],
+    })
+    renderPanel()
+
+    expect(await screen.findByText('Release regressions unavailable')).toBeInTheDocument()
+    expect(screen.queryByText(/No release comparison has run/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Login')).toBeInTheDocument()
   })
 })

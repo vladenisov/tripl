@@ -7,7 +7,18 @@ type MiniStatProps = {
   label: string
   value: ReactNode
   delta?: ReactNode
+  /**
+   * Colours the `delta` (and its pulse dot). With no delta to ride on it
+   * colours the figure instead: it used to show nothing at all, so Overview's
+   * Implemented / Needs review / Coverage, the Coverage page and others passed
+   * a tone that read as meaningful at the call site and never rendered (MON-42).
+   */
   tone?: MiniStatTone
+  /**
+   * Colours the figure itself, whether or not there is a delta — for a stat
+   * whose delta carries a different tone from its value.
+   */
+  valueTone?: MiniStatTone
   pulse?: boolean
 }
 
@@ -29,10 +40,19 @@ const TONE_DOT: Record<MiniStatTone, DotTone> = {
   neutral: 'neutral',
 }
 
-export function MiniStat({ label, value, delta, tone = 'neutral', pulse = false }: MiniStatProps) {
+export function MiniStat({
+  label,
+  value,
+  delta,
+  tone = 'neutral',
+  valueTone,
+  pulse = false,
+}: MiniStatProps) {
   // A definition list programmatically ties the value (<dd>) to its caption
   // (<dt>) so assistive tech announces "<label>: <value>" together, instead of
   // two unrelated <span>s. (Issue M9.)
+  const figureTone = valueTone ?? (delta == null ? tone : undefined)
+  const tint = figureTone && figureTone !== 'neutral' ? figureTone : undefined
   return (
     <dl className="m-0 flex flex-col gap-px">
       <dt
@@ -44,7 +64,8 @@ export function MiniStat({ label, value, delta, tone = 'neutral', pulse = false 
       <dd className="m-0 flex items-baseline gap-1.5">
         <span
           className="mono tnum text-[16px] font-medium tracking-[-0.01em]"
-          style={{ color: 'var(--fg)' }}
+          data-tone={tint}
+          style={{ color: tint ? TONE_COLOR[tint] : 'var(--fg)' }}
         >
           {value}
         </span>

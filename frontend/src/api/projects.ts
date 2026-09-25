@@ -1,5 +1,6 @@
 import { api } from './client'
 import type { Project } from '../types'
+import type { components } from '../types/api.gen'
 
 /** Optional half-open window (`after <= t < before`) for a danger-zone reset. */
 export interface DetectionResetPeriod {
@@ -13,11 +14,9 @@ export interface AnomalyResetCounts {
   metric_breakdown_anomalies: number
 }
 
-/** Outcome of asking an in-flight demo provision to abandon itself. */
-export interface DemoCancelResult {
-  cancelled: boolean
-  slug: string | null
-}
+/** Outcome of asking an in-flight demo provision to abandon itself. Derived
+ *  from the generated schema so the gen:api drift check covers it (DEMO-29). */
+export type DemoCancelResult = components['schemas']['DemoCancelResponse']
 
 /** What a variable-retirement pass did, and why it spared what it spared.
  *  The `kept_*` fields mirror the backend's `KeptReason`; a dry run fills
@@ -44,7 +43,8 @@ export const projectsApi = {
   get: (slug: string, signal?: AbortSignal) => api.get<Project>(`/projects/${slug}`, signal),
   create: (data: { name: string; slug: string; description?: string }) =>
     api.post<Project>('/projects', data),
-  // Demo lifecycle (tripl-2su6). Create BLOCKS ~5-8s while seeding and returns a
+  // Demo lifecycle (tripl-2su6). Create BLOCKS while seeding (for about
+  // DEMO_PROVISION_EXPECTED_MS, demo/provisioningPhases.ts) and returns a
   // fully-ready project (201) or 500 on failure. Reset/delete are scoped to the
   // demo endpoints and permitted for the demo's creator or a workspace owner —
   // distinct from the owner-only generic DELETE /projects/{slug} (`del`).
@@ -55,7 +55,10 @@ export const projectsApi = {
   // finishes seeding regardless. This asks it to abandon the provision instead;
   // `cancelled` is false when it was already too late (tripl-jfm3.12).
   cancelDemo: () => api.post<DemoCancelResult>('/projects/demo/cancel', {}),
-  resetDemo: (slug: string) => api.post<Project>(`/projects/demo/${slug}/reset`, {}),
+  // Reset re-seeds just as long as a create, so it takes a signal for the same
+  // timeout (DEMO-4).
+  resetDemo: (slug: string, signal?: AbortSignal) =>
+    api.post<Project>(`/projects/demo/${slug}/reset`, {}, signal),
   deleteDemo: (slug: string) => api.del(`/projects/demo/${slug}`),
   update: (slug: string, data: {
     name?: string

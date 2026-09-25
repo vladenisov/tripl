@@ -14,15 +14,24 @@
  *
  * A footer index still lists every surface plus the metric building blocks so
  * they stay directly reachable without paging; using it leaves the stepper's
- * position alone.
+ * position alone. It sits behind a disclosure (DEMO-20): shown on every step it
+ * added sixteen links to every keyboard pass through the dialog.
+ *
+ * Paging is announced (DEMO-19): Next and Back swap the step in place while
+ * focus stays on the button, so a polite live region says where the reader
+ * landed. The primary button is one element whose label changes (Next →
+ * Finish), and Back is aria-disabled rather than disabled on the first step,
+ * so the focused control never vanishes from under the keyboard.
  */
 
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Compass } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChevronDown, Compass, Search } from 'lucide-react'
+import { useCommandPalette } from '@/components/command-palette-context'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
 import { ChapterPicker } from './ChapterPicker'
+import { TOUR_STORAGE_PREFIX } from './demoLocalState'
 import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import type { ChapterListEntry } from './scenarioModel'
 import {
@@ -32,9 +41,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { buildMetricBuildingBlocks, buildTourSteps } from './tourSteps'
+import { buildMetricBuildingBlocks, buildTourSteps, type TourStep } from './tourSteps'
+import { setWelcomeDismissed, useWelcomeDismissed } from './welcomeDismissal'
 
-const STORAGE_PREFIX = 'tripl-tour:'
+const STORAGE_PREFIX = TOUR_STORAGE_PREFIX
 
 /** Persisted step, clamped to the current tour's length; 0 on anything unusable. */
 function readStoredStep(slug: string, stepCount: number): number {
@@ -65,21 +75,55 @@ interface ProductTourProps {
   onOpenChange: (open: boolean) => void
 }
 
+/** The index lists each surface once; action steps have no surface of their own. */
+function indexEntries(steps: readonly TourStep[]): TourStep[] {
+  const seen = new Set<string>()
+  return steps.filter((step) => {
+    if (step.action || seen.has(step.to)) return false
+    seen.add(step.to)
+    return true
+  })
+}
+
+const INDEX_LINK_CLASS =
+  'rounded-full px-2.5 py-1 text-[11px] font-medium no-underline transition-colors hover:bg-[var(--surface-hover)]'
+
 export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
   const steps = buildTourSteps(slug)
   const blocks = buildMetricBuildingBlocks(slug)
   const navigate = useNavigate()
+  const palette = useCommandPalette()
   const { available: scenarioAvailable, chapters } = useDemoScenario()
   const { startChapter } = useDemoScenarioActions()
+  const welcomeDismissed = useWelcomeDismissed(slug)
   const [index, setIndexState] = useState(() => readStoredStep(slug, steps.length))
+  const [announcement, setAnnouncement] = useState('')
+  const [indexOpen, setIndexOpen] = useState(false)
+  const indexId = useId()
+  // Set when the tour hands focus to the command palette, so closing the
+  // dialog does not pull it back to the tour's trigger.
+  const handingOffRef = useRef(false)
   const step = steps[Math.min(index, steps.length - 1)] ?? steps[0]
   const isFirst = index === 0
   const isLast = index === steps.length - 1
+
+  // Another tab (or the other copy of the tour on the Overview) moving the
+  // stored step: follow it rather than writing a stale position back (DEMO-16).
+  useEffect(() => {
+    const key = `${STORAGE_PREFIX}${slug}`
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === key || event.key === null) setIndexState(readStoredStep(slug, steps.length))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [slug, steps.length])
 
   const goTo = (next: number) => {
     const clamped = Math.min(Math.max(0, next), steps.length - 1)
     setIndexState(clamped)
     writeStoredStep(slug, clamped)
+    const target = steps[clamped]
+    if (target) setAnnouncement(`Step ${clamped + 1} of ${steps.length}: ${target.title}`)
   }
 
   /** Dismiss without losing your place (Escape, the X, the footer index). */
@@ -103,6 +147,13 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
     }
   }
 
+  /** A step whose surface is the command palette opens it rather than a page (DEMO-18). */
+  const runStepAction = () => {
+    handingOffRef.current = true
+    openStepSurface()
+    palette.setOpen(true)
+  }
+
   /**
    * The tour shows the surfaces; a scenario chapter makes one thing happen on
    * them. Picking one hands the user over to the strip, which coaches from
@@ -114,9 +165,23 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
     navigate(chapterEntry.to)
   }
 
+  /** Bring the welcome panel back — its own intent, no longer bundled with opening the tour (DEMO-26). */
+  const showWelcome = () => {
+    setWelcomeDismissed(slug, false)
+    onOpenChange(false)
+    navigate(`/p/${slug}/overview`)
+  }
+
+  const surfaces = indexEntries(steps)
+
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : dismiss())}>
-      <DialogContent className="min-w-0 max-w-lg overflow-x-hidden">
+      <DialogContent
+        className="min-w-0 max-w-lg overflow-x-hidden"
+        onCloseAutoFocus={(event) => {
+          if (handingOffRef.current) event.preventDefault()
+        }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Compass className="h-4 w-4" style={{ color: 'var(--accent)' }} />
@@ -126,6 +191,12 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             {`Step ${index + 1} of ${steps.length} · a quick guided path through tripl.`}
           </DialogDescription>
         </DialogHeader>
+
+        {/* Says where Next / Back landed; empty until the user pages, so
+            opening the dialog is announced once, by its title and description. */}
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {announcement}
+        </p>
 
         <div
           className="rounded-lg border p-4"
@@ -140,12 +211,19 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
           <p className="mt-2 text-[12.5px] leading-[1.5]" style={{ color: 'var(--fg-subtle)' }}>
             {step.blurb}
           </p>
-          <Button asChild size="sm" className="mt-3" onClick={openStepSurface}>
-            <Link to={step.to}>
+          {step.action === 'open-command-palette' ? (
+            <Button type="button" size="sm" className="mt-3" onClick={runStepAction}>
+              <Search className="h-3.5 w-3.5" />
               Open {step.title}
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Link>
-          </Button>
+            </Button>
+          ) : (
+            <Button asChild size="sm" className="mt-3" onClick={openStepSurface}>
+              <Link to={step.to}>
+                Open {step.title}
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          )}
         </div>
 
         <div className="flex items-center justify-between gap-2">
@@ -153,22 +231,19 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => goTo(index - 1)}
-            disabled={isFirst}
+            onClick={() => {
+              if (!isFirst) goTo(index - 1)
+            }}
+            aria-disabled={isFirst || undefined}
+            className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Back
           </Button>
-          {isLast ? (
-            <Button type="button" size="sm" onClick={finish}>
-              Finish
-            </Button>
-          ) : (
-            <Button type="button" size="sm" onClick={() => goTo(index + 1)}>
-              Next
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Button>
-          )}
+          <Button type="button" size="sm" onClick={isLast ? finish : () => goTo(index + 1)}>
+            {isLast ? 'Finish' : 'Next'}
+            {!isLast && <ArrowRight className="h-3.5 w-3.5" />}
+          </Button>
         </div>
 
         {/* Reading about a surface is not the same as making it do something.
@@ -189,42 +264,84 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
           </div>
         )}
 
+        {welcomeDismissed && (
+          <button
+            type="button"
+            onClick={showWelcome}
+            className="self-start rounded px-1 text-[12px] font-medium underline-offset-2 hover:underline"
+            style={{ color: 'var(--accent)' }}
+          >
+            Show the welcome panel on Overview
+          </button>
+        )}
+
         {/* Direct index — every surface + the metric building blocks are one
-            click away, regardless of the stepper position. */}
+            click away, regardless of the stepper position. Behind a
+            disclosure, so it costs one Tab stop until it is wanted. */}
         <div className="min-w-0 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
-          <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-faint)' }}>
-            Jump to any surface
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {steps.map((s) => (
-              <Link
-                key={s.id}
-                to={s.to}
-                onClick={dismiss}
-                className="rounded-full px-2.5 py-1 text-[11px] font-medium no-underline transition-colors hover:bg-[var(--surface-hover)]"
-                style={{ background: 'var(--surface)', color: 'var(--fg-muted)', border: '1px solid var(--border-subtle)' }}
-              >
-                {s.title}
-              </Link>
-            ))}
-          </div>
-          <p className="mb-2 mt-3 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-faint)' }}>
-            Metric building blocks
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {blocks.map((b) => (
-              <Link
-                key={b.id}
-                to={b.to}
-                onClick={dismiss}
-                title={b.blurb}
-                className="rounded-full px-2.5 py-1 text-[11px] font-medium no-underline transition-colors hover:bg-[var(--surface-hover)]"
-                style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
-              >
-                {b.label}
-              </Link>
-            ))}
-          </div>
+          <button
+            type="button"
+            onClick={() => setIndexOpen((value) => !value)}
+            aria-expanded={indexOpen}
+            aria-controls={indexId}
+            className="flex items-center gap-1 rounded px-1 py-0.5 text-[11.5px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            All surfaces
+            <ChevronDown
+              className="h-3 w-3 transition-transform"
+              style={{ transform: indexOpen ? 'rotate(180deg)' : 'none' }}
+            />
+          </button>
+          {indexOpen && (
+            <div id={indexId} className="mt-2">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-subtle)' }}>
+                Jump to any surface
+              </p>
+              <ul className="flex flex-wrap gap-1.5">
+                {surfaces.map((s) => (
+                  <li key={s.id}>
+                    <Link
+                      to={s.to}
+                      onClick={dismiss}
+                      aria-describedby={`${indexId}-${s.id}`}
+                      className={INDEX_LINK_CLASS}
+                      style={{ background: 'var(--surface)', color: 'var(--fg-muted)', border: '1px solid var(--border-subtle)' }}
+                    >
+                      {s.title}
+                    </Link>
+                    {/* The blurb used to live in `title`, which touch and
+                        screen-reader users never get. */}
+                    <span id={`${indexId}-${s.id}`} hidden>
+                      {s.blurb}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mb-2 mt-3 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-subtle)' }}>
+                Metric building blocks
+              </p>
+              <ul className="flex flex-wrap gap-1.5">
+                {blocks.map((b) => (
+                  <li key={b.id}>
+                    <Link
+                      to={b.to}
+                      onClick={dismiss}
+                      title={b.blurb}
+                      aria-describedby={`${indexId}-block-${b.id}`}
+                      className={INDEX_LINK_CLASS}
+                      style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                    >
+                      {b.label}
+                    </Link>
+                    <span id={`${indexId}-block-${b.id}`} hidden>
+                      {b.blurb}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

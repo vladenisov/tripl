@@ -578,7 +578,12 @@ function JobRow({
   return (
     <Fragment>
       {/* The mark anchors onto the <tr> itself: the Popover root renders no DOM
-          and the content is portalled, so nothing invalid lands in <tbody>. */}
+          and the content is portalled, so nothing invalid lands in <tbody>.
+          The row is not focusable; the mark hands its description to the
+          row's first control (Stop run while the watched run is active, the
+          details toggle once it has a result). A finished run with neither
+          stays undescribed on purpose — a tab stop on a non-interactive row
+          would be worse than the hint going unheard. */}
       <ScenarioCoachMark step="live-loop/watch-scan" when={watched}>
         <TableRow>
           <TableCell className="px-4 text-xs" style={{ color: 'var(--fg-muted)' }}>

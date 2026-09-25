@@ -2638,6 +2638,23 @@
               "default": 50,
               "title": "Limit"
             }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
           }
         ],
         "responses": {
@@ -3071,6 +3088,23 @@
               "minimum": 1,
               "default": 50,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           }
         ],
@@ -15442,12 +15476,24 @@
           "total": {
             "type": "integer",
             "title": "Total"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
           }
         },
         "type": "object",
         "required": [
           "items",
-          "total"
+          "total",
+          "next_cursor"
         ],
         "title": "AlertDeliveryListResponse"
       },
@@ -16847,13 +16893,25 @@
               }
             ],
             "title": "Window Truncated At"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
           }
         },
         "type": "object",
         "required": [
           "items",
           "total",
-          "window_truncated_at"
+          "window_truncated_at",
+          "next_cursor"
         ],
         "title": "AlertInboxListResponse"
       },
@@ -20313,14 +20371,24 @@
               }
             ],
             "title": "Slug"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "stopped",
+              "finished",
+              "none"
+            ],
+            "title": "State"
           }
         },
         "type": "object",
         "required": [
-          "cancelled"
+          "cancelled",
+          "state"
         ],
         "title": "DemoCancelResponse",
-        "description": "Outcome of asking an in-flight demo provision to abandon itself.\n\n``cancelled`` is only true when a still-seeding shell was found and flagged;\nthe provision then deletes itself instead of promoting. When it is false the\ncreate had already finished (or never started), so the caller must be told\nplainly that the demo will appear rather than pretending it was stopped."
+        "description": "Outcome of asking an in-flight demo provision to abandon itself.\n\n``cancelled`` is only true when a still-seeding shell was found and flagged;\nthe provision then deletes itself instead of promoting.\n\nWhen it is false there was nothing to stop, and ``state`` says which of two\nvery different things that means (DEMO-28): ``finished`` \u2014 a demo of this\nuser's became ready moments ago, so it WILL be in their projects list and\nthe caller should say so \u2014 or ``none`` \u2014 no recent demo exists, the create\nnever got far enough (or failed on its own), and the caller must not promise\nanything will appear. ``stopped`` always pairs with ``cancelled=true``."
       },
       "DetectionResetPeriod": {
         "properties": {
@@ -27305,6 +27373,29 @@
             "type": "boolean",
             "title": "Incident Child",
             "default": false
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "detected_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detected At"
           }
         },
         "type": "object",

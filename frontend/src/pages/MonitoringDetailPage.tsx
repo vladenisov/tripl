@@ -628,6 +628,10 @@ export default function MonitoringDetailPage() {
                     // and the "±Nσ" tooltip agree with the dots inside them. The
                     // metric scope serves it too (`adaptMetricSeries`, tripl-4cgl).
                     sigmaThreshold={metrics?.sigma_threshold}
+                    // The axis spans the range picked above, not just the
+                    // buckets that have data (MON-22).
+                    from={timeRange.from}
+                    to={timeRange.to}
                   />
                 )}
                 {metrics?.interval && (

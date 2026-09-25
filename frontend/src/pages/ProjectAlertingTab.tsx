@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   keepPreviousData,
@@ -29,11 +29,21 @@ import { useCanWriteProject } from '@/lib/permissions'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDestination, AlertInboxListResponse } from '@/types'
 
-import type { DeliveryFilters } from './alerting/AlertAuditPanel'
 import { invalidateAlertingConfig } from './alerting/alertingCache'
+import {
+  DELIVERY_FILTER_PARAM_KEYS,
+  DELIVERY_OFFSET_PARAM,
+  readDeliveryFilters,
+  readDeliveryOffset,
+  writeDeliveryFilters,
+  type DeliveryFilters,
+} from './alerting/deliveryFilters'
+import { createNoteDraftStore } from './alerting/noteDraftStore'
+import { listPageRequest, nextListPageParam, type ListPageParam } from './alerting/listPaging'
 import { describeDeletionImpact } from './alerting/deletionImpact'
 import { AlertingGuidedSetup } from './alerting/AlertingGuidedSetup'
 import type { InboxActionVariables, InboxStatusFilter } from './alerting/AlertingInbox'
+import { recordInboxActionFailure, type InboxActionFailure } from './alerting/inboxActionErrors'
 import type { InboxBulkActionRequest } from './alerting/InboxBulkActionBar'
 import {
   INBOX_FILTER_PARAM_KEYS,
@@ -159,6 +169,12 @@ interface InboxBulkActionVariables extends InboxBulkActionRequest {
   correlationGroupIds: string[]
 }
 
+/** One card's action once the page has attached the note the card was holding. */
+interface InboxActionRequest extends InboxActionVariables {
+  // Trimmed; '' when the box is empty.
+  note: string
+}
+
 export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey, focusScanId, focusIncidentId }: { slug: string; focusDeliveryId?: string; focusItemKey?: string; focusScanId?: string; focusIncidentId?: string }) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
@@ -180,40 +196,6 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // dialog the reader has just closed (tripl-oxkt.15).
   const [autoOpenRuleForDestinationId, setAutoOpenRuleForDestinationId] =
     useState<string | null>(null)
-  const [deliveryFilters, setDeliveryFilters] = useState<DeliveryFilters>({
-    status: '',
-    channel: '',
-    destination_id: '',
-    rule_id: '',
-    // Seeded from `?scan=` so a scan run's "Alerts queued" counter can hand the
-    // audit log over already narrowed to that scan (tripl-3y7z.2).
-    scan_config_id: focusScanId ?? '',
-    // The two dimensions that actually vary in a real delivery log. The backend
-    // has accepted `date_from`/`date_to` all along and the page passed neither,
-    // so five filters were on screen and none of them could narrow anything
-    // (tripl-oxkt.12). '' means unset.
-    date_from: '',
-    date_to: '',
-  })
-  // Where the delivery window starts. The panel owns the Newer/Older steps and
-  // resets this on every filter write — the offset indexes INTO the filtered
-  // set, so a narrowing that shrinks the set below the offset would otherwise
-  // land the reader on a blank page of a list that has rows.
-  const [deliveryOffset, setDeliveryOffset] = useState(0)
-  // `?scan=` can change without remounting (the alerting route is one page, and
-  // navigating from a deep link back to plain /alerting only swaps the query
-  // string), so the seed above fires once and would then go stale. Adjusting
-  // during render is React's documented way to follow a prop; an effect would
-  // fire one request against the old filter first.
-  const [appliedScanFocus, setAppliedScanFocus] = useState(focusScanId)
-  if (focusScanId !== appliedScanFocus) {
-    setAppliedScanFocus(focusScanId)
-    setDeliveryFilters(current => ({ ...current, scan_config_id: focusScanId ?? '' }))
-    // Same reason the panel resets it on every filter write: page 3 of the
-    // unfiltered log is not page 3 of one scan's log, and may not exist at all.
-    setDeliveryOffset(0)
-  }
-
   // Section lives in a QUERY param, not a path segment. The second segment of
   // /p/:slug/settings/:tab/:itemId is the delivery id an alert link carries, and
   // it is the only linkable shape the backend can emit — urls.py returns no link
@@ -248,6 +230,50 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       params.set('section', next)
       return params
     })
+
+  // The delivery log's filters and its page, in the URL beside the Inbox's
+  // (ALR-36). They were component state, so opening a scope link from a
+  // delivery and pressing Back lost both the filter and the page — the Inbox
+  // moved its own filters to the URL for exactly that reason (tripl-ahg5,
+  // tripl-htfn.4). The scan filter is `?scan=` itself, which the route reads
+  // and hands down as `focusScanId`: a scan run's "Alerts queued" counter links
+  // with it (tripl-3y7z.2), and it can change without remounting — deriving
+  // from it, rather than seeding state once, is what keeps the two in step.
+  const deliveryFilters = useMemo(
+    () => readDeliveryFilters(searchParams, focusScanId),
+    [searchParams, focusScanId],
+  )
+  // Where the delivery window starts. The offset indexes INTO the filtered
+  // set, so every filter write drops it in the same navigation (below) — a
+  // narrowing that shrinks the set below the offset would otherwise land the
+  // reader on a blank page of a list that has rows.
+  const deliveryOffset = readDeliveryOffset(searchParams)
+  // `replace`, like the Inbox's filters: a filter flip is not a place Back
+  // should stop. Pinned to `section=audit` because only the log writes these,
+  // and a reader who arrived by `?scan=` alone was on the log by DEFAULT —
+  // clearing that scan would otherwise have dropped them onto the Inbox.
+  const setDeliveryFilters = (next: DeliveryFilters) =>
+    setSearchParams(
+      current => {
+        const params = new URLSearchParams(current)
+        for (const key of DELIVERY_FILTER_PARAM_KEYS) params.delete(key)
+        for (const [key, value] of Object.entries(writeDeliveryFilters(next))) params.set(key, value)
+        params.set('section', 'audit')
+        return params
+      },
+      { replace: true },
+    )
+  const setDeliveryOffset = (next: number) =>
+    setSearchParams(
+      current => {
+        const params = new URLSearchParams(current)
+        if (next > 0) params.set(DELIVERY_OFFSET_PARAM, String(next))
+        else params.delete(DELIVERY_OFFSET_PARAM)
+        params.set('section', 'audit')
+        return params
+      },
+      { replace: true },
+    )
 
   // The other half of that contract: a roving tabIndex and the arrow keys that
   // move it. Three plain buttons meant Tab walked all three and the arrows did
@@ -424,6 +450,19 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       },
       { replace: true },
     )
+  // Status and every other filter off, in one navigation — see
+  // `AlertingInbox`'s `onClearAllFilters` for why two setter calls in one
+  // click lost the first.
+  const clearAllInboxFilters = () =>
+    setSearchParams(
+      current => {
+        const params = new URLSearchParams(current)
+        params.delete('status')
+        for (const key of INBOX_FILTER_PARAM_KEYS) params.delete(key)
+        return params
+      },
+      { replace: true },
+    )
   const inboxRequest = inboxFilterQuery(inboxFilters, inboxStatus)
   // Spread into the key, not the state object: two states that ask the server
   // the same question must share one cache entry, and only the request says
@@ -449,14 +488,13 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     queryFn: ({ pageParam }) =>
       alertingApi.listInbox(slug, {
         ...inboxRequest,
-        offset: pageParam,
+        ...listPageRequest(pageParam),
         limit: INBOX_PAGE_SIZE,
       }),
-    initialPageParam: 0,
-    getNextPageParam: (lastPage, allPages) => {
-      const loaded = allPages.reduce((sum, page) => sum + page.items.length, 0)
-      return loaded < lastPage.total ? loaded : undefined
-    },
+    initialPageParam: 0 as ListPageParam,
+    // Continues by the server's keyset cursor (ALR-27), so a card that sorts
+    // down past the page seam between two requests is still served.
+    getNextPageParam: nextListPageParam,
     // Only the Inbox section reads this. Splitting the page is what makes the
     // saving possible — before it, every section was on screen at once.
     enabled: section === 'inbox',
@@ -473,10 +511,26 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // a fact about the whole source load, not about the slice, so every page
     // reports the same one and reducing over them could only invent a
     // disagreement.
+    //
+    // De-duplicated by id, keeping the first (ALR-27). Pages continue by the
+    // server's keyset cursor, so a row that sorted DOWN past the seam is still
+    // served — but it may then also sit on an earlier page that has not
+    // refetched yet: two cards under one React key, and a selection model that
+    // assumes each id appears once. The first copy is the one in place.
+    const seen = new Set<string>()
+    const items = pages.flatMap(page =>
+      page.items.filter(item => {
+        if (seen.has(item.correlation_group_id)) return false
+        seen.add(item.correlation_group_id)
+        return true
+      }),
+    )
+    // `next_cursor` is the LAST page's: it is where "Load more" continues.
     return {
-      items: pages.flatMap(page => page.items),
+      items,
       total: firstPage.total,
       window_truncated_at: firstPage.window_truncated_at,
+      next_cursor: pages[pages.length - 1]?.next_cursor ?? null,
     }
   }, [inboxQuery.data])
   // A Telegram alert names its incident, and `?incident=` only pre-expanded a
@@ -565,7 +619,12 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // since the feature shipped, but nothing ever sent one — the field was
   // unreachable, so an operator had no way to record WHY they acked something
   // (tripl-jfm3.91). Omitting the key leaves the stored note untouched.
-  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
+  //
+  // A store, not state (ALR-29): with a `Record` in this component, every
+  // keystroke in any card re-rendered this 1,300-line page and every card on
+  // it. The page still OWNS the drafts — they outlive a section switch, and the
+  // mutation below reads them — but only the card being typed in re-renders.
+  const [noteDraftStore] = useState(() => createNoteDraftStore())
   // An alert link names its incident, so the card it points at opens with its
   // deliveries already showing — the reader lands on the alert AND the actions
   // for it, instead of on a delivery whose incident is in another list further
@@ -573,12 +632,12 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const [expandedIncidents, setExpandedIncidents] = useState<Set<string>>(
     () => new Set(focusIncidentId ? [focusIncidentId] : []),
   )
-  const toggleIncident = (correlationGroupId: string) =>
+  const toggleIncident = useCallback((correlationGroupId: string) =>
     setExpandedIncidents(current => {
       const next = new Set(current)
       if (!next.delete(correlationGroupId)) next.add(correlationGroupId)
       return next
-    })
+    }), [])
 
   // Which incidents the bulk bar will act on (tripl-gpfr).
   //
@@ -629,6 +688,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
    * and — worse — would leave a window in which a click could post an id the
    * page had already decided to forget.
    */
+  // The Set the cards read, rebuilt only when the selection changes — a fresh
+  // Set per render was a fresh prop per render for every card (ALR-29). Built
+  // from the raw list: an id it holds that is off screen has no card to read it.
+  const selectedIncidentSet = useMemo(() => new Set(selectedIncidentIds), [selectedIncidentIds])
   const selectedIncidentIdsInView = selectedIncidentIds.filter(id =>
     visibleIncidentIdSet.has(id),
   )
@@ -650,7 +713,9 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   useEffect(() => {
     selectedIncidentIdsInViewRef.current = selectedIncidentIdsInView
   })
-  const toggleIncidentSelected = (correlationGroupId: string, selected: boolean) =>
+  // Stable, like every callback the incident cards receive: they are memoized,
+  // and a fresh function per render would re-render all of them anyway (ALR-29).
+  const toggleIncidentSelected = useCallback((correlationGroupId: string, selected: boolean) =>
     setSelectedIncidentIds(current => {
       if (!selected) return current.filter(id => id !== correlationGroupId)
       // Idempotent on purpose: the checkbox is controlled, but a double event
@@ -658,7 +723,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       // duplicates too — this keeps the COUNT the confirmation quotes honest,
       // which the server cannot do for us.
       return current.includes(correlationGroupId) ? current : [...current, correlationGroupId]
-    })
+    }), [])
   // The batch form, for the header "select all N shown" box and the shift-click
   // range (tripl-rzkx). One state update for the whole batch rather than a
   // toggle per id: the pruning pass above runs on every render, so fifty
@@ -669,7 +734,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // the Inbox section, which only ever passes ids it is currently rendering — so
   // the "nothing selected that is not on screen" contract above still holds by
   // construction and did not have to be relaxed for either control.
-  const setIncidentsSelected = (correlationGroupIds: readonly string[], selected: boolean) =>
+  const setIncidentsSelected = useCallback((correlationGroupIds: readonly string[], selected: boolean) =>
     setSelectedIncidentIds(current => {
       if (!selected) {
         const dropped = new Set(correlationGroupIds)
@@ -678,12 +743,44 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       }
       const added = correlationGroupIds.filter(id => !current.includes(id))
       return added.length === 0 ? current : [...current, ...added]
-    })
+    }), [])
   const clearIncidentSelection = () => setSelectedIncidentIds([])
 
+  // Which rows have an action in flight, and which rows' last action failed —
+  // per row, not read off the mutation's latest `variables` (ALR-28). With one
+  // id, acting on card B while A was in flight re-enabled A's buttons (a second
+  // click could go out) and attributed any failure of A to B, so A's error was
+  // never rendered on A. The hook-level callbacks below run for EVERY `mutate`,
+  // which is what makes this bookkeeping complete.
+  const [pendingActionGroupIds, setPendingActionGroupIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const [actionErrors, setActionErrors] = useState<ReadonlyMap<string, InboxActionFailure>>(
+    () => new Map(),
+  )
   const inboxActionMut = useMutation({
-    mutationFn: ({ group, action, mutedUntil }: InboxActionVariables) => {
-      const draft = (noteDrafts[group.correlation_group_id] ?? '').trim()
+    // The failed card renders the error itself (`actionErrors` below), so the
+    // global toast would only say it a second time.
+    meta: SILENT_ERROR_META,
+    onMutate: ({ group }: InboxActionRequest) => {
+      const id = group.correlation_group_id
+      setPendingActionGroupIds(current => new Set(current).add(id))
+      setActionErrors(current => {
+        if (!current.has(id)) return current
+        const next = new Map(current)
+        next.delete(id)
+        return next
+      })
+    },
+    onError: (error, { group }) => {
+      // With the card's state at failure time, so the error retires itself once
+      // the live card moves on (a colleague resolves it, a bulk action, a
+      // refetch) instead of sitting on the card until the page unmounts.
+      setActionErrors(current =>
+        new Map(current).set(group.correlation_group_id, recordInboxActionFailure(group, error)),
+      )
+    },
+    mutationFn: ({ group, action, mutedUntil, note: draft }: InboxActionRequest) => {
       return alertingApi.applyInboxAction(slug, group.correlation_group_id, {
         action,
         // Two rules, and the split is what makes a note DELETABLE (tripl-pdb2).
@@ -706,19 +803,17 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     },
     onSuccess: (data, variables) => {
       // The draft has been persisted server-side; drop it so the input goes
-      // back to showing the placeholder rather than a stale copy.
-      setNoteDrafts(current => {
-        const rest = { ...current }
-        delete rest[variables.group.correlation_group_id]
-        return rest
-      })
+      // back to showing the placeholder rather than a stale copy — unless the
+      // reader kept typing while the request was out, in which case the box
+      // holds words the server has not seen.
+      noteDraftStore.clearIfUnchanged(variables.group.correlation_group_id, variables.note)
       // The server returns the group it just wrote, and this used to throw it
       // away and invalidate — so the row the operator touched showed nothing
       // until a refetch landed (tripl-oxkt.11). Write it into the page that
       // holds it; the refetch below is then a correction, not the only source
       // of feedback.
       const updated = data.group
-      qc.setQueryData<InfiniteData<AlertInboxListResponse, number>>(inboxKey, current =>
+      qc.setQueryData<InfiniteData<AlertInboxListResponse, ListPageParam>>(inboxKey, current =>
         current && {
           ...current,
           pages: current.pages.map(page => ({
@@ -740,8 +835,15 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // its response, and the one thing that must not happen in that case is a
     // list left showing the pre-action state with no refetch coming.
     onSettled: (_data, _error, variables) => {
-      // …except for a note, which moves no status and so cannot change what
-      // this list holds, how it is sorted, or what the filter admits. The
+      const settledId = variables.group.correlation_group_id
+      setPendingActionGroupIds(current => {
+        if (!current.has(settledId)) return current
+        const next = new Set(current)
+        next.delete(settledId)
+        return next
+      })
+      // No refetch after a note, which moves no status and so cannot change
+      // what this list holds, how it is sorted, or what the filter admits. The
       // group the server returned is already written above, and refetching
       // every loaded page after a comment is pure cost (tripl-oxkt.20).
       if (variables.action === 'note') return
@@ -752,6 +854,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       // nothing (tripl-oxkt.20).
     },
   })
+  // Stable in TanStack v5, and named so the callback below can depend on it.
+  const mutateInboxAction = inboxActionMut.mutate
 
   /**
    * Every inbox action, with the two that need asking first.
@@ -764,7 +868,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
    * the card can only show so much of it, so the sentence spells the whole key
    * before anything goes quiet (tripl-oxkt.7, tripl-oxkt.8).
    */
-  const handleInboxAction = async (variables: InboxActionVariables) => {
+  const handleInboxAction = useCallback(async (variables: InboxActionVariables) => {
     if (variables.action === 'false_positive') {
       const ok = await confirm({
         title: 'Mark as a false positive',
@@ -786,8 +890,15 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       })
       if (!ok) return
     }
-    inboxActionMut.mutate(variables)
-  }
+    // The note is read HERE, once, and travels with the request — so the draft
+    // the success handler clears is compared against exactly what was sent.
+    const note = noteDraftStore.get(variables.group.correlation_group_id).trim()
+    mutateInboxAction({ ...variables, note })
+  }, [confirm, mutateInboxAction, noteDraftStore])
+  const onInboxAction = useCallback(
+    (variables: InboxActionVariables) => { void handleInboxAction(variables) },
+    [handleInboxAction],
+  )
 
   /**
    * One triage decision, applied to every selected incident in ONE request
@@ -797,7 +908,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
    * deliberate: the single-incident mutation's response contract, its optimistic
    * cache write and its toast wording were each fixed in response to a specific
    * reported defect (tripl-oxkt.11, tripl-oxkt.6, tripl-a50u), and the row-level
-   * `pendingGroupId` / `errorGroupId` it feeds have no meaning for a batch that
+   * `pendingGroupIds` / `actionErrors` it feeds have no meaning for a batch that
    * has no single row. Sharing one mutation would have meant teaching all of
    * that to tell the two apart.
    *
@@ -842,7 +953,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       const rebuiltById = new Map(
         data.groups.map(group => [group.correlation_group_id, group]),
       )
-      qc.setQueryData<InfiniteData<AlertInboxListResponse, number>>(inboxKey, current =>
+      qc.setQueryData<InfiniteData<AlertInboxListResponse, ListPageParam>>(inboxKey, current =>
         current && {
           ...current,
           pages: current.pages.map(page => ({
@@ -949,15 +1060,6 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     inboxBulkActionMut.mutate({ correlationGroupIds, action, mutedUntil, note })
   }
 
-  // Which row is busy, and which row failed — read off the mutation's own
-  // variables, so no extra state can drift out of step with it. Both are gated
-  // on the flag rather than on `variables` alone, which survives settling.
-  const actingGroupId = inboxActionMut.isPending
-    ? inboxActionMut.variables?.group.correlation_group_id ?? null
-    : null
-  const failedGroupId = inboxActionMut.isError
-    ? inboxActionMut.variables?.group.correlation_group_id ?? null
-    : null
   const hasDestinations = destinations.length > 0
   const hasRules = allRules.length > 0
   // Delivery history means alerts have fired before, so the project is NOT a
@@ -1167,6 +1269,23 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           aria-labelledby={tabId('inbox')}
         >
         <SectionSuspense>
+        {/* The Inbox does not need the destinations list to show incidents,
+            but its "No rules yet" gate reads it — so while it is missing the
+            gate asserts nothing (below) and the failure is said here rather
+            than silently (ALR-10). */}
+        {destinationsRefreshFailed}
+        {destinationsQuery.isError && !destinationsLoaded && (
+          <p role="status" className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            Could not load alert destinations and rules; the incidents below are unaffected.
+            <button
+              type="button"
+              className="underline underline-offset-2"
+              onClick={() => void destinationsQuery.refetch()}
+            >
+              Retry
+            </button>
+          </p>
+        )}
         <AlertingInbox
           slug={slug}
           inbox={inbox}
@@ -1182,20 +1301,19 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           onStatusFilterChange={setInboxStatus}
           filters={inboxFilters}
           onFiltersChange={setInboxFilters}
+          onClearAllFilters={clearAllInboxFilters}
           onLoadMore={() => void inboxQuery.fetchNextPage()}
           hasMore={inboxQuery.hasNextPage}
           isLoadingMore={inboxQuery.isFetchingNextPage}
-          noteDrafts={noteDrafts}
-          setNoteDrafts={setNoteDrafts}
+          noteDraftStore={noteDraftStore}
           expandedIncidents={expandedIncidents}
           toggleIncident={toggleIncident}
-          selectedIncidents={new Set(selectedIncidentIdsInView)}
+          selectedIncidents={selectedIncidentSet}
           toggleIncidentSelected={toggleIncidentSelected}
           setIncidentsSelected={setIncidentsSelected}
-          onAction={handleInboxAction}
-          pendingGroupId={actingGroupId}
-          errorGroupId={failedGroupId}
-          actionError={inboxActionMut.error}
+          onAction={onInboxAction}
+          pendingGroupIds={pendingActionGroupIds}
+          actionErrors={actionErrors}
           onGoToMonitors={() => selectSection('monitors')}
           focusDeliveryId={focusDeliveryId}
           focusItemKey={focusItemKey}
@@ -1240,11 +1358,12 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           pinnedDelivery={pinnedDelivery}
           focusDeliveryId={focusDeliveryId}
           focusItemKey={focusItemKey}
-          deliveryFilters={deliveryFilters}
-          setDeliveryFilters={setDeliveryFilters}
-          activeScanFilter={activeDeliveryFilters.scan_config_id}
+          // The filters the request used, so an unknown `?scan=` that was
+          // degraded to "All" does not read as an active filter (ALR-39).
+          deliveryFilters={activeDeliveryFilters}
+          onDeliveryFiltersChange={setDeliveryFilters}
           deliveryOffset={deliveryOffset}
-          setDeliveryOffset={setDeliveryOffset}
+          onDeliveryOffsetChange={setDeliveryOffset}
           deliveryLimit={DELIVERY_PAGE_SIZE}
           destinations={destinations}
           allRules={allRules}

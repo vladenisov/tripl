@@ -26,6 +26,8 @@ import {
   metricsCatalogKey,
   monitorsSummaryKey,
   overviewRootKey,
+  overviewTopEventsKey,
+  overviewVolumeRootKey,
   projectAppVersionAdoptionKey,
   projectAppVersionSeriesKey,
   projectBreakdownTimelineKey,
@@ -131,7 +133,12 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         // register itself here.
         activeSignalsKey(slug),
         topbarNotificationsKey(slug),
-        overviewRootKey(),
+        // This project's volume chart and top events only (MON-39). Not the
+        // Overview root: it matches every project's Overview, and the KPI
+        // series counts event CREATIONS, which a metric collection does not
+        // change — scan_job.updated and project_summary.updated refresh it.
+        overviewVolumeRootKey(slug),
+        overviewTopEventsKey(slug),
         ...activityKeys(slug),
       ]
     case 'signals.updated':
@@ -144,7 +151,9 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         projectMonitoringSeriesKey(slug),
         projectAppVersionSeriesKey(slug),
         topbarNotificationsKey(slug),
-        overviewRootKey(),
+        // No Overview root here (MON-39): the signals Overview reads are the
+        // shared active-signals list above, and the root refetched every
+        // project's volume, top events and KPI series on each signal change.
         ...activityKeys(slug),
         ...alertInboxKeys(slug),
       ]

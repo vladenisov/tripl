@@ -86,6 +86,16 @@ class MetricSignalResponse(BaseModel):
     # expanded AnomaliesPage keeps children visible but tags them; the default
     # (collapsed) list drops them entirely, so they never carry this flag there.
     incident_child: bool = False
+    # Display unit of a ``metric``-scope signal's catalog metric (``"%"``,
+    # ``"ms"``…) so the client can print "4.2 %" rather than a bare number.
+    # NULL for every other scope, for a unitless metric and for one whose
+    # definition is gone (MON-34).
+    unit: str | None = None
+    # When the detector wrote this anomaly — distinct from ``bucket``, which is
+    # when the anomalous period STARTED. Lets a list say "detected 3m ago" next
+    # to a bucket that began an hour earlier (MON-40). NULL only on a path that
+    # did not build the signal from a stored anomaly row.
+    detected_at: datetime | None = None
 
 
 class SeasonalityCell(BaseModel):

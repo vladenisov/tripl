@@ -26,9 +26,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ApiError } from '@/api/client'
-import { projectsApi } from '@/api/projects'
+import { projectsApi, type DemoCancelResult } from '@/api/projects'
 import type { Project } from '@/types'
-import { PHASE_TICK_MS, nextPhaseIndex } from './provisioningPhases'
+import { DEMO_PROVISION_TIMEOUT_MS } from './provisioningPhases'
+import { useEstimatedPhase } from './useEstimatedPhase'
 import { projectsKey } from '@/lib/queryKeys'
 
 export type ProvisioningStatus =
@@ -43,16 +44,17 @@ export type ProvisioningStatus =
 export type CancelOutcome =
   /** The in-flight provision was flagged and deletes itself — nothing is created. */
   | 'stopped'
-  /** Too late (or the cancel call itself failed): the demo will appear in the list. */
+  /** Too late: the create had finished, so the demo will appear in the list. */
   | 'already-finished'
+  /**
+   * The server never saw a provision to stop, or the cancel itself could not be
+   * delivered: whether a demo exists is unknown, so the user is sent to the list
+   * rather than told it "will appear" (DEMO-28).
+   */
+  | 'unknown'
 
-/**
- * Seeding is heavy but bounded — it is a fixed recipe, not user-sized data — so
- * a create still running after this long is a stall, not slow progress. Without
- * a bound, a dead connection leaves the dialog spinning forever and a page
- * reload is the only way out (tripl-2su6.15).
- */
-export const DEMO_PROVISION_TIMEOUT_MS = 90_000
+// Lives with the other provisioning timings; re-exported for existing callers.
+export { DEMO_PROVISION_TIMEOUT_MS }
 
 /**
  * Mirrors `demo_service.MAX_DEMOS_PER_CREATOR`. Used only to warn before the
@@ -78,6 +80,22 @@ type CreateOutcome =
  */
 function isCancelledElsewhere(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && /provisioning was cancelled/i.test(error.message)
+}
+
+/**
+ * Reads the server's cancel answer. `cancelled: false` covers both "had
+ * already finished" and "never started" (DEMO-28); the server says which in
+ * `state` (`finished` when a demo of this user's became ready moments ago,
+ * `none` otherwise), and only `finished` lets the UI promise the demo will
+ * appear. An answer without it — an older server — names no outcome it
+ * cannot know.
+ */
+function cancelOutcomeOf(result: DemoCancelResult): CancelOutcome {
+  if (result.cancelled) return 'stopped'
+  // Read loosely: the generated type gains `state` when api.gen.ts is next
+  // regenerated, and an older server omits it.
+  const state = (result as DemoCancelResult & { state?: unknown }).state
+  return state === 'finished' ? 'already-finished' : 'unknown'
 }
 
 export interface DemoProvisioningController {
@@ -108,7 +126,6 @@ export function useDemoProvisioning(options?: {
   const timeoutMs = options?.timeoutMs ?? DEMO_PROVISION_TIMEOUT_MS
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const [phaseIndex, setPhaseIndex] = useState(0)
   const [project, setProject] = useState<Project | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [cancelling, setCancelling] = useState(false)
@@ -163,6 +180,10 @@ export function useDemoProvisioning(options?: {
       }
       if (outcome.kind === 'failed') {
         setError(outcome.error)
+        // A failure is not proof that nothing was created (DEMO-5): a dropped
+        // connection or a timeout can hide a create the server finished, and a
+        // 409 says the list this tab holds is out of date. Refresh it.
+        void queryClient.invalidateQueries({ queryKey: projectsKey() })
         return
       }
       if (outcome.kind === 'cancelled') return
@@ -194,15 +215,9 @@ export function useDemoProvisioning(options?: {
   // Animate through the expected phases while the request is blocking. There is
   // no server-side stage feed, so this is a timed best-effort narration — the
   // dialog labels it as an estimate rather than asserting completed work
-  // (tripl-jfm3.16). The pointer is reset to 0 in `start()` (before isPending
-  // flips), so the effect only needs to drive the interval.
-  useEffect(() => {
-    if (!isPending) return
-    const timer = setInterval(() => {
-      setPhaseIndex((current) => nextPhaseIndex(current))
-    }, PHASE_TICK_MS)
-    return () => clearInterval(timer)
-  }, [isPending])
+  // (tripl-jfm3.16). The same hook drives the reset dialog (DEMO-22), and it
+  // starts over at phase 0 every time a create begins.
+  const phaseIndex = useEstimatedPhase(isPending)
 
   // Abandoning the page must not leave a timer alive to fire against a request
   // nobody is watching any more.
@@ -224,7 +239,6 @@ export function useDemoProvisioning(options?: {
     setCancelOutcome(null)
     setError(null)
     setProject(null)
-    setPhaseIndex(0)
     resetMutation()
     mutate()
   }, [mutate, resetMutation])
@@ -239,10 +253,10 @@ export function useDemoProvisioning(options?: {
     setCancelling(true)
     void projectsApi
       .cancelDemo()
-      .then((result) => (result.cancelled ? 'stopped' : 'already-finished'))
+      .then(cancelOutcomeOf)
       // A cancel we could not deliver is not a cancel: never claim the create
-      // was stopped when we do not know that it was.
-      .catch((): CancelOutcome => 'already-finished')
+      // was stopped — or that it finished — when we do not know either.
+      .catch((): CancelOutcome => 'unknown')
       .then((outcome: CancelOutcome) => {
         // Whatever the answer, the list may have changed under it.
         void queryClient.invalidateQueries({ queryKey: projectsKey() })
@@ -260,7 +274,6 @@ export function useDemoProvisioning(options?: {
     setCancelOutcome(null)
     setError(null)
     setProject(null)
-    setPhaseIndex(0)
     clearTimer()
     abortRef.current?.abort()
     resetMutation()

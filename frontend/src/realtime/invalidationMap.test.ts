@@ -6,7 +6,12 @@ import {
   invalidationKeysFor,
   isProjectEventType,
 } from './invalidationMap'
-import { eventsMetricsKey } from '@/lib/queryKeys'
+import {
+  eventsMetricsKey,
+  overviewKpiSeriesKey,
+  overviewTopEventsKey,
+  overviewVolumeRootKey,
+} from '@/lib/queryKeys'
 
 const SLUG = 'demo'
 
@@ -60,7 +65,12 @@ describe('invalidationKeysFor', () => {
     expect(hasKey(keys, eventsMetricsKey(SLUG))).toBe(true)
     expect(hasKey(keys, ['eventWindowMetrics', SLUG])).toBe(true)
     expect(hasKey(keys, ['reconciliation'])).toBe(true)
-    expect(hasKey(keys, ['overview'])).toBe(true)
+    // MON-39: this project's volume chart and top events, not the whole
+    // Overview root (every project) and not the KPI series.
+    expect(hasKey(keys, ['overview'])).toBe(false)
+    expect(hasKey(keys, overviewVolumeRootKey(SLUG))).toBe(true)
+    expect(hasKey(keys, overviewTopEventsKey(SLUG))).toBe(true)
+    expect(hasKey(keys, overviewKpiSeriesKey(SLUG))).toBe(false)
   })
 
   it('refreshes the By version series with the adoption chart beside it (MON-4)', () => {
@@ -81,6 +91,8 @@ describe('invalidationKeysFor', () => {
     expect(hasKey(keys, ['anomalies', 'signals', SLUG])).toBe(false)
     expect(hasKey(keys, ['monitors-summary', SLUG])).toBe(true)
     expect(hasKey(keys, ['topbarNotifications', SLUG])).toBe(true)
+    // MON-39: the Overview's signal reads are the shared list above.
+    expect(hasKey(keys, ['overview'])).toBe(false)
   })
 
   it('activity.created refreshes the activity rail and notification surfaces', () => {

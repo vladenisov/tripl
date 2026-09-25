@@ -6,10 +6,16 @@
  * position is load-bearing — the <tr> in ScanDetail — keep valid markup and
  * nothing in the page shifts. `pointer-events: none` (in .coach-ring) keeps the
  * exact control clickable through the ring.
+ *
+ * Clipped to what can actually be seen of the anchor (DEMO-11): the viewport
+ * and every scroll container around it. A row action scrolled out of an
+ * `overflow-x-auto` table wrapper used to keep its ring floating over the page
+ * beside the table, and a ring near the edge of a narrow screen ran past it.
  */
 
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { clippingAncestors, intersect, visibleFrame, type Box } from './coachGeometry'
 
 /** The ring sits this far outside the anchor on every edge. */
 const RING_PAD = 2
@@ -17,30 +23,37 @@ const RING_PAD = 2
 /** Below the popover card (z-50) so the card is never occluded by its own ring. */
 const RING_Z_INDEX = 49
 
-interface AnchorRect {
-  top: number
-  left: number
-  width: number
-  height: number
-}
-
-function readRect(anchor: HTMLElement): AnchorRect {
+/** The ring's box on screen, or null when none of it can be seen. */
+function readRing(anchor: HTMLElement, ancestors: readonly Element[]): Box | null {
   const rect = anchor.getBoundingClientRect()
-  return { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+  // A 0x0 rect means the anchor is not laid out (hidden tab, display:none) —
+  // a ring there would point at the page corner.
+  if (rect.width === 0 && rect.height === 0) return null
+  const frame = visibleFrame(ancestors)
+  if (!frame) return null
+  return intersect(frame, {
+    top: rect.top - RING_PAD,
+    left: rect.left - RING_PAD,
+    right: rect.right + RING_PAD,
+    bottom: rect.bottom + RING_PAD,
+  })
 }
 
-function sameRect(a: AnchorRect, b: AnchorRect): boolean {
-  return a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
+function sameBox(a: Box | null, b: Box | null): boolean {
+  if (a === null || b === null) return a === b
+  return a.top === b.top && a.left === b.left && a.right === b.right && a.bottom === b.bottom
 }
 
 export function CoachBeacon({ anchor }: { anchor: HTMLElement }) {
-  const [rect, setRect] = useState<AnchorRect>(() => readRect(anchor))
+  const [ring, setRing] = useState<Box | null>(() => readRing(anchor, clippingAncestors(anchor)))
 
   useEffect(() => {
+    // Which ancestors clip is fixed for a mounted anchor; where they sit is not.
+    const ancestors = clippingAncestors(anchor)
     const refresh = () => {
-      setRect((prev) => {
-        const next = readRect(anchor)
-        return sameRect(prev, next) ? prev : next
+      setRing((prev) => {
+        const next = readRing(anchor, ancestors)
+        return sameBox(prev, next) ? prev : next
       })
     }
     refresh()
@@ -62,9 +75,7 @@ export function CoachBeacon({ anchor }: { anchor: HTMLElement }) {
     }
   }, [anchor])
 
-  // A 0x0 rect means the anchor is not laid out (hidden tab, display:none) —
-  // a ring there would point at the page corner.
-  if (rect.width === 0 && rect.height === 0) return null
+  if (!ring) return null
 
   return createPortal(
     <div
@@ -72,10 +83,10 @@ export function CoachBeacon({ anchor }: { anchor: HTMLElement }) {
       className="coach-ring"
       style={{
         position: 'fixed',
-        top: rect.top - RING_PAD,
-        left: rect.left - RING_PAD,
-        width: rect.width + RING_PAD * 2,
-        height: rect.height + RING_PAD * 2,
+        top: ring.top,
+        left: ring.left,
+        width: ring.right - ring.left,
+        height: ring.bottom - ring.top,
         zIndex: RING_Z_INDEX,
       }}
     />,

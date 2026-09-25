@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
@@ -13,6 +13,9 @@ import {
   earliestReachableDay,
   type InboxFilterState,
 } from './inboxFilters'
+import { createNoteDraftStore } from './noteDraftStore'
+import { recordInboxActionFailure } from './inboxActionErrors'
+import { SEARCH_DEBOUNCE_MS } from '@/hooks/useDebouncedValue'
 import { at } from '@/test/at'
 
 /**
@@ -81,10 +84,11 @@ function makeGroup(overrides: Partial<AlertInboxGroup> = {}): AlertInboxGroup {
  * A helper rather than object literals for the same reason `makeGroup` is one —
  * the response grows fields, and every fixture that spells the shape out by
  * hand has to be revisited when it does. `window_truncated_at` is required and
- * always sent (tripl-39n6), so a literal cannot omit it.
+ * always sent (tripl-39n6), so a literal cannot omit it; nor can it omit
+ * `next_cursor`.
  */
 function makeInbox(overrides: Partial<AlertInboxListResponse> = {}): AlertInboxListResponse {
-  return { items: [makeGroup()], total: 1, window_truncated_at: null, ...overrides }
+  return { items: [makeGroup()], total: 1, window_truncated_at: null, next_cursor: null, ...overrides }
 }
 
 function renderInbox(
@@ -119,17 +123,15 @@ function renderInbox(
           onLoadMore={vi.fn()}
           hasMore={false}
           isLoadingMore={false}
-          noteDrafts={{}}
-          setNoteDrafts={vi.fn()}
+          noteDraftStore={createNoteDraftStore()}
           expandedIncidents={new Set()}
           toggleIncident={vi.fn()}
           selectedIncidents={new Set()}
           toggleIncidentSelected={toggleIncidentSelected}
           setIncidentsSelected={setIncidentsSelected}
           onAction={onAction}
-          pendingGroupId={null}
-          errorGroupId={null}
-          actionError={null}
+          pendingGroupIds={new Set()}
+          actionErrors={new Map()}
           onGoToMonitors={vi.fn()}
           {...overrides}
         />
@@ -585,9 +587,10 @@ describe('AlertingInbox — feedback lands on the row it belongs to (tripl-oxkt.
         items: [makeGroup(), makeGroup({ correlation_group_id: 'grp-2' })],
         total: 2,
       }),
-      pendingGroupId: 'grp-1',
-      errorGroupId: 'grp-1',
-      actionError: new Error('Only failed deliveries can be retried'),
+      pendingGroupIds: new Set(['grp-1']),
+      actionErrors: new Map([
+        ['grp-1', recordInboxActionFailure(makeGroup(), new Error('Only failed deliveries can be retried'))],
+      ]),
     })
 
     const acks = screen.getAllByRole('button', { name: /^Acknowledge / })
@@ -603,6 +606,33 @@ describe('AlertingInbox — feedback lands on the row it belongs to (tripl-oxkt.
   })
 })
 
+describe('AlertingInbox — a row error retires once the incident moves on', () => {
+  it('drops a failed Acknowledge once the live incident is resolved elsewhere', () => {
+    // Ack on A failed while A was open. A colleague (or the bulk bar) then
+    // resolved A; the refetched card must not keep saying "Could not …".
+    const failure = recordInboxActionFailure(makeGroup({ status: 'open' }), new Error('ack failed'))
+
+    renderInbox({
+      inbox: makeInbox({ items: [makeGroup({ status: 'resolved' })], total: 1 }),
+      actionErrors: new Map([['grp-1', failure]]),
+    })
+    expect(
+      within(document.getElementById('incident-grp-1')!).queryByRole('alert'),
+    ).toBeNull()
+  })
+
+  it('keeps it while the incident still looks as it did when the action failed', () => {
+    const failure = recordInboxActionFailure(makeGroup({ status: 'open' }), new Error('ack failed'))
+    renderInbox({
+      inbox: makeInbox({ items: [makeGroup({ status: 'open' })], total: 1 }),
+      actionErrors: new Map([['grp-1', failure]]),
+    })
+    expect(
+      within(document.getElementById('incident-grp-1')!).getByRole('alert'),
+    ).toHaveTextContent('ack failed')
+  })
+})
+
 describe('AlertingInbox — the note is reachable without taking an action (tripl-oxkt.14)', () => {
   it('collapses behind "Add note" on a card nobody has written on', () => {
     renderInbox()
@@ -614,7 +644,7 @@ describe('AlertingInbox — the note is reachable without taking an action (trip
   })
 
   it('saves a note on its own, without taking an action first', () => {
-    const { onAction } = renderInbox({ noteDrafts: { 'grp-1': 'expected, we retired the screen' } })
+    const { onAction } = renderInbox({ noteDraftStore: createNoteDraftStore({ 'grp-1': 'expected, we retired the screen' }) })
 
     // A note used to ride along on an action, so writing down WHY something
     // was a false positive meant first undoing the false positive. `note`
@@ -664,7 +694,7 @@ describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)',
   })
 
   it('saves on Ctrl+Enter without leaving the box', () => {
-    const { onAction } = renderInbox({ noteDrafts: { 'grp-1': 'expected, we retired the screen' } })
+    const { onAction } = renderInbox({ noteDraftStore: createNoteDraftStore({ 'grp-1': 'expected, we retired the screen' }) })
 
     fireEvent.keyDown(noteBox(), { key: 'Enter', ctrlKey: true })
 
@@ -676,7 +706,7 @@ describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)',
     // note is prose that wraps, and 2000 characters through a 28px slot shows
     // about one line of them at a time. A bare Enter that submitted would put
     // the second paragraph out of reach.
-    const { onAction } = renderInbox({ noteDrafts: { 'grp-1': 'first line' } })
+    const { onAction } = renderInbox({ noteDraftStore: createNoteDraftStore({ 'grp-1': 'first line' }) })
 
     fireEvent.keyDown(noteBox(), { key: 'Enter' })
 
@@ -691,7 +721,7 @@ describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)',
     // "Save note" over an empty box reads as a no-op.
     const { onAction } = renderInbox({
       inbox: makeInbox({ items: [makeGroup({ note: 'wrong, this was the ios release' })], total: 1 }),
-      noteDrafts: { 'grp-1': '' },
+      noteDraftStore: createNoteDraftStore({ 'grp-1': '' }),
     })
 
     const clear = screen.getByRole('button', { name: 'Clear note' })
@@ -714,7 +744,7 @@ describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)',
   it('says nothing about length on a note anybody would actually write', () => {
     // A counter pinned to every card is noise: incident notes are a sentence,
     // and the cap is roughly a page and a half.
-    renderInbox({ noteDrafts: { 'grp-1': 'x'.repeat(1799) } })
+    renderInbox({ noteDraftStore: createNoteDraftStore({ 'grp-1': 'x'.repeat(1799) }) })
 
     expect(screen.queryByText(/characters left$/)).toBeNull()
   })
@@ -723,7 +753,7 @@ describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)',
     // `maxLength` does not warn, error or truncate visibly — it simply stops
     // accepting input, and somebody pasting a stack trace reads that as the page
     // having frozen.
-    renderInbox({ noteDrafts: { 'grp-1': 'x'.repeat(1800) } })
+    renderInbox({ noteDraftStore: createNoteDraftStore({ 'grp-1': 'x'.repeat(1800) }) })
 
     expect(screen.getByText('200 characters left')).toBeInTheDocument()
   })
@@ -731,7 +761,7 @@ describe('AlertingInbox — writing the note is not the hard part (tripl-gwrd)',
   it('says what is happening once the box is full, not just that it is zero', () => {
     // "0 characters left" states the number without stating the consequence, and
     // the consequence is the entire reason the line exists.
-    renderInbox({ noteDrafts: { 'grp-1': 'x'.repeat(2000) } })
+    renderInbox({ noteDraftStore: createNoteDraftStore({ 'grp-1': 'x'.repeat(2000) }) })
 
     expect(
       screen.getByText('Full — further characters are not being accepted'),
@@ -1050,22 +1080,19 @@ describe('AlertingInbox — viewer gating (tripl-oxkt.9)', () => {
  * fine" had one control over 180 incidents.
  */
 describe('AlertingInbox — narrowing the list past its status', () => {
-  it('offers the scope kinds by the same names the cards use', () => {
+  it('offers the scope kinds by the same names the cards use', async () => {
     const { onFiltersChange } = renderInbox()
 
     // "volume", not "event": the chip on the card below says the former, and a
     // picker with its own vocabulary makes one column read as two things.
-    fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'event' } })
+    // The design-system Select, like the Delivery log's filter bar (ALR-49).
+    fireEvent.click(screen.getByRole('combobox', { name: 'Kind' }))
+    expect(await screen.findByRole('option', { name: 'release regression' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: 'volume' }))
 
     expect(onFiltersChange).toHaveBeenCalledWith(
       expect.objectContaining({ scopeType: 'event' }),
     )
-    expect(
-      within(screen.getByLabelText('Kind')).getByRole('option', { name: 'volume' }),
-    ).toBeInTheDocument()
-    expect(
-      within(screen.getByLabelText('Kind')).getByRole('option', { name: 'release regression' }),
-    ).toBeInTheDocument()
   })
 
   it('states the window a date filter can reach, on the control itself', () => {
@@ -1104,17 +1131,15 @@ describe('AlertingInbox — narrowing the list past its status', () => {
               onLoadMore={vi.fn()}
               hasMore={false}
               isLoadingMore={false}
-              noteDrafts={{}}
-              setNoteDrafts={vi.fn()}
+              noteDraftStore={createNoteDraftStore()}
               expandedIncidents={new Set()}
               toggleIncident={vi.fn()}
               selectedIncidents={new Set()}
               toggleIncidentSelected={vi.fn()}
               setIncidentsSelected={vi.fn()}
               onAction={vi.fn()}
-              pendingGroupId={null}
-              errorGroupId={null}
-              actionError={null}
+              pendingGroupIds={new Set()}
+              actionErrors={new Map()}
               onGoToMonitors={vi.fn()}
             />
           </MemoryRouter>
@@ -1131,5 +1156,114 @@ describe('AlertingInbox — narrowing the list past its status', () => {
     // Both halves, because either can be the one that emptied the page.
     expect(onStatusFilterChange).toHaveBeenCalledWith('')
     expect(onFiltersChange).toHaveBeenCalledWith(EMPTY_INBOX_FILTERS)
+  })
+})
+
+describe('AlertingInbox — each card keeps its own action state (ALR-28)', () => {
+  const twoCards = () =>
+    makeInbox({
+      items: [
+        makeGroup(),
+        makeGroup({
+          correlation_group_id: 'grp-2',
+          scope_ref: 'scope-b',
+          scope_names: ['checkout_started'],
+        }),
+      ],
+      total: 2,
+    })
+
+  it('keeps both cards busy while both have an action in flight', () => {
+    // One id meant acting on B re-enabled A while A's request was still out, so
+    // a second click on A could go out behind the first.
+    renderInbox({ inbox: twoCards(), pendingGroupIds: new Set(['grp-1', 'grp-2']) })
+
+    for (const ack of screen.getAllByRole('button', { name: /^Acknowledge / })) {
+      expect(ack).toBeDisabled()
+    }
+  })
+
+  it('renders each failure on the card it belongs to', () => {
+    // A's failure used to be attributed to whichever card acted last.
+    renderInbox({
+      inbox: twoCards(),
+      actionErrors: new Map([
+        ['grp-1', recordInboxActionFailure(twoCards().items[0]!, new Error('first failed'))],
+        ['grp-2', recordInboxActionFailure(twoCards().items[1]!, new Error('second failed'))],
+      ]),
+    })
+
+    expect(
+      within(document.getElementById('incident-grp-1')!).getByRole('alert'),
+    ).toHaveTextContent('first failed')
+    expect(
+      within(document.getElementById('incident-grp-2')!).getByRole('alert'),
+    ).toHaveTextContent('second failed')
+  })
+})
+
+describe('AlertingInbox — clearing cannot be undone by a pending scope search (ALR-50)', () => {
+  const settleDebounce = () =>
+    act(async () => {
+      await new Promise(resolve => setTimeout(resolve, SEARCH_DEBOUNCE_MS * 2))
+    })
+
+  it('drops a scope typed inside the debounce window when Clear filters is pressed', async () => {
+    const { onFiltersChange } = renderInbox({
+      filters: { ...EMPTY_INBOX_FILTERS, direction: 'drop' },
+    })
+
+    fireEvent.change(screen.getByLabelText('Scope'), { target: { value: 'checkout' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    await settleDebounce()
+
+    expect(onFiltersChange).toHaveBeenCalledWith(EMPTY_INBOX_FILTERS)
+    expect(onFiltersChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'checkout' }),
+    )
+    expect(screen.getByLabelText('Scope')).toHaveValue('')
+  })
+
+  it('drops it on Show all too, which clears from outside the bar', async () => {
+    const { onFiltersChange } = renderInbox({
+      inbox: makeInbox({ items: [], total: 0 }),
+      filters: { ...EMPTY_INBOX_FILTERS, direction: 'drop' },
+    })
+
+    fireEvent.change(screen.getByLabelText('Scope'), { target: { value: 'checkout' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Show all' }))
+    await settleDebounce()
+
+    expect(onFiltersChange).toHaveBeenCalledWith(EMPTY_INBOX_FILTERS)
+    expect(onFiltersChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'checkout' }),
+    )
+    expect(screen.getByLabelText('Scope')).toHaveValue('')
+  })
+})
+
+describe('AlertingInbox — the filter bar speaks the design system (ALR-49)', () => {
+  it('offers direction through the same Select the Delivery log uses', async () => {
+    const { onFiltersChange } = renderInbox()
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Direction' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'spike ↑' }))
+
+    expect(onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: 'spike' }),
+    )
+  })
+
+  it('maps "Either way" back to no filter rather than to a sentinel', async () => {
+    const { onFiltersChange } = renderInbox({
+      filters: { ...EMPTY_INBOX_FILTERS, direction: 'drop' },
+    })
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Direction' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Either way' }))
+
+    expect(onFiltersChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ direction: '' }),
+    )
   })
 })

@@ -3,6 +3,7 @@ import type {
   MetricBreakdownsResponse,
   MetricSeriesPoint,
   MetricSeriesResponse,
+  MetricSignalResponse,
   MetricVersionSeriesResponse,
 } from '@/types'
 import {
@@ -13,6 +14,7 @@ import {
   granularityForInterval,
   metricPointToEventPoint,
   metricRollupMode,
+  metricSignalToMonitoringSignal,
 } from './metricAdapters'
 import { at } from '@/test/at'
 
@@ -118,5 +120,35 @@ describe('catalog metric adapters', () => {
       series: [{ breakdown_value: 'ios', is_other: false, total_value: 0.4, data: [seriesPoint()] }],
     } as unknown as MetricBreakdownsResponse)
     expect(adapted.series[0]).toMatchObject({ breakdown_value: 'ios', total_count: 0.4, parity_anomalies: [] })
+  })
+})
+
+describe('metricSignalToMonitoringSignal', () => {
+  const base: MetricSignalResponse = {
+    scope_type: 'metric',
+    scope_ref: 'metric-1',
+    state: 'latest_scan',
+    bucket: '2026-06-10T00:00:00Z',
+    actual_count: 0.04,
+    expected_count: 0.12,
+    stddev: 0.01,
+    z_score: -8,
+    direction: 'drop',
+    incident_child: false,
+  }
+
+  it('carries the unit and detection time the server sent (MON-34, MON-40)', () => {
+    const signal = metricSignalToMonitoringSignal({
+      ...base,
+      unit: '%',
+      detected_at: '2026-06-10T01:05:00Z',
+    })
+    expect(signal).toMatchObject({ unit: '%', detected_at: '2026-06-10T01:05:00Z' })
+  })
+
+  it('says null for a field the payload left out, never undefined', () => {
+    const signal = metricSignalToMonitoringSignal(base)
+    expect(signal.unit).toBeNull()
+    expect(signal.detected_at).toBeNull()
   })
 })

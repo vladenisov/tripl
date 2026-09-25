@@ -5,6 +5,8 @@ import { PackageX, TrendingDown } from 'lucide-react'
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
+import { ErrorState } from '@/components/error-state'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getScopeNavigationTarget } from '@/lib/monitoring'
 import type { ReleaseComparabilityItem, ReleaseRegressionItem } from '@/types'
 import { releaseRegressionsKey } from '@/lib/queryKeys'
@@ -116,6 +118,8 @@ export function ReleaseRegressionPanel({
   enabled = true,
 }: ReleaseRegressionPanelProps) {
   const query = useQuery({
+    // The panel says so itself, below; a toast on top would say it twice.
+    meta: SILENT_ERROR_META,
     queryKey: releaseRegressionsKey(slug, scanConfigId),
     queryFn: () => eventMetricsApi.getReleaseRegressions(slug, scanConfigId),
     enabled: enabled && !!slug && !!scanConfigId,
@@ -160,6 +164,19 @@ export function ReleaseRegressionPanel({
           <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
             Loading regressions…
           </div>
+        ) : query.isError ? (
+          // A failed request used to fall through to "No release comparison has
+          // run for this scan yet" — an outage reading as a quiet release, the
+          // worst possible reading for a regression detector (MON-30).
+          <ErrorState
+            title="Release regressions unavailable"
+            error={query.error}
+            onRetry={() => {
+              void query.refetch()
+            }}
+            retryLabel="Retry"
+            compact
+          />
         ) : (
           <>
             {withheld.length > 0 && (

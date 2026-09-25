@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Area,
   Bar,
@@ -26,6 +26,8 @@ import type { MetricsGranularity } from '@/lib/metrics'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
 import type { ChartAnnotation, EventMetricPoint, ForecastPoint } from '@/types'
 import { annotationDisplayColor, truncateAnnotationLabel } from '@/lib/chartAnnotations'
+import { signalDirectionColor } from '@/lib/statusLexicon'
+import { windowPaddingBuckets } from '@/components/ui/chart-window'
 
 interface MetricsChartProps {
   data: EventMetricPoint[]
@@ -53,6 +55,20 @@ interface MetricsChartProps {
    * Falls back to `DEFAULT_SIGMA_THRESHOLD` when the payload carries none.
    */
   sigmaThreshold?: number
+  /**
+   * Clamp the confidence and forecast bands at zero (MON-21). A count cannot be
+   * negative, but `expected - k·σ` can, and the band then dragged the axis
+   * below zero on every quiet scope. Defaults to on for count series — no
+   * `valueFormatter` — and off for catalog metrics, which may be signed.
+   */
+  nonNegative?: boolean
+  /**
+   * The window the reader asked for. The x-axis is padded with empty buckets
+   * out to it, so a series that starts late in a 30-day range is drawn at its
+   * real position rather than stretched edge-to-edge (MON-22).
+   */
+  from?: string
+  to?: string
 }
 
 interface MiniMetricsChartProps {
@@ -89,6 +105,9 @@ interface MetricsMultiSeriesChartProps {
    * default compact-count ticks and `value seriesLabel` tooltip lines.
    */
   valueFormatter?: (value: number) => string
+  /** See MetricsChartProps.from / .to (MON-22). */
+  from?: string
+  to?: string
 }
 
 function collectChartYValues(data: ChartDataPoint[]): number[] {
@@ -182,11 +201,14 @@ export function buildChartData(
   data: EventMetricPoint[],
   forecast: ForecastPoint[] = [],
   sigmaThreshold: number = DEFAULT_SIGMA_THRESHOLD,
+  nonNegative = false,
 ): ChartDataPoint[] {
   // Robust to a missing/invalid served threshold: fall back to the default.
   const k = Number.isFinite(sigmaThreshold) && sigmaThreshold > 0
     ? sigmaThreshold
     : DEFAULT_SIGMA_THRESHOLD
+  // A count's band stops at zero (MON-21); a signed metric's does not.
+  const floor = (value: number) => (nonNegative ? Math.max(0, value) : value)
   const points: ChartDataPoint[] = data.map(point => {
     if (point.expected_count == null || point.stddev == null) {
       return { ...point }
@@ -194,7 +216,7 @@ export function buildChartData(
     const offset = k * point.stddev
     return {
       ...point,
-      band: [point.expected_count - offset, point.expected_count + offset],
+      band: [floor(point.expected_count - offset), point.expected_count + offset],
     }
   })
 
@@ -205,7 +227,7 @@ export function buildChartData(
     anchor.forecast_expected = anchor.count ?? undefined
     if (anchor.stddev != null && anchor.count != null) {
       const anchorOffset = k * anchor.stddev
-      anchor.forecast_band = [anchor.count - anchorOffset, anchor.count + anchorOffset]
+      anchor.forecast_band = [floor(anchor.count - anchorOffset), anchor.count + anchorOffset]
     }
     for (const point of forecast) {
       const offset = k * point.stddev
@@ -214,14 +236,69 @@ export function buildChartData(
         count: null,
         expected_count: null,
         stddev: null,
-        forecast_expected: point.expected_count,
-        forecast_band: [point.expected_count - offset, point.expected_count + offset],
+        forecast_expected: nonNegative ? Math.max(0, point.expected_count) : point.expected_count,
+        forecast_band: [floor(point.expected_count - offset), point.expected_count + offset],
         is_forecast: true,
       })
     }
   }
 
   return points
+}
+
+/** Empty padding rows, typed for whichever row shape the chart uses (MON-22). */
+function padRows<Row extends { bucket: string }>(
+  rows: Row[],
+  window: { from?: string; to?: string },
+  granularity: MetricsGranularity,
+  empty: (bucket: string) => Row,
+): Row[] {
+  const first = rows[0]
+  const last = rows[rows.length - 1]
+  if (!first || !last || (!window.from && !window.to)) return rows
+  const { before, after } = windowPaddingBuckets(first.bucket, last.bucket, window, granularity)
+  if (!before.length && !after.length) return rows
+  return [...before.map(empty), ...rows, ...after.map(empty)]
+}
+
+// Exported for unit tests only — recharts never paints in jsdom.
+// eslint-disable-next-line react-refresh/only-export-components
+export function padChartData(
+  rows: ChartDataPoint[],
+  window: { from?: string; to?: string },
+  granularity: MetricsGranularity,
+): ChartDataPoint[] {
+  return padRows(rows, window, granularity, bucket => ({
+    bucket,
+    count: null,
+    expected_count: null,
+    stddev: null,
+  }))
+}
+
+/**
+ * The anomaly line of a tooltip: which way it moved and how far (MON-17). The
+ * dot was the only mark, in one red for spikes and drops alike, and hovering it
+ * said nothing the plain line did not.
+ */
+function AnomalyTooltipLine({
+  direction,
+  zScore,
+  prefix = 'Anomaly',
+}: {
+  direction?: 'spike' | 'drop' | null
+  zScore?: number | null
+  prefix?: string
+}) {
+  const z = zScore != null && Number.isFinite(zScore) ? ` (z=${zScore.toFixed(1)})` : ''
+  return (
+    <p
+      className="text-xs font-medium"
+      style={{ color: direction ? signalDirectionColor(direction) : 'var(--danger)' }}
+    >
+      {prefix}: {direction ?? 'flagged'}{z}
+    </p>
+  )
 }
 
 // Exported for unit tests only — recharts never paints its tooltip in jsdom.
@@ -272,6 +349,16 @@ export function CustomTooltip({
     )
   }
 
+  // A padding bucket out at the window's edge (MON-22): no value, not zero.
+  if (point.count == null && point.expected_count == null) {
+    return (
+      <div className="rounded-lg border bg-background px-3 py-2 shadow-md">
+        <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+        <p className="text-xs text-muted-foreground">No data for this bucket</p>
+      </div>
+    )
+  }
+
   const expectedCount = point.expected_count
   const count = point.count ?? 0
   const deviation = expectedCount === null ? null : count - expectedCount
@@ -297,6 +384,9 @@ export function CustomTooltip({
           Deviation: {deviation > 0 ? '+' : ''}{formatSecondary(deviation)}
         </p>
       )}
+      {point.is_anomaly && (
+        <AnomalyTooltipLine direction={point.anomaly_direction} zScore={point.z_score} />
+      )}
     </div>
   )
 }
@@ -312,7 +402,13 @@ export function MultiSeriesTooltip({
   valueFormatter,
 }: {
   active?: boolean
-  payload?: Array<{ value: number; dataKey?: string; color?: string; name?: string }>
+  payload?: Array<{
+    value: number
+    dataKey?: string
+    color?: string
+    name?: string
+    payload?: Record<string, unknown>
+  }>
   label?: string | number
   granularity: MetricsGranularity
   seriesLabel: string
@@ -340,6 +436,20 @@ export function MultiSeriesTooltip({
           </div>
         ))}
       </div>
+      {visiblePayload.map(item => {
+        const row = item.payload
+        if (!item.dataKey || !row?.[`${item.dataKey}__anomaly`]) return null
+        const direction = row[`${item.dataKey}__direction`]
+        const zScore = row[`${item.dataKey}__z`]
+        return (
+          <AnomalyTooltipLine
+            key={`${item.dataKey}-anomaly`}
+            prefix={`${item.name ?? 'Series'} anomaly`}
+            direction={direction === 'spike' || direction === 'drop' ? direction : null}
+            zScore={typeof zScore === 'number' ? zScore : null}
+          />
+        )
+      })}
     </div>
   )
 }
@@ -396,14 +506,23 @@ export function MetricsChart({
   seriesLabel = 'events',
   valueFormatter,
   sigmaThreshold = DEFAULT_SIGMA_THRESHOLD,
+  nonNegative,
+  from,
+  to,
 }: MetricsChartProps) {
   const { chartStyle } = useTheme()
   const chartColor = color || 'var(--chart-1)'
   const gradientId = useId().replace(/:/g, '')
   const descId = useId()
+  const clampAtZero = nonNegative ?? valueFormatter === undefined
   const chartData = useMemo(
-    () => buildChartData(data, forecast, sigmaThreshold),
-    [data, forecast, sigmaThreshold],
+    () =>
+      padChartData(
+        buildChartData(data, forecast, sigmaThreshold, clampAtZero),
+        { from, to: forecast?.length ? undefined : to },
+        granularity,
+      ),
+    [data, forecast, sigmaThreshold, clampAtZero, from, to, granularity],
   )
   const snappedAnnotations = useMemo(
     () => snapAnnotationsToBuckets(annotations, chartData),
@@ -438,22 +557,33 @@ export function MetricsChart({
     >
       <div id={descId} className="sr-only">
         {data.length} data points.
+        {/* The separating spaces sit OUTSIDE the spans: an accessible name or
+            description is built from each element's trimmed text, so a space
+            inside a span was dropped and the sentences ran together
+            ("points.1 anomaly"). */}
         {anomalyCount > 0 && (
-          <span data-testid="anomaly-dot">
+          <>
             {' '}
-            {formatAnomalyCount(anomalyCount)}: {summarizeBuckets(anomalyBuckets, granularity)}.
-          </span>
+            <span data-testid="anomaly-dot">
+              {formatAnomalyCount(anomalyCount)}: {summarizeBuckets(anomalyBuckets, granularity)}.
+            </span>
+          </>
         )}
         {forecastBuckets.length > 0 && (
-          <span data-testid="forecast-point">
+          <>
             {' '}
-            {summarizeForecastRange(forecastBuckets, granularity)}.
-          </span>
+            <span data-testid="forecast-point">
+              {summarizeForecastRange(forecastBuckets, granularity)}.
+            </span>
+          </>
         )}
         {snappedAnnotations.map(annotation => (
-          <span key={annotation.id} data-testid="chart-annotation">
-            {annotation.bucket}: {annotation.label}
-          </span>
+          <Fragment key={annotation.id}>
+            {' '}
+            <span data-testid="chart-annotation">
+              {annotation.bucket}: {annotation.label}
+            </span>
+          </Fragment>
         ))}
       </div>
       {containerReady ? (
@@ -589,6 +719,8 @@ export function MetricsMultiSeriesChart({
   seriesLabel = 'events',
   emptyLabel = 'No breakdown metrics available',
   valueFormatter,
+  from,
+  to,
 }: MetricsMultiSeriesChartProps) {
   const chartSeries = useMemo(
     () => series
@@ -608,13 +740,17 @@ export function MetricsMultiSeriesChart({
         const row = rows.get(point.bucket) ?? { bucket: point.bucket }
         row[item.key] = point.count
         row[`${item.key}__anomaly`] = point.is_anomaly
+        // Read back by the tooltip's anomaly line (MON-17).
+        if (point.anomaly_direction) row[`${item.key}__direction`] = point.anomaly_direction
+        if (point.z_score != null) row[`${item.key}__z`] = point.z_score
         rows.set(point.bucket, row)
       }
     }
-    return Array.from(rows.values()).sort((left, right) =>
+    const sorted = Array.from(rows.values()).sort((left, right) =>
       String(left.bucket).localeCompare(String(right.bucket)),
-    )
-  }, [chartSeries])
+    ) as Array<Record<string, string | number | boolean> & { bucket: string }>
+    return padRows(sorted, { from, to }, granularity, bucket => ({ bucket }))
+  }, [chartSeries, from, to, granularity])
   const { ref: containerRef, ready: containerReady } = useChartContainerReady()
   const yAxisWidth = useMemo(
     () => axisWidthForValues(collectMultiSeriesYValues(chartData), valueFormatter ?? formatCount),
@@ -699,15 +835,13 @@ export function MetricsMultiSeriesChart({
               // flagged skips it entirely instead of drawing empty fragments.
               dot={!item.hasAnomaly ? false : (props: { cx?: number; cy?: number; payload?: Record<string, unknown> }) => {
                 if (!props.payload?.[`${item.key}__anomaly`]) return <></>
+                const direction = props.payload[`${item.key}__direction`]
                 return (
-                  <circle
+                  <AnomalyMark
                     cx={props.cx}
                     cy={props.cy}
-                    r={4}
-                    fill="var(--destructive)"
-                    stroke="var(--background)"
-                    strokeWidth={2}
-                    data-testid="anomaly-dot"
+                    direction={direction === 'spike' || direction === 'drop' ? direction : null}
+                    mini={false}
                   />
                 )
               }}
@@ -746,16 +880,12 @@ export function renderCountSeries({
 }) {
   const anomalyDot = (props: { cx?: number; cy?: number; payload?: EventMetricPoint }) => {
     if (!props.payload?.is_anomaly) return <></>
-    const r = mini ? 3 : 4
     return (
-      <circle
+      <AnomalyMark
         cx={props.cx}
         cy={props.cy}
-        r={r}
-        fill="var(--destructive)"
-        stroke="var(--background)"
-        strokeWidth={mini ? 1.5 : 2}
-        data-testid="anomaly-dot"
+        direction={props.payload.anomaly_direction}
+        mini={mini}
       />
     )
   }
@@ -800,6 +930,55 @@ export function renderCountSeries({
   )
 }
 
+/**
+ * An anomaly's mark on the line: a triangle pointing the way it moved, in the
+ * direction's colour — so a drop reads as a drop without colour, and a spike
+ * and a drop are told apart at a glance (MON-17). A plain dot, as before, when
+ * the direction is unknown.
+ */
+// Exported for unit tests only — recharts never paints in jsdom.
+export function AnomalyMark({
+  cx,
+  cy,
+  direction,
+  mini,
+}: {
+  cx?: number
+  cy?: number
+  direction?: 'spike' | 'drop' | null
+  mini: boolean
+}) {
+  if (cx === undefined || cy === undefined) return <></>
+  const r = mini ? 3.5 : 5
+  const strokeWidth = mini ? 1.5 : 2
+  if (!direction) {
+    return (
+      <circle
+        cx={cx}
+        cy={cy}
+        r={mini ? 3 : 4}
+        fill="var(--destructive)"
+        stroke="var(--background)"
+        strokeWidth={strokeWidth}
+        data-testid="anomaly-dot"
+      />
+    )
+  }
+  const tip = direction === 'spike' ? cy - r : cy + r
+  const base = direction === 'spike' ? cy + r * 0.7 : cy - r * 0.7
+  return (
+    <polygon
+      points={`${cx},${tip} ${cx - r},${base} ${cx + r},${base}`}
+      fill={signalDirectionColor(direction)}
+      stroke="var(--background)"
+      strokeWidth={strokeWidth}
+      strokeLinejoin="round"
+      data-testid="anomaly-dot"
+      data-direction={direction}
+    />
+  )
+}
+
 type AnomalyBarProps = {
   x?: number
   y?: number
@@ -819,8 +998,31 @@ function AnomalyBar({
   if (x === undefined || y === undefined || width === undefined || height === undefined) {
     return <g />
   }
-  const fill = payload?.is_anomaly ? 'var(--destructive)' : chartColor
-  return <rect x={x} y={y} width={width} height={height} fill={fill} rx={2} ry={2} />
+  if (!payload?.is_anomaly) {
+    return <rect x={x} y={y} width={width} height={height} fill={chartColor} rx={2} ry={2} />
+  }
+  // Fill AND an outline in the direction's colour: a changed fill alone was the
+  // only cue, and at a bar's width a red and an amber fill are hard to tell
+  // apart from the series colour (MON-17).
+  const tone = payload.anomaly_direction
+    ? signalDirectionColor(payload.anomaly_direction)
+    : 'var(--destructive)'
+  return (
+    <rect
+      x={x}
+      y={y}
+      width={width}
+      height={height}
+      fill={tone}
+      fillOpacity={0.55}
+      stroke={tone}
+      strokeWidth={2}
+      rx={2}
+      ry={2}
+      data-testid="anomaly-bar"
+      data-direction={payload.anomaly_direction ?? undefined}
+    />
+  )
 }
 
 export function MiniMetricsChart({

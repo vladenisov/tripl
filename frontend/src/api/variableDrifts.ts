@@ -1,28 +1,35 @@
 import { api, withBranch } from './client'
+import type { components } from '../types/api.gen'
 
-export type VariableValueDriftStatus = 'open' | 'accepted' | 'snoozed' | 'false_positive'
-export type VariableValueDriftAction = 'accept' | 'snooze' | 'false_positive' | 'reopen'
-export type VariableValueDriftAcceptScope = 'global' | 'event'
+type Schemas = components['schemas']
+type DriftResponse = Schemas['VariableValueDriftResponse']
+type ActionRequest = Schemas['VariableValueDriftActionRequest']
 
-export interface VariableValueDrift {
-  id: string
-  variable_id: string
-  variable_name: string
-  event_id: string
-  event_name: string
-  scan_config_id: string | null
-  observed_values: string[]
-  status: VariableValueDriftStatus
-  resolution_note: string | null
-  snoozed_until: string | null
-  resolved_at: string | null
-  resolved_by: string | null
-  detected_at: string
+// Taken from the generated OpenAPI schema rather than restated (MON-45): a
+// backend change to `SchemaDriftStatus` or the action enum now fails to compile
+// here instead of drifting silently.
+export type VariableValueDriftStatus = Schemas['SchemaDriftStatus']
+export type VariableValueDriftAction = ActionRequest['action']
+export type VariableValueDriftAcceptScope = ActionRequest['scope']
+
+/**
+ * The generated response, with the nullable fields required. The schema marks
+ * them optional only because they carry a default; the server always sends
+ * them (null when unset), and the readers compare against `null`.
+ */
+type AlwaysSent = 'resolution_note' | 'resolved_at' | 'resolved_by' | 'snoozed_until'
+export type VariableValueDrift = Omit<DriftResponse, AlwaysSent> &
+  Required<Pick<DriftResponse, AlwaysSent>>
+
+export type VariableValueDriftList = Omit<Schemas['VariableValueDriftListResponse'], 'items'> & {
+  items: VariableValueDrift[]
 }
 
-export interface VariableValueDriftList {
-  items: VariableValueDrift[]
-  total: number
+/** The action body; `scope` has a server default, so it may be left out. */
+export type VariableValueDriftActionBody = Omit<ActionRequest, 'scope' | 'note' | 'snoozed_until'> & {
+  scope?: ActionRequest['scope']
+  note?: string
+  snoozed_until?: string
 }
 
 export const variableDriftsApi = {
@@ -41,12 +48,7 @@ export const variableDriftsApi = {
   action: (
     slug: string,
     driftId: string,
-    data: {
-      action: VariableValueDriftAction
-      scope?: VariableValueDriftAcceptScope
-      note?: string
-      snoozed_until?: string
-    },
+    data: VariableValueDriftActionBody,
     branchId?: string | null,
   ) =>
     api.post<VariableValueDrift>(

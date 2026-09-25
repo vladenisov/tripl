@@ -405,6 +405,10 @@ export function deriveRowSignalFromMetrics(
     stddev: 0,
     z_score: latestAnomaly.z_score ?? 0,
     direction: latestAnomaly.anomaly_direction ?? 'drop',
+    // An event-scope signal has no display unit, and a point read off the
+    // series carries no detection time.
+    unit: null,
+    detected_at: null,
     // A per-event row signal is standalone here, never an incident rollup child.
     incident_child: false,
   }

@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { eventMetricsApi } from '@/api/eventMetrics'
 import type { TopMoverItem } from '@/types'
 
+import { topMoversKey } from '@/lib/queryKeys'
+
 import { TopMoversPanel } from './top-movers-panel'
 
 vi.mock('@/api/eventMetrics', () => ({
@@ -122,5 +124,124 @@ describe('TopMoversPanel', () => {
     rerender(tree({ from: '2026-01-01T00:05:00Z', to: '2026-01-08T00:05:00Z' }))
     await new Promise(resolve => setTimeout(resolve, 20))
     await waitFor(() => expect(fetchTimeline).toHaveBeenCalledTimes(1))
+  })
+  it('colours a spike as danger and a drop as warning, like every other signal surface (MON-19)', async () => {
+    vi.mocked(eventMetricsApi.getTopMovers).mockResolvedValue([
+      mover(),
+      mover({
+        breakdown_value: 'android',
+        actual_count: 20,
+        expected_count: 100,
+        z_score: -6.7,
+        direction: 'drop',
+      }),
+    ])
+    renderPanel()
+
+    expect((await screen.findByText('+140')).closest('[data-tone]')).toHaveAttribute('data-tone', 'danger')
+    expect(screen.getByText('-80').closest('[data-tone]')).toHaveAttribute('data-tone', 'warning')
+  })
+
+  it('shows an error with a retry instead of vanishing when the request fails (MON-30)', async () => {
+    const fetchMovers = vi.mocked(eventMetricsApi.getTopMovers)
+    fetchMovers.mockReset()
+    fetchMovers.mockRejectedValueOnce(new Error('upstream timeout'))
+    fetchMovers.mockResolvedValue([mover()])
+    renderPanel()
+
+    expect(await screen.findByText('Top movers unavailable')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('+140%')).toBeInTheDocument()
+  })
+
+  it('keeps loaded rows and an open drilldown when a refetch fails', async () => {
+    const fetchMovers = vi.mocked(eventMetricsApi.getTopMovers)
+    fetchMovers.mockReset()
+    fetchMovers.mockResolvedValueOnce([mover()])
+    fetchMovers.mockRejectedValueOnce(new Error('upstream timeout'))
+    fetchMovers.mockResolvedValue([mover()])
+    const fetchTimeline = vi.mocked(eventMetricsApi.getBreakdownTimeline)
+    fetchTimeline.mockReset()
+    fetchTimeline.mockResolvedValue({
+      scan_config_id: 'scan-1',
+      scope_type: 'event',
+      scope_ref: 'event-1',
+      breakdown_column: 'platform',
+      breakdown_value: 'ios',
+      is_other: false,
+      interval: '1h',
+      data: [{ bucket: '2026-01-02T00:00:00Z', count: 240 }],
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <TopMoversPanel
+          slug="demo"
+          scanConfigId="scan-1"
+          scopeType="event"
+          scopeRef="event-1"
+          bucket="2026-01-02T00:00:00Z"
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('+140%')).toBeInTheDocument()
+    const row = screen.getByRole('button', { name: /platform=ios/ })
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+
+    // Refetch the movers list only; the drilldown keeps its own query.
+    await client
+      .refetchQueries({
+        queryKey: topMoversKey('demo', 'scan-1', 'event', 'event-1', '2026-01-02T00:00:00Z', 8),
+      })
+      .catch(() => undefined)
+
+    expect(await screen.findByText(/Refresh failed/)).toBeInTheDocument()
+    expect(screen.queryByText('Top movers unavailable')).not.toBeInTheDocument()
+    expect(screen.getByText('+140%')).toBeInTheDocument()
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByText(/Refresh failed/)).not.toBeInTheDocument())
+    expect(screen.getByText('+140%')).toBeInTheDocument()
+  })
+
+  it('charts the drilldown with the shared chart and marks the anomaly bucket (MON-20)', async () => {
+    vi.mocked(eventMetricsApi.getTopMovers).mockResolvedValue([mover()])
+    const fetchTimeline = vi.mocked(eventMetricsApi.getBreakdownTimeline)
+    fetchTimeline.mockReset()
+    fetchTimeline.mockResolvedValue({
+      scan_config_id: 'scan-1',
+      scope_type: 'event',
+      scope_ref: 'event-1',
+      breakdown_column: 'platform',
+      breakdown_value: 'ios',
+      is_other: false,
+      interval: '1h',
+      data: [
+        { bucket: '2026-01-01T23:00:00Z', count: 90 },
+        // The same instant as the panel's bucket, spelled differently.
+        { bucket: '2026-01-02T00:00:00+00:00', count: 240 },
+        { bucket: '2026-01-02T01:00:00Z', count: 110 },
+      ],
+    })
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: /platform=ios/ }))
+    const chart = await screen.findByRole('img', { name: 'events (platform=ios) over time' })
+    expect(chart).toHaveAccessibleDescription(/3 data points\. 1 anomal/)
+  })
+
+  it('says so inline when the drilldown timeline fails (MON-20)', async () => {
+    vi.mocked(eventMetricsApi.getTopMovers).mockResolvedValue([mover()])
+    const fetchTimeline = vi.mocked(eventMetricsApi.getBreakdownTimeline)
+    fetchTimeline.mockReset()
+    fetchTimeline.mockRejectedValue(new Error('upstream timeout'))
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: /platform=ios/ }))
+    expect(await screen.findByText('Timeline unavailable')).toBeInTheDocument()
+    expect(screen.queryByText(/No timeline data/)).not.toBeInTheDocument()
   })
 })

@@ -23,7 +23,7 @@
  * user's own action produced can move live-loop forward.
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from '@/api/client'
@@ -53,11 +53,13 @@ import {
   scenarioMetricArtifact,
   scenarioReducer,
   scenarioScanArtifact,
+  scenarioStorageKey,
   stepCompletedByPath,
   writeScenarioState,
   type ScenarioEvent,
   type ScenarioState,
 } from './scenarioModel'
+import { readHintsMuted, writeHintsMuted } from './demoLocalState'
 import {
   demoScenarioCollectWatchKey,
   demoScenarioScanWatchKey,
@@ -121,31 +123,69 @@ export function useDemoScenarioRuntime(
   const [state, setState] = useState<ScenarioState>(() =>
     slug ? readScenarioState(slug) : initialScenarioState(),
   )
-  const [hintsMuted, setHintsMuted] = useState(false)
+  // "Hide hints" lasts for the browser session, per project, as the coach
+  // mark promises — it used to be plain state, lost on a reload or a trip to
+  // another project and back (DEMO-15).
+  const [hintsMuted, setHintsMutedState] = useState(() => readHintsMuted(slug))
+  const setHintsMuted = useCallback(
+    (muted: boolean) => {
+      setHintsMutedState(muted)
+      writeHintsMuted(slug, muted)
+    },
+    [slug],
+  )
 
   // Re-read when the route walks to another project. Adjusting state during
   // render (the pattern Layout already uses) rather than in an effect, so the
   // first paint of the new project never shows the previous one's step.
-  const [loadedSlug, setLoadedSlug] = useState(slug)
-  if (loadedSlug !== slug) {
-    setLoadedSlug(slug)
-    setState(slug ? readScenarioState(slug) : initialScenarioState())
-    setHintsMuted(false)
+  // What was read, kept beside the slug it was read for: it is what storage
+  // holds for that project, so the write below can tell an advance made in the
+  // very commit that switched projects from the copy it loaded.
+  const [loaded, setLoaded] = useState({ slug, state })
+  if (loaded.slug !== slug) {
+    const next = slug ? readScenarioState(slug) : initialScenarioState()
+    setLoaded({ slug, state: next })
+    setState(next)
+    setHintsMutedState(readHintsMuted(slug))
   }
 
-  const dispatch = useCallback(
-    (event: ScenarioEvent) => {
-      setState((prev) => {
-        const next = scenarioReducer(prev, event)
-        // Persisting from the updater keeps the write on the transition that
-        // actually happened. The write is idempotent, so a double-invoked
-        // updater (StrictMode) is harmless.
-        if (next !== prev && slug) writeScenarioState(slug, next)
-        return next
-      })
-    },
-    [slug],
-  )
+  // The updater stays pure: a render React throws away must not leave a
+  // persisted advance behind (DEMO-14). The state is written once it is
+  // committed — and only when it differs from what storage already holds: the
+  // copy a project switch loaded, or one read from another tab. The switch
+  // itself is not skipped wholesale: arriving on the new project's current
+  // deep-link step advances it in that same commit, and that advance must
+  // reach storage like any other.
+  const persistedRef = useRef<{ slug: string | undefined; state: ScenarioState }>({ slug, state })
+  useEffect(() => {
+    const last = persistedRef.current
+    persistedRef.current = { slug, state }
+    if (!slug) return
+    const stored = last.slug === slug ? last.state : loaded.state
+    if (state === stored) return
+    writeScenarioState(slug, state)
+  }, [slug, state, loaded])
+
+  // Another tab on the same demo writes the same key. Without listening, each
+  // tab overwrote the other's progress with its own on every step, last writer
+  // wins (DEMO-16). Adopting the other tab's copy is marked as persisted, so it
+  // is not written straight back.
+  useEffect(() => {
+    if (!slug) return
+    const key = scenarioStorageKey(slug)
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== key && event.key !== null) return
+      const next = readScenarioState(slug)
+      persistedRef.current = { slug, state: next }
+      setState(next)
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [slug])
+
+  const dispatch = useCallback((event: ScenarioEvent) => {
+    setState((prev) => scenarioReducer(prev, event))
+  }, [])
 
   const running = isDemoReady && isScenarioActive(state)
   const chapter = activeChapterState(state)
@@ -253,7 +293,10 @@ export function useDemoScenarioRuntime(
   //
   // Checked at render rather than on a route change: the collection can settle
   // while the user is *already standing on* the chart, and no navigation would
-  // follow to notice.
+  // follow to notice. This is React's "adjust state while rendering" pattern
+  // and is safe as such since the updater stopped writing storage (DEMO-14):
+  // a render React throws away now leaves nothing behind, because the write
+  // happens in the persist effect above, after a commit.
   const seeChartMetric =
     onLiveLoop && chapter?.step === 'live-loop/see-chart'
       ? scenarioMetricArtifact(state)
@@ -266,7 +309,8 @@ export function useDemoScenarioRuntime(
 
   // Deep-link and explore steps complete by ARRIVING somewhere. Same render-time
   // check as the chart above; the reducer advances at most one step per render,
-  // and no two consecutive steps share an arrival path.
+  // and no two consecutive steps share an arrival path (scenarioModel.test.ts
+  // holds every chapter to that).
   const currentStepId = running ? chapter?.step : undefined
   if (slug && currentStepId && stepCompletedByPath(slug, currentStepId, location.pathname)) {
     // The pathname rides along so edit-event can remember which editor the
@@ -301,10 +345,13 @@ export function useDemoScenarioRuntime(
         setHintsMuted(false)
         const fresh = initialScenarioState()
         setState(fresh)
+        // Written here as well as by the persist effect: the caller (the
+        // banner's reset) navigates in the same tick, and the fresh blob must
+        // be in storage whatever happens to this render.
         if (slug) writeScenarioState(slug, fresh)
       },
     }),
-    [dispatch, slug],
+    [dispatch, setHintsMuted, slug],
   )
 
   const value = useMemo<DemoScenarioValue>(() => {

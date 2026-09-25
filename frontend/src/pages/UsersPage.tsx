@@ -1,19 +1,22 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { invitationsApi, type Invitation, type InvitationCreated } from '@/api/invitations'
 import { usersApi } from '@/api/users'
 import { useAuth } from '@/components/auth-context'
 import { ErrorState } from '@/components/error-state'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
-import { Select } from '@/components/settings/kit'
+import { Select, TextInput } from '@/components/settings/kit'
 import { ROLE_OPTIONS, type Role, type UserListItem } from '@/types'
 import { formatIsoDate } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
 import { invitationsKey, usersKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 function roleChip(role: Role) {
   return ROLE_OPTIONS.find((r) => r.value === role)?.chip ?? 'bg-muted text-muted-foreground'
@@ -31,6 +34,19 @@ function initialsOf(u: UserListItem): string {
   return base.slice(0, 2).toUpperCase()
 }
 
+/** What the Owner role hands over, said the same way wherever it is granted. */
+const OWNER_POWERS =
+  'Owners administer the whole instance: its settings and secrets, the audit log, every member’s role, and deleting any project.'
+
+const ROLE_RANK: Readonly<Record<Role, number>> = { viewer: 0, editor: 1, owner: 2 }
+
+function roleLabel(role: Role): string {
+  return ROLE_OPTIONS.find((r) => r.value === role)?.label ?? role
+}
+
+/** How long the Copy button says "Copied" before it offers to copy again. */
+const COPIED_RESET_MS = 2000
+
 /**
  * Invite one person without opening the instance to the world.
  *
@@ -38,30 +54,47 @@ function initialsOf(u: UserListItem): string {
  * returns it again, so this is the only chance to copy it. That is deliberate —
  * SMTP is optional here, so handing the link over out of band is a first-class
  * path rather than a fallback.
+ *
+ * Because it is shown once, the panel stays until it is dismissed, and minting
+ * another invite over a link nobody copied asks first: it used to be replaced
+ * without a word, and the first link was gone for good (WS-21).
  */
 function InviteMemberCard() {
   const qc = useQueryClient()
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('editor')
   const [minted, setMinted] = useState<InvitationCreated | null>(null)
+  const [everCopied, setEverCopied] = useState(false)
   const linkRef = useRef<HTMLInputElement>(null)
   const { state: copyState, copy, reset: resetCopy } = useCopyToClipboard(linkRef)
   const { confirm, dialog } = useConfirm()
+
+  // "Copied" is a moment, not a state: it went on saying so forever, so a
+  // second click could not tell whether it had worked again.
+  useEffect(() => {
+    if (copyState !== 'copied') return
+    const timer = window.setTimeout(resetCopy, COPIED_RESET_MS)
+    return () => window.clearTimeout(timer)
+  }, [copyState, resetCopy])
 
   const invitesQuery = useQuery({
     queryKey: invitationsKey(),
     queryFn: () => invitationsApi.list(),
   })
   const createMut = useMutation({
+    // Rendered in the card (role="alert" below), so no toast as well.
+    meta: SILENT_ERROR_META,
     mutationFn: () => invitationsApi.create(email.trim(), role),
     onSuccess: (created) => {
       setMinted(created)
+      setEverCopied(false)
       resetCopy()
       setEmail('')
       qc.invalidateQueries({ queryKey: invitationsKey() })
     },
   })
   const revokeMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (id: string) => invitationsApi.revoke(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: invitationsKey() }),
   })
@@ -76,6 +109,60 @@ function InviteMemberCard() {
       variant: 'danger',
     })
     if (ok) revokeMut.mutate(inv.id)
+  }
+
+  const handleCopy = async (url: string) => {
+    // No clipboard (a self-hosted instance on plain HTTP has none) or a refused
+    // write selects the link instead: it is shown exactly once, so claiming a
+    // copy that did not happen loses it outright.
+    if (await copy(url)) setEverCopied(true)
+  }
+
+  // Dismiss loses the show-once link as surely as replacing it does, so it
+  // asks the same question when nobody copied it.
+  const handleDismiss = async () => {
+    if (!minted) return
+    if (!everCopied) {
+      const ok = await confirm({
+        title: 'Discard the uncopied invite link?',
+        message:
+          `The link for ${minted.invitation.email} has not been copied, and it cannot be shown `
+          + 'again. Revoke it and create a new one if you need it.',
+        confirmLabel: 'Discard link',
+        variant: 'danger',
+      })
+      if (!ok) return
+    }
+    setMinted(null)
+    resetCopy()
+  }
+
+  const handleCreate = async () => {
+    if (!email.trim() || createMut.isPending) return
+    if (minted && !everCopied) {
+      const ok = await confirm({
+        title: 'Replace the uncopied invite link?',
+        message:
+          `The link for ${minted.invitation.email} has not been copied, and it cannot be shown `
+          + 'again. A new invite replaces it on this page. It keeps working until it expires or '
+          + 'is revoked, unless the new invite is for the same address, which invalidates it.',
+        confirmLabel: 'Create new link',
+        variant: 'primary',
+      })
+      if (!ok) return
+    }
+    if (role === 'owner') {
+      const ok = await confirm({
+        title: 'Invite as Owner?',
+        message:
+          `${OWNER_POWERS} Whoever opens this link gets all of that, so send it only to `
+          + `${email.trim()}.`,
+        confirmLabel: 'Create owner invite',
+        variant: 'danger',
+      })
+      if (!ok) return
+    }
+    createMut.mutate()
   }
 
   const invites = invitesQuery.data ?? []
@@ -96,36 +183,37 @@ function InviteMemberCard() {
         </p>
       </div>
 
+      {/* The design system's Input and Button, not hand-styled elements: those
+          were 32px and 24px tall, bordered differently from every other field,
+          and had no focus ring at all for keyboard users (WS-20). */}
       <form
         className="flex flex-wrap items-end gap-2"
         onSubmit={(e) => {
           e.preventDefault()
-          if (email.trim()) createMut.mutate()
+          void handleCreate()
         }}
       >
         <div className="min-w-[200px] flex-1">
           <label className="mb-1 block text-[11px]" htmlFor="invite-email">
             Email
           </label>
-          <input
+          {/* The kit field, like the role Select beside it, so the two
+              controls of one row share a height and a theme (WS-20). */}
+          <TextInput
             id="invite-email"
             type="email"
             required
+            autoComplete="off"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={setEmail}
             placeholder="teammate@example.com"
-            className="h-8 w-full rounded-md border px-2 text-xs"
-            style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}
           />
         </div>
         {/* The kit's Select, not a bare one. A native <select> keeps the
             platform's own widget: Chrome paints it with the UA's light
             background whatever `background` we hand it, so this was a pale box
-            with a black chevron sitting beside a dark custom email input — the
-            only unthemed control on the page (tripl-h3bb). The kit turns
-            `appearance` off, sets the foreground colour and draws its own
-            chevron, which is why every other select in the settings area looks
-            like it belongs. */}
+            with a black chevron — the only unthemed control on the page
+            (tripl-h3bb). */}
         <div className="w-32">
           <label className="mb-1 block text-[11px]" htmlFor="invite-role">
             Role
@@ -135,17 +223,30 @@ function InviteMemberCard() {
             value={role}
             onChange={(next) => setRole(next as Role)}
             options={ROLE_OPTIONS}
+            aria-describedby={role === 'owner' ? 'invite-owner-warning' : undefined}
           />
         </div>
-        <button
+        <Button
           type="submit"
+          size="sm"
+          variant="outline"
           disabled={createMut.isPending || !email.trim()}
-          className="h-8 rounded-md border px-3 text-xs font-medium disabled:opacity-50"
-          style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)' }}
         >
           {createMut.isPending ? 'Creating…' : 'Create invite link'}
-        </button>
+        </Button>
       </form>
+
+      {/* An owner invite forwarded to the wrong person is a full takeover, so
+          the role says what it grants before the link exists (WS-22). */}
+      {role === 'owner' && (
+        <p
+          id="invite-owner-warning"
+          className="m-0 text-[11.5px]"
+          style={{ color: 'var(--warning)' }}
+        >
+          {OWNER_POWERS}
+        </p>
+      )}
 
       {createMut.isError && (
         <p role="alert" className="text-xs text-destructive">
@@ -158,35 +259,49 @@ function InviteMemberCard() {
           className="space-y-1.5 rounded-lg border p-3"
           style={{ borderColor: 'var(--border-strong)', background: 'var(--bg-elevated)' }}
         >
-          <p className="text-xs font-medium">
-            Invite link for {minted.invitation.email} — copy it now
-          </p>
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-xs font-medium">
+              {roleLabel(minted.invitation.role)} invite link for {minted.invitation.email} — copy
+              it now
+            </p>
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              onClick={() => void handleDismiss()}
+            >
+              Dismiss
+            </Button>
+          </div>
           <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
             This link is shown once and cannot be retrieved later. It expires{' '}
             {formatIsoDate(minted.expires_at)} and works a single time.
           </p>
           <div className="flex items-center gap-2">
-            <input
+            <Input
               ref={linkRef}
               readOnly
               aria-label="Invite link"
               value={acceptUrl}
               onFocus={(e) => e.currentTarget.select()}
-              className="mono h-8 flex-1 rounded-md border px-2 text-[11px]"
-              style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}
+              // A manual Ctrl/Cmd+C (the no-clipboard path) is a copy too;
+              // otherwise every later invite warns about a link already copied.
+              onCopy={() => setEverCopied(true)}
+              className="mono h-8 flex-1 text-[11px]"
             />
-            <button
+            <Button
               type="button"
-              // No clipboard (a self-hosted instance on plain HTTP has none) or
-              // a refused write selects the link instead: it is shown exactly
-              // once, so claiming a copy that did not happen loses it outright.
-              onClick={() => void copy(acceptUrl)}
-              className="h-8 shrink-0 rounded-md border px-3 text-xs"
-              style={{ borderColor: 'var(--border)' }}
+              size="sm"
+              variant="outline"
+              onClick={() => void handleCopy(acceptUrl)}
             >
               {copyState === 'copied' ? 'Copied' : 'Copy'}
-            </button>
+            </Button>
           </div>
+          {/* The label change alone was never announced. */}
+          <p role="status" className="sr-only">
+            {copyState === 'copied' ? 'Invite link copied to the clipboard.' : ''}
+          </p>
           {copyState === 'failed' && (
             <p role="alert" className="text-[11px]" style={{ color: 'var(--danger)' }}>
               Couldn’t reach the clipboard. The link above is selected — press Ctrl/⌘+C to copy it.
@@ -219,7 +334,7 @@ function InviteMemberCard() {
             >
               <span className="mono min-w-0 flex-1 truncate text-[11px]">{inv.email}</span>
               <span className="text-[10px]" style={{ color: 'var(--fg-faint)' }}>
-                {ROLE_OPTIONS.find((r) => r.value === inv.role)?.label ?? inv.role}
+                {roleLabel(inv.role)}
               </span>
               <span
                 className="text-[10px]"
@@ -227,17 +342,17 @@ function InviteMemberCard() {
               >
                 {inv.is_expired ? 'expired' : `expires ${formatIsoDate(inv.expires_at)}`}
               </span>
-              <button
+              <Button
                 type="button"
+                size="xs"
+                variant="outline"
                 onClick={() => {
                   void handleRevoke(inv)
                 }}
                 disabled={revokeMut.isPending && revokeMut.variables === inv.id}
-                className="h-6 shrink-0 rounded border px-2 text-[10px]"
-                style={{ borderColor: 'var(--border)' }}
               >
                 {revokeMut.isPending && revokeMut.variables === inv.id ? 'Revoking…' : 'Revoke'}
-              </button>
+              </Button>
             </div>
           ))}
         </div>
@@ -257,16 +372,53 @@ export default function UsersPage() {
   const { user: currentUser } = useAuth()
   const isOwner = isOwnerRole(currentUser?.role)
 
+  const { confirm, dialog } = useConfirm()
+
   const listQuery = useQuery({ queryKey: usersKey(), queryFn: () => usersApi.list() })
   const updateMut = useMutation({
+    // The failure is shown on the row it belongs to, below.
+    meta: SILENT_ERROR_META,
     mutationFn: ({ userId, role }: { userId: string; role: Role }) =>
       usersApi.updateRole(userId, role),
     onSuccess: () => qc.invalidateQueries({ queryKey: usersKey() }),
   })
   const users = listQuery.data ?? []
 
+  /**
+   * Picking from the Select used to PATCH at once, so a stray arrow key or
+   * wheel on a focused select could demote an owner or grant Owner, with no
+   * undo (WS-19). Granting Owner and every demotion now ask first; a
+   * promotion short of Owner still applies directly.
+   */
+  const handleRoleChange = async (member: UserListItem, next: Role) => {
+    if (next === member.role) return
+    const who = member.name ?? member.email
+    if (next === 'owner') {
+      const ok = await confirm({
+        title: `Make ${who} an owner?`,
+        message: `${OWNER_POWERS} ${who} gets all of that as soon as you confirm.`,
+        confirmLabel: 'Make owner',
+        variant: 'danger',
+      })
+      if (!ok) return
+    } else if (ROLE_RANK[next] < ROLE_RANK[member.role]) {
+      const ok = await confirm({
+        title: `Change ${who} to ${roleLabel(next)}?`,
+        message:
+          next === 'viewer'
+            ? `${who} goes from ${roleLabel(member.role)} to Viewer and can no longer change anything in any project.`
+            : `${who} goes from ${roleLabel(member.role)} to ${roleLabel(next)} and loses instance administration.`,
+        confirmLabel: `Change to ${roleLabel(next)}`,
+        variant: 'danger',
+      })
+      if (!ok) return
+    }
+    updateMut.mutate({ userId: member.id, role: next })
+  }
+
   return (
     <div className="space-y-5">
+      {dialog}
       {/* The section header above this (MembersSection) already says who is in
           the list. This used to restate it in a second vocabulary — "workspace"
           there, "instance" here — so two subtitles stacked directly on top of
@@ -324,65 +476,74 @@ export default function UsersPage() {
           users.map((u: UserListItem) => (
             <div
               key={u.id}
-              className="flex items-center gap-3 border-b px-4 py-2.5 last:border-0"
+              className="border-b px-4 py-2.5 last:border-0"
               style={{ borderColor: 'var(--border-subtle)' }}
             >
-              {/* One avatar colour, the same token the shell and the settings
-                  sidebar use. The hue used to be hashed from the user id, so
-                  the person reading this page saw their own initials in pink
-                  here and in blue in the sidebar footer 30px away — one account
-                  rendered as two (tripl-h3bb). A hue carries no meaning worth
-                  that. */}
-              <div
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
-                style={{ background: 'var(--avatar-bg)' }}
-              >
-                {initialsOf(u)}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[12.5px] font-medium leading-tight">
-                  {u.name ?? u.email}
-                </div>
+              <div className="flex items-center gap-3">
+                {/* One avatar colour, the same token the shell and the settings
+                    sidebar use. The hue used to be hashed from the user id, so
+                    the person reading this page saw their own initials in pink
+                    here and in blue in the sidebar footer 30px away — one account
+                    rendered as two (tripl-h3bb). A hue carries no meaning worth
+                    that. */}
                 <div
-                  className="mono truncate text-[11px] leading-tight"
-                  style={{ color: 'var(--fg-subtle)' }}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+                  style={{ background: 'var(--avatar-bg)' }}
                 >
-                  {u.email}
+                  {initialsOf(u)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[12.5px] font-medium leading-tight">
+                    {u.name ?? u.email}
+                  </div>
+                  <div
+                    className="mono truncate text-[11px] leading-tight"
+                    style={{ color: 'var(--fg-subtle)' }}
+                  >
+                    {u.email}
+                  </div>
+                </div>
+                {/* The bare "2026-08-19" was a date with no question attached —
+                    joined? invited? last seen? — in a table that has no column
+                    headers to answer it (tripl-h3bb). The format stays ISO: this
+                    roster is read by whoever administers the instance, from
+                    wherever they are, and formatIsoDate is the locale-proof one. */}
+                <span
+                  className="hidden w-36 shrink-0 text-right text-[11px] sm:block"
+                  style={{ color: 'var(--fg-faint)' }}
+                >
+                  Joined <span className="mono">{formatIsoDate(u.created_at)}</span>
+                </span>
+                <div className="w-32 shrink-0 text-right">
+                  {isOwner && u.id !== currentUser?.id ? (
+                    <Select
+                      value={u.role}
+                      aria-label={`Role for ${u.name ?? u.email}`}
+                      onChange={(next) => {
+                        void handleRoleChange(u, next as Role)
+                      }}
+                      disabled={updateMut.isPending}
+                      options={ROLE_OPTIONS}
+                    />
+                  ) : (
+                    <span
+                      className={`inline-flex items-center rounded px-2 py-0.5 text-[10px] font-medium ${roleChip(u.role)}`}
+                    >
+                      {ROLE_OPTIONS.find((r) => r.value === u.role)?.label ?? u.role}
+                    </span>
+                  )}
                 </div>
               </div>
-              {/* The bare "2026-08-19" was a date with no question attached —
-                  joined? invited? last seen? — in a table that has no column
-                  headers to answer it (tripl-h3bb). The format stays ISO: this
-                  roster is read by whoever administers the instance, from
-                  wherever they are, and formatIsoDate is the locale-proof one. */}
-              <span
-                className="hidden w-36 shrink-0 text-right text-[11px] sm:block"
-                style={{ color: 'var(--fg-faint)' }}
-              >
-                Joined <span className="mono">{formatIsoDate(u.created_at)}</span>
-              </span>
-              <div className="w-32 shrink-0 text-right">
-                {isOwner && u.id !== currentUser?.id ? (
-                  <Select
-                    value={u.role}
-                    aria-label={`Role for ${u.name ?? u.email}`}
-                    onChange={(next) => updateMut.mutate({ userId: u.id, role: next as Role })}
-                    disabled={updateMut.isPending}
-                    options={ROLE_OPTIONS}
-                  />
-                ) : (
-                  <span
-                    className={`inline-flex items-center rounded px-2 py-0.5 text-[10px] font-medium ${roleChip(u.role)}`}
-                  >
-                    {ROLE_OPTIONS.find((r) => r.value === u.role)?.label ?? u.role}
-                  </span>
-                )}
-              </div>
+              {/* On the row it belongs to, naming the person: it used to sit
+                  under the whole list, where it said nothing about whose role
+                  had failed to change (WS-19). */}
+              {updateMut.isError && updateMut.variables?.userId === u.id && (
+                <p role="alert" className="m-0 mt-1.5 text-right text-xs text-destructive">
+                  Could not change the role of {u.name ?? u.email}: {getErrorMessage(updateMut.error)}
+                </p>
+              )}
             </div>
           ))
-        )}
-        {updateMut.isError && (
-          <p role="alert" className="px-4 py-3 text-xs text-destructive">{getErrorMessage(updateMut.error)}</p>
         )}
       </div>
     </div>

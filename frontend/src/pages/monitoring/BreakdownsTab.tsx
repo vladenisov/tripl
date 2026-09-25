@@ -200,6 +200,8 @@ export function BreakdownsTab({
               granularity={granularity}
               seriesLabel={seriesLabel}
               valueFormatter={valueFormatter}
+              from={timeRange.from}
+              to={timeRange.to}
             />
             {chart.hiddenCount > 0 && (
               <p className="mt-2 text-xs text-muted-foreground">

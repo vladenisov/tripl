@@ -9,8 +9,9 @@
  */
 
 import { useSyncExternalStore } from 'react'
+import { WELCOME_DISMISS_PREFIX } from './demoLocalState'
 
-const DISMISS_PREFIX = 'tripl-demo-welcome-dismissed:'
+const DISMISS_PREFIX = WELCOME_DISMISS_PREFIX
 
 const listeners = new Set<() => void>()
 
@@ -39,8 +40,16 @@ export function setWelcomeDismissed(slug: string, dismissed: boolean): void {
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener)
+  // Another tab dismissing or restoring the panel writes the same key; the
+  // store has to hear that too, or the two tabs disagree until a reload
+  // (DEMO-16). `key === null` is a storage-wide clear.
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === null || event.key.startsWith(DISMISS_PREFIX)) listener()
+  }
+  window.addEventListener('storage', onStorage)
   return () => {
     listeners.delete(listener)
+    window.removeEventListener('storage', onStorage)
   }
 }
 

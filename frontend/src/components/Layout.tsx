@@ -493,11 +493,12 @@ export default function Layout() {
                     // app. The demo chrome simply goes missing instead.
                     <ErrorBoundary fallback={() => null}>
                       <Suspense fallback={null}>
-                        <DemoBanner project={project} />
-                        {/* The coached scenario. Gated with the banner, but it
-                            decides for itself whether there is anything left to
-                            coach. */}
-                        <DemoScenarioStrip />
+                        {/* One row, not two stacked cards (LIVE-9): the coached
+                            scenario sits INSIDE the banner's row. Gated with
+                            the banner, but it decides for itself whether there
+                            is anything left to coach. Passed as an element so
+                            each keeps its own lazy chunk. */}
+                        <DemoBanner project={project} scenario={<DemoScenarioStrip />} />
                       </Suspense>
                     </ErrorBoundary>
                   )}
@@ -557,7 +558,7 @@ export default function Layout() {
 
               {/* Activity rail, inline from ACTIVITY_INLINE_MIN_WIDTH up. */}
               {isWideActivity && (
-                <ActivityPanel open={activityOpen && !railSuppressed} slug={slug} />
+                <ActivityPanel open={activityOpen && !railSuppressed} slug={slug} inline />
               )}
             </div>
           </div>

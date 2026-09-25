@@ -4,6 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
 import { projectsApi } from '@/api/projects'
+import { projectsKey } from '@/lib/queryKeys'
 import type { Project } from '@/types'
 import { useDemoProvisioning } from './useDemoProvisioning'
 
@@ -104,7 +105,7 @@ describe('useDemoProvisioning — a stalled create is escapable (tripl-2su6.15)'
     const captured = stallUntilAborted()
     const cancelSpy = vi
       .spyOn(projectsApi, 'cancelDemo')
-      .mockResolvedValue({ cancelled: true, slug: 'demo-abc123' })
+      .mockResolvedValue({ cancelled: true, slug: 'demo-abc123', state: 'stopped' })
 
     renderHarness()
     fireEvent.click(screen.getByText('start'))
@@ -126,7 +127,11 @@ describe('useDemoProvisioning — a stalled create is escapable (tripl-2su6.15)'
 
   it('reports honestly when the create was already past the point of no return', async () => {
     stallUntilAborted()
-    vi.spyOn(projectsApi, 'cancelDemo').mockResolvedValue({ cancelled: false, slug: null })
+    vi.spyOn(projectsApi, 'cancelDemo').mockResolvedValue({
+      cancelled: false,
+      slug: null,
+      state: 'finished',
+    })
 
     renderHarness()
     fireEvent.click(screen.getByText('start'))
@@ -135,6 +140,21 @@ describe('useDemoProvisioning — a stalled create is escapable (tripl-2su6.15)'
 
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('cancelled'))
     expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('already-finished')
+  })
+
+  it('does not promise a demo "will appear" when the server found nothing to stop (DEMO-28)', async () => {
+    // A quick cancel can land before the create reached the server: nothing
+    // exists, and `cancelled: false` alone does not say which case this is.
+    stallUntilAborted()
+    vi.spyOn(projectsApi, 'cancelDemo').mockResolvedValue({ cancelled: false, slug: null, state: 'none' })
+
+    renderHarness()
+    fireEvent.click(screen.getByText('start'))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('provisioning'))
+    fireEvent.click(screen.getByText('cancel'))
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('cancelled'))
+    expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('unknown')
   })
 
   it('never claims a stop when the cancel call itself fails', async () => {
@@ -146,14 +166,14 @@ describe('useDemoProvisioning — a stalled create is escapable (tripl-2su6.15)'
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('provisioning'))
     fireEvent.click(screen.getByText('cancel'))
 
-    await waitFor(() => expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('already-finished'))
+    await waitFor(() => expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('unknown'))
   })
 
   it('stays closed when the dialog is closed while the cancel is still answering (DEMO-6)', async () => {
     stallUntilAborted()
-    let answerCancel: (value: { cancelled: boolean; slug: string | null }) => void = () => {}
+    let answerCancel: (value: { cancelled: boolean; slug: string | null; state: 'stopped' | 'finished' | 'none' }) => void = () => {}
     vi.spyOn(projectsApi, 'cancelDemo').mockReturnValue(
-      new Promise<{ cancelled: boolean; slug: string | null }>((resolve) => {
+      new Promise<{ cancelled: boolean; slug: string | null; state: 'stopped' | 'finished' | 'none' }>((resolve) => {
         answerCancel = resolve
       }),
     )
@@ -169,7 +189,7 @@ describe('useDemoProvisioning — a stalled create is escapable (tripl-2su6.15)'
 
     // The late answer used to reopen the dialog the user had just closed.
     await act(async () => {
-      answerCancel({ cancelled: true, slug: 'demo-abc123' })
+      answerCancel({ cancelled: true, slug: 'demo-abc123', state: 'stopped' })
       await new Promise((resolve) => setTimeout(resolve, 20))
     })
     expect(screen.getByTestId('status')).toHaveTextContent('idle')
@@ -280,7 +300,7 @@ describe('useDemoProvisioning', () => {
       mutationCache: new MutationCache({ onError }),
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     })
-    vi.spyOn(projectsApi, 'cancelDemo').mockResolvedValue({ cancelled: true, slug: 'demo-x' })
+    vi.spyOn(projectsApi, 'cancelDemo').mockResolvedValue({ cancelled: true, slug: 'demo-x', state: 'stopped' })
     const captured = stallUntilAborted()
 
     render(
@@ -350,6 +370,26 @@ describe('useDemoProvisioning', () => {
     expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('stopped')
     expect(screen.queryByTestId('error')).not.toBeInTheDocument()
     expect(screen.getByTestId('path')).toHaveTextContent('/workspace')
+  })
+
+  it('refreshes the projects list after a failure, which may hide a finished create (DEMO-5)', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    vi.spyOn(projectsApi, 'createDemo').mockRejectedValue(new ApiError('Backend unavailable', 503))
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspace']}>
+          <Harness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByText('start'))
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('error'))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: projectsKey() })
   })
 
   it('surfaces a 403 as an error without navigating (DEMO-5)', async () => {

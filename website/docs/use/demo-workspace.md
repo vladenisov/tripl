@@ -140,9 +140,11 @@ The demo offers two guides, and they do different jobs.
 
 - **The product tour** (*Take the tour* on the welcome panel) walks the surfaces:
   Events, Scans, Live activity, Metrics and fact tables, Monitors, Anomalies,
-  Coverage, Reconciliation, Branches and the alert preview. Opening a step's
-  surface advances the tour and it remembers where you were, so it can be followed
-  across navigations instead of restarting every time.
+  Coverage, Reconciliation, Branches and the alert preview, and ends by opening
+  *Search by meaning* (the command palette) for you. Opening a step's surface
+  advances the tour and it remembers where you were, so it can be followed across
+  navigations instead of restarting every time. **All surfaces** at the bottom
+  of the tour expands a direct index of every surface and metric building block.
 - **The coached chapters** (*Coached chapters* on the welcome panel, or *Try it
   hands-on* from the tour) each make one thing happen end to end. The first,
   **Run the live loop**, is the core:
@@ -160,14 +162,22 @@ The demo offers two guides, and they do different jobs.
   merging stays your call), **Reconcile the plan**, **Route an alert** (against
   the local demo sink), and **Explore the rest**.
 
-  A strip below the demo banner tracks which chapter and step you are on and
+  A strip joined to the bottom of the demo banner — one bar, not two cards — tracks which chapter and step you are on and
   links to where the next action lives; a callout points at — and visibly
   rings — the exact button or input that performs it. Callouts use an opaque
   raised surface anchored beside the control they ring, and flip to stay inside
   the viewport. A control inside a data table has no free side — every direction
   the callout could open on is more table — so those callouts keep the ring on
-  the control and dock the card to the bottom‑right of the window instead, and
-  the rows stay readable. Both are demo-only and never appear in a real project.
+  the control and dock the card to the edge of the window instead (the bottom,
+  or the top when the control is in the lower half, on the control's side of the
+  window; full width on a phone), and
+  the rows stay readable. A docked card collapses to its step line with its
+  chevron. The ring is clipped to what can be seen of the control, so it never
+  floats over the page when the control scrolls out of a table. Screen readers
+  hear the step's instruction as the control's description. **Hide hints** — on
+  the callout, or in the strip — quiets the callouts for the rest of the browser
+  session on that project; **Show hints** in the strip brings them back. Both
+  are demo-only and never appear in a real project.
 
   The chapters follow **your** actions, not the demo's. The runtime clock is
   producing real scans and collections of its own in the background, so a step
@@ -177,31 +187,42 @@ The demo offers two guides, and they do different jobs.
   current Scans page also follows that exact run to its terminal status, even if a
   realtime update is missed, so completing the step never requires a reload.
   Progress is remembered per project (in your browser), so reloading mid-scan
-  resumes the watch.
+  resumes the watch, and two tabs on the same demo keep each other's progress.
+  On your first visit to the Overview the welcome panel stands in for the strip;
+  the strip appears there once you start a chapter or put the panel away.
 
   Dismiss it at any point — including after finishing. The welcome panel that
   carries the tour and the chapter picker opens **collapsed**, as a single row
   with a **Show me around** expander, so the Overview leads with the product
   rather than with onboarding; expanding it is not remembered between visits.
-  Dismissing the panel outright (the **✕**) hides it for that project, and the
-  demo bar's **Tour &amp; chapters** button — present on every demo surface, for
-  everyone — brings it back and reopens the tour.
+  Dismissing the panel outright (the **✕**) hides it for that project and
+  offers **Undo** for a few seconds. After that, the demo bar's **Tour &amp;
+  chapters** button — present on every demo surface, for everyone — opens the
+  tour, and the tour offers **Show the welcome panel on Overview** while the panel
+  is hidden.
 
 ## Lifecycle
 
 - **Create** — provisioning is atomic: you either get a fully‑ready demo or a
   clean failure, which never leaves a half‑built project in your workspace.
-  It takes about 10–15 seconds; the creation dialog narrates the *expected*
-  phases (the server reports only the final result, not the stage it is on) and
-  shows any failure.
+  It takes about 10 seconds; the creation dialog narrates the *expected*
+  phases (the server reports only the final result, not the stage it is on),
+  says so when a create runs well past that, and stops waiting after 90 seconds.
+  A failure says what is actually known: the server's own failure was rolled
+  back and can be retried; a demo limit or a refusal says why and offers no
+  retry; a lost connection or a timeout may still have created the demo, so
+  the dialog offers no **Try again** — check the projects list first.
 - **Cancel** — closing the creation dialog, pressing Escape, or clicking Cancel
   asks the server to abandon the provision, not just the browser to stop
   listening. If it is still seeding, the workspace is discarded and nothing is
-  added to your projects or left behind in the audit log. If the seed had already finished, the dialog says so
-  plainly and the demo appears in your list — delete it from its banner if you
-  do not want it.
-- **How many** — you can hold up to **three** demo workspaces at a time. Beyond
-  the first, generating another asks for confirmation and points at Reset; each
+  added to your projects or left behind in the audit log. If the demo finished
+  just before the cancel arrived, the dialog says it is in your list — delete it
+  from its banner if you do not want it. If the server had nothing left to
+  cancel at all, the dialog says only that.
+- **How many** — you can hold up to **three** demo workspaces at a time. At
+  three, **Generate demo project** is disabled with the reason beside it: reset
+  or delete one first. Beyond the first, generating another asks for
+  confirmation and points at Reset; each
   extra demo is named `Demo Project 2`, `Demo Project 3`, … so they are
   distinguishable in the workspace list. A new demo takes the lowest name you
   are not already using, so after deleting `Demo Project` the next one is named
@@ -209,9 +230,18 @@ The demo offers two guides, and they do different jobs.
 - **Reset** — re‑seed the demo in place under the same URL, preserving ownership
   and its name. Reset re‑runs the current recipe, so it is also how you refresh a
   demo built from an older one. It re‑seeds everything in one transaction and
-  takes about as long as a create; a progress dialog narrates the wait.
+  takes about as long as a create; a progress dialog narrates the wait. If the
+  reset has not answered after 90 seconds the page stops waiting and says the
+  server may still be re‑seeding. It leaves for the Overview and drops the
+  cached data and branch selection at once, then keeps checking for a few
+  minutes: when the re‑seeded demo appears it finishes the reset as usual
+  (fresh chapter progress, welcome panel back). Reset and Delete stay off while
+  it checks.
 - **Delete** — removes the demo and its owned synthetic warehouse and leaves every
-  real workspace source untouched. The creator or an owner can delete it.
+  real workspace source untouched. The creator or an owner can delete it. The
+  tour position, chapter progress and welcome/hint choices your browser kept
+  for it are cleared too — and the workspace page clears them for any demo that
+  was deleted elsewhere, the next time it lists your projects.
 - **Recipe version.** Each demo records the recipe version it was built from, shown
   on the demo banner.
 - **Failed shells.** A demo whose seed failed leaves a hidden, non-listable

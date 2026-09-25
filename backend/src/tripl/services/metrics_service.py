@@ -640,6 +640,7 @@ def _signal_from_anomaly(
         stddev=_served_stddev(anomaly),
         z_score=anomaly.z_score,
         direction=anomaly.direction,
+        detected_at=anomaly.created_at,
     )
 
 

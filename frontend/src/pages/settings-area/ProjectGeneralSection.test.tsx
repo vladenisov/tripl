@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -6,6 +7,7 @@ import { searchApi } from '@/api/search'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectGeneralSection from './ProjectGeneralSection'
 import { UnsavedChangesProvider, type UnsavedWork } from '@/components/settings/unsaved-changes'
+import { at } from '@/test/at'
 
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -421,5 +423,210 @@ describe('ProjectGeneralSection unsaved-changes guard (WS-13)', () => {
 
     fireEvent.change(screen.getByLabelText('Releases to keep'), { target: { value: '5' } })
     await waitFor(() => expect(lastRegistered()).not.toBeNull())
+  })
+})
+
+describe('ProjectGeneralSection — #207', () => {
+  type Handler = (method: string, init?: RequestInit) => Response | undefined
+
+  function mockDemo(handler: Handler = () => undefined) {
+    const calls: { method: string; url: string; body?: string }[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      calls.push({ method, url, body: init?.body ? String(init.body) : undefined })
+      if (url.endsWith('/api/v1/projects/demo')) {
+        const handled = handler(method, init)
+        if (handled) return handled
+        if (method === 'GET') return jsonResponse(PROJECT)
+      }
+      if (url.endsWith('/api/v1/projects')) return jsonResponse([PROJECT])
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    return calls
+  }
+
+  function errorResponse(status: number, detail: string) {
+    return new Response(JSON.stringify({ detail }), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  it('no longer shows dead Archive and Transfer ownership rows (WS-11)', async () => {
+    mockDemo()
+    renderSection()
+
+    expect(await screen.findByRole('button', { name: /Delete project/ })).toBeInTheDocument()
+    expect(screen.queryByText('Archive project')).not.toBeInTheDocument()
+    expect(screen.queryByText('Transfer ownership')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Transfer' })).not.toBeInTheDocument()
+  })
+
+  it('asks for the slug before deleting and shows a refusal in place (WS-9, WS-10)', async () => {
+    const calls = mockDemo((method) =>
+      method === 'DELETE' ? errorResponse(403, 'Only owners may delete projects') : undefined,
+    )
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Delete project/ }))
+    const dialog = await screen.findByRole('alertdialog')
+    const confirm = within(dialog).getByRole('button', { name: /Delete project/ })
+    expect(confirm).toBeDisabled()
+
+    fireEvent.change(within(dialog).getByLabelText(/type demo to confirm/i), {
+      target: { value: 'demo' },
+    })
+    fireEvent.click(confirm)
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      /Could not delete the project/,
+    )
+    expect(calls.filter((call) => call.method === 'DELETE')).toHaveLength(1)
+  })
+
+  it('announces a failed save as an error, not a hint (WS-15)', async () => {
+    mockDemo((method) =>
+      method === 'PATCH' ? errorResponse(409, 'A project with this slug already exists') : undefined,
+    )
+    renderSection()
+
+    const nameInput = await screen.findByLabelText('Name')
+    await waitFor(() => expect(nameInput).toHaveValue('Demo'))
+    fireEvent.change(nameInput, { target: { value: 'Demo 2' } })
+    fireEvent.click(at(screen.getAllByRole('button', { name: /Save/ }), 0))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already exists/)
+  })
+
+  it('confirms a successful save (WS-15)', async () => {
+    // The server keeps what it saved: the refetch after the save must answer
+    // with the new name, or the form reads as edited again and "Saved" hides.
+    let saved = PROJECT
+    mockDemo((method) => {
+      if (method === 'PATCH') {
+        saved = { ...PROJECT, name: 'Demo 2' }
+        return jsonResponse(saved)
+      }
+      return method === 'GET' ? jsonResponse(saved) : undefined
+    })
+    renderSection()
+
+    const nameInput = await screen.findByLabelText('Name')
+    await waitFor(() => expect(nameInput).toHaveValue('Demo'))
+    fireEvent.change(nameInput, { target: { value: 'Demo 2' } })
+    fireEvent.click(at(screen.getAllByRole('button', { name: /Save/ }), 0))
+
+    expect(await screen.findByText('Saved')).toBeInTheDocument()
+  })
+
+  it('offers IANA zones instead of free text, and saves the chosen one (WS-16)', async () => {
+    const calls = mockDemo((method, init) =>
+      method === 'PATCH'
+        ? jsonResponse({ ...PROJECT, ...(JSON.parse(String(init?.body)) as object) })
+        : undefined,
+    )
+    renderSection()
+
+    const zone = await screen.findByLabelText('Timezone')
+    expect(zone.tagName).toBe('SELECT')
+    await waitFor(() => expect(zone).toHaveValue('UTC'))
+    expect(within(zone).getByRole('option', { name: 'Europe/Moscow' })).toBeInTheDocument()
+
+    fireEvent.change(zone, { target: { value: 'Europe/Moscow' } })
+    fireEvent.click(at(screen.getAllByRole('button', { name: /Save/ }), 0))
+
+    await waitFor(() => {
+      const patch = calls.find((call) => call.method === 'PATCH')
+      expect(patch && JSON.parse(patch.body ?? '{}')).toMatchObject({ timezone: 'Europe/Moscow' })
+    })
+  })
+
+  it('keeps a stored zone the browser does not know, flagged, without blocking Save', async () => {
+    const calls = mockDemo((method, init) =>
+      method === 'GET'
+        ? jsonResponse({ ...PROJECT, timezone: 'Mars/Olympus_Mons' })
+        : method === 'PATCH'
+          ? jsonResponse({ ...PROJECT, ...(JSON.parse(String(init?.body)) as object) })
+          : undefined,
+    )
+    renderSection()
+
+    const zone = await screen.findByLabelText('Timezone')
+    await waitFor(() => expect(zone).toHaveValue('Mars/Olympus_Mons'))
+    expect(
+      within(zone).getByRole('option', { name: 'Mars/Olympus_Mons (not recognised)' }),
+    ).toBeInTheDocument()
+    expect(zone).not.toHaveAttribute('aria-invalid', 'true')
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Demo 2' } })
+    const save = at(screen.getAllByRole('button', { name: /Save/ }), 0)
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+
+    await waitFor(() => {
+      const patch = calls.find((call) => call.method === 'PATCH')
+      expect(patch && JSON.parse(patch.body ?? '{}')).toMatchObject({
+        name: 'Demo 2',
+        timezone: 'Mars/Olympus_Mons',
+      })
+    })
+  })
+
+  it('reports a renamed slug upward so the page stays bound (WS-8)', async () => {
+    const renamed = { ...PROJECT, slug: 'demo-renamed' }
+    const requested: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      requested.push(`${method} ${url}`)
+      if (url.endsWith('/api/v1/projects/demo') && method === 'PATCH') return jsonResponse(renamed)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      if (url.endsWith('/api/v1/projects/demo-renamed')) return jsonResponse(renamed)
+      if (url.endsWith('/api/v1/projects')) return jsonResponse([renamed])
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    const onSlugChanged = vi.fn()
+    // Stands in for SettingsArea: it rebinds the section to the slug it hears.
+    function Harness() {
+      const [slug, setSlug] = useState('demo')
+      return (
+        <ProjectGeneralSection
+          slug={slug}
+          onSlugChanged={(next) => {
+            onSlugChanged(next)
+            setSlug(next)
+          }}
+        />
+      )
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/settings/project/general']}>
+            <Harness />
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    const slugInput = await screen.findByLabelText('Slug')
+    await waitFor(() => expect(slugInput).toHaveValue('demo'))
+    fireEvent.change(slugInput, { target: { value: 'demo-renamed' } })
+    fireEvent.click(at(screen.getAllByRole('button', { name: /Save/ }), 0))
+
+    await waitFor(() => expect(onSlugChanged).toHaveBeenCalledWith('demo-renamed'))
+    expect(await screen.findByText('Saved')).toBeInTheDocument()
+    expect(screen.queryByText('Failed to load project.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Slug')).toHaveValue('demo-renamed')
+    // The dead address is never asked for again once the rename lands.
+    const patchIndex = requested.findIndex((entry) => entry.startsWith('PATCH '))
+    expect(
+      requested
+        .slice(patchIndex + 1)
+        .filter((entry) => entry.startsWith('GET ') && entry.endsWith('/api/v1/projects/demo')),
+    ).toEqual([])
   })
 })

@@ -1,4 +1,3 @@
-import type { Dispatch, SetStateAction } from 'react'
 import { X } from 'lucide-react'
 
 import { Panel } from '@/components/settings/kit'
@@ -6,7 +5,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatIsoDate } from '@/lib/datetime'
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
@@ -18,48 +16,19 @@ import type {
   ScanConfig,
 } from '@/types'
 
-import { AlertDeliveryRow } from './AlertDeliveryRow'
+import { AlertDeliveryRow, DeliveryTable } from './AlertDeliveryRow'
 import { CHANNEL_META } from './channelMeta'
+import {
+  NO_DELIVERY_FILTERS,
+  hasActiveDeliveryFilters,
+  newerDeliveryOffset,
+  toDayBoundary,
+  type DeliveryFilters,
+} from './deliveryFilters'
 
-export interface DeliveryFilters {
-  status: string
-  channel: string
-  destination_id: string
-  rule_id: string
-  scan_config_id: string
-  // ISO instants, not the `YYYY-MM-DD` the <input type="date"> shows. The page
-  // forwards these straight to `date_from`/`date_to`, and a bare date pins
-  // `date_to` to midnight — which drops the whole day the reader just asked
-  // for. `toDayBoundary` below converts; `formatIsoDate` converts back for the
-  // input. '' means unset (tripl-oxkt.12).
-  date_from: string
-  date_to: string
-}
-
-/** Every filter off — what Clear writes, and what "no filter is active" means. */
-const NO_FILTERS: DeliveryFilters = {
-  status: '',
-  channel: '',
-  destination_id: '',
-  rule_id: '',
-  scan_config_id: '',
-  date_from: '',
-  date_to: '',
-}
-
-/**
- * The `YYYY-MM-DD` from a native date input, as the instant that bounds the day.
- *
- * Mirrors `settings/AuditTab.tsx`'s `toIsoOrUndef`: the end of the range has to
- * be the END of its day or "To: Aug 12" excludes every delivery sent on Aug 12,
- * which is exactly the day a reader chasing a fresh alert asks for. Returns ''
- * (not undefined) because `DeliveryFilters` spells "unset" as an empty string.
- */
-function toDayBoundary(localDate: string, endOfDay: boolean): string {
-  if (!localDate) return ''
-  const at = new Date(`${localDate}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}`)
-  return Number.isNaN(at.getTime()) ? '' : at.toISOString()
-}
+// Re-exported: the type moved to ./deliveryFilters with the URL codec (ALR-36),
+// and the page and tests have always imported it from here.
+export type { DeliveryFilters } from './deliveryFilters'
 
 interface AlertAuditPanelProps {
   slug: string
@@ -72,18 +41,22 @@ interface AlertAuditPanelProps {
   pinnedDelivery: AlertDeliveryDetail | null
   focusDeliveryId?: string
   focusItemKey?: string
-  // The RAW filter state, which every select writes through…
+  // The filters the request ACTUALLY used, not the raw URL state. They differ
+  // exactly when `?scan=` names a scan this project does not have, which the
+  // page degrades to "All" — and a panel reading the raw state then said "N
+  // deliveries match the filter" and offered Clear over a filter that was not
+  // filtering anything (ALR-39).
   deliveryFilters: DeliveryFilters
-  setDeliveryFilters: Dispatch<SetStateAction<DeliveryFilters>>
-  // …and the DEGRADED scan id the request actually used, which the Scan select
-  // reads. They differ exactly when `?scan=` names a scan this project does not
-  // have; see the page for why that reads as "All".
-  activeScanFilter: string
+  // One write per change. The page keeps both in the URL (ALR-36), and a filter
+  // write resets the offset in the SAME navigation — two back-to-back
+  // `setSearchParams` calls read the same stale params and the second undoes
+  // the first.
+  onDeliveryFiltersChange: (next: DeliveryFilters) => void
   // The page window. `deliveryLimit` is the page's own constant rather than a
   // second copy here, so the Older step and the request that answers it can
   // never disagree about how big a page is.
   deliveryOffset: number
-  setDeliveryOffset: Dispatch<SetStateAction<number>>
+  onDeliveryOffsetChange: (next: number) => void
   deliveryLimit: number
   destinations: AlertDestination[]
   allRules: (AlertRule & { destination_name: string })[]
@@ -108,10 +81,9 @@ export function AlertAuditPanel({
   focusDeliveryId,
   focusItemKey,
   deliveryFilters,
-  setDeliveryFilters,
-  activeScanFilter,
+  onDeliveryFiltersChange,
   deliveryOffset,
-  setDeliveryOffset,
+  onDeliveryOffsetChange,
   deliveryLimit,
   destinations,
   allRules,
@@ -122,8 +94,7 @@ export function AlertAuditPanel({
   // to 4 while parked on page 3 lands the reader on a blank page that reads as
   // "nothing matches" (tripl-oxkt.12).
   const updateFilters = (patch: Partial<DeliveryFilters>) => {
-    setDeliveryFilters(current => ({ ...current, ...patch }))
-    setDeliveryOffset(0)
+    onDeliveryFiltersChange({ ...deliveryFilters, ...patch })
   }
 
   // Nothing in the filter bar or the table is a write — the log is readable by
@@ -138,11 +109,15 @@ export function AlertAuditPanel({
   const rangeEnd = deliveryOffset + items.length
   const hasNewer = deliveryOffset > 0
   const hasOlder = rangeEnd < total
-  const filtersActive = Object.values(deliveryFilters).some(Boolean)
+  const filtersActive = hasActiveDeliveryFilters(deliveryFilters)
+  // Parked past the end of a list that shrank under the offset (ALR-38): a
+  // retry moved a row out of Status=Failed, or a destination went elsewhere.
+  // The rows exist — `total` says so — the page the reader is on just no longer
+  // reaches them, and "No deliveries yet." over it would be false.
+  const strandedPastEnd = items.length === 0 && deliveryOffset > 0 && total > 0
 
   const clearFilters = () => {
-    setDeliveryFilters(NO_FILTERS)
-    setDeliveryOffset(0)
+    onDeliveryFiltersChange(NO_DELIVERY_FILTERS)
   }
 
   const renderDeliveries = () => {
@@ -165,6 +140,14 @@ export function AlertAuditPanel({
         </div>
       )
     }
+    if (strandedPastEnd && !pinnedDelivery) {
+      return (
+        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+          This page is now empty — the log changed while you were reading it. Use Newer to go back
+          to the last page with deliveries.
+        </div>
+      )
+    }
     if (items.length === 0 && !pinnedDelivery) {
       return (
         <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
@@ -180,50 +163,28 @@ export function AlertAuditPanel({
     }
     return (
       <div className="rounded-lg border">
-        {/* `table-fixed` plus explicit widths: without it the multi-kilobyte
-            summary cell's max-width never bound, every short column collapsed
-            to min-content and a single timestamp wrapped over four lines,
-            inflating rows to ~100px (tripl-oxkt.18). The min-width is what the
-            nine columns actually need; the Table's own container scrolls, so
-            the page body never does. */}
-        <Table className="min-w-[960px] table-fixed">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[96px]">Time</TableHead>
-              <TableHead className="w-[92px]">Status</TableHead>
-              <TableHead className="w-[104px]">Destination</TableHead>
-              <TableHead className="w-[88px]">Rule</TableHead>
-              <TableHead className="w-[112px]">Scan</TableHead>
-              <TableHead className="w-[52px]">Count</TableHead>
-              <TableHead className="w-[68px]">Channel</TableHead>
-              {/* Not "Error / Preview": the preview was the first 87 characters
-                  of a message whose first four lines are a fixed template
-                  header repeating the five cells to its left. */}
-              <TableHead>What fired</TableHead>
-              <TableHead className="w-[96px]"></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {pinnedDelivery && (
-              <AlertDeliveryRow
-                key={pinnedDelivery.id}
-                slug={slug}
-                delivery={pinnedDelivery}
-                focusDeliveryId={focusDeliveryId}
-                focusItemKey={focusItemKey}
-              />
-            )}
-            {items.map(delivery => (
-              <AlertDeliveryRow
-                key={delivery.id}
-                slug={slug}
-                delivery={delivery}
-                focusDeliveryId={focusDeliveryId}
-                focusItemKey={focusItemKey}
-              />
-            ))}
-          </TableBody>
-        </Table>
+        {/* Columns and widths live with the row (DeliveryTable), so the
+            incident card's nested table cannot drift from this one (ALR-32). */}
+        <DeliveryTable>
+          {pinnedDelivery && (
+            <AlertDeliveryRow
+              key={pinnedDelivery.id}
+              slug={slug}
+              delivery={pinnedDelivery}
+              focusDeliveryId={focusDeliveryId}
+              focusItemKey={focusItemKey}
+            />
+          )}
+          {items.map(delivery => (
+            <AlertDeliveryRow
+              key={delivery.id}
+              slug={slug}
+              delivery={delivery}
+              focusDeliveryId={focusDeliveryId}
+              focusItemKey={focusItemKey}
+            />
+          ))}
+        </DeliveryTable>
       </div>
     )
   }
@@ -307,7 +268,7 @@ export function AlertAuditPanel({
             </div>
             <div className="grid gap-2">
               <Label htmlFor="filter-scan">Scan</Label>
-              <Select value={activeScanFilter || 'all'} onValueChange={value => updateFilters({ scan_config_id: value === 'all' ? '' : value })}>
+              <Select value={deliveryFilters.scan_config_id || 'all'} onValueChange={value => updateFilters({ scan_config_id: value === 'all' ? '' : value })}>
                 <SelectTrigger id="filter-scan"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
@@ -348,7 +309,7 @@ export function AlertAuditPanel({
           {filtersActive && (
             <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
               <span>{countOf(total, 'delivery matches', 'deliveries match')} the filter.</span>
-              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={clearFilters}>
+              <Button type="button" variant="ghost" size="sm" className="h-9 px-3 text-xs sm:h-7 sm:px-2" onClick={clearFilters}>
                 <X aria-hidden="true" className="mr-1 h-3 w-3" />
                 Clear filters
               </Button>
@@ -357,7 +318,7 @@ export function AlertAuditPanel({
 
           {renderDeliveries()}
 
-          {items.length > 0 && (hasNewer || hasOlder) && (
+          {(items.length > 0 || strandedPastEnd) && (hasNewer || hasOlder) && (
             <div className="flex flex-wrap items-center justify-between gap-2">
               {/* The panel used to say "115 deliveries" over 50 rows and never
                   mention the other 65 — the oldest row on screen was four days
@@ -365,7 +326,9 @@ export function AlertAuditPanel({
                   alert had never been sent (tripl-oxkt.12). Wording follows the
                   sibling page, settings/AuditTab.tsx. */}
               <p className="text-xs text-muted-foreground">
-                {hasNewer
+                {strandedPastEnd
+                  ? `Past the end of ${countOf(total, 'delivery', 'deliveries')}.`
+                  : hasNewer
                   ? `Showing ${rangeStart}–${rangeEnd} of ${countOf(total, 'delivery', 'deliveries')}.`
                   : `Showing the most recent ${items.length} of ${countOf(total, 'delivery', 'deliveries')} — use Older to reach the rest, or narrow the filter.`}
               </p>
@@ -374,9 +337,9 @@ export function AlertAuditPanel({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-7 px-2 text-xs"
+                  className="h-9 px-3 text-xs sm:h-7 sm:px-2"
                   disabled={!hasNewer}
-                  onClick={() => setDeliveryOffset(current => Math.max(0, current - deliveryLimit))}
+                  onClick={() => onDeliveryOffsetChange(newerDeliveryOffset(deliveryOffset, total, deliveryLimit))}
                 >
                   Newer
                 </Button>
@@ -384,9 +347,9 @@ export function AlertAuditPanel({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-7 px-2 text-xs"
+                  className="h-9 px-3 text-xs sm:h-7 sm:px-2"
                   disabled={!hasOlder}
-                  onClick={() => setDeliveryOffset(current => current + deliveryLimit)}
+                  onClick={() => onDeliveryOffsetChange(deliveryOffset + deliveryLimit)}
                 >
                   Older
                 </Button>

@@ -7,19 +7,46 @@
  * finished them (tripl-jfm3.16) — and the caption says so.
  */
 
+import { useEffect, useState } from 'react'
 import { Check, Loader2 } from 'lucide-react'
-import { PROVISIONING_PHASES } from './provisioningPhases'
+import { DEMO_PROVISION_SLOW_MS, PROVISIONING_PHASES } from './provisioningPhases'
+
+const DEFAULT_SLOW_MESSAGE =
+  'Taking longer than usual — you can cancel; the server may still finish.'
+
+/**
+ * True once the list has been on screen for `ms`. Mount-scoped like the phase
+ * pointer: callers mount the list only while their request is open, so every
+ * request starts the clock afresh.
+ */
+function useElapsed(ms: number, running: boolean): boolean {
+  const [elapsed, setElapsed] = useState(false)
+  useEffect(() => {
+    if (!running) return
+    const timer = setTimeout(() => setElapsed(true), ms)
+    return () => clearTimeout(timer)
+  }, [ms, running])
+  return running && elapsed
+}
 
 type PhaseState = 'done' | 'estimated' | 'active' | 'pending'
 
 export function ProvisioningPhaseList({
   phaseIndex,
   complete = false,
+  slowMessage = DEFAULT_SLOW_MESSAGE,
 }: {
   phaseIndex: number
   /** True once the request has actually resolved — the only proof work is done. */
   complete?: boolean
+  /**
+   * Shown once the wait is well past the estimate (DEMO-21), so a pointer
+   * parked on "Finalizing" is not the only signal. Each caller names the way
+   * out it actually offers.
+   */
+  slowMessage?: string
 }) {
+  const slow = useElapsed(DEMO_PROVISION_SLOW_MS, !complete)
   return (
     <div className="space-y-2">
       <ol className="space-y-1.5">
@@ -49,6 +76,11 @@ export function ProvisioningPhaseList({
       {!complete && (
         <p className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
           Estimated steps — the server reports only the final result, not the stage it is on.
+        </p>
+      )}
+      {slow && (
+        <p className="text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+          {slowMessage}
         </p>
       )}
     </div>

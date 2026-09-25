@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { WELCOME_PILLARS } from '@/components/workspace-welcome-pillars'
 import { DEMO_PROVISION_ESTIMATE } from '@/demo/provisioningPhases'
-import { Plus, Sparkles } from 'lucide-react'
+import { ExternalLink, Plus, Sparkles } from 'lucide-react'
 
 interface WorkspaceWelcomeProps {
   canCreateProject: boolean
@@ -122,10 +122,14 @@ export function WorkspaceWelcome({
           href="https://vladenisov.github.io/tripl/"
           target="_blank"
           rel="noreferrer"
-          className="font-medium hover:underline"
+          className="inline-flex items-center gap-1 font-medium hover:underline"
           style={{ color: 'var(--accent)' }}
+          // It leaves the app, so it says so — visibly with the icon, and to a
+          // screen reader in a name that starts with the visible label (WS-46).
+          aria-label="Read the concepts (opens in a new tab)"
         >
-          Read the concepts →
+          Read the concepts
+          <ExternalLink className="h-3 w-3" aria-hidden="true" />
         </a>
       </div>
     </section>

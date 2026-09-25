@@ -21,6 +21,12 @@ export interface TourStep {
   blurb: string
   /** Deep link to the real surface for this step. */
   to: string
+  /**
+   * What the step's button does instead of following `to` (DEMO-18). The
+   * search step's surface is the command palette, which has no URL: linking to
+   * the Overview the user is usually already on just closed the tour.
+   */
+  action?: 'open-command-palette'
 }
 
 /**
@@ -174,6 +180,7 @@ export function buildTourSteps(slug: string): [TourStep, ...TourStep[]] {
       blurb:
         'Press Ctrl K (or ⌘K) and try "purchase funnel" or "money back" — semantic matches are marked.',
       to: `${base}/overview`,
+      action: 'open-command-palette',
     },
   ]
 }

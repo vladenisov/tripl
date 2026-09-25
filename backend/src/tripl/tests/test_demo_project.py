@@ -952,7 +952,7 @@ async def test_cancel_request_reports_nothing_to_cancel_when_idle(client: AsyncC
     """No in-flight provision means the caller must be told plainly, not lied to."""
     resp = await client.post("/api/v1/projects/demo/cancel")
     assert resp.status_code == 200
-    assert resp.json() == {"cancelled": False, "slug": None}
+    assert resp.json() == {"cancelled": False, "slug": None, "state": "none"}
 
 
 @pytest.mark.asyncio
@@ -973,7 +973,7 @@ async def test_cancel_request_flags_a_seeding_shell(client: AsyncClient) -> None
 
     resp = await client.post("/api/v1/projects/demo/cancel")
     assert resp.status_code == 200
-    assert resp.json() == {"cancelled": True, "slug": "demo-inflight"}
+    assert resp.json() == {"cancelled": True, "slug": "demo-inflight", "state": "stopped"}
 
     async with TestSessionLocal() as session:
         stage = await session.scalar(

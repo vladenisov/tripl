@@ -277,6 +277,21 @@ describe('ApiKeysSection', () => {
       expect(token).toHaveFocus()
     })
 
+    // WS-49: a browser that refuses the write is a failure too, not a silent "Copied".
+    it('reports a refused clipboard write and selects the token', async () => {
+      const writeText = vi.fn().mockRejectedValue(new Error('NotAllowedError'))
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+      const dialog = await mintKey()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Copy' }))
+
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        /Couldn’t reach the clipboard/,
+      )
+      expect(within(dialog).queryByRole('button', { name: 'Copied' })).toBeNull()
+      expect(within(dialog).getByRole('textbox', { name: 'API key' })).toHaveFocus()
+    })
+
     it('confirms a successful copy', async () => {
       const writeText = vi.fn().mockResolvedValue(undefined)
       Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })

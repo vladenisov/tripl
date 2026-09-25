@@ -63,6 +63,8 @@ function signal(scanConfigId: string | null): MonitoringSignal {
     z_score: -18,
     direction: 'drop',
     incident_child: false,
+    unit: null,
+    detected_at: null,
   }
 }
 

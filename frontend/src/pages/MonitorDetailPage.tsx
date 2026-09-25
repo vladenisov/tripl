@@ -30,6 +30,7 @@ import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { usePageTitle } from '@/components/shell-chrome-context'
+import { invalidateAlertingConfig } from './alerting/alertingCache'
 import { monitorDetailKey, monitorHistoryKey } from '@/lib/queryKeys'
 
 export default function MonitorDetailPage() {
@@ -57,22 +58,45 @@ export default function MonitorDetailPage() {
     refetchInterval,
   })
 
+  // The Monitors list, its summary and the destination card's rule all read
+  // the same muted_until from their own queries, so writing only this page's
+  // cache left them showing the old state until their next refetch (MON-31).
+  // Same helper the Monitors-list mute uses (MonitorsSection).
+  const onMuteChanged = (data: MonitorDetail) => {
+    queryClient.setQueryData(monitorKey, data)
+    if (slug) invalidateAlertingConfig(queryClient, slug)
+  }
   const muteMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: (mutedUntil: string) => alertingApi.muteMonitor(slug!, monitorId!, mutedUntil),
-    onSuccess: (data) => queryClient.setQueryData(monitorKey, data),
+    onSuccess: onMuteChanged,
   })
   const unmuteMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () => alertingApi.unmuteMonitor(slug!, monitorId!),
-    onSuccess: (data) => queryClient.setQueryData(monitorKey, data),
+    onSuccess: onMuteChanged,
   })
   const retryMut = useMutation({
+    // The failed row says why, right under its Retry button (MON-31).
+    meta: SILENT_ERROR_META,
     mutationFn: (deliveryId: string) => alertingApi.retryDelivery(slug!, deliveryId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: historyKey })
+      // "Last delivery" in the strip above is read off the monitor itself, and
+      // the delivery log lists the same rows.
+      void queryClient.invalidateQueries({ queryKey: monitorKey })
+      // The delivery log, the Inbox and the "has ever delivered" probe list
+      // the same row the retry just changed.
+      if (slug) invalidateAlertingConfig(queryClient, slug)
     },
   })
+  const retryError =
+    retryMut.isError && retryMut.variables
+      ? {
+          deliveryId: retryMut.variables,
+          message: retryMut.error instanceof Error ? retryMut.error.message : 'Retry failed.',
+        }
+      : null
 
   const monitor = monitorQuery.data
   usePageTitle(monitor?.rule_name)
@@ -178,6 +202,7 @@ export default function MonitorDetailPage() {
             isError={historyQuery.isError}
             onRetry={canWrite ? (deliveryId) => retryMut.mutate(deliveryId) : undefined}
             retryingId={retryMut.isPending ? (retryMut.variables ?? null) : null}
+            retryError={retryError}
           />
         </>
       )}
@@ -354,7 +379,9 @@ function RecencyStrip({ monitor }: { monitor: MonitorDetail }) {
         value={monitor.last_anomaly_at ? formatRelativeTime(monitor.last_anomaly_at) : 'never'}
         tone={isFiring ? 'danger' : 'neutral'}
         pulse={isFiring}
-        delta={isFiring ? 'now' : undefined}
+        // "1h ago · now" contradicted itself: the value is when it last fired,
+        // and the delta only says the state has not cleared since (LIVE-18).
+        delta={isFiring ? 'still firing' : undefined}
       />
       <MiniStatDivider />
       <MiniStat
@@ -371,10 +398,18 @@ function RecencyStrip({ monitor }: { monitor: MonitorDetail }) {
       <MiniStatDivider />
       <MiniStat label="Deliveries" value={monitor.total_deliveries.toLocaleString()} />
       <MiniStatDivider />
+      {/* The tone used to be set with no delta, and MiniStat paints the tone
+          on the delta only — so the emphasis never rendered (MON-42). The
+          delta now says what the tone is about. */}
       <MiniStat
         label="Active scopes"
         value={monitor.active_scope_count.toLocaleString()}
         tone={monitor.firing_scope_count > 0 ? 'danger' : 'neutral'}
+        delta={
+          monitor.firing_scope_count > 0
+            ? `${monitor.firing_scope_count.toLocaleString()} firing`
+            : undefined
+        }
       />
     </div>
   )
@@ -567,6 +602,7 @@ function FiredHistoryTimeline({
   isError,
   onRetry,
   retryingId,
+  retryError,
 }: {
   items: AlertDelivery[]
   total: number
@@ -575,6 +611,8 @@ function FiredHistoryTimeline({
   /** Omitted for a viewer, whose rows carry no Retry. */
   onRetry?: (deliveryId: string) => void
   retryingId: string | null
+  /** The last retry that failed, shown on its own row. */
+  retryError: { deliveryId: string; message: string } | null
 }) {
   return (
     <Panel title="Fired history" subtitle={total > 0 ? `${total} total` : undefined}>
@@ -598,6 +636,9 @@ function FiredHistoryTimeline({
               delivery={delivery}
               onRetry={onRetry ? () => onRetry(delivery.id) : undefined}
               retrying={retryingId === delivery.id}
+              retryError={
+                retryError?.deliveryId === delivery.id ? retryError.message : null
+              }
             />
           ))}
         </ul>
@@ -610,10 +651,12 @@ function DeliveryRow({
   delivery,
   onRetry,
   retrying,
+  retryError,
 }: {
   delivery: AlertDelivery
   onRetry?: () => void
   retrying: boolean
+  retryError: string | null
 }) {
   return (
     <li className="border-b px-4 py-3 last:border-0" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -647,6 +690,13 @@ function DeliveryRow({
       {delivery.status === 'failed' && delivery.error_message && (
         <p className="mt-1.5 text-[11.5px]" style={{ color: 'var(--danger)' }}>
           {delivery.error_message}
+        </p>
+      )}
+      {/* A failed retry used to hand the button back as "Retry" with no word
+          about what happened (MON-31). */}
+      {retryError && !retrying && (
+        <p role="alert" className="mt-1.5 text-[11.5px]" style={{ color: 'var(--danger)' }}>
+          Retry failed: {retryError}
         </p>
       )}
     </li>

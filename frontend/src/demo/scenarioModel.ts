@@ -23,6 +23,7 @@
  */
 
 import { getMetricMonitoringPath } from '@/lib/monitoring'
+import { SCENARIO_STORAGE_PREFIX } from './demoLocalState'
 
 export type ChapterId =
   | 'live-loop'
@@ -167,6 +168,12 @@ export interface ScenarioState {
   v: 3
   activeChapter: ChapterId | null
   chapters: Partial<Record<ChapterId, ChapterState>>
+  /**
+   * Set once the user starts or restarts a chapter themselves. The initial
+   * state is already on live-loop's first step, so the step alone cannot tell
+   * a pristine scenario from one the user chose (LIVE-9's strip rule).
+   */
+  engaged?: true
 }
 
 export type ScenarioEvent =
@@ -314,7 +321,7 @@ export function scenarioReducer(state: ScenarioState, event: ScenarioEvent): Sce
           chapters[outgoingId] = { ...outgoing, status: 'dismissed' }
         }
       }
-      return { v: 3, activeChapter: event.chapter, chapters }
+      return { v: 3, activeChapter: event.chapter, chapters, engaged: true }
     }
 
     case 'restartChapter':
@@ -322,6 +329,7 @@ export function scenarioReducer(state: ScenarioState, event: ScenarioEvent): Sce
         v: 3,
         activeChapter: event.chapter,
         chapters: { ...state.chapters, [event.chapter]: freshChapterState(event.chapter) },
+        engaged: true,
       }
 
     case 'dismissChapter': {
@@ -333,7 +341,7 @@ export function scenarioReducer(state: ScenarioState, event: ScenarioEvent): Sce
         return activeChapter === state.activeChapter ? state : { ...state, activeChapter }
       }
       return {
-        v: 3,
+        ...state,
         activeChapter,
         chapters: { ...state.chapters, [event.chapter]: { ...existing, status: 'dismissed' } },
       }
@@ -853,7 +861,12 @@ export function stepCompletedByPath(
   }
 }
 
-const STORAGE_PREFIX = 'tripl-demo-scenario:'
+const STORAGE_PREFIX = SCENARIO_STORAGE_PREFIX
+
+/** The localStorage key a slug's progress lives under — for cross-tab sync. */
+export function scenarioStorageKey(slug: string): string {
+  return `${STORAGE_PREFIX}${slug}`
+}
 
 function isScanArtifact(value: unknown): value is ScenarioScanArtifact {
   if (typeof value !== 'object' || value === null) return false
@@ -985,7 +998,8 @@ function parseScenarioState(raw: string): ScenarioState | null {
   if (candidate.v !== 3) return null
 
   const stored = parseStoredChapters(candidate)
-  return stored ? { v: 3, ...stored } : null
+  if (!stored) return null
+  return candidate.engaged === true ? { v: 3, ...stored, engaged: true } : { v: 3, ...stored }
 }
 
 export function readScenarioState(slug: string): ScenarioState {

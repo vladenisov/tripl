@@ -20,7 +20,7 @@
  * a lexeme's tone drops straight into `<Chip>`, `<Dot>` and `<MiniStat>`.
  */
 import type { ChipTone } from '@/components/primitives/chip'
-import type { AlertDeliveryStatus, MonitorStatus } from '@/types'
+import type { AlertDeliveryStatus, MonitoringSignal, MonitorStatus } from '@/types'
 import type { RunPillStatus } from '@/pages/settings/scans/scanRunStatus'
 import { EVENT_STATUS_LABELS, EVENT_STATUS_TONE, type EventStatus } from './eventStatus'
 
@@ -193,4 +193,29 @@ const TONE_VAR: Record<ChipTone, string> = {
 /** The semantic CSS variable for a tone (e.g. 'success' → 'var(--success)'). */
 export function toneVar(tone: ChipTone): string {
   return TONE_VAR[tone]
+}
+
+// ───────── Signal direction ─────────
+
+export type SignalDirection = MonitoringSignal['direction']
+export type SignalDirectionTone = 'danger' | 'warning'
+
+/**
+ * spike → danger, drop → warning: the colour convention every signal surface
+ * shares (Anomalies, Overview, the event hero and banner, the chart marks). Top
+ * movers kept their own and painted a spike green, so the breakdown rows behind
+ * a red "Volume spike detected" banner looked healthy (MON-19).
+ */
+export const SIGNAL_DIRECTION: Record<SignalDirection, StatusLexeme> = {
+  spike: { label: 'Spike', tone: 'danger' },
+  drop: { label: 'Drop', tone: 'warning' },
+}
+
+export function signalDirectionTone(direction: SignalDirection): SignalDirectionTone {
+  return direction === 'drop' ? 'warning' : 'danger'
+}
+
+/** {@link signalDirectionTone} as a CSS colour. */
+export function signalDirectionColor(direction: SignalDirection): string {
+  return `var(--${signalDirectionTone(direction)})`
 }

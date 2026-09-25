@@ -233,6 +233,13 @@ async def create_demo_project(
     return await project_service.get_project(session, slug)
 
 
+# How recent a ready demo must be for a cancel that found nothing in flight to
+# report it as the create it raced (``state="finished"``). Generous next to the
+# client's provisioning timeout, so a slow cancel request still says "it
+# finished" rather than "nothing happened"; an older demo is some earlier one.
+DEMO_CANCEL_FINISHED_WINDOW = timedelta(minutes=10)
+
+
 async def request_demo_cancel(
     session: AsyncSession, *, created_by: uuid.UUID | None = None
 ) -> DemoCancelResponse:
@@ -244,9 +251,13 @@ async def request_demo_cancel(
     seeding shell to flag — the create either already finished or never got far
     enough — so the caller can say so instead of implying a rollback that did
     not happen (tripl-jfm3.12).
+
+    ``state`` tells those two apart (DEMO-28): ``finished`` when a demo of this
+    user's became ready within :data:`DEMO_CANCEL_FINISHED_WINDOW`, so the UI can
+    promise it is in the list, and ``none`` otherwise.
     """
     if created_by is None:
-        return DemoCancelResponse(cancelled=False, slug=None)
+        return DemoCancelResponse(cancelled=False, slug=None, state="none")
 
     in_flight = (
         (
@@ -262,12 +273,27 @@ async def request_demo_cancel(
         .all()
     )
     if not in_flight:
-        return DemoCancelResponse(cancelled=False, slug=None)
+        finished = (
+            await session.execute(
+                select(Project.slug)
+                .where(
+                    Project.is_demo.is_(True),
+                    Project.generation_status == ProjectGenerationStatus.ready.value,
+                    Project.created_by_user_id == created_by,
+                    Project.created_at >= datetime.now(UTC) - DEMO_CANCEL_FINISHED_WINDOW,
+                )
+                .order_by(Project.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if finished is not None:
+            return DemoCancelResponse(cancelled=False, slug=finished, state="finished")
+        return DemoCancelResponse(cancelled=False, slug=None, state="none")
 
     for shell in in_flight:
         shell.generation_stage = DEMO_CANCEL_REQUESTED_STAGE
     await session.commit()
-    return DemoCancelResponse(cancelled=True, slug=in_flight[0].slug)
+    return DemoCancelResponse(cancelled=True, slug=in_flight[0].slug, state="stopped")
 
 
 async def _cancel_requested(session: AsyncSession, project_id: uuid.UUID) -> bool:

@@ -356,3 +356,34 @@ describe.each(ACCENT_BLOCKS)('accent: $name', ({ light, dark }) => {
     }
   })
 })
+
+/**
+ * Secondary text on a tinted panel (DEMO-24): the demo welcome panel and the
+ * provisioning dialog set captions on `--accent-soft` and `--warning-soft`,
+ * and the tint is what eats the ratio. `--fg-muted` and `--fg-subtle` must
+ * clear AA there; `--fg-faint` is measured too and must NOT, in at least one
+ * theme — that is why the demo copy is banned from using it on a fill, and
+ * the day a token change makes it pass, this says the ban can go.
+ */
+describe('secondary text on tinted fills', () => {
+  const TINTS = ['--accent-soft', '--warning-soft'] as const
+  const measure = (body: string, token: string, tint: string) =>
+    contrastRatio(oklchToken(body, token), composite(oklchDecl(body, tint), oklchToken(body, '--bg')))
+
+  it.each(THEMES)('$name: --fg-muted and --fg-subtle clear AA on each tint', ({ name, body }) => {
+    for (const tint of TINTS) {
+      for (const token of ['--fg-muted', '--fg-subtle'] as const) {
+        const ratio = measure(body, token, tint)
+        expect(ratio, `${name} ${token} on ${tint} over --bg measured ${ratio.toFixed(2)}:1`)
+          .toBeGreaterThanOrEqual(AA_BODY)
+      }
+    }
+  })
+
+  it('--fg-faint falls below AA on a tint somewhere, so it stays off tinted fills', () => {
+    const failing = THEMES.flatMap(({ name, body }) =>
+      TINTS.filter((tint) => measure(body, '--fg-faint', tint) < AA_BODY).map((tint) => `${name} ${tint}`),
+    )
+    expect(failing.length, 'every tinted pairing passes: the --fg-faint ban can be lifted').toBeGreaterThan(0)
+  })
+})

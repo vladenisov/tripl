@@ -284,6 +284,13 @@ async def simulate_alert_rule(
     )
 
 
+def _reject_cursor_with_offset(cursor: str | None, offset: int) -> None:
+    # A cursor already says where the page starts; an offset on top of it
+    # would be a second, conflicting answer.
+    if cursor is not None and offset:
+        raise HTTPException(status_code=422, detail="cursor and offset are mutually exclusive")
+
+
 @router.get("/alert-deliveries", response_model=AlertDeliveryListResponse)
 async def list_alert_deliveries(
     session: SessionDep,
@@ -307,7 +314,10 @@ async def list_alert_deliveries(
     date_to: datetime | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    # Keyset continuation from a previous page's `next_cursor` (ALR-27).
+    cursor: Annotated[str | None, Query(max_length=512)] = None,
 ) -> AlertDeliveryListResponse:
+    _reject_cursor_with_offset(cursor, offset)
     # Contradictory by construction: a delivery with an item in the group
     # necessarily has an item WITH a group, which `ungrouped` excludes, so the
     # pair can only ever return zero rows. Rejecting it is the difference between
@@ -332,6 +342,7 @@ async def list_alert_deliveries(
         date_to=date_to,
         offset=offset,
         limit=limit,
+        cursor=cursor,
     )
 
 
@@ -446,7 +457,10 @@ async def list_alert_inbox(
     scope: Annotated[FreeTextFilter | None, Query(max_length=200)] = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    # Keyset continuation from a previous page's `next_cursor` (ALR-27).
+    cursor: Annotated[str | None, Query(max_length=512)] = None,
 ) -> AlertInboxListResponse:
+    _reject_cursor_with_offset(cursor, offset)
     return await alerting_service.list_alert_inbox(
         session,
         slug,
@@ -460,6 +474,7 @@ async def list_alert_inbox(
         ),
         offset=offset,
         limit=limit,
+        cursor=cursor,
     )
 
 

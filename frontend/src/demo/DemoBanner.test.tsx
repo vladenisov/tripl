@@ -1,4 +1,5 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -12,6 +13,7 @@ import { DemoBanner } from './DemoBanner'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
 import { readScenarioState, writeScenarioState } from './scenarioModel'
 import { liveLoopState } from './scenarioTestState'
+import { at } from '@/test/at'
 
 const WELCOME_DISMISS_KEY = 'tripl-demo-welcome-dismissed:demo-1'
 
@@ -80,6 +82,10 @@ function renderBanner(options: {
   auth?: AuthContextValue
   initialPath?: string
   queryClient?: QueryClient
+  resetTimeoutMs?: number
+  reseedPollMs?: number
+  reseedWatchMs?: number
+  scenario?: ReactNode
 } = {}) {
   const project = options.project ?? makeProject()
   const auth = options.auth ?? authValue({ id: 'creator-1', role: 'editor' })
@@ -96,7 +102,13 @@ function renderBanner(options: {
         <MemoryRouter initialEntries={[initialPath]}>
           <DemoScenarioProvider project={project} pollIntervalMs={10_000}>
             <BranchProvider slug={project.slug}>
-              <DemoBanner project={project} />
+              <DemoBanner
+                project={project}
+                resetTimeoutMs={options.resetTimeoutMs}
+                reseedPollMs={options.reseedPollMs}
+                reseedWatchMs={options.reseedWatchMs}
+                scenario={options.scenario}
+              />
               <LocationProbe />
             </BranchProvider>
           </DemoScenarioProvider>
@@ -119,6 +131,49 @@ describe('DemoBanner', () => {
     expect(screen.getByText('Local synthetic data')).toBeInTheDocument()
     expect(screen.getByText('Demo workspace')).toBeInTheDocument()
     expect(screen.getByText('recipe v3')).toBeInTheDocument()
+  })
+
+  // One row, not a banner with the scenario strip stacked under it (LIVE-9).
+  it('carries the scenario inside its own row, between who it is and what it offers', () => {
+    renderBanner({
+      scenario: (
+        <section aria-label="Demo scenario" data-demo-scenario="">
+          <button type="button">Dismiss</button>
+        </section>
+      ),
+    })
+
+    const scenario = screen.getByRole('region', { name: 'Demo scenario' })
+    const row = scenario.parentElement
+    if (!row) throw new Error('the scenario has no row')
+    expect(row).toContainElement(screen.getByText('Local synthetic data'))
+    expect(row).toContainElement(screen.getByRole('button', { name: /^reset$/i }))
+    // In reading (and so tab) order: identity, scenario, then the actions.
+    const order = [
+      screen.getByText('Local synthetic data'),
+      screen.getByRole('button', { name: 'Dismiss' }),
+      screen.getByRole('button', { name: /what’s simulated/i }),
+    ]
+    order.slice(1).forEach((node, index) => {
+      expect(order[index]?.compareDocumentPosition(node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    })
+  })
+
+  it('folds into a pill on a phone that opens the whole bar (LIVE-9)', () => {
+    renderBanner()
+
+    const pill = screen.getByRole('button', { name: /demo workspace tools/i })
+    expect(pill).toHaveAttribute('aria-expanded', 'false')
+    // What it opens holds every control, so none is out of reach behind it.
+    const panel = document.getElementById(pill.getAttribute('aria-controls') ?? '')
+    if (!panel) throw new Error('the pill controls nothing')
+    expect(panel).toContainElement(screen.getByRole('button', { name: /^reset$/i }))
+    expect(panel).toContainElement(screen.getByRole('button', { name: /tour & chapters/i }))
+
+    fireEvent.click(pill)
+    expect(pill).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(pill)
+    expect(pill).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('reports freshness from the runtime tick, not the seed time (tripl-2su6.17)', () => {
@@ -151,7 +206,7 @@ describe('DemoBanner', () => {
     expect(resetSpy).not.toHaveBeenCalled()
     fireEvent.click(confirm)
 
-    await waitFor(() => expect(resetSpy).toHaveBeenCalledWith('demo-1'))
+    await waitFor(() => expect(resetSpy).toHaveBeenCalledWith('demo-1', expect.any(AbortSignal)))
   })
 
   it('after reset, leaves the now-dead detail URL and drops the stored branch', async () => {
@@ -165,7 +220,7 @@ describe('DemoBanner', () => {
     fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
     fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
 
-    await waitFor(() => expect(resetSpy).toHaveBeenCalledWith('demo-1'))
+    await waitFor(() => expect(resetSpy).toHaveBeenCalledWith('demo-1', expect.any(AbortSignal)))
     await waitFor(() =>
       expect(screen.getByTestId('path')).toHaveTextContent('/p/demo-1/overview'),
     )
@@ -210,17 +265,20 @@ describe('DemoBanner', () => {
 })
 
 describe('DemoBanner — the way back into the guided onboarding (tripl-imco)', () => {
-  it('restores the dismissed welcome panel and opens the tour', async () => {
-    // Dismissing the welcome panel is one unconfirmed X directly under this
-    // banner, and it used to remove the tour and the chapter picker for good:
-    // nothing in the app ever cleared this key.
+  it('opens the tour without restoring a panel the user put away (DEMO-26)', async () => {
+    // Dismissing the welcome panel used to remove the tour and the chapter
+    // picker for good; then this button restored the panel on every click,
+    // bundling two intents. It opens the tour, which offers the panel back.
     window.localStorage.setItem(WELCOME_DISMISS_KEY, '1')
     renderBanner()
 
     fireEvent.click(screen.getByRole('button', { name: /Tour & chapters/i }))
 
-    expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBeNull()
     expect(await screen.findByRole('dialog', { name: /Product tour/i })).toBeInTheDocument()
+    expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBe('1')
+
+    fireEvent.click(screen.getByRole('button', { name: /show the welcome panel/i }))
+    expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBeNull()
   })
 
   it('offers the way back to a viewer, who has no Reset to fall back on', () => {
@@ -240,7 +298,7 @@ describe('DemoBanner — the way back into the guided onboarding (tripl-imco)', 
     fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
     fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
 
-    await waitFor(() => expect(resetSpy).toHaveBeenCalledWith('demo-1'))
+    await waitFor(() => expect(resetSpy).toHaveBeenCalledWith('demo-1', expect.any(AbortSignal)))
     await waitFor(() => expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBeNull())
     expect(readScenarioState('demo-1').chapters['live-loop']).toEqual({
       status: 'active',
@@ -326,6 +384,151 @@ describe('DemoBanner — reset and delete failures (DEMO-4, DEMO-23)', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Demo delete refused'))
     expect(screen.queryByText('Demo reset failed')).not.toBeInTheDocument()
+  })
+})
+
+describe('DemoBanner — a reset that never answers (DEMO-4)', () => {
+  function stallReset() {
+    let signal: AbortSignal | undefined
+    vi.spyOn(projectsApi, 'resetDemo').mockImplementation(
+      (_slug: string, sig?: AbortSignal) =>
+        new Promise<Project>((_resolve, reject) => {
+          signal = sig
+          sig?.addEventListener('abort', () => {
+            reject(new ApiError('Request to the backend timed out.', 408))
+          })
+        }),
+    )
+    return () => signal
+  }
+
+  it('stops waiting after the timeout and says the server may still be re-seeding', async () => {
+    const signal = stallReset()
+    // The re-seed has not landed: the project still has its old id.
+    vi.spyOn(projectsApi, 'get').mockResolvedValue(makeProject())
+
+    renderBanner({ resetTimeoutMs: 20, reseedPollMs: 60_000 })
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+
+    // The request is actually aborted, and the progress modal gives way to an
+    // honest one that can be closed.
+    const stalled = await screen.findByRole('dialog', { name: /reset is still running/i })
+    expect(signal()?.aborted).toBe(true)
+    expect(stalled).toHaveTextContent(/may still be re-seeding/i)
+    expect(screen.queryByRole('dialog', { name: /re-seeding demo workspace/i })).not.toBeInTheDocument()
+    // Told once, by the dialog — not again under the banner.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    // Both the footer Close and the dialog's X close it.
+    fireEvent.click(at(within(stalled).getAllByRole('button', { name: /^close$/i }), 0))
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: /reset is still running/i })).not.toBeInTheDocument(),
+    )
+    // The server may still be re-seeding, so a second reset (or a delete)
+    // would race it.
+    expect(screen.getByRole('button', { name: /resetting/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^delete$/i })).toBeDisabled()
+  })
+
+  it('drops everything tied to the old ids at once, without waiting to know', async () => {
+    stallReset()
+    vi.spyOn(projectsApi, 'get').mockResolvedValue(makeProject())
+    window.localStorage.setItem('tripl-branch:demo-1', 'branch-abc')
+    window.localStorage.setItem(WELCOME_DISMISS_KEY, '1')
+    const progress = liveLoopState('live-loop/see-chart', { status: 'completed' })
+    writeScenarioState('demo-1', progress)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    queryClient.setQueryData(eventTypesKey('demo-1', null), [{ id: 'old-seeded-row' }])
+
+    renderBanner({
+      queryClient,
+      initialPath: '/p/demo-1/metrics/metric-99',
+      resetTimeoutMs: 20,
+      reseedPollMs: 60_000,
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+    await screen.findByRole('dialog', { name: /reset is still running/i })
+
+    // Harmless if the server rolled back, and "Refresh now" or "Close" would
+    // otherwise keep a stored branch id and cached rows for deleted entities.
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/p/demo-1/overview'))
+    expect(window.localStorage.getItem('tripl-branch:demo-1')).toBeNull()
+    expect(queryClient.getQueryCache().find({ queryKey: eventTypesKey('demo-1', null) })).toBeUndefined()
+    // The guidance is not touched until the re-seed is known to have landed.
+    expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBe('1')
+    expect(readScenarioState('demo-1').chapters['live-loop']).toEqual(progress.chapters['live-loop'])
+  })
+
+  it('finishes the reset when the server shows the re-seeded project', async () => {
+    stallReset()
+    // A re-seed replaces the project row: a new id under the same slug.
+    const getSpy = vi
+      .spyOn(projectsApi, 'get')
+      .mockResolvedValueOnce(makeProject())
+      .mockResolvedValue(makeProject({ id: 'p-2' }))
+    window.localStorage.setItem(WELCOME_DISMISS_KEY, '1')
+    writeScenarioState('demo-1', liveLoopState('live-loop/see-chart', { status: 'completed' }))
+
+    renderBanner({ resetTimeoutMs: 20, reseedPollMs: 10 })
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+
+    await waitFor(() => expect(getSpy).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBeNull())
+    expect(readScenarioState('demo-1').chapters['live-loop']).toEqual({
+      status: 'active',
+      step: 'live-loop/run-scan',
+    })
+    // Nothing left to say, and nothing left to race.
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: /reset is still running/i })).not.toBeInTheDocument(),
+    )
+    expect(screen.getByRole('button', { name: /^reset$/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^delete$/i })).toBeEnabled()
+  })
+
+  it('offers Reset again once the watch runs out without a re-seed', async () => {
+    stallReset()
+    vi.spyOn(projectsApi, 'get').mockResolvedValue(makeProject())
+    window.localStorage.setItem(WELCOME_DISMISS_KEY, '1')
+
+    renderBanner({ resetTimeoutMs: 20, reseedPollMs: 10, reseedWatchMs: 30 })
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+    const stalled = await screen.findByRole('dialog', { name: /reset is still running/i })
+    fireEvent.click(at(within(stalled).getAllByRole('button', { name: /^close$/i }), 0))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^reset$/i })).toBeEnabled())
+    // Taken as rolled back: the progress through the old dataset stands.
+    expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBe('1')
+  })
+})
+
+describe('DemoBanner — deleting leaves nothing behind in storage (DEMO-17)', () => {
+  it('forgets the tour, scenario, welcome and hint state of the deleted demo', async () => {
+    vi.spyOn(projectsApi, 'deleteDemo').mockResolvedValue(undefined as never)
+    window.localStorage.setItem('tripl-tour:demo-1', '3')
+    window.localStorage.setItem(WELCOME_DISMISS_KEY, '1')
+    window.sessionStorage.setItem('tripl-demo-hints-muted:demo-1', '1')
+    window.localStorage.setItem('tripl-tour:other-demo', '2')
+    writeScenarioState('demo-1', liveLoopState('live-loop/see-chart', { status: 'completed' }))
+
+    renderBanner()
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /delete demo/i }))
+
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/workspace'))
+    expect(window.localStorage.getItem('tripl-tour:demo-1')).toBeNull()
+    expect(window.localStorage.getItem(WELCOME_DISMISS_KEY)).toBeNull()
+    expect(window.localStorage.getItem('tripl-demo-scenario:demo-1')).toBeNull()
+    expect(window.sessionStorage.getItem('tripl-demo-hints-muted:demo-1')).toBeNull()
+    // Only that demo's.
+    expect(window.localStorage.getItem('tripl-tour:other-demo')).toBe('2')
   })
 })
 

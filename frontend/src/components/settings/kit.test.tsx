@@ -1,3 +1,4 @@
+import { createRef } from 'react'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { Field, Panel, SCard, Select, TextArea, TextInput } from './kit'
@@ -147,5 +148,32 @@ describe('SCard header', () => {
 
     expect(screen.getByRole('heading', { name: 'Project details', level: 2 })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { level: 3 })).toBeNull()
+  })
+})
+
+describe('TextInput — form attributes (WS-20)', () => {
+  it('forwards type, required, readOnly, list, autoComplete and ref to the input', () => {
+    const ref = createRef<HTMLInputElement>()
+    render(
+      <TextInput
+        ref={ref}
+        type="email"
+        required
+        readOnly
+        list="suggestions"
+        autoComplete="off"
+        value="a@example.com"
+        aria-label="Email"
+      />,
+    )
+
+    // A `list` makes it a combobox: the datalist offers suggestions.
+    const input = screen.getByRole('combobox', { name: 'Email' })
+    expect(input).toHaveAttribute('type', 'email')
+    expect(input).toBeRequired()
+    expect(input).toHaveAttribute('readonly')
+    expect(input).toHaveAttribute('list', 'suggestions')
+    expect(input).toHaveAttribute('autocomplete', 'off')
+    expect(ref.current).toBe(input)
   })
 })

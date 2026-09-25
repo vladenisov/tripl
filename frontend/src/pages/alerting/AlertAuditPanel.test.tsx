@@ -50,6 +50,8 @@ function page(count: number, total: number): AlertDeliveryListResponse {
       mockDelivery({ id: `delivery-${index + 1}` }),
     ),
     total,
+    // The Delivery log pages by offset (ALR-36); the cursor is not read here.
+    next_cursor: null,
   }
 }
 
@@ -98,10 +100,14 @@ function Harness({
       isError={isError}
       pinnedDelivery={null}
       deliveryFilters={filters}
-      setDeliveryFilters={setFilters}
-      activeScanFilter={filters.scan_config_id}
+      // What the page does: one write that sets the filters and drops the
+      // offset together (ALR-36).
+      onDeliveryFiltersChange={next => {
+        setFilters(next)
+        setOffset(0)
+      }}
       deliveryOffset={offset}
-      setDeliveryOffset={setOffset}
+      onDeliveryOffsetChange={setOffset}
       deliveryLimit={2}
       destinations={[]}
       allRules={[]}
@@ -330,6 +336,7 @@ describe('AlertAuditPanel viewer gating (tripl-oxkt.9)', () => {
   const failedPage: AlertDeliveryListResponse = {
     items: [mockDelivery({ status: 'failed', error_message: 'Forbidden' })],
     total: 1,
+    next_cursor: null,
   }
 
   it('leaves the log itself readable — filters and paging are not writes', () => {
@@ -352,5 +359,39 @@ describe('AlertAuditPanel viewer gating (tripl-oxkt.9)', () => {
 
     expect(screen.getByRole('button', { name: 'Retry delivery' })).toBeEnabled()
     expect(screen.queryByText(/your account has the viewer role/i)).toBeNull()
+  })
+})
+
+// A retry moving a row out of Status=Failed, or a destination deleted
+// elsewhere, can shrink the log under the offset — page 3 then answers zero
+// rows while `total` is still positive (ALR-38).
+describe('AlertAuditPanel — a page emptied under the reader', () => {
+  it('says the page is empty now, instead of that nothing was ever sent', () => {
+    renderPanel({ deliveries: page(0, 3), initialOffset: 4 })
+
+    expect(screen.getByText(/This page is now empty/)).toBeInTheDocument()
+    expect(screen.queryByText('No deliveries yet.')).toBeNull()
+  })
+
+  it('keeps Newer on screen, and it lands on the last page that has rows', () => {
+    const onOffset = vi.fn()
+    renderPanel({ deliveries: page(0, 3), initialOffset: 4, onOffset })
+
+    const newer = screen.getByRole('button', { name: 'Newer' })
+    expect(newer).toBeEnabled()
+    fireEvent.click(newer)
+
+    // Limit 2, total 3: the last page with rows starts at 2.
+    expect(onOffset).toHaveBeenLastCalledWith(2)
+  })
+
+  it('jumps past several empty pages in one step', () => {
+    const onOffset = vi.fn()
+    renderPanel({ deliveries: page(0, 3), initialOffset: 10, onOffset })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Newer' }))
+
+    // One page back would be 8, still past the end; the last page is at 2.
+    expect(onOffset).toHaveBeenLastCalledWith(2)
   })
 })

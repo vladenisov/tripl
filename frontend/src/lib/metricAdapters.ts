@@ -114,6 +114,8 @@ export function metricSignalToMonitoringSignal(signal: MetricSignalResponse): Mo
     stddev: signal.stddev,
     z_score: signal.z_score,
     direction: signal.direction,
+    unit: signal.unit ?? null,
+    detected_at: signal.detected_at ?? null,
     // Catalog metric-scope signals are never an incident rollup child.
     incident_child: false,
   }

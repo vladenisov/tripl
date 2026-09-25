@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { Project } from '@/types'
-import { demoGenerationWarning, ownedDemoCount } from './demoGenerationGuard'
+import {
+  demoGenerationBlockedReason,
+  demoGenerationWarning,
+  ownedDemoCount,
+} from './demoGenerationGuard'
 import { MAX_DEMOS_PER_CREATOR } from './useDemoProvisioning'
 
 function makeProject(overrides: Partial<Project>): Project {
@@ -68,5 +72,18 @@ describe('demoGenerationWarning', () => {
 
     expect(warning?.canProceed).toBe(false)
     expect(warning?.title).toBe('Demo limit reached')
+  })
+})
+
+describe('demoGenerationBlockedReason (DEMO-27)', () => {
+  it('leaves the button enabled below the cap', () => {
+    expect(demoGenerationBlockedReason(0)).toBeNull()
+    expect(demoGenerationBlockedReason(MAX_DEMOS_PER_CREATOR - 1)).toBeNull()
+  })
+
+  it('names the cap and the way out once it is reached', () => {
+    const reason = demoGenerationBlockedReason(MAX_DEMOS_PER_CREATOR)
+    expect(reason).toContain(`${MAX_DEMOS_PER_CREATOR} of ${MAX_DEMOS_PER_CREATOR} demos`)
+    expect(reason).toMatch(/reset or delete one/i)
   })
 })

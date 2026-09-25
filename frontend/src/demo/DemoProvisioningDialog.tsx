@@ -60,12 +60,25 @@ function refusalOf(error: unknown): Refusal | null {
   return null
 }
 
+/**
+ * A failure that says nothing about what the server did (DEMO-5): the backend
+ * could not be reached (the client maps a network error to 503), or a gateway
+ * gave up on it (502/504) while the app behind may still be seeding. Only the
+ * app's own 500 is its rollback — anything here may well have left a demo
+ * behind, so the copy sends the user to the list before another attempt.
+ */
+function isUnreachable(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return true
+  return error.status === 0 || error.status === 502 || error.status === 503 || error.status === 504
+}
+
 /** Title + description for each state, so no state falls through to in-progress copy. */
 function copyFor(
   status: ProvisioningStatus,
   timedOut: boolean,
   cancelOutcome: CancelOutcome | null,
   refusal: Refusal | null,
+  unreachable: boolean,
 ): { title: string; description: string } {
   if (status === 'error' && refusal === 'forbidden') {
     return {
@@ -86,7 +99,11 @@ function copyFor(
         ? // Honesty: a timeout aborts OUR request; the server may well be
           // seeding still. Promising a rollback here would be a lie.
           'The request took too long and was stopped. The demo may still be finishing on the server — check your projects list before creating another.'
-        : 'Nothing was left behind — the partial demo was rolled back. You can try again.',
+        : unreachable
+          ? // Same honesty for a lost connection: the server may have
+            // accepted the request and gone on to finish it.
+            'The server could not be reached, so the result is unknown. The demo may still be created — check your projects list before trying again.'
+          : 'Nothing was left behind — the partial demo was rolled back. You can try again.',
     }
   }
   if (status === 'success') {
@@ -102,16 +119,28 @@ function copyFor(
     }
   }
   if (status === 'cancelled') {
-    return cancelOutcome === 'stopped'
-      ? {
-          title: 'Demo generation cancelled',
-          description: 'The workspace was discarded — nothing was added to your projects.',
-        }
-      : {
-          title: 'Too late to cancel',
-          description:
-            'The demo had already finished generating on the server, so it will appear in your projects list. Delete it from its banner if you do not want it.',
-        }
+    if (cancelOutcome === 'stopped') {
+      return {
+        title: 'Demo generation cancelled',
+        description: 'The workspace was discarded — nothing was added to your projects.',
+      }
+    }
+    if (cancelOutcome === 'already-finished') {
+      return {
+        title: 'Too late to cancel',
+        description:
+          'The demo had already finished generating on the server, so it will appear in your projects list. Delete it from its banner if you do not want it.',
+      }
+    }
+    // The server found nothing still seeding — the create may never have
+    // reached it, or may have just finished (DEMO-28). Say only that: the
+    // likelier case is a finished demo, so a title claiming it "stopped" told
+    // the user the opposite of what happened.
+    return {
+      title: 'Nothing left to cancel',
+      description:
+        'The server had nothing left to cancel. If the demo finished first it is in your projects list — delete it from its banner if you do not want it.',
+    }
   }
   return {
     title: 'Generating demo workspace',
@@ -140,7 +169,14 @@ export function DemoProvisioningDialog({
   // the response header, so ApiError carries it for the demo 500 path.
   const requestId = error instanceof ApiError ? error.requestId : undefined
   const refusal = isError ? refusalOf(error) : null
-  const { title, description } = copyFor(status, timedOut, cancelOutcome, refusal)
+  const unreachable = isError && !timedOut && refusal === null && isUnreachable(error)
+  const { title, description } = copyFor(status, timedOut, cancelOutcome, refusal, unreachable)
+  // The server may have finished the create (a timeout, a lost connection):
+  // the copy sends the user to the projects list, refreshed behind this
+  // dialog, so the dialog must not offer a one-click duplicate that counts
+  // towards the demo cap. A retry is the create button, after a look.
+  const outcomeUnknown = isError && refusal === null && (timedOut || unreachable)
+  const offerRetry = isError && refusal === null && !outcomeUnknown
 
   // On failure the role="alert" block below is the single live announcer, so the
   // polite status region stays silent — otherwise a screen reader reads the same
@@ -186,7 +222,9 @@ export function DemoProvisioningDialog({
           >
             <p>{errorMessage}</p>
             {requestId ? (
-              <p className="font-mono text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+              // --fg-subtle, not --fg-faint: faint falls below AA on the
+              // tinted --danger-soft fill (DEMO-24).
+              <p className="font-mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
                 Reference: {requestId}
               </p>
             ) : null}
@@ -198,10 +236,10 @@ export function DemoProvisioningDialog({
         <DialogFooter>
           {isError ? (
             <>
-              <Button type="button" variant={refusal ? 'default' : 'outline'} onClick={onClose}>
+              <Button type="button" variant={offerRetry ? 'outline' : 'default'} onClick={onClose}>
                 Close
               </Button>
-              {!refusal && (
+              {offerRetry && (
                 <Button type="button" onClick={onRetry}>
                   Try again
                 </Button>

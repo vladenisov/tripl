@@ -1,77 +1,47 @@
-import { type ElementType, type ReactNode, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from 'react-router-dom'
 import { dataSourcesApi } from '@/api/dataSources'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
-import { ErrorState } from '@/components/error-state'
 import { Chip } from '@/components/primitives/chip'
-import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-} from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Textarea } from '@/components/ui/textarea'
 import { WorkspaceWelcome } from '@/components/workspace-welcome'
 import { DemoProvisioningDialog } from '@/demo/DemoProvisioningDialog'
-import { demoGenerationWarning, ownedDemoCount } from '@/demo/demoGenerationGuard'
+import {
+  demoGenerationBlockedReason,
+  demoGenerationWarning,
+  ownedDemoCount,
+} from '@/demo/demoGenerationGuard'
 import { useDemoProvisioning } from '@/demo/useDemoProvisioning'
+import { forgetDemoLocalState, sweepOrphanedDemoLocalState } from '@/demo/demoLocalState'
 import { useConfirm } from '@/hooks/useConfirm'
-import { formatIncidentCount } from '@/lib/alertStatus'
-import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
-import { formatDate, formatDateTime } from '@/lib/datetime'
-import { getMonitoringPath } from '@/lib/monitoring'
-import { countOf, pluralize } from '@/lib/plural'
-import { friendlyScanError } from '@/lib/scanError'
-import type {
-  Project,
-  ProjectLatestScanJob,
-  ProjectLatestSignal,
-  ProjectSummary,
-} from '@/types'
+import { deleteProjectConfirmation } from '@/lib/projectDeletion'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { formatPlanCoverage } from '@/lib/coverage'
+import { pluralize } from '@/lib/plural'
+import type { Project } from '@/types'
 import {
   Activity,
   AlertTriangle,
-  ArrowRight,
   BellRing,
-  MoreHorizontal,
-  PlayCircle,
   Plus,
-  Settings2,
   Sparkles,
-  Trash2,
 } from 'lucide-react'
-import { dataSourcesKey, projectsKey, projectsQueryOptions } from '@/lib/queryKeys'
+import { dataSourcesKey, projectKey, projectsKey, projectsQueryOptions } from '@/lib/queryKeys'
 import { canWrite, isOwner as isOwnerRole } from '@/lib/permissions'
+import { AttentionStat, ProjectCard } from './ProjectsPageCards'
+import { CreateProjectDialog } from './ProjectsPageCreateDialog'
+import { reviewQueueHint, summarizePortfolio } from './ProjectsPagePortfolio'
 
 export default function MainPage() {
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
   const { user } = useAuth()
   const [showForm, setShowForm] = useState(false)
-  const [name, setName] = useState('')
-  const [slug, setSlug] = useState('')
-  const [slugTouched, setSlugTouched] = useState(false)
-  const [description, setDescription] = useState('')
+  // The slug whose delete succeeded but whose list refetch has not landed yet:
+  // its card is still listed and must keep saying "Deleting…" (WS-9).
+  const [settlingSlug, setSettlingSlug] = useState<string | null>(null)
   const { confirm, dialog } = useConfirm()
 
   const projectsQuery = useQuery(projectsQueryOptions())
@@ -80,82 +50,54 @@ export default function MainPage() {
     queryFn: dataSourcesApi.list,
   })
 
-  const projects = [...(projectsQuery.data ?? [])].sort(
-    (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at),
-  )
+  // One pass over the list, memoised: the sort and the roll-up used to run on
+  // every render of the page (WS-44).
+  const {
+    projects,
+    totals: portfolio,
+    projectsWithScans,
+    projectsWithSignals,
+    projectsWithLatestScanJob,
+    projectsWithRunningScan,
+    projectsWithFailedScan,
+    failingScanConfigCount,
+  } = useMemo(() => summarizePortfolio(projectsQuery.data ?? []), [projectsQuery.data])
   const dataSourceCount = dataSourcesQuery.data?.length ?? 0
 
-  const portfolio = projects.reduce(
-    (totals, project) => {
-      totals.activeEventCount += project.summary.active_event_count
-      totals.alertDestinationCount += project.summary.alert_destination_count
-      totals.eventCount += project.summary.event_count
-      totals.implementedEventCount += project.summary.implemented_event_count
-      totals.monitoringSignalCount += project.summary.monitoring_signal_count
-      totals.projectCount += 1
-      totals.reviewPendingEventCount += project.summary.review_pending_event_count
-      totals.scanCount += project.summary.scan_count
-      totals.variableCount += project.summary.variable_count
-      return totals
-    },
-    {
-      activeEventCount: 0,
-      alertDestinationCount: 0,
-      eventCount: 0,
-      implementedEventCount: 0,
-      monitoringSignalCount: 0,
-      projectCount: 0,
-      reviewPendingEventCount: 0,
-      scanCount: 0,
-      variableCount: 0,
-    },
-  )
+  // The workspace list is the one place that knows every project this browser
+  // can still reach, so it clears demo state left behind by projects that are
+  // gone — deleted elsewhere, or by someone else (DEMO-17).
+  const loadedProjects = projectsQuery.data
+  useEffect(() => {
+    if (loadedProjects) sweepOrphanedDemoLocalState(loadedProjects.map((project) => project.slug))
+  }, [loadedProjects])
 
   const coverageDisplay = formatPlanCoverage(
     portfolio.implementedEventCount,
     portfolio.activeEventCount,
   )
-  const projectsWithScans = projects.filter((project) => project.summary.scan_count > 0).length
-  const projectsWithSignals = projects.filter(
-    (project) => project.summary.monitoring_signal_count > 0,
-  ).length
-  const projectsWithLatestScanJob = projects.filter(
-    (project) => project.summary.latest_scan_job != null,
-  ).length
-  const projectsWithRunningScan = projects.filter(
-    (project) => project.summary.latest_scan_job?.status === 'running',
-  ).length
-  // Count projects with ANY scan config whose LATEST run failed — NOT just the
-  // single newest job across the project. A config that fails every hourly run is
-  // invisible in latest_scan_job once a different config logs a newer success, so
-  // the rollup follows the per-config failing_scan_config_count instead (tripl-7l83.3).
-  const projectsWithFailedScan = projects.filter(
-    (project) => project.summary.failing_scan_config_count > 0,
-  ).length
-  const failingScanConfigCount = projects.reduce(
-    (total, project) => total + project.summary.failing_scan_config_count,
-    0,
-  )
 
-  const createMut = useMutation({
-    mutationFn: () => projectsApi.create({ name, slug, description }),
-    onSuccess: (created) => {
-      void queryClient.invalidateQueries({ queryKey: projectsKey() })
-      setShowForm(false)
-      setName('')
-      setSlug('')
-      setSlugTouched(false)
-      setDescription('')
-      // Enter the freshly-created project instead of stranding the user on the
-      // workspace list — mirrors the demo path's success routing (tripl-q7i1.8).
-      void navigate(`/p/${created.slug}/overview`)
+  // The delete dialog shows its own failure, and the card shows its own
+  // pending state, so neither is left to a toast or to nothing at all (WS-9).
+  //
+  // The confirm dialog runs the delete and closes once the DELETE succeeds; the
+  // list refetch after it is tracked by `settlingSlug` rather than by keeping
+  // the mutation pending, so the dialog does not wait on it.
+  const deleteMut = useMutation({
+    meta: SILENT_ERROR_META,
+    mutationFn: (projectSlug: string) => projectsApi.del(projectSlug),
+    onSuccess: (_data, projectSlug) => {
+      queryClient.removeQueries({ queryKey: projectKey(projectSlug) })
+      // A demo's tour, scenario and welcome state is keyed by slug and would
+      // otherwise outlive it (DEMO-17); harmless for any other project.
+      forgetDemoLocalState(projectSlug)
+      setSettlingSlug(projectSlug)
+      void queryClient
+        .invalidateQueries({ queryKey: projectsKey() })
+        .finally(() => setSettlingSlug(current => (current === projectSlug ? null : current)))
     },
   })
-
-  const deleteMut = useMutation({
-    mutationFn: (projectSlug: string) => projectsApi.del(projectSlug),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectsKey() }),
-  })
+  const deleteBusy = deleteMut.isPending || settlingSlug !== null
 
   // Demo provisioning: a blocking create with staged progress, a duplicate-click
   // guard, and success routing to the new demo's Overview welcome (not Events).
@@ -165,8 +107,14 @@ export default function MainPage() {
 
   // Every demo is an extra synthetic workspace inside the real roll-ups, so the
   // second one asks first and points at Reset instead (tripl-jfm3.14).
+  //
+  // At the cap the button is disabled with the reason beside it (DEMO-27): the
+  // old confirm there had two buttons that both did nothing.
+  const ownedDemos = ownedDemoCount(projects, user?.id)
+  const demoBlockedReason = demoGenerationBlockedReason(ownedDemos)
   const handleGenerateDemo = async () => {
-    const warning = demoGenerationWarning(ownedDemoCount(projects, user?.id))
+    if (demoBlockedReason) return
+    const warning = demoGenerationWarning(ownedDemos)
     if (warning) {
       const ok = await confirm({
         title: warning.title,
@@ -174,19 +122,20 @@ export default function MainPage() {
         confirmLabel: warning.confirmLabel,
         variant: 'primary',
       })
-      if (!ok || !warning.canProceed) return
+      if (!ok) return
     }
     provisioning.start()
   }
 
-  const handleDelete = async (project: Project) => {
-    const ok = await confirm({
-      title: 'Delete project',
-      message: `Are you sure you want to delete "${project.name}"? All event types and events will be permanently removed.`,
-      confirmLabel: 'Delete',
-      variant: 'danger',
-    })
-    if (ok) deleteMut.mutate(project.slug)
+  const handleDelete = (project: Project) => {
+    // One delete at a time: the first card keeps "Deleting…" through the list
+    // refetch, after the dialog has closed, and a second delete resetting the
+    // mutation then wiped it while that card was still listed. Every card's
+    // menu is shut meanwhile (deleteLocked below); this is the backstop.
+    if (deleteBusy) return
+    // A failure from an earlier attempt belongs to that attempt, not this one.
+    deleteMut.reset()
+    void confirm(deleteProjectConfirmation(project, () => deleteMut.mutateAsync(project.slug)))
   }
 
   const dataSourceValue = dataSourcesQuery.isError
@@ -233,89 +182,42 @@ export default function MainPage() {
           </p>
         </div>
         {canCreateProject && !isEmptyWorkspace && (
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void handleGenerateDemo()}
-              disabled={isProvisioningDemo}
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
-            </Button>
-            <Button size="sm" onClick={() => setShowForm(true)}>
-              <Plus className="h-3.5 w-3.5" />
-              New project
-            </Button>
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void handleGenerateDemo()}
+                disabled={isProvisioningDemo || demoBlockedReason !== null}
+                aria-describedby={demoBlockedReason ? 'demo-generation-blocked' : undefined}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
+              </Button>
+              <Button size="sm" onClick={() => setShowForm(true)}>
+                <Plus className="h-3.5 w-3.5" />
+                New project
+              </Button>
+            </div>
+            {demoBlockedReason && (
+              <p
+                id="demo-generation-blocked"
+                className="m-0 max-w-[320px] text-right text-[11.5px]"
+                style={{ color: 'var(--fg-subtle)' }}
+              >
+                {demoBlockedReason}
+              </p>
+            )}
           </div>
         )}
       </div>
 
-      <Dialog open={showForm} onOpenChange={setShowForm}>
-        <DialogContent>
-          <form onSubmit={(event) => { event.preventDefault(); createMut.mutate() }}>
-            <DialogHeader>
-              <DialogTitle>Create project</DialogTitle>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="project-name">Project name</Label>
-                <Input
-                  id="project-name"
-                  value={name}
-                  onChange={(event) => {
-                    setName(event.target.value)
-                    if (!slugTouched) {
-                      setSlug(
-                        event.target.value
-                          .toLowerCase()
-                          .replace(/[^a-z0-9]+/g, '-')
-                          .replace(/(^-|-$)/g, ''),
-                      )
-                    }
-                  }}
-                  placeholder="My Project"
-                  required
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="project-slug">Slug (url-friendly)</Label>
-                <Input
-                  id="project-slug"
-                  value={slug}
-                  onChange={(event) => {
-                    setSlugTouched(true)
-                    setSlug(event.target.value)
-                  }}
-                  className="font-mono"
-                  pattern="^[a-z0-9]+(?:-[a-z0-9]+)*$"
-                  required
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="project-desc">Description (optional)</Label>
-                <Textarea
-                  id="project-desc"
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  rows={2}
-                />
-              </div>
-              {createMut.isError && (
-                <ErrorState compact title="Could not create project" error={createMut.error} />
-              )}
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={createMut.isPending}>
-                Create
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      {showForm && (
+        <CreateProjectDialog
+          onClose={() => setShowForm(false)}
+          existingSlugs={projects.map((project) => project.slug)}
+        />
+      )}
 
       {projectsQuery.isLoading && <ProjectsPageSkeleton />}
 
@@ -476,7 +378,12 @@ export default function MainPage() {
                   project={project}
                   canDelete={canDeleteProject}
                   isOwner={isOwner}
-                  onDelete={() => { void handleDelete(project) }}
+                  isDeleting={
+                    settlingSlug === project.slug ||
+                    (deleteMut.isPending && deleteMut.variables === project.slug)
+                  }
+                  deleteLocked={deleteBusy}
+                  onDelete={() => handleDelete(project)}
                 />
               ))}
             </div>
@@ -498,588 +405,4 @@ function ProjectsPageSkeleton() {
       </div>
     </div>
   )
-}
-
-type StatTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral'
-
-/** How many projects the Review-queue hint names before it summarises the rest. */
-const REVIEW_HINT_PROJECT_LIMIT = 3
-
-/**
- * Where the workspace review backlog actually sits, biggest queue first.
- *
- * "across 3 projects" told the operator nothing about which project holds the
- * 1441 of the 2292 events, and the tile's single link opened a different one
- * (tripl-a1d1).
- */
-function reviewQueueHint(projects: Project[]): string {
-  const pending = projects
-    .filter((project) => project.summary.review_pending_event_count > 0)
-    .sort(
-      (left, right) =>
-        right.summary.review_pending_event_count - left.summary.review_pending_event_count,
-    )
-  if (pending.length === 0) return 'No pending event reviews'
-  const named = pending
-    .slice(0, REVIEW_HINT_PROJECT_LIMIT)
-    .map((project) => `${project.summary.review_pending_event_count} in ${project.name}`)
-    .join(' · ')
-  const remaining = pending.length - REVIEW_HINT_PROJECT_LIMIT
-  return remaining > 0 ? `${named} · +${remaining} more` : named
-}
-
-/**
- * An action-needed stat: an attention-worthy card that pops with a tone-soft
- * background and tone-colored border when it actually needs work, and stays
- * calm/muted once cleared. Reuses the same tone-soft attention system as the
- * project cards so actionable items read as clickable under the calm STATE
- * MiniStats (UX-10).
- */
-function AttentionStat({
-  icon: Icon,
-  label,
-  value,
-  unit,
-  hint,
-  tone = 'neutral',
-  pulse = false,
-}: {
-  icon: ElementType
-  label: string
-  value: string
-  unit?: string
-  hint: string
-  tone?: StatTone
-  pulse?: boolean
-}) {
-  const toneColor =
-    tone === 'success'
-      ? 'var(--success)'
-      : tone === 'warning'
-        ? 'var(--warning)'
-        : tone === 'danger'
-          ? 'var(--danger)'
-          : tone === 'info'
-            ? 'var(--info)'
-            : 'var(--fg-subtle)'
-  const toneSoft =
-    tone === 'success'
-      ? 'var(--success-soft)'
-      : tone === 'warning'
-        ? 'var(--warning-soft)'
-        : tone === 'danger'
-          ? 'var(--danger-soft)'
-          : tone === 'info'
-            ? 'var(--info-soft)'
-            : 'var(--surface-hover)'
-  const needsAttention = tone === 'warning' || tone === 'danger' || tone === 'info'
-  return (
-    <div
-      // `min-w-0` and no flex basis: the grid column decides the width now, and
-      // a min-width here is what used to push the third card onto its own row.
-      className="flex min-w-0 items-start gap-2.5 rounded-lg border px-3 py-2.5"
-      style={{
-        background: needsAttention ? toneSoft : 'var(--bg-elevated)',
-        borderColor: needsAttention ? toneColor : 'var(--border)',
-      }}
-    >
-      <div
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
-        style={{ background: toneSoft, color: toneColor }}
-      >
-        <Icon className="h-3.5 w-3.5" />
-      </div>
-      <dl className="m-0 min-w-0 space-y-0.5">
-        <dd className="m-0 flex items-baseline gap-1">
-          {pulse && needsAttention && (
-            <Dot tone={tone === 'warning' ? 'warning' : 'danger'} size={6} pulse />
-          )}
-          <span className="mono tnum text-[20px] font-medium leading-[1.1] tracking-[-0.01em]">
-            {value}
-          </span>
-          {unit ? (
-            <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-              {unit}
-            </span>
-          ) : null}
-        </dd>
-        <dt
-          className="text-[10px] font-semibold uppercase tracking-[0.07em]"
-          style={{ color: 'var(--fg-subtle)' }}
-        >
-          {label}
-        </dt>
-        <dd className="m-0 text-[11px] leading-[1.35]" style={{ color: 'var(--fg-muted)' }}>
-          {hint}
-        </dd>
-      </dl>
-    </div>
-  )
-}
-
-function ProjectCard({
-  project,
-  canDelete,
-  isOwner,
-  onDelete,
-}: {
-  project: Project
-  canDelete: boolean
-  isOwner: boolean
-  onDelete: () => void
-}) {
-  const status = getProjectStatus(project.summary)
-  const coverageDisplay = formatPlanCoverage(
-    project.summary.implemented_event_count,
-    project.summary.active_event_count,
-  )
-  const coverageRatio = planCoverageRatio(
-    project.summary.implemented_event_count,
-    project.summary.active_event_count,
-  )
-  const hasSignals = project.summary.monitoring_signal_count > 0
-  const needsReview = project.summary.review_pending_event_count > 0
-  // One needs-attention status leads the card in a saturated color; the rest
-  // render calm/muted so the eye lands on what matters (UX-23). Live monitoring
-  // signals outrank a pending review queue.
-  const attention: 'signals' | 'review' | null = hasSignals
-    ? 'signals'
-    : needsReview
-      ? 'review'
-      : null
-
-  return (
-    <Card
-      className="overflow-hidden p-0"
-      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
-    >
-      <div
-        className="flex items-start justify-between gap-3 border-b px-4 py-3"
-        style={{ borderColor: 'var(--border-subtle)' }}
-      >
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-[14px] font-semibold">{project.name}</span>
-            <Chip
-              tone={
-                attention === 'signals'
-                  ? 'neutral'
-                  : status.label === 'Ready'
-                    ? 'success'
-                    : status.label === 'Needs Review'
-                      ? 'warning'
-                      : status.label === 'In Progress'
-                        ? 'info'
-                        : 'neutral'
-              }
-              size="xs"
-            >
-              {status.label}
-            </Chip>
-            {hasSignals && (
-              <Chip tone="danger" size="xs">
-                <Dot tone="danger" pulse size={5} />
-                live
-              </Chip>
-            )}
-          </div>
-          <p className="mt-1 line-clamp-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-            {project.description ||
-              'No project description yet. Add one to capture the scope of this tracking plan.'}
-          </p>
-          <p className="mt-1 text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-            <span className="mono">{project.slug}</span> · Updated {formatDate(project.updated_at)}
-          </p>
-        </div>
-        {canDelete && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="shrink-0 text-muted-foreground"
-                aria-label={`Project actions for ${project.name}`}
-              >
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" sideOffset={6} className="w-[176px]">
-              <DropdownMenuItem
-                variant="destructive"
-                className="text-[12.5px]"
-                onSelect={onDelete}
-              >
-                <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                Delete project
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-      </div>
-
-      <CardContent className="space-y-4 px-4 py-4">
-        <div className="flex flex-wrap gap-1.5">
-          <Chip tone="neutral" size="xs">
-            {project.summary.active_event_count > 0 ? `${coverageDisplay} implemented` : 'No active events'}
-          </Chip>
-          {/* The workspace tile above was the only anchor into a review queue
-              anywhere, and it opened one arbitrary project's. Each card already
-              knows its own slug, so its count is the link — unambiguous, one per
-              queue, and cmd-clickable (tripl-a1d1). */}
-          {needsReview ? (
-            <Link
-              to={`/p/${project.slug}/events/review`}
-              aria-label={`Review queue for ${project.name}: ${pluralize(
-                project.summary.review_pending_event_count,
-                '1 pending event',
-                `${project.summary.review_pending_event_count} pending events`,
-              )}`}
-              className="rounded-full no-underline"
-            >
-              <Chip tone={attention === 'review' ? 'warning' : 'neutral'} size="xs">
-                {project.summary.review_pending_event_count} pending review
-              </Chip>
-            </Link>
-          ) : (
-            <Chip tone="neutral" size="xs">
-              Review queue clear
-            </Chip>
-          )}
-          <Chip tone="neutral" size="xs">
-            {project.summary.scan_count > 0
-              ? pluralize(
-                  project.summary.scan_count,
-                  '1 scan configured',
-                  `${project.summary.scan_count} scans configured`,
-                )
-              : 'No scan coverage'}
-          </Chip>
-          {/* A config that fails every run is hidden by the single newest
-              latest_scan_job once a sibling config succeeds — surface the
-              per-config failing count so it never goes unnoticed (tripl-7l83.3). */}
-          {project.summary.failing_scan_config_count > 0 && (
-            <Chip tone="danger" size="xs">
-              {pluralize(
-                project.summary.failing_scan_config_count,
-                '1 scan failing',
-                `${project.summary.failing_scan_config_count} scans failing`,
-              )}
-            </Chip>
-          )}
-          <Chip tone={attention === 'signals' ? 'danger' : 'neutral'} size="xs">
-            {hasSignals
-              ? pluralize(
-                  project.summary.monitoring_signal_count,
-                  '1 open signal',
-                  `${project.summary.monitoring_signal_count} open signals`,
-                )
-              : 'No open signals'}
-          </Chip>
-        </div>
-
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-            <span>Implementation progress</span>
-            <span className="mono tnum">
-              {project.summary.implemented_event_count}/{project.summary.active_event_count || 0}
-            </span>
-          </div>
-          <div
-            className="h-1.5 overflow-hidden rounded-full"
-            style={{ background: 'var(--bg-sunken)' }}
-          >
-            <div
-              className="h-full rounded-full transition-[width]"
-              style={{ width: `${coverageRatio * 100}%`, background: 'var(--accent)' }}
-            />
-          </div>
-        </div>
-
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,auto)_minmax(0,1fr)_minmax(0,1fr)]">
-          <div className="grid grid-cols-2 gap-2">
-            <Metric label="Event types" value={String(project.summary.event_type_count)} />
-            <Metric label="Active events" value={String(project.summary.active_event_count)} />
-            <Metric label="Variables" value={String(project.summary.variable_count)} />
-            <Metric label="Alerts" value={String(project.summary.alert_destination_count)} />
-          </div>
-          <Panel icon={PlayCircle} title="Latest scan">
-            <LatestScanJobSummary job={project.summary.latest_scan_job} isOwner={isOwner} />
-          </Panel>
-          <Panel icon={AlertTriangle} title="Monitoring">
-            <LatestSignalSummary
-              slug={project.slug}
-              signal={project.summary.latest_signal}
-              signalCount={project.summary.monitoring_signal_count}
-            />
-          </Panel>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <Button asChild size="sm">
-            <Link to={`/p/${project.slug}/events`}>
-              Open Project
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Link>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link to={`/p/${project.slug}/settings`}>
-              <Settings2 className="h-3.5 w-3.5" />
-              Settings
-            </Link>
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <dl
-      className="m-0 rounded-md border px-2.5 py-2"
-      style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
-    >
-      <dt
-        className="text-[10px] font-semibold uppercase tracking-[0.06em]"
-        style={{ color: 'var(--fg-faint)' }}
-      >
-        {label}
-      </dt>
-      <dd className="mono tnum m-0 mt-0.5 text-[18px] font-medium tracking-[-0.01em]">{value}</dd>
-    </dl>
-  )
-}
-
-function Panel({
-  icon: Icon,
-  title,
-  children,
-}: {
-  icon: ElementType
-  title: string
-  children: ReactNode
-}) {
-  return (
-    <div
-      className="rounded-md border p-3"
-      style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
-    >
-      <div className="mb-2 flex items-center gap-2">
-        <div
-          className="flex h-6 w-6 items-center justify-center rounded"
-          style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
-        >
-          <Icon className="h-3 w-3" />
-        </div>
-        <p className="text-[12px] font-medium">{title}</p>
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function LatestScanJobSummary({
-  job,
-  isOwner,
-}: {
-  job: ProjectLatestScanJob | null
-  isOwner: boolean
-}) {
-  if (!job) {
-    return (
-      <div className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        No scan runs yet. Configure a scan and run it once to start surfacing execution
-        history here.
-      </div>
-    )
-  }
-
-  const scanError = job.error_message ? friendlyScanError(job.error_message) : null
-  // Precedence MUST match `jobRowsScanned` (settings/scans/scanUtils.ts), which
-  // the scan detail page's "Rows read · last run" card reads: a run that reports
-  // both counters would otherwise show one number here and a different one on
-  // the scan page for the same run.
-  const rowsRead =
-    job.result_summary?.query_rows_scanned ?? job.result_summary?.scan_rows_processed ?? null
-  // Zero deltas are suppressed, all three alike. A green "+0 events" announced
-  // in the success colour that nothing happened, while its zero siblings were
-  // correctly silent — the card then read as a positive result at a glance
-  // (tripl-h5um).
-  const eventsCreated = job.result_summary?.events_created ?? 0
-  const signalsAdded = job.result_summary?.signals_added ?? 0
-  const alertsQueued = job.result_summary?.alerts_queued ?? 0
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="text-[12px] font-medium">{job.scan_name}</p>
-        <Badge variant={getScanJobStatusVariant(job.status)}>{job.status}</Badge>
-      </div>
-      <div className="space-y-0.5 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        <p>{describeScanJobTiming(job)}</p>
-        {/* What this number counts, spelled out: warehouse rows this run read
-            from the data source. The Monitoring tile beside it prints the value
-            of one metric bucket, so "8,261" next to "13,373" under the same scan
-            name and the same timestamp read as two surfaces disagreeing about
-            one figure rather than two unrelated quantities (tripl-h5um).
-            "Rows read" is also what the scan detail page's card is called. */}
-        {rowsRead != null && (
-          <p
-            className="mono tnum"
-            title="Warehouse rows this run read from the data source. Not an event count."
-          >
-            {rowsRead.toLocaleString()}{' '}
-            warehouse rows read
-          </p>
-        )}
-        {scanError && (
-          <div className="space-y-1">
-            <p className="line-clamp-2" style={{ color: 'var(--danger)' }}>
-              {scanError.message}
-            </p>
-            {isOwner && scanError.technical && (
-              <details className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-                <summary className="cursor-pointer select-none">View technical details</summary>
-                <p className="mono mt-1 whitespace-pre-wrap break-words">{scanError.technical}</p>
-              </details>
-            )}
-          </div>
-        )}
-      </div>
-      {(eventsCreated > 0 || signalsAdded > 0 || alertsQueued > 0) && (
-        <div className="flex flex-wrap gap-1.5">
-          {eventsCreated > 0 && (
-            <Chip size="xs" tone="success">
-              +{countOf(eventsCreated, 'event', 'events')}
-            </Chip>
-          )}
-          {signalsAdded > 0 && (
-            <Chip size="xs" tone="danger">
-              +{countOf(signalsAdded, 'signal', 'signals')}
-            </Chip>
-          )}
-          {alertsQueued > 0 && (
-            <Chip size="xs" tone="warning">
-              +{countOf(alertsQueued, 'alert', 'alerts')}
-            </Chip>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function LatestSignalSummary({
-  slug,
-  signal,
-  signalCount,
-}: {
-  slug: string
-  signal: ProjectLatestSignal | null
-  signalCount: number
-}) {
-  if (!signal) {
-    return (
-      <div className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        No recent monitoring signals. Once metrics collection finds anomalies, the latest signal
-        will appear here.
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Chip tone={signal.state === 'recent' ? 'warning' : 'danger'} size="xs">
-          {signal.state === 'recent' ? 'Recent signal' : 'Latest scan signal'}
-        </Chip>
-        <Chip size="xs">{signalCount} recent</Chip>
-      </div>
-      <div className="space-y-0.5">
-        {/* "Spike on <scope>" is the sentence the bell and the Anomalies list
-            already use, and it is what stops the scope name being read as a
-            readout: bare "Project total" sat directly beside a scan tile and
-            announced itself as a project-wide total rather than the name of the
-            series that fired (tripl-h5um). The direction rode a chip here as
-            well — the same fact, printed twice — so the chip is gone. */}
-        <p className="text-[12px] font-medium">
-          {signal.direction === 'drop' ? 'Drop' : 'Spike'} on {signal.scope_name}
-        </p>
-        {/* The value that series carried in ONE bucket, against the baseline the
-            detector expected — not the run's row count. The scan tile beside it
-            reports warehouse rows read, and the two were printing 8,261 and
-            13,373 under the same scan name with nothing saying they count
-            different things (tripl-h5um).
-
-            The scan tile answers that by naming its population in the line
-            itself. This one put its noun in a `title` only, which no reader
-            sees: on a freshly seeded stand the pair still read "7,953 warehouse
-            rows read" beside a bare "12,024 actual", same scan name, same 1:00
-            PM, i.e. two surfaces disagreeing about one figure. So the noun is on
-            the line now, and the noun is "events" — the workspace summary only
-            ever carries project_total / event_type / event scopes
-            (project_service `_populate_monitoring_signals` filters to exactly
-            those three) and all three are EventMetric volume. "In this bucket"
-            is the other half: it is what stops 12,024 events reading as an
-            impossible yield from 7,953 rows. */}
-        <p
-          className="text-[11px]"
-          style={{ color: 'var(--fg-subtle)' }}
-          title="What the detector measured in this one bucket, against the baseline it expected. Not a row count."
-        >
-          <span className="mono tnum">{signal.actual_count.toLocaleString()}</span> events in this
-          bucket vs <span className="mono tnum">{formatIncidentCount(signal.expected_count)}</span>{' '}
-          expected
-        </p>
-        {/* "Bucket" names the timestamp. Unlabelled it looked like the scan
-            tile's "Completed <time>" — the demo stand shows both as 9:00 AM,
-            which is exactly how one bucket and one run finish reading as one
-            event described twice. */}
-        <p className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-          Bucket {formatDateTime(signal.bucket)} · via {signal.scan_name}
-        </p>
-      </div>
-      <Button asChild variant="outline" size="sm">
-        <Link to={getMonitoringPath(slug, signal)}>
-          Open Signal
-          <ArrowRight className="h-3.5 w-3.5" />
-        </Link>
-      </Button>
-    </div>
-  )
-}
-
-function getProjectStatus(summary: ProjectSummary): {
-  label: string
-  variant: 'info' | 'warning' | 'success' | 'secondary'
-} {
-  if (summary.active_event_count === 0) {
-    return { label: 'Setup', variant: 'secondary' }
-  }
-  if (summary.review_pending_event_count > 0) {
-    return { label: 'Needs Review', variant: 'warning' }
-  }
-  if (summary.implemented_event_count === summary.active_event_count) {
-    return { label: 'Ready', variant: 'success' }
-  }
-  return { label: 'In Progress', variant: 'info' }
-}
-
-function getScanJobStatusVariant(
-  status: ProjectLatestScanJob['status'],
-): 'outline' | 'secondary' | 'success' | 'destructive' {
-  if (status === 'completed') return 'success'
-  if (status === 'failed') return 'destructive'
-  if (status === 'running') return 'secondary'
-  return 'outline'
-}
-
-function describeScanJobTiming(job: ProjectLatestScanJob) {
-  if (job.started_at && job.completed_at) {
-    return `Completed ${formatDateTime(job.completed_at)}`
-  }
-  if (job.started_at) {
-    return `Started ${formatDateTime(job.started_at)}`
-  }
-  return `Queued ${formatDateTime(job.created_at)}`
 }

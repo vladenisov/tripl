@@ -3,7 +3,8 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { Card, CardContent } from '@/components/ui/card'
-import { cn } from '@/lib/utils'
+import { ErrorState } from '@/components/error-state'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { SeasonalityCell } from '@/types/metrics'
 import { seasonalityKey } from '@/lib/queryKeys'
 
@@ -94,7 +95,9 @@ export function SeasonalityHeatmap({
   timeRange,
   color = 'var(--chart-1)',
 }: SeasonalityHeatmapProps) {
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    // The card renders the failure itself (MON-30).
+    meta: SILENT_ERROR_META,
     // Keyed on the range length, not the live bounds: those step every five
     // minutes, and a key that moved with them refetched the grid each time
     // (MON-3). The query function reads the current window on each fetch, as
@@ -136,7 +139,25 @@ export function SeasonalityHeatmap({
     )
   }
 
-  if (isError || !data || data.max_count === 0) {
+  // Only when there is nothing on screen: a failed refetch behind a grid that
+  // is still showing keeps the grid (placeholderData above).
+  if (isError && !data) {
+    // An outage used to read "Not enough data to build a seasonality heatmap",
+    // which is a claim about the scope, not about the request (MON-30).
+    return (
+      <ErrorState
+        title="Seasonality heatmap unavailable"
+        error={error}
+        onRetry={() => {
+          void refetch()
+        }}
+        retryLabel="Retry"
+        compact
+      />
+    )
+  }
+
+  if (!data || data.max_count === 0) {
     return (
       <Card>
         <CardContent className="p-6 text-sm text-muted-foreground">
@@ -177,8 +198,8 @@ export function SeasonalityHeatmap({
         <div>
           <h2 className="text-sm font-semibold">Hour × weekday heatmap</h2>
           <p className="text-xs text-muted-foreground">
-            Total volume by day-of-week and hour-of-day. Red ring marks slots with
-            detected anomalies. Total in window:{' '}
+            Total volume by day-of-week and hour-of-day. A red ring and dot mark
+            slots with detected anomalies. Total in window:{' '}
             <span className="font-medium">{formatCount(data.total_count)}</span>.
           </p>
         </div>
@@ -247,17 +268,43 @@ export function SeasonalityHeatmap({
                         title={tooltipText}
                       >
                         <span className="sr-only">{tooltipText}</span>
+                        {/* The fill is faded on its own layer. `opacity` on the
+                            ringed element faded the ring with it — to 6–18 % on
+                            empty and quiet slots, exactly where an anomaly (a drop
+                            to near zero) matters most. The ring stays on the
+                            unfaded element, and a dot adds a shape so the mark does
+                            not rest on colour alone (MON-18). The ring is its own
+                            overlay painted AFTER the fill: an inset box-shadow on
+                            the wrapper paints below its children, so the fill
+                            (up to 96 % opaque on the busiest slot) covered it. */}
                         <div
-                          data-count={count}
-                          className={cn(
-                            'h-6 w-full rounded-sm',
-                            hasAnomaly && 'ring-1 ring-destructive',
+                          data-anomaly={hasAnomaly ? 'true' : undefined}
+                          className="relative h-6 w-full rounded-sm"
+                        >
+                          <div
+                            aria-hidden="true"
+                            data-count={count}
+                            className="absolute inset-0 rounded-sm"
+                            style={{
+                              backgroundColor: color,
+                              opacity: scale.opacityFor(count),
+                            }}
+                          />
+                          {hasAnomaly && (
+                            <span
+                              aria-hidden="true"
+                              data-testid="heatmap-anomaly-ring"
+                              className="pointer-events-none absolute inset-0 rounded-sm ring-2 ring-inset ring-destructive"
+                            />
                           )}
-                          style={{
-                            backgroundColor: color,
-                            opacity: scale.opacityFor(count),
-                          }}
-                        />
+                          {hasAnomaly && (
+                            <span
+                              aria-hidden="true"
+                              data-testid="heatmap-anomaly-mark"
+                              className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-destructive ring-1 ring-background"
+                            />
+                          )}
+                        </div>
                       </td>
                     )
                   })}
