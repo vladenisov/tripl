@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ThemeProvider } from './theme-provider'
 import { TweaksPanelProvider } from './tweaks-panel'
@@ -66,13 +66,14 @@ describe('TweaksPanel', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('moves focus in, closes on Escape and hands focus back', () => {
+  it('moves focus in, closes on Escape and hands focus back', async () => {
     renderPanel()
     const opener = screen.getByRole('button', { name: 'Appearance' })
     opener.focus()
     fireEvent.click(opener)
 
-    const dialog = screen.getByRole('dialog', { name: 'Appearance' })
+    const dialog = await screen.findByRole('dialog', { name: 'Appearance' })
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
     expect(dialog.contains(document.activeElement)).toBe(true)
 
     fireEvent.keyDown(window, { key: 'Escape' })
@@ -80,20 +81,20 @@ describe('TweaksPanel', () => {
     expect(opener).toHaveFocus()
   })
 
-  it('closes on a click outside', () => {
+  it('closes on a click outside', async () => {
     renderPanel()
     fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
 
     fireEvent.pointerDown(document.body)
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('reports the selected options with aria-pressed', () => {
+  it('reports the selected options with aria-pressed', async () => {
     renderPanel()
     fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
 
-    const violet = screen.getByRole('button', { name: 'Violet' })
+    const violet = await screen.findByRole('button', { name: 'Violet' })
     expect(violet).toHaveAttribute('aria-pressed', 'false')
     fireEvent.click(violet)
     expect(violet).toHaveAttribute('aria-pressed', 'true')
@@ -103,12 +104,12 @@ describe('TweaksPanel', () => {
     expect(density.querySelector('[aria-pressed="true"]')).toHaveTextContent('Compact')
   })
 
-  it('offers System, and a System theme follows the OS as it changes (SHELL-33)', () => {
+  it('offers System, and a System theme follows the OS as it changes (SHELL-33)', async () => {
     const setOsDark = installColorScheme(false)
     renderPanel()
     fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
 
-    const system = screen.getByRole('button', { name: 'System' })
+    const system = await screen.findByRole('button', { name: 'System' })
     fireEvent.click(system)
     expect(system).toHaveAttribute('aria-pressed', 'true')
     expect(localStorage.getItem('tripl-ui-theme')).toBe('system')

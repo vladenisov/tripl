@@ -8,9 +8,11 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import { authApi } from '@/api/auth'
 import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
 import { AuthContext, type AuthContextValue, type AuthStatus } from './auth-context'
-import { SessionExpiredDialog } from './session-expired-dialog'
 import type { AuthUser } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+// Eager on purpose: the dialog exists to keep an unsaved page alive, and a lazy
+// chunk that failed to load after a deploy would reload that page away.
+import { SessionExpiredDialog } from './session-expired-dialog'
 
 const AUTH_QUERY_KEY = ['auth', 'me'] as const
 
