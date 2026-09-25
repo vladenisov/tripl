@@ -11,6 +11,7 @@ import './index.css'
 import App from './App.tsx'
 import { ErrorBoundary } from './components/error-boundary.tsx'
 import { surfaceMutationError, surfaceQueryError } from './lib/errorFeedback.ts'
+import { shouldRetryQuery } from './lib/queryRetry.ts'
 
 const queryClient = new QueryClient({
   // Backstop so a failure nobody renders still surfaces a message. A query or
@@ -20,7 +21,7 @@ const queryClient = new QueryClient({
   mutationCache: new MutationCache({ onError: surfaceMutationError }),
   defaultOptions: {
     queries: {
-      retry: 1,
+      retry: shouldRetryQuery,
       refetchOnWindowFocus: false,
       // Default cache policy: data is fresh for 60s, GC'd 5 min after unmount.
       // Per-query overrides: longer for event types/meta fields (rarely change),

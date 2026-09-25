@@ -18,6 +18,9 @@
  * is read in more than one file.
  */
 
+import { queryOptions } from '@tanstack/react-query'
+import { projectsApi } from '@/api/projects'
+
 /** Workspace data sources — `GET /data-sources`, one list for the whole app. */
 export const dataSourcesKey = () => ['dataSources'] as const
 
@@ -112,3 +115,43 @@ export const metricDrilldownKeys = (slug: string | undefined, metricId: string) 
     ['eventMetricBreakdowns', slug, 'metric', metricId],
     ['appVersionSeries', slug, 'metric', metricId],
   ] as const
+
+/** Every project the viewer can see — `GET /projects`, one list for the app. */
+export const projectsKey = () => ['projects'] as const
+
+/**
+ * The one definition of the projects-list query. Six components read this
+ * cache; each used to redeclare it with slightly different options, so
+ * whichever mounted first decided how it behaved. Spread it and override only
+ * what a reader genuinely needs (`enabled: false` for a cache-only read).
+ */
+export const projectsQueryOptions = () =>
+  queryOptions({ queryKey: projectsKey(), queryFn: ({ signal }) => projectsApi.list(signal) })
+
+/**
+ * Every events-tab dynamics cache for a project — `metricsApi.getEventsMetrics`.
+ * TabMetricsCard extends it with branch, filters and range; the realtime layer
+ * invalidates this prefix because the card does not poll while the stream is
+ * live, so a finished scan or collection would otherwise never reach the chart.
+ */
+export const eventsMetricsKey = (slug: string | undefined) => ['eventsMetrics', slug] as const
+
+/** One project — `GET /projects/{slug}`. */
+export const projectKey = (slug: string | undefined) => ['project', slug] as const
+
+/** The one definition of the single-project query; spread it to add `enabled`. */
+export const projectQueryOptions = (slug: string | undefined) =>
+  queryOptions({
+    queryKey: projectKey(slug),
+    queryFn: ({ signal }) => projectsApi.get(slug as string, signal),
+  })
+
+/**
+ * The alert inbox caches for a project: the grouped inbox list, one group's
+ * deliveries, and the "has this project ever delivered" probe. The realtime
+ * layer invalidates all three when a delivery lands.
+ */
+export const alertInboxKey = (slug: string | undefined) => ['alertInbox', slug] as const
+export const alertInboxGroupKey = (slug: string | undefined) => ['alertInboxGroup', slug] as const
+export const alertDeliveriesAnyKey = (slug: string | undefined) =>
+  ['alertDeliveriesAny', slug] as const

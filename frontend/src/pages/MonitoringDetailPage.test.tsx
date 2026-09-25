@@ -1767,7 +1767,8 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(screen.getByText('dau')).toBeInTheDocument()
 
     // The SQL itself is collapsed behind a "Show SQL" disclosure by default…
-    const sql = screen.getByDisplayValue('SELECT day, dau FROM daily_users')
+    // (The editor is a lazy chunk, so it can arrive a tick after the card.)
+    const sql = await screen.findByDisplayValue('SELECT day, dau FROM daily_users')
     expect(sql).not.toBeVisible()
     // …and expands on click.
     fireEvent.click(screen.getByText('Show SQL'))

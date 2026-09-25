@@ -26,6 +26,7 @@ import { cn } from '@/lib/utils'
 import type { EventType, MonitoringSignal } from '@/types'
 
 import { getMonitoringPath } from '@/lib/monitoring'
+import { eventsMetricsKey } from '@/lib/queryKeys'
 import {
   TAB_METRICS_GRANULARITY_OPTIONS,
   TAB_METRICS_RANGE_DAYS_DEFAULT,
@@ -79,8 +80,7 @@ export function TabMetricsCard({
 
   const { data: tabMetrics, isLoading } = useQuery({
     queryKey: [
-      'eventsMetrics',
-      slug,
+      ...eventsMetricsKey(slug),
       branchId ?? null,
       filters.filterEtId,
       filters.debouncedSearch,

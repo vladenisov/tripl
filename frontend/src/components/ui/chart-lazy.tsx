@@ -1,4 +1,5 @@
-import { lazy, Suspense, type ComponentProps } from 'react'
+import { Suspense, type ComponentProps } from 'react'
+import { lazyWithReload } from '@/lib/lazyWithReload'
 import type * as ChartLib from './chart'
 import { cn } from '@/lib/utils'
 
@@ -8,13 +9,13 @@ import { cn } from '@/lib/utils'
 // mount in the same render.
 const loadChartModule = () => import('./chart')
 
-const MetricsChartImpl = lazy(() =>
+const MetricsChartImpl = lazyWithReload(() =>
   loadChartModule().then(module_ => ({ default: module_.MetricsChart })),
 )
-const MiniMetricsChartImpl = lazy(() =>
+const MiniMetricsChartImpl = lazyWithReload(() =>
   loadChartModule().then(module_ => ({ default: module_.MiniMetricsChart })),
 )
-const MetricsMultiSeriesChartImpl = lazy(() =>
+const MetricsMultiSeriesChartImpl = lazyWithReload(() =>
   loadChartModule().then(module_ => ({ default: module_.MetricsMultiSeriesChart })),
 )
 

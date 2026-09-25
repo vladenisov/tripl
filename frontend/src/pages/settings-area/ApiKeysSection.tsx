@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Lock, Plus } from 'lucide-react'
 import { apiKeysApi } from '@/api/apiKeys'
-import { projectsApi } from '@/api/projects'
+import { projectsQueryOptions } from '@/lib/queryKeys'
 import { useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -41,7 +41,7 @@ export default function ApiKeysSection() {
   const [revealed, setRevealed] = useState<ApiKeyWithToken | null>(null)
 
   const listQuery = useQuery({ queryKey: ['api-keys'], queryFn: () => apiKeysApi.list() })
-  const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: () => projectsApi.list() })
+  const projectsQuery = useQuery(projectsQueryOptions())
 
   const projectNameById = (projectsQuery.data ?? []).reduce<Record<string, string>>((acc, p) => {
     acc[p.id] = p.name

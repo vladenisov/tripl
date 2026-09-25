@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
+import { lazyWithReload } from '@/lib/lazyWithReload'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { projectsApi } from '@/api/projects'
+import { projectsQueryOptions } from '@/lib/queryKeys'
 import { useAuth } from '@/components/auth-context'
 import { SCard } from '@/components/settings/kit'
 import { SettingsLayout } from '@/components/settings/SettingsLayout'
@@ -9,15 +10,15 @@ import { SETTINGS_STORAGE_KEY } from '@/components/settings/nav'
 import type { Project } from '@/types'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
 
-const ProjectGeneralSection = lazy(() => import('./ProjectGeneralSection'))
-const PlanRulesSection = lazy(() => import('./PlanRulesSection'))
-const MembersSection = lazy(() => import('./MembersSection'))
-const DataSourcesSection = lazy(() => import('./DataSourcesSection'))
-const ApiKeysSection = lazy(() => import('./ApiKeysSection'))
-const ProfileSection = lazy(() => import('./ProfileSection'))
-const SecuritySection = lazy(() => import('./SecuritySection'))
-const InstanceSection = lazy(() => import('./InstanceSection'))
-const WorkspaceAuditSection = lazy(() => import('./WorkspaceAuditSection'))
+const ProjectGeneralSection = lazyWithReload(() => import('./ProjectGeneralSection'))
+const PlanRulesSection = lazyWithReload(() => import('./PlanRulesSection'))
+const MembersSection = lazyWithReload(() => import('./MembersSection'))
+const DataSourcesSection = lazyWithReload(() => import('./DataSourcesSection'))
+const ApiKeysSection = lazyWithReload(() => import('./ApiKeysSection'))
+const ProfileSection = lazyWithReload(() => import('./ProfileSection'))
+const SecuritySection = lazyWithReload(() => import('./SecuritySection'))
+const InstanceSection = lazyWithReload(() => import('./InstanceSection'))
+const WorkspaceAuditSection = lazyWithReload(() => import('./WorkspaceAuditSection'))
 
 const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
 
@@ -35,7 +36,7 @@ const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
  */
 function useSettingsSlug(pickedSlug: string | null): string | undefined {
   const { slug: urlSlug } = useParams<{ slug?: string }>()
-  const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: projectsApi.list })
+  const projectsQuery = useQuery(projectsQueryOptions())
   const projects = projectsQuery.data ?? []
   if (urlSlug) return urlSlug
   if (pickedSlug) return pickedSlug
@@ -64,7 +65,7 @@ export default function SettingsArea({ section }: { section: string }) {
   const isOwner = isOwnerRole(auth.user?.role)
   const [pickedSlug, setPickedSlug] = useState<string | null>(null)
   const slug = useSettingsSlug(pickedSlug)
-  const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: projectsApi.list })
+  const projectsQuery = useQuery(projectsQueryOptions())
   const projects = projectsQuery.data ?? []
   const projectName = projects.find((p) => p.slug === slug)?.name
 

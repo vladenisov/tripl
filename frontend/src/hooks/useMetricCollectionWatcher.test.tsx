@@ -12,6 +12,7 @@ vi.mock('sonner', () => ({
 
 import { toast } from 'sonner'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { ApiError } from '@/api/client'
 import { useMetricCollectionWatcher } from './useMetricCollectionWatcher'
 
 // The watcher only reads id / last_collection_status / last_collection_error;
@@ -170,6 +171,54 @@ describe('useMetricCollectionWatcher', () => {
     fireEvent.click(screen.getByRole('button'))
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Collection failed.'))
+  })
+
+  // SHELL-32: a failing poll used to error the query, which kept refetching on
+  // the interval — a toast every 3 s and a spinner that never stopped.
+  it('settles with "no longer exists" when the metric was deleted mid-watch', async () => {
+    vi.mocked(metricsCatalogApi.get).mockRejectedValue(new ApiError('Not found', 404))
+    const onSettled = vi.fn()
+    renderHarness(onSettled)
+
+    fireEvent.click(screen.getByRole('button'))
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        '"Checkout errors" no longer exists — it was deleted while collecting.',
+      ),
+    )
+    expect(screen.getByRole('button')).toHaveTextContent('idle')
+    expect(metricsCatalogApi.get).toHaveBeenCalledTimes(1)
+    expect(onSettled).not.toHaveBeenCalled()
+  })
+
+  it('gives up after repeated failed polls instead of spinning forever', async () => {
+    vi.mocked(metricsCatalogApi.get).mockRejectedValue(new ApiError('Backend is unavailable.', 503))
+    renderHarness()
+
+    fireEvent.click(screen.getByRole('button'))
+
+    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('idle'))
+    expect(metricsCatalogApi.get).toHaveBeenCalledTimes(3)
+    expect(toast.info).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(toast.info).mock.calls[0]![0]).toMatch(/Lost track of "Checkout errors"/)
+  })
+
+  it('times out on schedule even while every poll fails', async () => {
+    let now = 1_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    vi.mocked(metricsCatalogApi.get).mockImplementation(async () => {
+      // Five minutes pass during the first (failing) poll.
+      now += 5 * 60_000
+      throw new ApiError('Gateway timeout', 504)
+    })
+    renderHarness()
+
+    fireEvent.click(screen.getByRole('button'))
+
+    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('idle'))
+    expect(vi.mocked(toast.info).mock.calls[0]![0]).toMatch(/is still collecting/)
+    expect(metricsCatalogApi.get).toHaveBeenCalledTimes(1)
   })
 
   it('keeps polling while the run is still running, then settles', async () => {

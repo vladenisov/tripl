@@ -60,7 +60,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
-import { dataSourcesKey } from '@/lib/queryKeys'
+import { dataSourcesKey, projectsKey, projectsQueryOptions } from '@/lib/queryKeys'
 import { canWrite, isOwner as isOwnerRole } from '@/lib/permissions'
 
 export default function MainPage() {
@@ -74,10 +74,7 @@ export default function MainPage() {
   const [description, setDescription] = useState('')
   const { confirm, dialog } = useConfirm()
 
-  const projectsQuery = useQuery({
-    queryKey: ['projects'],
-    queryFn: projectsApi.list,
-  })
+  const projectsQuery = useQuery(projectsQueryOptions())
   const dataSourcesQuery = useQuery({
     queryKey: dataSourcesKey(),
     queryFn: dataSourcesApi.list,
@@ -143,7 +140,7 @@ export default function MainPage() {
   const createMut = useMutation({
     mutationFn: () => projectsApi.create({ name, slug, description }),
     onSuccess: (created) => {
-      void queryClient.invalidateQueries({ queryKey: ['projects'] })
+      void queryClient.invalidateQueries({ queryKey: projectsKey() })
       setShowForm(false)
       setName('')
       setSlug('')
@@ -157,7 +154,7 @@ export default function MainPage() {
 
   const deleteMut = useMutation({
     mutationFn: (projectSlug: string) => projectsApi.del(projectSlug),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectsKey() }),
   })
 
   // Demo provisioning: a blocking create with staged progress, a duplicate-click

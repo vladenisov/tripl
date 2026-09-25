@@ -27,6 +27,7 @@ import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
 import {
   COMMAND_PALETTE_TRIGGER_ATTR,
+  preloadCommandPalette,
   useCommandPalette,
 } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
@@ -92,6 +93,8 @@ export function TopBar({
           aria-label="Command palette"
           {...{ [COMMAND_PALETTE_TRIGGER_ATTR]: '' }}
           onClick={() => palette.setOpen(true)}
+          onPointerEnter={preloadCommandPalette}
+          onFocus={preloadCommandPalette}
           className="flex h-7 items-center gap-1.5 rounded-md px-2 transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--fg-muted)' }}
         >

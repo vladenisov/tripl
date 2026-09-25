@@ -30,6 +30,7 @@ import { dataSourcesKey } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { uid } from '@/lib/uid'
 
 const DEFAULT_COLOR = '#6366f1'
 
@@ -135,7 +136,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   // uncheck the ones the tightened count_distinct heuristic no longer returns.
   const [identifierCandidates, setIdentifierCandidates] = useState<string[]>([])
   const [rowFilters, setRowFilters] = useState<RowFilterDraft[]>(() =>
-    (factTable?.row_filters ?? []).map(filter => ({ ...filter, id: crypto.randomUUID() })),
+    (factTable?.row_filters ?? []).map(filter => ({ ...filter, id: uid() })),
   )
 
   const [formErrors, setFormErrors] = useState<string[]>([])
@@ -297,7 +298,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   }
 
   const addRowFilter = () => {
-    setRowFilters(current => [...current, { id: crypto.randomUUID(), name: '', sql: '' }])
+    setRowFilters(current => [...current, { id: uid(), name: '', sql: '' }])
   }
 
   const updateRowFilter = (id: string, patch: Partial<FactTableRowFilter>) => {

@@ -40,8 +40,8 @@ export interface DriftResetCounts {
 }
 
 export const projectsApi = {
-  list: () => api.get<Project[]>('/projects'),
-  get: (slug: string) => api.get<Project>(`/projects/${slug}`),
+  list: (signal?: AbortSignal) => api.get<Project[]>('/projects', signal),
+  get: (slug: string, signal?: AbortSignal) => api.get<Project>(`/projects/${slug}`, signal),
   create: (data: { name: string; slug: string; description?: string }) =>
     api.post<Project>('/projects', data),
   // Demo lifecycle (tripl-2su6). Create BLOCKS ~5-8s while seeding and returns a

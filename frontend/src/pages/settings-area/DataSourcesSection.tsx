@@ -1,7 +1,8 @@
-import { lazy, Suspense } from 'react'
+import { Suspense } from 'react'
+import { lazyWithReload } from '@/lib/lazyWithReload'
 import { SHeader } from '@/components/settings/kit'
 
-const DataSourcesPage = lazy(() => import('@/pages/DataSourcesPage'))
+const DataSourcesPage = lazyWithReload(() => import('@/pages/DataSourcesPage'))
 
 /**
  * Workspace · Data sources. Reuses the existing DataSourcesPage wiring verbatim

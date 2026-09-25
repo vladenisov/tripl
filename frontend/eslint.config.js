@@ -39,6 +39,27 @@ export default defineConfig([
           depth: 3,
         },
       ],
+      // Every code-split component goes through lib/lazyWithReload.ts, which
+      // recovers a tab left open across a deploy. A bare React.lazy turns that
+      // first click after a release into a raw chunk-load error (#194 SHELL-6).
+      'no-restricted-syntax': [
+        'error',
+        // Selectors rather than no-restricted-imports, which also rejects every
+        // `import * as React from 'react'` because a namespace could reach lazy.
+        {
+          selector: "ImportDeclaration[source.value='react'] > ImportSpecifier[imported.name='lazy']",
+          message: 'Use lazyWithReload from @/lib/lazyWithReload instead of React.lazy.',
+        },
+        {
+          selector: "MemberExpression[object.name='React'][property.name='lazy']",
+          message: 'Use lazyWithReload from @/lib/lazyWithReload instead of React.lazy.',
+        },
+      ],
     },
+  },
+  {
+    // The one module allowed to call React.lazy: the wrapper itself.
+    files: ['src/lib/lazyWithReload.ts'],
+    rules: { 'no-restricted-syntax': 'off' },
   },
 ])

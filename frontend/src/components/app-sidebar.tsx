@@ -16,7 +16,6 @@ import {
   SlidersHorizontal,
 } from 'lucide-react'
 import { eventTypesApi } from '@/api/eventTypes'
-import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { BranchSwitcher } from '@/components/branch-switcher'
 import { useCommandPalette } from '@/components/command-palette-context'
@@ -33,7 +32,7 @@ import { useActiveBranchId } from '@/hooks/useBranch'
 import { buildNavGroups, type NavGroup, type NavItem, type NavTone } from '@/lib/navigation'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
 import type { EventType, Project } from '@/types'
-import { eventTypesKey } from '@/lib/queryKeys'
+import { eventTypesKey, projectsQueryOptions } from '@/lib/queryKeys'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
 
 const SIDEBAR_STORAGE_KEY = 'tripl-sidebar-collapsed'
@@ -156,10 +155,7 @@ export function AppSidebar() {
   const branchId = useActiveBranchId()
   const [collapsed, setCollapsed] = useSidebarCollapsed()
 
-  const projectsQuery = useQuery({
-    queryKey: ['projects'],
-    queryFn: projectsApi.list,
-  })
+  const projectsQuery = useQuery(projectsQueryOptions())
   const projects = projectsQuery.data ?? []
 
   // Keep the persisted last-slug fresh, but render the nav from the REAL route
@@ -186,10 +182,6 @@ export function AppSidebar() {
   const eventTypes = eventTypesQuery.data ?? []
   const currentPath = location.pathname
   const userInitials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
-  const projectSettingsActive =
-    !!slug
-    && (currentPath === `/p/${slug}/settings`
-      || currentPath === `/p/${slug}/settings/general`)
   const conceptsActive = !!slug && currentPath === `/p/${slug}/concepts`
 
   if (collapsed) {
@@ -296,20 +288,19 @@ export function AppSidebar() {
             <Link
               to="/settings/project/general"
               className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12.5px] font-medium no-underline transition-colors"
-              style={{
-                background: projectSettingsActive ? 'var(--surface-hover)' : 'transparent',
-                color: projectSettingsActive ? 'var(--fg)' : 'var(--fg-muted)',
-              }}
+              // Never "active": project settings open in the full-screen
+              // takeover, which does not render this sidebar.
+              style={{ background: 'transparent', color: 'var(--fg-muted)' }}
               onMouseEnter={(e) => {
-                if (!projectSettingsActive) e.currentTarget.style.background = 'var(--surface-hover)'
+                e.currentTarget.style.background = 'var(--surface-hover)'
               }}
               onMouseLeave={(e) => {
-                if (!projectSettingsActive) e.currentTarget.style.background = 'transparent'
+                e.currentTarget.style.background = 'transparent'
               }}
             >
               <SlidersHorizontal
                 className="h-3.5 w-3.5 shrink-0"
-                style={{ color: projectSettingsActive ? 'var(--accent)' : 'var(--fg-subtle)' }}
+                style={{ color: 'var(--fg-subtle)' }}
               />
               <span className="flex-1 truncate text-left">Project settings</span>
             </Link>

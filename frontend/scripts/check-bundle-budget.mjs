@@ -14,14 +14,16 @@ import path from 'node:path'
 
 const DIST = path.resolve(import.meta.dirname, '..', 'dist')
 
-// Bytes on disk before compression, measured 2026-09-25 plus ~5% headroom.
-const ENTRY_BUDGET = 226_000
-const CRITICAL_PATH_BUDGET = 1_180_000
+// Bytes on disk before compression, measured 2026-09-25 plus ~5% headroom —
+// after #194 took recharts, the demo chrome, the command palette dialog and the
+// settings surfaces off the first load (entry 132 732, critical path 694 876).
+const ENTRY_BUDGET = 140_000
+const CRITICAL_PATH_BUDGET = 730_000
 
-// Chunks that vite.config.ts splits out so that only the pages using them pay
-// for them. charts-vendor belongs here too, but it is still preloaded from the
-// entry today; add it in the change that takes it off the critical path (#194).
-const LAZY_ONLY = ['sql-editor']
+// Chunks that are split out so that only the pages using them pay for them:
+// the SQL editor, its formatter (fetched on the first Format click) and
+// recharts (vite.config.ts `charts-vendor`, behind components/ui/chart-lazy).
+const LAZY_ONLY = ['sql-editor', 'sql-format', 'charts-vendor']
 
 const html = readFileSync(path.join(DIST, 'index.html'), 'utf8')
 const entries = [...html.matchAll(/<script[^>]+type="module"[^>]+src="\/assets\/([^"]+\.js)"/g)]

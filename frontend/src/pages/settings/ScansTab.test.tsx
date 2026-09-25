@@ -571,7 +571,8 @@ describe('ScansTab', () => {
     fireEvent.click(screen.getByLabelText('Catalog only'))
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
-    fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
+    // The SQL editor is a lazy chunk.
+    fireEvent.change(await screen.findByPlaceholderText('SELECT * FROM analytics.events'), {
       target: { value: 'SELECT * FROM analytics.events' },
     })
     await screen.findByRole('option', { name: 'Click' })

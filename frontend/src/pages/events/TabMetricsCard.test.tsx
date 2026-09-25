@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { invalidateForEvent } from '@/realtime/invalidationMap'
 import { TabMetricsCard } from './TabMetricsCard'
 import { unappliedChartFilters } from './utils'
 
@@ -71,6 +72,7 @@ function renderCard(
       </MemoryRouter>
     </QueryClientProvider>,
   )
+  return queryClient
 }
 
 afterEach(() => {
@@ -108,6 +110,19 @@ describe('TabMetricsCard', () => {
     const url = new URL(String(fetchSpy.mock.calls[0][0]), 'http://localhost')
     expect(url.searchParams.has('branch')).toBe(false)
   })
+
+  it.each(['scan_job.updated', 'metric_collection.updated'] as const)(
+    'refetches when the stream reports %s, since it does not poll while live',
+    async (type) => {
+      const fetchSpy = installFetch()
+      const queryClient = renderCard('branch-1')
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1))
+
+      invalidateForEvent(queryClient, type, 'demo')
+
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    },
+  )
 
   it('neither fetches nor polls while the chart is collapsed (EVT-20)', async () => {
     const fetchSpy = installFetch()

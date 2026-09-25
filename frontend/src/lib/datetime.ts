@@ -1,6 +1,22 @@
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/
+
+/**
+ * Parse for display. A bare `YYYY-MM-DD` is a calendar day, not an instant:
+ * `new Date('2026-09-24')` reads it as UTC midnight, which west of UTC is still
+ * Sep 23 locally. So a date-only string becomes local midnight of that day;
+ * anything with a time part keeps the platform's instant parsing.
+ */
+function parseForDisplay(value: string): Date {
+  const dateOnly = DATE_ONLY.exec(value)
+  if (dateOnly) {
+    return new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+  }
+  return new Date(value)
+}
+
 // Returns '' for an empty or unparseable input (never the literal "Invalid Date").
 export function formatDate(value: string) {
-  const date = new Date(value)
+  const date = parseForDisplay(value)
   if (Number.isNaN(date.getTime())) return ''
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
@@ -11,7 +27,7 @@ export function formatDate(value: string) {
 // from the Date's local parts so the result is locale-proof. Returns '' for an
 // empty or unparseable input.
 export function formatIsoDate(value: string): string {
-  const date = new Date(value)
+  const date = parseForDisplay(value)
   if (Number.isNaN(date.getTime())) return ''
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')

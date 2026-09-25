@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { act, renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useProjectEventStream } from './useProjectEventStream'
+import { reconnectDelay, useProjectEventStream } from './useProjectEventStream'
 
 // Minimal EventSource stand-in: records instances + listeners so tests can drive
 // events and inspect reconnect behaviour (jsdom ships no EventSource).
@@ -131,9 +131,10 @@ describe('useProjectEventStream', () => {
     expect(first.closed).toBe(true)
     expect(MockEventSource.instances).toHaveLength(1)
 
-    // Backoff elapses → a new stream opens, resuming from the last id.
+    // Backoff (1 s, up to +30% jitter) elapses → a new stream opens, resuming
+    // from the last id.
     act(() => {
-      vi.advanceTimersByTime(1000)
+      vi.advanceTimersByTime(1300)
     })
     expect(MockEventSource.instances).toHaveLength(2)
     expect(MockEventSource.instances[1].url).toContain('last_event_id=9')
@@ -165,5 +166,60 @@ describe('useProjectEventStream', () => {
     const source = MockEventSource.instances[0]
     unmount()
     expect(source.closed).toBe(true)
+  })
+
+  it('resyncs once on the hello that follows a reconnect', () => {
+    vi.useFakeTimers()
+    const { wrapper, invalidateSpy } = makeWrapper()
+    renderHook(() => useProjectEventStream('demo'), { wrapper })
+    const first = MockEventSource.instances[0]
+    act(() => first.emit('hello', JSON.stringify({ backend: 'redis' }), '0'))
+    // The first hello of a stream is not a resync.
+    expect(invalidateCallsFor(invalidateSpy, ['scans', 'demo'])).toBe(0)
+
+    act(() => first.fail())
+    act(() => {
+      vi.advanceTimersByTime(1300)
+    })
+    const second = MockEventSource.instances[1]
+    act(() => second.emit('hello', JSON.stringify({ backend: 'redis' }), '0'))
+
+    // More was missed than the replay ring may hold: every cache the stream
+    // feeds is refreshed.
+    expect(invalidateCallsFor(invalidateSpy, ['scans', 'demo'])).toBeGreaterThan(0)
+    expect(invalidateCallsFor(invalidateSpy, ['activeSignals', 'demo'])).toBeGreaterThan(0)
+    expect(invalidateCallsFor(invalidateSpy, ['alertInbox', 'demo'])).toBeGreaterThan(0)
+  })
+
+  it('treats an id far below the last one as a sequence reset, not a duplicate', () => {
+    const { wrapper, invalidateSpy } = makeWrapper()
+    renderHook(() => useProjectEventStream('demo'), { wrapper })
+    const source = MockEventSource.instances[0]
+
+    act(() => source.emit('signals.updated', '{}', '5000'))
+    // Redis restarted without persistence: the sequence starts again at 1.
+    act(() => source.emit('signals.updated', '{}', '1'))
+
+    expect(invalidateCallsFor(invalidateSpy, ['activeSignals', 'demo'])).toBe(2)
+  })
+
+  it('reconnects at once when the browser comes back online', () => {
+    vi.useFakeTimers()
+    const { wrapper } = makeWrapper()
+    renderHook(() => useProjectEventStream('demo'), { wrapper })
+    act(() => MockEventSource.instances[0].fail())
+    expect(MockEventSource.instances).toHaveLength(1)
+
+    act(() => {
+      window.dispatchEvent(new Event('online'))
+    })
+
+    expect(MockEventSource.instances).toHaveLength(2)
+  })
+
+  it('jitters the backoff within ±30% and caps it', () => {
+    expect(reconnectDelay(0, () => 0)).toBe(700)
+    expect(reconnectDelay(0, () => 1)).toBe(1300)
+    expect(reconnectDelay(10, () => 0.5)).toBe(30_000)
   })
 })
