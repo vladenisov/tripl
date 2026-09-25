@@ -1357,15 +1357,12 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       const url = String(input)
 
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
-      // Events list backing the Definition card's event-name resolution.
-      if (url.endsWith('/api/v1/projects/demo/events')) {
-        return mockJsonResponse({
-          items: [
-            { id: 'event-a', name: 'checkout_completed' },
-            { id: 'event-b', name: 'session_started' },
-          ],
-          total: 2,
-        })
+      // The Definition card resolves each referenced event by id (MET-2).
+      if (url.endsWith('/api/v1/projects/demo/events/event-a')) {
+        return mockJsonResponse({ id: 'event-a', name: 'checkout_completed' })
+      }
+      if (url.endsWith('/api/v1/projects/demo/events/event-b')) {
+        return mockJsonResponse({ id: 'event-b', name: 'session_started' })
       }
       if (url.endsWith('/api/v1/projects/demo/fact-tables')) {
         return mockJsonResponse({
@@ -1764,7 +1761,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(await screen.findByRole('heading', { name: 'Definition' })).toBeInTheDocument()
     // Kind chip + collection-interval meta chip.
     expect(screen.getByText('SQL')).toBeInTheDocument()
-    expect(screen.getByText('every 1d')).toBeInTheDocument()
+    expect(screen.getByText('Daily')).toBeInTheDocument()
     // Time/value column chips from the SQL config.
     expect(screen.getByText('day')).toBeInTheDocument()
     expect(screen.getByText('dau')).toBeInTheDocument()
@@ -1789,7 +1786,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
 
     expect(await screen.findByRole('heading', { name: 'Definition' })).toBeInTheDocument()
     expect(screen.getByText('Event composition')).toBeInTheDocument()
-    // Event ids resolve to names via the events list; joined by ÷.
+    // Event ids resolve to names by id; joined by ÷.
     expect(await screen.findByText('checkout_completed')).toBeInTheDocument()
     expect(screen.getByText('session_started')).toBeInTheDocument()
     expect(screen.getByText('÷')).toBeInTheDocument()

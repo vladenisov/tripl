@@ -196,6 +196,17 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     if (!timestampColumn.trim()) errs.push('A timestamp column is required.')
     // Last, because the messages render in this order and Row filters is the
     // bottom card — the reader scans down to the field the first error names.
+    // A half-filled row used to be dropped on save without a word, so a metric
+    // naming that filter lost it (MET-3). Only an entirely blank row is dropped.
+    rowFilters.forEach((filter, index) => {
+      const hasName = !!filter.name.trim()
+      const hasSql = !!filter.sql.trim()
+      if (hasName !== hasSql) {
+        errs.push(
+          `Row filter ${index + 1} needs both a name and a SQL condition — complete it or remove it.`,
+        )
+      }
+    })
     const repeated = firstRepeatedFilterName(cleanRowFilters())
     if (repeated !== null) {
       errs.push(

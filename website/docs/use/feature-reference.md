@@ -916,7 +916,24 @@ then reveals kind-specific config:
   up to the top-line ratio.
 - **Event composition** — derived from already-collected event series with no
   warehouse query of its own: a **single** event's count, a **ratio** of one event
-  to another (A / B), or an event **per distinct user**.
+  to another (A / B), or an event **per distinct user**. Each side names one
+  event — searched across the whole catalog — or a whole **event type**, which
+  counts every event of that type.
+
+Every row of a fact metric's filters has to be complete before it saves: a named
+filter with no name picked, a condition with no column or value, or an empty SQL
+fragment is flagged in place rather than dropped. `in` / `not in` conditions take
+one value per chip, so a value may itself contain a comma, and the operators on
+offer follow the column's type. Saved filters reload grouped by type — named
+filters, then conditions, then SQL fragments.
+
+**Changing what a metric measures deletes its history.** Any edit to the
+definition — the SQL, the data source, the interval, the fact table,
+aggregation, columns or filters, the events, the composition or the kind —
+deletes the metric's collected values, breakdowns and anomalies when saved, and
+collection starts over. The edit form says so as soon as the definition differs
+from the saved one and asks before saving; edits to the name, description, unit,
+color, status or dimension columns keep the history.
 
 Shared fields are name, display name, description, color, unit, owner/review,
 status, breakdown columns/limit, optional version/platform columns, and the

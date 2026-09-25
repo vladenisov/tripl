@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom'
 
 import { dataSourcesApi } from '@/api/dataSources'
 import { eventsApi } from '@/api/events'
+import { eventTypesApi } from '@/api/eventTypes'
 import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { Chip } from '@/components/primitives/chip'
@@ -12,10 +13,19 @@ import { SqlEditor } from '@/components/sql-editor'
 import { Card, CardContent } from '@/components/ui/card'
 import { formatDateTime } from '@/lib/datetime'
 import { factColumnValueKind } from '@/lib/factColumnValueKind'
+import {
+  VALUELESS_CONDITION_OPERATORS,
+  conditionOperatorLabel,
+  readFactOperandConfig,
+  type FactConditionConfig,
+  type FactOperandConfig,
+} from '@/lib/factOperandConfig'
+import { eventNameLabel } from '@/lib/eventName'
+import { METRIC_INTERVAL_LABEL } from '@/lib/metricFormat'
 import { METRIC_KIND_LABEL } from '@/types'
 import type { MetricDefinitionDetailResponse } from '@/types'
 import { useCanWriteProject } from '@/lib/permissions'
-import { dataSourcesKey } from '@/lib/queryKeys'
+import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
 
 /** Names are best-effort; when a lookup misses we fall back to a short id. */
 const SHORT_ID_LENGTH = 8
@@ -42,86 +52,12 @@ interface FactOperandView {
   filters: FactFiltersView
 }
 
-/** One visual column/operator/value condition row from a fact config. */
-interface FactConditionView {
-  column: string
-  operator: string
-  value: unknown
-}
-
 /**
  * The three row-filter inputs of one fact operand, ANDed at collection time:
  * named row filters (labels of the fact table's stored filters), visual
  * conditions, and a free-text SQL WHERE fragment.
  */
-interface FactFiltersView {
-  rowFilters: string[]
-  conditions: FactConditionView[]
-  filterSql: string | null
-}
-
-/** Operators that take no value; rendered as `column <operator>`. */
-const VALUELESS_CONDITION_OPERATORS = new Set([
-  'is_null',
-  'is_not_null',
-  'is_true',
-  'is_false',
-])
-
-/** SQL-ish display label per condition operator; unknown operators pass through. */
-const CONDITION_OPERATOR_LABEL: Record<string, string> = {
-  eq: '=',
-  ne: '!=',
-  gt: '>',
-  gte: '>=',
-  lt: '<',
-  lte: '<=',
-  contains: 'contains',
-  not_contains: 'not contains',
-  like: 'like',
-  not_like: 'not like',
-  in: 'in',
-  not_in: 'not in',
-  is_null: 'is null',
-  is_not_null: 'is not null',
-  is_true: 'is true',
-  is_false: 'is false',
-}
-
-/** Named row filters: `row_filters` plus a folded legacy single `row_filter`. */
-function readRowFilterNames(record: Record<string, unknown>): string[] {
-  const names = Array.isArray(record.row_filters)
-    ? record.row_filters.filter(
-        (name): name is string => typeof name === 'string' && !!name,
-      )
-    : []
-  const legacy = configString(record, 'row_filter')
-  return legacy && !names.includes(legacy) ? [...names, legacy] : names
-}
-
-/** Narrows an untyped `conditions` config array, skipping malformed entries. */
-function readConditions(value: unknown): FactConditionView[] {
-  if (!Array.isArray(value)) return []
-  const conditions: FactConditionView[] = []
-  for (const entry of value) {
-    if (!entry || typeof entry !== 'object') continue
-    const record = entry as Record<string, unknown>
-    const column = configString(record, 'column')
-    const operator = configString(record, 'operator')
-    if (!column || !operator) continue
-    conditions.push({ column, operator, value: record.value })
-  }
-  return conditions
-}
-
-/** Reads the filter block shared by top-level fact configs and ratio operands. */
-function readFactFilters(record: Record<string, unknown>): FactFiltersView {
-  return {
-    rowFilters: readRowFilterNames(record),
-    conditions: readConditions(record.conditions),
-    filterSql: configString(record, 'filter_sql'),
-  }
-}
+type FactFiltersView = Pick<FactOperandConfig, 'rowFilters' | 'conditions' | 'filterSql'>
 
 function hasFilters(filters: FactFiltersView): boolean {
   return (
@@ -144,8 +80,8 @@ function conditionScalarText(value: unknown, columnType?: string | null): string
 }
 
 /** SQL-ish one-liner for a condition, e.g. `platform = 'ios'` / `plan in ('a', 'b')`. */
-function conditionText(condition: FactConditionView, columnType?: string | null): string {
-  const operator = CONDITION_OPERATOR_LABEL[condition.operator] ?? condition.operator
+function conditionText(condition: FactConditionConfig, columnType?: string | null): string {
+  const operator = conditionOperatorLabel(condition.operator)
   if (
     VALUELESS_CONDITION_OPERATORS.has(condition.operator)
     || condition.value === null
@@ -162,35 +98,20 @@ function conditionText(condition: FactConditionView, columnType?: string | null)
   return `${condition.column} ${operator} ${conditionScalarText(condition.value, columnType)}`
 }
 
-/**
- * Reads a `config.numerator` / `config.denominator` FactOperand block. The
- * config arrives untyped (`Record<string, unknown>`), so narrow defensively.
- */
+/** Display shape of one parsed operand (shared parser: lib/factOperandConfig). */
+function toOperandView(config: FactOperandConfig): FactOperandView {
+  return {
+    factTableId: config.factTableId,
+    aggregation: config.aggregation,
+    column: config.aggregation === 'count_distinct' ? config.distinctColumn : config.measureColumn,
+    filters: config,
+  }
+}
+
+/** A ratio's `config.numerator` / `config.denominator` block, when present. */
 function readFactOperand(value: unknown): FactOperandView | null {
   if (!value || typeof value !== 'object') return null
-  const record = value as Record<string, unknown>
-  const factTableId =
-    typeof record.fact_table_id === 'string' && record.fact_table_id
-      ? record.fact_table_id
-      : null
-  const aggregation =
-    typeof record.aggregation === 'string' && record.aggregation
-      ? record.aggregation
-      : 'count'
-  const measure =
-    typeof record.measure_column === 'string' && record.measure_column
-      ? record.measure_column
-      : null
-  const distinct =
-    typeof record.distinct_column === 'string' && record.distinct_column
-      ? record.distinct_column
-      : null
-  return {
-    factTableId,
-    aggregation,
-    column: aggregation === 'count_distinct' ? distinct : measure,
-    filters: readFactFilters(record),
-  }
+  return toOperandView(readFactOperandConfig(value))
 }
 
 function referencedFactTableIds(definition: MetricDefinitionDetailResponse): string[] {
@@ -226,10 +147,33 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
     enabled: kind === 'fact',
     staleTime: LOOKUP_STALE_TIME_MS,
   })
-  const eventsQuery = useQuery({
-    queryKey: ['events', slug, null],
-    queryFn: () => eventsApi.list(slug),
-    enabled: kind === 'event_composition',
+  // Names resolved BY ID, not looked up in the first page of the events list:
+  // that page is the endpoint's default 200, so a metric on a later event
+  // painted an 8-char id instead of its name (MET-2).
+  const eventIds = [definition.numerator_event_id, definition.denominator_event_id].filter(
+    (id): id is string => kind === 'event_composition' && !!id,
+  )
+  const eventNameById = useQueries({
+    queries: eventIds.map(id => ({
+      queryKey: ['event', slug, null, id],
+      queryFn: () => eventsApi.get(slug, id),
+      staleTime: LOOKUP_STALE_TIME_MS,
+    })),
+    combine: results =>
+      new Map(
+        results.flatMap(result =>
+          result.data ? [[result.data.id, eventNameLabel(result.data.name)] as const] : [],
+        ),
+      ),
+  })
+  // A side may reference a whole event type instead of one event (MET-13).
+  const referencesEventType =
+    kind === 'event_composition'
+    && !!(definition.numerator_event_type_id || definition.denominator_event_type_id)
+  const eventTypesQuery = useQuery({
+    queryKey: eventTypesKey(slug, null),
+    queryFn: () => eventTypesApi.list(slug),
+    enabled: referencesEventType,
     staleTime: LOOKUP_STALE_TIME_MS,
   })
   const dataSourcesQuery = useQuery({
@@ -264,15 +208,17 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
     const table = factTableDetailQueries.find(query => query.data?.id === factTableId)?.data
     return table?.columns.find(candidate => candidate.name === column)?.type ?? null
   }
-  const eventNameById = useMemo(
-    () => new Map((eventsQuery.data?.items ?? []).map(event => [event.id, event.name])),
-    [eventsQuery.data],
-  )
-
   const factTableName = (id: string | null): string =>
     id ? factTableNameById.get(id) ?? shortId(id) : '—'
-  const eventName = (id: string | null): string =>
-    id ? eventNameById.get(id) ?? shortId(id) : '—'
+  const eventTypeNameById = new Map(
+    (eventTypesQuery.data ?? []).map(type => [type.id, type.display_name]),
+  )
+  // One side of an event composition: its event, else its event type.
+  const eventRefName = (eventId: string | null, eventTypeId: string | null): string => {
+    if (eventId) return eventNameById.get(eventId) ?? shortId(eventId)
+    if (eventTypeId) return `type · ${eventTypeNameById.get(eventTypeId) ?? shortId(eventTypeId)}`
+    return '—'
+  }
   const dataSourceName = definition.data_source_id
     ? dataSourcesQuery.data?.find(source => source.id === definition.data_source_id)?.name
       ?? shortId(definition.data_source_id)
@@ -297,13 +243,13 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
           />
         )}
         {kind === 'event_composition' && (
-          <EventCompositionExpression definition={definition} eventName={eventName} />
+          <EventCompositionExpression definition={definition} eventRefName={eventRefName} />
         )}
 
         <div className="flex flex-wrap items-center gap-1.5">
           {definition.interval && (
-            <Chip size="xs" variant="outline" className="font-mono">
-              every {definition.interval}
+            <Chip size="xs" variant="outline">
+              {METRIC_INTERVAL_LABEL[definition.interval]}
             </Chip>
           )}
           <MetricSchedule definition={definition} />
@@ -468,15 +414,12 @@ function FactExpression({
       </div>
     )
   }
-  const single: FactOperandView = {
-    factTableId: definition.fact_table_id,
-    aggregation: definition.aggregation ?? 'count',
-    column:
-      definition.aggregation === 'count_distinct'
-        ? configString(config, 'distinct_column')
-        : configString(config, 'measure_column'),
-    filters: readFactFilters(config),
-  }
+  const single = toOperandView(
+    readFactOperandConfig(config, {
+      factTableId: definition.fact_table_id,
+      aggregation: definition.aggregation,
+    }),
+  )
   return (
     <div className="space-y-2">
       <FactOperandBlock
@@ -491,11 +434,13 @@ function FactExpression({
 }
 
 function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricId: string }) {
-  // Hidden from viewers because the endpoint now refuses them. The compiled SQL
-  // embeds the fact table's own query — warehouse table and column names an
-  // editor authored — and a role that cannot author metrics has no business
-  // reading it. Without this the panel would render and answer 403 on expand,
-  // which reads as a broken page rather than as a boundary.
+  // Hidden from viewers for one reason only: the generated-SQL endpoint answers
+  // them 403, and a panel that renders and then fails on expand reads as a
+  // broken page. It is NOT a secrecy boundary — the definition API returns
+  // `config` to viewers, and this card shows them a SQL metric's own query
+  // under "Show SQL", as the read-only metric form does. One policy for both
+  // (either the endpoint admits viewers, or `config` is stripped for them) is
+  // a backend decision (MET-41).
   const canWrite = useCanWriteProject()
   const [open, setOpen] = useState(false)
   const query = useQuery({
@@ -581,19 +526,21 @@ function MetricSchedule({ definition }: { definition: MetricDefinitionDetailResp
 
 function EventCompositionExpression({
   definition,
-  eventName,
+  eventRefName,
 }: {
   definition: MetricDefinitionDetailResponse
-  eventName: (id: string | null) => string
+  eventRefName: (eventId: string | null, eventTypeId: string | null) => string
 }) {
-  const numerator = eventName(definition.numerator_event_id)
+  const numerator = eventRefName(definition.numerator_event_id, definition.numerator_event_type_id)
   const userIdColumn = configString(definition.config, 'user_id_column')
   if (definition.composition === 'ratio') {
     return (
       <p className="text-sm">
         <span className="font-mono">{numerator}</span>
         <span className="text-muted-foreground"> ÷ </span>
-        <span className="font-mono">{eventName(definition.denominator_event_id)}</span>
+        <span className="font-mono">
+          {eventRefName(definition.denominator_event_id, definition.denominator_event_type_id)}
+        </span>
       </p>
     )
   }

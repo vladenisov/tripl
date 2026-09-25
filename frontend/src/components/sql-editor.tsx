@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import CodeMirror, { type EditorView } from '@uiw/react-codemirror'
 import { sql, type SQLNamespace } from '@codemirror/lang-sql'
 import { format } from 'sql-formatter'
@@ -52,6 +52,9 @@ export function SqlEditor({
   ariaLabel = 'SQL editor',
   id,
   readOnly = false,
+  ariaDescribedBy,
+  ariaInvalid = false,
+  ariaRequired = false,
 }: {
   value: string
   onChange: (v: string) => void
@@ -64,6 +67,14 @@ export function SqlEditor({
   id?: string
   /** Display-only mode: keeps CodeMirror highlighting while disabling edits/tools. */
   readOnly?: boolean
+  /**
+   * Validation wiring for the editable surface. CodeMirror's focusable element
+   * is its inner contenteditable, not the wrapper `id` sits on, so these go
+   * onto it through `contentAttributes` — the only place a screen reader looks.
+   */
+  ariaDescribedBy?: string
+  ariaInvalid?: boolean
+  ariaRequired?: boolean
 }) {
   const viewRef = useRef<EditorView | null>(null)
 
@@ -103,6 +114,28 @@ export function SqlEditor({
       }),
     ]
   }, [dialect, schema, tables])
+
+  // Mirror the validation attributes onto the contenteditable. Written to the
+  // DOM directly (CodeMirror leaves attributes it did not set alone) rather than
+  // through an extension, so the editor keeps working behind the test suites'
+  // default-export-only mock of @uiw/react-codemirror.
+  const applyContentAria = useCallback(
+    (view: EditorView | null) => {
+      const content = view?.contentDOM
+      if (!content) return
+      const set = (name: string, value: string | undefined) => {
+        if (value) content.setAttribute(name, value)
+        else content.removeAttribute(name)
+      }
+      set('aria-describedby', ariaDescribedBy)
+      set('aria-invalid', ariaInvalid ? 'true' : undefined)
+      set('aria-required', ariaRequired ? 'true' : undefined)
+    },
+    [ariaDescribedBy, ariaInvalid, ariaRequired],
+  )
+  useEffect(() => {
+    applyContentAria(viewRef.current)
+  }, [applyContentAria])
 
   const handleFormat = useCallback(() => {
     try {
@@ -151,7 +184,10 @@ export function SqlEditor({
           extensions={extensions}
           basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: false }}
           minHeight={minHeight}
-          onCreateEditor={view => { viewRef.current = view }}
+          onCreateEditor={view => {
+            viewRef.current = view
+            applyContentAria(view)
+          }}
         />
       </div>
       {/* Format sits under the editor, not over it: an overlay button covered

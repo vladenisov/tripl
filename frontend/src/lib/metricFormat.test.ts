@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { formatMetricValue, isPercentUnit, metricAxisFormatter } from './metricFormat'
+import {
+  METRIC_INTERVAL_LABEL,
+  formatMetricValue,
+  isIntervalFinerThan,
+  isPercentUnit,
+  metricAxisFormatter,
+} from './metricFormat'
 
 describe('isPercentUnit', () => {
   it('is true for "%" including surrounding whitespace', () => {
@@ -60,5 +66,18 @@ describe('metricAxisFormatter', () => {
 
   it('treats non-percent units the same as no unit', () => {
     expect(metricAxisFormatter('ms')(1500)).toBe('1.5k')
+  })
+})
+
+describe('interval helpers', () => {
+  it('labels every interval', () => {
+    expect(METRIC_INTERVAL_LABEL['1h']).toBe('Hourly')
+    expect(METRIC_INTERVAL_LABEL['15m']).toBe('Every 15 min')
+  })
+
+  it('orders intervals by span', () => {
+    expect(isIntervalFinerThan('1d', '1w')).toBe(true)
+    expect(isIntervalFinerThan('1w', '1d')).toBe(false)
+    expect(isIntervalFinerThan('1h', '1h')).toBe(false)
   })
 })

@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { eventsApi } from '@/api/events'
+import { eventTypesApi } from '@/api/eventTypes'
 import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import type { FactTableListResponse, MetricDefinitionDetailResponse } from '@/types'
@@ -13,7 +15,10 @@ vi.mock('@/api/factTablesApi', () => ({
   factTablesApi: { list: vi.fn(), get: vi.fn() },
 }))
 vi.mock('@/api/events', () => ({
-  eventsApi: { list: vi.fn() },
+  eventsApi: { get: vi.fn() },
+}))
+vi.mock('@/api/eventTypes', () => ({
+  eventTypesApi: { list: vi.fn() },
 }))
 vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
@@ -308,5 +313,54 @@ describe('MetricDefinitionCard filters', () => {
       </QueryClientProvider>,
     )
     expect(screen.getByText('Not scheduled')).toBeInTheDocument()
+  })
+})
+
+describe('MetricDefinitionCard event composition', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(eventsApi.get).mockImplementation(async (_slug, id) => ({
+      id,
+      name: id === 'ev-late' ? 'checkout:completed' : 'checkout:started',
+    }) as unknown as Awaited<ReturnType<typeof eventsApi.get>>)
+    vi.mocked(eventTypesApi.list).mockResolvedValue([
+      { id: 'type-1', name: 'signup', display_name: 'Signup' },
+    ] as unknown as Awaited<ReturnType<typeof eventTypesApi.list>>)
+  })
+
+  it('names an event by id, wherever it sits in the catalog (MET-2)', async () => {
+    renderCard(
+      factDefinition({
+        kind: 'event_composition',
+        composition: 'single',
+        fact_table_id: null,
+        aggregation: null,
+        numerator_event_id: 'ev-late',
+      }),
+    )
+    expect(await screen.findByText('checkout:completed')).toBeInTheDocument()
+    expect(eventsApi.get).toHaveBeenCalledWith('demo', 'ev-late')
+  })
+
+  it('names an event-type side instead of painting a dash (MET-13)', async () => {
+    renderCard(
+      factDefinition({
+        kind: 'event_composition',
+        composition: 'ratio',
+        fact_table_id: null,
+        aggregation: null,
+        numerator_event_type_id: 'type-1',
+        denominator_event_id: 'ev-early',
+      }),
+    )
+    expect(await screen.findByText('type · Signup')).toBeInTheDocument()
+    expect(await screen.findByText('checkout:started')).toBeInTheDocument()
+    expect(screen.queryByText('—')).toBeNull()
+  })
+
+  it('labels the collection interval the way the rest of the UI does (MET-41)', () => {
+    renderCard(factDefinition({ interval: '1h' }))
+    expect(screen.getByText('Hourly')).toBeInTheDocument()
+    expect(screen.queryByText('every 1h')).toBeNull()
   })
 })
