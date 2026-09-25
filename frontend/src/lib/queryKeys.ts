@@ -103,6 +103,22 @@ export const metricGeneratedSqlKey = (slug: string | undefined) =>
   ['metric-generated-sql', slug] as const
 
 /**
+ * The drilldown caches MonitoringDetailPage fills for one entity, by scope
+ * (`event`, `event_type`, `project_total`, `metric`). The page extends each with
+ * its range and filters; these prefixes are what a save, a collect or the
+ * realtime layer invalidates.
+ */
+export const monitoringSeriesKey = (slug: string | undefined, scope: string, scopeId: string) =>
+  ['monitoringMetrics', slug, scope, scopeId] as const
+export const monitoringBreakdownsKey = (slug: string | undefined, scope: string, scopeId: string) =>
+  ['eventMetricBreakdowns', slug, scope, scopeId] as const
+export const appVersionSeriesKey = (slug: string | undefined, scope: string, scopeId: string) =>
+  ['appVersionSeries', slug, scope, scopeId] as const
+/** Chart annotations shown on one entity's drilldown. */
+export const chartAnnotationsKey = (slug: string | undefined, scope: string, scopeId: string) =>
+  ['chartAnnotations', slug, scope, scopeId] as const
+
+/**
  * Prefixes of every drilldown cache one catalog metric fills: its series, its
  * breakdowns and its app-version series (MonitoringDetailPage keys them all
  * `[family, slug, 'metric', metricId, …]`). A save that redefines the metric
@@ -111,9 +127,9 @@ export const metricGeneratedSqlKey = (slug: string | undefined) =>
  */
 export const metricDrilldownKeys = (slug: string | undefined, metricId: string) =>
   [
-    ['monitoringMetrics', slug, 'metric', metricId],
-    ['eventMetricBreakdowns', slug, 'metric', metricId],
-    ['appVersionSeries', slug, 'metric', metricId],
+    monitoringSeriesKey(slug, 'metric', metricId),
+    monitoringBreakdownsKey(slug, 'metric', metricId),
+    appVersionSeriesKey(slug, 'metric', metricId),
   ] as const
 
 /** Every project the viewer can see — `GET /projects`, one list for the app. */

@@ -1,278 +1,70 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react'
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { chartAnnotationsApi } from '@/api/chartAnnotations'
+import { useMemo, useRef } from 'react'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { AlertTriangle, ArrowLeft, GitBranch, GitCompareArrows, Layers, TrendingUp } from 'lucide-react'
 import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
-import { usersApi } from '@/api/users'
 import { metricsApi } from '@/api/metrics'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { scansApi } from '@/api/scans'
-import { EVENT_STATUS_LABELS, EVENT_STATUS_TONE } from '@/lib/eventStatus'
-import type { EventStatus } from '@/lib/eventStatus'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Chip } from '@/components/primitives/chip'
-import { Dot } from '@/components/primitives/dot'
-import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { EmptyState } from '@/components/empty-state'
+import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
 import { EventValueDriftPanel } from '@/pages/events/EventValueDriftPanel'
+import { EventSpecCard } from '@/components/EventSpecCard'
 import { MetricDefinitionCard } from '@/components/monitoring/metric-definition-card'
-import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
 import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
-import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
-import { MetricsChart, MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { MetricsChart } from '@/components/ui/chart-lazy'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
-import { ImplementationTicketRow } from '@/components/implementation-ticket-row'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
-import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
-import { eventNameLabel } from '@/lib/eventName'
 import { formatIncidentCount } from '@/lib/alertStatus'
-import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
-import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
-import { resolveMetaFieldHref } from '@/lib/metaFields'
-import { EntityBranchBanner } from '@/components/EntityBranchBanner'
-import { EventSpecCard } from '@/components/EventSpecCard'
-import { historyFieldLabel } from '@/lib/eventHistory'
-import { formatSignalSeverity, getMonitoringPath, resolveDetailScope } from '@/lib/monitoring'
-import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
-import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
-import type {
-  AppVersionSeriesResponse,
-  DistributionDriftBand,
-  DistributionDriftPoint,
-  Event as TEvent,
-  EventMetricBreakdownsResponse,
-  EventMetricPoint,
-  EventMetricsResponse,
-  EventType,
-  FieldDefinition,
-  MetaFieldDefinition,
-  MetricBreakdownsResponse,
-  MetricSeriesPoint,
-  MetricSeriesResponse,
-  MetricSignalResponse,
-  MetricVersionSeriesResponse,
-  MonitoringSignal,
-  AppVersionMetricSeries,
-} from '@/types'
-import {
-  AlertTriangle, ArrowDown, ArrowLeft, ArrowUp, CalendarPlus, ChevronDown, ChevronLeft, ChevronUp,
-  Code, Eye, GitBranch, GitCompareArrows, Layers, Loader2, MoreHorizontal, Pencil, RefreshCw,
-  Trash2, TrendingUp,
-} from 'lucide-react'
-import { toast } from 'sonner'
-import { useConfirm } from '@/hooks/useConfirm'
-import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
-import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
-import { useDemoScenarioActions, useScenarioArtifacts } from '@/demo/demoScenarioContext'
-import { eventTypesKey } from '@/lib/queryKeys'
+import { formatTimestamp } from '@/lib/datetime'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { getErrorMessage } from '@/lib/utils'
+import {
+  adaptMetricSeries,
+  defaultDrilldownGranularity,
+  granularityForInterval,
+  metricRollupMode,
+} from '@/lib/metricAdapters'
+import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
+import { aggregateMetricPoints, clampGranularityToRange, type MetricsGranularity } from '@/lib/metrics'
+import { resolveDetailScope } from '@/lib/monitoring'
 import { useCanWriteProject } from '@/lib/permissions'
-
-/**
- * Everything a manual collect needs, captured when the button is pressed and
- * carried through the mutation and the watch. Nothing downstream re-reads the
- * route, so navigating mid-run cannot repoint the run at another metric or
- * another project (tripl-htvg).
- */
-type CollectTarget = {
-  slug: string
-  scope: string
-  scopeId: string
-  displayName: string
-  isFactMetric: boolean
-}
+import { eventTypesKey, metricDefinitionKey, monitoringSeriesKey } from '@/lib/queryKeys'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
+import type { EventType, FieldDefinition, MetaFieldDefinition } from '@/types'
+import { AnnotationsCard } from './monitoring/AnnotationsCard'
+import { BreakdownsTab } from './monitoring/BreakdownsTab'
+import { DistributionTab, type DistributionScope } from './monitoring/DistributionTab'
+import { EventDetailHero, EventDetailSkeleton } from './monitoring/event/EventDetailHero'
+import { EventFieldsTable } from './monitoring/event/EventFieldsTable'
+import { EventSideColumn } from './monitoring/event/EventSideColumn'
+import { LIVE_STATUSES } from './monitoring/event/surface'
+import { MetricHeaderActions } from './monitoring/MetricHeaderActions'
+import { ChartCardHeader, MetricsRangeControls } from './monitoring/MetricsRangeControls'
+import { useChartAnnotations } from './monitoring/useChartAnnotations'
+import { useMetricCollect } from './monitoring/useMetricCollect'
+import { useMonitoringDetailSearch, type MonitoringDetailTab } from './monitoring/useMonitoringDetailSearch'
+import { VersionsTab } from './monitoring/VersionsTab'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
 
 /**
- * A catalog metric charts at the granularity it was *collected* at, so the axis
- * describes the buckets the data actually has.
- *
- * One entry per backend interval code (backend/src/tripl/core/intervals.py). This
- * used to be a chain of ternaries covering only `1d` and `1w`, so a `15m` or `6h`
- * metric fell through to "Hours" — an axis labelled with a bucket width the series
- * does not have (tripl-64n8.15). A table makes the missing case obvious instead of
- * hiding it in a fallback.
+ * One page, four scopes: an event, an event type, a scan's project total, and a
+ * catalog metric. The page owns the queries that define the entity (the event,
+ * the metric definition, the series); every secondary tab lives under
+ * `pages/monitoring/` and owns its own query and error state (MON-35).
  */
-const GRANULARITY_FOR_INTERVAL: Record<string, MetricsGranularity> = {
-  '15m': '15min',
-  '1h': 'hour',
-  '6h': '6h',
-  '1d': 'day',
-  '1w': 'week',
-}
-
-const MONITORING_DETAIL_TABS = [
-  'volume',
-  'versions',
-  'distribution',
-  'heatmap',
-  'breakdowns',
-] as const
-type MonitoringDetailTab = (typeof MONITORING_DETAIL_TABS)[number]
-type VersionFilter = 'all' | 'latest'
-
-const VERSION_CHART_COLORS = [
-  'var(--chart-1)',
-  'var(--chart-2)',
-  'var(--chart-3)',
-  'var(--chart-4)',
-  'var(--chart-5)',
-  '#0f766e',
-  '#b45309',
-  '#be123c',
-]
-
-interface VersionChartSeries {
-  label: string
-  version: string
-  isOther: boolean
-  isLatest: boolean
-  // The SemVer-newest release that has NOT taken a real share of traffic yet
-  // (backend is_latest && !is_active): a pre-release / not-yet-rolled-out build.
-  isPreRelease: boolean
-  totalCount: number
-  legendValue: number
-  data: AppVersionMetricSeries['data']
-  color: string
-  isHighlighted: boolean
-}
-
-function isCountShapedMetric(metric: {
-  kind?: string
-  aggregation?: string | null
-  composition?: string | null
-} | undefined): boolean {
-  if (!metric) return true
-  if (metric.kind === 'sql') return false
-  if (metric.kind === 'event_composition') return metric.composition === 'single'
-  if (metric.kind === 'fact') {
-    if (metric.composition === 'ratio') return false
-    return metric.aggregation === 'count' || metric.aggregation === 'count_distinct'
-  }
-  return true
-}
-
-// ───────── Catalog-metric adapters ─────────
-// Catalog metric series mirror the event-volume shapes almost exactly (the only
-// real difference is a float `value` instead of an integer `count`), so the
-// `metric` scope reuses every MonitoringDetailPage consumer by mapping its
-// catalog responses onto the event-shaped types the tabs already render.
-function metricPointToEventPoint(point: MetricSeriesPoint): EventMetricPoint {
-  return {
-    bucket: point.bucket,
-    count: point.value,
-    expected_count: point.expected_count ?? null,
-    stddev: point.stddev ?? null,
-    is_anomaly: point.is_anomaly,
-    anomaly_direction: point.anomaly_direction ?? null,
-    z_score: point.z_score ?? null,
-  }
-}
-
-function metricSignalToMonitoringSignal(signal: MetricSignalResponse): MonitoringSignal {
-  return {
-    scan_config_id: signal.scan_config_id ?? '',
-    scope_type: signal.scope_type,
-    scope_ref: signal.scope_ref,
-    state: signal.state === 'recent' ? 'recent' : 'latest_scan',
-    event_id: signal.event_id ?? null,
-    event_type_id: signal.event_type_id ?? null,
-    bucket: signal.bucket,
-    actual_count: signal.actual_count,
-    expected_count: signal.expected_count,
-    stddev: signal.stddev,
-    z_score: signal.z_score,
-    direction: signal.direction,
-    // Catalog metric-scope signals are never an incident rollup child.
-    incident_child: false,
-  }
-}
-
-function adaptMetricSeries(res: MetricSeriesResponse): EventMetricsResponse {
-  return {
-    scope: 'event',
-    scan_config_id: res.scan_config_id ?? null,
-    event_id: null,
-    event_type_id: null,
-    interval: res.interval ?? null,
-    latest_signal: res.latest_signal ? metricSignalToMonitoringSignal(res.latest_signal) : null,
-    data: res.data.map(metricPointToEventPoint),
-    // Per-metric forecasting renders a dashed tail that trends toward 0, which
-    // is misleading for fractional (ratio/avg) catalog metrics. Drop it for the
-    // metric scope; event-scope forecasts come from their own endpoint and are
-    // left untouched.
-    forecast: [],
-    // The project sigma narrowed by this metric's false-positive override,
-    // the multiplier the detector scored it with (tripl-4cgl).
-    sigma_threshold: res.sigma_threshold,
-  }
-}
-
-function adaptMetricVersions(res: MetricVersionSeriesResponse): AppVersionSeriesResponse {
-  // Both res.series and res.versions carry is_active, and the backend fills them
-  // from the same gate. Read it off the versions catalog because that is the list
-  // this adapter walks below, so the metric scope gets the same pre-release
-  // treatment as the event scope.
-  const activeByVersion = new Map(res.versions.map(info => [info.version, info.is_active]))
-  return {
-    scan_config_id: res.scan_config_id ?? '',
-    scope_type: 'event',
-    scope_ref: '',
-    event_id: null,
-    event_type_id: null,
-    app_version_column: res.app_version_column ?? null,
-    interval: res.interval ?? null,
-    latest_version: res.latest_version ?? null,
-    versions: res.versions,
-    series: res.series.map(series => ({
-      version: series.version,
-      is_other: series.is_other,
-      is_latest: series.is_latest,
-      is_active: activeByVersion.get(series.version) ?? false,
-      total_count: series.total_value,
-      data: series.data.map(metricPointToEventPoint),
-    })),
-  }
-}
-
-function adaptMetricBreakdowns(res: MetricBreakdownsResponse): EventMetricBreakdownsResponse {
-  return {
-    event_id: res.metric_id,
-    scan_config_id: res.scan_config_id ?? null,
-    interval: res.interval ?? null,
-    columns: res.columns,
-    selected_column: res.selected_column ?? null,
-    series: res.series.map(series => ({
-      breakdown_value: series.breakdown_value,
-      is_other: series.is_other,
-      total_count: series.total_value,
-      data: series.data.map(metricPointToEventPoint),
-      parity_anomalies: [],
-    })),
-  }
-}
-
 export default function MonitoringDetailPage() {
   const { slug, scope: scopeParam, id, eventId } = useParams<{
     slug: string
@@ -285,21 +77,12 @@ export default function MonitoringDetailPage() {
   // Edit, collect, delete and annotations are EditorUserDep; a viewer reads the
   // page without them instead of meeting each as a 403 (MON-6).
   const canWrite = useCanWriteProject()
-  // Return to wherever the user came from (e.g. an event-type tab with its filters),
-  // not always the "all events" list. location.key is 'default' only when this page was
+  // Same history-first pop for both list-backed scopes, with the list as the
+  // cold-start fallback: location.key is 'default' only when this page was
   // opened directly (deep link / refresh) with no in-app history to pop back to.
-  const goBack = () => {
+  const popOr = (fallback: string) => () => {
     if (location.key !== 'default') navigate(-1)
-    else navigate(`/p/${slug}/events`)
-  }
-  // Catalog-metric drilldowns belong to the Metrics surface, so their back
-  // affordance returns to the metrics list rather than the events list.
-  const goToMetrics = () => navigate(`/p/${slug}/metrics`)
-  // Same history-first pop as goBack, with the Anomalies list as the cold-start
-  // fallback — see backAffordance below for why these scopes belong there.
-  const goToAnomalies = () => {
-    if (location.key !== 'default') navigate(-1)
-    else navigate(`/p/${slug}/anomalies`)
+    else navigate(fallback)
   }
   // The legacy `/events/detail/:eventId` route carries no `:scope`; default to
   // the event scope when an eventId is present so the page never crashes on an
@@ -308,41 +91,18 @@ export default function MonitoringDetailPage() {
   // One page, THREE surfaces — the same three-way split navigation.ts makes for
   // these exact routes: `/monitoring/event/` is an Events drilldown,
   // `/monitoring/metric/` a Metrics one, and everything left under
-  // `/monitoring/` (event-type, project-total) belongs to Anomalies, which is
-  // also what the breadcrumb above this button already reads. The label was a
-  // two-way branch on `metric`, so the only navigation affordance above the fold
-  // on a project-total or event-type page offered "Back to events" — a
-  // destination the reader had not come from (tripl-lkox).
+  // `/monitoring/` (event-type, project-total) belongs to Anomalies (tripl-lkox).
   const backAffordance: { label: string; onClick: () => void }
     = scope === 'metric'
-      ? { label: 'Back to metrics', onClick: goToMetrics }
+      ? { label: 'Back to metrics', onClick: () => navigate(`/p/${slug}/metrics`) }
       : scope === 'event'
-        ? { label: 'Back to events', onClick: goBack }
-        : { label: 'Back to anomalies', onClick: goToAnomalies }
-  const [rangeDays, setRangeDays] = useState(scope === 'metric' ? 30 : 7)
-  // null = "no manual pick yet": the effective granularity then follows the
-  // scope's default (interval-aware for catalog metrics, range-aware otherwise).
-  const [granularityOverride, setGranularityOverride] = useState<MetricsGranularity | null>(null)
-  // `?tab=` and `?column=` make this page linkable to the answer instead of to
-  // its front door: the event form points a scan-observed field at the split it
-  // belongs to. Read ONCE, as the branch context does — after mount the tab and
-  // the column are the reader's, and re-reading would yank them back on every
-  // navigation that touches the query string.
-  const [activeTab, setActiveTab] = useState<MonitoringDetailTab>(() => {
-    const requested = new URLSearchParams(location.search).get('tab')
-    return MONITORING_DETAIL_TABS.includes(requested as MonitoringDetailTab)
-      ? (requested as MonitoringDetailTab)
-      : 'volume'
-  })
-  const metricsRef = useRef<HTMLSpanElement>(null)
-  const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
-  const [distributionField, setDistributionField] = useState('')
-  const [breakdownColumn, setBreakdownColumn] = useState(
-    () => new URLSearchParams(location.search).get('column') ?? '',
-  )
-  // Breakdown VALUE filter: empty = show every value (the default). Selecting
-  // labels narrows the chart to just those series (tripl-egt5).
-  const [breakdownValueFilter, setBreakdownValueFilter] = useState<string[]>([])
+        ? { label: 'Back to events', onClick: popOr(`/p/${slug}/events`) }
+        : { label: 'Back to anomalies', onClick: popOr(`/p/${slug}/anomalies`) }
+
+  // Tab, range, granularity and filters live in the URL (MON-24).
+  const [search, searchActions] = useMonitoringDetailSearch()
+  const { rangeDays } = search
+  const metricsRef = useRef<HTMLDivElement>(null)
 
   const branchId = useActiveBranchId()
   const branchLink = useBranchLinkProps()
@@ -364,6 +124,7 @@ export default function MonitoringDetailPage() {
     queryKey: ['event', slug, branchId, scopeId],
     queryFn: () => eventsApi.get(slug!, scopeId, branchId),
     enabled: scope === 'event' && !!slug && !!scopeId,
+    meta: SILENT_ERROR_META,
   })
   const event = eventQuery.data
 
@@ -371,16 +132,22 @@ export default function MonitoringDetailPage() {
     queryKey: ['eventHistory', slug, branchId, scopeId],
     queryFn: () => eventsApi.history(slug!, scopeId, branchId),
     enabled: scope === 'event' && !!slug && !!scopeId,
+    meta: SILENT_ERROR_META,
   })
-  const eventHistory = historyQuery.data ?? []
 
+  // Only the event and event-type pages read event types (the type's fields,
+  // name and colour); a metric or project-total page used to download every
+  // type with its field definitions, and blank itself if that failed (MON-37).
   const eventTypesQuery = useQuery({
     queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug!, branchId),
-    enabled: !!slug,
+    enabled: !!slug && (scope === 'event' || scope === 'event_type'),
+    meta: SILENT_ERROR_META,
   })
-  const eventTypes = eventTypesQuery.data ?? []
+  const eventTypes = eventTypesQuery.data
 
+  // Secondary: a failure only costs the meta-field labels, and the global
+  // toast says so — it is not a reason to blank the page (MON-8).
   const metaFieldsQuery = useQuery({
     queryKey: ['metaFields', slug, branchId],
     queryFn: () => metaFieldsApi.list(slug!, branchId),
@@ -391,11 +158,16 @@ export default function MonitoringDetailPage() {
   // Catalog metric definition (header / color / version-column) — only the
   // `metric` scope; the other scopes derive their title from event(-type) data.
   const metricDefinitionQuery = useQuery({
-    queryKey: ['metricDefinition', slug, scopeId],
+    queryKey: metricDefinitionKey(slug, scopeId),
     queryFn: () => metricsCatalogApi.get(slug!, scopeId),
     enabled: scope === 'metric' && !!slug && !!scopeId,
+    meta: SILENT_ERROR_META,
   })
   const metricDefinition = metricDefinitionQuery.data
+  // Owned here, not by the header's Collect button: that button unmounts when
+  // the page swaps to its error state or canWrite flickers, and an in-progress
+  // watch must outlive it.
+  const metricCollect = useMetricCollect(scopeId)
 
   // Percent-unit catalog metrics store fractions (0.08 for 8 %): render them
   // ×100 everywhere on this page (chart ticks, tooltip, stat card). Every
@@ -411,12 +183,17 @@ export default function MonitoringDetailPage() {
   // their unit ('%', 'ms', …, falling back to 'value'); event scopes keep the
   // historical 'events'.
   const metricSeriesLabel = scope === 'metric' ? metricDefinition?.unit || 'value' : 'events'
-  const versionLegendValueKind = scope === 'metric' && !isCountShapedMetric(metricDefinition)
-    ? 'latest'
-    : 'total'
+  // Event volumes sum into a coarser bucket; a ratio, average or percentage
+  // metric averages instead (MON-2 / MET-12).
+  const rollupMode = scope === 'metric' ? metricRollupMode(metricDefinition) : 'sum'
+  // Until a metric's definition arrives its rollup is unknown: anything drawn
+  // with the 'sum' fallback would show a ratio metric summed, then snap.
+  const rollupPending = scope === 'metric' && metricDefinitionQuery.isPending
 
   const metricsQuery = useQuery({
-    queryKey: ['monitoringMetrics', slug, scope, scopeId, rangeDays],
+    // Keyed on the range length, not the live bounds: the bound steps every five
+    // minutes, and the query function reads the current window on each fetch.
+    queryKey: [...monitoringSeriesKey(slug, scope, scopeId), rangeDays],
     queryFn: () => {
       if (scope === 'metric') {
         return metricsCatalogApi.getSeries(slug!, scopeId, timeRange).then(adaptMetricSeries)
@@ -436,22 +213,30 @@ export default function MonitoringDetailPage() {
     refetchInterval,
     // Keep the previous range's series on screen while the new range loads so the
     // chart doesn't remount into a loading flash on range change (tripl-7l83.10).
-    placeholderData: (prev) => prev,
+    placeholderData: keepPreviousData,
+    meta: SILENT_ERROR_META,
   })
   const metrics = metricsQuery.data
-  // Interval-based catalog metrics chart one point per interval, so 'Hours'
-  // is a misleading default (tripl-4m86): follow the collection cadence
-  // instead. Event / event-type / project-total volume drilldowns instead size
-  // the default to the selected range (tripl-7l83.10) — a 30d/90d window on the
-  // hourly default renders ~720+ points as an unreadable comb. A manual pick
-  // (granularityOverride) still wins and stays sticky across range changes.
-  const defaultGranularity: MetricsGranularity =
-    scope === 'metric'
-      ? (GRANULARITY_FOR_INTERVAL[metrics?.interval ?? ''] ?? 'hour')
-      : defaultGranularityForRange(rangeDays)
-  const granularity = granularityOverride ?? defaultGranularity
+  // One default rule for every scope (MON-43): the range's readable default,
+  // never finer than the collection interval. A manual pick wins and stays
+  // sticky across range changes — but is bumped coarser when it would draw more
+  // points than a chart can take over the new range (MON-23).
+  // The collection interval's own granularity is exempt from that cap, so a
+  // 15 min series can still be read at 15 min with its band and forecast.
+  const nativeGranularity = granularityForInterval(metrics?.interval)
+  const defaultGranularity = defaultDrilldownGranularity(rangeDays, metrics?.interval)
+  const granularity = clampGranularityToRange(
+    search.granularity ?? defaultGranularity,
+    rangeDays,
+    nativeGranularity,
+  )
+  // A pick equal to the default stays out of the URL, like every other param.
+  const setGranularity = (next: MetricsGranularity) =>
+    searchActions.setGranularity(next, defaultGranularity)
   const scanConfigId = metrics?.scan_config_id ?? (scope === 'project_total' ? scopeId : null)
 
+  // Secondary: without it the By version tab stays hidden, and the global toast
+  // names the failure (MON-8).
   const scanConfigQuery = useQuery({
     queryKey: ['scanConfig', slug, scanConfigId],
     queryFn: () => scansApi.get(slug!, scanConfigId!),
@@ -463,9 +248,8 @@ export default function MonitoringDetailPage() {
     ? Boolean(metricDefinition?.app_version_column)
     : Boolean(scanConfigQuery.data?.app_version_column)
   // Which tabs this scope actually renders a trigger for — kept in step with
-  // the TabsList below. A URL can now ask for any of them, so the fallback has
-  // to cover every absent tab, not only `versions` on a scan with no version
-  // column: a value with no trigger leaves the reader on an empty page.
+  // the TabsList below. A URL can ask for any of them, so the fallback has to
+  // cover every absent tab: a value with no trigger leaves an empty page.
   const availableTabs = useMemo<MonitoringDetailTab[]>(
     () => [
       'volume',
@@ -475,375 +259,36 @@ export default function MonitoringDetailPage() {
     ],
     [hasVersionColumn, scope],
   )
-  const selectedTab: MonitoringDetailTab = availableTabs.includes(activeTab) ? activeTab : 'volume'
-
-  const appVersionScope = useMemo(() => {
-    // The catalog `metric` scope fetches versions from its own endpoint, so it
-    // never builds an event app-version scope (and returning early here narrows
-    // `scope` to the three event scopes for the typed app-version API below).
-    if (scope === 'metric' || !scanConfigId || !scopeId) return null
-    return {
-      scope_type: scope,
-      scope_ref: scope === 'project_total' ? scanConfigId : scopeId,
-    }
-  }, [scanConfigId, scope, scopeId])
-
-  const appVersionSeriesQuery = useQuery({
-    queryKey: [
-      'appVersionSeries',
-      slug,
-      scope,
-      scopeId,
-      scanConfigId,
-      appVersionScope?.scope_type,
-      appVersionScope?.scope_ref,
-      timeRange.from,
-      timeRange.to,
-    ],
-    queryFn: () => {
-      if (scope === 'metric') {
-        return metricsCatalogApi.getVersions(slug!, scopeId, timeRange).then(adaptMetricVersions)
-      }
-      return metricsApi.getAppVersionSeries(slug!, scanConfigId!, {
-        scope_type: appVersionScope!.scope_type,
-        scope_ref: appVersionScope!.scope_ref,
-        ...timeRange,
-      })
-    },
-    enabled: selectedTab === 'versions' && hasVersionColumn && !!slug && !!scopeId
-      && (scope === 'metric' || (!!scanConfigId && !!appVersionScope)),
-    refetchInterval,
-  })
-
-  const appVersionAdoptionQuery = useQuery({
-    queryKey: ['appVersionAdoption', slug, scanConfigId, timeRange.from, timeRange.to],
-    queryFn: () => metricsApi.getAppVersionAdoption(slug!, scanConfigId!, timeRange),
-    // No catalog adoption endpoint — the metric scope leaves this card empty.
-    enabled: scope !== 'metric' && selectedTab === 'versions' && hasVersionColumn && !!slug && !!scanConfigId,
-    refetchInterval,
-  })
-  const selectedVersionFilter: VersionFilter = versionFilter === 'latest' && !appVersionSeriesQuery.data?.latest_version
-    ? 'all'
-    : versionFilter
+  const selectedTab: MonitoringDetailTab = availableTabs.includes(search.tab) ? search.tab : 'volume'
 
   const eventDistributionEventTypeId = event?.event_type_id ?? null
-
-  const distributionScope = useMemo(() => {
+  const distributionScope = useMemo<DistributionScope | null>(() => {
     if (scope === 'project_total' && scopeId) {
-      return {
-        scope_type: 'project_total' as const,
-        scope_ref: scopeId,
-        scan_config_id: scopeId,
-      }
+      return { scope_type: 'project_total', scope_ref: scopeId, scan_config_id: scopeId }
     }
     if (scope === 'event_type' && scopeId) {
-      return {
-        scope_type: 'event_type' as const,
-        scope_ref: scopeId,
-      }
+      return { scope_type: 'event_type', scope_ref: scopeId }
     }
     if (scope === 'event' && eventDistributionEventTypeId) {
-      return {
-        scope_type: 'event_type' as const,
-        scope_ref: eventDistributionEventTypeId,
-      }
+      return { scope_type: 'event_type', scope_ref: eventDistributionEventTypeId }
     }
     return null
   }, [eventDistributionEventTypeId, scope, scopeId])
 
-  const distributionQuery = useQuery({
-    queryKey: ['distributionDrifts', slug, distributionScope, rangeDays],
-    queryFn: () => metricsApi.getDistributionDrifts(slug!, {
-      scope_type: distributionScope!.scope_type,
-      scope_ref: distributionScope!.scope_ref,
-      scan_config_id: 'scan_config_id' in distributionScope!
-        ? distributionScope!.scan_config_id
-        : undefined,
-      ...timeRange,
-    }),
-    enabled: selectedTab === 'distribution' && !!slug && !!distributionScope,
-    refetchInterval,
-  })
-
   const chartData = useMemo(
-    () => aggregateMetricPoints(metrics?.data ?? [], granularity),
-    [granularity, metrics?.data],
+    () => aggregateMetricPoints(metrics?.data ?? [], granularity, rollupMode),
+    [granularity, metrics?.data, rollupMode],
   )
   // The API forecasts exactly one native collection bucket. Once actuals are
   // rolled up (for example 1h -> day), that single point is not a forecast for
   // the whole display bucket and can even duplicate the last x-axis date.
-  const chartForecast = GRANULARITY_FOR_INTERVAL[metrics?.interval ?? ''] === granularity
+  const chartForecast = nativeGranularity === granularity
     ? metrics?.forecast
     : undefined
 
-  // Breakdowns: split this event's volume into a series per value of a chosen column
-  // (event-level only). Columns come from the event's configured breakdown columns plus
-  // scan-wide breakdown columns that have collected data.
-  const breakdownQuery = useQuery({
-    queryKey: ['eventMetricBreakdowns', slug, scope, scopeId, breakdownColumn, rangeDays],
-    queryFn: () => {
-      if (scope === 'metric') {
-        return metricsCatalogApi
-          .getBreakdowns(slug!, scopeId, { column: breakdownColumn || undefined, ...timeRange })
-          .then(adaptMetricBreakdowns)
-      }
-      return metricsApi.getEventMetricBreakdowns(slug!, scopeId, {
-        column: breakdownColumn || undefined,
-        ...timeRange,
-      })
-    },
-    enabled: (scope === 'event' || scope === 'metric')
-      && selectedTab === 'breakdowns' && !!slug && !!scopeId,
-    refetchInterval,
-  })
-  const breakdowns = breakdownQuery.data
-  const selectedBreakdownColumn = breakdownColumn || breakdowns?.selected_column || ''
-  const breakdownSeriesEntries = useMemo(
-    () => (breakdowns?.series ?? []).map((series, index) => ({
-      label: series.is_other ? 'Other' : (series.breakdown_value || '(empty)'),
-      // Pin each value to a palette slot from the UNFILTERED order (identical
-      // to the chart's own fallback palette) so a series keeps its color when
-      // the value filter hides its neighbours.
-      color: VERSION_CHART_COLORS[index % VERSION_CHART_COLORS.length],
-      totalCount: series.total_count,
-      data: series.data,
-    })),
-    [breakdowns?.series],
-  )
-  // Only labels that still exist in the response count: a stale selection
-  // (e.g. after a range change drops a value) falls back to "show everything"
-  // instead of an inexplicably empty chart.
-  const effectiveBreakdownFilter = useMemo(
-    () => breakdownValueFilter.filter(label =>
-      breakdownSeriesEntries.some(entry => entry.label === label)),
-    [breakdownSeriesEntries, breakdownValueFilter],
-  )
-  const breakdownChartSeries = useMemo(
-    () => breakdownSeriesEntries
-      // Filter BEFORE the 8-series render cap so values outside the top 8
-      // become visible once picked.
-      .filter(entry => effectiveBreakdownFilter.length === 0
-        || effectiveBreakdownFilter.includes(entry.label))
-      .slice(0, 8)
-      .map(entry => ({
-        label: entry.label,
-        color: entry.color,
-        data: aggregateMetricPoints(entry.data, granularity),
-      })),
-    [breakdownSeriesEntries, effectiveBreakdownFilter, granularity],
-  )
-  const toggleBreakdownValue = (label: string) => {
-    setBreakdownValueFilter(current => (
-      current.includes(label)
-        ? current.filter(value => value !== label)
-        : [...current, label]
-    ))
-  }
-  const latestParityAnomalies = useMemo(
-    () => (breakdowns?.series ?? []).flatMap(series => {
-      const latest = [...(series.parity_anomalies ?? [])]
-        .sort((left, right) => left.bucket.localeCompare(right.bucket))
-        .at(-1)
-      return latest ? [{ series, anomaly: latest }] : []
-    }),
-    [breakdowns?.series],
-  )
-  const versionChartSeries = useMemo(
-    () => buildVersionChartSeries(
-      appVersionSeriesQuery.data?.series ?? [],
-      granularity,
-      selectedVersionFilter,
-      appVersionSeriesQuery.data?.latest_version,
-      versionLegendValueKind,
-    ),
-    [
-      appVersionSeriesQuery.data?.latest_version,
-      appVersionSeriesQuery.data?.series,
-      granularity,
-      selectedVersionFilter,
-      versionLegendValueKind,
-    ],
-  )
-  const adoptionChartSeries = useMemo(
-    () => buildVersionChartSeries(
-      appVersionAdoptionQuery.data?.series ?? [],
-      granularity,
-      selectedVersionFilter,
-      appVersionAdoptionQuery.data?.latest_version,
-      'total',
-    ),
-    [
-      appVersionAdoptionQuery.data?.latest_version,
-      appVersionAdoptionQuery.data?.series,
-      granularity,
-      selectedVersionFilter,
-    ],
-  )
-  const adoptionTotal = useMemo(
-    () => appVersionAdoptionQuery.data?.totals.reduce((sum, point) => sum + point.count, 0) ?? 0,
-    [appVersionAdoptionQuery.data?.totals],
-  )
-  const latestAdoptionTotal = useMemo(
-    () => appVersionAdoptionQuery.data?.series
-      .find(series => series.is_latest)?.total_count ?? 0,
-    [appVersionAdoptionQuery.data?.series],
-  )
-  const latestAdoptionShare = adoptionTotal > 0 ? latestAdoptionTotal / adoptionTotal : null
+  const annotationsQuery = useChartAnnotations({ slug, scope, scopeId, rangeDays, timeRange })
 
-  // The header/tab "latest" is the backend's activation-gated release: Wave 1
-  // made is_latest reflect the gated release, so it already agrees with the
-  // maturity-gated "latest active release" the ReleaseRegressionPanel derives.
-  // When that newest release has NOT yet taken a real share of traffic
-  // (is_active=false) it's a pre-release / not-yet-rolled-out build, and drops
-  // the primary "latest" highlight for a distinct pre-release treatment.
-  const latestVersion = appVersionSeriesQuery.data?.latest_version ?? null
-  const latestVersionIsActive = useMemo(() => {
-    const data = appVersionSeriesQuery.data
-    if (!data?.latest_version) return false
-    const info = data.versions.find(entry => entry.is_latest && !entry.is_other)
-      ?? data.series.find(entry => entry.is_latest && !entry.is_other)
-    return info?.is_active ?? false
-  }, [appVersionSeriesQuery.data])
-  const latestIsPreRelease = latestVersion !== null && !latestVersionIsActive
-  // Warn on the Latest filter whenever the newest release is not yet a rolled-out
-  // active release. The backend `is_active` already honors each scan's own
-  // app_version_active_share_min (which drives latestVersionIsActive), so this is
-  // the authoritative signal — a separate hardcoded low-share check could
-  // contradict a scan whose override differs from the default threshold.
-  const latestFilterNeedsWarning = latestIsPreRelease
-
-  const queryClient = useQueryClient()
-  const annotationsKey = useMemo(
-    () => ['chartAnnotations', slug, scope, scopeId, timeRange.from, timeRange.to],
-    [slug, scope, scopeId, timeRange.from, timeRange.to],
-  )
-  const annotationsQuery = useQuery({
-    queryKey: annotationsKey,
-    queryFn: () =>
-      chartAnnotationsApi.list(slug!, {
-        scope_type: scope,
-        scope_ref: scopeId,
-        from: timeRange.from,
-        to: timeRange.to,
-      }),
-    enabled: !!slug && !!scopeId,
-  })
-  const annotations = annotationsQuery.data ?? []
-
-  const [annotationBucket, setAnnotationBucket] = useState('')
-  const [annotationLabel, setAnnotationLabel] = useState('')
-  const createAnnotationMut = useMutation({
-    meta: SILENT_ERROR_META,
-    mutationFn: () =>
-      chartAnnotationsApi.create(slug!, {
-        bucket: new Date(annotationBucket).toISOString(),
-        label: annotationLabel.trim(),
-        scope_type: scope,
-        scope_ref: scopeId,
-      }),
-    onSuccess: () => {
-      setAnnotationBucket('')
-      setAnnotationLabel('')
-      void queryClient.invalidateQueries({ queryKey: annotationsKey })
-    },
-  })
-  const deleteAnnotationMut = useMutation({
-    mutationFn: (id: string) => chartAnnotationsApi.delete(slug!, id),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: annotationsKey })
-    },
-  })
-  const { notifyMetricCollectStarted } = useDemoScenarioActions()
-  const { metricId: scenarioMetricId } = useScenarioArtifacts()
-  // Manual "collect now": backfill a recent window for this metric so its chart
-  // populates without waiting for the scheduler. Collection runs in the worker;
-  // the watcher polls the persisted last_collection_status until the run
-  // settles, toasts success or the persisted failure reason (tripl-4mju), and
-  // refreshes the series/definition once data landed.
-  const collectWatcher = useMetricCollectionWatcher<CollectTarget>((metricId, status, context) => {
-    if (status !== 'success' || !context) return
-    // Invalidate the metric this run was actually collecting — its slug/scope/
-    // scopeId captured at collect-start — not whatever the page navigated to
-    // mid-watch (tripl-0s3d, tripl-htvg). The live `slug` used here before
-    // pointed the invalidation at the wrong project after a cross-project move.
-    void queryClient.invalidateQueries({
-      queryKey: ['monitoringMetrics', context.slug, context.scope, context.scopeId],
-    })
-    void queryClient.invalidateQueries({ queryKey: ['metricDefinition', context.slug, metricId] })
-    if (context.isFactMetric) {
-      // A fact collect refreshes every active dependent metric in the shared
-      // source batch, so every dependent series and catalog row may change.
-      void queryClient.invalidateQueries({
-        queryKey: ['monitoringMetrics', context.slug, 'metric'],
-      })
-      void queryClient.invalidateQueries({ queryKey: ['metrics-catalog', context.slug] })
-    }
-  })
-  /**
-   * A fact click collects every metric sharing its source, in one batch — say how
-   * many, rather than "all active dependent metrics": the batch is capped, so
-   * that phrasing could promise more than the click actually started.
-   */
-  const factCollectMessage = (metricCount: number): string =>
-    metricCount > 1
-      ? `Source refresh started — ${metricCount} metrics sharing this source will update in one batch.`
-      : 'Source refresh started — current fact data will update shortly.'
-
-  const collectMut = useMutation({
-    meta: SILENT_ERROR_META,
-    // The target travels WITH the mutation instead of being re-read in onSuccess.
-    // react-query refreshes the observer's options every render, so onSuccess saw
-    // the CURRENT scopeId: firing a collect for metric A and navigating to B
-    // before the POST resolved attached the watcher to B (tripl-htvg).
-    mutationFn: (target: CollectTarget) => metricsCatalogApi.collect(target.slug, target.scopeId),
-    onSuccess: (data, target) => {
-      toast.success(
-        target.isFactMetric
-          ? factCollectMessage(data.metric_count)
-          : 'Collection started — you will be notified when it finishes.',
-      )
-      collectWatcher.watch({
-        slug: target.slug,
-        metricId: target.scopeId,
-        displayName: target.displayName,
-        context: target,
-      })
-      // The scenario binds to the metric the USER collected — the demo's tick
-      // runs collections of its own, so only this path counts (tripl-2su6.21).
-      // Inert outside a ready demo project.
-      notifyMetricCollectStarted(target.scopeId)
-    },
-    // Its own toast (silenced in the backstop), so the one message carries both
-    // what failed and why.
-    onError: error => toast.error(`Could not start collection — ${getErrorMessage(error)}`),
-  })
-  // Key the spinner to the metric actually being collected — both while the POST
-  // is in flight and while the watch polls — so a run on metric A does not read
-  // as "collecting" once the page navigates to metric B (tripl-0s3d, tripl-htvg).
-  const isCollecting =
-    (collectMut.isPending && collectMut.variables?.scopeId === scopeId) ||
-    collectWatcher.watchingMetricId === scopeId
-
-  const { confirm: confirmDelete, dialog: deleteDialog } = useConfirm()
-  const deleteMetric = async (): Promise<void> => {
-    const ok = await confirmDelete({
-      title: 'Delete metric?',
-      message: `"${metricDefinition?.display_name ?? 'This metric'}" and its collected series will be permanently removed. This can't be undone.`,
-      variant: 'danger',
-      confirmLabel: 'Delete',
-    })
-    if (!ok) return
-    try {
-      await metricsCatalogApi.del(slug!, scopeId)
-      toast.success('Metric deleted.')
-      void queryClient.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
-      navigate(`/p/${slug}/metrics`)
-    } catch {
-      toast.error('Could not delete metric.')
-    }
-  }
-
-  const eventType = eventTypes.find((candidate: EventType) => (
+  const eventType = (eventTypes ?? []).find((candidate: EventType) => (
     scope === 'event'
       ? candidate.id === event?.event_type_id
       : scope === 'event_type' && candidate.id === scopeId
@@ -884,67 +329,59 @@ export default function MonitoringDetailPage() {
     ? `${latestSignal.state === 'recent' ? 'Recent' : 'Latest scan'} ${latestSignal.direction === 'drop' ? 'drop' : 'spike'} anomaly`
     : null
 
-  if (
-    eventQuery.isError
-    || eventTypesQuery.isError
-    || metaFieldsQuery.isError
-    || metricDefinitionQuery.isError
-    || metricsQuery.isError
-    || scanConfigQuery.isError
-    || appVersionSeriesQuery.isError
-    || appVersionAdoptionQuery.isError
-    || distributionQuery.isError
-  ) {
+  const isEventScope = scope === 'event'
+  const containerClassName = isEventScope
+    ? 'mx-auto max-w-[1000px] space-y-5 px-4 pb-12 pt-4 sm:px-6'
+    : 'space-y-6 p-4 sm:p-6'
+
+  // Only the queries that define the entity blank the page; every tab renders
+  // its own failure inside itself (MON-8). A disabled query never errors, so
+  // the list covers every scope.
+  const entityQueries = [eventQuery, eventTypesQuery, metricDefinitionQuery, metricsQuery]
+  const failedEntityQuery = entityQueries.find(query => query.isError)
+  if (failedEntityQuery) {
     return (
-      <div className="p-6">
+      <div className={containerClassName}>
         <ErrorState
           title="Failed to load monitoring details"
           description="The monitoring page could not fetch data from the backend."
-          error={
-            eventQuery.error
-            ?? eventTypesQuery.error
-            ?? metaFieldsQuery.error
-            ?? metricDefinitionQuery.error
-            ?? metricsQuery.error
-            ?? scanConfigQuery.error
-            ?? appVersionSeriesQuery.error
-            ?? appVersionAdoptionQuery.error
-            ?? distributionQuery.error
-          }
+          error={failedEntityQuery.error}
+          // Retry exactly what failed: the metric definition was never retried
+          // before, and refetching a disabled query ignores `enabled` and fired
+          // a request with a null scan id (MON-7).
           onRetry={() => {
-            const refetches: Promise<unknown>[] = [
-              eventTypesQuery.refetch(),
-              metricsQuery.refetch(),
-            ]
-            if (scanConfigId) {
-              refetches.push(scanConfigQuery.refetch())
+            for (const query of entityQueries) {
+              if (query.isError) void query.refetch()
             }
-            if (selectedTab === 'versions' && hasVersionColumn) {
-              refetches.push(appVersionSeriesQuery.refetch(), appVersionAdoptionQuery.refetch())
-            }
-            if (selectedTab === 'distribution') {
-              refetches.push(distributionQuery.refetch())
-            }
-            if (scope === 'event') {
-              refetches.push(eventQuery.refetch(), metaFieldsQuery.refetch())
-            }
-            void Promise.all(refetches)
           }}
         />
       </div>
     )
   }
 
-  const isEventDetail = scope === 'event' && !!event
+  // The event hero, not the generic header, is what an event page settles into;
+  // painting the generic one first made the layout jump (MON-9).
+  if (isEventScope && !event) {
+    return (
+      <div className={containerClassName}>
+        <EventDetailSkeleton />
+      </div>
+    )
+  }
+
+  const chartIsLoading = metricsQuery.isLoading
+    // A metric's rollup depends on its definition; charting before it arrives
+    // would draw a sum and then snap to a mean.
+    || rollupPending
 
   return (
-    <div className={isEventDetail ? 'mx-auto max-w-[1000px] space-y-5 px-4 pb-12 pt-4 sm:px-6' : 'space-y-6 p-4 sm:p-6'}>
-      {isEventDetail && event ? (
+    <div className={containerClassName}>
+      {isEventScope && event ? (
         <EventDetailHero
+          slug={slug ?? ''}
           event={event}
           eventType={eventType}
           metrics={metrics}
-          onBack={goBack}
           // Branch-aware: a bare path would drop the branch out of the URL and
           // leave the editor relying on context alone (tripl-h2sx.2).
           onEdit={canWrite ? () => {
@@ -959,80 +396,25 @@ export default function MonitoringDetailPage() {
         />
       ) : (
         <>
-          <div className="flex items-center justify-between gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={backAffordance.onClick}
-            >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Button variant="ghost" size="sm" onClick={backAffordance.onClick}>
               <ArrowLeft className="mr-2 h-4 w-4" />
               {backAffordance.label}
             </Button>
-            {scope === 'metric' && canWrite && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => navigate(metricEditPath)}
-                >
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Edit
-                </Button>
-                {/* No see-chart mark on this page: the scenario completes that step
-                    on arrival here, so a mark would never be read. Collect-metric
-                    only coaches until the user's own collect is in flight — after
-                    that, every metric detail page would otherwise shout. */}
-                <ScenarioCoachMark step="live-loop/collect-metric" when={scenarioMetricId === null}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      collectMut.mutate({
-                        slug: slug!,
-                        scope,
-                        scopeId,
-                        displayName: metricDefinition?.display_name ?? 'This metric',
-                        isFactMetric: metricDefinition?.kind === 'fact',
-                      })
-                    }
-                    disabled={isCollecting || !metricDefinition}
-                    title={
-                      metricDefinition?.kind === 'fact'
-                        ? "Reread current warehouse data for this metric's fact source(s) and refresh all dependent active metrics in one batch."
-                        : 'Backfill a recent window now so the chart populates without waiting for the scheduler.'
-                    }
-                  >
-                    {isCollecting ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                    )}
-                    {metricDefinition?.kind === 'fact'
-                      ? isCollecting
-                        ? 'Refreshing source metrics…'
-                        : 'Refresh source metrics'
-                      : isCollecting
-                        ? 'Collecting…'
-                        : 'Collect now'}
-                  </Button>
-                </ScenarioCoachMark>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={deleteMetric}
-                  className="text-[var(--danger)] hover:text-[var(--danger)]"
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </Button>
-                {deleteDialog}
-              </div>
+            {scope === 'metric' && canWrite && slug && (
+              <MetricHeaderActions
+                slug={slug}
+                scopeId={scopeId}
+                metricDefinition={metricDefinition}
+                editPath={metricEditPath}
+                collect={metricCollect}
+              />
             )}
           </div>
 
           <div className="space-y-3">
-            <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{headerTitle}</h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="min-w-0 break-words text-[22px] font-semibold tracking-[-0.01em]">{headerTitle}</h1>
               {headerIdentity && (
                 <span className="mono text-[13px]" style={{ color: 'var(--fg-muted)' }} data-testid="header-identity">
                   {headerIdentity}
@@ -1070,7 +452,7 @@ export default function MonitoringDetailPage() {
         <MetricDefinitionCard slug={slug} definition={metricDefinition} />
       )}
 
-      {isEventDetail && event && slug && (
+      {isEventScope && event && slug && (
         <EntityBranchBanner
           slug={slug}
           rowBranchId={event.branch_id}
@@ -1082,543 +464,262 @@ export default function MonitoringDetailPage() {
           where a developer is sent to instrument it, and the metrics below can
           only say "no data" until they have (tripl-kjhi.8). Once the event is
           live the chart leads and the spec follows the fields. */}
-      {isEventDetail && event && slug && !LIVE_STATUSES.has(event.status) && (
+      {isEventScope && event && slug && !LIVE_STATUSES.has(event.status) && (
         <EventSpecCard slug={slug} event={event} eventType={eventType} metaFieldMap={metaFieldMap} />
       )}
 
-      {isEventDetail && event && (
-        <div className="grid items-start gap-[14px] lg:grid-cols-[1.5fr_1fr]">
+      {isEventScope && event && (
+        // grid-cols-1 is minmax(0, 1fr): an auto column grew to the Fields
+        // table's width on a phone and the page scrolled sideways (LIVE-5).
+        <div className="grid grid-cols-1 items-start gap-[14px] lg:grid-cols-[1.5fr_1fr] [&>*]:min-w-0">
           <EventFieldsTable eventType={eventType} event={event} fieldDefMap={fieldDefMap} />
-          <EventSideColumn slug={slug ?? ''} event={event} eventType={eventType} history={eventHistory} metaFieldMap={metaFieldMap} />
+          <EventSideColumn
+            slug={slug ?? ''}
+            event={event}
+            eventType={eventType}
+            history={historyQuery.data ?? []}
+            historyError={historyQuery.isError ? historyQuery.error : undefined}
+            onRetryHistory={() => void historyQuery.refetch()}
+            metaFieldMap={metaFieldMap}
+          />
         </div>
       )}
 
-      {isEventDetail && event && slug && LIVE_STATUSES.has(event.status) && (
+      {isEventScope && event && slug && LIVE_STATUSES.has(event.status) && (
         <EventSpecCard slug={slug} event={event} eventType={eventType} metaFieldMap={metaFieldMap} />
       )}
 
-      {isEventDetail && <span ref={metricsRef} aria-hidden className="-mt-5 block scroll-mt-4" />}
-      <Tabs value={selectedTab} onValueChange={value => setActiveTab(value as MonitoringDetailTab)}>
-        <TabsList className="text-fg-muted">
-          <TabsTrigger value="volume">{volumeLabel}</TabsTrigger>
-          {hasVersionColumn && (
-            <TabsTrigger value="versions">
-              <GitBranch className="h-3.5 w-3.5" />
-              By version
-            </TabsTrigger>
-          )}
-          {scope !== 'metric' && <TabsTrigger value="heatmap">Heatmap</TabsTrigger>}
-          {scope !== 'metric' && (
-            <TabsTrigger value="distribution">
-              <GitCompareArrows className="h-3.5 w-3.5" />
-              Distribution
-            </TabsTrigger>
-          )}
-          {(scope === 'event' || scope === 'metric') && (
-            <TabsTrigger value="breakdowns">
-              <Layers className="h-3.5 w-3.5" />
-              Breakdowns
-            </TabsTrigger>
-          )}
-        </TabsList>
-
-        <TabsContent value="volume" className="space-y-6">
-          {latestSignal && (
-            <Card>
-              <CardContent className="grid gap-3 p-4 md:grid-cols-4">
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
-                  <p className="text-sm font-medium">{formatTimestamp(latestSignal.bucket)}</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
-                  <p className="text-sm font-medium">
-                    {metricIsPercent
-                      ? formatMetricValue(latestSignal.actual_count, metricUnit)
-                      : latestSignal.actual_count.toLocaleString()}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Expected</p>
-                  <p className="text-sm font-medium">
-                    {metricIsPercent
-                      ? formatMetricValue(latestSignal.expected_count, metricUnit)
-                      : // Value-aware: a non-percent metric can still carry a
-                        // sub-unit baseline, which plain rounding wrote as "0".
-                        formatIncidentCount(latestSignal.expected_count)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Z-Score</p>
-                  <p className="text-sm font-medium">{latestSignal.z_score.toFixed(2)}</p>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* scan_config_id is NULL only for metric-scope signals, which the
-              scope guard already excludes — but it is checked rather than
-              asserted, so a future scope that also lacks one cannot put a null
-              into the query key. */}
-          {latestSignal?.scan_config_id && slug && scope !== 'metric' && (
-            <TopMoversPanel
-              slug={slug}
-              scanConfigId={latestSignal.scan_config_id}
-              scopeType={latestSignal.scope_type}
-              scopeRef={latestSignal.scope_ref}
-              bucket={latestSignal.bucket}
-              from={timeRange.from}
-              to={timeRange.to}
-            />
-          )}
-
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">{volumeLabel}</h2>
-                <MetricsRangeControls
-                  rangeDays={rangeDays}
-                  granularity={granularity}
-                  onRangeDaysChange={setRangeDays}
-                  onGranularityChange={setGranularityOverride}
-                />
-              </div>
-              {metricsQuery.isLoading ? (
-                <div className="h-[200px] flex items-center justify-center text-sm text-muted-foreground">
-                  Loading monitoring data…
-                </div>
-              ) : chartData.length === 0 ? (
-                <div className="h-[200px] flex items-center justify-center">
-                  <EmptyState
-                    icon={TrendingUp}
-                    title="No metrics data available"
-                    description="Run a scan to start collecting volume metrics for this scope."
-                  />
-                </div>
-              ) : (
-                <MetricsChart
-                  data={chartData}
-                  forecast={chartForecast}
-                  annotations={annotations}
-                  height={200}
-                  color={eventType?.color || metricDefinition?.color || 'var(--chart-3)'}
-                  granularity={granularity}
-                  seriesLabel={metricSeriesLabel}
-                  valueFormatter={metricValueFormatter}
-                  // The sigma the detector scored THIS scope with, so the band
-                  // and the "±Nσ" tooltip agree with the dots inside them. The
-                  // metric scope serves it too (`adaptMetricSeries`, tripl-4cgl).
-                  sigmaThreshold={metrics?.sigma_threshold}
-                />
+      {/* The hero's "Metrics" action scrolls here. The anchor used to be a
+          separate span with -mt-5, which cancelled the page gap and glued the
+          tab strip to the card above it (LIVE-12). */}
+      <div ref={metricsRef} className="min-w-0 scroll-mt-4">
+        <Tabs value={selectedTab} onValueChange={value => searchActions.setTab(value as MonitoringDetailTab)}>
+          {/* The strip scrolls on its own on a phone instead of widening the
+              page: five triggers do not fit 375px (LIVE-5). */}
+          <div className="tripl-scroll-x -mx-1 overflow-x-auto px-1">
+            <TabsList className="text-fg-muted">
+              <TabsTrigger value="volume">{volumeLabel}</TabsTrigger>
+              {hasVersionColumn && (
+                <TabsTrigger value="versions">
+                  <GitBranch className="h-3.5 w-3.5" />
+                  By version
+                </TabsTrigger>
               )}
-              {metrics?.interval && (
-                <p className="text-xs text-muted-foreground mt-2">
-                  Collection interval: {metrics.interval}
-                </p>
+              {scope !== 'metric' && <TabsTrigger value="heatmap">Heatmap</TabsTrigger>}
+              {scope !== 'metric' && (
+                <TabsTrigger value="distribution">
+                  <GitCompareArrows className="h-3.5 w-3.5" />
+                  Distribution
+                </TabsTrigger>
               )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="space-y-3 p-4">
-              <div className="flex items-center gap-2">
-                <CalendarPlus className="h-4 w-4 text-muted-foreground" />
-                <h2 className="text-sm font-semibold">Annotations</h2>
-                <span className="text-xs text-muted-foreground">
-                  ({annotations.length})
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Mark deploys, releases, or incidents so the chart shows what
-                changed when. Snaps to the closest bucket of the current
-                scope.
-                {!canWrite && ' Adding and removing them is done by an editor or owner.'}
-              </p>
-              {canWrite && (
-                <form
-                  className="flex flex-wrap items-center gap-2"
-                  onSubmit={event => {
-                    event.preventDefault()
-                    if (!annotationBucket || !annotationLabel.trim()) return
-                    createAnnotationMut.mutate()
-                  }}
-                >
-                  <div className="flex flex-col gap-0.5">
-                    <Label htmlFor="annotation-bucket" className="sr-only">Date and time</Label>
-                    <Input
-                      id="annotation-bucket"
-                      type="datetime-local"
-                      value={annotationBucket}
-                      onChange={event => setAnnotationBucket(event.target.value)}
-                      className="h-8 w-[200px]"
-                    />
-                    <span className="text-[10px] text-muted-foreground">
-                      YYYY-MM-DD HH:mm
-                    </span>
-                  </div>
-                  <Label htmlFor="annotation-label" className="sr-only">Label</Label>
-                  <Input
-                    id="annotation-label"
-                    placeholder="Label (e.g. v1.4 deploy)"
-                    value={annotationLabel}
-                    onChange={event => setAnnotationLabel(event.target.value)}
-                    className="h-8 w-[280px]"
-                  />
-                  <Button
-                    type="submit"
-                    size="sm"
-                    variant="secondary"
-                    disabled={
-                      !annotationBucket
-                      || !annotationLabel.trim()
-                      || createAnnotationMut.isPending
-                    }
-                  >
-                    Add
-                  </Button>
-                </form>
+              {(scope === 'event' || scope === 'metric') && (
+                <TabsTrigger value="breakdowns">
+                  <Layers className="h-3.5 w-3.5" />
+                  Breakdowns
+                </TabsTrigger>
               )}
-              {createAnnotationMut.isError && (
-                <p role="alert" className="text-xs text-destructive">
-                  {createAnnotationMut.error instanceof Error
-                    ? createAnnotationMut.error.message
-                    : 'Failed to add annotation.'}
-                </p>
-              )}
-              {annotations.length > 0 && (
-                <ul className="divide-y divide-border text-xs">
-                  {annotations.map(annotation => (
-                    <li
-                      key={annotation.id}
-                      className="flex items-center justify-between gap-2 py-2"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="inline-block h-2.5 w-2.5 rounded-full"
-                          style={{ backgroundColor: annotation.color }}
-                        />
-                        <span className="text-muted-foreground">
-                          {formatTimestamp(annotation.bucket)}
-                        </span>
-                        <span className="font-medium">{annotation.label}</span>
-                        {annotation.scope_type === null && (
-                          <Badge variant="outline" className="text-[10px]">project-wide</Badge>
-                        )}
-                      </div>
-                      {canWrite && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          onClick={() => deleteAnnotationMut.mutate(annotation.id)}
-                          disabled={deleteAnnotationMut.isPending}
-                          aria-label={`Delete annotation ${annotation.label}`}
-                        >
-                          <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+            </TabsList>
+          </div>
 
-        {hasVersionColumn && (
-          <TabsContent value="versions" className="space-y-4">
-            <Card>
-              <CardContent className="p-6">
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <GitBranch className="h-4 w-4 text-muted-foreground" />
-                    <h2 className="text-lg font-semibold">By version</h2>
-                    {latestVersion && (
-                      latestIsPreRelease ? (
-                        <Badge
-                          variant="outline"
-                          className="gap-1 border-[var(--warning)]/60 bg-[var(--warning-soft)] font-mono text-[var(--warning)]"
-                          title="Newest release by version, but it hasn't taken a real share of traffic yet — treat it as a pre-release / not-yet-rolled-out build."
-                        >
-                          <AlertTriangle aria-hidden="true" className="h-3 w-3" />
-                          <span>pre-release {latestVersion}</span>
-                          {latestAdoptionShare !== null && (
-                            <span className="opacity-80">· {formatPercent(latestAdoptionShare)}</span>
-                          )}
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="gap-1 font-mono">
-                          <span>latest {latestVersion}</span>
-                          {latestAdoptionShare !== null && (
-                            <span className="text-muted-foreground">· {formatPercent(latestAdoptionShare)}</span>
-                          )}
-                        </Badge>
-                      )
-                    )}
+          <TabsContent value="volume" className="space-y-6">
+            {latestSignal && (
+              <Card>
+                <CardContent className="grid grid-cols-2 gap-3 p-4 md:grid-cols-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
+                    <p className="text-sm font-medium">{formatTimestamp(latestSignal.bucket)}</p>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="inline-flex h-8 items-center rounded-md border bg-muted/30 p-0.5">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={selectedVersionFilter === 'all' ? 'secondary' : 'ghost'}
-                        className="h-6 px-2 text-xs"
-                        onClick={() => setVersionFilter('all')}
-                      >
-                        All versions
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={selectedVersionFilter === 'latest' ? 'secondary' : 'ghost'}
-                        className="h-6 gap-1 px-2 text-xs"
-                        onClick={() => setVersionFilter('latest')}
-                        disabled={!latestVersion}
-                        title={latestFilterNeedsWarning
-                          ? 'The newest release is a pre-release with little traffic — not yet rolled out.'
-                          : undefined}
-                      >
-                        Latest
-                        {latestFilterNeedsWarning && (
-                          <AlertTriangle aria-hidden="true" className="h-3 w-3 text-[var(--warning)]" />
-                        )}
-                      </Button>
-                    </div>
-                    <MetricsRangeControls
-                      rangeDays={rangeDays}
-                      granularity={granularity}
-                      onRangeDaysChange={setRangeDays}
-                      onGranularityChange={setGranularityOverride}
-                    />
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
+                    <p className="text-sm font-medium">
+                      {metricIsPercent
+                        ? formatMetricValue(latestSignal.actual_count, metricUnit)
+                        : latestSignal.actual_count.toLocaleString()}
+                    </p>
                   </div>
-                </div>
-                {appVersionSeriesQuery.isLoading ? (
-                  <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
-                    Loading version metrics…
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Expected</p>
+                    <p className="text-sm font-medium">
+                      {metricIsPercent
+                        ? formatMetricValue(latestSignal.expected_count, metricUnit)
+                        : // Value-aware: a non-percent metric can still carry a
+                          // sub-unit baseline, which plain rounding wrote as "0".
+                          formatIncidentCount(latestSignal.expected_count)}
+                    </p>
                   </div>
-                ) : (
-                  <>
-                    <MetricsMultiSeriesChart
-                      series={versionChartSeries}
-                      height={280}
-                      granularity={granularity}
-                      seriesLabel={metricSeriesLabel}
-                      valueFormatter={metricValueFormatter}
-                      emptyLabel="No version metrics available"
-                    />
-                    <VersionLegend
-                      series={versionChartSeries}
-                      latestShare={latestAdoptionShare}
-                      valueFormatter={metricValueFormatter}
-                      valueKind={versionLegendValueKind}
-                    />
-                    {appVersionSeriesQuery.data?.interval && (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        Collection interval: {appVersionSeriesQuery.data.interval}
-                      </p>
-                    )}
-                  </>
-                )}
-              </CardContent>
-            </Card>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Z-Score</p>
+                    <p className="text-sm font-medium">{latestSignal.z_score.toFixed(2)}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
-            <Card>
-              <CardContent className="p-6">
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-lg font-semibold">Version adoption</h2>
-                    {latestAdoptionShare !== null && (
-                      latestIsPreRelease ? (
-                        <Badge
-                          variant="outline"
-                          className="gap-1 border-[var(--warning)]/60 bg-[var(--warning-soft)] text-[var(--warning)]"
-                        >
-                          <AlertTriangle aria-hidden="true" className="h-3 w-3" />
-                          Pre-release {formatPercent(latestAdoptionShare)}
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline">
-                          Latest {formatPercent(latestAdoptionShare)}
-                        </Badge>
-                      )
-                    )}
-                  </div>
-                  {appVersionAdoptionQuery.data?.app_version_column && (
-                    <Badge variant="secondary" className="font-mono">
-                      {appVersionAdoptionQuery.data.app_version_column}
-                    </Badge>
-                  )}
-                </div>
-                {appVersionAdoptionQuery.isLoading ? (
-                  <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">
-                    Loading adoption…
-                  </div>
-                ) : (
-                  <>
-                    <MetricsMultiSeriesChart
-                      series={adoptionChartSeries}
-                      height={240}
-                      granularity={granularity}
-                      emptyLabel="No adoption data available"
-                    />
-                    <VersionLegend series={adoptionChartSeries} latestShare={latestAdoptionShare} />
-                  </>
-                )}
-              </CardContent>
-            </Card>
-
-            {scope !== 'metric' && scanConfigId && (
-              <ReleaseRegressionPanel
-                slug={slug!}
-                scanConfigId={scanConfigId}
-                enabled={selectedTab === 'versions'}
+            {/* scan_config_id is NULL only for metric-scope signals, which the
+                scope guard already excludes — but it is checked rather than
+                asserted, so a future scope that also lacks one cannot put a null
+                into the query key. */}
+            {latestSignal?.scan_config_id && slug && scope !== 'metric' && (
+              <TopMoversPanel
+                slug={slug}
+                scanConfigId={latestSignal.scan_config_id}
+                scopeType={latestSignal.scope_type}
+                scopeRef={latestSignal.scope_ref}
+                bucket={latestSignal.bucket}
+                rangeDays={rangeDays}
+                timeRange={timeRange}
               />
             )}
-          </TabsContent>
-        )}
 
-        <TabsContent value="heatmap">
-          {metrics?.scan_config_id ? (
-            <SeasonalityHeatmap
-              slug={slug!}
-              scanConfigId={metrics.scan_config_id}
-              scopeType={scope}
-              scopeRef={scopeId}
-              from={timeRange.from}
-              to={timeRange.to}
-              color={eventType?.color || 'var(--chart-3)'}
-            />
-          ) : (
             <Card>
-              <CardContent className="p-6 text-sm text-muted-foreground">
-                No scan found for this scope yet — run a scan to populate
-                the heatmap.
-              </CardContent>
-            </Card>
-          )}
-        </TabsContent>
-
-        <TabsContent value="distribution">
-          <DistributionDriftPanel
-            data={distributionQuery.data?.data ?? []}
-            fields={distributionQuery.data?.fields ?? []}
-            isLoading={distributionQuery.isLoading}
-            selectedField={distributionField}
-            onSelectedFieldChange={setDistributionField}
-          />
-        </TabsContent>
-
-        <TabsContent value="breakdowns">
-          <Card>
-            <CardContent className="p-6">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <Layers className="h-4 w-4 text-muted-foreground" />
-                  <h2 className="text-lg font-semibold">Breakdowns</h2>
-                </div>
-                <Select
-                  value={selectedBreakdownColumn}
-                  onValueChange={value => {
-                    setBreakdownColumn(value)
-                    // A new column has a different value set; a carried-over
-                    // selection would silently blank the chart.
-                    setBreakdownValueFilter([])
-                  }}
-                  disabled={!breakdowns?.columns.length}
-                >
-                  <SelectTrigger className="h-8 w-[200px]">
-                    <SelectValue placeholder="Column" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {breakdowns?.columns.map(column => (
-                      <SelectItem key={column} value={column}>
-                        {column}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {breakdownQuery.isLoading ? (
-                <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
-                  Loading breakdowns…
-                </div>
-              ) : !breakdowns?.columns.length ? (
-                <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
-                  <p>No breakdown groups yet.</p>
-                  {scope === 'metric' ? (
-                    <>
-                      <p className="text-xs">
-                        Add breakdown columns in the metric settings — each configured
-                        column splits this metric into a series per value after the next
-                        collection.
-                      </p>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="mt-2"
-                        onClick={() => navigate(metricEditPath)}
-                      >
-                        <Pencil className="mr-2 h-4 w-4" />
-                        Edit metric
-                      </Button>
-                    </>
-                  ) : (
-                    <p className="text-xs">
-                      Edit this event and add a column under “Metric breakdowns”, then run a
-                      scan — its volume will split into a series per value of that column.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <MetricsMultiSeriesChart
-                    series={breakdownChartSeries}
-                    height={280}
+              <CardContent className="p-4 sm:p-6">
+                <ChartCardHeader title={<h2 className="text-lg font-semibold">{volumeLabel}</h2>}>
+                  <MetricsRangeControls
+                    rangeDays={rangeDays}
+                    granularity={granularity}
+                    nativeGranularity={nativeGranularity}
+                    onRangeDaysChange={searchActions.setRangeDays}
+                    onGranularityChange={setGranularity}
+                  />
+                </ChartCardHeader>
+                {chartIsLoading ? (
+                  <div className="h-[200px] flex items-center justify-center text-sm text-muted-foreground">
+                    Loading monitoring data…
+                  </div>
+                ) : chartData.length === 0 ? (
+                  <div className="h-[200px] flex items-center justify-center">
+                    <EmptyState
+                      icon={TrendingUp}
+                      title="No metrics data available"
+                      description="Run a scan to start collecting volume metrics for this scope."
+                    />
+                  </div>
+                ) : (
+                  <MetricsChart
+                    data={chartData}
+                    forecast={chartForecast}
+                    annotations={annotationsQuery.data ?? []}
+                    height={200}
+                    color={eventType?.color || metricDefinition?.color || 'var(--chart-3)'}
                     granularity={granularity}
                     seriesLabel={metricSeriesLabel}
                     valueFormatter={metricValueFormatter}
+                    // The sigma the detector scored THIS scope with, so the band
+                    // and the "±Nσ" tooltip agree with the dots inside them. The
+                    // metric scope serves it too (`adaptMetricSeries`, tripl-4cgl).
+                    sigmaThreshold={metrics?.sigma_threshold}
                   />
-                  <BreakdownValueChips
-                    options={breakdownSeriesEntries}
-                    selected={effectiveBreakdownFilter}
-                    valueFormatter={metricValueFormatter}
-                    onToggle={toggleBreakdownValue}
-                    onReset={() => setBreakdownValueFilter([])}
-                  />
-                  {latestParityAnomalies.length > 0 && (
-                    <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
-                      <p className="mb-2 text-xs font-medium text-muted-foreground">
-                        {selectedBreakdownColumn} share anomalies
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {latestParityAnomalies.map(({ series, anomaly }) => (
-                          <Badge
-                            key={`${series.breakdown_value}-${anomaly.bucket}`}
-                            aria-label={`${series.is_other ? 'Other' : (series.breakdown_value || '(empty)')} share ${anomaly.direction}: ${formatPercent(anomaly.expected_share)} -> ${formatPercent(anomaly.actual_share)}`}
-                            variant="outline"
-                            className={anomaly.direction === 'drop'
-                              ? 'border-destructive/50 text-destructive'
-                              : 'border-warning/50 text-warning'}
-                          >
-                            {series.is_other ? 'Other' : (series.breakdown_value || '(empty)')}
-                            {' share '}{anomaly.direction}:{' '}
-                            {formatPercent(anomaly.expected_share)} {'->'} {formatPercent(anomaly.actual_share)}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {breakdowns?.interval && (
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      Collection interval: {breakdowns.interval}
-                    </p>
-                  )}
-                </>
+                )}
+                {metrics?.interval && (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Collection interval: {metrics.interval}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            {slug && (
+              <AnnotationsCard
+                slug={slug}
+                scope={scope}
+                scopeId={scopeId}
+                canWrite={canWrite}
+                query={annotationsQuery}
+              />
+            )}
+          </TabsContent>
+
+          {hasVersionColumn && slug && (
+            <TabsContent value="versions" className="space-y-4">
+              <VersionsTab
+                slug={slug}
+                scope={scope}
+                scopeId={scopeId}
+                scanConfigId={scanConfigId}
+                rangeDays={rangeDays}
+                timeRange={timeRange}
+                granularity={granularity}
+                nativeGranularity={nativeGranularity}
+                rollupMode={rollupMode}
+                refetchInterval={refetchInterval}
+                versionFilter={search.versionFilter}
+                seriesLabel={metricSeriesLabel}
+                valueFormatter={metricValueFormatter}
+                onRangeDaysChange={searchActions.setRangeDays}
+                onGranularityChange={setGranularity}
+                onVersionFilterChange={searchActions.setVersionFilter}
+              />
+            </TabsContent>
+          )}
+
+          <TabsContent value="heatmap">
+            {metrics?.scan_config_id ? (
+              <SeasonalityHeatmap
+                slug={slug!}
+                scanConfigId={metrics.scan_config_id}
+                scopeType={scope}
+                scopeRef={scopeId}
+                rangeDays={rangeDays}
+                timeRange={timeRange}
+                color={eventType?.color || 'var(--chart-3)'}
+              />
+            ) : (
+              <Card>
+                <CardContent className="p-6 text-sm text-muted-foreground">
+                  No scan found for this scope yet — run a scan to populate
+                  the heatmap.
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {slug && (
+            <TabsContent value="distribution">
+              <DistributionTab
+                slug={slug}
+                distributionScope={distributionScope}
+                rangeDays={rangeDays}
+                timeRange={timeRange}
+                refetchInterval={refetchInterval}
+                selectedField={search.distributionField}
+                onSelectedFieldChange={searchActions.setDistributionField}
+              />
+            </TabsContent>
+          )}
+
+          {slug && (scope === 'event' || scope === 'metric') && (
+            <TabsContent value="breakdowns">
+              {rollupPending ? (
+                // Same reason as the volume chart: no summed values for a
+                // ratio metric while its definition is on the way.
+                <Card>
+                  <CardContent className="p-6 text-sm text-muted-foreground">
+                    Loading breakdowns…
+                  </CardContent>
+                </Card>
+              ) : (
+                <BreakdownsTab
+                  slug={slug}
+                  scope={scope}
+                  scopeId={scopeId}
+                  rangeDays={rangeDays}
+                  timeRange={timeRange}
+                  granularity={granularity}
+                  rollupMode={rollupMode}
+                  refetchInterval={refetchInterval}
+                  column={search.breakdownColumn}
+                  selectedValues={search.breakdownValues}
+                  seriesLabel={metricSeriesLabel}
+                  valueFormatter={metricValueFormatter}
+                  metricEditPath={metricEditPath}
+                  onColumnChange={searchActions.setBreakdownColumn}
+                  onSelectedValuesChange={searchActions.setBreakdownValues}
+                />
               )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+            </TabsContent>
+          )}
+        </Tabs>
+      </div>
 
       {scope === 'event' && scopeId && (
         <EventValueDriftPanel slug={slug!} eventId={scopeId} />
@@ -1626,1170 +727,6 @@ export default function MonitoringDetailPage() {
       {scope === 'event' && scopeId && (
         <EventPhotosSection slug={slug!} eventId={scopeId} />
       )}
-    </div>
-  )
-}
-
-function MetricsRangeControls({
-  rangeDays,
-  granularity,
-  onRangeDaysChange,
-  onGranularityChange,
-}: {
-  rangeDays: number
-  granularity: MetricsGranularity
-  onRangeDaysChange: (days: number) => void
-  onGranularityChange: (granularity: MetricsGranularity) => void
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <div className="flex gap-1">
-        {RANGE_OPTIONS.map(option => (
-          <Button
-            key={option.days}
-            variant={rangeDays === option.days ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => onRangeDaysChange(option.days)}
-          >
-            {option.label}
-          </Button>
-        ))}
-      </div>
-      <Select
-        value={granularity}
-        onValueChange={(value: MetricsGranularity) => onGranularityChange(value)}
-      >
-        <SelectTrigger className="h-8 w-[130px]" aria-label="Time granularity">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {GRANULARITY_OPTIONS.map(option => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  )
-}
-
-function buildVersionChartSeries(
-  series: AppVersionMetricSeries[],
-  granularity: MetricsGranularity,
-  versionFilter: VersionFilter,
-  latestVersion: string | null | undefined,
-  legendValueKind: 'total' | 'latest',
-): VersionChartSeries[] {
-  return series
-    .filter(item => versionFilter === 'all' || (!!latestVersion && item.is_latest))
-    .map((item, index) => {
-      const isNewest = item.is_latest && !item.is_other
-      // Only the rolled-out (active) newest release keeps the primary "latest"
-      // identity and highlight; a not-yet-active newest release is a pre-release.
-      const isActiveLatest = isNewest && item.is_active
-      const isPreRelease = isNewest && !item.is_active
-      const data = aggregateMetricPoints(item.data, granularity)
-      return {
-        label: formatVersionLabel(item),
-        version: item.version,
-        isOther: item.is_other,
-        isLatest: isActiveLatest,
-        isPreRelease,
-        totalCount: item.total_count,
-        legendValue: legendValueKind === 'latest'
-          ? item.data.at(-1)?.count ?? item.total_count
-          : item.total_count,
-        data,
-        color: isActiveLatest
-          ? 'var(--primary)'
-          : isPreRelease
-            ? 'var(--warning)'
-            : item.is_other
-              ? 'var(--muted-foreground)'
-              : VERSION_CHART_COLORS[index % VERSION_CHART_COLORS.length],
-        isHighlighted: isActiveLatest,
-      }
-    })
-}
-
-function formatVersionLabel(version: AppVersionMetricSeries) {
-  const label = version.is_other ? 'Other' : (version.version || '(empty)')
-  if (version.is_other || !version.is_latest) return label
-  // The gated-newest release reads "· latest" once rolled out, but "· pre-release"
-  // while it hasn't taken a real share of traffic (is_active=false).
-  return version.is_active ? `${label} · latest` : `${label} · pre-release`
-}
-
-function VersionLegend({
-  series,
-  latestShare,
-  valueFormatter,
-  valueKind = 'total',
-}: {
-  series: VersionChartSeries[]
-  latestShare?: number | null
-  // Same convention as the charts: the formatted string carries its own unit
-  // (percent-unit catalog metrics render stored fractions ×100).
-  valueFormatter?: (value: number) => string
-  valueKind?: 'total' | 'latest'
-}) {
-  if (!series.length) return null
-  const shareSuffix = latestShare != null ? ` · ${formatPercent(latestShare)}` : ''
-  return (
-    <div className="mt-3 flex flex-wrap gap-2">
-      {series.map(item => (
-        <VersionLegendItem
-          key={`${item.version}-${item.isOther}`}
-          item={item}
-          shareSuffix={shareSuffix}
-          valueFormatter={valueFormatter}
-          valueKind={valueKind}
-        />
-      ))}
-    </div>
-  )
-}
-
-function VersionLegendItem({
-  item,
-  shareSuffix,
-  valueFormatter,
-  valueKind,
-}: {
-  item: VersionChartSeries
-  shareSuffix: string
-  valueFormatter?: (value: number) => string
-  valueKind: 'total' | 'latest'
-}) {
-  const value = valueFormatter ? valueFormatter(item.legendValue) : item.legendValue.toLocaleString()
-  const displayValue = valueKind === 'latest' ? `latest value: ${value}` : value
-  return (
-    <div className="flex min-w-0 items-center gap-2 rounded-md border bg-background px-2 py-1 text-xs">
-          <span
-            className="h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ backgroundColor: item.color }}
-          />
-          <span className="min-w-0 truncate font-mono">{item.isOther ? 'Other' : item.version}</span>
-          {item.isLatest && (
-            <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-              latest{shareSuffix}
-            </Badge>
-          )}
-          {item.isPreRelease && (
-            <Badge
-              variant="outline"
-              className="h-5 gap-1 border-[var(--warning)]/60 bg-[var(--warning-soft)] px-1.5 text-[10px] text-[var(--warning)]"
-            >
-              pre-release{shareSuffix}
-            </Badge>
-          )}
-          <span className="shrink-0 text-muted-foreground">
-            {displayValue}
-          </span>
-    </div>
-  )
-}
-
-// Legend-style toggles for the breakdown chart: when the selected column has
-// many values, click chips to isolate one or several series (tripl-egt5).
-// Empty selection = every value shown, and a single-value breakdown has
-// nothing to filter, so the row hides itself.
-function BreakdownValueChips({
-  options,
-  selected,
-  valueFormatter,
-  onToggle,
-  onReset,
-}: {
-  options: Array<{ label: string; color: string; totalCount: number }>
-  selected: string[]
-  valueFormatter?: (value: number) => string
-  onToggle: (label: string) => void
-  onReset: () => void
-}) {
-  if (options.length < 2) return null
-  const hasFilter = selected.length > 0
-  return (
-    <div className="mt-3 flex flex-wrap items-center gap-2">
-      {options.map(option => {
-        const isSelected = selected.includes(option.label)
-        const isVisible = !hasFilter || isSelected
-        return (
-          <button
-            key={option.label}
-            type="button"
-            aria-pressed={isSelected}
-            aria-label={`Toggle ${option.label}`}
-            onClick={() => onToggle(option.label)}
-            className={`flex min-w-0 items-center gap-2 rounded-md border px-2 py-1 text-xs transition-colors hover:bg-muted/40 ${
-              isSelected
-                ? 'border-[var(--accent)]/60 bg-[var(--accent-soft)]'
-                : isVisible
-                  ? 'bg-background'
-                  : 'bg-background opacity-50'
-            }`}
-          >
-            <span
-              className="h-2.5 w-2.5 shrink-0 rounded-full"
-              style={{ backgroundColor: option.color }}
-            />
-            <span className="min-w-0 truncate font-mono">{option.label}</span>
-            <span className="shrink-0 text-muted-foreground">
-              {valueFormatter ? valueFormatter(option.totalCount) : option.totalCount.toLocaleString()}
-            </span>
-          </button>
-        )
-      })}
-      {hasFilter && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-6 px-2 text-xs"
-          onClick={onReset}
-        >
-          Show all
-        </Button>
-      )}
-    </div>
-  )
-}
-
-function formatPercent(value: number) {
-  return `${(value * 100).toFixed(1)}%`
-}
-
-function driftBandClassName(band: DistributionDriftBand) {
-  if (band === 'significant') return 'border-destructive/60 bg-destructive/10 text-destructive'
-  if (band === 'minor') return 'border-warning/50 bg-warning-soft text-warning'
-  return 'border-success/40 bg-success-soft text-success'
-}
-
-function DistributionShareBar({
-  label,
-  baselineShare,
-  currentShare,
-}: {
-  label: string
-  baselineShare: number
-  currentShare: number
-}) {
-  return (
-    <div className="grid gap-2 rounded-md border bg-background p-3">
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <span className="min-w-0 truncate font-mono">{label}</span>
-        <span className="shrink-0 text-muted-foreground">
-          {formatPercent(baselineShare)} {'->'} {formatPercent(currentShare)}
-        </span>
-      </div>
-      <div className="grid gap-1.5">
-        <div className="h-2 rounded-full bg-muted">
-          <div
-            className="h-2 rounded-full bg-muted-foreground"
-            style={{ width: `${Math.max(2, baselineShare * 100)}%` }}
-          />
-        </div>
-        <div className="h-2 rounded-full bg-muted">
-          <div
-            className="h-2 rounded-full bg-primary"
-            style={{ width: `${Math.max(2, currentShare * 100)}%` }}
-          />
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function DistributionDriftPanel({
-  data,
-  fields,
-  isLoading,
-  selectedField,
-  onSelectedFieldChange,
-}: {
-  data: DistributionDriftPoint[]
-  fields: string[]
-  isLoading: boolean
-  selectedField: string
-  onSelectedFieldChange: (field: string) => void
-}) {
-  const activeField = fields.includes(selectedField) ? selectedField : fields[0] ?? ''
-  const rows = data
-    .filter(row => !activeField || row.field_name === activeField)
-    .sort((left, right) => left.bucket.localeCompare(right.bucket))
-  const latest = rows.at(-1)
-  const tableRows = [...rows].reverse().slice(0, 12)
-
-  if (isLoading) {
-    return (
-      <Card>
-        <CardContent className="flex h-56 items-center justify-center text-sm text-muted-foreground">
-          Loading distribution data…
-        </CardContent>
-      </Card>
-    )
-  }
-
-  if (!data.length || !fields.length) {
-    return (
-      <Card>
-        <CardContent className="flex h-56 flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
-          <p>No distribution drift data available</p>
-          {/* "the scan" is the one resolved above (`scanConfigId`) — this scope's
-              samples come from that scan and no other, so "run a scan" pointed the
-              reader at the wrong control as well as at the wire's noun. */}
-          <p className="max-w-md text-xs">
-            Add fields to{' '}
-            <span className="font-mono">distribution_drift_fields</span> on the scan,
-            then run it to start collecting distribution samples for this scope.
-          </p>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  return (
-    <div className="space-y-4">
-      <Card>
-        <CardContent className="space-y-4 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">Distribution</h2>
-            <Select value={activeField} onValueChange={onSelectedFieldChange}>
-              <SelectTrigger className="h-8 w-[220px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {fields.map(field => (
-                  <SelectItem key={field} value={field}>
-                    {field}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {latest && (
-            <div className="grid gap-3 md:grid-cols-4">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
-                <p className="text-sm font-medium">{formatTimestamp(latest.bucket)}</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">PSI</p>
-                <p className="text-sm font-medium">{latest.psi.toFixed(3)}</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Band</p>
-                <Badge variant="outline" className={driftBandClassName(latest.band)}>
-                  {latest.band}
-                </Badge>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Rows</p>
-                <p className="text-sm font-medium">
-                  {latest.baseline_total.toLocaleString()} {'->'} {latest.current_total.toLocaleString()}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {latest && latest.top_movers.length > 0 && (
-            <div className="grid gap-3 md:grid-cols-2">
-              {latest.top_movers.slice(0, 6).map(mover => (
-                <DistributionShareBar
-                  key={mover.value}
-                  label={mover.value}
-                  baselineShare={mover.baseline_share}
-                  currentShare={mover.current_share}
-                />
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-3 font-medium">Bucket</th>
-                  <th className="px-4 py-3 font-medium">PSI</th>
-                  <th className="px-4 py-3 font-medium">Band</th>
-                  <th className="px-4 py-3 font-medium">Top contribution</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tableRows.map(row => {
-                  const topMover = row.top_movers[0]
-                  return (
-                    <tr key={row.id} className="border-b last:border-0">
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {formatTimestamp(row.bucket)}
-                      </td>
-                      <td className="px-4 py-3 font-medium">{row.psi.toFixed(3)}</td>
-                      <td className="px-4 py-3">
-                        <Badge variant="outline" className={driftBandClassName(row.band)}>
-                          {row.band}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3">
-                        {topMover ? (
-                          <span className="font-mono text-xs">
-                            {topMover.value}: {formatPercent(topMover.baseline_share)} {'->'} {formatPercent(topMover.current_share)}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  )
-}
-
-// ───────── Event detail (page-based, mockup EventDetailPage) ─────────
-
-const DAY_MS = 24 * 60 * 60 * 1000
-const SURFACE_CARD = 'overflow-hidden rounded-[10px] border'
-const SURFACE_STYLE = { background: 'var(--surface)', borderColor: 'var(--border)' } as const
-const EV_TH_CLASS = 'px-[14px] py-2 text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
-const EV_TD_CLASS = 'px-[14px] py-[9px] text-[12.5px] align-middle'
-
-type EventDetailStats = {
-  volume24h: number | null
-  delta24h: number | null
-  series24h: number[]
-}
-
-type EventHistoryItem = { id: string; field: string; created_at: string; new_value: string | null }
-
-// Statuses whose event has data behind it, so the chart may lead the page.
-const LIVE_STATUSES = new Set<string>(['live', 'deprecated', 'archived'])
-
-
-/**
- * Derives the event-detail stat strip + trend from the real volume series.
- * The mockup's error-rate/coverage have no API source, so the strip instead
- * surfaces real fields (drift count, last seen) alongside 24h volume + delta.
- */
-function computeEventStats(metrics: EventMetricsResponse | undefined): EventDetailStats {
-  const points = metrics?.data ?? []
-  if (points.length === 0) return { volume24h: null, delta24h: null, series24h: [] }
-  const hourly = aggregateMetricPoints(points, 'hour')
-  const latest = Date.parse(hourly[hourly.length - 1]?.bucket ?? '') || Date.now()
-  const recent = hourly.filter(p => latest - Date.parse(p.bucket) < DAY_MS)
-  const prior = hourly.filter(p => {
-    const age = latest - Date.parse(p.bucket)
-    return age >= DAY_MS && age < 2 * DAY_MS
-  })
-  const sum = (rows: EventMetricPoint[]) => rows.reduce((total, p) => total + p.count, 0)
-  const volume24h = sum(recent)
-  const priorVolume = sum(prior)
-  const delta24h = priorVolume > 0 ? ((volume24h - priorVolume) / priorVolume) * 100 : null
-  return { volume24h, delta24h, series24h: recent.map(p => p.count) }
-}
-
-function formatNum(value: number): string {
-  return value.toLocaleString()
-}
-
-function EventDetailHero({
-  event,
-  eventType,
-  metrics,
-  onBack,
-  onEdit,
-  onMetrics,
-}: {
-  event: TEvent
-  eventType: EventType | undefined
-  metrics: EventMetricsResponse | undefined
-  onBack: () => void
-  /** Omitted for a viewer, who gets no Edit action. */
-  onEdit?: () => void
-  onMetrics: () => void
-}) {
-  const stats = computeEventStats(metrics)
-  const signal = metrics?.latest_signal ?? null
-  const signalTone: 'danger' | 'warning' = signal?.direction === 'drop' ? 'warning' : 'danger'
-  return (
-    <div className="space-y-[18px]">
-      <EventDetailBreadcrumb name={event.name} onBack={onBack} />
-      <EventDetailHeader event={event} eventType={eventType} signal={signal} onEdit={onEdit} onMetrics={onMetrics} />
-      {signal && <EventSignalBanner signal={signal} tone={signalTone} />}
-      {signal && (
-        <EventSignalMiniChart
-          data={metrics?.data ?? []}
-          interval={metrics?.interval ?? null}
-          sigmaThreshold={metrics?.sigma_threshold}
-          signal={signal}
-          tone={signalTone}
-        />
-      )}
-      <EventStatStrip event={event} stats={stats} />
-    </div>
-  )
-}
-
-function EventDetailBreadcrumb({ name, onBack }: { name: string; onBack: () => void }) {
-  return (
-    <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-[11.5px]">
-      <button
-        type="button"
-        onClick={onBack}
-        className="inline-flex items-center gap-1 transition-colors hover:text-[var(--fg)]"
-        style={{ color: 'var(--fg-muted)' }}
-      >
-        <ChevronLeft size={13} /> Plan
-      </button>
-      <span aria-hidden style={{ color: 'var(--fg-faint)' }}>/</span>
-      <button
-        type="button"
-        onClick={onBack}
-        className="transition-colors hover:text-[var(--fg)]"
-        style={{ color: 'var(--fg-muted)' }}
-      >
-        Events
-      </button>
-      <span aria-hidden style={{ color: 'var(--fg-faint)' }}>/</span>
-      {/* A blank name left this crumb empty, so the trail ended in nothing
-          (tripl-wkwv.5). Plain string rather than <EventName>: the crumb
-          truncates and carries its own native title. */}
-      <span
-        aria-current="page"
-        className="mono min-w-0 truncate"
-        style={{ color: 'var(--fg)' }}
-        title={eventNameLabel(name)}
-      >
-        {eventNameLabel(name)}
-      </span>
-      <div className="flex-1" />
-      <button
-        type="button"
-        disabled
-        title="Coming soon"
-        className="inline-flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11px] opacity-40"
-        style={{ color: 'var(--fg-muted)' }}
-      >
-        <ChevronUp size={11} /> Prev
-      </button>
-      <button
-        type="button"
-        disabled
-        title="Coming soon"
-        className="inline-flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11px] opacity-40"
-        style={{ color: 'var(--fg-muted)' }}
-      >
-        <ChevronDown size={11} /> Next
-      </button>
-    </nav>
-  )
-}
-
-function HeroAction({
-  icon,
-  label,
-  primary,
-  onClick,
-  disabled,
-  title,
-}: {
-  icon: ReactNode
-  label: string
-  primary?: boolean
-  onClick?: () => void
-  disabled?: boolean
-  /** Hover/long-press hint — used to explain why a disabled action is inert. */
-  title?: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-      style={{
-        background: primary ? 'var(--accent)' : 'var(--surface)',
-        color: primary ? 'var(--accent-fg)' : 'var(--fg)',
-        borderColor: primary ? 'var(--accent)' : 'var(--border)',
-      }}
-    >
-      {icon} {label}
-    </button>
-  )
-}
-
-function EventDetailHeader({
-  event,
-  eventType,
-  signal,
-  onEdit,
-  onMetrics,
-}: {
-  event: TEvent
-  eventType: EventType | undefined
-  signal: MonitoringSignal | null
-  onEdit?: () => void
-  onMetrics: () => void
-}) {
-  const status = event.status as EventStatus
-  const statusTone = EVENT_STATUS_TONE[status] ?? 'neutral'
-  const typeColor = eventType?.color ?? 'var(--fg-faint)'
-  const typeLabel = eventType?.display_name ?? event.event_type?.display_name ?? 'Event'
-  return (
-    <div className="flex flex-wrap items-start gap-[13px]">
-      <span className="mt-[7px] flex-shrink-0">
-        {signal
-          ? <Dot tone={signal.direction === 'drop' ? 'warning' : 'danger'} pulse size={8} />
-          : <Dot tone={statusTone} size={8} />}
-      </span>
-      {/* `basis-60` makes the title column ask for 240px, so on a phone the
-          action group below wraps onto its own line instead of the heading
-          being crushed to ~107px and painted under the buttons
-          (tripl-jfm3.41). `break-all` then wraps a long mono event name rather
-          than letting it overflow the column. */}
-      <div className="min-w-0 flex-1 basis-60">
-        <div className="flex flex-wrap items-center gap-[10px]">
-          {/* Never an empty top-level heading: a blank name gave the whole page
-              no accessible title (tripl-wkwv.5). */}
-          <h1 className="mono m-0 min-w-0 break-all text-[19px] font-semibold tracking-[-0.01em]">
-            {eventNameLabel(event.name)}
-          </h1>
-          <Chip tone={statusTone} size="sm">{EVENT_STATUS_LABELS[status] ?? event.status}</Chip>
-          {event.tags.map(tag => <Chip key={tag.id} size="xs">{tag.name}</Chip>)}
-        </div>
-        <div className="mt-[7px] flex flex-wrap items-center gap-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-          <span className="inline-flex items-center gap-[5px]">
-            <span className="h-[7px] w-[7px] rounded-[2px]" style={{ background: typeColor }} />
-            {typeLabel}
-          </span>
-          <span style={{ color: 'var(--fg-faint)' }}>·</span>
-          <span>updated {formatRelativeTime(event.updated_at)}</span>
-        </div>
-        {event.description && (
-          <p className="mt-[7px] max-w-[62ch] text-[13px] leading-snug" style={{ color: 'var(--fg-muted)' }}>
-            {event.description}
-          </p>
-        )}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <HeroAction icon={<TrendingUp size={12} />} label="Metrics" onClick={onMetrics} />
-        {onEdit && <HeroAction icon={<Pencil size={12} />} label="Edit" primary onClick={onEdit} />}
-        <EventActionOverflow />
-      </div>
-    </div>
-  )
-}
-
-/**
- * Overflow ("…") menu for not-yet-shipped actions. Keeping Watch / Implementation
- * out of the primary row — rather than as inert disabled buttons beside the live
- * ones — stops the dead CTAs from undercutting confidence in the working actions.
- */
-function EventActionOverflow() {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="More actions"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-[7px] border transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ background: 'var(--surface)', color: 'var(--fg-muted)', borderColor: 'var(--border)' }}
-        >
-          <MoreHorizontal size={14} />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={6} className="w-[180px]">
-        <DropdownMenuLabel
-          className="text-[10px] font-semibold uppercase tracking-[0.08em]"
-          style={{ color: 'var(--fg-faint)' }}
-        >
-          Coming soon
-        </DropdownMenuLabel>
-        <DropdownMenuItem disabled className="text-[12.5px]">
-          <Eye className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Watch
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled className="text-[12.5px]">
-          <Code className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Implementation
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
-function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: 'danger' | 'warning' }) {
-  // No baseline is a fact about the signal, not a missing value: dropping the
-  // clause left the banner silently shorter on exactly the anomalies that moved
-  // the most — an event firing where nothing was expected, a scope resuming
-  // after an outage — so it says so instead (tripl-l429.27).
-  const delta = ratioDelta(signal.actual_count, signal.expected_count)
-  const Arrow = signal.direction === 'drop' ? ArrowDown : ArrowUp
-  return (
-    <div
-      className="flex items-center gap-[10px] rounded-[10px] px-[14px] py-[10px]"
-      style={{
-        background: `var(--${tone}-soft)`,
-        border: `1px solid color-mix(in oklab, var(--${tone}) 35%, var(--border))`,
-      }}
-    >
-      <Arrow size={15} style={{ color: `var(--${tone})` }} />
-      <span className="text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
-        {signal.direction === 'drop' ? 'Volume drop' : 'Volume spike'} detected
-        {delta === null
-          ? ` — ${NO_BASELINE_LABEL} to compare against`
-          : ` — ${formatRatioDelta(delta)} vs. baseline`}
-        {` (${formatSignalSeverity(signal)}).`}
-      </span>
-      <div className="flex-1" />
-      <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-        {formatTimestamp(signal.bucket)}
-      </span>
-    </div>
-  )
-}
-
-/**
- * Compact volume chart rendered beside {@link EventSignalBanner} so the anomaly
- * the banner describes is visible in context, without the extra click into the
- * Metrics tab. Reuses the already-fetched series and the same
- * {@link MetricsChart}; native granularity keeps the flagged point
- * un-aggregated, so its anomaly dot never merges into a neighbouring bucket.
- *
- * It is titled "Volume", not "Volume vs. baseline". MetricsChart does draw a
- * dashed expectation and a sigma band from each point's expected_count/stddev,
- * but the backend fills those two fields ONLY on buckets it flagged
- * (metrics_service._build_metric_points): the expected series has a single
- * non-null point, and a `connectNulls={false} dot={false}` Line through one
- * point paints nothing. So the panel promised the comparison that justifies the
- * alert and then showed one bare series — the reader had to take "+198% vs.
- * baseline" on faith from the chart they were handed to check it with. The one
- * baseline that does exist is the flagged bucket's, so it is named in words
- * beside the title instead of implied by a line that is not there (tripl-v2lm).
- */
-function EventSignalMiniChart({
-  data,
-  interval,
-  sigmaThreshold,
-  signal,
-  tone,
-}: {
-  data: EventMetricPoint[]
-  interval: string | null
-  /** `EventMetricsResponse.sigma_threshold`, threaded from the hero's already-fetched series. */
-  sigmaThreshold: number | undefined
-  signal: MonitoringSignal
-  tone: 'danger' | 'warning'
-}) {
-  if (data.length === 0) return null
-  const granularity = GRANULARITY_FOR_INTERVAL[interval ?? ''] ?? 'hour'
-  return (
-    <div
-      data-testid="signal-volume-chart"
-      className="rounded-[10px] border px-[14px] pb-[6px] pt-[10px]"
-      style={SURFACE_STYLE}
-    >
-      <div className="mb-[6px] flex items-baseline justify-between gap-3 text-[11px]">
-        <span className="font-medium" style={{ color: 'var(--fg-subtle)' }}>Volume</span>
-        {/* Same `expected > 0` gate the banner uses, so the two cannot disagree
-            about whether this signal had a baseline at all — and the SAME
-            value-aware formatter the signal card 1200 lines up already uses, so
-            they cannot disagree about what it was. `expected_count` is a mean of
-            prior buckets, so a rare event's baseline is legitimately sub-unit
-            (0.4/hour); `Math.round` wrote that as "baseline 0", contradicting
-            the gate that had just decided a baseline existed. */}
-        <span style={{ color: 'var(--fg-faint)' }}>
-          {signal.expected_count > 0
-            ? `baseline ${formatIncidentCount(signal.expected_count)} at the flagged bucket`
-            : `${NO_BASELINE_LABEL} at the flagged bucket`}
-        </span>
-      </div>
-      <MetricsChart
-        data={data}
-        height={104}
-        color={`var(--${tone})`}
-        granularity={granularity}
-        seriesLabel="events"
-        sigmaThreshold={sigmaThreshold}
-      />
-    </div>
-  )
-}
-
-function StatCard({
-  label,
-  value,
-  tone,
-  hint,
-  empty,
-}: {
-  label: string
-  value: string
-  tone?: 'danger' | 'warning'
-  /** Hover/long-press explanation, e.g. for an empty "—" value. */
-  hint?: string
-  /** De-emphasise the value when it represents a no-data ("—" / "0") state. */
-  empty?: boolean
-}) {
-  const color = empty
-    ? 'var(--fg-faint)'
-    : tone === 'danger'
-      ? 'var(--danger)'
-      : tone === 'warning'
-        ? 'var(--warning)'
-        : 'var(--fg)'
-  return (
-    <div className="rounded-[10px] border px-[14px] py-[11px]" style={SURFACE_STYLE} title={hint}>
-      <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>{label}</div>
-      <div className="mono tnum mt-1 text-[19px] font-medium" style={{ color }}>{value}</div>
-    </div>
-  )
-}
-
-function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailStats }) {
-  const deltaTone: 'danger' | 'warning' | undefined = stats.delta24h == null
-    ? undefined
-    : stats.delta24h > 20 ? 'danger' : stats.delta24h < -20 ? 'warning' : undefined
-  return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <StatCard
-        label="Volume · 24h"
-        value={stats.volume24h == null ? '—' : formatNum(stats.volume24h)}
-        empty={stats.volume24h == null}
-        hint={stats.volume24h == null ? 'No events in the last 24h' : undefined}
-      />
-      <StatCard
-        label="Δ · 24h"
-        value={stats.delta24h == null ? '—' : `${stats.delta24h > 0 ? '+' : ''}${stats.delta24h.toFixed(0)}%`}
-        tone={deltaTone}
-        empty={stats.delta24h == null}
-        hint={stats.delta24h == null ? 'No prior 24h window to compare against' : undefined}
-      />
-      <StatCard
-        label="Schema drifts"
-        value={formatNum(event.drift_count)}
-        tone={event.drift_count > 0 ? 'warning' : undefined}
-        // Zero drifts is a real, reassuring count — render "0", not the
-        // no-data glyph the empty state would otherwise show.
-        hint={event.drift_count === 0 ? 'No schema drifts detected' : undefined}
-      />
-      <StatCard
-        label="Last seen"
-        value={event.last_seen_at ? formatRelativeTime(event.last_seen_at) : '—'}
-        empty={!event.last_seen_at}
-        hint={event.last_seen_at ? undefined : 'No hits recorded yet'}
-      />
-    </div>
-  )
-}
-
-function EventFieldsTable({
-  eventType,
-  event,
-  fieldDefMap,
-}: {
-  eventType: EventType | undefined
-  event: TEvent
-  fieldDefMap: Map<string, FieldDefinition>
-}) {
-  const fields = [...(eventType?.field_definitions ?? [])].sort((a, b) => a.order - b.order)
-  const valueByField = new Map(event.field_values.map(fv => [fv.field_definition_id, fv]))
-  const requiredCount = fields.filter(f => f.is_required).length
-  // Hide the Sensitivity column when no field carries a sensitivity label —
-  // otherwise it renders a "—" for every row, adding noise without signal.
-  const showSensitivity = fields.some(f => (fieldDefMap.get(f.id) ?? f).sensitivity !== 'none')
-  return (
-    <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-      <div className="flex items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-        <span className="flex-1 text-[12.5px] font-semibold">Fields</span>
-        <span className="mono text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
-          {fields.length} · {requiredCount} required
-        </span>
-      </div>
-      {fields.length === 0 ? (
-        <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-          No fields defined.
-        </div>
-      ) : (
-        <div className="overflow-x-auto">
-        <table className="w-full border-collapse" aria-label="Fields">
-          <thead>
-            <tr style={{ background: 'var(--bg-sunken)' }}>
-              <th scope="col" className={EV_TH_CLASS}>Field</th>
-              <th scope="col" className={EV_TH_CLASS}>Type</th>
-              <th scope="col" className={EV_TH_CLASS}>Value</th>
-              {showSensitivity && <th scope="col" className={EV_TH_CLASS}>Sensitivity</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {fields.map(field => {
-              const fv = valueByField.get(field.id)
-              const def = fieldDefMap.get(field.id) ?? field
-              return (
-                <tr key={field.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                  <td className={EV_TD_CLASS}>
-                    <span className="mono text-[12px]">{def.name}</span>
-                    {def.is_required && <span className="ml-[3px]" style={{ color: 'var(--danger)' }}>*</span>}
-                  </td>
-                  <td className={EV_TD_CLASS}><Chip size="xs" variant="outline">{def.field_type}</Chip></td>
-                  <td className={EV_TD_CLASS}>
-                    <span className="mono inline-flex items-center gap-1.5 text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
-                      <span className="break-all">{fv?.value || '—'}</span>
-                      {fv?.variable_values?.length ? (
-                        <VariableValueContextTrigger contexts={fv.variable_values} />
-                      ) : null}
-                    </span>
-                  </td>
-                  {showSensitivity && (
-                    <td className={EV_TD_CLASS}><SensitivityChip value={def.sensitivity} /></td>
-                  )}
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function PropertyRow({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
-  return (
-    <div role="row" className="flex gap-3 px-4 py-[6px] text-[12px]">
-      <span role="rowheader" className="w-[120px] flex-shrink-0" style={{ color: 'var(--fg-subtle)' }}>{label}</span>
-      <span role="cell" className={`min-w-0 flex-1 break-words ${mono ? 'mono' : ''}`} style={{ color: 'var(--fg)' }}>
-        {value}
-      </span>
-    </div>
-  )
-}
-
-function EventMetaCard({
-  event,
-  metaFieldMap,
-}: {
-  event: TEvent
-  metaFieldMap: Map<string, MetaFieldDefinition>
-}) {
-  if (event.meta_values.length === 0) return null
-  return (
-    <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-      <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
-        Meta fields
-      </div>
-      <div role="table" aria-label="Meta fields" className="py-[6px]">
-        {event.meta_values.map(mv => {
-          const def = metaFieldMap.get(mv.meta_field_definition_id)
-          const href = def ? resolveMetaFieldHref(def, mv.value) : null
-          const display = def?.field_type === 'boolean'
-            ? (mv.value === 'true' ? '✓' : '✗')
-            : (mv.value || '—')
-          return (
-            <PropertyRow
-              key={mv.id}
-              label={def?.display_name ?? def?.name ?? 'Unknown'}
-              value={href
-                ? <a href={href} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: 'var(--accent)' }}>{mv.value}</a>
-                : display}
-              mono
-            />
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function EventTicketsCard({ slug, event }: { slug: string; event: TEvent }) {
-  const branchId = useActiveBranchId()
-  const { data: tickets } = useQuery({
-    queryKey: ['eventImplementationTickets', slug, branchId, event.id],
-    queryFn: () => eventsApi.implementationTickets(slug, event.id, branchId),
-  })
-  // Hidden, not empty. Rows exist only where the Jira integration is on and a
-  // branch has merged, so "no tickets" is the normal state for most events and
-  // an empty card would be noise on every one of them — the same rule the
-  // branch panel states for itself. No merged-status gate here: an event has
-  // no branch status to gate on, and these tickets come from branches that
-  // already merged (tripl-h2sx.32).
-  if (!tickets || tickets.length === 0) return null
-  return (
-    <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-      <div
-        className="border-b px-4 py-3 text-[12.5px] font-semibold"
-        style={{ borderColor: 'var(--border-subtle)' }}
-      >
-        Implementation tickets
-      </div>
-      <div>
-        {tickets.map(ticket => (
-          <ImplementationTicketRow key={ticket.id} ticket={ticket} />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function EventSideColumn({
-  slug,
-  event,
-  eventType,
-  history,
-  metaFieldMap,
-}: {
-  slug: string
-  event: TEvent
-  eventType: EventType | undefined
-  history: EventHistoryItem[]
-  metaFieldMap: Map<string, MetaFieldDefinition>
-}) {
-  const breakdowns = event.metric_breakdown_columns
-  const activeBranchId = useActiveBranchId()
-  const branchLink = useBranchLinkProps()
-  const usersQuery = useQuery({
-    queryKey: ['users'],
-    queryFn: () => usersApi.list(),
-    enabled: Boolean(event.owner_id),
-  })
-  // The successor is guaranteed to sit on the same branch as this event (the
-  // server refuses a cross-branch pointer), so it resolves against the row's
-  // OWN branch — the same fallback the edit link uses, since a detail page can
-  // answer for a branch that is not the active one.
-  const successorBranchId = event.branch_id ?? activeBranchId
-  const successorId = event.superseded_by_event_id ?? null
-  const successorQuery = useQuery({
-    // Same key shape as the page's own event query, so a successor already
-    // visited is read from cache instead of refetched.
-    queryKey: ['event', slug, successorBranchId, successorId],
-    queryFn: () => eventsApi.get(slug, successorId!, successorBranchId),
-    enabled: Boolean(successorId),
-  })
-  const owner = event.owner_id ? usersQuery.data?.find(user => user.id === event.owner_id) : undefined
-  // An owner the roster no longer lists (a removed member, or a roster the
-  // request could not fetch) reads as unknown, not as still loading.
-  const ownerLabel = !event.owner_id
-    ? '—'
-    : owner
-      ? owner.name || owner.email
-      : usersQuery.isPending
-        ? '…'
-        : 'Unknown user'
-  return (
-    <div className="flex flex-col gap-[14px]">
-      <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
-          Properties
-        </div>
-        <div role="table" aria-label="Properties" className="py-[6px]">
-          <PropertyRow label="Event type" value={eventType?.display_name ?? event.event_type?.display_name ?? '—'} />
-          <PropertyRow label="Status" value={EVENT_STATUS_LABELS[event.status as EventStatus] ?? event.status} />
-          <PropertyRow label="Event ID" value={event.id} mono />
-          {!!event.source_name && event.source_name !== event.name && (
-            // Shown only when the two have parted. The scan matches on
-            // source_name, so once a rename moves the display name away from it
-            // this row is the only place that says which event the warehouse is
-            // still feeding (tripl-u2h9.10). When they agree the name IS the
-            // identity and a second row saying so would be noise.
-            <PropertyRow label="Scan identity" value={event.source_name} mono />
-          )}
-          <PropertyRow label="Owner" value={ownerLabel} />
-          {/* Authored and seen are two dates: an event planned before it
-              shipped was "first seen" on a day nothing was (tripl-kjhi.10). */}
-          <PropertyRow label="Created" value={formatTimestamp(event.created_at)} />
-          <PropertyRow label="First seen" value={event.first_seen_at ? formatTimestamp(event.first_seen_at) : '—'} />
-          <PropertyRow label="Updated" value={formatRelativeTime(event.updated_at)} />
-          <PropertyRow label="Last seen" value={event.last_seen_at ? formatTimestamp(event.last_seen_at) : '—'} />
-          {event.sunset_at && <PropertyRow label="Sunset" value={formatTimestamp(event.sunset_at)} />}
-          {/* What to send instead. Shown whenever the pointer is set, not only
-              on a deprecated event: an analyst can name the successor while the
-              old event is still live, and hiding the row until the status flips
-              would lose the one answer the retirement notice owes its reader
-              (tripl-h2sx.13). Falls back to the raw id if the successor cannot
-              be loaded — a link to a name we do not have is worse than the id. */}
-          {successorId && (
-            <PropertyRow
-              label="Replaced by"
-              mono={!successorQuery.data}
-              value={
-                successorQuery.data ? (
-                  <Link
-                    {...branchLink(
-                      getMonitoringPath(slug, { scope_type: 'event', scope_ref: successorId }),
-                      successorBranchId,
-                    )}
-                    className="underline underline-offset-2"
-                    style={{ color: 'var(--fg)' }}
-                  >
-                    {successorQuery.data.name}
-                  </Link>
-                ) : successorQuery.isPending ? (
-                  '…'
-                ) : (
-                  successorId
-                )
-              }
-            />
-          )}
-        </div>
-      </div>
-
-      <EventMetaCard event={event} metaFieldMap={metaFieldMap} />
-
-      <EventTicketsCard slug={slug} event={event} />
-
-      <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
-          Metric breakdowns
-        </div>
-        <div className="flex flex-wrap gap-[6px] px-4 py-[12px]">
-          {breakdowns.length > 0
-            ? breakdowns.map(column => <Chip key={column} size="xs" variant="outline">{column}</Chip>)
-            : <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>No event-level breakdowns</span>}
-        </div>
-      </div>
-
-      <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
-          Recent activity
-        </div>
-        <div className="py-[4px]">
-          {history.length === 0 ? (
-            <div className="px-4 py-5 text-center" style={{ color: 'var(--fg-subtle)' }}>
-              <p className="text-[11.5px] font-medium" style={{ color: 'var(--fg-muted)' }}>
-                No recent changes
-              </p>
-              <p className="mt-1 text-[10.5px]">
-                Edits to this event's definition will show up here.
-              </p>
-            </div>
-          ) : history.slice(0, 4).map(change => (
-            <div key={change.id} className="flex gap-[10px] border-t px-4 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
-              <Dot tone="neutral" size={6} className="mt-[5px]" />
-              <div className="min-w-0 flex-1">
-                <div className="text-[11.5px] font-medium">
-                  <span className={change.field.startsWith('field:') || change.field.startsWith('meta:') ? 'mono' : ''}>
-                    {historyFieldLabel(change.field)}
-                  </span>
-                  {change.new_value != null && <span style={{ color: 'var(--fg-muted)' }}> → {change.new_value}</span>}
-                </div>
-                <div className="mt-[2px] text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
-                  {formatRelativeTime(change.created_at)}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   )
 }

@@ -82,7 +82,13 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['eventHistory', slug],
         ['event', slug],
         ['eventWindowMetrics', slug],
+        // The By version series sits right above the adoption chart; refreshing
+        // only the adoption made the two cards disagree after a collection,
+        // since neither polls while the stream is live (MON-4).
+        ['appVersionSeries', slug],
         ['appVersionAdoption', slug],
+        ['chartAnnotations', slug],
+        ['breakdownTimeline', slug],
         ['distributionDrifts', slug],
         ['seasonality', slug],
         ['topMovers', slug],
@@ -109,6 +115,7 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['monitor-history', slug],
         ['metricDefinition', slug],
         ['monitoringMetrics', slug],
+        ['appVersionSeries', slug],
         ['topbarNotifications', slug],
         ['overview'],
         ...activityKeys(slug),

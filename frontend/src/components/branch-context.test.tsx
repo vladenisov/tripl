@@ -5,9 +5,9 @@ import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
 import { planBranchesApi } from '@/api/planBranches'
-import { planBranchesKey } from '@/lib/queryKeys'
 import { useBranchContext } from '@/hooks/useBranch'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
+import { planBranchesKey } from '@/lib/queryKeys'
 import type { PlanBranchSummary } from '@/types'
 import { BranchProvider } from './branch-context'
 

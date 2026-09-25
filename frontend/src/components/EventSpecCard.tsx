@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { Copy } from 'lucide-react'
 import { toast } from 'sonner'
@@ -148,7 +148,13 @@ export function EventSpecCard({
       </div>
 
       {rows.length > 0 && (
-        <div className="overflow-x-auto border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+        // The Events table's scroller: the edge fade says there is a fourth
+        // column to the right on a phone instead of cutting it off (LIVE-5).
+        // The card is `--surface`, so the fade's cover matches it.
+        <div
+          className="tripl-scroll-x overflow-x-auto border-t"
+          style={{ borderColor: 'var(--border-subtle)', '--scroll-x-bg': 'var(--surface)' } as CSSProperties}
+        >
           <table className="w-full border-collapse" aria-label="Spec fields">
             <thead>
               <tr style={{ background: 'var(--bg-sunken)' }}>

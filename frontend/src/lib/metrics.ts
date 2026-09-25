@@ -30,13 +30,81 @@ export const GRANULARITY_OPTIONS: { value: MetricsGranularity; label: string }[]
  * month are ~720 points; following the range keeps the point count in the tens.
  *
  * Used as the *default* only — a manual granularity pick overrides it and stays
- * sticky across range changes. Catalog-metric drilldowns bypass this and follow
- * their collection interval instead (see MonitoringDetailPage).
+ * sticky across range changes. A series collected coarser than this default
+ * (a daily metric at 7d) keeps its collection interval instead: the monitoring
+ * page charts the coarser of the two (MON-43).
  */
 export function defaultGranularityForRange(rangeDays: number): MetricsGranularity {
   if (rangeDays <= 7) return 'hour'
   if (rangeDays <= 30) return 'day'
   return 'week'
+}
+
+/** Coarsest-last order of every granularity, for "at least this coarse" rules. */
+export const GRANULARITY_ORDER: readonly MetricsGranularity[] = [
+  '15min', 'hour', '6h', 'day', 'week', 'month',
+]
+
+/** Nominal width of one bucket (a month counts as 30 days). */
+const GRANULARITY_SPAN_MS: Record<MetricsGranularity, number> = {
+  '15min': 15 * 60 * 1000,
+  hour: 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  day: 24 * 60 * 60 * 1000,
+  week: 7 * 24 * 60 * 60 * 1000,
+  month: 30 * 24 * 60 * 60 * 1000,
+}
+
+/**
+ * The most buckets one series may draw. A 15 min pick over 90 days is 8,640
+ * SVG points per series, times up to eight series, and the page janks on every
+ * range change and hover (MON-23). 500 keeps each preset's finest readable
+ * option: hours for 7d, 6 hours for 30d and 90d. A series' own collection
+ * granularity is exempt (see {@link granularityFitsRange}).
+ */
+export const MAX_POINTS_PER_SERIES = 500
+
+/** The coarser of two granularities. */
+export function coarserGranularity(
+  left: MetricsGranularity,
+  right: MetricsGranularity,
+): MetricsGranularity {
+  return GRANULARITY_ORDER.indexOf(left) >= GRANULARITY_ORDER.indexOf(right) ? left : right
+}
+
+/**
+ * Whether `granularity` may be picked over `rangeDays`: it stays within
+ * {@link MAX_POINTS_PER_SERIES}, or it is the series' `native` collection
+ * granularity. The native one is always allowed — the smallest preset is 7d, so
+ * the cap alone ruled out a 15 min metric's own buckets everywhere, and with
+ * them the anomaly band a roll-up drops and the forecast that only renders at
+ * the native granularity.
+ */
+export function granularityFitsRange(
+  granularity: MetricsGranularity,
+  rangeDays: number,
+  native: MetricsGranularity | null = null,
+): boolean {
+  if (granularity === native) return true
+  return (rangeDays * GRANULARITY_SPAN_MS.day) / GRANULARITY_SPAN_MS[granularity]
+    <= MAX_POINTS_PER_SERIES
+}
+
+/**
+ * `granularity`, bumped up to the finest one at least as coarse that
+ * {@link granularityFitsRange} allows. A manual pick stays sticky across range
+ * changes, so without this a "15 min" chosen at 7d followed the reader to 90d.
+ * The series' `native` granularity counts as fitting, so it is never bumped and
+ * a finer pick stops at it rather than jumping past it.
+ */
+export function clampGranularityToRange(
+  granularity: MetricsGranularity,
+  rangeDays: number,
+  native: MetricsGranularity | null = null,
+): MetricsGranularity {
+  return GRANULARITY_ORDER
+    .slice(GRANULARITY_ORDER.indexOf(granularity))
+    .find(option => granularityFitsRange(option, rangeDays, native)) ?? 'month'
 }
 
 const MINUTE_MS = 60 * 1000
@@ -122,9 +190,29 @@ export function getBucketStart(dateStr: string, granularity: MetricsGranularity)
  */
 const AGGREGATE_ANOMALY_Z_THRESHOLD = 3
 
+/**
+ * How a coarser display bucket combines the source buckets inside it.
+ *
+ * `sum` is right for anything additive — event counts, a fact `count` or `sum`.
+ * Everything else (ratios, averages, percentages, min/max, distinct counts) is
+ * NOT additive: summing 24 hourly values of an 8 % conversion rate plots 192 %
+ * per day (MON-2 / MET-12). Those roll up by `mean`, which keeps the value on
+ * the scale it was collected on.
+ */
+export type MetricRollupMode = 'sum' | 'mean'
+
+/**
+ * Roll `points` up onto `granularity` buckets.
+ *
+ * In `mean` mode a bucket that merged several source points carries no
+ * expected/stddev and is not re-tested: the detector's baseline describes one
+ * native bucket, and there is no honest way to average a band and a sigma
+ * into one for the merged value. A single-point bucket passes through as-is.
+ */
 export function aggregateMetricPoints(
   points: EventMetricPoint[],
   granularity: MetricsGranularity,
+  mode: MetricRollupMode = 'sum',
 ): EventMetricPoint[] {
   const grouped = new Map<string, EventMetricPoint[]>()
 
@@ -142,7 +230,21 @@ export function aggregateMetricPoints(
         .filter(point => point.is_anomaly)
         .sort((left, right) => Math.abs(right.z_score ?? 0) - Math.abs(left.z_score ?? 0))[0]
 
-      const count = bucketPoints.reduce((sum, point) => sum + point.count, 0)
+      const total = bucketPoints.reduce((sum, point) => sum + point.count, 0)
+
+      if (mode === 'mean') {
+        if (bucketPoints.length === 1) return { ...bucketPoints[0], bucket }
+        return {
+          bucket,
+          count: total / bucketPoints.length,
+          expected_count: null,
+          stddev: null,
+          is_anomaly: strongestAnomaly !== undefined,
+          anomaly_direction: strongestAnomaly?.anomaly_direction ?? null,
+          z_score: strongestAnomaly?.z_score ?? null,
+        }
+      }
+      const count = total
 
       // Only roll up a baseline when *every* source bucket carries one.
       // Summing a partial set (e.g. only the single scored/anomalous hour)

@@ -25,6 +25,7 @@ import {
 import type { MetricsGranularity } from '@/lib/metrics'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
 import type { ChartAnnotation, EventMetricPoint, ForecastPoint } from '@/types'
+import { annotationDisplayColor, truncateAnnotationLabel } from '@/lib/chartAnnotations'
 
 interface MetricsChartProps {
   data: EventMetricPoint[]
@@ -67,6 +68,12 @@ interface MetricsMultiSeriesChartProps {
     label: string
     data: EventMetricPoint[]
     color?: string
+    /**
+     * SVG dash pattern. The palette has eight hues, so a ninth series reuses
+     * the first one's colour and needs a second cue to stay distinguishable
+     * (MON-29).
+     */
+    dash?: string
     isHighlighted?: boolean
   }>
   className?: string
@@ -366,7 +373,7 @@ function snapAnnotationsToBuckets(
         id: annotation.id,
         bucket: data[closestIndex].bucket,
         label: annotation.label,
-        color: annotation.color || 'var(--destructive)',
+        color: annotationDisplayColor(annotation.color),
       }
     })
     .filter((value): value is { id: string; bucket: string; label: string; color: string } => value !== null)
@@ -542,7 +549,7 @@ export function MetricsChart({
               strokeDasharray="2 3"
               strokeWidth={1.5}
               label={{
-                value: annotation.label,
+                value: truncateAnnotationLabel(annotation.label),
                 position: 'top',
                 fill: annotation.color,
                 fontSize: 10,
@@ -584,6 +591,7 @@ export function MetricsMultiSeriesChart({
         ...item,
         key: `series_${index}`,
         color: item.color ?? MULTI_SERIES_COLORS[index % MULTI_SERIES_COLORS.length],
+        hasAnomaly: item.data.some(point => point.is_anomaly),
       })),
     [series],
   )
@@ -676,7 +684,14 @@ export function MetricsMultiSeriesChart({
               stroke={item.color}
               strokeWidth={item.isHighlighted ? 3 : 2}
               strokeOpacity={item.isHighlighted ? 1 : 0.82}
-              dot={(props: { cx?: number; cy?: number; payload?: Record<string, unknown> }) => {
+              strokeDasharray={item.dash}
+              // Static, like the main volume series: animating up to eight
+              // lines of a few hundred points each janked every range change
+              // (MON-23).
+              isAnimationActive={false}
+              // The dot renderer runs once per point, so a series with nothing
+              // flagged skips it entirely instead of drawing empty fragments.
+              dot={!item.hasAnomaly ? false : (props: { cx?: number; cy?: number; payload?: Record<string, unknown> }) => {
                 if (!props.payload?.[`${item.key}__anomaly`]) return <></>
                 return (
                   <circle
