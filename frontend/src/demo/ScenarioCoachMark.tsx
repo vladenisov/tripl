@@ -97,11 +97,16 @@ export function ScenarioCoachMark({
   // hidden, and the one that collapses a section still saw it laid out. A
   // layout effect re-measures after every commit, before paint, so neither
   // shows; the observer catches a box that appears or vanishes with no render.
+  //
+  // Keyed on `children` rather than run after every commit: a parent that
+  // reveals or collapses the anchor re-renders this mark with a new element,
+  // while this mark's own updates (the measurement included) keep the same
+  // one — so the measurement can never feed itself.
   const [anchorHidden, setAnchorHidden] = useState(false)
   useLayoutEffect(() => {
     const measure = () => setAnchorHidden(isUnrendered(anchorEl))
     measure()
-  })
+  }, [anchorEl, children, coaching])
   useEffect(() => {
     if (!coaching || !anchorEl || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => setAnchorHidden(isUnrendered(anchorEl)))

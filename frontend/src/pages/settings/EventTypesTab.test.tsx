@@ -6,6 +6,7 @@ import type { EventType, FieldDefinition } from '@/types'
 import { BranchContext } from '@/components/branch-context-internal'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import { authAs } from '@/test/auth'
+import { projectEventTypesKey } from '@/lib/queryKeys'
 import { EventTypesTab, FieldsEditor } from './EventTypesTab'
 import { EventTypeDetail } from './EventTypeDetailView'
 
@@ -883,7 +884,7 @@ describe('review 204 follow-ups', () => {
 
     failing = true
     await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ['eventTypes', 'demo'] })
+      await queryClient.invalidateQueries({ queryKey: projectEventTypesKey('demo') })
     })
 
     expect(await screen.findByText(/Couldn't refresh this event type: Bad gateway/)).toBeInTheDocument()
