@@ -410,7 +410,10 @@ function GeneralCard({
             ) : undefined
           }
         >
-          <SField label="Name" hint="Used in queries and ingestion — can't be changed.">
+          {/* "Type name", not "Name": the field subpage below renders on the same
+              screen with its own Name input, and two controls sharing one
+              accessible name cannot be told apart by a screen reader. */}
+          <SField label="Type name" hint="Used in queries and ingestion — can't be changed.">
             <SInput value={eventType.name} onChange={() => undefined} mono disabled />
           </SField>
           <SField label="Display name">

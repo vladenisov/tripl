@@ -6,6 +6,7 @@ import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import { BranchProvider } from '@/components/branch-context'
 import { projectsApi } from '@/api/projects'
 import { ApiError } from '@/api/client'
+import { eventTypesKey, projectKey, projectsKey } from '@/lib/queryKeys'
 import type { Project } from '@/types'
 import { DemoBanner } from './DemoBanner'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
@@ -322,21 +323,21 @@ describe('DemoBanner — what a reset drops from the cache (DEMO-3)', () => {
     })
     const user = authValue({ id: 'creator-1', role: 'editor' }).user
     queryClient.setQueryData(['auth', 'me'], user)
-    queryClient.setQueryData(['projects'], [makeProject()])
-    queryClient.setQueryData(['project', 'demo-1'], makeProject())
-    queryClient.setQueryData(['eventTypes', 'demo-1', null], [{ id: 'old-seeded-row' }])
+    queryClient.setQueryData(projectsKey(), [makeProject()])
+    queryClient.setQueryData(projectKey('demo-1'), makeProject())
+    queryClient.setQueryData(eventTypesKey('demo-1', null), [{ id: 'old-seeded-row' }])
 
     renderBanner({ queryClient })
     fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
     fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
 
     await waitFor(() =>
-      expect(queryClient.getQueryCache().find({ queryKey: ['eventTypes', 'demo-1', null] })).toBeUndefined(),
+      expect(queryClient.getQueryCache().find({ queryKey: eventTypesKey('demo-1', null) })).toBeUndefined(),
     )
     // Removing the session put the signed-in user back to 'loading' and
     // unmounted the whole app behind the route guard.
     expect(queryClient.getQueryData(['auth', 'me'])).toEqual(user)
-    expect(queryClient.getQueryCache().find({ queryKey: ['projects'] })).toBeDefined()
-    expect(queryClient.getQueryCache().find({ queryKey: ['project', 'demo-1'] })).toBeDefined()
+    expect(queryClient.getQueryCache().find({ queryKey: projectsKey() })).toBeDefined()
+    expect(queryClient.getQueryCache().find({ queryKey: projectKey('demo-1') })).toBeDefined()
   })
 })

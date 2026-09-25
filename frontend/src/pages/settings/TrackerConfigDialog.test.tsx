@@ -158,4 +158,57 @@ describe('TrackerConfigDialog', () => {
       await screen.findByText('Only project owners can change the tracker connection.'),
     ).toBeInTheDocument()
   })
+
+  it('shows a failed load with a retry, not "Loading tracker…" forever (PLAN-21)', async () => {
+    vi.mocked(trackerConfigApi.get)
+      .mockRejectedValueOnce(new Error('Network down'))
+      .mockResolvedValue(makeConfig())
+
+    renderDialog('owner')
+
+    expect(await screen.findByText('Could not load the tracker connection')).toBeInTheDocument()
+    expect(screen.getByText('Network down')).toBeInTheDocument()
+    expect(screen.queryByText('Loading tracker…')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Try again/ }))
+    expect(await screen.findByLabelText('Project key')).toHaveValue('ENG')
+  })
+
+  it('refuses to save a malformed or incomplete enabled connection (PLAN-21)', async () => {
+    vi.mocked(trackerConfigApi.get).mockResolvedValue(makeConfig())
+
+    renderDialog('owner')
+
+    const baseUrl = await screen.findByLabelText('Base URL')
+    fireEvent.change(baseUrl, { target: { value: 'acme.atlassian' } })
+    fireEvent.change(screen.getByLabelText('Project key'), { target: { value: '  ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(
+      await screen.findByText('Enter a full URL, such as https://acme.atlassian.net.'),
+    ).toBeInTheDocument()
+    expect(baseUrl).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText('Project key')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByText('Required while the tracker is enabled.')).toBeInTheDocument()
+    expect(trackerConfigApi.update).not.toHaveBeenCalled()
+  })
+
+  it('lets an owner park an incomplete connection while it is disabled', async () => {
+    vi.mocked(trackerConfigApi.get).mockResolvedValue(
+      makeConfig({ enabled: false, base_url: '', project_key: '', auth_email: '' }),
+    )
+    vi.mocked(trackerConfigApi.update).mockResolvedValue(makeConfig({ enabled: false }))
+
+    renderDialog('owner')
+
+    fireEvent.change(await screen.findByLabelText('Issue type'), { target: { value: 'Story' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(trackerConfigApi.update).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ enabled: false, issue_type: 'Story' }),
+      ),
+    )
+  })
 })

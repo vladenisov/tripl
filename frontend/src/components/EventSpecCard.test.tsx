@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
+import { toast } from 'sonner'
 import type { Event, EventType, MetaFieldDefinition } from '@/types'
 import { buildExamplePayload, buildSpecMarkdown } from '@/lib/eventSpec'
 import { EventSpecCard } from './EventSpecCard'
@@ -121,6 +122,19 @@ describe('EventSpecCard (tripl-kjhi.8)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy as JSON' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
     expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual(payload)
+  })
+
+  it('reports a failed copy when there is no clipboard (plain HTTP)', async () => {
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    try {
+      renderCard()
+      fireEvent.click(screen.getByRole('button', { name: 'Copy as JSON' }))
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not copy json'))
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
   })
 
   it('builds a Markdown spec a ticket can carry', () => {

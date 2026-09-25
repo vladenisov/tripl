@@ -532,7 +532,14 @@ value outside the accepted set. An action without a resolution note preserves
 the existing note; send an explicit null to clear it, or reopen the drift.
 The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and
-delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
+delete. A bulk type change is chosen first and applied with **Set type**, after a
+confirm that names how many selected variables have documented values the new
+type would reject. Values are checked against the variable's type wherever they
+are entered — documented values, per-event overrides and bulk-added values: a
+Number takes numbers, a Boolean `true` or `false`, a Date `YYYY-MM-DD`, a Datetime
+an ISO date-time and JSON valid JSON (array types check each value as one
+element). Changing a variable's type in its editor lists the documented values
+the new type would reject, and holds Save until they are removed. **Exclude from scans** keeps a restorable tombstone so a deliberately
 removed scan-owned variable is not recreated. Search matches a variable's
 display name and description **and** its scan source path and bindings, so a
 variable whose display name was shortened from a dotted path is still findable

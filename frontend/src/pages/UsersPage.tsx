@@ -7,6 +7,7 @@ import { useAuth } from '@/components/auth-context'
 import { ErrorState } from '@/components/error-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { Select } from '@/components/settings/kit'
 import { ROLE_OPTIONS, type Role, type UserListItem } from '@/types'
 import { formatIsoDate } from '@/lib/datetime'
@@ -42,8 +43,8 @@ function InviteMemberCard() {
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('editor')
   const [minted, setMinted] = useState<InvitationCreated | null>(null)
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const linkRef = useRef<HTMLInputElement>(null)
+  const { state: copyState, copy, reset: resetCopy } = useCopyToClipboard(linkRef)
   const { confirm, dialog } = useConfirm()
 
   const invitesQuery = useQuery({
@@ -54,7 +55,7 @@ function InviteMemberCard() {
     mutationFn: () => invitationsApi.create(email.trim(), role),
     onSuccess: (created) => {
       setMinted(created)
-      setCopyState('idle')
+      resetCopy()
       setEmail('')
       qc.invalidateQueries({ queryKey: ['invitations'] })
     },
@@ -175,21 +176,10 @@ function InviteMemberCard() {
             />
             <button
               type="button"
-              onClick={() => {
-                void (async () => {
-                  try {
-                    if (!navigator.clipboard) throw new Error('clipboard unavailable')
-                    await navigator.clipboard.writeText(acceptUrl)
-                    setCopyState('copied')
-                  } catch {
-                    // No clipboard (a self-hosted instance on plain HTTP has none)
-                    // or the write was refused. This link is shown exactly once,
-                    // so claiming a copy that did not happen loses it outright.
-                    linkRef.current?.select()
-                    setCopyState('failed')
-                  }
-                })()
-              }}
+              // No clipboard (a self-hosted instance on plain HTTP has none) or
+              // a refused write selects the link instead: it is shown exactly
+              // once, so claiming a copy that did not happen loses it outright.
+              onClick={() => void copy(acceptUrl)}
               className="h-8 shrink-0 rounded-md border px-3 text-xs"
               style={{ borderColor: 'var(--border)' }}
             >

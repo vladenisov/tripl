@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from '@/api/client'
 import { trackerConfigApi } from '@/api/trackerConfig'
 import { useAuth } from '@/components/auth-context'
+import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -15,6 +16,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
 import type { ProjectTrackerConfig, ProjectTrackerConfigUpdate } from '@/types'
 import { isOwner } from '@/lib/permissions'
@@ -31,6 +33,48 @@ function describeTrackerError(error: unknown): string {
   return getErrorMessage(error)
 }
 
+type TrackerField = 'baseUrl' | 'projectKey' | 'authEmail'
+
+/**
+ * What the form would save wrong, per field (PLAN-21). The backend accepts any
+ * string, so a typo in the base URL or an enabled tracker with no project key
+ * used to save cleanly and only fail later, in the merge worker, where nobody
+ * sees it. An empty field is fine while the tracker is off: an owner may park
+ * a half-filled connection.
+ */
+function trackerConfigErrors(values: {
+  enabled: boolean
+  baseUrl: string
+  projectKey: string
+  authEmail: string
+}): Partial<Record<TrackerField, string>> {
+  const errors: Partial<Record<TrackerField, string>> = {}
+  const baseUrl = values.baseUrl.trim()
+  if (baseUrl !== '') {
+    let parsed: URL | null
+    try {
+      parsed = new URL(baseUrl)
+    } catch {
+      parsed = null
+    }
+    if (!parsed || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) {
+      errors.baseUrl = 'Enter a full URL, such as https://acme.atlassian.net.'
+    }
+  } else if (values.enabled) {
+    errors.baseUrl = 'Required while the tracker is enabled.'
+  }
+  if (values.enabled && values.projectKey.trim() === '') {
+    errors.projectKey = 'Required while the tracker is enabled.'
+  }
+  const email = values.authEmail.trim()
+  if (email !== '' && !/^[^\s@]+@[^\s@]+$/.test(email)) {
+    errors.authEmail = 'Enter an email address.'
+  } else if (email === '' && values.enabled) {
+    errors.authEmail = 'Required while the tracker is enabled.'
+  }
+  return errors
+}
+
 interface TrackerConfigDialogProps {
   slug: string
   open: boolean
@@ -43,11 +87,15 @@ interface TrackerConfigDialogProps {
  * branches settings tab), same Dialog/primitive styling.
  */
 export function TrackerConfigDialog({ slug, open, onOpenChange }: TrackerConfigDialogProps) {
-  const { data: config } = useQuery({
+  const configQuery = useQuery({
     queryKey: ['trackerConfig', slug],
     queryFn: () => trackerConfigApi.get(slug),
     enabled: open,
+    // Rendered in the dialog with a retry, instead of "Loading tracker…"
+    // forever (PLAN-21).
+    meta: SILENT_ERROR_META,
   })
+  const config = configQuery.data
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -57,6 +105,14 @@ export function TrackerConfigDialog({ slug, open, onOpenChange }: TrackerConfigD
         </DialogHeader>
         {config ? (
           <TrackerConfigForm slug={slug} config={config} onClose={() => onOpenChange(false)} />
+        ) : configQuery.isError ? (
+          <ErrorState
+            compact
+            className="my-4"
+            title="Could not load the tracker connection"
+            error={configQuery.error}
+            onRetry={() => void configQuery.refetch()}
+          />
         ) : (
           <p className="py-4 text-sm text-muted-foreground">Loading tracker…</p>
         )}
@@ -94,7 +150,22 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
   // a blank field means "keep the stored token".
   const [apiToken, setApiToken] = useState('')
 
+  const errors = trackerConfigErrors({ enabled, baseUrl, projectKey, authEmail })
+  const invalid = Object.keys(errors).length > 0
+  // Field errors show once the owner has tried to save, not while typing.
+  const [attempted, setAttempted] = useState(false)
+  const shown = attempted ? errors : {}
+  const fieldProps = (field: TrackerField, errorId: string) =>
+    shown[field]
+      ? { 'aria-invalid': true as const, 'aria-describedby': errorId }
+      : {}
+  const baseUrlErrorId = useId()
+  const projectKeyErrorId = useId()
+  const authEmailErrorId = useId()
+
   const saveMut = useMutation({
+    // Rendered inline below the fields.
+    meta: SILENT_ERROR_META,
     mutationFn: () => {
       const patch: ProjectTrackerConfigUpdate = {
         enabled,
@@ -124,9 +195,11 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
 
   return (
     <form
+      noValidate
       onSubmit={(event) => {
         event.preventDefault()
-        if (canEdit) saveMut.mutate()
+        setAttempted(true)
+        if (canEdit && !invalid) saveMut.mutate()
       }}
     >
       <div className="grid gap-4 py-4">
@@ -159,7 +232,9 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             onChange={(event) => setBaseUrl(event.target.value)}
             placeholder="https://acme.atlassian.net"
             disabled={!canEdit}
+            {...fieldProps('baseUrl', baseUrlErrorId)}
           />
+          <FieldError id={baseUrlErrorId} message={shown.baseUrl} />
         </div>
 
         <div className="grid gap-2">
@@ -170,7 +245,9 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             onChange={(event) => setProjectKey(event.target.value)}
             placeholder="ENG"
             disabled={!canEdit}
+            {...fieldProps('projectKey', projectKeyErrorId)}
           />
+          <FieldError id={projectKeyErrorId} message={shown.projectKey} />
         </div>
 
         <div className="grid gap-2">
@@ -182,7 +259,9 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             onChange={(event) => setAuthEmail(event.target.value)}
             placeholder="you@acme.com"
             disabled={!canEdit}
+            {...fieldProps('authEmail', authEmailErrorId)}
           />
+          <FieldError id={authEmailErrorId} message={shown.authEmail} />
         </div>
 
         <div className="grid gap-2">
@@ -242,5 +321,14 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
         )}
       </DialogFooter>
     </form>
+  )
+}
+
+function FieldError({ id, message }: { id: string; message?: string }) {
+  if (!message) return null
+  return (
+    <p id={id} className="text-xs" style={{ color: 'var(--danger)' }}>
+      {message}
+    </p>
   )
 }

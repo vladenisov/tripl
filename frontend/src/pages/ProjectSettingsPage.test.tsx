@@ -945,7 +945,9 @@ describe('ProjectSettingsPage', () => {
       'aria-selected',
       'true',
     )
-    expect(screen.getByLabelText('Status')).toBeInTheDocument()
+    // The log panel is its own chunk (tripl-fj5g.15), so it can land a tick
+    // after the tab strip.
+    expect(await screen.findByLabelText('Status')).toBeInTheDocument()
     expect(screen.queryByText('Set up alerting')).toBeNull()
   })
 

@@ -263,10 +263,13 @@ export function DateTimePicker({
             variant="outline"
             disabled={disabled}
             aria-describedby={describedBy}
+            // An explicit name, not an sr-only prefix: name computation trims
+            // each inline child and joins them without a space, which read the
+            // prefix and the date as one word ("date:Jan 14, 2026").
+            aria-label={`${label}, date: ${date ? formatDate(date) : "none picked"}`}
             className="h-8 justify-start gap-1.5 px-2.5 text-[13px] font-normal"
           >
             <CalendarDays aria-hidden="true" className="size-3.5 text-muted-foreground" />
-            <span className="sr-only">{label}, date: </span>
             {date ? formatDate(date) : <span className="text-muted-foreground">Pick a date</span>}
           </Button>
         </PopoverTrigger>

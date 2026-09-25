@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Copy } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { buildExamplePayload, buildSpecMarkdown, specIdentity, type SpecRow } from '@/lib/eventSpec'
@@ -13,15 +14,6 @@ const CARD = 'overflow-hidden rounded-[10px] border'
 const CARD_STYLE = { background: 'var(--surface)', borderColor: 'var(--border)' } as const
 const TH = 'px-[14px] py-2 text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
 const TD = 'px-[14px] py-[9px] text-[12.5px] align-top'
-
-async function copyText(text: string, what: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-    toast.success(`${what} copied`)
-  } catch {
-    toast.error(`Could not copy ${what.toLowerCase()}`)
-  }
-}
 
 /**
  * What a developer needs to instrument an event, on the page they are sent to.
@@ -45,6 +37,13 @@ export function EventSpecCard({
   eventType: EventType | undefined
   metaFieldMap: Map<string, MetaFieldDefinition>
 }) {
+  // No fallback field to select here, so the outcome goes to a toast. The hook
+  // also covers plain-HTTP instances, where navigator.clipboard is undefined.
+  const { copy } = useCopyToClipboard()
+  const copyText = async (text: string, what: string) => {
+    if (await copy(text)) toast.success(`${what} copied`)
+    else toast.error(`Could not copy ${what.toLowerCase()}`)
+  }
   const branchId = useActiveBranchId()
   const branchLink = useBranchLinkProps()
   const identity = specIdentity(event)

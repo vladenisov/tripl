@@ -108,4 +108,41 @@ describe('UsersPage', () => {
     })
     expect(revoked).toEqual([])
   })
+
+  it('selects the one-time invite link when the clipboard is unavailable', async () => {
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = urlOf(input)
+        if (url.endsWith('/api/v1/users/invitations') && init?.method === 'POST') {
+          return Promise.resolve(
+            jsonResponse({
+              invitation: INVITATION,
+              accept_path: '/invite/tok-123',
+              expires_at: '2026-09-01T00:00:00Z',
+            }),
+          )
+        }
+        return Promise.resolve(jsonResponse([]))
+      },
+    )
+    try {
+      renderUsersPage()
+
+      fireEvent.change(await screen.findByLabelText('Email'), {
+        target: { value: 'newcomer@example.com' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Create invite link' }))
+
+      const link = await screen.findByRole('textbox', { name: 'Invite link' })
+      fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Couldn’t reach the clipboard/)
+      expect(link).toHaveFocus()
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
+  })
 })

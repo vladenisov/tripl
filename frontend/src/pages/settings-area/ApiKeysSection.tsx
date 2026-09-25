@@ -383,9 +383,11 @@ export default function ApiKeysSection() {
                       void handleRevoke(k)
                     }}
                     disabled={revoking}
+                    // The visible label is the same on every row; the name
+                    // says which key a screen-reader user is about to revoke.
+                    aria-label={`${revoking ? 'Revoking…' : 'Revoke'} ${k.name}`}
                   >
                     {revoking ? 'Revoking…' : 'Revoke'}
-                    <span className="sr-only"> {k.name}</span>
                   </Button>
                 )}
               </div>

@@ -155,6 +155,15 @@ function makeTrackerConfig(overrides: Partial<ProjectTrackerConfig> = {}): Proje
   }
 }
 
+/** Merge to main stays disabled until the selected branch's diff has loaded
+ * (the confirm reads it), and the diff is no longer prefetched by a per-row
+ * fan-out (PLAN-3) — so wait for the button to come live before clicking. */
+async function clickMerge() {
+  const button = await screen.findByRole('button', { name: /Merge to main/i })
+  await waitFor(() => expect(button).toBeEnabled())
+  fireEvent.click(button)
+}
+
 /** Every merge now asks first (PLAN-8): the plain case's confirm is "Merge". */
 async function confirmMerge() {
   fireEvent.click(await screen.findByRole('button', { name: 'Merge' }))
@@ -1084,7 +1093,7 @@ describe('BranchesTab', () => {
     const active = screen.getByRole('status', { name: 'active branch' })
     expect(active).toHaveTextContent(FEATURE.id)
 
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     await confirmMerge()
     await waitFor(() => expect(active).toHaveTextContent('main'))
     expect(localStorage.getItem('tripl-branch:demo')).toBeNull()
@@ -1246,7 +1255,7 @@ describe('BranchesTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     await confirmMerge()
 
     expect(
@@ -1272,7 +1281,7 @@ describe('BranchesTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     await confirmMerge()
 
     expect(
@@ -1328,7 +1337,7 @@ describe('BranchesTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     await confirmMerge()
 
     expect(await screen.findByText(expected)).toBeInTheDocument()
@@ -1355,7 +1364,7 @@ describe('BranchesTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     await confirmMerge()
 
     expect(
@@ -1380,7 +1389,7 @@ describe('BranchesTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
 
     // The confirm dialog lists the doomed variable; merge waits for consent.
     expect(await screen.findByText('Merge deletes variables from main')).toBeInTheDocument()
@@ -1499,7 +1508,7 @@ describe('BranchesTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
 
     // The plain confirm, not the deletion warning: the paired row keeps its
     // id, and with it the observed values, overrides and drift history the
@@ -1516,7 +1525,7 @@ describe('BranchesTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
 
     // Both entries carry `payload.variant`, which is exactly the shape this
     // screen used to pair for itself. The merge refuses the move — main already
@@ -1533,7 +1542,7 @@ describe('BranchesTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
 
     // Being behind used to force the warning on every removal, because the
     // pairing was inferred from a diff that cannot see main. The backend's
@@ -1907,7 +1916,7 @@ describe('BranchesTab housekeeping rows (tripl-kjhi.12)', () => {
     // Nor does the merge confirmation list them: the dialog protects documented
     // values, overrides and drift history, none of which these rows have.
     vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     await confirmMerge()
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
     expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
@@ -2011,7 +2020,7 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
 
     renderTab('feat-1')
 
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     await confirmMerge()
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
     await waitFor(() => {
@@ -2035,7 +2044,7 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
 
     renderTab('feat-1')
 
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(planBranchesApi.merge).not.toHaveBeenCalled()
@@ -2071,7 +2080,7 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
     await waitFor(() => expect(planBranchesApi.getConflicts).toHaveBeenCalledTimes(1))
     expect(screen.queryByText('Conflicts')).not.toBeInTheDocument()
 
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     await confirmMerge()
 
     expect(
@@ -2204,7 +2213,7 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
 
     renderTab('feat-1')
 
-    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await clickMerge()
     await confirmMerge()
 
     expect(
