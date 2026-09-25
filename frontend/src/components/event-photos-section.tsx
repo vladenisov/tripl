@@ -12,7 +12,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
-import { eventPhotoCommentsKey, eventPhotosKey } from '@/lib/queryKeys'
+import { eventPhotoCommentsKey, eventPhotosKey, photoLimitsKey } from '@/lib/queryKeys'
 
 interface Props {
   slug: string
@@ -20,22 +20,11 @@ interface Props {
 }
 
 /**
- * Which types and sizes the server stores are owner settings
- * (`photo_allowed_mime`, `photo_max_size_mb`) the client cannot read, so the
- * browser only filters out what is not an image at all and lets the server's
- * 413/415 speak for the rest. A fixed list and a hard 10 MB gate here refused
- * files an instance had been configured to take.
+ * Which image types the server stores is an owner setting
+ * (`photo_allowed_mime`) the client does not read, so the browser only filters
+ * out what is not an image at all and lets the server's 415 speak for the rest.
  */
 const ACCEPT = 'image/*'
-
-/**
- * The server's DEFAULT `photo_max_size_mb`. A larger file still uploads — the
- * instance may have raised the limit — but the author is told up front why it
- * may come back refused, instead of meeting a bare 413 after a long upload
- * (EVT-28).
- */
-const PHOTO_DEFAULT_MAX_SIZE_MB = 10
-const PHOTO_DEFAULT_MAX_BYTES = PHOTO_DEFAULT_MAX_SIZE_MB * 1024 * 1024
 
 /** One file of an upload, as the list under the drop zone shows it. */
 interface UploadItem {
@@ -47,9 +36,20 @@ interface UploadItem {
   error?: string
 }
 
-/** Why a dropped or picked file is not uploaded at all, or null to upload it. */
-function photoRejection(file: Pick<File, 'type'>): string | null {
-  return file.type.startsWith('image/') ? null : 'not an image'
+/**
+ * Why a dropped or picked file is not uploaded at all, or null to upload it.
+ *
+ * `maxSizeMb` is the instance's own `photo_max_size_mb`, read from the server
+ * (EVT-28): a fixed 10 MB here refused files an instance had been configured to
+ * take. Until it has loaded (or if it cannot be read) size is left to the
+ * server's 413.
+ */
+function photoRejection(file: Pick<File, 'type' | 'size'>, maxSizeMb: number | undefined): string | null {
+  if (!file.type.startsWith('image/')) return 'not an image'
+  if (maxSizeMb !== undefined && file.size > maxSizeMb * 1024 * 1024) {
+    return `larger than the ${maxSizeMb} MB limit`
+  }
+  return null
 }
 
 function formatSize(bytes: number): string {
@@ -77,7 +77,6 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
   const [figmaTitle, setFigmaTitle] = useState('')
   const [uploads, setUploads] = useState<UploadItem[]>([])
   const [skipped, setSkipped] = useState<string[]>([])
-  const [oversized, setOversized] = useState<string[]>([])
   const uploadSeq = useRef(0)
   const { confirm, dialog } = useConfirm()
 
@@ -87,6 +86,15 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
     queryFn: () => eventPhotosApi.list(slug, eventId),
     enabled: !!slug && !!eventId,
   })
+  // Not fatal when it fails: size is then left to the server, as it always is.
+  const limitsQuery = useQuery({
+    queryKey: photoLimitsKey(),
+    queryFn: () => eventPhotosApi.limits(),
+    meta: SILENT_ERROR_META,
+    staleTime: 5 * 60 * 1000,
+    enabled: canWrite,
+  })
+  const maxSizeMb = limitsQuery.data?.photo_max_size_mb
 
   // Files upload side by side, each with its own progress and outcome. They
   // used to go one after another inside one mutation: no progress, and when the
@@ -156,13 +164,12 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
     const accepted: File[] = []
     const refused: string[] = []
     for (const file of Array.from(files)) {
-      const reason = photoRejection(file)
+      const reason = photoRejection(file, maxSizeMb)
       if (reason) refused.push(`${file.name} (${reason})`)
       else accepted.push(file)
     }
     // A mixed drop used to discard what it could not take without a word.
     setSkipped(refused)
-    setOversized(accepted.filter(file => file.size > PHOTO_DEFAULT_MAX_BYTES).map(file => file.name))
     setError(null)
     // A new batch replaces the failures of the last one.
     const batch = accepted.map(file => {
@@ -279,7 +286,9 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
               {canWrite ? (
                 <>
                   <div>Drop images here, click <span className="font-medium">Upload</span>, or attach a Figma URL above</div>
-                  <div className="text-xs">JPEG, PNG, GIF, or WebP</div>
+                  <div className="text-xs">
+                    JPEG, PNG, GIF, or WebP{maxSizeMb !== undefined && `, up to ${maxSizeMb} MB each`}
+                  </div>
                 </>
               ) : (
                 <div>No photos or specs attached yet.</div>
@@ -330,14 +339,6 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
         {skipped.length > 0 && (
           <div role="status" className="mt-3 rounded-md border px-3 py-2 text-xs text-muted-foreground">
             Not uploaded: {skipped.join(', ')}.
-          </div>
-        )}
-
-        {oversized.length > 0 && (
-          <div role="status" className="mt-3 rounded-md border px-3 py-2 text-xs text-muted-foreground">
-            Larger than the default {PHOTO_DEFAULT_MAX_SIZE_MB} MB limit: {oversized.join(', ')}. Uploading
-            anyway; the server refuses {oversized.length === 1 ? 'it' : 'them'} if this instance keeps
-            that limit.
           </div>
         )}
 

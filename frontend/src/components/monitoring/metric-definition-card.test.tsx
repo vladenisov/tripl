@@ -5,15 +5,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
-import { factTablesApi } from '@/api/factTablesApi'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { factTablesApi } from '@/api/factTables'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { AuthContext } from '@/components/auth-context'
 import { authAs } from '@/test/auth'
 import type { FactTableListResponse, MetricDefinitionDetailResponse, Role } from '@/types'
 
 import { MetricDefinitionCard } from './metric-definition-card'
 
-vi.mock('@/api/factTablesApi', () => ({
+vi.mock('@/api/factTables', () => ({
   factTablesApi: { list: vi.fn(), get: vi.fn() },
 }))
 vi.mock('@/api/events', () => ({
@@ -25,7 +25,7 @@ vi.mock('@/api/eventTypes', () => ({
 vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
 }))
-vi.mock('@/api/metricsCatalogApi', () => ({
+vi.mock('@/api/metricsCatalog', () => ({
   metricsCatalogApi: { getGeneratedSql: vi.fn() },
 }))
 vi.mock('@uiw/react-codemirror', () => ({

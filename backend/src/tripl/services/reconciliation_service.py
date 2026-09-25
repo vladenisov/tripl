@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -30,6 +31,8 @@ from tripl.schemas.reconciliation import (
     DeadEventListResponse,
     ShadowEventAcceptRequest,
     ShadowEventAcceptResponse,
+    ShadowEventBatchItemResult,
+    ShadowEventBatchRequest,
     ShadowEventCandidateResponse,
     ShadowEventDismissResponse,
     ShadowEventListResponse,
@@ -121,6 +124,7 @@ async def list_shadow_events(
     *,
     status: str | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> ShadowEventListResponse:
     project_id = await get_project_id_by_slug(session, slug)
     not_archived = _not_an_archived_identity(project_id)
@@ -137,7 +141,11 @@ async def list_shadow_events(
         .join(ScanConfig, ScanConfig.id == ShadowEventCandidate.scan_config_id)
         .outerjoin(EventType, EventType.id == ShadowEventCandidate.event_type_id)
         .where(ShadowEventCandidate.project_id == project_id, not_archived)
-        .order_by(ShadowEventCandidate.observed_count.desc())
+        # ``id`` breaks ties so that pages are stable: many candidates share
+        # an observed count, and an unordered tie could show one row on two
+        # pages and another on none (DATA-39).
+        .order_by(ShadowEventCandidate.observed_count.desc(), ShadowEventCandidate.id)
+        .offset(offset)
         .limit(limit)
     )
     if status:
@@ -424,6 +432,77 @@ async def dismiss_shadow_event(
         ),
         candidate=candidate,
     )
+
+
+async def batch_shadow_events(
+    session: AsyncSession,
+    slug: str,
+    data: ShadowEventBatchRequest,
+    *,
+    user_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    on_accepted: Callable[[ShadowEventAcceptResult], Awaitable[None]],
+    on_dismissed: Callable[[ShadowEventDismissResult], Awaitable[None]],
+) -> list[ShadowEventBatchItemResult]:
+    """Accept or dismiss many inbox rows, each on its own (DATA-39).
+
+    Every row runs through the single route's service call and commits on its
+    own, so one refused row (already resolved, no event type, an identity that
+    exists) is reported beside the others instead of undoing them — the same
+    outcome the page got from one request per row, in one round trip.
+
+    ``on_accepted``/``on_dismissed`` run right after each row commits, with the
+    result the single route audits, so a batch files the same ``event.create``
+    / ``shadow_event.dismiss`` rows one click at a time would. Right after, not
+    at the end: a later row's rollback expires every loaded object, and the
+    earlier results could no longer be read without IO.
+    """
+    results: list[ShadowEventBatchItemResult] = []
+    for item in data.items:
+        try:
+            if data.action == "accept":
+                accepted = await accept_shadow_event(
+                    session,
+                    slug,
+                    item.candidate_id,
+                    ShadowEventAcceptRequest(event_type_id=item.event_type_id, name=item.name),
+                    user_id=user_id,
+                    branch_id=branch_id,
+                )
+                results.append(
+                    ShadowEventBatchItemResult(
+                        candidate_id=item.candidate_id,
+                        ok=True,
+                        status=accepted.response.status,
+                        event_id=accepted.response.event_id,
+                    )
+                )
+                await on_accepted(accepted)
+            else:
+                dismissed = await dismiss_shadow_event(
+                    session, slug, item.candidate_id, user_id=user_id
+                )
+                results.append(
+                    ShadowEventBatchItemResult(
+                        candidate_id=item.candidate_id,
+                        ok=True,
+                        status=dismissed.response.status,
+                    )
+                )
+                await on_dismissed(dismissed)
+        except HTTPException as exc:
+            # Whatever the refused row had staged goes; the rows before it
+            # committed on their own.
+            await session.rollback()
+            results.append(
+                ShadowEventBatchItemResult(
+                    candidate_id=item.candidate_id,
+                    ok=False,
+                    error=str(exc.detail),
+                    error_status=exc.status_code,
+                )
+            )
+    return results
 
 
 async def list_dead_events(

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { AlertTriangle, History } from 'lucide-react'
 
-import { alertingApi } from '@/api/alerting'
+import { alertingApi, type AlertRuleUpdatePayload } from '@/api/alerting'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { Button } from '@/components/ui/button'
 import {
@@ -161,6 +161,7 @@ export function RuleReplayDialog({
   destinationId,
   rule,
   scans,
+  draft = null,
 }: {
   open: boolean
   onOpenChange: (value: boolean) => void
@@ -168,6 +169,13 @@ export function RuleReplayDialog({
   destinationId: string
   rule: AlertRule
   scans: Pick<ScanConfig, 'id' | 'name'>[]
+  /**
+   * The editor's unsaved edits (the PATCH body Save would send). Given, every
+   * run replays the saved rule with these laid over it, server-side and
+   * without writing them (ALR-12); the overrides below then vary the EDITED
+   * thresholds.
+   */
+  draft?: AlertRuleUpdatePayload | null
 }) {
   const [days, setDays] = useState<number>(7)
   const [cooldownText, setCooldownText] = useState<string>('')
@@ -176,6 +184,15 @@ export function RuleReplayDialog({
   const [sigmaText, setSigmaText] = useState<string>('')
   const [result, setResult] = useState<ReplayResult | null>(null)
   const { notifyStepCompleted } = useDemoScenarioActions()
+  // What an override is compared with: the edited value when replaying a
+  // draft, else the saved one.
+  const base = {
+    cooldown_minutes: draft?.cooldown_minutes ?? rule.cooldown_minutes,
+    min_percent_delta: draft?.min_percent_delta ?? rule.min_percent_delta,
+    min_expected_count: draft?.min_expected_count ?? rule.min_expected_count,
+    message_format: draft?.message_format ?? rule.message_format,
+  }
+  const baseLabel = draft ? 'edited' : 'saved'
 
   // Only a value that actually DIFFERS from the rule counts as an override:
   // typing the saved number back in would otherwise cost a second identical
@@ -184,17 +201,17 @@ export function RuleReplayDialog({
   const cooldown = parseOverride(cooldownText)
   const cooldownInvalid =
     cooldown !== null && (!Number.isInteger(cooldown) || cooldown > COOLDOWN_OVERRIDE_MAX)
-  if (cooldown !== null && !cooldownInvalid && cooldown !== rule.cooldown_minutes) {
+  if (cooldown !== null && !cooldownInvalid && cooldown !== base.cooldown_minutes) {
     requestedOverrides.cooldownMinutes = cooldown
   }
   const minPercent = parseOverride(minPercentText)
   const minPercentInvalid = isInvalidOverride(minPercent)
-  if (minPercent !== null && !minPercentInvalid && minPercent !== rule.min_percent_delta) {
+  if (minPercent !== null && !minPercentInvalid && minPercent !== base.min_percent_delta) {
     requestedOverrides.minPercentDelta = minPercent
   }
   const minExpected = parseOverride(minExpectedText)
   const minExpectedInvalid = isInvalidOverride(minExpected)
-  if (minExpected !== null && !minExpectedInvalid && minExpected !== rule.min_expected_count) {
+  if (minExpected !== null && !minExpectedInvalid && minExpected !== base.min_expected_count) {
     requestedOverrides.minExpectedCount = minExpected
   }
   // Sigma has no rule-level column to compare against — the detector's own
@@ -218,14 +235,21 @@ export function RuleReplayDialog({
       // Two runs, always: `*_used`/`*_saved` name the thresholds a single run
       // applied, but only a second run over the SAME window says how many
       // firings the change would actually have removed.
-      const savedPromise = alertingApi.simulateRule(slug, destinationId, rule.id, n)
+      // A draft rides every run, so the comparison is edits vs edits+overrides.
+      const run = (runOverrides?: ReplayOverrides) =>
+        draft
+          ? alertingApi.simulateRule(slug, destinationId, rule.id, n, runOverrides, draft)
+          : runOverrides
+            ? alertingApi.simulateRule(slug, destinationId, rule.id, n, runOverrides)
+            : alertingApi.simulateRule(slug, destinationId, rule.id, n)
+      const savedPromise = run()
       if (!overrides) {
         const saved = await savedPromise
         return { saved, override: null, request }
       }
       const [saved, overrideResp] = await Promise.all([
         savedPromise,
-        alertingApi.simulateRule(slug, destinationId, rule.id, n, overrides),
+        run(overrides),
       ])
       return { saved, override: overrideResp, request }
     },
@@ -262,7 +286,7 @@ export function RuleReplayDialog({
         <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <History className="h-4 w-4" />
-            Replay rule “{rule.name}”
+            Replay rule “{rule.name}”{draft ? ' with your unsaved edits' : ''}
           </DialogTitle>
         </DialogHeader>
 
@@ -300,7 +324,7 @@ export function RuleReplayDialog({
                 max={COOLDOWN_OVERRIDE_MAX}
                 step={1}
                 aria-invalid={cooldownInvalid || undefined}
-                placeholder={`saved: ${rule.cooldown_minutes}`}
+                placeholder={`${baseLabel}: ${base.cooldown_minutes}`}
                 value={cooldownText}
                 onChange={(e) => setCooldownText(e.target.value)}
                 className="h-8 w-32 text-xs"
@@ -321,7 +345,7 @@ export function RuleReplayDialog({
                 min={0}
                 step="0.1"
                 aria-invalid={minPercentInvalid || undefined}
-                placeholder={`saved: ${rule.min_percent_delta}`}
+                placeholder={`${baseLabel}: ${base.min_percent_delta}`}
                 value={minPercentText}
                 onChange={(e) => setMinPercentText(e.target.value)}
                 className="h-8 w-28 text-xs"
@@ -342,7 +366,7 @@ export function RuleReplayDialog({
                 min={0}
                 step="0.1"
                 aria-invalid={minExpectedInvalid || undefined}
-                placeholder={`saved: ${rule.min_expected_count}`}
+                placeholder={`${baseLabel}: ${base.min_expected_count}`}
                 value={minExpectedText}
                 onChange={(e) => setMinExpectedText(e.target.value)}
                 className="h-8 w-28 text-xs"
@@ -427,7 +451,7 @@ export function RuleReplayDialog({
             <div className={resultIsStale ? 'space-y-3 opacity-50' : 'space-y-3'}>
               <div className="flex flex-wrap items-center gap-3 text-sm">
                 <FiringsCountBadge
-                  label="Saved thresholds"
+                  label={draft ? 'Your edits' : 'Saved thresholds'}
                   count={result.saved.firings.length}
                   noisy={result.saved.noisy}
                 />
@@ -596,7 +620,7 @@ export function RuleReplayDialog({
                 <div className="min-w-0 space-y-1">
                   <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                     Preview — the message this run would have sent, as{' '}
-                    {MESSAGE_FORMAT_LABEL[rule.message_format]}
+                    {MESSAGE_FORMAT_LABEL[base.message_format]}
                   </div>
                   <pre className="max-h-48 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-md border bg-muted/30 px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
                     {displayResult.rendered_message}

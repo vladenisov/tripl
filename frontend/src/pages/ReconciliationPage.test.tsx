@@ -139,7 +139,11 @@ function renderPage(
 /** Confirms the archive dialog that now sits in front of every archive (DATA-40). */
 async function confirmArchive(): Promise<void> {
   const confirmDialog = await screen.findByRole('alertdialog')
-  fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Archive' }))
+  // The page awaits the confirm promise and then updates state, one microtask
+  // after the click: an async act() flushes that continuation too.
+  await act(async () => {
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Archive' }))
+  })
 }
 
 afterEach(() => {
@@ -785,14 +789,20 @@ describe('ReconciliationPage', () => {
   // request per click.
   it('says how much of the inbox is shown and loads more on request', async () => {
     const shadowUrls: string[] = []
-    const bigInbox: ShadowEventsResponse = { ...shadowNew, total: 250, new_count: 250 }
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
       if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
       if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
       if (url.includes('/reconciliation/shadow-events')) {
         shadowUrls.push(url)
-        return jsonResponse(bigInbox)
+        // One row per page, a different one for each offset.
+        const offset = Number(new URL(url, 'http://test').searchParams.get('offset') ?? '0')
+        const page: ShadowEventsResponse = {
+          total: 250,
+          new_count: 250,
+          items: [{ ...at(shadowNew.items, 0), id: `sh-${offset}`, event_name: `event_${offset}` }],
+        }
+        return jsonResponse(page)
       }
       if (url.includes('/event-types')) return jsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
@@ -804,10 +814,13 @@ describe('ReconciliationPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }))
 
-    await waitFor(() => expect(shadowUrls.some((url) => url.includes('limit=200'))).toBe(true))
+    // The next page by offset, not a longer first page: every row is reachable.
+    expect(await screen.findByText('Showing 2 of 250')).toBeInTheDocument()
+    expect(shadowUrls.some((url) => url.includes('offset=1'))).toBe(true)
+    expect(shadowUrls.every((url) => url.includes('limit=100'))).toBe(true)
   })
 
-  it('dismisses selected shadow events in bulk, one request each', async () => {
+  it('dismisses selected shadow events in bulk, in one request', async () => {
     const typed: ShadowEventsResponse = {
       total: 2,
       new_count: 2,
@@ -816,21 +829,28 @@ describe('ReconciliationPage', () => {
         { ...at(shadowNew.items, 0), id: 'sh2', event_name: 'promo_banner_closed' },
       ],
     }
-    const dismissed: string[] = []
-    const accepted: string[] = []
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const batches: { action: string; items: { candidate_id: string }[] }[] = []
+    const single: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
       if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
-      const dismiss = /shadow-events\/([^/]+)\/dismiss/.exec(url)
-      if (dismiss?.[1]) {
-        dismissed.push(dismiss[1])
-        return jsonResponse({ candidate_id: dismiss[1], status: 'dismissed' })
+      if (url.includes('/shadow-events/batch')) {
+        const body = JSON.parse(String(init?.body)) as (typeof batches)[number]
+        batches.push(body)
+        // The second row is refused; the first still goes through.
+        return jsonResponse({
+          succeeded: 1,
+          failed: 1,
+          results: [
+            { candidate_id: 'sh1', ok: true, status: 'dismissed', event_id: null, error: null, error_status: null },
+            { candidate_id: 'sh2', ok: false, status: null, event_id: null, error: 'Candidate already accepted', error_status: 409 },
+          ],
+        })
       }
-      const accept = /shadow-events\/([^/]+)\/accept/.exec(url)
-      if (accept?.[1]) {
-        accepted.push(accept[1])
-        return jsonResponse({ candidate_id: accept[1], event_id: 'ev', status: 'accepted' })
+      if (/shadow-events\/[^/]+\/(accept|dismiss)/.test(url)) {
+        single.push(url)
+        return jsonResponse({})
       }
       if (url.includes('/reconciliation/shadow-events')) return jsonResponse(typed)
       if (url.includes('/event-types')) return jsonResponse([])
@@ -847,9 +867,15 @@ describe('ReconciliationPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss 2 selected' }))
 
-    await waitFor(() => expect(dismissed).toEqual(['sh1', 'sh2']))
-    expect(await screen.findByText('2 events dismissed.')).toBeInTheDocument()
-    expect(accepted).toEqual([])
+    await waitFor(() => expect(batches).toHaveLength(1))
+    expect(batches[0]).toEqual({
+      action: 'dismiss',
+      items: [{ candidate_id: 'sh1' }, { candidate_id: 'sh2' }],
+    })
+    expect(await screen.findByText('1 event dismissed. 1 failed; see the rows below.')).toBeInTheDocument()
+    // The refusal lands on its own row, in the server's words.
+    expect(screen.getByText('Candidate already accepted')).toBeInTheDocument()
+    expect(single).toEqual([])
   })
 
   // Dismiss only flips a candidate's status: it refreshes the inbox, not the
@@ -899,10 +925,15 @@ describe('ReconciliationPage', () => {
       const url = String(input)
       if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
       if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
-      const dismiss = /shadow-events\/([^/]+)\/dismiss/.exec(url)
-      if (dismiss?.[1]) {
+      if (url.includes('/shadow-events/batch')) {
         await gate
-        return jsonResponse({ candidate_id: dismiss[1], status: 'dismissed' })
+        return jsonResponse({
+          succeeded: 2,
+          failed: 0,
+          results: ['sh1', 'sh2'].map((id) => ({
+            candidate_id: id, ok: true, status: 'dismissed', event_id: null, error: null, error_status: null,
+          })),
+        })
       }
       if (url.includes('/reconciliation/shadow-events')) return jsonResponse(typed)
       if (url.includes('/event-types')) return jsonResponse([])

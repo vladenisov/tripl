@@ -19,6 +19,8 @@ from tripl.models.data_source import DataSource, DBType, TestStatus
 from tripl.schemas.data_source import (
     SSLKEY_STORAGE_KEY,
     ConnectionSettingsError,
+    DataSourceConnectionTest,
+    DataSourceConnectionTestResponse,
     DataSourceCreate,
     DataSourceResponse,
     DataSourceTestResponse,
@@ -446,4 +448,39 @@ async def test_data_source_connection(
         message=message,
         tested_at=tested_at,
         data_source=_to_response(ds),
+    )
+
+
+async def test_unsaved_connection(
+    data: DataSourceConnectionTest,
+) -> DataSourceConnectionTestResponse:
+    """Probe a config that has not been saved, and store nothing (DATA-30).
+
+    The same adapter probe and the same safe wording as a saved source's test.
+    The source is a TRANSIENT row built from the request alone — never added to
+    a session — so a failed probe leaves no half-made source behind, and no
+    stored secret can be borrowed by naming one.
+    """
+    if data.db_type == DBType.synthetic:
+        raise HTTPException(
+            status_code=422,
+            detail="Synthetic data sources are created only by demo projects, not directly.",
+        )
+    raw_settings = data.model_dump(exclude_unset=True).get("connection_settings")
+    settings = _validated_settings(data.db_type.value, raw_settings)
+    ds = DataSource(
+        name=data.name,
+        db_type=data.db_type,
+        host=data.host,
+        port=data.port,
+        database_name=data.database_name,
+        username=data.username,
+        password_encrypted=encrypt_value(data.password),
+        timeout_seconds=data.timeout_seconds,
+        json_path_discovery=data.json_path_discovery,
+        extra_params=_settings_to_storage(settings, previous=None),
+    )
+    success, message = await asyncio.to_thread(_run_adapter_test, ds)
+    return DataSourceConnectionTestResponse(
+        success=success, message=message, tested_at=datetime.now(UTC)
     )

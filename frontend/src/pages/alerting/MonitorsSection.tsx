@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bell, BellOff, ChevronDown, ChevronRight, History, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
-import { alertingApi } from '@/api/alerting'
+import { alertingApi, type AlertRuleUpdatePayload } from '@/api/alerting'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { EmptyState } from '@/components/empty-state'
@@ -15,7 +15,8 @@ import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { useConfirm } from '@/hooks/useConfirm'
-import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { SILENT_ERROR_META, surfaceError } from '@/lib/errorFeedback'
+import { stripValueErrorPrefix } from '@/lib/alertStatus'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
 import { MUTE_PRESETS, muteChoiceName, muteName, muteUntilIso, unmuteName } from '@/lib/mutePresets'
@@ -28,7 +29,6 @@ import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDestination, AlertRule, EventType, MonitorSummaryItem, ScanConfig } from '@/types'
 
 import { invalidateAlertingConfig } from './alertingCache'
-import { toastAlertingWriteError } from './writeErrorToast'
 import {
   defaultRuleForm,
   directionSummary,
@@ -160,6 +160,9 @@ export function MonitorsSection({
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<RuleWithDestination | null>(null)
   const [replayingRule, setReplayingRule] = useState<RuleWithDestination | null>(null)
+  // The editor's unsaved edits when the replay was opened from its "Replay
+  // with these edits" (ALR-12); null replays the saved rule.
+  const [replayDraft, setReplayDraft] = useState<AlertRuleUpdatePayload | null>(null)
   const [ruleForm, setRuleForm] = useState<RuleFormState>(defaultRuleForm())
   const [formDestinationId, setFormDestinationId] = useState('')
   // One rule's settings open at a time. The list is for scanning state; the
@@ -238,8 +241,8 @@ export function MonitorsSection({
   // The row-level writes below have no dialog to report in, and each used to
   // fail with nothing on screen: the switch snapped back, the bin did nothing
   // (ALR-6). They say why in a toast that keeps the global backstop's 401
-  // silence, request reference and dedupe (see writeErrorToast.ts).
-  const reportRowWriteError = toastAlertingWriteError
+  // silence, request reference and dedupe (`surfaceError`).
+  const reportRowWriteError = (error: unknown) => surfaceError(error, stripValueErrorPrefix)
 
   const deleteRuleMut = useMutation({
     meta: SILENT_ERROR_META,
@@ -473,7 +476,7 @@ export function MonitorsSection({
                     isDeletePending={deleteRuleMut.isPending && deleteRuleMut.variables?.id === rule.id}
                     onToggle={enabled => toggleRuleMut.mutate({ rule, enabled })}
                     onMute={mutedUntil => muteMut.mutate({ rule, mutedUntil })}
-                    onReplay={() => setReplayingRule(rule)}
+                    onReplay={() => { setReplayDraft(null); setReplayingRule(rule) }}
                     onEdit={() => openEditRule(rule)}
                     onDelete={() => void handleDeleteRule(rule)}
                   />
@@ -501,11 +504,14 @@ export function MonitorsSection({
         scans={scans}
         scansLoaded={scansLoaded}
         scansFailed={scansFailed}
-        // Replays the SAVED rule, from inside its editor (ALR-12). The draft
-        // itself cannot be replayed until the simulate endpoint accepts a rule
-        // body; until then this is the honest half — what the rule on file
-        // would have sent — one click from the form, instead of close-and-find.
-        onReplaySaved={editingRule ? () => setReplayingRule(editingRule) : undefined}
+        // Both replays from inside the editor (ALR-12): the rule on file, and
+        // the rule with this form's edits laid over it server-side, unsaved.
+        onReplaySaved={editingRule ? () => { setReplayDraft(null); setReplayingRule(editingRule) } : undefined}
+        onReplayDraft={
+          editingRule
+            ? () => { setReplayDraft(ruleFormToPayload(ruleForm)); setReplayingRule(editingRule) }
+            : undefined
+        }
         // Rides the monitors-summary response this section already polls, so the
         // editor gains the fact without a second request. Undefined until that
         // request answers, which the dialog reads as "say nothing yet".
@@ -519,11 +525,12 @@ export function MonitorsSection({
       {replayingRule && (
         <RuleReplayDialog
           open={!!replayingRule}
-          onOpenChange={value => { if (!value) setReplayingRule(null) }}
+          onOpenChange={value => { if (!value) { setReplayingRule(null); setReplayDraft(null) } }}
           slug={slug}
           destinationId={replayingRule.destination_id}
           rule={replayingRule}
           scans={scans}
+          draft={replayDraft}
         />
       )}
     </>

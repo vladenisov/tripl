@@ -1,7 +1,7 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { EventListResponse, EventType } from '@/types'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { EventType } from '@/types'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { useActiveBranchId } from '@/hooks/useBranch'
@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import {
   branchEventIdentityProbesKey,
   branchEventsKey,
-  eventIdentityProbeKey,
+  eventIdentityLookupKey,
   eventTypesKey,
 } from '@/lib/queryKeys'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
@@ -30,63 +30,26 @@ const EMPTY_EVENT_TYPES: EventType[] = []
 /**
  * How many distinct pasted names are checked against the catalog.
  *
- * Each name is probed on its own — the same `search` the single-event form
- * asks, and under the same cache key, so the two share answers. It used to read
- * up to 5,000 full event rows (field values, meta values, tags) on every type
- * selection just to build a set of names (EVT-37). Past this many names the
- * page says so rather than reporting a preview it could not have verified; the
- * server refuses a taken identity regardless, so a miss here costs a rejected
- * submit, not a duplicate.
+ * All of them in ONE exact-name lookup (`GET /events/by-names`), answered by
+ * the rule create refuses on (EVT-37). It used to read up to 5,000 full event
+ * rows on every type selection, and then one substring search per name. Past
+ * this many names the page says so rather than reporting a preview it could
+ * not have verified; the server refuses a taken identity regardless, so a miss
+ * here costs a rejected submit, not a duplicate. Below the route's own cap.
  */
 const IDENTITY_PROBE_LIMIT = 100
-/** Rows read per probe. `search` is a substring match over name, description
- *  and source name, so a short or common name can match more rows than this;
- *  such a probe is reported as unchecked unless the name's own row came back. */
-const IDENTITY_PROBE_ROWS = 100
 
-interface ProbeResult {
-  data?: EventListResponse
-  isError: boolean
-  isPending: boolean
-}
-
-/** What the per-name probes established, position for position with `names`. */
+/** What the lookup established about the probed names. */
 interface ProbeSummary {
-  /** Every identity the answered probes found held. */
+  /** Every probed identity an event already holds. */
   taken: ReadonlySet<string>
-  /** Names whose probe failed, or returned a truncated page without the name's
-   *  own row: the catalog was not really consulted about them (EVT-37). */
+  /** Names the catalog was not really consulted about: the lookup failed. */
   unchecked: ReadonlySet<string>
-  /** Some probe has not answered yet. */
+  /** The lookup has not answered yet. */
   pending: boolean
 }
 
-function summarizeIdentityProbes(
-  names: readonly string[],
-  results: readonly ProbeResult[],
-): ProbeSummary {
-  const taken = new Set<string>()
-  const unchecked = new Set<string>()
-  let pending = false
-  results.forEach((result, position) => {
-    const name = names[position]
-    if (name === undefined) return
-    // An errored probe proves nothing; reading it as "not taken" would preview
-    // a line the server then refuses.
-    if (result.isError) {
-      unchecked.add(name)
-      return
-    }
-    if (!result.data) {
-      if (result.isPending) pending = true
-      return
-    }
-    // The same two arms the server tests in `_event_holding_scan_identity`.
-    for (const item of result.data.items) taken.add(item.source_name ?? item.name)
-    if (!taken.has(name) && result.data.total > result.data.items.length) unchecked.add(name)
-  })
-  return { taken, unchecked, pending }
-}
+const EMPTY_NAMES: ReadonlySet<string> = new Set()
 
 const STATUS_LABEL: Record<BulkRow['status'], string> = {
   ready: 'will be created',
@@ -191,25 +154,27 @@ export default function EventBulkForm() {
   const probedNames = useMemo(() => candidateNames.slice(0, IDENTITY_PROBE_LIMIT), [candidateNames])
   const overLimitCount = candidateNames.length - probedNames.length
 
-  // Stable while the probed names are, so TanStack only rebuilds the summary
-  // when a probe's answer changes.
-  const summarize = useCallback(
-    (results: ProbeResult[]) => summarizeIdentityProbes(probedNames, results),
-    [probedNames],
-  )
-  const probes = useQueries({
-    combine: summarize,
-    queries: probedNames.map(name => ({
-      queryKey: eventIdentityProbeKey(slug, branchId, etId, name),
-      queryFn: () =>
-        eventsApi.list(
-          slug!,
-          { event_type_id: etId, search: name, limit: IDENTITY_PROBE_ROWS },
-          branchId,
-        ),
-      enabled: !!slug,
-    })),
+  const identityQuery = useQuery({
+    queryKey: eventIdentityLookupKey(slug, branchId, etId, probedNames),
+    queryFn: ({ signal }) => eventsApi.byNames(slug!, etId, probedNames, branchId, signal),
+    enabled: !!slug && !!etId && probedNames.length > 0,
+    // Its failure is shown on the preview ("could not be checked"), not toasted.
+    meta: SILENT_ERROR_META,
   })
+  const probes = useMemo<ProbeSummary>(() => {
+    if (probedNames.length === 0) return { taken: EMPTY_NAMES, unchecked: EMPTY_NAMES, pending: false }
+    // A failed lookup proves nothing; reading it as "not taken" would preview
+    // lines the server then refuses.
+    if (identityQuery.isError) {
+      return { taken: EMPTY_NAMES, unchecked: new Set(probedNames), pending: false }
+    }
+    if (!identityQuery.data) return { taken: EMPTY_NAMES, unchecked: EMPTY_NAMES, pending: true }
+    return {
+      taken: new Set(identityQuery.data.items.map(item => item.identity)),
+      unchecked: EMPTY_NAMES,
+      pending: false,
+    }
+  }, [probedNames, identityQuery.isError, identityQuery.data])
 
   const taken = probes.taken
   const rows = useMemo(

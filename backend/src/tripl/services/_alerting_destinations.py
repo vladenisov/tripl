@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
@@ -894,6 +896,14 @@ async def update_destination(
         header_value = update_dict.get("webhook_header_value")
         if header_value is not None:
             destination.webhook_header_value_encrypted = _encrypt_secret(header_value)
+        # The header is a pair, and its name is what says it exists: a null name
+        # (the "Remove secret header" body sends both halves as null) removes the
+        # secret with it. Clearing the name alone used to stop the header going
+        # out but left the secret's ciphertext in the row for good (ALR-24). A
+        # null or blank VALUE next to a kept name still means "keep the stored
+        # secret", which is how an edit that only renames the header works.
+        if destination.webhook_header_name is None:
+            destination.webhook_header_value_encrypted = None
     if destination.type == AlertDestinationType.email:
         # Field validators on AlertDestinationUpdate already normalized these.
         if "email_recipients" in update_dict and update_dict["email_recipients"] is not None:
@@ -1043,20 +1053,21 @@ async def create_rule(
     return await build_rule_response(session, refreshed_rule)
 
 
-async def update_rule(
+async def _validated_rule_changes(
     session: AsyncSession,
-    slug: str,
-    destination_id: uuid.UUID,
-    rule_id: uuid.UUID,
+    *,
+    project: Project,
+    destination: AlertDestination,
+    rule: AlertRule,
     data: AlertRuleUpdate,
-) -> AlertRuleResponse:
-    project = await _get_project(session, slug)
-    destination, rule = await get_rule(
-        session,
-        project_id=project.id,
-        destination_id=destination_id,
-        rule_id=rule_id,
-    )
+) -> tuple[dict[str, Any], list[AlertRuleFilterPayload] | None]:
+    """A rule PATCH body checked against the stored rule, without applying it.
+
+    Returns the column changes and the replacement filters (None when the body
+    leaves them alone). Shared by ``update_rule``, which writes them, and
+    ``draft_rule``, which replays them without writing (ALR-12), so a draft the
+    replay accepted is one Save would accept too.
+    """
     update_dict = data.model_dump(exclude_unset=True)
     _reject_demo_ai_explanation(
         is_demo=project.is_demo,
@@ -1116,6 +1127,60 @@ async def update_rule(
         update_dict["message_format"] = message_format
         update_dict["message_template"] = message_template
         update_dict["items_template"] = items_template
+
+    return update_dict, filters_payload
+
+
+async def draft_rule(
+    session: AsyncSession,
+    *,
+    project: Project,
+    destination: AlertDestination,
+    rule: AlertRule,
+    data: AlertRuleUpdate,
+) -> AlertRule:
+    """The stored rule with a draft's changes laid over it, never persisted.
+
+    The draft is the editor's unsaved PATCH body, checked exactly as Save checks
+    it. The result is a TRANSIENT copy: it is not added to the session and is
+    linked to nothing persistent, so no flush can write it, and the stored rule
+    is untouched — the replay of unsaved edits must not become the edit (ALR-12).
+    """
+    update_dict, filters_payload = await _validated_rule_changes(
+        session, project=project, destination=destination, rule=rule, data=data
+    )
+    columns = {attr.key: getattr(rule, attr.key) for attr in sa_inspect(AlertRule).column_attrs}
+    columns.update(update_dict)
+    draft = AlertRule(**columns)
+    source_filters = (
+        [(payload.field, payload.operator, list(payload.values)) for payload in filters_payload]
+        if filters_payload is not None
+        else [(row.field, row.operator, list(row.values or [])) for row in rule.filters]
+    )
+    draft.filters = [
+        AlertRuleFilter(field=field, operator=operator, values=values, position=position)
+        for position, (field, operator, values) in enumerate(source_filters)
+    ]
+    return draft
+
+
+async def update_rule(
+    session: AsyncSession,
+    slug: str,
+    destination_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    data: AlertRuleUpdate,
+) -> AlertRuleResponse:
+    project = await _get_project(session, slug)
+    destination, rule = await get_rule(
+        session,
+        project_id=project.id,
+        destination_id=destination_id,
+        rule_id=rule_id,
+    )
+    update_dict, filters_payload = await _validated_rule_changes(
+        session, project=project, destination=destination, rule=rule, data=data
+    )
 
     if "enabled" in update_dict and update_dict["enabled"] is False:
         await clear_rule_states(session, [rule.id])

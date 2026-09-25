@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MetricDefinitionDetailResponse } from '@/types'
 
-vi.mock('@/api/metricsCatalogApi', () => ({
+vi.mock('@/api/metricsCatalog', () => ({
   metricsCatalogApi: { get: vi.fn() },
 }))
 vi.mock('sonner', () => ({
@@ -11,7 +11,7 @@ vi.mock('sonner', () => ({
 }))
 
 import { toast } from 'sonner'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
 import {
   startMetricCollectionWatch,
@@ -362,10 +362,14 @@ describe('startMetricCollectionWatch (MET-8)', () => {
     render(<WatchedBadge metricId="m-1" />)
     expect(screen.getByText('idle')).toBeInTheDocument()
 
-    startMetricCollectionWatch(
-      { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
-      { pollIntervalMs: 10 },
-    )
+    // Starting a watch notifies mounted subscribers synchronously; in the app
+    // that happens inside a click handler, here it needs act().
+    act(() => {
+      startMetricCollectionWatch(
+        { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
+        { pollIntervalMs: 10 },
+      )
+    })
     expect(await screen.findByText('watching')).toBeInTheDocument()
 
     vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('success'))
@@ -393,11 +397,14 @@ describe('startMetricCollectionWatch (MET-8)', () => {
     const onSettled = vi.fn()
     render(<WatchedBadge metricId="m-1" />)
 
-    startMetricCollectionWatch(
-      { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
-      { onSettled, pollIntervalMs: 10 },
-    )
+    act(() => {
+      startMetricCollectionWatch(
+        { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
+        { onSettled, pollIntervalMs: 10 },
+      )
+    })
 
+    expect(screen.getByText('watching')).toBeInTheDocument()
     expect(await screen.findByText('idle')).toBeInTheDocument()
     await new Promise(resolve => setTimeout(resolve, 50))
     // One poll, no retries, and nothing said on the login screen.
@@ -410,10 +417,12 @@ describe('startMetricCollectionWatch (MET-8)', () => {
   it('stops every watch when the app signals a lost session', async () => {
     vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('running'))
     render(<WatchedBadge metricId="m-1" />)
-    startMetricCollectionWatch(
-      { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
-      { pollIntervalMs: 10 },
-    )
+    act(() => {
+      startMetricCollectionWatch(
+        { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
+        { pollIntervalMs: 10 },
+      )
+    })
     expect(await screen.findByText('watching')).toBeInTheDocument()
 
     act(() => {

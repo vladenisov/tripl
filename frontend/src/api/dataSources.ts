@@ -2,10 +2,24 @@ import { api } from './client'
 import type {
   ConnectionSettings,
   DataSource,
+  DataSourceDraftTestResult,
   DataSourceTestResult,
   DbType,
   JsonPathDiscovery,
 } from '../types'
+
+export interface DataSourceCreatePayload {
+  name: string
+  db_type: DbType
+  host: string
+  port: number
+  database_name: string
+  username?: string
+  password?: string
+  timeout_seconds?: number | null
+  json_path_discovery?: JsonPathDiscovery | null
+  connection_settings?: ConnectionSettings | null
+}
 
 export const dataSourcesApi = {
   list: () =>
@@ -14,18 +28,7 @@ export const dataSourcesApi = {
   get: (id: string) =>
     api.get<DataSource>(`/data-sources/${id}`),
 
-  create: (data: {
-    name: string
-    db_type: DbType
-    host: string
-    port: number
-    database_name: string
-    username?: string
-    password?: string
-    timeout_seconds?: number | null
-    json_path_discovery?: JsonPathDiscovery | null
-    connection_settings?: ConnectionSettings | null
-  }) => api.post<DataSource>('/data-sources', data),
+  create: (data: DataSourceCreatePayload) => api.post<DataSource>('/data-sources', data),
 
   // connection_settings replaces the stored settings wholesale — a field left
   // out is cleared. The one exception is `sslkey`: omitting it keeps the stored
@@ -48,4 +51,11 @@ export const dataSourcesApi = {
 
   testConnection: (id: string) =>
     api.post<DataSourceTestResult>(`/data-sources/${id}/test`, {}),
+
+  /**
+   * Test a config that has not been saved (DATA-30). Owner-only, like create;
+   * nothing is stored, and every secret the probe needs is in this body.
+   */
+  testDraft: (data: Omit<DataSourceCreatePayload, 'name'> & { name?: string }) =>
+    api.post<DataSourceDraftTestResult>('/data-sources/test', data),
 }

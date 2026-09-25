@@ -179,23 +179,26 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   })
   const dataSources = dataSourcesQuery.data ?? EMPTY_DATA_SOURCES
 
+  // The create body, shared by Create and by Test connection, so the test
+  // probes exactly what Create would store.
+  const buildCreatePayload = () => {
+    const connectionSettings = buildConnectionSettings(dbType, settings)
+    return {
+      name: name.trim(),
+      db_type: dbType,
+      ...buildCoreCreatePayload(dbType, core),
+      ...(connectionSettings ? { connection_settings: connectionSettings } : {}),
+    }
+  }
+
   // Create and update render their error inside their dialog.
   const createMut = useMutation({
     meta: SILENT_ERROR_META,
-    mutationFn: () => {
-      const connectionSettings = buildConnectionSettings(dbType, settings)
-      return dataSourcesApi.create({
-        name: name.trim(),
-        db_type: dbType,
-        ...buildCoreCreatePayload(dbType, core),
-        ...(connectionSettings ? { connection_settings: connectionSettings } : {}),
-      })
-    },
+    mutationFn: () => dataSourcesApi.create(buildCreatePayload()),
     onSuccess: (created) => {
       resetForm()
-      // No endpoint tests a connection before it is saved, so test it the
-      // moment it is: a typo in the host shows on the card right away instead
-      // of as the first failed scan (DATA-30).
+      // Tested again the moment it is saved, so the card shows its health right
+      // away instead of "unverified" until the first scan (DATA-30).
       void qc
         .invalidateQueries({ queryKey: dataSourcesKey() })
         .then(() => handleTest(created.id))
@@ -343,6 +346,24 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     }
   }, [openDsId, dataSources, populateEditForm, canManageDataSources, navigate])
 
+  // Test connection before saving (DATA-30): the unsaved config goes to the
+  // server, which probes it and stores nothing. The answer is for the inputs it
+  // was run with, so it is hidden as soon as any of them changes.
+  const draftKey = JSON.stringify({ dbType, core, settings })
+  const draftTestMut = useMutation({
+    meta: SILENT_ERROR_META,
+    // `key` names the inputs the answer is for.
+    mutationFn: ({ payload }: { key: string; payload: ReturnType<typeof buildCreatePayload> }) =>
+      dataSourcesApi.testDraft(payload),
+  })
+  const draftTestShown = draftTestMut.variables?.key === draftKey && !draftTestMut.isPending
+  const testDraft = () => {
+    const errors = connectionErrors(dbType, core, settings, EMPTY_CONNECTION_SETTINGS_FORM)
+    setCreateErrors(errors)
+    if (hasConnectionErrors(errors)) return
+    draftTestMut.mutate({ key: draftKey, payload: buildCreatePayload() })
+  }
+
   const resetForm = () => {
     setShowForm(false)
     setName('')
@@ -352,6 +373,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setCreateErrors(NO_CONNECTION_ERRORS)
     // Opening "Add connection" after a failed attempt showed the old error.
     createMut.reset()
+    draftTestMut.reset()
   }
 
   const submitCreate = () => {
@@ -504,9 +526,30 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
               {createMut.isError && (
                 <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>
               )}
+              {draftTestShown && draftTestMut.data && (
+                <p
+                  role="status"
+                  className={draftTestMut.data.success ? 'text-sm text-success' : 'text-sm text-destructive'}
+                >
+                  {draftTestMut.data.message}
+                </p>
+              )}
+              {draftTestShown && draftTestMut.isError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {getErrorMessage(draftTestMut.error)}
+                </p>
+              )}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => createGuard.requestClose(resetForm)}>Cancel</Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={testDraft}
+                disabled={draftTestMut.isPending}
+              >
+                {draftTestMut.isPending ? 'Testing…' : 'Test connection'}
+              </Button>
               <Button type="submit" disabled={createMut.isPending}>Create</Button>
             </DialogFooter>
           </form>

@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight } from 'lucide-react'
 import { Area, ComposedChart, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { Card, CardContent } from '@/components/ui/card'
 import { CHART_SURFACE_TAB_INDEX } from '@/components/ui/chart-format'
 import { formatSignalSeverity } from '@/lib/monitoring'
@@ -63,7 +63,7 @@ export function TopMoversPanel({
   const { data, isLoading, isError } = useQuery({
     queryKey: topMoversKey(slug, scanConfigId, scopeType, scopeRef, bucket, limit),
     queryFn: () =>
-      metricsApi.getTopMovers(slug, scanConfigId, {
+      eventMetricsApi.getTopMovers(slug, scanConfigId, {
         scope_type: scopeType,
         scope_ref: scopeRef,
         bucket,
@@ -231,7 +231,7 @@ function BreakdownDrilldown({
       rangeDays,
     ),
     queryFn: () =>
-      metricsApi.getBreakdownTimeline(slug, scanConfigId, {
+      eventMetricsApi.getBreakdownTimeline(slug, scanConfigId, {
         scope_type: scopeType,
         scope_ref: scopeRef,
         breakdown_column: breakdownColumn,

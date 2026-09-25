@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { factTablesApi } from '@/api/factTablesApi'
+import { factTablesApi } from '@/api/factTables'
 import type { SelectOption } from '@/components/settings/kit'
 import type { DataSource } from '@/types'
 import type { DbType } from '@/types/dataSources'

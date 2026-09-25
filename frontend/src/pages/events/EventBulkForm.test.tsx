@@ -11,6 +11,7 @@ import EventBulkForm from './EventBulkForm'
 vi.mock('@/api/events', () => ({
   eventsApi: {
     list: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+    byNames: vi.fn().mockResolvedValue({ items: [] }),
     bulkCreate: vi.fn().mockResolvedValue([]),
   },
 }))
@@ -63,6 +64,7 @@ beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.mocked(eventTypesApi.list).mockResolvedValue([SE_TYPE])
   vi.mocked(eventsApi.list).mockResolvedValue({ items: [], total: 0 } as never)
+  vi.mocked(eventsApi.byNames).mockResolvedValue({ items: [] })
   vi.mocked(eventsApi.bulkCreate).mockResolvedValue([] as never)
 })
 
@@ -161,10 +163,11 @@ describe('EventBulkForm', () => {
   })
 
   it('leaves out the lines it cannot create, and says why', async () => {
-    vi.mocked(eventsApi.list).mockResolvedValue({
-      items: [{ id: 'ev-1', name: 'spot:open:models', source_name: 'spot:open:models' }],
-      total: 1,
-    } as never)
+    vi.mocked(eventsApi.byNames).mockResolvedValue({
+      items: [
+        { identity: 'spot:open:models', event_id: 'ev-1', name: 'spot:open:models', source_name: 'spot:open:models' },
+      ],
+    })
     render(createElement(EventBulkForm), { wrapper })
     await chooseType()
 
@@ -180,7 +183,7 @@ describe('EventBulkForm', () => {
     })
 
     expect(await screen.findByText('repeated above')).toBeInTheDocument()
-    // The catalog is asked once the paste settles (debounced), name by name.
+    // The catalog is asked once the paste settles (debounced), in one lookup.
     expect(await screen.findByText('already in the catalog')).toBeInTheDocument()
     expect(screen.getByText('missing label')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create 1 event' })).toBeInTheDocument()
@@ -253,8 +256,9 @@ describe('EventBulkForm unsaved-changes guard (EVT-8)', () => {
 })
 
 describe('EventBulkForm duplicate check (EVT-37)', () => {
-  it('asks the catalog about the pasted names only, not for every event of the type', async () => {
+  it('asks the catalog about the pasted names only, in one exact-name lookup', async () => {
     vi.mocked(eventsApi.list).mockClear()
+    vi.mocked(eventsApi.byNames).mockClear()
     render(createElement(EventBulkForm), { wrapper })
     await chooseType()
     fireEvent.change(await screen.findByLabelText('Events to create'), {
@@ -262,28 +266,23 @@ describe('EventBulkForm duplicate check (EVT-37)', () => {
     })
 
     await waitFor(() =>
-      expect(eventsApi.list).toHaveBeenCalledWith(
+      expect(eventsApi.byNames).toHaveBeenCalledWith(
         'demo',
-        expect.objectContaining({ event_type_id: 'et-se', search: 'spot:open:models' }),
+        'et-se',
+        ['settings:unit_change:wind_speed', 'spot:open:models'],
         null,
+        expect.anything(),
       ),
     )
-    expect(eventsApi.list).toHaveBeenCalledWith(
-      'demo',
-      expect.objectContaining({ search: 'settings:unit_change:wind_speed' }),
-      null,
-    )
-    // Never the old whole-catalog read.
-    for (const call of vi.mocked(eventsApi.list).mock.calls) {
-      expect(call[1]).toEqual(expect.objectContaining({ search: expect.any(String) }))
-      expect(call[1]?.limit ?? 0).toBeLessThanOrEqual(100)
-    }
+    expect(eventsApi.byNames).toHaveBeenCalledTimes(1)
+    // Neither the old whole-catalog read nor a substring search per name.
+    expect(eventsApi.list).not.toHaveBeenCalled()
   })
 
   it('holds Create while the names are still being checked', async () => {
-    let answer: (value: unknown) => void = () => {}
-    vi.mocked(eventsApi.list).mockImplementation(
-      () => new Promise(resolve => { answer = resolve }) as never,
+    let answer: (value: { items: [] }) => void = () => {}
+    vi.mocked(eventsApi.byNames).mockImplementation(
+      () => new Promise(resolve => { answer = resolve }),
     )
     render(createElement(EventBulkForm), { wrapper })
     await chooseType()
@@ -291,42 +290,21 @@ describe('EventBulkForm duplicate check (EVT-37)', () => {
       target: { value: 'spot\topen\tmodels' },
     })
 
-    // Before the debounce and while the probe is out, nothing says the line
+    // Before the debounce and while the lookup is out, nothing says the line
     // is free — the name may be taken, and the server would refuse the batch.
     expect(await screen.findByText('checking…')).toBeInTheDocument()
     expect(screen.queryByText('will be created')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create 1 event' })).toBeDisabled()
-    await waitFor(() => expect(eventsApi.list).toHaveBeenCalled())
+    await waitFor(() => expect(eventsApi.byNames).toHaveBeenCalled())
     expect(screen.getByRole('button', { name: 'Create 1 event' })).toBeDisabled()
 
-    answer({ items: [], total: 0 })
+    answer({ items: [] })
     expect(await screen.findByText('will be created')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create 1 event' })).not.toBeDisabled()
   })
 
-  it('reads a failed probe as unchecked, not as a free name', async () => {
-    vi.mocked(eventsApi.list).mockRejectedValue(new Error('network down'))
-    render(createElement(EventBulkForm), { wrapper })
-    await chooseType()
-    fireEvent.change(await screen.findByLabelText('Events to create'), {
-      target: { value: 'spot\topen\tmodels' },
-    })
-
-    expect(await screen.findByText('will be created, not checked')).toBeInTheDocument()
-    expect(screen.getByText(/1 name could not be checked against the catalog/)).toBeInTheDocument()
-  })
-
-  it('reads a truncated probe without the name as unchecked', async () => {
-    // `search` is a substring match: a common name can match more rows than one
-    // probe reads, and the exact row may be among those left out.
-    vi.mocked(eventsApi.list).mockResolvedValue({
-      items: Array.from({ length: 100 }, (_, i) => ({
-        id: `ev-${i}`,
-        name: `spot:open:models_${i}`,
-        source_name: `spot:open:models_${i}`,
-      })),
-      total: 150,
-    } as never)
+  it('reads a failed lookup as unchecked, not as a free name', async () => {
+    vi.mocked(eventsApi.byNames).mockRejectedValue(new Error('network down'))
     render(createElement(EventBulkForm), { wrapper })
     await chooseType()
     fireEvent.change(await screen.findByLabelText('Events to create'), {
@@ -338,11 +316,11 @@ describe('EventBulkForm duplicate check (EVT-37)', () => {
   })
 
   it('does not ask anything before a line is pasted', async () => {
-    vi.mocked(eventsApi.list).mockClear()
+    vi.mocked(eventsApi.byNames).mockClear()
     render(createElement(EventBulkForm), { wrapper })
     await chooseType()
     await screen.findByLabelText('Events to create')
-    expect(eventsApi.list).not.toHaveBeenCalled()
+    expect(eventsApi.byNames).not.toHaveBeenCalled()
   })
 })
 

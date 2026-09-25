@@ -88,6 +88,11 @@ interface RuleEditorDialogProps {
    */
   onReplaySaved?: () => void
   /**
+   * Replay the rule WITH the edits on this form, unsaved (ALR-12). Offered
+   * beside "Replay saved rule" once the form differs from what it opened with.
+   */
+  onReplayDraft?: () => void
+  /**
    * Whether the two drift scopes have any source data in this project.
    * Optional because it rides along on the monitors-summary response: while
    * that request is in flight there is no answer yet, and a form must not
@@ -131,6 +136,7 @@ export function RuleEditorDialog({
   scansLoaded = true,
   scansFailed = false,
   onReplaySaved,
+  onReplayDraft,
   scopeReadiness,
   onSubmit,
   isPending,
@@ -179,7 +185,8 @@ export function RuleEditorDialog({
   // Two 8-row templates, filters and thresholds: Escape, a stray overlay click
   // or Cancel used to drop all of it at once (ALR-17). They ask first now,
   // while the form differs from what it opened with.
-  const unsaved = useUnsavedDialogGuard(useDirtySinceOpen(open, { ruleForm, destinationId }))
+  const dirty = useDirtySinceOpen(open, { ruleForm, destinationId })
+  const unsaved = useUnsavedDialogGuard(dirty)
   const requestClose = () => unsaved.requestClose(onClose)
 
   return (
@@ -266,14 +273,34 @@ export function RuleEditorDialog({
                   ? 'A rule cannot be re-pointed at another destination — that would drop its delivery history. Create a new rule instead.'
                   : 'Where matched signals are delivered.'}
               </p>
-              {isEditing && onReplaySaved && (
+              {isEditing && (onReplaySaved || onReplayDraft) && (
                 <div>
-                  <Button type="button" variant="outline" size="sm" onClick={onReplaySaved}>
-                    <History aria-hidden="true" className="mr-2 h-4 w-4" />
-                    Replay saved rule
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    {onReplaySaved && (
+                      <Button type="button" variant="outline" size="sm" onClick={onReplaySaved}>
+                        <History aria-hidden="true" className="mr-2 h-4 w-4" />
+                        Replay saved rule
+                      </Button>
+                    )}
+                    {onReplayDraft && dirty && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={onReplayDraft}
+                        // The draft is checked as Save checks it; a form with
+                        // problems of its own would only come back refused.
+                        disabled={hasRuleFormProblems(problems)}
+                      >
+                        <History aria-hidden="true" className="mr-2 h-4 w-4" />
+                        Replay with these edits
+                      </Button>
+                    )}
+                  </div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Replays the rule as it is saved now, not the edits on this form.
+                    {onReplayDraft && dirty
+                      ? 'Try the edits on this form against past signals before saving them. Nothing is saved.'
+                      : 'Replays the rule as it is saved now.'}
                   </p>
                 </div>
               )}

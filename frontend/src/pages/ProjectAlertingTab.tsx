@@ -23,6 +23,7 @@ import {
   falsePositiveConfirmMessage,
   inboxActionSuccessMessage,
   muteConfirmMessage,
+  stripValueErrorPrefix,
 } from '@/lib/alertStatus'
 import { useCanWriteProject } from '@/lib/permissions'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
@@ -30,7 +31,6 @@ import type { AlertDestination, AlertInboxListResponse } from '@/types'
 
 import type { DeliveryFilters } from './alerting/AlertAuditPanel'
 import { invalidateAlertingConfig } from './alerting/alertingCache'
-import { toastAlertingWriteError } from './alerting/writeErrorToast'
 import { describeDeletionImpact } from './alerting/deletionImpact'
 import { AlertingGuidedSetup } from './alerting/AlertingGuidedSetup'
 import type { InboxActionVariables, InboxStatusFilter } from './alerting/AlertingInbox'
@@ -59,7 +59,7 @@ import {
   projectKey,
   scansKey,
 } from '@/lib/queryKeys'
-import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { SILENT_ERROR_META, surfaceError } from '@/lib/errorFeedback'
 import { lazyWithReload } from '@/lib/lazyWithReload'
 
 // One chunk per section (tripl-fj5g.15). The page was a single ~118 KB chunk,
@@ -511,7 +511,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     mutationFn: (destinationId: string) => alertingApi.deleteDestination(slug, destinationId),
     onSuccess: () => invalidateAlertingConfig(qc, slug),
     onError: error => {
-      toastAlertingWriteError(error)
+      surfaceError(error, stripValueErrorPrefix)
     },
   })
 
@@ -881,7 +881,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // N cards and belongs to none of them, and the one thing worse than a toast
     // here would be the same message stamped onto twelve rows.
     onError: error => {
-      toastAlertingWriteError(error)
+      surfaceError(error, stripValueErrorPrefix)
     },
     // On settled, not on success — same reasoning as the single route: an action
     // can commit and then fail to render its response, and a list left showing

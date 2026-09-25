@@ -2,13 +2,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import type { TopMoverItem } from '@/types'
 
 import { TopMoversPanel } from './top-movers-panel'
 
-vi.mock('@/api/metrics', () => ({
-  metricsApi: { getTopMovers: vi.fn(), getBreakdownSeries: vi.fn(), getBreakdownTimeline: vi.fn() },
+vi.mock('@/api/eventMetrics', () => ({
+  eventMetricsApi: { getTopMovers: vi.fn(), getBreakdownSeries: vi.fn(), getBreakdownTimeline: vi.fn() },
 }))
 
 function mover(overrides: Partial<TopMoverItem> = {}): TopMoverItem {
@@ -42,7 +42,7 @@ function renderPanel() {
 
 describe('TopMoversPanel', () => {
   it('shows the signed percentage for a row that has a baseline', async () => {
-    vi.mocked(metricsApi.getTopMovers).mockResolvedValue([mover()])
+    vi.mocked(eventMetricsApi.getTopMovers).mockResolvedValue([mover()])
     renderPanel()
 
     expect(await screen.findByText('+140%')).toBeInTheDocument()
@@ -53,7 +53,7 @@ describe('TopMoversPanel', () => {
     // A brand-new breakdown value: nothing was expected, so the ratio is
     // undefined. The row used to render an empty span, which reads as missing
     // data — indistinguishable from a value the panel simply failed to load.
-    vi.mocked(metricsApi.getTopMovers).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getTopMovers).mockResolvedValue([
       mover({ breakdown_value: 'visionos', actual_count: 137, expected_count: 0, z_score: 9.1 }),
     ])
     renderPanel()
@@ -70,7 +70,7 @@ describe('TopMoversPanel', () => {
   it('still prints nothing for a real change too small to round to a percent', async () => {
     // The two cases used to share the empty string. This one genuinely has
     // nothing to add: the absolute-delta badge beside it already says +0.
-    vi.mocked(metricsApi.getTopMovers).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getTopMovers).mockResolvedValue([
       mover({ actual_count: 1000, expected_count: 999, z_score: 3.2 }),
     ])
     renderPanel()
@@ -81,8 +81,8 @@ describe('TopMoversPanel', () => {
   })
 
   it('keys the row timeline on the range length, not the moving live window (MON-3)', async () => {
-    vi.mocked(metricsApi.getTopMovers).mockResolvedValue([mover()])
-    const fetchTimeline = vi.mocked(metricsApi.getBreakdownTimeline)
+    vi.mocked(eventMetricsApi.getTopMovers).mockResolvedValue([mover()])
+    const fetchTimeline = vi.mocked(eventMetricsApi.getBreakdownTimeline)
     fetchTimeline.mockReset()
     fetchTimeline.mockResolvedValue({
       scan_config_id: 'scan-1',

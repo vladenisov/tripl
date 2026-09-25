@@ -7,7 +7,7 @@
  * runs collections constantly, so a spy on the API would prove nothing.
  */
 
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -31,7 +31,7 @@ import { ApiError } from '@/api/client'
 import { stopAllMetricCollectionWatches } from '@/hooks/useMetricCollectionWatcher'
 import { MetricsCatalog } from './MetricsCatalog'
 
-vi.mock('@/api/metricsCatalogApi', () => ({
+vi.mock('@/api/metricsCatalog', () => ({
   metricsCatalogApi: {
     list: vi.fn(),
     get: vi.fn(),
@@ -46,7 +46,7 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
 
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { toast } from 'sonner'
 import { at } from '@/test/at'
 
@@ -176,7 +176,9 @@ beforeEach(() => {
 
 afterEach(() => {
   // Collect watches outlive the component by design (MET-8); end them so one
-  // test's poll never reports into the next.
+  // test's poll never reports into the next. Unmount first: stopping a watch
+  // notifies every mounted row, an update outside act().
+  cleanup()
   stopAllMetricCollectionWatches()
   vi.restoreAllMocks()
   window.localStorage.clear()

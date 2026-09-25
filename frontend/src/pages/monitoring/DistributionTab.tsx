@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -41,7 +41,7 @@ export function DistributionTab({
 }) {
   const query = useQuery({
     queryKey: distributionDriftsKey(slug, distributionScope, rangeDays),
-    queryFn: () => metricsApi.getDistributionDrifts(slug, {
+    queryFn: () => eventMetricsApi.getDistributionDrifts(slug, {
       scope_type: distributionScope!.scope_type,
       scope_ref: distributionScope!.scope_ref,
       scan_config_id: 'scan_config_id' in distributionScope!

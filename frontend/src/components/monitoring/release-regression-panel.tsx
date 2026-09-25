@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { PackageX, TrendingDown } from 'lucide-react'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { getScopeNavigationTarget } from '@/lib/monitoring'
@@ -117,7 +117,7 @@ export function ReleaseRegressionPanel({
 }: ReleaseRegressionPanelProps) {
   const query = useQuery({
     queryKey: releaseRegressionsKey(slug, scanConfigId),
-    queryFn: () => metricsApi.getReleaseRegressions(slug, scanConfigId),
+    queryFn: () => eventMetricsApi.getReleaseRegressions(slug, scanConfigId),
     enabled: enabled && !!slug && !!scanConfigId,
   })
 

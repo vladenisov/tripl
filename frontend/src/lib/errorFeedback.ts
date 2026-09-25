@@ -39,13 +39,28 @@ export function errorToastId(error: unknown): string {
   return `error:${status}:${getErrorMessage(error)}`
 }
 
-function surfaceError(error: unknown) {
+/**
+ * The error toast every backstop raises: a 401 stays quiet, a request id is
+ * quoted for support, and a repeat replaces the toast instead of stacking.
+ *
+ * Exported for a `SILENT_ERROR_META` write that has no inline place to report
+ * but wants its message reworded (alerting strips Pydantic's "Value error, "
+ * prefix — ALR-6): `formatMessage` rewrites the text and nothing else, so the
+ * toast keeps the backstop's behaviour. The dedupe id stays keyed on the raw
+ * error, so the same failure still replaces its own toast.
+ */
+export function surfaceError(
+  error: unknown,
+  formatMessage: (message: string) => string = message => message,
+): void {
   // A 401 triggers the dedicated re-auth flow (see AUTH_UNAUTHORIZED_EVENT); a
   // toast there would be noise on top of the redirect.
   if (error instanceof ApiError && error.status === 401) return
   const reference =
     error instanceof ApiError && error.requestId ? `\nReference: ${error.requestId}` : ''
-  toast.error(`${getErrorMessage(error)}${reference}`, { id: errorToastId(error) })
+  toast.error(`${formatMessage(getErrorMessage(error))}${reference}`, {
+    id: errorToastId(error),
+  })
 }
 
 /**

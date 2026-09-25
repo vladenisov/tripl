@@ -5,8 +5,8 @@ import { AlertTriangle, ArrowLeft, GitBranch, GitCompareArrows, Layers, Trending
 import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
-import { metricsApi } from '@/api/metrics'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { eventMetricsApi } from '@/api/eventMetrics'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { scansApi } from '@/api/scans'
 import { EmptyState } from '@/components/empty-state'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
@@ -208,15 +208,15 @@ export default function MonitoringDetailPage() {
         return metricsCatalogApi.getSeries(slug!, scopeId, timeRange).then(adaptMetricSeries)
       }
       if (scope === 'project_total') {
-        return metricsApi.getProjectTotalMetrics(slug!, {
+        return eventMetricsApi.getProjectTotalMetrics(slug!, {
           scan_config_id: scopeId,
           ...timeRange,
         })
       }
       if (scope === 'event_type') {
-        return metricsApi.getEventTypeMetrics(slug!, scopeId, timeRange)
+        return eventMetricsApi.getEventTypeMetrics(slug!, scopeId, timeRange)
       }
-      return metricsApi.getEventMetrics(slug!, scopeId, timeRange)
+      return eventMetricsApi.getEventMetrics(slug!, scopeId, timeRange)
     },
     enabled: !!slug && !!scopeId,
     refetchInterval,
@@ -469,10 +469,14 @@ export default function MonitoringDetailPage() {
           slug={slug}
           rowBranchId={event.branch_id}
           path={`/p/${slug}/monitoring/event/${event.id}`}
-          // The events list on main, as on the edit page: this id is the
-          // branch row's, which main would render again under a mismatch
-          // warning (EVT-42).
-          mainPath={`/p/${slug}/events`}
+          // Not this id on main: it is the branch row's, which main would
+          // render again under a mismatch warning (EVT-42). The main twin's
+          // page when the server names one, else the events list on main.
+          mainPath={
+            event.main_event_id
+              ? `/p/${slug}/monitoring/event/${event.main_event_id}`
+              : `/p/${slug}/events`
+          }
         />
       )}
 

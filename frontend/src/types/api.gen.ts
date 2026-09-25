@@ -286,6 +286,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/data-sources/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Unsaved Data Source Connection
+         * @description Test a connection before it is saved (DATA-30).
+         *
+         *     The create gate (owner, browser session) and the create body's validation,
+         *     host format included; nothing is stored and no stored secret is read. Always
+         *     200: a refused connection is the answer the caller asked for.
+         */
+        post: operations["test_unsaved_data_source_connection_api_v1_data_sources_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/data-sources/{ds_id}": {
         parameters: {
             query?: never;
@@ -1638,6 +1662,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/events/by-names": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Lookup Events By Names */
+        get: operations["lookup_events_by_names_api_v1_projects__slug__events_by_names_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/events/reorder": {
         parameters: {
             query?: never;
@@ -2515,6 +2556,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/reconciliation/shadow-events/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch Shadow Events
+         * @description Accept or dismiss many inbox rows in one request (DATA-39).
+         *
+         *     Each row is handled and audited exactly as its single route would, and a
+         *     refused row is reported in ``results`` without stopping the rest.
+         */
+        post: operations["batch_shadow_events_api_v1_projects__slug__reconciliation_shadow_events_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/reconciliation/shadow-events/{candidate_id}/accept": {
         parameters: {
             query?: never;
@@ -3316,6 +3380,31 @@ export interface paths {
          *     smtplib carries the relay's response in there, never the credential we sent.
          */
         post: operations["test_email_settings_api_v1_settings_email_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/photo-limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Photo Limits
+         * @description The photo upload limit, readable by every signed-in user.
+         *
+         *     The rest of this router is owner-only; this one value is not, because it is
+         *     an editor's upload it refuses and the browser should say so before the
+         *     upload rather than after (EVT-28). The router's own dependency still
+         *     requires a session.
+         */
+        get: operations["get_photo_limits_api_v1_settings_photo_limits_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5259,6 +5348,60 @@ export interface components {
          * @enum {string}
          */
         DBType: "clickhouse" | "postgres" | "bigquery" | "synthetic";
+        /**
+         * DataSourceConnectionTest
+         * @description An unsaved data-source config to test a connection with (DATA-30).
+         *
+         *     The create body, validated the same way (host format included), so a form
+         *     can test exactly what Create would store. ``name`` is optional because the
+         *     test does not store anything. Every secret the probe needs travels in this
+         *     request; nothing is read from or written to a stored source.
+         */
+        DataSourceConnectionTest: {
+            /** Connection Settings */
+            connection_settings?: components["schemas"]["ClickHouseSettings"] | components["schemas"]["PostgresSettings"] | components["schemas"]["BigQuerySettings"] | components["schemas"]["SyntheticSettings"] | null;
+            /** Database Name */
+            database_name: string;
+            db_type: components["schemas"]["DBType"];
+            /** Host */
+            host: string;
+            /** Json Path Discovery */
+            json_path_discovery?: ("all" | "dynamic") | null;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /**
+             * Password
+             * @default
+             */
+            password: string;
+            /**
+             * Port
+             * @default 8123
+             */
+            port: number;
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /**
+             * Username
+             * @default
+             */
+            username: string;
+        };
+        /** DataSourceConnectionTestResponse */
+        DataSourceConnectionTestResponse: {
+            /** Message */
+            message: string;
+            /** Success */
+            success: boolean;
+            /**
+             * Tested At
+             * Format: date-time
+             */
+            tested_at: string;
+        };
         /** DataSourceCreate */
         DataSourceCreate: {
             /** Connection Settings */
@@ -5888,6 +6031,31 @@ export interface components {
             name: string;
         };
         /**
+         * EventIdentityHolder
+         * @description An event that already answers to a looked-up identity (EVT-37).
+         *
+         *     ``identity`` is the name that was asked about; ``name`` is the holder's own
+         *     name, which differs when a scanned event has since been renamed.
+         */
+        EventIdentityHolder: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Identity */
+            identity: string;
+            /** Name */
+            name: string;
+            /** Source Name */
+            source_name: string | null;
+        };
+        /** EventIdentityHoldersResponse */
+        EventIdentityHoldersResponse: {
+            /** Items */
+            items: components["schemas"]["EventIdentityHolder"][];
+        };
+        /**
          * EventListItemResponse
          * @description Slim variant of EventResponse used by the list endpoint.
          *
@@ -6152,6 +6320,8 @@ export interface components {
             id: string;
             /** Last Seen At */
             last_seen_at?: string | null;
+            /** Main Event Id */
+            main_event_id?: string | null;
             /**
              * Meta Values
              * @default []
@@ -6356,6 +6526,8 @@ export interface components {
             id: string;
             /** Last Seen At */
             last_seen_at?: string | null;
+            /** Main Event Id */
+            main_event_id?: string | null;
             /**
              * Meta Values
              * @default []
@@ -8288,6 +8460,17 @@ export interface components {
             /** Message */
             message: string;
         };
+        /**
+         * PhotoLimitsResponse
+         * @description What the upload endpoint will take, for the browser to say so up front.
+         *
+         *     ``photo_max_size_mb`` is an owner setting; every signed-in user may read it,
+         *     because an editor's upload is what it refuses (EVT-28).
+         */
+        PhotoLimitsResponse: {
+            /** Photo Max Size Mb */
+            photo_max_size_mb: number;
+        };
         /** PlanBranchCreate */
         PlanBranchCreate: {
             /**
@@ -10193,6 +10376,60 @@ export interface components {
             event_id: string;
             status: components["schemas"]["ShadowEventStatus"];
         };
+        /** ShadowEventBatchItem */
+        ShadowEventBatchItem: {
+            /**
+             * Candidate Id
+             * Format: uuid
+             */
+            candidate_id: string;
+            /** Event Type Id */
+            event_type_id?: string | null;
+            /** Name */
+            name?: string | null;
+        };
+        /**
+         * ShadowEventBatchItemResult
+         * @description What happened to one row. A refused row does not stop the rest.
+         */
+        ShadowEventBatchItemResult: {
+            /**
+             * Candidate Id
+             * Format: uuid
+             */
+            candidate_id: string;
+            /** Error */
+            error?: string | null;
+            /** Error Status */
+            error_status?: number | null;
+            /** Event Id */
+            event_id?: string | null;
+            /** Ok */
+            ok: boolean;
+            status?: components["schemas"]["ShadowEventStatus"] | null;
+        };
+        /**
+         * ShadowEventBatchRequest
+         * @description Accept or dismiss many inbox rows in one request (DATA-39).
+         */
+        ShadowEventBatchRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "accept" | "dismiss";
+            /** Items */
+            items: components["schemas"]["ShadowEventBatchItem"][];
+        };
+        /** ShadowEventBatchResponse */
+        ShadowEventBatchResponse: {
+            /** Failed */
+            failed: number;
+            /** Results */
+            results: components["schemas"]["ShadowEventBatchItemResult"][];
+            /** Succeeded */
+            succeeded: number;
+        };
         /** ShadowEventCandidateResponse */
         ShadowEventCandidateResponse: {
             /** Accepted Event Id */
@@ -11358,6 +11595,39 @@ export interface operations {
             };
         };
     };
+    test_unsaved_data_source_connection_api_v1_data_sources_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DataSourceConnectionTest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataSourceConnectionTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_data_source_api_v1_data_sources__ds_id__get: {
         parameters: {
             query?: never;
@@ -12415,7 +12685,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AlertRuleUpdate"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -14555,6 +14829,42 @@ export interface operations {
             };
         };
     };
+    lookup_events_by_names_api_v1_projects__slug__events_by_names_get: {
+        parameters: {
+            query: {
+                event_type_id: string;
+                names: string[];
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventIdentityHoldersResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reorder_events_api_v1_projects__slug__events_reorder_patch: {
         parameters: {
             query?: {
@@ -16595,6 +16905,7 @@ export interface operations {
             query?: {
                 status?: components["schemas"]["ShadowEventStatus"] | null;
                 limit?: number;
+                offset?: number;
             };
             header?: never;
             path: {
@@ -16611,6 +16922,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ShadowEventListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    batch_shadow_events_api_v1_projects__slug__reconciliation_shadow_events_batch_post: {
+        parameters: {
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShadowEventBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShadowEventBatchResponse"];
                 };
             };
             /** @description Validation Error */
@@ -18493,6 +18842,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_photo_limits_api_v1_settings_photo_limits_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotoLimitsResponse"];
                 };
             };
         };

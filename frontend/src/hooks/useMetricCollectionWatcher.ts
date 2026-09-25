@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import type { MetricDefinitionDetailResponse } from '@/types'
 import { metricCollectWatchKey } from '@/lib/queryKeys'
 

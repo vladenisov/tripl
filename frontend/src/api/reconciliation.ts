@@ -33,6 +33,32 @@ export interface DismissShadowEventResponse {
   status: string
 }
 
+/** The most rows one batch request takes (the route's `MAX_SHADOW_BATCH`). */
+export const MAX_SHADOW_BATCH = 200
+
+export interface ShadowEventBatchItem {
+  candidate_id: string
+  /** Accept only; defaults to the candidate's detected type. */
+  event_type_id?: string
+  name?: string
+}
+
+export interface ShadowEventBatchItemResult {
+  candidate_id: string
+  ok: boolean
+  status: ShadowEventStatus | null
+  event_id: string | null
+  /** Why a row was refused, in the single route's words. */
+  error: string | null
+  error_status: number | null
+}
+
+export interface ShadowEventBatchResponse {
+  results: ShadowEventBatchItemResult[]
+  succeeded: number
+  failed: number
+}
+
 export interface DeadEvent {
   event_id: string
   name: string
@@ -77,12 +103,13 @@ export interface CoverageResponse {
 export const reconciliationApi = {
   shadowEvents: (
     slug: string,
-    params: { status?: ShadowEventStatus; limit?: number },
+    params: { status?: ShadowEventStatus; limit?: number; offset?: number },
     branchId?: string | null,
   ) => {
     const qs = new URLSearchParams()
     if (params.status) qs.set('status', params.status)
     if (params.limit !== undefined) qs.set('limit', String(params.limit))
+    if (params.offset) qs.set('offset', String(params.offset))
     const base = `/projects/${slug}/reconciliation/shadow-events`
     const path = qs.toString() ? `${base}?${qs}` : base
     return api.get<ShadowEventsResponse>(withBranch(path, branchId))
@@ -106,6 +133,20 @@ export const reconciliationApi = {
   ) =>
     api.post<DismissShadowEventResponse>(
       withBranch(`/projects/${slug}/reconciliation/shadow-events/${id}/dismiss`, branchId),
+    ),
+
+  /**
+   * Accept or dismiss many rows in one request (DATA-39). Each row succeeds or
+   * fails on its own; `results` says which, in the order sent.
+   */
+  batchShadowEvents: (
+    slug: string,
+    body: { action: 'accept' | 'dismiss'; items: ShadowEventBatchItem[] },
+    branchId?: string | null,
+  ) =>
+    api.post<ShadowEventBatchResponse>(
+      withBranch(`/projects/${slug}/reconciliation/shadow-events/batch`, branchId),
+      body,
     ),
 
   deadEvents: (slug: string, days: number) =>

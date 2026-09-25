@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import EventPhotosSection from './event-photos-section'
 
 vi.mock('@/api/eventPhotos', () => ({
   eventPhotosApi: {
+    limits: vi.fn(),
     list: vi.fn(),
     upload: vi.fn(),
     delete: vi.fn(),
@@ -55,6 +56,7 @@ function drop(files: File[]) {
 beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.mocked(eventPhotosApi.list).mockResolvedValue([])
+  vi.mocked(eventPhotosApi.limits).mockResolvedValue({ photo_max_size_mb: 10 })
   vi.mocked(eventPhotosApi.listComments).mockResolvedValue([])
   vi.mocked(eventPhotosApi.upload).mockReset()
 })
@@ -96,21 +98,46 @@ describe('EventPhotosSection uploads (EVT-28)', () => {
     expect(vi.mocked(eventPhotosApi.upload).mock.calls[0]?.[2]).toHaveProperty('name', 'ok.png')
   })
 
-  it('leaves size and image type to the server, whose limits are owner settings', async () => {
+  it('leaves the image type to the server, whose allowed list is an owner setting', async () => {
     vi.mocked(eventPhotosApi.upload).mockResolvedValue(PHOTO)
     renderSection()
     await screen.findByText(/Drop images here/)
 
-    // An instance may allow AVIF or a 25 MB limit; the browser cannot know,
-    // so neither file is refused here — the large one only carries a warning.
-    drop([image('photo.avif', 1024, 'image/avif'), image('huge.png', 15 * 1024 * 1024)])
+    // An instance may allow AVIF; the browser cannot know, so it is not refused here.
+    drop([image('photo.avif', 1024, 'image/avif')])
 
-    await waitFor(() => expect(eventPhotosApi.upload).toHaveBeenCalledTimes(2))
-    const names = vi.mocked(eventPhotosApi.upload).mock.calls.map(call => call[2].name)
-    expect(names).toEqual(['photo.avif', 'huge.png'])
+    await waitFor(() => expect(eventPhotosApi.upload).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(eventPhotosApi.upload).mock.calls[0]?.[2]).toHaveProperty('name', 'photo.avif')
+    expect(screen.queryByText(/Not uploaded/)).toBeNull()
+  })
+
+  it("refuses a file over the instance's own size limit, read from the server", async () => {
+    // An instance that raised the limit to 25 MB takes a 15 MB file; the fixed
+    // 10 MB gate this replaced warned about it (EVT-28).
+    vi.mocked(eventPhotosApi.limits).mockResolvedValue({ photo_max_size_mb: 25 })
+    vi.mocked(eventPhotosApi.upload).mockResolvedValue(PHOTO)
+    renderSection()
+    expect(await screen.findByText(/up to 25 MB each/)).toBeInTheDocument()
+
+    drop([image('big.png', 15 * 1024 * 1024), image('huge.png', 30 * 1024 * 1024)])
+
+    await waitFor(() => expect(eventPhotosApi.upload).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(eventPhotosApi.upload).mock.calls[0]?.[2]).toHaveProperty('name', 'big.png')
     expect(screen.getByRole('status')).toHaveTextContent(
-      'Larger than the default 10 MB limit: huge.png.',
+      'Not uploaded: huge.png (larger than the 25 MB limit).',
     )
+  })
+
+  it('leaves size to the server when the limit cannot be read', async () => {
+    vi.mocked(eventPhotosApi.limits).mockRejectedValue(new Error('offline'))
+    vi.mocked(eventPhotosApi.upload).mockResolvedValue(PHOTO)
+    renderSection()
+    await screen.findByText(/Drop images here/)
+    await waitFor(() => expect(eventPhotosApi.limits).toHaveBeenCalled())
+
+    drop([image('huge.png', 30 * 1024 * 1024)])
+
+    await waitFor(() => expect(eventPhotosApi.upload).toHaveBeenCalledTimes(1))
     expect(screen.queryByText(/Not uploaded/)).toBeNull()
   })
 
@@ -128,7 +155,8 @@ describe('EventPhotosSection uploads (EVT-28)', () => {
 
     const bar = await screen.findByRole('progressbar', { name: 'Uploading slow.png' })
     expect(bar).toHaveAttribute('value', '0')
-    report?.(0.4)
+    // Progress arrives from the upload request, outside any React event.
+    act(() => report?.(0.4))
     await waitFor(() => expect(bar).toHaveAttribute('value', '40'))
     expect(screen.getByText('40%')).toBeInTheDocument()
   })

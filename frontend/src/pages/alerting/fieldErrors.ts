@@ -1,6 +1,7 @@
 import { ApiError } from '@/api/client'
 import { stripValueErrorPrefix } from '@/lib/alertStatus'
 import { getErrorMessage } from '@/lib/utils'
+import { fieldErrorId } from '@/lib/fieldErrors'
 
 /**
  * A server rejection, split into what belongs beside an input and what does not.
@@ -64,9 +65,7 @@ export function splitApiFieldErrors<K extends string>(
 }
 
 /** The id of the message element {@link FieldError} renders for an input. */
-export function fieldErrorId(inputId: string): string {
-  return `${inputId}-error`
-}
+export { fieldErrorId }
 
 /** `aria-invalid` + `aria-describedby` for an input, when it has an error. */
 export function fieldErrorProps(inputId: string, message: string | null | undefined) {

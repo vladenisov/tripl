@@ -120,7 +120,7 @@ beforeEach(() => {
   }
 })
 
-afterEach(() => {
+afterEach(async () => {
   // Global state that used to leak from one test into the next: persisted
   // storage, fake timers left on by a test that failed before restoring them,
   // and stubbed globals.
@@ -134,6 +134,13 @@ afterEach(() => {
   )
   consoleCalls.length = 0
   if (unexpected.length > 0) {
+    // Throwing here skips Testing Library's own afterEach cleanup, which left
+    // this test's DOM mounted for the next one and turned one noisy test into
+    // a cascade of "found multiple elements" failures. Unmount first.
+    if (hasDom) {
+      const { cleanup } = await import('@testing-library/react')
+      cleanup()
+    }
     throw new Error(
       `The test printed ${unexpected.length} unexpected console message(s). ` +
         'Fix the cause, or spy on console yourself if the message is the point of the test.\n\n' +

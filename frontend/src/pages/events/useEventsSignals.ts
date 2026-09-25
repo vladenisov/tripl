@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import type { VirtualItem } from '@tanstack/react-virtual'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { EventListItem } from '@/types'
 
@@ -20,7 +20,7 @@ export function useEventsSignals({ slug }: { slug: string | undefined }) {
 
   const tabSignalsQuery = useQuery({
     queryKey: eventsTabSignalsKey(slug),
-    queryFn: () => metricsApi.getActiveSignals(slug!),
+    queryFn: () => eventMetricsApi.getActiveSignals(slug!),
     enabled: !!slug,
     refetchInterval,
   })
@@ -82,7 +82,7 @@ export function useEventRowSignals({
   const rowSignals = useQueries({
     queries: visibleBuckets.map(bucketIds => ({
       queryKey: eventRowSignalsKey(slug, bucketIds),
-      queryFn: () => metricsApi.getActiveSignals(slug!, bucketIds),
+      queryFn: () => eventMetricsApi.getActiveSignals(slug!, bucketIds),
       enabled: !!slug && bucketIds.length > 0,
       refetchInterval,
     })),

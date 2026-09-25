@@ -2,8 +2,8 @@ import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Layers, Pencil } from 'lucide-react'
-import { metricsApi } from '@/api/metrics'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { eventMetricsApi } from '@/api/eventMetrics'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -78,7 +78,7 @@ export function BreakdownsTab({
           .getBreakdowns(slug, scopeId, { column: column || undefined, ...timeRange })
           .then(adaptMetricBreakdowns)
       }
-      return metricsApi.getEventMetricBreakdowns(slug, scopeId, {
+      return eventMetricsApi.getEventMetricBreakdowns(slug, scopeId, {
         column: column || undefined,
         ...timeRange,
       })

@@ -227,7 +227,9 @@ async def delete_photo_comment(
     comment_id: uuid.UUID,
     current_user: EditorUserDep,
 ) -> None:
-    await event_photo_service.delete_comment(session, slug, event_id, photo_id, comment_id)
+    await event_photo_service.delete_comment(
+        session, slug, event_id, photo_id, comment_id, user=current_user
+    )
     await audit_service.record(
         session,
         user=current_user,

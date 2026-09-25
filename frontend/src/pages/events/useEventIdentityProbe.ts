@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { eventsApi } from '@/api/events'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { eventIdentityProbeKey } from '@/lib/queryKeys'
 
 /** An event already holding the identity the form is about to claim. */
@@ -20,11 +21,10 @@ export interface CreatedIdentity extends IdentityHolder {
 /**
  * Advisory duplicate check. The SERVER is what refuses a taken scan identity
  * (409 from create_event); this only spares the user filling a whole form to
- * find out on submit. `search` is a plain ILIKE over name/description/
- * source_name, so an exact name is always inside the result set and the exact
- * comparison below cannot produce a false POSITIVE. A false negative is
- * possible if a very broad match pushes the row past the limit — and the
- * server still catches that one.
+ * find out on submit. It asks the exact-name lookup (`GET /events/by-names`),
+ * which answers with the same rule create refuses on (EVT-37). The substring
+ * `search` it used before could miss the row when a broad match pushed it past
+ * the page limit.
  *
  * `createdHere` is what this form has itself created. "Save and add another"
  * keeps the values, so they regenerate the name just taken, and the probe's
@@ -52,9 +52,10 @@ export function useEventIdentityProbe({
   const probedName = useDebouncedValue(completedName, 350)
   const { data: identityProbe } = useQuery({
     queryKey: eventIdentityProbeKey(slug, branchId, eventTypeId, probedName),
-    queryFn: () =>
-      eventsApi.list(slug, { event_type_id: eventTypeId, search: probedName!, limit: 100 }, branchId),
+    queryFn: ({ signal }) => eventsApi.byNames(slug, eventTypeId, [probedName!], branchId, signal),
     enabled: enabled && !!probedName && !!eventTypeId,
+    // Advisory: a failed check shows no warning, and the server still refuses.
+    meta: SILENT_ERROR_META,
   })
   return useMemo(() => {
     if (!enabled || !completedName) return null
@@ -63,17 +64,10 @@ export function useEventIdentityProbe({
     )
     if (mine) return mine
     if (probedName !== completedName || !identityProbe) return null
-    // The same two arms the server tests in `_event_holding_scan_identity`: an
+    // The server applied the two arms of `_event_holding_scan_identity`: an
     // event answering to this identity, or one with no identity yet whose name
-    // the next scan will adopt as one. Matching on `name` alone would miss a
-    // scanned event that has since been renamed — exactly the case source_name
-    // exists for.
-    return (
-      identityProbe.items.find(
-        item =>
-          item.source_name === probedName
-          || (item.source_name === null && item.name === probedName),
-      ) ?? null
-    )
+    // the next scan will adopt as one.
+    const holder = identityProbe.items.find(item => item.identity === probedName)
+    return holder ? { id: holder.event_id, name: holder.name } : null
   }, [enabled, completedName, createdHere, eventTypeId, probedName, identityProbe])
 }

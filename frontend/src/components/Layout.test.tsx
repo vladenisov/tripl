@@ -5,7 +5,7 @@ import { QueryCache, QueryClient, QueryClientProvider, useQuery } from '@tanstac
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { alertingApi } from '@/api/alerting'
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { projectsApi } from '@/api/projects'
 import { ApiError } from '@/api/client'
 import type { Project } from '@/types'
@@ -23,8 +23,8 @@ vi.mock('@/api/alerting', () => ({
   alertingApi: { listDeliveries: vi.fn() },
 }))
 
-vi.mock('@/api/metrics', () => ({
-  metricsApi: { getActiveSignals: vi.fn() },
+vi.mock('@/api/eventMetrics', () => ({
+  eventMetricsApi: { getActiveSignals: vi.fn() },
 }))
 
 vi.mock('@/api/projects', () => ({
@@ -150,7 +150,7 @@ function renderLayout(
 ) {
   vi.mocked(projectsApi.list).mockResolvedValue([makeProject(options.isDemo)])
   vi.mocked(projectsApi.get).mockRejectedValue(new ApiError('Not found', 404))
-  vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([])
+  vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([])
   vi.mocked(alertingApi.listDeliveries).mockResolvedValue({ items: [], total: 0 })
   options.mocks?.()
 

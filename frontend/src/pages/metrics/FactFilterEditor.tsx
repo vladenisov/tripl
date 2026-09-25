@@ -29,7 +29,7 @@ import {
   type FactConditionOperator,
   type FactFilter,
 } from './factFilters'
-import { errorAria, fieldErrorId, type FieldErrors } from './fieldErrors'
+import { errorAria, fieldErrorId, type FieldErrors } from '@/lib/fieldErrors'
 import { filterFieldId } from './metricDraft'
 
 interface FactFilterEditorProps {

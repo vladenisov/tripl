@@ -341,6 +341,11 @@ class EventResponse(BaseModel):
     # that is a date nothing was seen on (tripl-kjhi.10). Null until the first
     # collection finds it, and on list responses, which do not compute it.
     first_seen_at: datetime | None = None
+    # A branch copy's twin on main (``_branch_counterparts.main_counterparts``),
+    # so a branch page can link to the same event on main (EVT-42). Null on a
+    # main row, on a branch event main has no counterpart of, and — like
+    # ``first_seen_at`` — on every response but the single-event read.
+    main_event_id: uuid.UUID | None = None
     owner_id: uuid.UUID | None = None
     reviewed: bool = False
     metric_breakdown_columns: list[str] = []
@@ -419,3 +424,25 @@ class EventListItemResponse(BaseModel):
 class EventListResponse(BaseModel):
     items: list[EventListItemResponse]
     total: int
+
+
+# Names one identity lookup takes. The bulk form checks up to 100 pasted names;
+# the bound keeps a query string (and one SELECT's IN list) finite.
+MAX_IDENTITY_LOOKUP_NAMES = 200
+
+
+class EventIdentityHolder(BaseModel):
+    """An event that already answers to a looked-up identity (EVT-37).
+
+    ``identity`` is the name that was asked about; ``name`` is the holder's own
+    name, which differs when a scanned event has since been renamed.
+    """
+
+    identity: str
+    event_id: uuid.UUID
+    name: str
+    source_name: str | None
+
+
+class EventIdentityHoldersResponse(BaseModel):
+    items: list[EventIdentityHolder]

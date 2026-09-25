@@ -16,7 +16,14 @@ vi.mock('@/api/auth', () => ({
   },
 }))
 
+// Detached collect watches are module state; the provider's job is only to
+// stop them on sign-out.
+vi.mock('@/hooks/useMetricCollectionWatcher', () => ({
+  stopAllMetricCollectionWatches: vi.fn(),
+}))
+
 import { authApi } from '@/api/auth'
+import { stopAllMetricCollectionWatches } from '@/hooks/useMetricCollectionWatcher'
 
 const meMock = vi.mocked(authApi.me)
 const logoutMock = vi.mocked(authApi.logout)
@@ -210,5 +217,20 @@ describe('AuthProvider unauthorized event cycle', () => {
 
     await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('anonymous'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+describe('AuthProvider sign-out', () => {
+  it('stops every metric collection watch when the user signs out', async () => {
+    meMock.mockResolvedValueOnce(makeUser()).mockRejectedValue(new ApiError('Unauthorized', 401))
+    logoutMock.mockResolvedValue(undefined)
+    renderProvider()
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('authenticated'))
+    expect(stopAllMetricCollectionWatches).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }))
+
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('anonymous'))
+    expect(stopAllMetricCollectionWatches).toHaveBeenCalledTimes(1)
   })
 })

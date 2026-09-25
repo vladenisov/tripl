@@ -158,10 +158,16 @@ export default function EventEditPage() {
             slug={slug}
             rowBranchId={eventQuery.data?.branch_id}
             path={`/p/${slug}/events/${tab ?? 'all'}/${eventId}/edit`}
-            // Not this page on main: the id in it is the branch row's, which
-            // main would render again under a mismatch warning (EVT-42). The
-            // list on main is the main plan this event belongs to.
-            mainPath={!tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`}
+            // Not this page's id on main: it is the branch row's, which main
+            // would render again under a mismatch warning (EVT-42). The main
+            // twin's page when the server names one, else the list on main.
+            mainPath={
+              eventQuery.data?.main_event_id
+                ? `/p/${slug}/events/${tab ?? 'all'}/${eventQuery.data.main_event_id}/edit`
+                : !tab || tab === 'all'
+                  ? `/p/${slug}/events`
+                  : `/p/${slug}/events/${tab}`
+            }
           />
         </div>
       ) : null}

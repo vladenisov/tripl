@@ -86,6 +86,13 @@ export interface DataSource {
   updated_at: string
 }
 
+/** POST /data-sources/test: a probe of an unsaved config, which stores nothing. */
+export interface DataSourceDraftTestResult {
+  success: boolean
+  message: string
+  tested_at: string
+}
+
 export interface DataSourceTestResult {
   success: boolean
   message: string

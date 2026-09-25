@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Inbox, Info } from 'lucide-react'
 import {
+  MAX_SHADOW_BATCH,
   reconciliationApi,
   type CoverageBucket,
   type CoverageSummary,
@@ -37,7 +38,7 @@ import {
   projectKey,
   projectShadowEventsKey,
   reconciliationCoverageKey,
-  shadowEventsPageKey,
+  shadowEventsPagesKey,
 } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
@@ -54,10 +55,9 @@ const COVERAGE_DAYS = 14 as const
 // the window, so the page never leaves the look-back implicit.
 const DEAD_DAYS = DEAD_EVENT_DAYS
 const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed']
-// The inbox asks for one page at a time and "Show more" raises the limit up to
-// the endpoint's own cap (`le=500`); it has no offset parameter.
+// The inbox reads one page at a time, and "Show more" asks for the next one by
+// offset (DATA-39), so every row of a large inbox is reachable.
 const SHADOW_PAGE_SIZE = 100
-const SHADOW_MAX_LIMIT = 500
 // Dead events arrive as one unpaginated list. Rendering every row (each with a
 // Radix checkbox) froze large plans, so the panel shows them a page at a time
 // (DATA-47).
@@ -153,7 +153,6 @@ export default function ReconciliationPage() {
   const { confirm, dialog } = useConfirm()
 
   const [shadowStatus, setShadowStatus] = useState<ShadowEventStatus>('new')
-  const [shadowLimit, setShadowLimit] = useState(SHADOW_PAGE_SIZE)
   const [selectedShadow, setSelectedShadow] = useState<ReadonlySet<string>>(() => new Set())
   const [bulkProgress, setBulkProgress] = useState<BulkProgress | null>(null)
   const [bulkNotice, setBulkNotice] = useState<string | null>(null)
@@ -173,17 +172,20 @@ export default function ReconciliationPage() {
     enabled: !!slug,
   })
 
-  const shadowQuery = useQuery({
-    queryKey: shadowEventsPageKey(slug, branchId, shadowStatus, shadowLimit),
-    queryFn: () =>
-      reconciliationApi.shadowEvents(slug!, { status: shadowStatus, limit: shadowLimit }, branchId),
+  const shadowQuery = useInfiniteQuery({
+    queryKey: shadowEventsPagesKey(slug, branchId, shadowStatus),
+    queryFn: ({ pageParam }) =>
+      reconciliationApi.shadowEvents(
+        slug!,
+        { status: shadowStatus, limit: SHADOW_PAGE_SIZE, offset: pageParam },
+        branchId,
+      ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, pages) => {
+      const loaded = pages.reduce((sum, page) => sum + page.items.length, 0)
+      return lastPage.items.length > 0 && loaded < lastPage.total ? loaded : undefined
+    },
     enabled: !!slug,
-    // "Show more" keeps the rows on screen while the longer page loads; a tab
-    // or branch switch does not borrow another list's rows.
-    placeholderData: (previous, previousQuery) =>
-      previousQuery?.queryKey[3] === branchId && previousQuery.queryKey[4] === shadowStatus
-        ? previous
-        : undefined,
   })
 
   const deadQuery = useQuery({
@@ -292,7 +294,17 @@ export default function ReconciliationPage() {
   }
 
   const coverage = coverageQuery.data
-  const shadow = shadowQuery.data
+  // The pages read as one list. Counts come from the newest page, which is the
+  // most recent answer to "how many are there".
+  const shadowPages = shadowQuery.data?.pages
+  const lastShadowPage = shadowPages?.[shadowPages.length - 1]
+  const shadow = shadowPages && lastShadowPage
+    ? {
+        items: shadowPages.flatMap((page) => page.items),
+        total: lastShadowPage.total,
+        new_count: lastShadowPage.new_count,
+      }
+    : undefined
   const dead = deadQuery.data
   const eventTypes = eventTypesQuery.data ?? []
   const shadowHasItems = (shadow?.items.length ?? 0) > 0
@@ -321,39 +333,55 @@ export default function ReconciliationPage() {
 
   const selectShadowTab = (tab: ShadowEventStatus) => {
     setShadowStatus(tab)
-    setShadowLimit(SHADOW_PAGE_SIZE)
     setSelectedShadow(new Set())
     setBulkNotice(null)
   }
 
-  // Sequential, one request per row: there is no batch endpoint, and one
-  // failure must not sink the rest. Each failure lands on its own row.
+  // One batch request per MAX_SHADOW_BATCH rows (DATA-39). The server handles
+  // each row on its own, so one refused row does not sink the rest; each
+  // refusal lands on its own row, in the server's words.
   const runBulk = async (action: BulkAction, items: ShadowEvent[]) => {
     if (!slug || items.length === 0) return
     setBulkNotice(null)
     setAcceptingId(null)
     let succeeded = 0
     setBulkProgress({ action, done: 0, total: items.length })
-    for (const [index, item] of items.entries()) {
+    const fallback = action === 'accept' ? 'Accept failed' : 'Dismiss failed'
+    for (let start = 0; start < items.length; start += MAX_SHADOW_BATCH) {
+      const chunk = items.slice(start, start + MAX_SHADOW_BATCH)
       try {
-        if (action === 'accept') {
-          await reconciliationApi.acceptShadowEvent(
-            slug,
-            item.id,
-            { event_type_id: item.event_type_id ?? undefined },
-            branchId,
-          )
-        } else {
-          await reconciliationApi.dismissShadowEvent(slug, item.id, branchId)
+        const response = await reconciliationApi.batchShadowEvents(
+          slug,
+          {
+            action,
+            items: chunk.map((item) =>
+              action === 'accept'
+                ? { candidate_id: item.id, event_type_id: item.event_type_id ?? undefined }
+                : { candidate_id: item.id },
+            ),
+          },
+          branchId,
+        )
+        for (const result of response.results) {
+          if (result.ok) {
+            succeeded += 1
+            clearRowError(result.candidate_id)
+          } else {
+            const msg = result.error ?? fallback
+            setRowError((prev) => ({ ...prev, [result.candidate_id]: msg }))
+          }
         }
-        succeeded += 1
-        clearRowError(item.id)
       } catch (err) {
-        const fallback = action === 'accept' ? 'Accept failed' : 'Dismiss failed'
+        // The request itself failed: nothing in this chunk is known to have
+        // happened, so every row of it says so.
         const msg = err instanceof Error ? err.message : fallback
-        setRowError((prev) => ({ ...prev, [item.id]: msg }))
+        setRowError((prev) => {
+          const next = { ...prev }
+          for (const item of chunk) next[item.id] = msg
+          return next
+        })
       }
-      setBulkProgress({ action, done: index + 1, total: items.length })
+      setBulkProgress({ action, done: Math.min(start + chunk.length, items.length), total: items.length })
     }
     setBulkProgress(null)
     setSelectedShadow(new Set())
@@ -517,11 +545,15 @@ export default function ReconciliationPage() {
                   }}
                 >
                   {tab}
+                  {/* The space sits outside the span: inside it, the
+                      accessible name collapsed to "new250". */}
                   {tab === 'new' && shadow && shadow.new_count > 0 && (
-                    <span className="mono tnum" style={{ color: 'var(--fg-subtle)' }}>
+                    <>
                       {' '}
-                      {shadow.new_count.toLocaleString()}
-                    </span>
+                      <span className="mono tnum" style={{ color: 'var(--fg-subtle)' }}>
+                        {shadow.new_count.toLocaleString()}
+                      </span>
+                    </>
                   )}
                 </button>
               ))}
@@ -659,8 +691,8 @@ export default function ReconciliationPage() {
               />
             )
           })}
-          {/* The inbox is paged; it used to stop at 100 rows without saying so
-              (DATA-39). */}
+          {/* The inbox is paged; it used to stop at 100 rows without saying so,
+              and then at 500 with no way past them (DATA-39). */}
           {shadow && shadow.total > shadow.items.length && (
             <div
               className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-[11px]"
@@ -669,19 +701,17 @@ export default function ReconciliationPage() {
               <span>
                 Showing {shadow.items.length.toLocaleString()} of {shadow.total.toLocaleString()}
               </span>
-              {shadowLimit < SHADOW_MAX_LIMIT ? (
+              {shadowQuery.hasNextPage && (
                 <Button
                   size="xs"
                   variant="outline"
                   disabled={bulkRunning || shadowQuery.isFetching}
-                  onClick={() =>
-                    setShadowLimit((limit) => Math.min(limit + SHADOW_PAGE_SIZE, SHADOW_MAX_LIMIT))
-                  }
+                  onClick={() => {
+                    void shadowQuery.fetchNextPage()
+                  }}
                 >
-                  {shadowQuery.isFetching ? 'Loading…' : 'Show more'}
+                  {shadowQuery.isFetchingNextPage ? 'Loading…' : 'Show more'}
                 </Button>
-              ) : (
-                <span>Resolve some of these to see the rest.</span>
               )}
             </div>
           )}

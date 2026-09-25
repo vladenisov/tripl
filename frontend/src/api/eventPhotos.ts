@@ -1,4 +1,4 @@
-import type { EventPhoto, EventPhotoComment } from '../types'
+import type { EventPhoto, EventPhotoComment, PhotoLimits } from '../types'
 import { uid } from '@/lib/uid'
 import { api, ApiError, AUTH_UNAUTHORIZED_EVENT } from './client'
 
@@ -59,6 +59,9 @@ function uploadWithProgress<T>(
 }
 
 export const eventPhotosApi = {
+  /** The instance's upload limit (an owner setting any signed-in user may read). */
+  limits: (): Promise<PhotoLimits> => api.get<PhotoLimits>('/settings/photo-limits'),
+
   list: (slug: string, eventId: string): Promise<EventPhoto[]> =>
     api.get<EventPhoto[]>(`/projects/${slug}/events/${eventId}/photos`),
 

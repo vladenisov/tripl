@@ -30,11 +30,10 @@ export interface EventsMetricsParams {
  *
  * Not the metrics catalog. User-defined metrics (fact, SQL and event
  * composition), their CRUD, collection and series live in
- * {@link metricsCatalogApi} (`api/metricsCatalogApi.ts`). The two names are
- * easy to confuse (MET-45); renaming this module is a cross-cutting sweep of
- * its ~20 importers and their `vi.mock` paths, left for a quiet tree.
+ * {@link metricsCatalogApi} (`api/metricsCatalog.ts`). This module was
+ * `metricsApi` in `api/metrics.ts` until MET-45 renamed it.
  */
-export const metricsApi = {
+export const eventMetricsApi = {
   // `branchId` scopes the tag / status / search filter to that branch's events;
   // their metrics are read through each copy's main twin (tripl-vk1p).
   getEventsMetrics: (slug: string, params?: EventsMetricsParams, branchId?: string | null) => {

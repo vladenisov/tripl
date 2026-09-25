@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
 import { SCard, Select, type SelectOption } from '@/components/settings/kit'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -8,8 +8,8 @@ import type { FactOperandPayload } from '@/lib/factOperandConfig'
 import { METRIC_AGGREGATIONS, type MetricAggregation, type MetricScanInterval } from '@/types'
 import { FactFilterEditor } from './FactFilterEditor'
 import { IntervalField } from './IntervalField'
-import { MetricField } from './MetricField'
-import { errorAria, type FieldErrors } from './fieldErrors'
+import { FormField } from '@/components/settings/form-field'
+import { errorAria, type FieldErrors } from '@/lib/fieldErrors'
 import {
   FACT_COMPOSITIONS,
   needsDistinct,
@@ -128,7 +128,7 @@ function FactOperandEditor({
 
   return (
     <>
-      <MetricField
+      <FormField
         label="Fact table"
         htmlFor={`${idPrefix}-table`}
         required
@@ -145,8 +145,8 @@ function FactOperandEditor({
           aria-required
           {...errorAria(errors, `${idPrefix}-table`)}
         />
-      </MetricField>
-      <MetricField label="Aggregation" htmlFor={`${idPrefix}-aggregation`} required>
+      </FormField>
+      <FormField label="Aggregation" htmlFor={`${idPrefix}-aggregation`} required>
         <Select
           id={`${idPrefix}-aggregation`}
           value={operand.aggregation}
@@ -156,9 +156,9 @@ function FactOperandEditor({
           }}
           options={METRIC_AGGREGATIONS.map(a => ({ value: a, label: AGGREGATION_LABEL[a] }))}
         />
-      </MetricField>
+      </FormField>
       {needsMeasure(operand.aggregation) && (
-        <MetricField
+        <FormField
           label="Measure column"
           htmlFor={`${idPrefix}-measure`}
           required
@@ -174,10 +174,10 @@ function FactOperandEditor({
             aria-required
             {...errorAria(errors, `${idPrefix}-measure`)}
           />
-        </MetricField>
+        </FormField>
       )}
       {needsDistinct(operand.aggregation) && (
-        <MetricField
+        <FormField
           label="Distinct column"
           htmlFor={`${idPrefix}-distinct`}
           required
@@ -193,12 +193,12 @@ function FactOperandEditor({
             aria-required
             {...errorAria(errors, `${idPrefix}-distinct`)}
           />
-        </MetricField>
+        </FormField>
       )}
       {/* A filter list plus two buttons, so there is no one control the label
           names — and with no filters yet (the default) the generated id
           addressed nothing at all. `false` names the row as a group instead. */}
-      <MetricField
+      <FormField
         label="Filters"
         htmlFor={false}
         last
@@ -228,7 +228,7 @@ function FactOperandEditor({
           checkResult={checkMut.data ?? null}
           checkError={checkError}
         />
-      </MetricField>
+      </FormField>
     </>
   )
 }
@@ -258,7 +258,7 @@ export function FactDefinitionFields({
   return (
     <>
       <SCard title="Fact" description="Aggregate a reusable fact table into one value per bucket.">
-        <MetricField
+        <FormField
           label="Composition"
           htmlFor="metric-fact-composition"
           required
@@ -273,7 +273,7 @@ export function FactDefinitionFields({
               label: c === 'single' ? 'Single' : 'Ratio',
             }))}
           />
-        </MetricField>
+        </FormField>
         <IntervalField
           id="metric-fact-interval"
           value={draft.interval}

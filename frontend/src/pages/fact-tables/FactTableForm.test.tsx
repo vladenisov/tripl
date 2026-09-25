@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataSource, FactTable } from '@/types'
 import { FactTableForm } from './FactTableForm'
 
-vi.mock('@/api/factTablesApi', () => ({
+vi.mock('@/api/factTables', () => ({
   factTablesApi: {
     create: vi.fn().mockResolvedValue({ id: 'created' }),
     update: vi.fn().mockResolvedValue({ id: 'updated' }),
@@ -71,7 +71,7 @@ vi.mock('@/hooks/useDataSourceSchema', () => ({
   useDataSourceSchema: useDataSourceSchemaMock,
 }))
 
-import { factTablesApi } from '@/api/factTablesApi'
+import { factTablesApi } from '@/api/factTables'
 import { ApiError } from '@/api/client'
 import { at } from '@/test/at'
 
@@ -601,7 +601,10 @@ describe('FactTableForm columns follow the SQL (MET-9)', () => {
     submit()
 
     await waitFor(() => expect(factTablesApi.preview).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText(/"ts" is not a column of this SQL/)).toBeInTheDocument()
+    // The reason shows twice by design: in the summary (a link to the field)
+    // and under the field, which is also its accessible description.
+    await screen.findByRole('alert')
+    expect(summary().getByText(/"ts" is not a column of this SQL/)).toBeInTheDocument()
     const timestamp = document.getElementById('fact-timestamp')!
     expect(timestamp).toHaveAttribute('aria-invalid', 'true')
     await waitFor(() => expect(timestamp).toHaveFocus())

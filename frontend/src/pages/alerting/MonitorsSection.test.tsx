@@ -874,4 +874,46 @@ describe('MonitorsSection rule form — what is saved is what is shown', () => {
 
     expect(await screen.findByText(/Replay rule “Prod drops”/)).toBeInTheDocument()
   })
+
+  it('replays the edits on the form, unsaved, once there are any (ALR-12)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const update = vi.spyOn(alertingApi, 'updateRule')
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue({
+      rule_id: 'rule-1',
+      rule_name: 'Prod drops',
+      days: 7,
+      window_from: '2026-07-12T10:00:00Z',
+      window_to: '2026-07-19T10:00:00Z',
+      anomalies_considered: 0,
+      matched_before_cooldown: 0,
+      noisy: false,
+      cooldown_minutes_used: 45,
+      cooldown_minutes_saved: 60,
+      min_percent_delta_used: 0,
+      min_percent_delta_saved: 0,
+      min_expected_count_used: 0,
+      min_expected_count_saved: 0,
+      sigma_threshold_used: null,
+      sigma_threshold_saved: null,
+      rendered_message: null,
+      firings: [],
+    })
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Prod drops' }))
+    // No edits yet: only the saved rule can be replayed.
+    expect(screen.queryByRole('button', { name: 'Replay with these edits' })).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Cooldown minutes'), { target: { value: '45' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Replay with these edits' }))
+
+    expect(
+      await screen.findByRole('heading', { name: /Replay rule “Prod drops” with your unsaved edits/ }),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+
+    await waitFor(() => expect(simulate).toHaveBeenCalled())
+    expect(simulate.mock.calls[0]?.[5]).toMatchObject({ cooldown_minutes: 45 })
+    expect(update).not.toHaveBeenCalled()
+  })
 })

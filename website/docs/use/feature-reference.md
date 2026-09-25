@@ -320,7 +320,9 @@ question written there arrives as if it were part of the specification. Nothing
 written in the discussion goes to any of those places.
 
 Every comment shows who wrote it and when, and replies nest under the comment
-they answer. The **Delete** button is shown to the comment's author and to owners, and asks for a
+they answer. Only the comment's author or an owner can delete a comment on an event
+or an attachment; the server refuses anyone else with a 403, and the **Delete**
+button is shown only to them. It asks for a
 confirmation that says how many replies go with it. The same thread powers the notes on an individual attachment and
 the review comments on a branch, so all three read and behave alike.
 
@@ -382,15 +384,16 @@ state; only the event discussion does.
 (Plan › Events → open an event, or click an event's signal on Observe ›
 Anomalies). It is shown for the `event` scope only.
 
-You can upload images (JPEG, PNG, GIF, or WebP by default, up to 10 MB each by default —
-both are instance settings) by
+You can upload images (JPEG, PNG, GIF, or WebP by default, up to 10 MB each by default.
+Both are instance settings, and the upload area shows the size limit your instance uses) by
 drag-and-drop or the **Upload image** button (stored on the configured backend —
 local disk or GCS). Several files upload side by side, each with its own
 progress; a file that fails is named with the reason while the others still
 land, and a file that is not an image is listed as not uploaded rather than dropped
-silently. A file larger than the default 10 MB still uploads, with a note that the
-server refuses it if the instance keeps that limit; a type or size the instance does
-not allow comes back as a failed upload with the server's reason. You can also attach a
+silently. So is a file larger than the instance's size limit, which the page reads
+from the server (`GET /api/v1/settings/photo-limits`, open to every signed-in user).
+If the limit cannot be read, the file uploads and the server decides. An image type the
+instance does not allow comes back as a failed upload with the server's reason. You can also attach a
 **Figma spec** by URL with an optional title (rendered as an embedded frame with
 an "Open in Figma" link), delete a photo or detach a spec, and hold a **threaded
 comment** discussion (top-level comments plus one level of replies) per
@@ -1226,10 +1229,13 @@ governance numbers are not read as contradictory. The **shadow events inbox** (t
 `dismissed`) lists events seen in data but missing from the plan — **Accept**
 creates the event on the active branch (you pick an event type when none is
 inferred), or **Dismiss** it. The inbox loads 100 rows at a time and says how
-many it is showing ("Showing 100 of 812", with **Show more** up to 500); the
-`new` tab carries the count of new events. Tick rows (or the select-all box) to
-**Accept** or **Dismiss** them in bulk; bulk accept only takes rows that
-already have an event type, and rows without one are accepted individually. A scan reads `main`'s plan, so the event type it
+many it is showing ("Showing 100 of 812"); **Show more** loads the next 100, as
+far as the list goes. The `new` tab carries the count of new events. Tick rows
+(or the select-all box) to **Accept** or **Dismiss** them in bulk. A bulk action
+is one request (`POST …/reconciliation/shadow-events/batch`), and each row
+succeeds or fails on its own: a refused row shows the reason on the row and the
+others still go through. Bulk accept only takes rows that already have an event
+type, and rows without one are accepted individually. A scan reads `main`'s plan, so the event type it
 inferred is `main`'s; accepting on a working branch writes the branch's own copy
 of that type, matched by name. If the branch deleted the type, the accept is
 refused and says so — accept on `main`, or pick a type the branch still has.
@@ -1988,9 +1994,10 @@ documents indexed and whether embeddings were queued.
 **Where:** Workspace settings › Data sources (owner only). Supported types and
 default ports: **ClickHouse** (8123), **PostgreSQL** (5432, **version 14+
 required**), and **BigQuery** (project/dataset based). Create, edit, and delete
-sources; **Test connection** (a new source is tested as soon as it is created,
-and an edited one when its host, credentials or TLS settings change — there is
-no test before saving); browse the schema (tables/columns) for the scan
+sources; **Test connection** (the new-source dialog can test the connection
+before you create it, and nothing is stored by that test; a new source is tested
+again as soon as it is created, and an edited one when its host, credentials or
+TLS settings change); browse the schema (tables/columns) for the scan
 query builder; and view ingestion stats. Health is shown as healthy / stale /
 failing / untested. The dialog checks secrets before saving: a BigQuery key must
 be valid JSON with `"type": "service_account"` (paste it or **load the key

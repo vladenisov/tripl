@@ -9,7 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { DataSource, EventListItem, MetricDefinitionDetailResponse } from '@/types'
 import MetricEditPage, { MetricForm } from './MetricForm'
 
-vi.mock('@/api/metricsCatalogApi', () => ({
+vi.mock('@/api/metricsCatalog', () => ({
   metricsCatalogApi: {
     create: vi.fn().mockResolvedValue({ id: 'created' }),
     update: vi.fn().mockResolvedValue({ id: 'updated' }),
@@ -31,7 +31,7 @@ vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
 }))
 
-vi.mock('@/api/factTablesApi', () => ({
+vi.mock('@/api/factTables', () => ({
   factTablesApi: {
     list: vi.fn(),
     get: vi.fn(),
@@ -76,8 +76,8 @@ vi.mock('@/hooks/useDataSourceSchema', () => ({
   useDataSourceSchema: useDataSourceSchemaMock,
 }))
 
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
-import { factTablesApi } from '@/api/factTablesApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
+import { factTablesApi } from '@/api/factTables'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { dataSourcesApi } from '@/api/dataSources'

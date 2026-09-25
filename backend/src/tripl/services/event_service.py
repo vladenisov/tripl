@@ -39,6 +39,8 @@ from tripl.schemas.event import (
     EventBulkUpdate,
     EventCreate,
     EventFieldValueIn,
+    EventIdentityHolder,
+    EventIdentityHoldersResponse,
     EventMetaValueIn,
     EventMove,
     EventReorder,
@@ -1049,6 +1051,10 @@ async def _attach_first_seen(session: AsyncSession, *, project_id: uuid.UUID, ev
         )
     )
     event.first_seen_at = first_seen  # type: ignore[attr-defined]
+    # The same twin, named: a branch page's "View main plan" opens this event on
+    # main instead of main's event list (EVT-42). None on main and for an event
+    # created on the branch that main has no counterpart of.
+    event.main_event_id = row.id if row.id != event.id else None  # type: ignore[attr-defined]
 
 
 async def _resolve_event_name_format(
@@ -1224,6 +1230,44 @@ async def _event_holding_scan_identity(
         wanted=[(event_type_id, identity)],
     )
     return held.get((event_type_id, identity))
+
+
+async def identity_holders(
+    session: AsyncSession,
+    slug: str,
+    *,
+    event_type_id: uuid.UUID,
+    names: Sequence[str],
+    branch_id: uuid.UUID | None,
+) -> EventIdentityHoldersResponse:
+    """Which of ``names`` an event of this type already holds, exactly (EVT-37).
+
+    The same predicate create uses (``_identities_already_held``), so an
+    authoring form can say "already in the catalog" for exactly the names an
+    event holds — in one query, where the bulk form used to send one substring
+    search per pasted name. Create refuses such a name (409) only on an event
+    type governed by a scan naming rule; elsewhere it is a warning.
+    """
+    project_id = await get_project_id_by_slug(session, slug)
+    resolved_branch_id = await resolve_branch_id(session, project_id, branch_id)
+    wanted = list(dict.fromkeys(name for name in names if name))
+    held = await _identities_already_held(
+        session,
+        project_id=project_id,
+        branch_id=resolved_branch_id,
+        wanted=[(event_type_id, name) for name in wanted],
+    )
+    items = [
+        EventIdentityHolder(
+            identity=name,
+            event_id=event.id,
+            name=event.name,
+            source_name=event.source_name,
+        )
+        for name in wanted
+        if (event := held.get((event_type_id, name))) is not None
+    ]
+    return EventIdentityHoldersResponse(items=items)
 
 
 def _scan_identity_conflict_detail(*, identity: str, existing: Event) -> str:

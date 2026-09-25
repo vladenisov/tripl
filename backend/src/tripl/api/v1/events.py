@@ -6,10 +6,12 @@ from fastapi import APIRouter, Depends, Query
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep, get_editor_user
 from tripl.models.event import Event, EventStatus
 from tripl.schemas.event import (
+    MAX_IDENTITY_LOOKUP_NAMES,
     EventBulkDelete,
     EventBulkUpdate,
     EventChangeResponse,
     EventCreate,
+    EventIdentityHoldersResponse,
     EventListResponse,
     EventMove,
     EventMutationResponse,
@@ -185,6 +187,25 @@ async def list_events(
 @router.get("/tags", response_model=list[str])
 async def list_tags(session: SessionDep, slug: str, branch_id: BranchIdDep) -> list[str]:
     return await event_service.list_tags(session, slug, branch_id)
+
+
+@router.get("/by-names", response_model=EventIdentityHoldersResponse)
+async def lookup_events_by_names(
+    session: SessionDep,
+    slug: str,
+    branch_id: BranchIdDep,
+    event_type_id: uuid.UUID,
+    # Exact identities, repeated: ``?names=a&names=b``. An authoring form's
+    # "is this name taken" check, answered with the rule create enforces
+    # (EVT-37); a substring ``search`` per name was the only way to ask before.
+    names: Annotated[
+        list[FreeTextFilter],
+        Query(min_length=1, max_length=MAX_IDENTITY_LOOKUP_NAMES),
+    ],
+) -> EventIdentityHoldersResponse:
+    return await event_service.identity_holders(
+        session, slug, event_type_id=event_type_id, names=names, branch_id=branch_id
+    )
 
 
 @router.post("", response_model=EventMutationResponse, status_code=201)

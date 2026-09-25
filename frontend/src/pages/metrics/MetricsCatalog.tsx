@@ -29,7 +29,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiError } from '@/api/client'
-import { metricsCatalogApi, type MetricListParams } from '@/api/metricsCatalogApi'
+import { metricsCatalogApi, type MetricListParams } from '@/api/metricsCatalog'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {

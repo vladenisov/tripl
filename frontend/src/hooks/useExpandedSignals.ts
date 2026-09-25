@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { MonitoringSignal } from '@/types'
 import { expandedSignalsKey } from '@/lib/queryKeys'
@@ -28,7 +28,7 @@ export function useExpandedSignals(
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   return useQuery<MonitoringSignal[]>({
     queryKey: expandedSignalsKey(slug),
-    queryFn: () => metricsApi.getActiveSignals(slug!, undefined, { expanded: true }),
+    queryFn: () => eventMetricsApi.getActiveSignals(slug!, undefined, { expanded: true }),
     enabled: !!slug && enabled,
     staleTime: 30_000,
     refetchInterval,

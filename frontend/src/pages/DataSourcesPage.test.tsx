@@ -1024,8 +1024,47 @@ describe('DataSourcesPage', () => {
     expect(posted).toBe(false)
   })
 
-  // DATA-30: there is no test-before-save endpoint, so a new source is tested
-  // the moment it is saved instead of sitting "untested".
+  it('tests an unsaved connection before Create, storing nothing (DATA-30)', async () => {
+    const bodies: unknown[] = []
+    const posts: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') posts.push(url)
+      if (url.endsWith('/api/v1/data-sources/test') && init?.method === 'POST') {
+        bodies.push(JSON.parse(String(init.body)))
+        return Promise.resolve(
+          jsonResponse({
+            success: false,
+            message: 'Connection test failed: could not reach the data source',
+            tested_at: '2026-04-10T09:00:00Z',
+          }),
+        )
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Prod CH' } })
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'ch.exmaple.com' } })
+    fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'analytics' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+
+    expect(await screen.findByText(/could not reach the data source/)).toHaveAttribute('role', 'status')
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).toMatchObject({ db_type: 'clickhouse', host: 'ch.exmaple.com', database_name: 'analytics' })
+    // Nothing was created.
+    expect(posts.every(url => url.endsWith('/api/v1/data-sources/test'))).toBe(true)
+
+    // The answer is for the inputs it was run with.
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'ch.example.com' } })
+    expect(screen.queryByText(/could not reach the data source/)).toBeNull()
+  })
+
+  // DATA-30: a new source is also tested the moment it is saved, so its card
+  // shows health right away instead of sitting "untested".
   it('tests a new connection as soon as it is created', async () => {
     const created: DataSource = { ...DATA_SOURCE, id: 'ds-new', name: 'Prod CH' }
     let sources: DataSource[] = [DATA_SOURCE]

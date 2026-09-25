@@ -542,7 +542,12 @@ class AlertDestinationCreate(BaseModel):
     @field_validator("chat_id")
     @classmethod
     def normalize_chat_id(cls, value: str | None) -> str | None:
-        if value is None:
+        # Blank is "not given", like the secret fields above: a form that holds
+        # every channel's inputs sends ``chat_id: ""`` for a Slack or webhook
+        # destination, and refusing that as a missing Telegram chat id failed a
+        # create that never involved Telegram (ALR-1). The telegram arm of
+        # ``validate_channel_config`` still requires one.
+        if value is None or not value.strip():
             return None
         return normalize_required_text(value, field_name="Telegram chat_id")
 

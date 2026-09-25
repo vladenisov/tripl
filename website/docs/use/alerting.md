@@ -73,7 +73,9 @@ plain text automatically if a message can't be rendered safely.
 Credentials are write-only. When you edit a destination, a secret box left empty
 keeps the stored value. The webhook's custom header is a pair: a new header name
 needs its value. To stop sending a stored header, use **Remove secret header**
-in the edit dialog.
+in the edit dialog; it removes the stored secret value too. Over the API, sending
+`webhook_header_name: null` in the update does the same. A null or blank
+`webhook_header_value` next to a kept name keeps the stored secret.
 
 ### Delivery schedule — send now, or collect into a digest {#delivery-schedule}
 
@@ -722,6 +724,14 @@ Each comes back as a `*_used` / `*_saved` pair (`min_percent_delta_used`,
 In the replay dialog a blank box means "use the saved value". A box holding
 something outside the bounds, such as a negative number, is marked invalid and
 blocks **Replay**. It is not read as blank.
+
+The request body can also carry a **draft**: the same body a rule edit saves
+(`PATCH …/rules/{rule_id}`). The replay then runs the saved rule with the
+draft's changes laid over it — checked the way Save checks them, and written
+nowhere. The overrides above apply on top of the draft, and the `*_saved`
+fields still report the rule as stored. In the rule editor, **Replay saved
+rule** replays the rule on file; once you have changed something on the form,
+**Replay with these edits** replays the form as it stands, before you save it.
 
 Each firing also reports its scan. The preview table shows that scan's name,
 or **Project-wide** when the anomaly has no scan, so similarly named scopes

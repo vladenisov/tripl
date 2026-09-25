@@ -34,9 +34,11 @@ from tripl.models.event_photo_comment import (
     EventPhotoComment,
 )
 from tripl.models.event_type import EventType
+from tripl.models.user import User
 from tripl.schemas.event_photo import EventCommentActionRequest
 from tripl.services._branch_counterparts import main_counterparts
 from tripl.services._plan_branch_locks import hold_branch_for_plan_write
+from tripl.services.event_photo_service import ensure_comment_deletable
 from tripl.services.project_service import get_project_id_by_slug
 
 
@@ -173,11 +175,14 @@ async def delete_comment(
     slug: str,
     event_id: uuid.UUID,
     comment_id: uuid.UUID,
+    *,
+    user: User,
 ) -> None:
     thread = await event_thread(session, slug, event_id)
     comment = await session.get(EventPhotoComment, comment_id)
     if comment is None or comment.event_id not in thread.anchors:
         raise HTTPException(status_code=404, detail="Comment not found")
+    ensure_comment_deletable(comment, user)
     await session.delete(comment)
     await session.commit()
 

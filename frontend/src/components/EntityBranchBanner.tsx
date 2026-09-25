@@ -16,8 +16,9 @@ interface EntityBranchBannerProps {
    * Where "View main plan" goes from a row that lives on a branch. Not `path`:
    * a branch row's id names the branch row, and reads are lenient, so main
    * rendered that same branch row again under a "you are viewing main" warning
-   * and its Save 404'd (EVT-42). The row's main twin is not on the API, so a
-   * page offers somewhere on main that exists (its list), or no link at all.
+   * and its Save 404'd (EVT-42). A page passes the row's main twin
+   * (`main_event_id`) when the server names one, else somewhere on main that
+   * exists (its list), or no link at all.
    */
   mainPath?: string
 }

@@ -15,7 +15,14 @@ from tripl.schemas.app_settings import (
     ServiceSettingsUpdate,
     SettingsTestResponse,
 )
-from tripl.services import _email_test_send, app_settings_service, audit_service, llm_service
+from tripl.schemas.event_photo import PhotoLimitsResponse
+from tripl.services import (
+    _email_test_send,
+    app_settings_service,
+    audit_service,
+    event_photo_service,
+    llm_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +90,18 @@ async def put_service_settings(
     clients that issue PUT; settings are a sparse override map with no full
     "replace all" semantics."""
     return await patch_service_settings(session, _current_user, payload)
+
+
+@router.get("/photo-limits", response_model=PhotoLimitsResponse)
+async def get_photo_limits() -> PhotoLimitsResponse:
+    """The photo upload limit, readable by every signed-in user.
+
+    The rest of this router is owner-only; this one value is not, because it is
+    an editor's upload it refuses and the browser should say so before the
+    upload rather than after (EVT-28). The router's own dependency still
+    requires a session.
+    """
+    return PhotoLimitsResponse(photo_max_size_mb=event_photo_service.max_size_mb())
 
 
 @router.get("/ai", response_model=AiSettingsResponse)

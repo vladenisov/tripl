@@ -1,9 +1,10 @@
 /**
- * Wiring between the metric editor's field-keyed validation messages and the
- * controls they describe. Every message is keyed by the DOM id of its control;
- * the inline message under it gets `${id}-error`, and the control points at it.
- * Before this the messages were plain paragraphs no control referenced, so a
- * screen reader heard neither that a field was invalid nor why (MET-15).
+ * Wiring between a settings-style form's field-keyed validation messages and
+ * the controls they describe (the metric and fact-table editors). Every message
+ * is keyed by the DOM id of its control; the inline message under it (rendered
+ * by `FormField`) gets `${id}-error`, and the control points at it. Before this
+ * the messages were plain paragraphs no control referenced, so a screen reader
+ * heard neither that a field was invalid nor why (MET-15, MET-35).
  */
 
 export type FieldErrors = Readonly<Record<string, string>>

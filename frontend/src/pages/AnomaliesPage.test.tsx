@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MonitoringSignal, ScanConfig } from '@/types'
 import AnomaliesPage from './AnomaliesPage'
 
-vi.mock('@/api/metrics', () => ({
-  metricsApi: { getActiveSignals: vi.fn() },
+vi.mock('@/api/eventMetrics', () => ({
+  eventMetricsApi: { getActiveSignals: vi.fn() },
 }))
 // Kept mocked although the page no longer imports it: the point of tripl-y4wt is
 // that this catalog download (limit 10_000 — 2641 rows / 1.7s on windy-ios) must
@@ -19,7 +19,7 @@ vi.mock('@/api/scans', () => ({
   scansApi: { list: vi.fn() },
 }))
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { eventsApi } from '@/api/events'
 import { scansApi } from '@/api/scans'
 
@@ -80,7 +80,7 @@ function renderAnomalies(entry = '/p/demo/anomalies') {
 }
 
 beforeEach(() => {
-  vi.mocked(metricsApi.getActiveSignals).mockReset()
+  vi.mocked(eventMetricsApi.getActiveSignals).mockReset()
   vi.mocked(eventsApi.list).mockReset()
   vi.mocked(scansApi.list).mockReset()
   vi.mocked(scansApi.list).mockResolvedValue(makeScans([]))
@@ -92,7 +92,7 @@ afterEach(() => {
 
 describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
   it('renders a metric signal with the name the server resolved and links to the drilldown', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_ref: 'metric-abc', scope_name: 'Checkout conversion' }),
     ])
 
@@ -112,7 +112,7 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
     // The metric was deleted out from under the anomaly row, so the server sends
     // scope_name: null. "Drop on Metric 9136d575" reads as a name and is what the
     // page used to show for every row for the first 4.4s — the whole of tripl-y4wt.
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_ref: '9136d575-0000-4000-8000-000000000001', direction: 'drop' }),
     ])
 
@@ -137,7 +137,7 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
     // gated on isLoading — so the shimmer made a permanent state read as a
     // pending one, and the operator waits and refreshes on a row that will never
     // change.
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ direction: 'drop' }),
       makeSignal({ scope_type: 'event', scope_ref: 'ev-9', event_id: null }),
     ])
@@ -154,7 +154,7 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
   })
 
   it('names event-type and event scopes from the signal payload', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_type: 'event_type', scope_ref: 'et-1', scope_name: 'Signup' }),
       makeSignal({ scope_type: 'event', scope_ref: 'ev-1', scope_name: 'Checkout tapped' }),
     ])
@@ -166,7 +166,7 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
   })
 
   it('does not download the event catalog just to label rows', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_type: 'event', scope_ref: 'ev-1', scope_name: 'Checkout tapped' }),
     ])
 
@@ -177,7 +177,7 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
   })
 
   it('tags incident children folded under a project_total spike, but not the parent', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_type: 'project_total', scope_ref: 'pt-1', incident_child: false }),
       makeSignal({
         scope_type: 'event_type',
@@ -203,7 +203,7 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
 
 describe('AnomaliesPage — severity label (tripl-yfsj.9)', () => {
   it('shows "dropped to zero" instead of the clamped z-score for a drop-to-zero signal', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({
         scope_type: 'event_type',
         scope_ref: 'et-1',
@@ -227,7 +227,7 @@ describe('AnomaliesPage — severity label (tripl-yfsj.9)', () => {
 
   it('keeps the numeric z-score for a non-zero signal', async () => {
     // makeSignal() defaults to a spike with z_score 8 and actual_count 120.
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_type: 'event_type', scope_ref: 'et-1', scope_name: 'Signup' }),
     ])
 
@@ -245,7 +245,7 @@ describe('AnomaliesPage — counts (tripl-nj4n)', () => {
     // `metric` is a first-class scope here and a `%` catalog metric STORES a
     // fraction (0.08 == 8%), so Math.round wrote "1.2 vs 0" on a row whose
     // severity was computed from 0.4. Below 1 the decimals are the number.
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({
         scope_name: 'Checkout conversion',
         actual_count: 1.2,
@@ -264,7 +264,7 @@ describe('AnomaliesPage — counts (tripl-nj4n)', () => {
 
 describe('AnomaliesPage — magnitude filter', () => {
   it('hides low-magnitude signals at the default level and reveals them under "All"', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       // relEffect = 220/80 = 2.75 → clears "Significant".
       makeSignal({
         scope_type: 'event_type',
@@ -297,7 +297,7 @@ describe('AnomaliesPage — magnitude filter', () => {
   })
 
   it('keeps the magnitude control reachable by its accessible name', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_name: 'Checkout conversion' }),
     ])
 
@@ -308,7 +308,7 @@ describe('AnomaliesPage — magnitude filter', () => {
   })
 
   it('shows a lower-the-filter hint (not the empty state) when the level hides everything', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       // relEffect = 2/80 = 0.025 → below the default "Significant".
       makeSignal({
         scope_type: 'event_type',
@@ -349,7 +349,7 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
   }
 
   it('pre-selects the level named by ?level= so a bookmarked view survives', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([tinySignal()])
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([tinySignal()])
 
     renderAnomalies('/p/demo/anomalies?level=all')
 
@@ -359,7 +359,7 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
   })
 
   it('writes the level back to the URL, and clears the parameter on the default', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([tinySignal()])
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([tinySignal()])
 
     renderAnomalies()
 
@@ -373,7 +373,7 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
   })
 
   it('degrades an unknown ?level= to the default instead of showing nothing', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_type: 'event_type', scope_ref: 'et-1', scope_name: 'Signup' }),
       tinySignal(),
     ])
@@ -389,7 +389,7 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
   })
 
   it('keeps ?scan= and ?level= independent of each other', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([tinySignal()])
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([tinySignal()])
     vi.mocked(scansApi.list).mockResolvedValue(makeScans([{ id: 'scan-1', name: 'Live' }]))
 
     renderAnomalies('/p/demo/anomalies?scan=scan-1&level=all')
@@ -431,7 +431,7 @@ describe('AnomaliesPage — scan facet', () => {
   ])
 
   it('narrows the list to one scan, with per-scan counts on the options', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     vi.mocked(scansApi.list).mockResolvedValue(scans)
 
     renderAnomalies()
@@ -456,7 +456,7 @@ describe('AnomaliesPage — scan facet', () => {
   })
 
   it('omits the facet when every signal comes from the same scan', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({
         scan_config_id: 'scan-legacy',
         scope_type: 'event',
@@ -479,7 +479,7 @@ describe('AnomaliesPage — scan facet', () => {
     // scan_config_id: null for it. Keyed by the raw scan id, that null reached
     // `id.slice(0, 8)` in the option label and threw, white-screening the whole
     // page the first hour any metric fired.
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       ...legacyAndLiveSignals(),
       makeSignal({
         scan_config_id: null,
@@ -504,7 +504,7 @@ describe('AnomaliesPage — scan facet', () => {
   })
 
   it('falls back to the short scan ref when the scan list has not resolved', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     // Scan names unavailable (still loading, or the scan was deleted).
     vi.mocked(scansApi.list).mockResolvedValue(makeScans([]))
 
@@ -515,7 +515,7 @@ describe('AnomaliesPage — scan facet', () => {
   })
 
   it('offers "show all scans" when the selected scan has nothing at this level', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       // relEffect 2.75 → clears "Major" (≥1); relEffect 0.05 → clears neither.
       makeSignal({
         scan_config_id: 'scan-legacy',
@@ -565,7 +565,7 @@ describe('AnomaliesPage — scan facet', () => {
   // it produced. Before this the facet was component state only, so the link had
   // nowhere to land but the unfiltered page (tripl-3y7z.2).
   it('pre-selects the scan named by ?scan= and shows only its signals', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     vi.mocked(scansApi.list).mockResolvedValue(scans)
 
     renderAnomalies('/p/demo/anomalies?scan=scan-live')
@@ -588,7 +588,7 @@ describe('AnomaliesPage — scan facet', () => {
     // A deleted scan, a stale bookmark or a hand-edited URL must not produce a
     // page that shows nothing and explains nothing. This is the `activeScanId`
     // guard: dropping it on the way to reading the URL would empty the list.
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     vi.mocked(scansApi.list).mockResolvedValue(scans)
 
     renderAnomalies('/p/demo/anomalies?scan=does-not-exist')
@@ -609,7 +609,7 @@ describe('AnomaliesPage — scan facet', () => {
     // since closed. Silently widening to "all" answers a question the user did
     // not ask — a full list of a DIFFERENT scan's anomalies, with no control
     // showing that the filter was discarded (tripl-3y7z.2).
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({
         scan_config_id: 'scan-legacy',
         scope_type: 'event',
@@ -639,7 +639,7 @@ describe('AnomaliesPage — scan facet', () => {
   })
 
   it('writes the facet selection back to ?scan= so the narrowed view is linkable', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue(legacyAndLiveSignals())
     vi.mocked(scansApi.list).mockResolvedValue(scans)
 
     renderAnomalies()

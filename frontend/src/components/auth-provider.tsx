@@ -16,6 +16,7 @@ import {
 } from './auth-context'
 import type { AuthUser } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { stopAllMetricCollectionWatches } from '@/hooks/useMetricCollectionWatcher'
 // Eager on purpose: the dialog exists to keep an unsaved page alive, and a lazy
 // chunk that failed to load after a deploy would reload that page away.
 import { SessionExpiredDialog } from './session-expired-dialog'
@@ -42,6 +43,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     mutationFn: authApi.logout,
     onMutate: () => {
       loggingOutRef.current = true
+      // Collect watches outlive every page, so they end with the session: a
+      // poll still running after sign-out would toast the previous user's
+      // metric to whoever signs in next.
+      stopAllMetricCollectionWatches()
     },
     onSettled: async () => {
       loggingOutRef.current = false

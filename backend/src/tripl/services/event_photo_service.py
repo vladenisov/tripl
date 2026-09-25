@@ -16,6 +16,7 @@ from tripl.models.event import Event
 from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.plan_branch import BranchKind, BranchStatus
+from tripl.models.user import User
 from tripl.services._plan_branch_locks import hold_branch_for_plan_write
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.storage import PhotoStorage, get_photo_storage, storage_for
@@ -51,8 +52,13 @@ def _allowed_mime_types() -> set[str]:
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 
+def max_size_mb() -> int:
+    """The per-file upload limit in MiB, exactly as ``read_upload`` applies it."""
+    return max(1, settings.photo_max_size_mb)
+
+
 def _max_size_bytes() -> int:
-    return max(1, settings.photo_max_size_mb) * 1024 * 1024
+    return max_size_mb() * 1024 * 1024
 
 
 # Room for the multipart framing around the one file part: boundaries, part
@@ -470,17 +476,38 @@ async def create_comment(
     return comment
 
 
+def ensure_comment_deletable(comment: EventPhotoComment, user: User) -> None:
+    """Only the comment's author or an owner may delete it.
+
+    The editor gate on the route answers "may this user write to the project";
+    it does not make another editor's words theirs to remove. A comment whose
+    author was deleted (``user_id`` NULL) is left to owners. Shared by the event
+    and the photo threads, which are the same table.
+    """
+    if user.role == "owner":
+        return
+    if comment.user_id is not None and comment.user_id == user.id:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Only the comment's author or an owner can delete it",
+    )
+
+
 async def delete_comment(
     session: AsyncSession,
     slug: str,
     event_id: uuid.UUID,
     photo_id: uuid.UUID,
     comment_id: uuid.UUID,
+    *,
+    user: User,
 ) -> None:
     await get_photo(session, slug, event_id, photo_id)
     comment = await session.get(EventPhotoComment, comment_id)
     if comment is None or comment.photo_id != photo_id:
         raise HTTPException(status_code=404, detail="Comment not found")
+    ensure_comment_deletable(comment, user)
     await session.delete(comment)
     await session.commit()
 

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Eye, Loader2, Plus, Save, Trash2 } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
-import { factTablesApi } from '@/api/factTablesApi'
+import { factTablesApi } from '@/api/factTables'
 import { toast } from 'sonner'
 import { ColumnSuggestInput } from '@/components/column-suggest'
 import { ErrorState } from '@/components/error-state'
@@ -40,16 +40,16 @@ import { toIdentifier } from '@/lib/identifier'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { uid } from '@/lib/uid'
-// The metric editor's field row and error wiring, shared so the two sibling
-// editors report validation the same way: inline under the field, linked from
+// The shared settings field row and error wiring: the metric and fact-table
+// editors report validation the same way — inline under the field, linked from
 // the summary, focus moved to the first one (MET-35).
-import { MetricField } from '@/pages/metrics/MetricField'
+import { FormField } from '@/components/settings/form-field'
 import {
   errorAria,
   fieldErrorId,
   focusField,
   type FieldErrors,
-} from '@/pages/metrics/fieldErrors'
+} from '@/lib/fieldErrors'
 
 const DEFAULT_COLOR = '#6366f1'
 
@@ -520,7 +520,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             the layout. */}
         <fieldset disabled={!canWrite} className="contents">
           <SCard title="Details">
-            <MetricField
+            <FormField
               label="Display name"
               htmlFor="fact-display-name"
               required
@@ -534,8 +534,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 aria-required
                 {...errorAria(fieldErrors, 'fact-display-name')}
               />
-            </MetricField>
-            <MetricField
+            </FormField>
+            <FormField
               label="Internal name"
               // After creation this row holds the name as text, not a control:
               // `false` names it as a group instead of pointing the label at a
@@ -560,8 +560,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                   {name}
                 </div>
               )}
-            </MetricField>
-            <MetricField label="Description" htmlFor="fact-description">
+            </FormField>
+            <FormField label="Description" htmlFor="fact-description">
               <TextArea
                 id="fact-description"
                 value={description}
@@ -569,8 +569,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 rows={2}
                 placeholder="What does this fact table represent?"
               />
-            </MetricField>
-            <MetricField label="Color" htmlFor="fact-color" last>
+            </FormField>
+            <FormField label="Color" htmlFor="fact-color" last>
               <input
                 id="fact-color"
                 type="color"
@@ -579,11 +579,11 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 className="h-8 w-12 cursor-pointer rounded border bg-transparent"
                 style={{ borderColor: 'var(--border)' }}
               />
-            </MetricField>
+            </FormField>
           </SCard>
 
           <SCard title="Source" description="A full read-only SELECT or WITH ... SELECT plus the warehouse it runs against.">
-            <MetricField
+            <FormField
               label="Data source"
               htmlFor="fact-data-source"
               required
@@ -597,8 +597,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 aria-required
                 {...errorAria(fieldErrors, 'fact-data-source')}
               />
-            </MetricField>
-            <MetricField
+            </FormField>
+            <FormField
               label="SQL"
               htmlFor="fact-sql"
               required
@@ -620,8 +620,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 ariaInvalid={errorAria(fieldErrors, 'fact-sql')['aria-invalid']}
                 ariaDescribedBy={errorAria(fieldErrors, 'fact-sql')['aria-describedby']}
               />
-            </MetricField>
-            <MetricField
+            </FormField>
+            <FormField
               label="Timestamp column"
               htmlFor="fact-timestamp"
               required
@@ -638,7 +638,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 aria-required
                 {...errorAria(fieldErrors, 'fact-timestamp')}
               />
-            </MetricField>
+            </FormField>
           </SCard>
 
           <SCard

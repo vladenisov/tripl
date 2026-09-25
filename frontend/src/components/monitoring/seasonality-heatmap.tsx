@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import type { SeasonalityCell } from '@/types/metrics'
@@ -101,7 +101,7 @@ export function SeasonalityHeatmap({
     // the By version and Breakdowns tabs do.
     queryKey: seasonalityKey(slug, scanConfigId, scopeType, scopeRef, rangeDays),
     queryFn: () =>
-      metricsApi.getSeasonalityHeatmap(slug, scanConfigId, {
+      eventMetricsApi.getSeasonalityHeatmap(slug, scanConfigId, {
         scope_type: scopeType,
         scope_ref: scopeRef,
         from: timeRange.from,

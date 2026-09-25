@@ -8,12 +8,12 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
 import { getErrorMessage } from '@/lib/utils'
-import { SILENT_ERROR_META } from "@/lib/errorFeedback"
+import { SILENT_ERROR_META, surfaceError } from "@/lib/errorFeedback"
+import { stripValueErrorPrefix } from "@/lib/alertStatus"
 import { formatDateTime } from "@/lib/datetime"
 import { countOf } from "@/lib/plural"
 import { describeCron, formatInProjectZone } from "./deliverySchedule"
 import { invalidateAlertingConfig } from "./alertingCache"
-import { toastAlertingWriteError } from "./writeErrorToast"
 
 interface DestinationCardProps {
   slug: string
@@ -57,7 +57,7 @@ export function DestinationCard({
       alertingApi.updateDestination(slug, destination.id, data),
     onSuccess: () => invalidateAlertingConfig(qc, slug),
     onError: error => {
-      toastAlertingWriteError(error)
+      surfaceError(error, stripValueErrorPrefix)
     },
   })
 

@@ -349,3 +349,40 @@ describe('RuleReplayDialog stale results (ALR-12)', () => {
   })
 })
 
+
+describe('RuleReplayDialog with unsaved edits (ALR-12)', () => {
+  it('sends the draft with every run and says it is replaying the edits', async () => {
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    const draft = { cooldown_minutes: 60, min_percent_delta: 50 }
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RuleReplayDialog
+          open
+          onOpenChange={() => {}}
+          slug="demo"
+          destinationId="destination-1"
+          rule={RULE}
+          scans={[]}
+          draft={draft}
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByRole('heading', { name: /with your unsaved edits/ })).toBeInTheDocument()
+    // The overrides are compared with the EDITED thresholds.
+    expect(screen.getByLabelText('Cooldown override in minutes')).toHaveAttribute('placeholder', 'edited: 60')
+
+    fireEvent.change(screen.getByLabelText('Sigma threshold override'), { target: { value: '4.5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+
+    await waitFor(() => expect(simulate).toHaveBeenCalledTimes(2))
+    expect(simulate).toHaveBeenCalledWith('demo', 'destination-1', 'rule-1', 7, undefined, draft)
+    expect(simulate).toHaveBeenCalledWith(
+      'demo', 'destination-1', 'rule-1', 7, { sigmaThreshold: 4.5 }, draft,
+    )
+    expect(await screen.findByText('Your edits')).toBeInTheDocument()
+  })
+})

@@ -5,8 +5,8 @@ import { eventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { METRIC_COMPOSITIONS, type EventType, type MetricComposition } from '@/types'
 import { EventRefPicker, type EventRef } from './EventRefPicker'
-import { MetricField } from './MetricField'
-import { errorAria, type FieldErrors } from './fieldErrors'
+import { FormField } from '@/components/settings/form-field'
+import { errorAria, type FieldErrors } from '@/lib/fieldErrors'
 import type { MetricDraft } from './metricDraft'
 
 // Human-readable labels for the composition select (raw option values are kept
@@ -57,15 +57,15 @@ export function EventCompositionFields({
 
   return (
     <SCard title="Event composition" description="Combine existing event series.">
-      <MetricField label="Composition" htmlFor="metric-composition" required>
+      <FormField label="Composition" htmlFor="metric-composition" required>
         <Select
           id="metric-composition"
           value={draft.composition}
           onChange={value => patch({ composition: value as MetricComposition })}
           options={METRIC_COMPOSITIONS.map(c => ({ value: c, label: COMPOSITION_LABEL[c] }))}
         />
-      </MetricField>
-      <MetricField
+      </FormField>
+      <FormField
         label={isRatio ? 'Numerator event' : 'Event'}
         htmlFor="metric-numerator"
         required
@@ -85,9 +85,9 @@ export function EventCompositionFields({
           disabled={disabled}
           {...errorAria(errors, 'metric-numerator')}
         />
-      </MetricField>
+      </FormField>
       {isRatio && (
-        <MetricField
+        <FormField
           label="Denominator event"
           htmlFor="metric-denominator"
           required
@@ -107,10 +107,10 @@ export function EventCompositionFields({
             disabled={disabled}
             {...errorAria(errors, 'metric-denominator')}
           />
-        </MetricField>
+        </FormField>
       )}
       {draft.composition === 'per_distinct_user' && (
-        <MetricField
+        <FormField
           label="User ID column"
           htmlFor="metric-user-id-column"
           last
@@ -125,7 +125,7 @@ export function EventCompositionFields({
               placeholder="user_id"
             />
           </div>
-        </MetricField>
+        </FormField>
       )}
     </SCard>
   )

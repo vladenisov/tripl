@@ -5,14 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataSource, FactTableListItem, FactTableListResponse } from '@/types'
 import { FactTablesList } from './FactTablesList'
 
-vi.mock('@/api/factTablesApi', () => ({
+vi.mock('@/api/factTables', () => ({
   factTablesApi: { list: vi.fn() },
 }))
 vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
 }))
 
-import { factTablesApi } from '@/api/factTablesApi'
+import { factTablesApi } from '@/api/factTables'
 import { dataSourcesApi } from '@/api/dataSources'
 
 function makeItem(overrides: Partial<FactTableListItem>): FactTableListItem {
