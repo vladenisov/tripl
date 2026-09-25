@@ -5,8 +5,8 @@ import { VariableValueContextTrigger } from '@/components/variable-value-context
 import type { Event as TEvent, EventType, FieldDefinition } from '@/types'
 import { SURFACE_CARD, SURFACE_STYLE } from './surface'
 
-const EV_TH_CLASS = 'h-auto px-[14px] py-2 text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
-const EV_TD_CLASS = 'px-[14px] py-[9px] text-[12.5px] align-middle'
+const EV_TH_CLASS = 'h-auto px-[14px] py-2 text-left text-2xs font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
+const EV_TD_CLASS = 'px-[14px] py-[9px] text-body-sm align-middle'
 
 export function EventFieldsTable({
   eventType,
@@ -26,8 +26,8 @@ export function EventFieldsTable({
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
       <div className="flex items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-        <span className="flex-1 text-[12.5px] font-semibold">Fields</span>
-        <span className="mono text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="flex-1 text-body-sm font-semibold">Fields</span>
+        <span className="mono text-2xs" style={{ color: 'var(--fg-subtle)' }}>
           {fields.length} · {requiredCount} required
         </span>
       </div>
@@ -61,7 +61,7 @@ export function EventFieldsTable({
                     <Chip size="xs" variant="outline">{def.field_type}</Chip>
                   </TableCell>
                   <TableCell className={EV_TD_CLASS}>
-                    <span className="mono inline-flex items-center gap-1.5 text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+                    <span className="mono inline-flex items-center gap-1.5 text-caption" style={{ color: 'var(--fg-muted)' }}>
                       <span className="break-all">{fv?.value || '—'}</span>
                       {fv?.variable_values?.length ? (
                         <VariableValueContextTrigger contexts={fv.variable_values} />

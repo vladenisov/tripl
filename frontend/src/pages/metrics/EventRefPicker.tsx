@@ -173,12 +173,12 @@ export function EventRefPicker({
         )}
       </select>
       {hiddenCount > 0 && (
-        <p className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
           {hiddenCount} more events not listed — search to narrow.
         </p>
       )}
       {rosterQuery.isError && (
-        <p role="alert" className="text-[11.5px]" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="text-caption" style={{ color: 'var(--danger)' }}>
           Could not load events.{' '}
           <button
             type="button"

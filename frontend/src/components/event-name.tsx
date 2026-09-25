@@ -1,7 +1,7 @@
 import { Fragment } from 'react'
 import type { ReactNode } from 'react'
 import { UNNAMED_EVENT_LABEL } from '@/lib/eventName'
-import { NAME_SEGMENT_SEPARATOR, splitEventName } from '@/pages/events/utils'
+import { NAME_SEGMENT_SEPARATOR, splitEventName } from '@/lib/eventNameSegments'
 
 function EmptySegment(): ReactNode {
   return (

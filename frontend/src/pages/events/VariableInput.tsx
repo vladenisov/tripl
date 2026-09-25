@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { AnchoredListbox } from '@/components/ui/anchored-listbox'
 import { cn } from '@/lib/utils'
 import { useEvDescribedBy } from './evFieldContext'
 import { TEXT_INPUT_CLASS } from './eventFormLayout'
@@ -6,26 +7,20 @@ import { filterVariableSuggestions, type VariableSuggestion } from './variableSu
 
 export type { VariableSuggestion }
 
-export function SuggestionRow({
-  suggestion,
-  selected = false,
-}: {
-  suggestion: VariableSuggestion
-  selected?: boolean
-}) {
+export function SuggestionRow({ suggestion }: { suggestion: VariableSuggestion }) {
   const bindings = suggestion.bindings ?? []
   const values = suggestion.allowed_values ?? []
-  const detailClassName = selected ? 'text-accent-foreground/80' : 'text-muted-foreground/80'
+  const detailClassName = 'text-muted-foreground/80'
   return (
     <>
-      <code className={`shrink-0 font-mono ${selected ? 'text-accent-foreground' : 'text-primary'}`}>
+      <code className="shrink-0 font-mono text-primary">
         {`\${${suggestion.name}}`}
       </code>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5 overflow-hidden text-left">
         {suggestion.description && (
           <span
             title={suggestion.description}
-            className={`w-full truncate ${selected ? 'text-accent-foreground/80' : 'text-muted-foreground'}`}
+            className="w-full truncate text-muted-foreground"
           >
             {suggestion.description}
           </span>
@@ -44,44 +39,51 @@ export function SuggestionRow({
 /**
  * The dropdown under a variable-aware input, shared by the single-line input and
  * the JSON editor so the two cannot drift. Height-limited and scrolling, and the
- * highlighted option is kept in view as the arrow keys move it (EVT-24).
+ * highlighted option is kept in view as the arrow keys move it (EVT-24). It is
+ * portalled and anchored to the field, so a clipping card no longer cuts it
+ * off (DS-35); the highlight is the neutral hover surface, not the brand
+ * colour (DS-10).
  */
 export function SuggestionListbox({
   id,
+  open,
+  anchorRef,
+  onDismiss,
   suggestions,
   highlightIdx,
   onPick,
 }: {
   id: string
+  open: boolean
+  anchorRef: RefObject<HTMLElement | null>
+  onDismiss: () => void
   suggestions: VariableSuggestion[]
   highlightIdx: number
   onPick: (name: string) => void
 }) {
   useEffect(() => {
+    if (!open) return
     const active = document.getElementById(`${id}-opt-${highlightIdx}`)
     // Optional call: jsdom does not implement scrollIntoView.
     active?.scrollIntoView?.({ block: 'nearest' })
-  }, [id, highlightIdx])
+  }, [id, open, highlightIdx])
   return (
-    <div
-      id={id}
-      role="listbox"
-      className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-popover p-1 shadow-md"
-    >
+    <AnchoredListbox id={id} open={open} anchorRef={anchorRef} onDismiss={onDismiss} ariaLabel="Variables">
       {suggestions.map((v, i) => (
         <button
           key={v.name}
           id={`${id}-opt-${i}`}
           type="button"
           role="option"
+          tabIndex={-1}
           aria-selected={i === highlightIdx}
           onMouseDown={e => { e.preventDefault(); onPick(v.name) }}
-          className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
+          className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-surface-hover text-foreground' : 'text-popover-foreground hover:bg-surface-hover'}`}
         >
-          <SuggestionRow suggestion={v} selected={i === highlightIdx} />
+          <SuggestionRow suggestion={v} />
         </button>
       ))}
-    </div>
+    </AnchoredListbox>
   )
 }
 
@@ -135,11 +137,14 @@ export function VariableInput({
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setShowMenu(false)
+      const target = e.target as Node
+      // The list is portalled, so a press on it (its scrollbar) is outside the wrapper.
+      if (document.getElementById(listboxId)?.contains(target)) return
+      if (wrapperRef.current && !wrapperRef.current.contains(target)) setShowMenu(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [])
+  }, [listboxId])
 
   const insert = useCallback((varName: string) => {
     const before = value.slice(0, insertPos)
@@ -222,9 +227,15 @@ export function VariableInput({
             }
           : {})}
       />
-      {open && (
-        <SuggestionListbox id={listboxId} suggestions={filtered} highlightIdx={highlightIdx} onPick={insert} />
-      )}
+      <SuggestionListbox
+        id={listboxId}
+        open={open}
+        anchorRef={wrapperRef}
+        onDismiss={() => setShowMenu(false)}
+        suggestions={filtered}
+        highlightIdx={highlightIdx}
+        onPick={insert}
+      />
     </div>
   )
 }

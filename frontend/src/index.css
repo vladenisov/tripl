@@ -6,9 +6,15 @@
 /* ── Design Tokens ─────────────────────────────────────────────────────── */
 
 :root {
+  /* Native controls (scrollbars, date pickers, autofill, spinners, the <select>
+     popup) follow the APP theme, not the OS. ThemeProvider also sets it inline
+     on <html>; these are the stylesheet's half of the same answer (DS-14). */
+  color-scheme: light;
+
+  /* The radius scale is derived from this one value in @theme below
+     (--radius-sm/-md/-lg/-xl); it used to be declared a second time here with
+     literal values that merely happened to match (DS-36). */
   --radius: 0.5rem;
-  --radius-sm: 0.375rem;
-  --radius-lg: 0.75rem;
 
   --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", Menlo, ui-monospace, monospace;
@@ -69,6 +75,21 @@
   --shadow-md: 0 4px 14px rgb(0 0 0 / 0.08);
   --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.12);
 
+  /* Stacking layers (DS-40). Named so a new surface picks a layer instead of
+     guessing a number, and so two layers can no longer tie: the bulk-action
+     bars and the drawer backdrop were both z-30, so a bulk bar painted above
+     the dimmed backdrop and stayed clickable behind an open drawer. Use as
+     `z-(--z-bar)`. Popovers share the modal layer on purpose: Radix portals
+     them after the dialog in DOM order, so a select inside a dialog opens
+     above it. */
+  --z-sticky: 20;        /* sticky headers and in-page bars */
+  --z-bar: 30;           /* fixed bulk-action bars */
+  --z-backdrop: 40;      /* off-canvas drawer backdrop */
+  --z-drawer: 41;        /* off-canvas drawers / rails */
+  --z-modal: 50;         /* dialog overlays and content */
+  --z-popover: 50;       /* menus, selects, popovers, tooltips, listboxes */
+  --z-skip-link: 100;
+
   /* shadcn mapping — keeps existing UI kit working */
   --background: var(--bg);
   --foreground: var(--fg);
@@ -81,6 +102,11 @@
   --secondary: var(--surface-hover);
   --secondary-foreground: var(--fg);
   --muted: var(--surface-hover);
+  /* Naming trap (DS-22): shadcn's `muted-foreground` is --fg-SUBTLE (the
+     0.50-lightness caption grey), not --fg-muted (the darker secondary-text
+     grey). `text-muted-foreground` and `text-fg-subtle` are the same colour;
+     reach for `text-fg-muted` when secondary text is meant. Likewise danger
+     text has one spelling to use: `text-danger` (== `text-destructive`). */
   --muted-foreground: var(--fg-subtle);
   --accent-foreground: var(--accent-fg);
   --destructive: var(--danger);
@@ -99,6 +125,22 @@
   --chart-4: var(--warning);
   --chart-5: var(--danger);
 
+  /* Categorical palette for multi-series charts (DS-23 / MON-36), read by
+     SERIES_COLORS in components/ui/chart-format.ts. Fixed hues, not theme
+     roles: the accent, the status tones and the neutral greys already mean
+     something on those charts (latest release, pre-release, "Other", anomaly
+     dots), so a slot built from them drew two series in one colour. The hues
+     skip the red / amber band and the default teal accent, and each value is
+     held to 3:1 against the chart surfaces in src/theme-contrast.test.ts. */
+  --series-1: oklch(0.52 0.15 258);
+  --series-2: oklch(0.52 0.13 148);
+  --series-3: oklch(0.52 0.17 305);
+  --series-4: oklch(0.55 0.11 105);
+  --series-5: oklch(0.55 0.1 225);
+  --series-6: oklch(0.53 0.18 340);
+  --series-7: oklch(0.42 0.08 170);
+  --series-8: oklch(0.45 0.14 280);
+
   --sidebar: var(--bg-sunken);
   --sidebar-foreground: var(--fg);
   --sidebar-primary: var(--accent);
@@ -111,6 +153,18 @@
 }
 
 .dark {
+  color-scheme: dark;
+
+  /* Chart series, dark values of the same hues (see :root). */
+  --series-1: oklch(0.72 0.13 258);
+  --series-2: oklch(0.75 0.15 148);
+  --series-3: oklch(0.74 0.14 305);
+  --series-4: oklch(0.8 0.14 105);
+  --series-5: oklch(0.78 0.11 225);
+  --series-6: oklch(0.74 0.15 340);
+  --series-7: oklch(0.66 0.1 170);
+  --series-8: oklch(0.8 0.09 280);
+
   --bg: oklch(0.14 0.01 250);
   --bg-elevated: oklch(0.17 0.012 250);
   --bg-sunken: oklch(0.11 0.01 250);
@@ -272,8 +326,11 @@
 .tripl-table tbody tr {
   height: var(--row-h);
   transition: background 0.12s ease;
-  content-visibility: auto;
-  contain-intrinsic-size: auto var(--row-h);
+  /* No `content-visibility: auto` here: size and layout containment do not
+     apply to internal table boxes (CSS Containment §3), so on a <tr> it was
+     ignored and only suggested a row-virtualisation safeguard that did not
+     exist (DS-44). A long table that needs it gets real virtualisation, as the
+     events catalog does. */
 }
 
 .tripl-table tbody tr:hover {
@@ -348,6 +405,11 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  /* The brand colour, NOT a hover surface. shadcn's menus, selects and badges
+     read `bg-accent` as "subtle highlight"; here that painted every focused
+     menu row a solid brand bar and left --fg text under 4.5:1 on it. Those
+     components highlight with `bg-surface-hover` instead, like the command
+     palettes (DS-10). */
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
@@ -393,8 +455,23 @@
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 4px);
   --radius-xl: calc(var(--radius) + 8px);
-  --font-family-sans: var(--font-sans);
-  --font-family-mono: var(--font-mono);
+  /* Named radii for the two shapes the app draws by hand (DS-20): a control
+     (`rounded-control`, was rounded-[7px]) and a card (`rounded-card`, was
+     rounded-[10px]). */
+  --radius-control: 7px;
+  --radius-card: 10px;
+
+  /* Type scale (DS-20). The app's dense UI sits between Tailwind's steps, and
+     authors picked from 21 arbitrary sizes — 10, 10.5, 11, 11.5, 12, 12.5px
+     are six steps inside 2.5px. New code uses these; the arbitrary values are
+     migrated as files are touched. Named so none of them collides with
+     Tailwind's own text-xs/sm/base, which the ui/* kit still uses. */
+  --text-2xs: 10.5px;
+  --text-caption: 11.5px;
+  --text-body-sm: 12.5px;
+  --text-body: 13px;
+  --text-lead: 15px;
+  --text-title: 21px;
 }
 
 /* ── Global Base Styles ────────────────────────────────────────────────── */
@@ -415,9 +492,11 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+  /* No `color-scheme` of its own: it used to force `dark` in both themes, so
+     in Light every native <select> opened a dark popup and scrollbar beside
+     light fields. It inherits the root's now (DS-14). */
   select {
     @apply bg-background text-foreground;
-    color-scheme: dark;
   }
   .dark select option {
     background-color: var(--background);
@@ -515,10 +594,18 @@
 
 /* ── Focus ─────────────────────────────────────────────────────────────── */
 
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  border-radius: 4px;
+/* The fallback indicator for anything that brings no focus style of its own.
+   In `@layer base` so a component's utilities win: unlayered, it beat every
+   `outline-none` + `focus-visible:ring-*` design in the kit whatever the
+   specificity, so buttons and inputs showed a ring AND an outline. And no
+   `border-radius`: forcing 4px on the focused element reshaped round switches
+   and pill buttons on Tab; an outline follows the element's own radius
+   (DS-2). */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
 }
 
 /* ── Skip link ─────────────────────────────────────────────────────────── */
@@ -531,7 +618,7 @@
   position: absolute;
   top: -60px;
   left: 8px;
-  z-index: 100;
+  z-index: var(--z-skip-link);
   padding: 8px 14px;
   font-size: 12.5px;
   font-weight: 600;
@@ -576,12 +663,23 @@
 
 /* ── CodeMirror SQL editor ─────────────────────────────────────────────── */
 
-/* Token-driven theme so the editor follows :root light mode and every accent
-   variant defined above. Mirrors the Textarea frame: rounded-md, 1px subtle
-   border, sunken background, teal focus ring. */
-.cm-editor {
+/* Token-driven frame so the editor follows the app theme and every accent
+   variant above. The editor itself is the ONE frame: the wrapper in
+   sql-editor.tsx used to draw a second border with its own radius and clip
+   this one's focus ring with `overflow-hidden` (DS-7).
+
+   Scoped under `.sql-editor` for specificity, not just namespacing. The editor
+   is handed CodeMirror's light or one-dark theme to match the app (DS-1), and
+   those inject class-scoped rules (`.ͼo .cm-gutters`, `.ͼ3 .cm-tooltip`) that a
+   bare `.cm-editor …` selector ties with or loses to. The extra class keeps
+   the tokens on top; the theme still supplies the syntax colours, which is
+   why it is passed at all.
+
+   The edge is `--input`, the form-control boundary pinned to 3:1 (WCAG
+   1.4.11); `--border` measures ~1.3:1 and left the box barely visible (DS-8). */
+.sql-editor .cm-editor {
   background: var(--bg-sunken);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--input);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 13px;
@@ -592,40 +690,79 @@
    autocomplete tooltip is a child of .cm-editor (sibling of .cm-scroller), so
    keeping overflow off .cm-editor lets suggestions overflow the editor box
    instead of being clipped. */
-.cm-editor .cm-scroller {
+.sql-editor .cm-editor .cm-scroller {
   border-radius: inherit;
 }
 
-.cm-editor.cm-focused {
+/* The same ring ui/input shows, now that nothing clips it. */
+.sql-editor .cm-editor.cm-focused {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent);
 }
 
-.cm-editor .cm-content {
-  color: var(--fg);
-  caret-color: var(--accent);
-}
-
-.cm-editor .cm-gutters {
+.sql-editor .cm-editor .cm-gutters {
   background: var(--bg-sunken);
   border-right: 1px solid var(--border-subtle);
   color: var(--fg-faint);
 }
 
-.cm-editor .cm-cursor,
-.cm-editor .cm-dropCursor {
+.sql-editor .cm-editor .cm-cursor,
+.sql-editor .cm-editor .cm-dropCursor {
   border-left-color: var(--accent);
 }
 
-.cm-editor .cm-selectionBackground,
-.cm-editor.cm-focused .cm-selectionBackground,
-.cm-editor ::selection {
+.sql-editor .cm-editor .cm-selectionBackground,
+.sql-editor .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground,
+.sql-editor .cm-editor ::selection {
   background: var(--accent-soft);
 }
 
-.cm-editor .cm-activeLineGutter {
+.sql-editor .cm-editor .cm-activeLine,
+.sql-editor .cm-editor .cm-activeLineGutter {
   background: transparent;
+}
+
+/* Autocomplete and other tooltips (DS-1). Left to CodeMirror, the light base
+   theme painted a #f5f5f5 box under text that inherited near-white --fg in
+   dark mode, so the completion list could not be read. Popover tokens, like
+   every other menu in the app. */
+.sql-editor .cm-editor .cm-tooltip {
+  z-index: var(--z-popover);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  font-family: var(--font-mono);
+}
+
+.sql-editor .cm-editor .cm-tooltip-autocomplete > ul > li {
+  color: var(--popover-foreground);
+}
+
+.sql-editor .cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--surface-hover);
+  color: var(--fg);
+}
+
+.sql-editor .cm-editor .cm-completionLabel,
+.sql-editor .cm-editor .cm-completionMatchedText {
+  color: inherit;
+}
+
+.sql-editor .cm-editor .cm-completionMatchedText {
+  text-decoration: none;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.sql-editor .cm-editor .cm-completionDetail {
+  color: var(--fg-subtle);
+}
+
+.sql-editor .cm-editor .cm-placeholder {
+  color: var(--fg-faint);
 }
 
 /* Soft-wrap long lines in the SQL editor (tripl-h2sx.33).
@@ -648,6 +785,8 @@
  * the content never narrows to the scroller width and nothing wraps however the
  * white-space is set. Values copied from the base theme's `.cm-lineWrapping`. */
 .sql-editor .cm-editor .cm-content {
+  color: var(--fg);
+  caret-color: var(--accent);
   white-space: break-spaces;
   word-break: break-word;
   overflow-wrap: anywhere;

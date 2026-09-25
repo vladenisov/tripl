@@ -7,6 +7,7 @@ import { useActiveBranchId } from "@/hooks/useBranch"
 import type { EventType, EventTypeRelation } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Button } from "@/components/ui/button"
+import { IconButton } from "@/components/ui/icon-button"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -210,16 +211,15 @@ export function RelationsTab({ slug }: { slug: string }) {
                       <TableCell className="text-muted-foreground text-xs">{r.relation_type}</TableCell>
                       <TableCell>
                         {canWrite && (
-                          <Button
+                          <IconButton
                             variant="ghost"
-                            size="icon"
                             className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                            aria-label={`Delete relation between ${source} and ${target}`}
+                            label={`Delete relation between ${source} and ${target}`}
                             disabled={deleteMut.isPending}
                             onClick={() => handleDelete(r)}
                           >
                             <Trash2 className="h-3 w-3" aria-hidden="true" />
-                          </Button>
+                          </IconButton>
                         )}
                       </TableCell>
                     </TableRow>

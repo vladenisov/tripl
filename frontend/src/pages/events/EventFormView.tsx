@@ -1,3 +1,4 @@
+import { PageHeader } from '@/components/primitives/page-header'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -618,14 +619,12 @@ export function EventForm({
         <button
           type="button"
           onClick={onClose}
-          className="mb-[14px] inline-flex items-center gap-1 text-[11.5px] transition-colors hover:text-[var(--fg)]"
+          className="mb-[14px] inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
           style={{ color: 'var(--fg-muted)' }}
         >
           <ChevronLeft size={13} aria-hidden="true" /> {isNew ? 'Events' : event!.name}
         </button>
-        <h1 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">
-          {isNew ? 'New event' : canWrite ? 'Edit event' : 'Event'}
-        </h1>
+        <PageHeader className="mb-[18px]" title={isNew ? 'New event' : canWrite ? 'Edit event' : 'Event'} />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         {/* `disabled` on a fieldset reaches every native control inside it, so
@@ -778,7 +777,7 @@ export function EventForm({
                   type="button"
                   onClick={() => aiDescribeMut.mutate()}
                   disabled={aiDescribeMut.isPending}
-                  className="mt-[6px] inline-flex items-center gap-[5px] text-[11.5px] transition-colors hover:text-[var(--accent)]"
+                  className="mt-[6px] inline-flex items-center gap-[5px] text-caption transition-colors hover:text-[var(--accent)]"
                   style={{ color: 'var(--fg-subtle)' }}
                 >
                   {aiDescribeMut.isPending
@@ -912,7 +911,7 @@ export function EventForm({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 items-center rounded-[7px] px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
             {canWrite ? 'Cancel' : 'Close'}
@@ -922,7 +921,7 @@ export function EventForm({
               type="button"
               onClick={saveAndAddAnother}
               disabled={cannotSave}
-              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
               style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
             >
               {saveMut.isPending
@@ -936,7 +935,7 @@ export function EventForm({
               <button
                 type="submit"
                 disabled={cannotSave}
-                className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
+                className="inline-flex h-8 items-center gap-[6px] rounded-control px-3 text-[12px] font-medium disabled:opacity-60"
                 style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
               >
                 {saveMut.isPending

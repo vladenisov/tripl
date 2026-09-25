@@ -14,6 +14,7 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { DataSource, DbType } from '@/types'
 import { DB_TYPE_OPTIONS } from '@/types'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import {
   Dialog,
   DialogContent,
@@ -48,7 +49,7 @@ import { ErrorState } from '@/components/error-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
 import { Chip } from '@/components/primitives/chip'
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import {
   CheckCircle2,
   Clock,
@@ -454,9 +455,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
           overflowed off the LEFT edge at 375px, where nothing can scroll to it,
           and "Connections" read as "TIONS" (DATA-35 / LIVE-4). */}
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-        <div className="flex flex-wrap items-center gap-4">
+        <MiniStatStrip>
           <MiniStat label="Connections" value={statsPending ? '—' : String(dataSources.length)} />
-          <MiniStatDivider />
           <MiniStat
             label="Healthy"
             value={statsPending ? '—' : String(healthyCount)}
@@ -464,13 +464,12 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
             tone="success"
             pulse={!statsPending && healthyCount > 0}
           />
-          <MiniStatDivider />
           <MiniStat
             label="Warnings"
             value={statsPending ? '—' : String(warningCount)}
             tone={!statsPending && warningCount > 0 ? 'danger' : 'neutral'}
           />
-        </div>
+        </MiniStatStrip>
         {canManageDataSources && (
           <Button onClick={() => setShowForm(true)} size="sm">
             <Plus className="h-3.5 w-3.5" />
@@ -767,7 +766,7 @@ function DataSourceCard({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-[13px] font-semibold">{ds.name}</span>
+            <span className="truncate text-body font-semibold">{ds.name}</span>
           </div>
           {!connectionRedacted && (
             <div
@@ -799,14 +798,14 @@ function DataSourceCard({
         {ds.username && <Chip size="xs">{ds.username}</Chip>}
         {ds.timeout_seconds != null && <Chip size="xs">timeout {ds.timeout_seconds}s</Chip>}
         <div className="flex-1" />
-        <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="mono text-2xs" style={{ color: 'var(--fg-faint)' }}>
           {formatRelativeTime(ds.updated_at)}
         </span>
       </div>
 
       {hasTestRow && (
         <div
-          className="border-t text-[11.5px]"
+          className="border-t text-caption"
           style={{
             borderColor: 'var(--border-subtle)',
             color: stale
@@ -836,7 +835,7 @@ function DataSourceCard({
             </span>
             {lastTestAt && (
               <span
-                className="mono ml-auto shrink-0 text-[10.5px]"
+                className="mono ml-auto shrink-0 text-2xs"
                 style={{ color: 'var(--fg-faint)' }}
               >
                 {stale ? 're-test to confirm' : formatRelativeTime(lastTestAt)}
@@ -861,7 +860,7 @@ function DataSourceCard({
       {deleteError && (
         <p
           role="alert"
-          className="border-t px-3.5 py-2 text-[11.5px]"
+          className="border-t px-3.5 py-2 text-caption"
           style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)', background: 'var(--danger-soft)' }}
         >
           Could not delete {ds.name}: {deleteError}
@@ -882,15 +881,14 @@ function DataSourceCard({
             Edit
           </Button>
           <div className="flex-1" />
-          <Button
+          <IconButton
             variant="ghost"
-            size="icon"
             className="text-muted-foreground hover:text-destructive"
             onClick={onDelete}
-            aria-label={`Delete data source ${ds.name}`}
+            label={`Delete data source ${ds.name}`}
           >
             <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
-          </Button>
+          </IconButton>
         </div>
       )}
     </div>

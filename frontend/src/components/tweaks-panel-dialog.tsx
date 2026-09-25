@@ -59,7 +59,9 @@ export function TweaksPanel({ onClose }: { onClose: () => void }) {
       role="dialog"
       aria-labelledby={titleId}
       // Beside the sidebar footer that opens it, above the iOS home indicator.
-      className="fixed bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-3 z-50 w-[min(280px,calc(100vw-24px))] overflow-hidden rounded-xl border shadow-lg"
+      // On the drawer layer, under modals: at z-50 this non-modal panel sat on
+      // top of an open dialog's overlay (DS-40).
+      className="fixed bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-3 z-(--z-drawer) w-[min(280px,calc(100vw-24px))] overflow-hidden rounded-xl border shadow-lg"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-strong)',
@@ -70,7 +72,7 @@ export function TweaksPanel({ onClose }: { onClose: () => void }) {
         style={{ borderColor: 'var(--border-subtle)' }}
       >
         <Sparkles className="h-3 w-3" style={{ color: 'var(--accent)' }} aria-hidden="true" />
-        <span id={titleId} className="text-[12.5px] font-semibold">
+        <span id={titleId} className="text-body-sm font-semibold">
           Appearance
         </span>
         <div className="flex-1" />
@@ -155,7 +157,7 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
       <div
-        className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em]"
+        className="mb-1.5 text-2xs font-semibold uppercase tracking-[0.06em]"
         style={{ color: 'var(--fg-subtle)' }}
       >
         {label}
@@ -196,7 +198,7 @@ function Seg<T extends string>({
             type="button"
             onClick={() => onChange(o.v)}
             aria-pressed={active}
-            className="flex flex-1 items-center justify-center gap-1 rounded-[4px] px-2 py-[5px] text-[11.5px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            className="flex flex-1 items-center justify-center gap-1 rounded-[4px] px-2 py-[5px] text-caption font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             style={{
               background: active ? 'var(--surface)' : 'transparent',
               color: active ? 'var(--fg)' : 'var(--fg-muted)',

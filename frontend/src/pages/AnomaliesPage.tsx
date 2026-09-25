@@ -5,10 +5,12 @@ import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
 import { scansApi } from '@/api/scans'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
-import { PageHead, Panel } from '@/components/settings/kit'
+import { Panel } from '@/components/settings/kit'
+import { PageHeader } from '@/components/primitives/page-header'
 import { Dot } from '@/components/primitives/dot'
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
+import { formatNumber } from '@/lib/format'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import {
   DEFAULT_MAGNITUDE_LEVEL,
@@ -337,10 +339,10 @@ export default function AnomaliesPage() {
           : 'min-w-0 space-y-6 pb-12'
       }
     >
-      <PageHead
+      <PageHeader
         eyebrow="Observe"
         title="Anomalies"
-        right={
+        actions={
           slug ? (
             <Link
               to={`/p/${slug}/settings/monitoring`}
@@ -366,36 +368,32 @@ export default function AnomaliesPage() {
           compact
         />
       ) : (
-        <div
-          className={`flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3 ${
-            isEmpty ? 'opacity-60' : ''
-          }`}
+        <MiniStatStrip
+          className={`rounded-lg border px-4 py-3 ${isEmpty ? 'opacity-60' : ''}`}
           style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
         >
           <MiniStat
             label="Open signals"
-            value={signalsQuery.data ? visibleCount.toLocaleString() : '—'}
+            value={signalsQuery.data ? formatNumber(visibleCount) : '—'}
             tone={visibleCount > 0 ? 'danger' : 'success'}
             pulse={visibleCount > 0}
             delta={
-              signalsQuery.data && hiddenCount > 0 ? `of ${total.toLocaleString()}` : undefined
+              signalsQuery.data && hiddenCount > 0 ? `of ${formatNumber(total)}` : undefined
             }
           />
-          <MiniStatDivider />
           {/* `valueTone`, not `tone`: these carry no delta, and `tone` paints
               only the delta — so the emphasis never rendered (MON-42). */}
           <MiniStat
             label="Spikes"
-            value={signalsQuery.data ? spikes.toLocaleString() : '—'}
+            value={signalsQuery.data ? formatNumber(spikes) : '—'}
             valueTone={spikes > 0 ? signalDirectionTone('spike') : 'neutral'}
           />
-          <MiniStatDivider />
           <MiniStat
             label="Drops"
-            value={signalsQuery.data ? drops.toLocaleString() : '—'}
+            value={signalsQuery.data ? formatNumber(drops) : '—'}
             valueTone={drops > 0 ? signalDirectionTone('drop') : 'neutral'}
           />
-        </div>
+        </MiniStatStrip>
       )}
 
       {/* Signals table — or a centered empty state when nothing is firing */}
@@ -489,8 +487,8 @@ export default function AnomaliesPage() {
                       style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
                     >
                       {scanHasNothingOpen || emptiedByScan
-                        ? `Show all scans (${(byMagnitude.length || total).toLocaleString()})`
-                        : `Show all ${total.toLocaleString()}`}
+                        ? `Show all scans (${formatNumber(byMagnitude.length || total)})`
+                        : `Show all ${formatNumber(total)}`}
                     </button>
                   }
                 />
@@ -501,7 +499,7 @@ export default function AnomaliesPage() {
                   <div role="rowgroup">
                     <div
                       role="row"
-                      className={`${ANOMALY_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                      className={`${ANOMALY_GRID} border-b py-2 text-2xs font-semibold uppercase tracking-[0.05em]`}
                       style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                     >
                       <span role="columnheader">Anomaly</span>
@@ -572,7 +570,7 @@ function AnomalyRow({
       {label ?? <UnnamedScope signal={signal} />}
     </>
   )
-  const textClass = 'truncate text-[12.5px] font-medium'
+  const textClass = 'truncate text-body-sm font-medium'
 
   return (
     <div
@@ -602,7 +600,7 @@ function AnomalyRow({
           <span
             // Dropped on phones, where it left the scope name a few letters.
             // `relative` lifts it over the row link so its tooltip still shows.
-            className="relative hidden shrink-0 whitespace-nowrap text-[10.5px] sm:inline"
+            className="relative hidden shrink-0 whitespace-nowrap text-2xs sm:inline"
             style={{ color: 'var(--fg-faint)' }}
             title="This scope fired as part of a project-total spike or drop on the same bucket"
           >
@@ -616,7 +614,7 @@ function AnomalyRow({
       <span role="cell" className="mono text-right text-[11px]" style={{ color: severityColor }}>
         {formatSignalSeverity(signal)}
       </span>
-      <span role="cell" className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+      <span role="cell" className="mono text-right text-2xs" style={{ color: 'var(--fg-faint)' }}>
         {/* `relative` lifts it over the row link, so the absolute time in its
             tooltip is reachable (MON-40). */}
         <time

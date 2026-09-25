@@ -1,15 +1,15 @@
-import { Suspense } from 'react'
+import { Suspense, useRef, type ReactNode } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
-  AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { lazyWithReload } from '@/lib/lazyWithReload'
+import { ConfirmDialogMessage } from './ConfirmDialogMessage'
 
 // The typed / in-place-pending variant is rare (deleting a project) and this
 // dialog sits on the first load through useConfirm, so its body is its own chunk.
@@ -18,7 +18,8 @@ const ConfirmDialogGuardedContent = lazyWithReload(() => import('./ConfirmDialog
 interface Props {
   open: boolean
   title: string
-  message: string
+  /** Plain text, or rich content (emphasis, a list) for the body (DS-29). */
+  message: ReactNode
   confirmLabel?: string
   variant?: 'danger' | 'primary'
   onConfirm: () => void
@@ -57,6 +58,11 @@ export default function ConfirmDialog({
   errorPrefix,
   pendingLabel,
 }: Props) {
+  // Set by Confirm for the close its own click triggers. AlertDialogAction
+  // closes the dialog, and that close reaches `onOpenChange(false)` right
+  // AFTER `onConfirm` — which used to run `onCancel` as well, so any caller with
+  // a side effect on cancel had both run for one confirm (DS-29).
+  const confirming = useRef(false)
   if (requireText !== undefined || stayOpen) {
     return (
       <AlertDialog
@@ -87,17 +93,29 @@ export default function ConfirmDialog({
     )
   }
   return (
-    <AlertDialog open={open} onOpenChange={v => { if (!v) onCancel() }}>
+    <AlertDialog
+      open={open}
+      onOpenChange={v => {
+        if (v) return
+        // Cancel, Esc and the overlay all arrive here, once each; Cancel no
+        // longer calls onCancel itself as well.
+        if (confirming.current) confirming.current = false
+        else onCancel()
+      }}
+    >
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{message}</AlertDialogDescription>
+          <ConfirmDialogMessage message={message} />
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
-            onClick={onConfirm}
-            className={variant === 'danger' ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : ''}
+            onClick={() => {
+              confirming.current = true
+              onConfirm()
+            }}
+            variant={variant === 'danger' ? 'destructive' : 'default'}
           >
             {confirmLabel}
           </AlertDialogAction>
@@ -106,3 +124,4 @@ export default function ConfirmDialog({
     </AlertDialog>
   )
 }
+

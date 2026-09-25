@@ -450,7 +450,7 @@ export default function Layout() {
             ref={sidebarRef}
             inert={(!isWideNav && !mobileNavOpen) || activityDrawerActive}
             className={
-              'fixed inset-y-0 left-0 z-40 transition-transform duration-200 ease-out lg:static lg:translate-x-0 ' +
+              'fixed inset-y-0 left-0 z-(--z-drawer) transition-transform duration-200 ease-out lg:static lg:translate-x-0 ' +
               (mobileNavOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0')
             }
           >
@@ -464,7 +464,7 @@ export default function Layout() {
               aria-label="Close navigation"
               tabIndex={-1}
               onClick={closeDrawers}
-              className="fixed inset-0 z-30 bg-black/40 backdrop-blur-[2px] lg:hidden"
+              className="fixed inset-0 z-(--z-backdrop) bg-black/40 backdrop-blur-[2px] lg:hidden"
             />
           )}
 
@@ -572,11 +572,11 @@ export default function Layout() {
                 aria-label="Close activity feed"
                 tabIndex={-1}
                 onClick={closeDrawers}
-                className="fixed inset-0 z-30 bg-black/40 backdrop-blur-[2px]"
+                className="fixed inset-0 z-(--z-backdrop) bg-black/40 backdrop-blur-[2px]"
               />
               <div
                 ref={activityDrawerRef}
-                className="fixed inset-y-0 right-0 z-40 pb-[env(safe-area-inset-bottom)] shadow-xl"
+                className="fixed inset-y-0 right-0 z-(--z-drawer) pb-[env(safe-area-inset-bottom)] shadow-xl"
                 style={{ background: 'var(--bg-sunken)' }}
               >
                 <ActivityPanel open slug={slug} />

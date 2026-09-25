@@ -82,7 +82,7 @@ export function BranchReviewSummary({
 
   return (
     <div
-      className="flex flex-col gap-2 border-t px-4 py-3 text-[11.5px]"
+      className="flex flex-col gap-2 border-t px-4 py-3 text-caption"
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       {description ? (
@@ -170,7 +170,7 @@ export function BranchReviewSummary({
                 id={pickerId}
                 value={picked}
                 onChange={(event) => setPicked(event.target.value)}
-                className="h-7 rounded-md border bg-transparent px-2 text-[11.5px]"
+                className="h-7 rounded-md border bg-transparent px-2 text-caption"
                 style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
               >
                 <option value="">Choose a person…</option>

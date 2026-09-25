@@ -50,6 +50,40 @@ const NO_QUERY_KEY_LITERALS = [
   },
 ]
 
+// Pages build selects from the kit's NativeSelect, not a raw <select> that
+// copies the control styling by hand and drifts from it: two form-control
+// systems with different sizes, borders and disabled states is how DS-9 began.
+const NO_RAW_SELECT = [
+  {
+    selector: "JSXOpeningElement[name.name='select']",
+    message: 'Use NativeSelect from @/components/settings/kit instead of a raw <select>.',
+  },
+]
+
+// Pages that still hold a raw <select> from before the rule. A ratchet: the
+// list only shrinks — move a page onto NativeSelect and delete its line.
+const RAW_SELECT_LEGACY = [
+  'src/pages/alerting/InboxFilterBar.tsx',
+  'src/pages/DataSourcesPage.tsx',
+  'src/pages/events/eventFormLayout.tsx',
+  'src/pages/events/SuccessorPicker.tsx',
+  'src/pages/metrics/EventRefPicker.tsx',
+  'src/pages/metrics/MetricsCatalog.tsx',
+  'src/pages/ReconciliationPage.tsx',
+  'src/pages/settings-area/ApiKeysSection.tsx',
+  'src/pages/settings/AuditTab.tsx',
+  'src/pages/settings/branches/BranchReviewers.tsx',
+  'src/pages/settings/EventTypesTab.tsx',
+  'src/pages/settings/MetaFieldsTab.tsx',
+  'src/pages/settings/RelationsTab.tsx',
+  'src/pages/settings/scans/AppVersionFields.tsx',
+  'src/pages/settings/scans/EventGroupRulesEditor.tsx',
+  'src/pages/settings/scans/ScanFormSections.tsx',
+  'src/pages/settings-service/SecuritySection.tsx',
+  'src/pages/settings/VariablesTab.tsx',
+  'src/pages/UsersPage.tsx',
+]
+
 export default defineConfig([
   globalIgnores(['dist', '.ds-entry.tsx']),
   {
@@ -74,6 +108,7 @@ export default defineConfig([
         {
           controlComponents: [
             'Checkbox',
+            'NativeSelect',
             'Switch',
             'SelectTrigger',
             'Input',
@@ -84,6 +119,13 @@ export default defineConfig([
         },
       ],
       'no-restricted-syntax': ['error', ...NO_BARE_LAZY, ...NO_QUERY_KEY_LITERALS],
+    },
+  },
+  {
+    files: ['src/pages/**/*.tsx'],
+    ignores: ['**/*.test.tsx', ...RAW_SELECT_LEGACY],
+    rules: {
+      'no-restricted-syntax': ['error', ...NO_BARE_LAZY, ...NO_QUERY_KEY_LITERALS, ...NO_RAW_SELECT],
     },
   },
   {

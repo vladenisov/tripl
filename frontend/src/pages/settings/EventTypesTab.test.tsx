@@ -271,7 +271,7 @@ describe('FieldsEditor fields table', () => {
       </QueryClientProvider>,
     )
 
-    fireEvent.click(at(screen.getAllByTitle('Delete field'), 0))
+    fireEvent.click(at(screen.getAllByRole('button', { name: /^Delete field / }), 0))
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
 
     // The WHOLE detail, not a fragment of it: tripl-24i0 chose to render the
@@ -840,7 +840,8 @@ describe('FieldsEditor reordering (PLAN-37)', () => {
     )
 
     const up = await screen.findByRole('button', { name: 'Move email up' })
-    up.focus()
+    // Focus opens the button's tooltip (DS-12), a state update of its own.
+    act(() => up.focus())
     fireEvent.click(up)
 
     expect(await screen.findByText('email moved to position 1 of 2')).toBeInTheDocument()

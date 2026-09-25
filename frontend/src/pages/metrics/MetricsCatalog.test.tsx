@@ -533,3 +533,24 @@ describe('MetricsCatalog — status changes can be undone (MET-23)', () => {
     })
   })
 })
+
+// DS-30: values and dates paint in the app locale, so the stat strip beside
+// them must too — a bare toLocaleString() printed "1.234" next to "1,234" for a
+// de-DE reader.
+describe('MetricsCatalog — the stat strip uses the app locale (DS-30)', () => {
+  it('formats its counts through the app locale, never the browser one', async () => {
+    const original = Number.prototype.toLocaleString
+    vi.spyOn(Number.prototype, 'toLocaleString').mockImplementation(function (
+      this: number,
+      ...args: Parameters<number['toLocaleString']>
+    ) {
+      return args[0] === undefined ? 'BROWSER-LOCALE' : original.apply(this, args)
+    })
+    renderCatalog(NOT_A_DEMO)
+
+    await screen.findByRole('link', { name: 'Signups' })
+    const metricsStat = screen.getByText('Metrics', { selector: 'dt' }).closest('dl') as HTMLElement
+    expect(within(metricsStat).getByRole('definition')).toHaveTextContent('2')
+    expect(screen.queryByText(/BROWSER-LOCALE/)).not.toBeInTheDocument()
+  })
+})

@@ -58,12 +58,12 @@ export default function PlanRulesSection() {
             <section key={group.title} aria-labelledby={`plan-rules-${index}`}>
               <h3
                 id={`plan-rules-${index}`}
-                className="m-0 text-[13px] font-medium"
+                className="m-0 text-body font-medium"
               >
                 {group.title}
               </h3>
               <ul
-                className="m-0 mt-1 list-disc space-y-0.5 pl-5 text-[12.5px] leading-[1.5]"
+                className="m-0 mt-1 list-disc space-y-0.5 pl-5 text-body-sm leading-[1.5]"
                 style={{ color: 'var(--fg-subtle)' }}
               >
                 {group.items.map((item) => (

@@ -1,6 +1,8 @@
+import { formatNumber } from '@/lib/format'
 import { Info } from 'lucide-react'
 
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
+import { PageHeader } from '@/components/primitives/page-header'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import {
   Tooltip,
@@ -55,7 +57,7 @@ function StatHelp({ help }: { help: string }) {
         <TooltipTrigger asChild>
           <button
             type="button"
-            className="inline-flex shrink-0 self-end rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            className="inline-flex shrink-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             aria-label={help}
           >
             <Info className="h-3 w-3" style={{ color: 'var(--fg-faint)' }} aria-hidden />
@@ -152,53 +154,53 @@ export function EventsHeader({
   const hasLiveSignal = eventTypeSignals.size > 0 || !!projectTotalSignal
 
   return (
-    <div className="mb-3 flex flex-wrap items-end justify-between gap-4">
-      <div className="flex items-baseline gap-2.5">
-        <h1 className="m-0 text-[20px] font-semibold tracking-[-0.01em]">
-          {activeType ? `${activeType.display_name} events` : 'Events'}
-        </h1>
-        {slug && (
+    <PageHeader
+      className="mb-3"
+      title={activeType ? `${activeType.display_name} events` : 'Events'}
+      titleAddon={
+        slug ? (
           <EventTypeDriftBadges slug={slug} typeDrifts={typeDrifts} namesType={!!activeType} />
-        )}
-      </div>
-      {/* Wraps rather than overflows: the scoped "In review · project" caption
-          is the widest label in the row, and on a phone-width viewport the
-          three stats no longer fit the line the heading leaves them. */}
-      <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-        {/* The one place the count appears in the header: the heading used to
-            repeat it beside the h1, unformatted, while the footer formatted
-            the same number (EVT-16). */}
-        {columnFilter ? (
-          <MiniStat
-            label="Matching"
-            value={columnFilter.matching.toLocaleString()}
-            delta={`${columnFilter.checked.toLocaleString()} of ${total.toLocaleString()} checked`}
-          />
-        ) : (
-          <MiniStat label="Total" value={total.toLocaleString()} />
-        )}
-        <MiniStatDivider />
-        <div className="inline-flex items-center gap-1">
-          <MiniStat
-            label="Chart signals"
-            value={String(liveSignalCount)}
-            delta={hasLiveSignal ? 'live' : 'quiet'}
-            tone={hasLiveSignal ? 'danger' : 'success'}
-            pulse={hasLiveSignal}
-          />
-          <StatHelp help={CHART_SIGNALS_HELP} />
-        </div>
-        <MiniStatDivider />
-        <div className="inline-flex items-center gap-1">
-          <MiniStat
-            label="In review · project"
-            value={String(inReviewCount)}
-            delta={inReviewCount > 0 ? 'pending' : undefined}
-            tone={inReviewCount > 0 ? 'warning' : 'success'}
-          />
-          <StatHelp help={IN_REVIEW_HELP} />
-        </div>
-      </div>
-    </div>
+        ) : undefined
+      }
+      actions={
+        <>
+          {/* Wraps rather than overflows: the scoped "In review · project" caption
+              is the widest label in the row, and on a phone-width viewport the
+              three stats no longer fit the line the heading leaves them. */}
+          <MiniStatStrip>
+            {/* The one place the count appears in the header: the heading used to
+                repeat it beside the h1, unformatted, while the footer formatted
+                the same number (EVT-16). */}
+            {columnFilter ? (
+              <MiniStat
+                label="Matching"
+                value={formatNumber(columnFilter.matching)}
+                delta={`${formatNumber(columnFilter.checked)} of ${formatNumber(total)} checked`}
+              />
+            ) : (
+              <MiniStat label="Total" value={formatNumber(total)} />
+            )}
+            {/* The help icon rides on the caption it explains: beside the whole
+                stat it sat far from the label, next to the following stat
+                (LIVE-23). */}
+            <MiniStat
+              label="Chart signals"
+              value={String(liveSignalCount)}
+              delta={hasLiveSignal ? 'live' : 'quiet'}
+              tone={hasLiveSignal ? 'danger' : 'success'}
+              pulse={hasLiveSignal}
+              labelAddon={<StatHelp help={CHART_SIGNALS_HELP} />}
+            />
+            <MiniStat
+              label="In review · project"
+              value={String(inReviewCount)}
+              delta={inReviewCount > 0 ? 'pending' : undefined}
+              tone={inReviewCount > 0 ? 'warning' : 'success'}
+              labelAddon={<StatHelp help={IN_REVIEW_HELP} />}
+            />
+          </MiniStatStrip>
+        </>
+      }
+    />
   )
 }

@@ -3,8 +3,9 @@ import { Trash2, X } from 'lucide-react'
 
 import type { VariableType } from '@/types'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { Input } from '@/components/ui/input'
-import { Select } from '@/components/settings/kit'
+import { NativeSelect } from '@/components/settings/kit'
 import { getErrorMessage } from '@/lib/utils'
 import { VALUE_LIST_HINT, splitValueList } from './variableValueValidation'
 
@@ -74,7 +75,7 @@ export function VariablesBulkBar({
       // sized the bar to the half of the viewport right of centre, so ~700px of
       // controls wrapped into two or three rows below ~1400px and into a 187px
       // column on a phone (PLAN-27).
-      className="fixed inset-x-4 bottom-[18px] z-30 mx-auto flex w-fit max-w-[calc(100vw-2rem)] flex-col gap-1.5 rounded-[10px] border py-1.5 pl-3.5 pr-2"
+      className="fixed inset-x-4 bottom-[18px] z-(--z-bar) mx-auto flex w-fit max-w-[calc(100vw-2rem)] flex-col gap-1.5 rounded-card border py-1.5 pl-3.5 pr-2"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-strong)',
@@ -90,7 +91,7 @@ export function VariablesBulkBar({
             select fires a change per option (PLAN-25). */}
         <div className="flex items-center gap-1">
           <div className="w-32">
-            <Select
+            <NativeSelect
               aria-label="Bulk set type"
               value={typeDraft}
               disabled={isPending}
@@ -137,9 +138,9 @@ export function VariablesBulkBar({
         <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs text-destructive" disabled={isPending} onClick={onDelete}>
           <Trash2 className="mr-1 h-3 w-3" aria-hidden="true" />Delete
         </Button>
-        <Button type="button" size="icon" variant="ghost" className="h-7 w-7" aria-label="Clear selection" disabled={isPending} onClick={onClear}>
+        <IconButton type="button" variant="ghost" className="h-7 w-7" label="Clear selection" disabled={isPending} onClick={onClear}>
           <X className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
+        </IconButton>
       </div>
       {error != null && (
         <p role="alert" className="text-xs text-destructive">

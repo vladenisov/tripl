@@ -1,8 +1,7 @@
-import { useId, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import { Database } from 'lucide-react'
 import type { DbType } from '@/types'
 import { cn } from '@/lib/utils'
-import { FormRow } from '@/components/ui/form-row'
 
 // The mockup keys SrcIcon off a platform kind (web/ios/...) the real model lacks.
 // We key off the data source's db_type instead, using one warehouse glyph with a
@@ -28,49 +27,6 @@ export function SrcIcon({ dbType, size = 30 }: { dbType: DbType | null; size?: n
   )
 }
 
-// ─── Panel (header + body) — matches the mockup's SurfPanel ───
-export function SurfPanel({
-  title,
-  subtitle,
-  right,
-  children,
-  className,
-}: {
-  title?: string
-  subtitle?: string
-  right?: ReactNode
-  children: ReactNode
-  className?: string
-}) {
-  return (
-    <section
-      className={cn('overflow-hidden rounded-[10px] border', className)}
-      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
-    >
-      {(title || right) && (
-        <header
-          className="flex items-center gap-2.5 border-b px-4 py-3"
-          style={{ borderColor: 'var(--border-subtle)' }}
-        >
-          <div className="min-w-0 flex-1">
-            <div className="text-[12.5px] font-semibold" style={{ color: 'var(--fg)' }}>
-              {title}
-            </div>
-            {subtitle && (
-              <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
-                {subtitle}
-              </div>
-            )}
-          </div>
-          {right}
-        </header>
-      )}
-      {/* Scrolls sideways so a wide table is never clipped by the rounded card
-          (see .tripl-panel-body in index.css). */}
-      <div data-slot="panel-body" className="tripl-scroll-x tripl-panel-body">{children}</div>
-    </section>
-  )
-}
 
 // ─── Key/value display row used in the Overview panels ───
 export function KV({
@@ -91,7 +47,7 @@ export function KV({
         {label}
       </span>
       <span
-        className={cn('min-w-0 flex-1 text-[12.5px]', mono && 'mono')}
+        className={cn('min-w-0 flex-1 text-body-sm', mono && 'mono')}
         style={{ color: 'var(--fg)' }}
       >
         {value}
@@ -122,7 +78,7 @@ export function StatCard({
 }) {
   return (
     <div
-      className="rounded-[10px] border px-3.5 py-3"
+      className="rounded-card border px-3.5 py-3"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
       title={title}
     >
@@ -172,7 +128,7 @@ export function SCard({
               {title}
             </h3>
             {description && (
-              <p className="mt-1 text-[12.5px] leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="mt-1 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
                 {description}
               </p>
             )}
@@ -192,67 +148,6 @@ export function SCard({
   )
 }
 
-// ─── Field row inside an SCard body (label + hint left, control right) ───
-export function Field({
-  label,
-  hint,
-  id,
-  children,
-  last,
-}: {
-  label: string
-  hint?: string
-  /**
-   * The id of the control this row's label names. `false` for any row whose
-   * content is not a labelable element, where a `<label htmlFor>` can only
-   * dangle: today the Base query row (a CodeMirror contenteditable carrying its
-   * own `ariaLabel`), the Preview row (a button and an error, no control), and
-   * the Lookback row in its no-time-column form (a sentence explaining why
-   * there is nothing to set). Stated as a rule rather than a list because
-   * tripl-otlv fixed the first two by name and tripl-6h2b then found the third.
-   * Same escape hatch as the settings kit's Field (components/settings/kit.tsx).
-   */
-  id?: string | false
-  children: ReactNode
-  last?: boolean
-}) {
-  const generatedId = useId()
-  // `false` names the row as a group instead, so what it does hold is still
-  // announced under "Base query" / "Preview" rather than under nothing.
-  const captionId = id === false ? generatedId : undefined
-  const controlId = id === false ? undefined : id
-  return (
-    // Stacks below `sm`: the fixed 232px caption left a phone ~50px for the
-    // SQL editor and every select (DATA-8).
-    <FormRow
-      role={captionId ? 'group' : undefined}
-      aria-labelledby={captionId}
-      captionClassName="sm:pt-1.5"
-      className={cn('px-[18px] py-4', !last && 'border-b')}
-      style={{ borderColor: 'var(--border-subtle)' }}
-      caption={
-        <>
-          {captionId ? (
-            <span id={captionId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              {label}
-            </span>
-          ) : (
-            <label htmlFor={controlId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              {label}
-            </label>
-          )}
-          {hint && (
-            <div className="mt-1 text-xs leading-snug" style={{ color: 'var(--fg-subtle)' }}>
-              {hint}
-            </div>
-          )}
-        </>
-      }
-    >
-      {children}
-    </FormRow>
-  )
-}
 
 // Back link used on detail / create surfaces.
 export function BackLink({ onClick, label = 'Scans' }: { onClick: () => void; label?: string }) {
@@ -260,7 +155,7 @@ export function BackLink({ onClick, label = 'Scans' }: { onClick: () => void; la
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex items-center gap-1 text-[11.5px] transition-colors"
+      className="inline-flex items-center gap-1 text-caption transition-colors"
       style={{ color: 'var(--fg-muted)' }}
     >
       <span aria-hidden>←</span> {label}

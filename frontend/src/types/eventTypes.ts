@@ -98,3 +98,12 @@ export interface MetaFieldDefinition {
   order: number
   sensitivity: Sensitivity
 }
+
+/**
+ * The swatch an event type, metric or fact table starts with when nobody has
+ * picked one. It has to equal the backend column default (the API schemas
+ * document `@default #6366f1`), so a row created without a colour and a form
+ * opened fresh show the same swatch; it was repeated as a magic hex in five
+ * places (DS-33).
+ */
+export const DEFAULT_ENTITY_COLOR = '#6366f1'

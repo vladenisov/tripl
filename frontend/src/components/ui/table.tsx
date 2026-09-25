@@ -56,12 +56,16 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   )
 }
 
+// One header typography for every table idiom: the 10.5px semibold uppercase
+// caption `.tripl-table th` (index.css) and the settings tables use. This one
+// was 12px medium with wide tracking, so a ui/Table and a data table on the
+// same page captioned their columns differently (DS-34).
 function TableHead({ className, ...props }: React.ComponentProps<"th">) {
   return (
     <th
       data-slot="table-head"
       className={cn(
-        "text-muted-foreground h-10 px-3 text-left align-middle text-xs font-medium uppercase tracking-wider whitespace-nowrap [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "text-muted-foreground h-10 px-3 text-left align-middle text-2xs font-semibold uppercase tracking-[0.04em] whitespace-nowrap [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}

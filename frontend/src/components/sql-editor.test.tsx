@@ -25,6 +25,24 @@ describe('SqlEditor', () => {
     expect(screen.getByLabelText('Fact metric SQL')).toBeInTheDocument()
   })
 
+  // DS-6: the name and the id belong on the contenteditable (role="textbox"),
+  // not on the outer wrapper div where a label cannot resolve and a screen
+  // reader ignores an aria-label.
+  it('names the editable surface and lets a <label htmlFor> reach it', () => {
+    const { container } = render(
+      <>
+        <label htmlFor="metric-sql">SQL query</label>
+        <SqlEditor value="" onChange={vi.fn()} id="metric-sql" ariaLabel="Metric SQL" />
+      </>,
+    )
+    const content = container.querySelector('.cm-content')!
+    expect(content).toHaveAttribute('id', 'metric-sql')
+    expect(content).toHaveAttribute('aria-label', 'Metric SQL')
+    // Exactly one element carries the name now.
+    expect(screen.getByLabelText('Metric SQL')).toBe(content)
+    expect(container.querySelectorAll('[id="metric-sql"]')).toHaveLength(1)
+  })
+
   // MET-15: the focusable surface is CodeMirror's contenteditable, so that is
   // where a validation message has to be linked, not the wrapper div.
   it('puts validation attributes on the editable surface', () => {

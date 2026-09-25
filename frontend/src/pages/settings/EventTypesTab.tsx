@@ -1,3 +1,4 @@
+import { Panel, Field } from '@/components/settings/kit'
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -19,11 +20,11 @@ import { fieldsApi } from '@/api/fields'
 import { usersApi } from '@/api/users'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import type { EventType, EventTypeOwner, FieldDefinition, Sensitivity, UserListItem } from '@/types'
-import { SENSITIVITY_OPTIONS } from '@/types'
+import { DEFAULT_ENTITY_COLOR, SENSITIVITY_OPTIONS } from '@/types'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { Button } from '@/components/ui/button'
-import { FormRow } from '@/components/ui/form-row'
+import { IconButton } from '@/components/ui/icon-button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -31,8 +32,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { ErrorState } from '@/components/error-state'
 import {
-  createFieldControlIdSlot,
-  FieldControlIdContext,
   useFieldControlId,
 } from '@/components/settings/field-control-id'
 import { Chip } from '@/components/primitives/chip'
@@ -57,9 +56,9 @@ import {
   type ContractErrors,
 } from './fieldContract'
 import { describedByIds, SFieldHintContext, useSFieldHintId } from './sFieldContext'
+import { UserAvatar } from '@/components/ui/user-avatar'
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
-const DEFAULT_COLOR = '#6366f1'
 
 
 function fieldContractRuleCount(field: FieldDefinition): number {
@@ -158,7 +157,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
       </div>
       {!canWrite && <ReadOnlyNotice />}
 
-      <SurfPanel
+      <Panel
         title="All types"
         subtitle={typesQuery.isPending ? 'Loading…' : countOf(sorted.length, 'type', 'types')}
       >
@@ -188,7 +187,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
             />
           </div>
         ) : sorted.length === 0 ? (
-          <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             No event types yet. Create one to categorize your events.
           </p>
         ) : (
@@ -215,7 +214,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                     <div className="flex items-center gap-2.5">
                       <span
                         className="size-[9px] shrink-0 rounded-[3px]"
-                        style={{ background: et.color || DEFAULT_COLOR }}
+                        style={{ background: et.color || DEFAULT_ENTITY_COLOR }}
                         aria-hidden="true"
                       />
                       <div className="min-w-0">
@@ -224,7 +223,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                             column headers (PLAN-39). */}
                         <Link
                           to={`/p/${slug}/settings/event-types/${et.id}`}
-                          className="text-[13px] font-semibold hover:underline"
+                          className="text-body font-semibold hover:underline"
                           style={{ color: 'var(--fg)' }}
                         >
                           {et.display_name}
@@ -314,7 +313,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
             </TableBody>
           </Table>
         )}
-      </SurfPanel>
+      </Panel>
     </div>
   )
 }
@@ -332,7 +331,7 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
-  const [color, setColor] = useState(DEFAULT_COLOR)
+  const [color, setColor] = useState(DEFAULT_ENTITY_COLOR)
 
   const createMut = useMutation({
     // Its error is rendered under the form.
@@ -396,14 +395,14 @@ export function ColorPicker({ value, onChange }: { value: string; onChange: (v: 
       <input
         id={id}
         type="color"
-        value={value || DEFAULT_COLOR}
+        value={value || DEFAULT_ENTITY_COLOR}
         onChange={(e) => onChange(e.target.value)}
         aria-label="Color"
-        className="cursor-pointer rounded-[7px] p-0.5"
+        className="cursor-pointer rounded-control p-0.5"
         style={{ width: 40, height: 34, border: '1px solid var(--border)', background: 'none' }}
       />
-      <span className="mono text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
-        {value || DEFAULT_COLOR}
+      <span className="mono text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+        {value || DEFAULT_ENTITY_COLOR}
       </span>
     </div>
   )
@@ -651,12 +650,12 @@ export function FieldsEditor({
           test_name_format_conflict_vocabulary, since scan-docs-agreement.test.ts
           reads frontend sources and cannot see a string built in Python. */}
       {deleteMut.isError && (
-        <div role="alert" className="px-[18px] py-2 text-[12.5px] text-destructive">
+        <div role="alert" className="px-[18px] py-2 text-body-sm text-destructive">
           {getErrorMessage(deleteMut.error)}
         </div>
       )}
       {reorderMut.isError && (
-        <div role="alert" className="px-[18px] py-2 text-[12.5px] text-destructive">
+        <div role="alert" className="px-[18px] py-2 text-body-sm text-destructive">
           Could not reorder fields: {getErrorMessage(reorderMut.error)}
         </div>
       )}
@@ -664,7 +663,7 @@ export function FieldsEditor({
         {moveAnnouncement}
       </p>
       {sortedFields.length === 0 ? (
-        <p className="px-[18px] py-3.5 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="px-[18px] py-3.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           No fields defined yet.
         </p>
       ) : (
@@ -751,10 +750,10 @@ function FieldRow({
     <ListRow>
       <Td className="pr-0">
         {canWrite && <div className="flex flex-col gap-px">
-          <IconButton ref={upRef} title={`Move ${field.name} up`} disabled={isFirst} onClick={onMoveUp}>
+          <IconButton ref={upRef} label={`Move ${field.name} up`} className={ROW_ICON_CLASS} disabled={isFirst} onClick={onMoveUp}>
             <ChevronUp className="size-3" />
           </IconButton>
-          <IconButton ref={downRef} title={`Move ${field.name} down`} disabled={isLast} onClick={onMoveDown}>
+          <IconButton ref={downRef} label={`Move ${field.name} down`} className={ROW_ICON_CLASS} disabled={isLast} onClick={onMoveDown}>
             <ChevronDown className="size-3" />
           </IconButton>
         </div>}
@@ -810,10 +809,10 @@ function FieldRow({
       </Td>
       <Td>
         {canWrite && <div className="flex justify-end gap-0.5">
-          <IconButton title="Edit field" label={`Edit field ${field.name}`} onClick={onEdit}>
+          <IconButton label={`Edit field ${field.name}`} tooltip="Edit field" className={ROW_ICON_CLASS} onClick={onEdit}>
             <Pencil className="size-3.5" />
           </IconButton>
-          <IconButton title="Delete field" label={`Delete field ${field.name}`} danger onClick={onDelete}>
+          <IconButton label={`Delete field ${field.name}`} tooltip="Delete field" className={ROW_ICON_DANGER_CLASS} onClick={onDelete}>
             <Trash2 className="size-3.5" />
           </IconButton>
         </div>}
@@ -1006,13 +1005,14 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
                   {draft.enum_options.map((opt) => (
                     <span
                       key={opt}
-                      className="mono inline-flex items-center gap-1.5 rounded-full pr-1.5 pl-2.5 text-[11.5px]"
+                      className="mono inline-flex items-center gap-1.5 rounded-full pr-1.5 pl-2.5 text-caption"
                       style={{ height: 22, background: 'var(--surface-hover)' }}
                     >
                       {opt}
                       <IconButton
-                        title="Remove option"
-                        danger
+                        label={`Remove option ${opt}`}
+                        tooltip="Remove option"
+                        className={ROW_ICON_DANGER_CLASS}
                         onClick={() =>
                           set(
                             'enum_options',
@@ -1145,7 +1145,7 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
       {dialog}
       <div className="flex flex-col gap-3 px-[18px] py-3.5">
         {owners.length === 0 ? (
-          <p className="m-0 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             No owners — anyone can merge a branch touching this type.
           </p>
         ) : (
@@ -1156,16 +1156,16 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
                 className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1"
                 style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
               >
-                <Avatar name={owner.user_name || owner.user_email} />
+                <UserAvatar name={owner.user_name || owner.user_email} size={18} />
                 <span className="text-[12px] font-medium">{owner.user_name || owner.user_email}</span>
-                <span className="mono text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                <span className="mono text-2xs" style={{ color: 'var(--fg-subtle)' }}>
                   {owner.user_email}
                 </span>
                 {canWrite && (
                   <IconButton
-                    title="Remove owner"
                     label={`Remove owner ${owner.user_name || owner.user_email}`}
-                    danger
+                    tooltip="Remove owner"
+                    className={ROW_ICON_DANGER_CLASS}
                     disabled={removeMut.isPending}
                     onClick={() => { void handleRemove(owner) }}
                   >
@@ -1208,7 +1208,7 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
           </div>
         )}
         {ownerError && (
-          <p role="alert" className="m-0 text-[12.5px] text-destructive">
+          <p role="alert" className="m-0 text-body-sm text-destructive">
             {addMut.isError ? 'Could not add the owner' : 'Could not remove the owner'}:{' '}
             {getErrorMessage(ownerError)}
           </p>
@@ -1222,44 +1222,6 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
 // Composed from design tokens; exported for EventTypeDetailView to reuse so the
 // settings surface stays visually consistent without a separate shared module.
 
-export function SurfPanel({
-  title,
-  subtitle,
-  right,
-  children,
-}: {
-  title: string
-  subtitle?: string
-  right?: ReactNode
-  children: ReactNode
-}) {
-  return (
-    <section
-      className="overflow-hidden rounded-[10px] border"
-      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
-    >
-      <header
-        className="flex items-center gap-2.5 border-b px-4 py-3"
-        style={{ borderColor: 'var(--border-subtle)' }}
-      >
-        <div className="min-w-0 flex-1">
-          <div className="text-[12.5px] font-semibold" style={{ color: 'var(--fg)' }}>
-            {title}
-          </div>
-          {subtitle && (
-            <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
-              {subtitle}
-            </div>
-          )}
-        </div>
-        {right}
-      </header>
-      {/* Scrolls sideways so a wide table is never clipped by the rounded card
-          (see .tripl-panel-body in index.css). */}
-      <div data-slot="panel-body" className="tripl-scroll-x tripl-panel-body">{children}</div>
-    </section>
-  )
-}
 
 export function SCard({
   title,
@@ -1288,11 +1250,11 @@ export function SCard({
         style={{ borderColor: 'var(--border-subtle)', background: headBg }}
       >
         <div className="min-w-0 flex-1">
-          <div className="text-[12.5px] font-semibold" style={{ color: titleColor }}>
+          <div className="text-body-sm font-semibold" style={{ color: titleColor }}>
             {title}
           </div>
           {description && (
-            <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="mt-0.5 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
               {description}
             </div>
           )}
@@ -1366,48 +1328,21 @@ export function SField({
   htmlFor?: string | false
   children: ReactNode
 }) {
-  const generatedId = useId()
   const hintId = useId()
-  const controlId = htmlFor === false ? null : (htmlFor ?? generatedId)
-  // Fresh per render so the id follows the row's current first control; see
-  // field-control-id.ts.
-  const slot = controlId === null ? null : createFieldControlIdSlot(controlId)
-  const captionStyle = { color: 'var(--fg)' }
+  // The kit Field row (DS-17): one implementation of the caption, the label
+  // association, the phone stacking and the required / error wiring. This only
+  // keeps the event-type forms' narrower caption column, and hands the hint's
+  // id to the S* controls so they are described by it.
   return (
-    // Stacks below `sm`: the fixed 180px caption left a phone ~125px for every
-    // input on the type and field forms (PLAN-35).
-    <FormRow
+    <Field
+      label={label}
+      hint={hint ? <span id={hintId}>{hint}</span> : undefined}
+      last={last}
+      htmlFor={htmlFor}
       labelWidth={180}
-      captionClassName="sm:pt-1.5"
-      className="px-[18px] py-3.5 sm:gap-4"
-      style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
-      role={controlId === null ? 'group' : undefined}
-      aria-labelledby={controlId === null ? generatedId : undefined}
-      caption={
-        <>
-          {controlId === null ? (
-            <span id={generatedId} className="block text-[12.5px] font-medium" style={captionStyle}>
-              {label}
-            </span>
-          ) : (
-            <label htmlFor={controlId} className="block text-[12.5px] font-medium" style={captionStyle}>
-              {label}
-            </label>
-          )}
-          {hint && (
-            <div id={hintId} className="mt-1 text-[11px] leading-snug" style={{ color: 'var(--fg-subtle)' }}>
-              {hint}
-            </div>
-          )}
-        </>
-      }
     >
-      <FieldControlIdContext.Provider value={slot}>
-        <SFieldHintContext.Provider value={hint ? hintId : undefined}>
-          {children}
-        </SFieldHintContext.Provider>
-      </FieldControlIdContext.Provider>
-    </FormRow>
+      <SFieldHintContext.Provider value={hint ? hintId : undefined}>{children}</SFieldHintContext.Provider>
+    </Field>
   )
 }
 
@@ -1514,7 +1449,7 @@ function BackLink({ label, onClick }: { label: string; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="mb-3.5 inline-flex items-center gap-1 text-[11.5px] transition-colors hover:text-[var(--fg)]"
+      className="mb-3.5 inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
       style={{ color: 'var(--fg-muted)' }}
     >
       <ArrowLeft className="size-3" />
@@ -1540,7 +1475,7 @@ function Th({
     <TableHead
       scope="col"
       className={cn(
-        'h-8 px-3.5 text-[10.5px] font-semibold tracking-[0.04em]',
+        'h-8 px-3.5 text-2xs font-semibold tracking-[0.04em]',
         align === 'right' && 'text-right',
         wideOnly && 'hidden md:table-cell',
       )}
@@ -1565,7 +1500,7 @@ function Td({
   return (
     <TableCell
       className={cn(
-        'px-3.5 text-[12.5px]',
+        'px-3.5 text-body-sm',
         align === 'right' && 'text-right',
         wideOnly && 'hidden md:table-cell',
         className,
@@ -1591,67 +1526,11 @@ function ListRow({ children }: { children: ReactNode }) {
   )
 }
 
-export function IconButton({
-  children,
-  title,
-  label,
-  disabled,
-  danger,
-  onClick,
-  ref,
-}: {
-  children: ReactNode
-  title: string
-  /** The accessible name when it should say more than the tooltip (which row). */
-  label?: string
-  disabled?: boolean
-  danger?: boolean
-  onClick: () => void
-  ref?: React.Ref<HTMLButtonElement>
-}) {
-  return (
-    <button
-      ref={ref}
-      type="button"
-      title={title}
-      aria-label={label ?? title}
-      disabled={disabled}
-      onClick={onClick}
-      className="flex items-center justify-center p-1 transition-colors disabled:opacity-40"
-      style={{ color: 'var(--fg-subtle)' }}
-      onMouseEnter={(e) => {
-        if (!disabled) e.currentTarget.style.color = danger ? 'var(--danger)' : 'var(--fg)'
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.color = 'var(--fg-subtle)'
-      }}
-    >
-      {children}
-    </button>
-  )
-}
+// The row actions' look on the shared IconButton (DS-12): small and quiet,
+// darkening on hover AND keyboard focus — the old local button swapped its
+// colour in JS `onMouseEnter`, so focus got nothing.
+const ROW_ICON_CLASS =
+  'size-6 text-[var(--fg-subtle)] hover:bg-transparent hover:text-[var(--fg)] focus-visible:text-[var(--fg)]'
+const ROW_ICON_DANGER_CLASS =
+  'size-6 text-[var(--fg-subtle)] hover:bg-transparent hover:text-[var(--danger)] focus-visible:text-[var(--danger)]'
 
-export function Avatar({ name, size = 18 }: { name: string; size?: number }) {
-  const initials = name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((p) => p[0]?.toUpperCase() ?? '')
-    .join('')
-  // Stable hue from the name so avatars are consistent across renders.
-  let hash = 0
-  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) % 360
-  return (
-    <span
-      title={name}
-      className="inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white"
-      style={{
-        width: size,
-        height: size,
-        fontSize: size * 0.42,
-        background: `oklch(0.62 0.12 ${hash})`,
-      }}
-    >
-      {initials || '?'}
-    </span>
-  )
-}

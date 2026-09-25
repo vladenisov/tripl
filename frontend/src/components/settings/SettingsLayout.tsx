@@ -1,8 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react'
 import { Link, useBlocker, useNavigate, type Location } from 'react-router-dom'
 import { ChevronLeft, LogOut, Menu } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
+import { UserAvatar } from '@/components/ui/user-avatar'
 import { SETTINGS_CONTENT_ID } from './landmarks'
 import { sectionPathForUrl, visibleGroupsAll } from './nav'
 import { SettingsCommandPalette } from './settings-palette'
@@ -11,6 +20,36 @@ import type { Project } from '@/types'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
 
 const RAIL_TITLE_ID = 'settings-rail-title'
+const RAIL_ID = 'settings-rail'
+/** From here up the rail is pinned in flow; below it, it is an off-canvas drawer. */
+const RAIL_PINNED_QUERY = '(min-width: 768px)'
+
+/**
+ * Whether the rail is pinned (`md` and up). Without `matchMedia` it answers
+ * "pinned", so the rail is never made inert unmeasured — the same fallback the
+ * app shell's sidebar uses.
+ */
+function useRailPinned(): boolean {
+  const subscribe = useCallback((onChange: () => void) => {
+    if (typeof window.matchMedia !== 'function') return () => {}
+    const mql = window.matchMedia(RAIL_PINNED_QUERY)
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [])
+  return useSyncExternalStore(
+    subscribe,
+    () => (typeof window.matchMedia === 'function' ? window.matchMedia(RAIL_PINNED_QUERY).matches : true),
+    () => true,
+  )
+}
+
+function firstFocusable(root: HTMLElement | null): HTMLElement | null {
+  return (
+    root?.querySelector<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ) ?? null
+  )
+}
 
 /**
  * Full-viewport takeover shell for the Settings area (Linear/Vercel pattern).
@@ -64,12 +103,59 @@ export function SettingsLayout({
     return group.sub
   }
 
-  const initials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
-
   // Off-canvas rail state, used only below `md` — above it the `md:*` utilities
   // pin the rail to static flow regardless of this flag.
   const [railOpen, setRailOpen] = useState(false)
   const closeRail = useCallback(() => setRailOpen(false), [])
+  const railPinned = useRailPinned()
+  // The drawer behaves like the modal it looks like, as the app shell's does
+  // (DS-11): below `md` a closed rail is `inert`, so its ~20 links and Sign out
+  // leave the Tab order and the accessibility tree instead of being walked
+  // through off-screen on every settings page; an open one takes focus, closes
+  // on Escape, and while it is open the content behind it is inert, which is
+  // also what keeps Tab inside it. Closing hands focus back to the opener.
+  const railDrawerActive = railOpen && !railPinned
+  const railRef = useRef<HTMLElement | null>(null)
+  const railOpenerRef = useRef<HTMLElement | null>(null)
+  const openRail = useCallback(() => {
+    railOpenerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setRailOpen(true)
+  }, [])
+  const wasDrawerActive = useRef(false)
+  useEffect(() => {
+    if (railDrawerActive) {
+      firstFocusable(railRef.current)?.focus()
+    } else if (wasDrawerActive.current) {
+      const opener = railOpenerRef.current
+      // Only when focus would otherwise be lost with the rail: a rail link
+      // that navigated has already moved focus on purpose.
+      const active = document.activeElement
+      const lost = !active || active === document.body || railRef.current?.contains(active)
+      if (lost && opener?.isConnected) opener.focus()
+    }
+    wasDrawerActive.current = railDrawerActive
+  }, [railDrawerActive])
+  useEffect(() => {
+    if (!railDrawerActive) return
+    const onKey = (event: KeyboardEvent) => {
+      // A Radix layer on top (a dialog, the settings palette) handles Escape
+      // at document capture and marks it handled: that press closes that layer
+      // only, not the drawer beneath it too.
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault()
+      closeRail()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [railDrawerActive, closeRail])
+  // Any route change closes the drawer — Back included, which no rail click
+  // sees. "Derived state from props" rather than an effect, as Layout does.
+  const [lastActivePath, setLastActivePath] = useState(activePath)
+  if (lastActivePath !== activePath) {
+    setLastActivePath(activePath)
+    if (railOpen) setRailOpen(false)
+  }
 
   // Draft held by the section currently rendered in the content column, so the
   // rail can warn before it navigates that draft out of existence (tripl-l8v2).
@@ -246,8 +332,11 @@ export function SettingsLayout({
         Skip to main content
       </a>
       <aside
+        id={RAIL_ID}
+        ref={railRef}
+        inert={!railPinned && !railOpen}
         className={
-          'fixed inset-y-0 left-0 z-40 flex w-[264px] shrink-0 flex-col transition-transform duration-200 ease-out md:static md:translate-x-0 ' +
+          'fixed inset-y-0 left-0 z-(--z-drawer) flex w-[264px] shrink-0 flex-col transition-transform duration-200 ease-out md:static md:translate-x-0 ' +
           (railOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0')
         }
         style={{ background: 'var(--bg-sunken)', borderRight: '1px solid var(--border)' }}
@@ -257,10 +346,9 @@ export function SettingsLayout({
           <Link
             to={backHref}
             onClick={guardLeave}
-            className="-ml-1 inline-flex items-center gap-[7px] rounded-md px-2 py-1 pr-2 text-[12.5px] no-underline transition-colors"
-            style={{ color: 'var(--fg-muted)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--fg)')}
-            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--fg-muted)')}
+            // Hover and keyboard focus through classes, not JS style swaps that
+            // focus never triggered (DS-21).
+            className="-ml-1 inline-flex items-center gap-[7px] rounded-md px-2 py-1 pr-2 text-body-sm text-fg-muted no-underline transition-colors hover:text-fg focus-visible:text-fg"
           >
             <ChevronLeft className="h-[15px] w-[15px]" />
             <span>Back to project</span>
@@ -272,7 +360,7 @@ export function SettingsLayout({
           <div id={RAIL_TITLE_ID} className="mx-1 mt-2.5 text-[17px] font-semibold tracking-[-0.01em]">
             Settings
           </div>
-          <p className="mx-1 mt-1 text-[11.5px] leading-snug" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="mx-1 mt-1 text-caption leading-snug" style={{ color: 'var(--fg-subtle)' }}>
             Workspace &amp; account configuration
           </p>
         </div>
@@ -283,7 +371,7 @@ export function SettingsLayout({
             <div key={group.label} className="mb-4">
               <div className="px-[9px] pb-1.5">
                 <div className="flex items-baseline gap-1.5">
-                  <span className="text-[11.5px] font-semibold" style={{ color: 'var(--fg)' }}>
+                  <span className="text-caption font-semibold" style={{ color: 'var(--fg)' }}>
                     {group.label}
                   </span>
                   <span
@@ -293,7 +381,7 @@ export function SettingsLayout({
                     {subFor(group)}
                   </span>
                 </div>
-                <p className="mt-0.5 text-[10.5px] leading-snug" style={{ color: 'var(--fg-faint)' }}>
+                <p className="mt-0.5 text-2xs leading-snug" style={{ color: 'var(--fg-faint)' }}>
                   {group.desc}
                 </p>
               </div>
@@ -316,21 +404,17 @@ export function SettingsLayout({
                       aria-current={active ? 'page' : undefined}
                       aria-label={dirty ? `${item.label}, unsaved changes` : item.label}
                       onClick={guardLeave}
-                      className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium no-underline transition-colors"
-                      style={{
-                        // Match the app shell: the main sidebar marks the active
-                        // nav item with --surface-hover, so this takeover shell
-                        // uses the same token instead of the heavier
-                        // --surface-active, which read as a foreign grey block.
-                        background: active ? 'var(--surface-hover)' : 'transparent',
-                        color: active ? 'var(--fg)' : 'var(--fg-muted)',
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!active) e.currentTarget.style.background = 'var(--surface-hover)'
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!active) e.currentTarget.style.background = 'transparent'
-                      }}
+                      // Match the app shell: the main sidebar marks the active
+                      // nav item with --surface-hover, so this takeover shell
+                      // uses the same token instead of the heavier
+                      // --surface-active, which read as a foreign grey block.
+                      // Hover is a class, not a JS style swap: the swap left a
+                      // stale fill when the active item changed under the
+                      // pointer and never answered keyboard focus (DS-21).
+                      className={
+                        'flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-body-sm font-medium no-underline transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover ' +
+                        (active ? 'bg-surface-hover text-fg' : 'text-fg-muted')
+                      }
                     >
                       <Icon
                         className="h-[15px] w-[15px] shrink-0"
@@ -360,18 +444,13 @@ export function SettingsLayout({
           className="flex items-center gap-[9px] p-3"
           style={{ borderTop: '1px solid var(--border-subtle)' }}
         >
-          <div
-            className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[11px] font-semibold text-white"
-            style={{ background: 'var(--avatar-bg)' }}
-          >
-            {initials}
-          </div>
+          <UserAvatar name={auth.user?.name ?? auth.user?.email} />
           <div className="min-w-0 flex-1">
             <div className="truncate text-[12px] font-medium leading-[1.1]">
               {auth.user?.name ?? auth.user?.email}
             </div>
             <div
-              className="mt-px truncate text-[10.5px] leading-[1.1]"
+              className="mt-px truncate text-2xs leading-[1.1]"
               style={{ color: 'var(--fg-subtle)' }}
             >
               {auth.user?.role ? capitalize(auth.user.role) : 'Signed in'}
@@ -383,10 +462,7 @@ export function SettingsLayout({
             aria-label="Sign out"
             disabled={auth.isLoggingOut}
             onClick={signOut}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:opacity-50"
-            style={{ color: 'var(--fg-subtle)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--fg)')}
-            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--fg-subtle)')}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-subtle transition-colors hover:text-fg focus-visible:text-fg disabled:opacity-50"
           >
             <LogOut className="h-3.5 w-3.5" />
           </button>
@@ -399,7 +475,7 @@ export function SettingsLayout({
           type="button"
           aria-label="Close settings navigation"
           onClick={closeRail}
-          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-[2px] md:hidden"
+          className="fixed inset-0 z-(--z-backdrop) bg-black/40 backdrop-blur-[2px] md:hidden"
         />
       )}
 
@@ -407,6 +483,7 @@ export function SettingsLayout({
       <main
         id={SETTINGS_CONTENT_ID}
         tabIndex={-1}
+        inert={railDrawerActive}
         className="min-w-0 flex-1 overflow-y-auto focus:outline-none"
       >
         {/* Phone-only header: the only way back to the rail once it is
@@ -415,20 +492,21 @@ export function SettingsLayout({
             below it instead of underneath it (ServiceSettingsPage's Save row
             uses `top-[52px] md:top-0`). */}
         <div
-          className="sticky top-0 z-20 flex h-[52px] items-center gap-2 px-4 md:hidden"
+          className="sticky top-0 z-(--z-sticky) flex h-[52px] items-center gap-2 px-4 md:hidden"
           style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}
         >
           <button
             type="button"
             aria-label="Open settings navigation"
             aria-expanded={railOpen}
-            onClick={() => setRailOpen(true)}
+            aria-controls={RAIL_ID}
+            onClick={openRail}
             className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
             <Menu className="h-4 w-4" />
           </button>
-          <span className="text-[13px] font-semibold">Settings</span>
+          <span className="text-body font-semibold">Settings</span>
         </div>
         <div className="mx-auto max-w-[768px] px-4 pb-24 pt-6 sm:px-6 md:px-10 md:pt-10">
           <UnsavedChangesProvider value={unsavedChanges}>{children}</UnsavedChangesProvider>
@@ -440,17 +518,4 @@ export function SettingsLayout({
 
 function capitalize(value: string): string {
   return value ? value[0]!.toUpperCase() + value.slice(1) : value
-}
-
-function initialsFrom(nameOrEmail: string): string {
-  if (!nameOrEmail) return '•'
-  const trimmed = nameOrEmail.trim()
-  if (trimmed.includes(' ')) {
-    return trimmed
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((w) => w[0]!.toUpperCase())
-      .join('')
-  }
-  return trimmed.slice(0, 2).toUpperCase()
 }

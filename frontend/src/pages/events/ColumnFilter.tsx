@@ -59,7 +59,7 @@ export function ColumnFilter({
         className="w-56 p-2"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-1.5 px-1 text-[10.5px] font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--fg-subtle)' }}>
           {label}
         </div>
         {type === 'text' && (

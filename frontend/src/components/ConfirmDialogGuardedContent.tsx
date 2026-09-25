@@ -1,8 +1,7 @@
-import { useId, useState } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import {
   AlertDialogCancel,
   AlertDialogContent,
-  AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
@@ -10,6 +9,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { getErrorMessage } from '@/lib/utils'
+import { ConfirmDialogMessage } from './ConfirmDialogMessage'
 
 /**
  * ConfirmDialog's guarded body: an optional typed confirmation, and a Confirm
@@ -31,7 +31,7 @@ export default function ConfirmDialogGuardedContent({
   onConfirm,
 }: {
   title: string
-  message: string
+  message: ReactNode
   confirmLabel: string
   variant: 'danger' | 'primary'
   requireText?: string
@@ -55,11 +55,11 @@ export default function ConfirmDialogGuardedContent({
       >
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{message}</AlertDialogDescription>
+          <ConfirmDialogMessage message={message} />
         </AlertDialogHeader>
         {requireText !== undefined && (
           <div className="grid gap-2">
-            <label htmlFor={inputId} className="text-[12.5px]">
+            <label htmlFor={inputId} className="text-body-sm">
               Type <span className="mono font-semibold">{requireText}</span> to confirm
             </label>
             <Input
@@ -74,7 +74,7 @@ export default function ConfirmDialogGuardedContent({
           </div>
         )}
         {error != null && !pending && (
-          <p role="alert" className="m-0 text-[12.5px]" style={{ color: 'var(--danger)' }}>
+          <p role="alert" className="m-0 text-body-sm" style={{ color: 'var(--danger)' }}>
             {errorPrefix}: {getErrorMessage(error)}
           </p>
         )}

@@ -3,6 +3,7 @@ import type { ProjectSummary } from '@/types'
 import { resolveTitleFromPath } from '@/hooks/useDocumentTitle'
 import {
   buildNavGroups,
+  formatCount,
   getAlertingPath,
   projectHomePath,
   resolveActivityTargetPath,
@@ -454,5 +455,15 @@ describe('switchProjectPath', () => {
     expect(switchProjectPath('/p/a/monitoring/event/evt-1', 'a', 'b')).toBe('/p/b/overview')
     expect(switchProjectPath('/p/a', 'a', 'b')).toBe('/p/b/overview')
     expect(switchProjectPath('/p/ab/events', 'a', 'b')).toBe('/p/b/overview')
+  })
+})
+
+describe('formatCount (DS-30)', () => {
+  it('compacts sidebar counts with the shared formatter', () => {
+    expect(formatCount(842)).toBe('842')
+    expect(formatCount(1_000)).toBe('1k')
+    expect(formatCount(12_345)).toBe('12.3k')
+    expect(formatCount(123_456)).toBe('123k')
+    expect(formatCount(1_500_000)).toBe('1.5M')
   })
 })

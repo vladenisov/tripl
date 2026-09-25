@@ -4,7 +4,7 @@ import { dataSourcesApi } from '@/api/dataSources'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { WorkspaceWelcome } from '@/components/workspace-welcome'
@@ -173,10 +173,10 @@ export default function MainPage() {
         <div className="min-w-0 space-y-2">
           {/* One name for this page wherever it is named — the sidebar, the
               top bar, the tab and the palette all say "All projects" (LIVE-34). */}
-          <h1 className="m-0 text-[20px] font-semibold tracking-[-0.01em]">
+          <h1 className="m-0 text-title font-semibold tracking-[-0.01em]">
             All projects
           </h1>
-          <p className="max-w-2xl text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="max-w-2xl text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             See which tracking plans are filling out, which projects still need review, and how much
             scan and alerting coverage exists across the workspace.
           </p>
@@ -202,7 +202,7 @@ export default function MainPage() {
             {demoBlockedReason && (
               <p
                 id="demo-generation-blocked"
-                className="m-0 max-w-[320px] text-right text-[11.5px]"
+                className="m-0 max-w-[320px] text-right text-caption"
                 style={{ color: 'var(--fg-subtle)' }}
               >
                 {demoBlockedReason}
@@ -253,9 +253,8 @@ export default function MainPage() {
             className="flex flex-col gap-3 rounded-lg border p-3"
             style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
           >
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-3 px-1">
+            <MiniStatStrip className="px-1">
               <MiniStat label="Projects" value={String(portfolio.projectCount)} />
-              <MiniStatDivider />
               <MiniStat
                 label="Coverage"
                 value={coverageDisplay}
@@ -270,13 +269,11 @@ export default function MainPage() {
                 // health signal — keep it neutral so 77% never reads as an error.
                 tone="neutral"
               />
-              <MiniStatDivider />
               <MiniStat
                 label="Data sources"
                 value={dataSourceValue}
                 tone={dataSourcesQuery.isError ? 'danger' : 'neutral'}
               />
-              <MiniStatDivider />
               {/* "Automation 8 · 3 covered" was the only tile on the landing page
                   that never said what it counted, and the page subtitle above it
                   ("scan and alerting coverage") invited reading the 8 as scans +
@@ -294,7 +291,7 @@ export default function MainPage() {
                     : undefined
                 }
               />
-            </div>
+            </MiniStatStrip>
 
             <div className="h-px w-full" style={{ background: 'var(--border)' }} />
 
@@ -364,7 +361,7 @@ export default function MainPage() {
             <div className="flex items-end justify-between gap-3">
               <div>
                 <h2 className="text-[14px] font-semibold tracking-tight">Project portfolio</h2>
-                <p className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
                   Recently updated projects with planning, review, scan, and alerting coverage.
                 </p>
               </div>

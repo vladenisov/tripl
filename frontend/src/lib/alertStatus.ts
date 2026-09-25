@@ -12,6 +12,7 @@
  * decides what an operator believes happened can be unit-tested without
  * rendering a card.
  */
+import { formatNumber } from '@/lib/format'
 import type { ChipTone } from '@/components/primitives/chip'
 import type {
   AlertInboxAction,
@@ -175,10 +176,10 @@ export function incidentDirectionGlyph(direction: AlertInboxGroup['direction']):
  * trade-off, and not one an incident row wants.
  */
 export function formatIncidentCount(value: number): string {
-  if (Math.abs(value) >= 1) return Math.round(value).toLocaleString()
+  if (Math.abs(value) >= 1) return formatNumber(Math.round(value))
   // Significant digits, not fraction digits: a bare `toLocaleString()` caps at
   // three FRACTION digits, which turns a 0.000123 ratio back into "0".
-  return value.toLocaleString(undefined, { maximumSignificantDigits: 3 })
+  return formatNumber(value, { maximumSignificantDigits: 3 })
 }
 
 /**

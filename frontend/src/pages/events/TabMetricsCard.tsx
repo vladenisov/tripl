@@ -108,7 +108,7 @@ export function TabMetricsCard({
       <Card className="mb-3 gap-0 rounded-lg py-0">
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
           <div className="min-w-0">
-            <h2 className="text-[13px] font-semibold leading-tight">{activeTabLabel} Dynamics</h2>
+            <h2 className="text-body font-semibold leading-tight">{activeTabLabel} Dynamics</h2>
             {/* The series is scoped to ONE scan — summing every scan
                 double-counts the events a legacy/backfill scan also collected —
                 so name it here rather than let "All Events Dynamics" imply the

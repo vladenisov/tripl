@@ -4,6 +4,7 @@ import { Eye, EyeOff } from 'lucide-react'
 
 import { alertingApi } from '@/api/alerting'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -76,17 +77,16 @@ function SecretInput({ label, ...props }: ComponentProps<typeof Input> & { label
   return (
     <div className="flex gap-1">
       <Input {...props} {...SECRET_INPUT_PROPS} type={shown ? 'text' : 'password'} />
-      <Button
+      <IconButton
         type="button"
         variant="ghost"
-        size="icon"
         className="h-9 w-9 shrink-0"
-        aria-label={`${shown ? 'Hide' : 'Show'} ${label}`}
+        label={`${shown ? 'Hide' : 'Show'} ${label}`}
         aria-pressed={shown}
         onClick={() => setShown(current => !current)}
       >
         {shown ? <EyeOff aria-hidden="true" className="h-4 w-4" /> : <Eye aria-hidden="true" className="h-4 w-4" />}
-      </Button>
+      </IconButton>
     </div>
   )
 }

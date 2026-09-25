@@ -29,7 +29,7 @@ export function useSavedViews({
 }: {
   slug: string | undefined
   activeTab: string
-  /** Asks before a save replaces a view of the same name. */
+  /** Asks before a save replaces a view of the same name, and before a delete. */
   confirm: ConfirmFn
 }) {
   const [searchParams] = useSearchParams()
@@ -88,10 +88,19 @@ export function useSavedViews({
     navigate(path + (params ? `?${params}` : ''), { replace: true })
   }, [navigate, searchParams, slug])
 
-  const deleteSavedView = useCallback((name: string) => {
+  // A view is a hand-built filter set with no undo, and the trash icon sat
+  // right beside the row that applies it — it went on one click (DS-28).
+  const deleteSavedView = useCallback(async (name: string) => {
     if (!slug) return
+    const ok = await confirm({
+      title: 'Delete saved view',
+      message: `Delete the saved view "${name}"? Its filters are not kept anywhere else.`,
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    })
+    if (!ok) return
     setSavedViews(deleteEventsSavedView(slug, name))
-  }, [slug])
+  }, [confirm, slug])
 
   return {
     savedViews,

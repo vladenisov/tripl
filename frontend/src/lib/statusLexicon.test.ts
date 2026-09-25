@@ -82,15 +82,15 @@ describe('dataSourceHealthLexeme — failed is red, not amber', () => {
   })
 
   it('renders a fresh successful test as healthy/success', () => {
-    expect(dataSourceHealthLexeme('success', false)).toEqual({ label: 'healthy', tone: 'success' })
+    expect(dataSourceHealthLexeme('success', false)).toEqual({ label: 'Healthy', tone: 'success' })
   })
 
   it('downgrades a stale successful test to stale/warning', () => {
-    expect(dataSourceHealthLexeme('success', true)).toEqual({ label: 'stale', tone: 'warning' })
+    expect(dataSourceHealthLexeme('success', true)).toEqual({ label: 'Stale', tone: 'warning' })
   })
 
   it('renders an untested/unknown source as neutral', () => {
-    expect(dataSourceHealthLexeme(null, false)).toEqual({ label: 'untested', tone: 'neutral' })
+    expect(dataSourceHealthLexeme(null, false)).toEqual({ label: 'Untested', tone: 'neutral' })
     expect(dataSourceHealthLexeme(undefined, true).tone).toBe('neutral')
   })
 })

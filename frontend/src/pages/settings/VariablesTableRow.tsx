@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import { Ban, Pencil, Trash2 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
@@ -172,18 +172,18 @@ function VariablesTableRowImpl({
             step="variables/inspect-values"
             when={variable.name === SCENARIO_SEEDED.driftVariableName}
           >
-            <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit variable ${variable.name}`} onClick={() => onEdit(variable)}>
+            <IconButton variant="ghost" className="h-7 w-7" label={`Edit variable ${variable.name}`} onClick={() => onEdit(variable)}>
               <Pencil className="h-3 w-3" aria-hidden="true" />
-            </Button>
+            </IconButton>
           </ScenarioCoachMark>
           {canWrite && (
             <>
-              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-warning" aria-label={`Exclude variable ${variable.name} from scans`} onClick={() => onExclude(variable)}>
+              <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-warning" label={`Exclude variable ${variable.name} from scans`} onClick={() => onExclude(variable)}>
                 <Ban className="h-3 w-3" aria-hidden="true" />
-              </Button>
-              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${variable.name}`} onClick={() => onDelete(variable)}>
+              </IconButton>
+              <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" label={`Delete variable ${variable.name}`} onClick={() => onDelete(variable)}>
                 <Trash2 className="h-3 w-3" aria-hidden="true" />
-              </Button>
+              </IconButton>
             </>
           )}
         </div>

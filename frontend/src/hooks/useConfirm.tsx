@@ -1,9 +1,10 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState, type ReactNode } from 'react'
 import ConfirmDialog from '../components/ConfirmDialog'
 
 export interface ConfirmOptions {
   title: string
-  message: string
+  /** Plain text, or rich content (emphasis, a list). */
+  message: ReactNode
   variant?: 'danger' | 'primary'
   confirmLabel?: string
   /** Confirm arms only once exactly this text is typed (WS-10). */
@@ -30,12 +31,24 @@ interface ConfirmState extends ConfirmOptions {
 export function useConfirm() {
   const [state, setState] = useState<ConfirmState | null>(null)
   const nextKey = useRef(0)
+  // The open request's resolver, outside state so `confirm` can settle it
+  // without depending on (and so re-creating itself for) every state change.
+  const openResolve = useRef<((v: boolean) => void) | null>(null)
 
   // Stable, so a hook that wraps it (useUnsavedChangesGuard) can memoise on it.
   const confirm = useCallback((opts: ConfirmOptions) => {
     return new Promise<boolean>(resolve => {
+      // A second request while one is open replaces it. The first caller is
+      // answered "no" rather than left awaiting a promise that would never
+      // settle (DS-29).
+      openResolve.current?.(false)
+      const settle = (v: boolean) => {
+        if (openResolve.current === settle) openResolve.current = null
+        resolve(v)
+      }
+      openResolve.current = settle
       nextKey.current += 1
-      setState({ ...opts, resolve, pending: false, error: null, key: nextKey.current })
+      setState({ ...opts, resolve: settle, pending: false, error: null, key: nextKey.current })
     })
   }, [])
 

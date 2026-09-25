@@ -64,7 +64,7 @@ export function ColumnsMenu({
           <span className="max-sm:sr-only">Columns</span>
           {badge && (
             <span
-              className="ml-1 text-[10.5px]"
+              className="ml-1 text-2xs"
               style={{ color: 'var(--fg-subtle)' }}
             >
               {badge}
@@ -74,7 +74,7 @@ export function ColumnsMenu({
       </PopoverTrigger>
       <PopoverContent align="end" className="w-60 p-1.5">
         <div
-          className="px-2 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em]"
+          className="px-2 pb-1 pt-1.5 text-2xs font-semibold uppercase tracking-[0.06em]"
           style={{ color: 'var(--fg-subtle)' }}
         >
           Toggle columns

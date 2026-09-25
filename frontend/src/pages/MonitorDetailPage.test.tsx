@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import MonitorDetailPage from './MonitorDetailPage'
+import { PageHeader } from '@/components/primitives/page-header'
 import { INDEFINITE_MUTE, MUTE_PRESETS, muteChoiceName } from '@/lib/mutePresets'
 import { formatCooldown } from './alerting/constants'
 import { at } from '@/test/at'
@@ -676,5 +677,19 @@ describe('MonitorDetailPage inert scopes', () => {
 
     expect(await screen.findByText('Value drifts')).toBeInTheDocument()
     expect(screen.queryByText(VALUE_DRIFT_SENTENCE)).toBeNull()
+  })
+})
+
+// LIVE-11: the monitor detail used the kit's page head, a second title scale.
+describe('MonitorDetailPage — the shared page header (LIVE-11)', () => {
+  it('renders the same title element as the other Observe pages', async () => {
+    mockApi()
+    renderDetail()
+    const heading = await screen.findByRole('heading', { level: 1, name: 'payment_failed spike' })
+
+    const { container } = render(<PageHeader eyebrow="Observe" title="Metrics" />)
+    const reference = container.querySelector('h1')
+    expect(reference).not.toBeNull()
+    expect(heading.className).toBe(reference?.className)
   })
 })

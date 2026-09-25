@@ -1,14 +1,34 @@
 import type { CSSProperties } from 'react'
 
+/**
+ * The form-control boundary: `--input`, pinned by measurement to the 3:1 WCAG
+ * 1.4.11 floor for non-text contrast. `--border` is a hairline for row
+ * separators (1.20-1.31:1) and left every kit field's edge close to invisible,
+ * worst in dark mode (DS-8). The same token `ui/input` and `ui/switch` use, so
+ * the two control families now share their edge (DS-9).
+ */
+export const INPUT_EDGE = '1px solid var(--input)'
+
+/**
+ * Corner radius shared with `ui/*` controls (`rounded-md` = --radius). The kit
+ * used 7px against ui's 8px, one of the differences that made a settings row
+ * and a dialog field look like two design systems (DS-9).
+ */
+export const INPUT_RADIUS = 'var(--radius)'
+
 // Shared base style for kit text fields. Lives outside kit.tsx because that
 // file must export only components (react-refresh/only-export-components);
 // sibling controls (e.g. the column-suggest combobox) import it to render
 // inputs that match the kit's text fields exactly.
+//
+// Still the dense settings size (34px / 12.5px) rather than ui/input's
+// 36px / 14px: the kit is the compact variant of the same control, not a
+// second look for it.
 export const INPUT_BASE: CSSProperties = {
   height: 34,
   width: '100%',
-  borderRadius: 7,
-  border: '1px solid var(--border)',
+  borderRadius: INPUT_RADIUS,
+  border: INPUT_EDGE,
   background: 'var(--bg)',
   color: 'var(--fg)',
   fontSize: 12.5,

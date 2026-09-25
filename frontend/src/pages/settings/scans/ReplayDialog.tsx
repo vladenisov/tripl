@@ -133,7 +133,7 @@ export function ReplayDialog({
         className="space-y-4 p-4"
         onSubmit={e => { e.preventDefault(); replayMut.mutate() }}
       >
-        <div className="text-[12.5px] font-semibold">Replay metrics period</div>
+        <div className="text-body-sm font-semibold">Replay metrics period</div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label htmlFor="replay-from">From</Label>

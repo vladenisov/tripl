@@ -144,7 +144,7 @@ function FiringsCountBadge({
         <span className="text-base font-semibold tnum">{count}</span>
         <span className="text-xs text-muted-foreground">{count === 1 ? 'firing' : 'firings'}</span>
         {noisy && (
-          <Badge variant="destructive" className="gap-1 text-[10px]">
+          <Badge variant="danger" className="gap-1 text-[10px]">
             <AlertTriangle className="h-3 w-3" />
             Noisy
           </Badge>
@@ -330,7 +330,7 @@ export function RuleReplayDialog({
                 className="h-8 w-32 text-xs"
               />
               {cooldownInvalid && (
-                <p role="alert" className="text-[10.5px] text-destructive">
+                <p role="alert" className="text-2xs text-destructive">
                   Whole minutes from 0 to {COOLDOWN_OVERRIDE_MAX}, or blank for the saved value.
                 </p>
               )}
@@ -351,7 +351,7 @@ export function RuleReplayDialog({
                 className="h-8 w-28 text-xs"
               />
               {minPercentInvalid && (
-                <p role="alert" className="text-[10.5px] text-destructive">
+                <p role="alert" className="text-2xs text-destructive">
                   0 or more, or blank for the saved value.
                 </p>
               )}
@@ -372,7 +372,7 @@ export function RuleReplayDialog({
                 className="h-8 w-28 text-xs"
               />
               {minExpectedInvalid && (
-                <p role="alert" className="text-[10.5px] text-destructive">
+                <p role="alert" className="text-2xs text-destructive">
                   0 or more, or blank for the saved value.
                 </p>
               )}
@@ -394,7 +394,7 @@ export function RuleReplayDialog({
                 className="h-8 w-28 text-xs"
               />
               {sigmaOutOfRange && (
-                <p role="alert" className="text-[10.5px] text-destructive">
+                <p role="alert" className="text-2xs text-destructive">
                   Between {SIGMA_MIN_EXCLUSIVE} and {SIGMA_MAX}, or blank for the detector default.
                 </p>
               )}

@@ -17,6 +17,7 @@ import { formatPercentDelta } from "@/lib/percentDelta"
 import { Badge } from "@/components/ui/badge"
 import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
+import { IconButton } from "@/components/ui/icon-button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { invalidateAlertingConfig } from "./alertingCache"
 import { CHANNEL_META } from "./channelMeta"
@@ -413,7 +414,7 @@ export function AlertDeliveryRow({
         </TableCell>
         <TableCell>
           <div className="flex flex-wrap items-center gap-1.5">
-            <Badge variant={status === 'failed' ? 'destructive' : status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{status}</Badge>
+            <Badge variant={status === 'failed' ? 'danger' : status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{status}</Badge>
             {(delivery.is_local || delivery.is_simulated) && (
               <LocalDeliveryBadge simulated={delivery.is_simulated} />
             )}
@@ -480,16 +481,15 @@ export function AlertDeliveryRow({
                 Retry
               </Button>
             )}
-            <Button
+            <IconButton
               variant="ghost"
-              size="icon"
               className="size-9 sm:size-7"
-              aria-label={open ? 'Collapse delivery details' : 'Expand delivery details'}
+              label={open ? 'Collapse delivery details' : 'Expand delivery details'}
               aria-expanded={open}
               onClick={() => setOpen(current => !current)}
             >
               <ChevronDown aria-hidden="true" className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
-            </Button>
+            </IconButton>
           </div>
         </TableCell>
       </TableRow>

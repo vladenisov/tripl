@@ -40,7 +40,7 @@ function EventMetaCard({
   if (event.meta_values.length === 0) return null
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-      <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
         Meta fields
       </div>
       <div role="table" aria-label="Meta fields" className="py-[6px]">
@@ -82,7 +82,7 @@ function EventTicketsCard({ slug, event }: { slug: string; event: TEvent }) {
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
       <div
-        className="border-b px-4 py-3 text-[12.5px] font-semibold"
+        className="border-b px-4 py-3 text-body-sm font-semibold"
         style={{ borderColor: 'var(--border-subtle)' }}
       >
         Implementation tickets
@@ -148,7 +148,7 @@ export function EventSideColumn({
   return (
     <div className="flex flex-col gap-[14px]">
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
           Properties
         </div>
         <div role="table" aria-label="Properties" className="py-[6px]">
@@ -209,7 +209,7 @@ export function EventSideColumn({
       <EventTicketsCard slug={slug} event={event} />
 
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
           Metric breakdowns
         </div>
         <div className="flex flex-wrap gap-[6px] px-4 py-[12px]">
@@ -220,7 +220,7 @@ export function EventSideColumn({
       </div>
 
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
           Recent activity
         </div>
         <div className="py-[4px]">
@@ -235,10 +235,10 @@ export function EventSideColumn({
             </div>
           ) : history.length === 0 ? (
             <div className="px-4 py-5 text-center" style={{ color: 'var(--fg-subtle)' }}>
-              <p className="text-[11.5px] font-medium" style={{ color: 'var(--fg-muted)' }}>
+              <p className="text-caption font-medium" style={{ color: 'var(--fg-muted)' }}>
                 No recent changes
               </p>
-              <p className="mt-1 text-[10.5px]">
+              <p className="mt-1 text-2xs">
                 Edits to this event's definition will show up here.
               </p>
             </div>
@@ -246,13 +246,13 @@ export function EventSideColumn({
             <div key={change.id} className="flex gap-[10px] border-t px-4 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
               <Dot tone="neutral" size={6} className="mt-[5px]" />
               <div className="min-w-0 flex-1">
-                <div className="text-[11.5px] font-medium">
+                <div className="text-caption font-medium">
                   <span className={change.field.startsWith('field:') || change.field.startsWith('meta:') ? 'mono' : ''}>
                     {historyFieldLabel(change.field)}
                   </span>
                   {change.new_value != null && <span style={{ color: 'var(--fg-muted)' }}> → {change.new_value}</span>}
                 </div>
-                <div className="mt-[2px] text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="mt-[2px] text-2xs" style={{ color: 'var(--fg-subtle)' }}>
                   {formatRelativeTime(change.created_at)}
                 </div>
               </div>

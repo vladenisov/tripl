@@ -47,7 +47,7 @@ export function NotFoundState({
       <p className="text-sm font-semibold tracking-wide" style={{ color: 'var(--fg-subtle)' }}>
         404
       </p>
-      <h1 className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
+      <h1 className="mt-2 text-title font-semibold" style={{ color: 'var(--fg)' }}>
         {title}
       </h1>
       <p className="mt-2 max-w-sm text-sm" style={{ color: 'var(--fg-muted)' }}>

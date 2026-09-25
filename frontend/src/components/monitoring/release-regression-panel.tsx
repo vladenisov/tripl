@@ -1,3 +1,4 @@
+import { formatNumber } from '@/lib/format'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { PackageX, TrendingDown } from 'lucide-react'
@@ -17,8 +18,10 @@ interface ReleaseRegressionPanelProps {
   enabled?: boolean
 }
 
+// The app locale, not the browser's: the chart beside this list already
+// prints its numbers in it (DS-30).
 function formatCount(value: number): string {
-  return Math.round(value).toLocaleString()
+  return formatNumber(Math.round(value))
 }
 
 function formatPct(value: number): string {

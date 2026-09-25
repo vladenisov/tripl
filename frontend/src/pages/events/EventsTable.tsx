@@ -25,7 +25,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { TooltipProvider } from '@/components/ui/tooltip'
 import { Dot } from '@/components/primitives/dot'
 import { EmptyState } from '@/components/empty-state'
 import type {
@@ -303,10 +302,10 @@ export function EventsTable({
   const lastVirtual = virtualItems[virtualItems.length - 1]
 
   return (
-    // A short delay: at 0 every 48h cell the pointer crossed mounted its lazy
-    // chart on the way past (EVT-46).
-    <TooltipProvider delayDuration={300}>
-      <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+    // Tooltips here take the app-wide provider's 300ms delay (main.tsx): at 0
+    // every 48h cell the pointer crossed mounted its lazy chart on the way past
+    // (EVT-46). The local provider this used to mount is no longer needed.
+    <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext
           items={visibleEventIds}
           strategy={verticalListSortingStrategy}
@@ -636,7 +635,6 @@ export function EventsTable({
             </div>
           )}
         </SortableContext>
-      </DndContext>
-    </TooltipProvider>
+    </DndContext>
   )
 }

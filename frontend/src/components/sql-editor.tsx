@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import CodeMirror, { type EditorView } from '@uiw/react-codemirror'
 import { sql, type SQLNamespace } from '@codemirror/lang-sql'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { useTheme } from '@/components/theme-provider'
+import { getErrorMessage } from '@/lib/utils'
 import type { DbType } from '@/types/dataSources'
 import type { TableSchema } from '@/types/dataSourceSchema'
 import { formatLanguage, highlightDialect } from '@/components/sql-dialects'
@@ -68,14 +71,21 @@ export function SqlEditor({
   readOnly?: boolean
   /**
    * Validation wiring for the editable surface. CodeMirror's focusable element
-   * is its inner contenteditable, not the wrapper `id` sits on, so these go
-   * onto it through `contentAttributes` — the only place a screen reader looks.
+   * is its inner contenteditable, so these — like `id` — go onto it through
+   * `contentAttributes`, the only place a screen reader looks.
    */
   ariaDescribedBy?: string
   ariaInvalid?: boolean
   ariaRequired?: boolean
 }) {
   const viewRef = useRef<EditorView | null>(null)
+  // CodeMirror defaults to its LIGHT theme, which registers the editor as
+  // light: the base theme then painted the autocomplete box #f5f5f5 under text
+  // inheriting the dark theme's near-white --fg, and the fallback highlight
+  // style used light-background token colours at ~2:1 on --bg-sunken (DS-1).
+  // index.css keeps the frame and tooltips on tokens either way.
+  const { resolvedTheme } = useTheme()
+  const editorTheme = resolvedTheme === 'dark' ? 'dark' : 'light'
 
   // Reshape tables into the `{ table: column[] }` map CodeMirror's sql() uses
   // for table/column autocomplete.
@@ -115,23 +125,33 @@ export function SqlEditor({
     ]
   }, [dialect, schema, tables])
 
-  // Mirror the validation attributes onto the contenteditable. Written to the
-  // DOM directly (CodeMirror leaves attributes it did not set alone) rather than
-  // through an extension, so the editor keeps working behind the test suites'
-  // default-export-only mock of @uiw/react-codemirror.
+  // Mirror the name, id and validation attributes onto the contenteditable —
+  // the element with role="textbox", and so the only one a screen reader or a
+  // `<label htmlFor>` can use. Written to the DOM directly (CodeMirror leaves
+  // attributes it did not set alone) rather than through an extension, so the
+  // editor keeps working behind the test suites' default-export-only mock of
+  // @uiw/react-codemirror.
+  //
+  // `aria-label` is still passed to <CodeMirror> for those mocks, which label
+  // their stand-in textarea from it. The real component spreads it onto its
+  // outer wrapper div, where it names nothing and duplicates the label, so it
+  // is taken off that div here (DS-6).
   const applyContentAria = useCallback(
     (view: EditorView | null) => {
-      const content = view?.contentDOM
-      if (!content) return
+      if (!view) return
+      const content = view.contentDOM
       const set = (name: string, value: string | undefined) => {
         if (value) content.setAttribute(name, value)
         else content.removeAttribute(name)
       }
+      set('aria-label', ariaLabel)
+      set('id', id)
       set('aria-describedby', ariaDescribedBy)
       set('aria-invalid', ariaInvalid ? 'true' : undefined)
       set('aria-required', ariaRequired ? 'true' : undefined)
+      view.dom.parentElement?.removeAttribute('aria-label')
     },
-    [ariaDescribedBy, ariaInvalid, ariaRequired],
+    [ariaLabel, id, ariaDescribedBy, ariaInvalid, ariaRequired],
   )
   useEffect(() => {
     applyContentAria(viewRef.current)
@@ -144,6 +164,9 @@ export function SqlEditor({
   useEffect(() => {
     latestValueRef.current = value
   }, [value])
+  //
+  // A failure keeps the text as it is and SAYS so: a silent catch made Format
+  // on templated or dialect-edge SQL look like a dead button (DS-43).
   const handleFormat = useCallback(() => {
     const source = value
     void import('@/components/sql-format')
@@ -151,7 +174,9 @@ export function SqlEditor({
         if (latestValueRef.current !== source) return
         onChange(formatSql(source, formatLanguage(dialect)))
       })
-      .catch(() => { /* unparseable SQL or a failed chunk: keep the text as is */ })
+      .catch((error: unknown) => {
+        toast.error(`Couldn't format this SQL: ${getErrorMessage(error)}`)
+      })
   }, [value, onChange, dialect])
 
   // Insert a table/column name at the cursor (replacing any selection). Adds a
@@ -177,14 +202,15 @@ export function SqlEditor({
   return (
     <div className="flex flex-col gap-1.5">
       {/* `sql-editor` is a styling hook, not decoration: index.css targets
-          `.sql-editor .cm-editor .cm-content` to soft-wrap long lines. Renaming
-          it here silently stops the wrapping, which is why a test pins the pair
-          (tripl-h2sx.33). */}
-      <div
-        id={id}
-        className="sql-editor overflow-hidden rounded-[7px]"
-        style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
-      >
+          `.sql-editor .cm-editor …` for the frame, the tooltips and the
+          soft-wrap of long lines. Renaming it here silently drops all three,
+          which is why a test pins the pair (tripl-h2sx.33).
+
+          No border, background or overflow clip of its own: `.cm-editor` is
+          the frame, and a second one here doubled the border and clipped the
+          focus ring away (DS-7). `id` lives on the contenteditable, the one
+          element a <label htmlFor> can point at (DS-6). */}
+      <div className="sql-editor">
         <CodeMirror
           value={value}
           onChange={onChange}
@@ -192,6 +218,7 @@ export function SqlEditor({
           editable={!readOnly}
           placeholder={placeholder}
           aria-label={ariaLabel}
+          theme={editorTheme}
           extensions={extensions}
           basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: false }}
           minHeight={minHeight}

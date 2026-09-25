@@ -522,14 +522,14 @@ export function AlertingInbox({
                   number that looks project-wide while describing one page is
                   how "52 open" turns into a decision nobody can retrace. */}
               {!statusFilter && items.length > 0 && (
-                <p className="text-[10.5px] text-muted-foreground">
+                <p className="text-2xs text-muted-foreground">
                   Of the {countOf(items.length, 'incident', 'incidents')} loaded: {openCount} open ·{' '}
                   {handledCount} handled
                 </p>
               )}
               {pinnedGroup && (
                 <div className="space-y-1">
-                  <p className="text-[10.5px] text-muted-foreground">
+                  <p className="text-2xs text-muted-foreground">
                     Linked from an alert. This incident is outside the list below.
                   </p>
                   {renderCard(pinnedGroup, true)}
@@ -1049,7 +1049,7 @@ const IncidentCard = memo(function IncidentCard({
             <button
               type="button"
               onClick={openNote}
-              className="inline-flex min-h-9 items-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground sm:min-h-0 sm:text-[10.5px]"
+              className="inline-flex min-h-9 items-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground sm:min-h-0 sm:text-2xs"
             >
               {group.note ? 'Edit note' : 'Add note'}
             </button>
@@ -1200,7 +1200,7 @@ const IncidentCard = memo(function IncidentCard({
 
       {/* Inside the failing card, not once below all twenty of them. */}
       {errorMessage && (
-        <p role="alert" className="mt-2 text-[10.5px] text-destructive">
+        <p role="alert" className="mt-2 text-2xs text-destructive">
           {errorMessage}
         </p>
       )}
@@ -1212,7 +1212,7 @@ const IncidentCard = memo(function IncidentCard({
         type="button"
         aria-expanded={isExpanded}
         onClick={() => toggleIncident(id)}
-        className="mt-2 inline-flex min-h-9 items-center text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground sm:min-h-0 sm:text-[10.5px]"
+        className="mt-2 inline-flex min-h-9 items-center text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground sm:min-h-0 sm:text-2xs"
       >
         {isExpanded ? 'Hide' : 'Show'} what was sent (
         {countOf(group.delivery_count, 'delivery', 'deliveries')})

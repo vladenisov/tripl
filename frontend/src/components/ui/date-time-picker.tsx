@@ -1,6 +1,7 @@
 import * as React from "react"
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { IconButton } from "@/components/ui/icon-button"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { formatDate } from "@/lib/datetime"
@@ -126,29 +127,27 @@ function CalendarGrid({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <Button
+        <IconButton
           type="button"
           variant="ghost"
-          size="icon"
           className="size-7"
-          aria-label="Previous month"
+          label="Previous month"
           onClick={() => onFocusedChange(addMonths(focused, -1))}
         >
           <ChevronLeft aria-hidden="true" className="size-4" />
-        </Button>
+        </IconButton>
         <div aria-live="polite" className="text-sm font-medium">
           {monthLabel}
         </div>
-        <Button
+        <IconButton
           type="button"
           variant="ghost"
-          size="icon"
           className="size-7"
-          aria-label="Next month"
+          label="Next month"
           onClick={() => onFocusedChange(addMonths(focused, 1))}
         >
           <ChevronRight aria-hidden="true" className="size-4" />
-        </Button>
+        </IconButton>
       </div>
       {/* A grid, not a list of buttons: arrow keys move by day and week, Page
           Up/Down by month, and only the focused day is in the tab order. */}
@@ -189,7 +188,7 @@ function CalendarGrid({
                       aria-current={sameDay(day, today) ? "date" : undefined}
                       onClick={() => onSelect(day)}
                       className={cn(
-                        "inline-flex size-8 items-center justify-center rounded-md text-[13px] outline-none transition-colors",
+                        "inline-flex size-8 items-center justify-center rounded-md text-body outline-none transition-colors",
                         "hover:bg-surface-hover focus-visible:ring-ring/50 focus-visible:ring-[3px]",
                         sameDay(day, today) && !isSelected && "font-semibold text-primary",
                         isSelected && "bg-primary text-primary-foreground hover:bg-primary/90",
@@ -267,7 +266,7 @@ export function DateTimePicker({
             // each inline child and joins them without a space, which read the
             // prefix and the date as one word ("date:Jan 14, 2026").
             aria-label={`${label}, date: ${date ? formatDate(date) : "none picked"}`}
-            className="h-8 justify-start gap-1.5 px-2.5 text-[13px] font-normal"
+            className="h-8 justify-start gap-1.5 px-2.5 text-body font-normal"
           >
             <CalendarDays aria-hidden="true" className="size-3.5 text-muted-foreground" />
             {date ? formatDate(date) : <span className="text-muted-foreground">Pick a date</span>}
@@ -299,7 +298,7 @@ export function DateTimePicker({
         value={time}
         disabled={disabled}
         onChange={event => changeTime(event.target.value)}
-        className="h-8 w-[104px] text-[13px] md:text-[13px]"
+        className="h-8 w-[104px] text-body md:text-body"
       />
     </div>
   )

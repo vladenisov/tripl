@@ -161,7 +161,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
           <SrcIcon dbType={dataSource?.db_type ?? null} size={36} />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-              <h1 className="m-0 text-[21px] font-semibold tracking-tight">{sc.name}</h1>
+              <h1 className="m-0 text-title font-semibold tracking-tight">{sc.name}</h1>
               <span className="inline-flex items-center gap-1.5">
                 <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
                 <span className="text-xs" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
@@ -169,7 +169,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
                 </span>
               </span>
             </div>
-            <p className="mt-1 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="mt-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
               {/* "Reads from", not "Ingests from": the causal note directly below
                   says what a run DOES ("adds events to your tracking plan"), and
                   two verbs for one act, one line apart, is the vocabulary drift
@@ -232,19 +232,19 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             type="button"
             onClick={() => setTab(id)}
             onKeyDown={(e) => {
-              if (e.key === 'ArrowRight') {
-                const next = arr[(idx + 1) % arr.length]
-                if (!next) return
-                setTab(next)
-                document.getElementById(`scan-tab-${next}`)?.focus()
-              } else if (e.key === 'ArrowLeft') {
-                const prev = arr[(idx - 1 + arr.length) % arr.length]
-                if (!prev) return
-                setTab(prev)
-                document.getElementById(`scan-tab-${prev}`)?.focus()
-              }
+              // The APG tabs keys: arrows wrap, Home/End jump to the ends (DS-35).
+              const target =
+                e.key === 'ArrowRight' ? arr[(idx + 1) % arr.length]
+                : e.key === 'ArrowLeft' ? arr[(idx - 1 + arr.length) % arr.length]
+                : e.key === 'Home' ? arr[0]
+                : e.key === 'End' ? arr[arr.length - 1]
+                : undefined
+              if (!target) return
+              e.preventDefault()
+              setTab(target)
+              document.getElementById(`scan-tab-${target}`)?.focus()
             }}
-            className="-mb-px px-3 py-2 text-[12.5px] font-medium"
+            className="-mb-px px-3 py-2 text-body-sm font-medium"
             style={{
               color: tab === id ? 'var(--fg)' : 'var(--fg-muted)',
               borderBottom: tab === id ? '2px solid var(--accent)' : '2px solid transparent',

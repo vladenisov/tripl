@@ -7,12 +7,15 @@ import { dataSourcesApi } from '@/api/dataSources'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { PageHeader } from '@/components/primitives/page-header'
+import { LoadingState } from '@/components/primitives/loading-state'
 import {
   RadioCards,
   SCard,
-  Select,
+  NativeSelect,
   TextArea,
   TextInput,
+  Field,
 } from '@/components/settings/kit'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
@@ -40,7 +43,6 @@ import {
 } from '@/types'
 import { EventCompositionFields } from './EventCompositionFields'
 import { FactDefinitionFields } from './FactDefinitionFields'
-import { FormField } from '@/components/settings/form-field'
 import { MonitoringFields } from './MonitoringFields'
 import { SqlDefinitionFields } from './SqlDefinitionFields'
 import { TemplateGallery } from './TemplateGallery'
@@ -101,7 +103,7 @@ function DefinitionChangeNotice() {
   return (
     <div
       role="status"
-      className="mb-[18px] flex items-start gap-2 rounded-[10px] border px-4 py-3 text-[12.5px]"
+      className="mb-[18px] flex items-start gap-2 rounded-card border px-4 py-3 text-body-sm"
       style={{
         background: 'var(--warning-soft, var(--bg-sunken))',
         borderColor: 'color-mix(in oklab, var(--warning, var(--border)) 40%, var(--border))',
@@ -403,17 +405,20 @@ export function MetricForm({
         }}
         className="mx-auto max-w-[1100px] px-4 pb-12 pt-4 sm:px-6"
       >
-        <button
-          type="button"
-          onClick={onClose}
-          className="mb-[14px] inline-flex items-center gap-1 text-[11.5px] transition-colors hover:text-[var(--fg)]"
-          style={{ color: 'var(--fg-muted)' }}
-        >
-          <ChevronLeft size={13} /> Back
-        </button>
-        <h1 className="mb-[18px] text-[22px] font-semibold tracking-[-0.01em]">
-          {isNew ? 'New metric' : canWrite ? 'Edit metric' : 'Metric'}
-        </h1>
+        <PageHeader
+          className="mb-[18px]"
+          back={
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              <ChevronLeft size={13} /> Back
+            </button>
+          }
+          title={isNew ? 'New metric' : canWrite ? 'Edit metric' : 'Metric'}
+        />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         {/* A viewer gets the definition read-only: `disabled` on a fieldset
@@ -429,11 +434,12 @@ export function MetricForm({
               gutter from `sm` up, so nothing narrower than the page leaves a
               usable control (tripl-vv2f). */}
           <SCard title="Details">
-            <FormField
+            <Field
               label="Display name"
               htmlFor="metric-display-name"
               required
               error={fieldErrors['metric-display-name']}
+              announceError={false}
             >
               <TextInput
                 id="metric-display-name"
@@ -443,8 +449,8 @@ export function MetricForm({
                 aria-required
                 {...errorAria(fieldErrors, 'metric-display-name')}
               />
-            </FormField>
-            <FormField
+            </Field>
+            <Field
               label="Internal name"
               // After creation this row holds the name as text, not a control:
               // `false` names it as a group.
@@ -452,6 +458,7 @@ export function MetricForm({
               required={isNew}
               hint={isNew ? 'Stable identifier used in queries.' : "Can't be changed after creation."}
               error={isNew ? fieldErrors['metric-name'] : undefined}
+              announceError={false}
             >
               {isNew ? (
                 <TextInput
@@ -467,12 +474,12 @@ export function MetricForm({
                   {...errorAria(fieldErrors, 'metric-name')}
                 />
               ) : (
-                <div className="mono text-[13px]" style={{ color: 'var(--fg)' }}>
+                <div className="mono text-body" style={{ color: 'var(--fg)' }}>
                   {draft.name}
                 </div>
               )}
-            </FormField>
-            <FormField label="Description" htmlFor="metric-description">
+            </Field>
+            <Field label="Description" htmlFor="metric-description">
               <TextArea
                 id="metric-description"
                 value={draft.description}
@@ -480,11 +487,11 @@ export function MetricForm({
                 rows={2}
                 placeholder="What does this metric measure?"
               />
-            </FormField>
-            <FormField label="Unit" htmlFor="metric-unit" hint="Optional display unit (e.g. %, ms). With %, stored fractions render ×100 (0.08 → 8 %).">
+            </Field>
+            <Field label="Unit" htmlFor="metric-unit" hint="Optional display unit (e.g. %, ms). With %, stored fractions render ×100 (0.08 → 8 %).">
               <TextInput id="metric-unit" value={draft.unit} onChange={value => patch({ unit: value })} placeholder="%" />
-            </FormField>
-            <FormField label="Color" htmlFor="metric-color">
+            </Field>
+            <Field label="Color" htmlFor="metric-color">
               <input
                 id="metric-color"
                 type="color"
@@ -493,26 +500,26 @@ export function MetricForm({
                 className="h-8 w-12 cursor-pointer rounded border bg-transparent"
                 style={{ borderColor: 'var(--border)' }}
               />
-            </FormField>
-            <FormField label="Status" htmlFor="metric-status" last>
-              <Select
+            </Field>
+            <Field label="Status" htmlFor="metric-status" last>
+              <NativeSelect
                 id="metric-status"
                 value={draft.status}
                 onChange={value => patch({ status: value as MetricStatus })}
                 options={METRIC_STATUSES.map(s => ({ value: s, label: METRIC_STATUS_LABEL[s] }))}
               />
-            </FormField>
+            </Field>
           </SCard>
 
           <SCard title="Kind" description="How this metric produces its per-bucket value.">
-            <FormField label="Metric kind" stacked last>
+            <Field label="Metric kind" stacked last>
               <RadioCards
                 groupLabel="Metric kind"
                 value={draft.kind}
                 onChange={value => changeKind(value as MetricKind)}
                 options={KIND_OPTIONS}
               />
-            </FormField>
+            </Field>
           </SCard>
 
           {definitionChanged && <DefinitionChangeNotice />}
@@ -568,7 +575,7 @@ export function MetricForm({
         {errorEntries.length > 0 && (
           <div
             role="alert"
-            className="mb-[18px] rounded-[10px] border px-4 py-3 text-[12.5px]"
+            className="mb-[18px] rounded-card border px-4 py-3 text-body-sm"
             style={{
               background: 'var(--danger-soft)',
               borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
@@ -603,7 +610,7 @@ export function MetricForm({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 items-center rounded-[7px] px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
             {canWrite ? 'Cancel' : 'Close'}
@@ -612,7 +619,7 @@ export function MetricForm({
             <button
               type="submit"
               disabled={saveMut.isPending || facts.loading || facts.error != null}
-              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
+              className="inline-flex h-8 items-center gap-[6px] rounded-control px-3 text-[12px] font-medium disabled:opacity-60"
               style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
             >
               {saveMut.isPending ? (
@@ -693,9 +700,7 @@ export default function MetricEditPage() {
   const isLoading = dataSourcesQuery.isLoading || (!isNew && metricQuery.isLoading)
   if (isLoading || !slug) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-        Loading…
-      </div>
+      <LoadingState className="flex min-h-[240px] items-center justify-center text-[12px]" />
     )
   }
 

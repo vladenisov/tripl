@@ -81,7 +81,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
 
       <div className="flex flex-wrap items-center gap-2 pr-10">
         <Sparkles className="h-4 w-4" style={{ color: 'var(--accent)' }} />
-        <h2 id="demo-welcome-heading" className="text-[15px] font-semibold">
+        <h2 id="demo-welcome-heading" className="text-lead font-semibold">
           Welcome to your demo workspace
         </h2>
         {/* No "Local synthetic data" badge here: the demo banner right above
@@ -90,7 +90,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
           type="button"
           onClick={() => setExpanded((open) => !open)}
           aria-expanded={expanded}
-          className="flex items-center gap-1 rounded px-2 py-1 text-[11.5px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex items-center gap-1 rounded px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--accent)' }}
         >
           {expanded ? 'Hide the tour & chapters' : 'Show me around'}
@@ -103,7 +103,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
 
       {expanded && (
         <>
-          <p className="mt-2 max-w-2xl text-[12.5px] leading-[1.55]" style={{ color: 'var(--fg-muted)' }}>
+          <p className="mt-2 max-w-2xl text-body-sm leading-[1.55]" style={{ color: 'var(--fg-muted)' }}>
             Everything here runs on a local, synthetic warehouse — no external systems are touched.
             Explore real scans, metrics, monitors and alerts against generated data, then reset or delete
             the demo whenever you like.

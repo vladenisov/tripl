@@ -1,7 +1,8 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { RouterProvider, createMemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { SettingsLayout } from './SettingsLayout'
 import { WORKSPACE_GROUPS } from './nav'
 import { useUnsavedChanges } from './unsaved-changes'
@@ -147,6 +148,90 @@ describe('SettingsLayout responsive rail', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Profile' }))
 
     expect(rail(container).className).toContain('-translate-x-full')
+  })
+})
+
+describe('SettingsLayout off-canvas rail keyboard behaviour (DS-11)', () => {
+  function rail(container: HTMLElement): HTMLElement {
+    return container.querySelector('aside') as HTMLElement
+  }
+
+  // test-setup's matchMedia answers "no match": a phone-width viewport.
+  it('keeps a closed off-canvas rail out of the Tab order and the a11y tree', () => {
+    const { container } = renderSettings('members')
+    expect(rail(container)).toHaveAttribute('inert')
+  })
+
+  it('moves focus into the opened rail, closes it on Escape and returns focus', () => {
+    const { container } = renderSettings('members')
+    const open = screen.getByRole('button', { name: 'Open settings navigation' })
+    open.focus()
+    fireEvent.click(open)
+
+    expect(rail(container)).not.toHaveAttribute('inert')
+    expect(rail(container)).toContainElement(document.activeElement as HTMLElement)
+    // The content behind the drawer is what goes inert while it is open.
+    expect(container.querySelector('main')).toHaveAttribute('inert')
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(rail(container)).toHaveAttribute('inert')
+    expect(container.querySelector('main')).not.toHaveAttribute('inert')
+    expect(open).toHaveFocus()
+  })
+
+  it('lets Escape close only a dialog opened over the open rail, not the rail too', async () => {
+    function DialogOverRail() {
+      const [open, setOpen] = useState(false)
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open dialog
+          </button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogContent>
+              <DialogTitle>Layer on top</DialogTitle>
+              <DialogDescription>Stands in for the settings palette.</DialogDescription>
+            </DialogContent>
+          </Dialog>
+        </>
+      )
+    }
+    const { container } = render(
+      <RouterProvider
+        router={dataRouter(
+          <SettingsLayout activePath="members" backHref="/">
+            <DialogOverRail />
+          </SettingsLayout>,
+        )}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings navigation' }))
+    expect(rail(container)).not.toHaveAttribute('inert')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open dialog' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Layer on top' })
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement))
+
+    // One press, dispatched where it really lands: the focused element in the
+    // dialog. Radix handles it at document capture and marks it handled.
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Layer on top' })).toBeNull())
+    expect(rail(container)).not.toHaveAttribute('inert')
+  })
+
+  it('never makes the pinned rail inert from md up', () => {
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) => ({
+      ...original(query),
+      matches: query === '(min-width: 768px)',
+    })) as typeof window.matchMedia
+    try {
+      const { container } = renderSettings('members')
+      expect(rail(container)).not.toHaveAttribute('inert')
+    } finally {
+      window.matchMedia = original
+    }
   })
 })
 

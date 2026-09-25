@@ -1,0 +1,47 @@
+import { render } from '@testing-library/react'
+import { afterEach, describe, expect, it } from 'vitest'
+import { ThemeProvider, useTheme } from './theme-provider'
+
+function Probe() {
+  const { resolvedTheme } = useTheme()
+  return <span data-testid="resolved">{resolvedTheme}</span>
+}
+
+afterEach(() => {
+  localStorage.clear()
+  document.documentElement.classList.remove('light', 'dark')
+  document.documentElement.style.colorScheme = ''
+})
+
+describe('ThemeProvider color-scheme (DS-14)', () => {
+  it('sets the root color-scheme to the app theme, not the OS one', () => {
+    const { getByTestId, unmount } = render(
+      <ThemeProvider defaultTheme="light" storageKey="theme-test-light">
+        <Probe />
+      </ThemeProvider>,
+    )
+    expect(document.documentElement).toHaveClass('light')
+    expect(document.documentElement.style.colorScheme).toBe('light')
+    expect(getByTestId('resolved')).toHaveTextContent('light')
+    unmount()
+
+    render(
+      <ThemeProvider defaultTheme="dark" storageKey="theme-test-dark">
+        <Probe />
+      </ThemeProvider>,
+    )
+    expect(document.documentElement).toHaveClass('dark')
+    expect(document.documentElement.style.colorScheme).toBe('dark')
+  })
+
+  it('resolves "system" from the OS preference', () => {
+    // test-setup's matchMedia answers "no match": the OS prefers light.
+    const { getByTestId } = render(
+      <ThemeProvider defaultTheme="system" storageKey="theme-test-system">
+        <Probe />
+      </ThemeProvider>,
+    )
+    expect(getByTestId('resolved')).toHaveTextContent('light')
+    expect(document.documentElement.style.colorScheme).toBe('light')
+  })
+})

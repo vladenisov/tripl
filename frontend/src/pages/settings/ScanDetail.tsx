@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react"
+import { Panel } from '@/components/settings/kit'
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, ChevronDown, GitMerge, RotateCcw, XCircle } from "lucide-react"
 import { scansApi } from "@/api/scans"
@@ -6,6 +7,7 @@ import { useDemoScenarioActions, useScenarioArtifacts } from "@/demo/demoScenari
 import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
 import type { DataSource, EventType, ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
+import { IconButton } from "@/components/ui/icon-button"
 import { Chip } from "@/components/primitives/chip"
 import { ErrorState } from "@/components/error-state"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -17,7 +19,6 @@ import {
   NoneTag,
   SrcIcon,
   StatCard,
-  SurfPanel,
 } from './scans/scanLayout'
 import { RunStatusPill } from './scans/ScanConfigRow'
 import { runPillStatus } from './scans/scanRunStatus'
@@ -116,7 +117,7 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
                 return (
                   <TableCell
                     key={platform}
-                    className="mono px-4 text-center text-[12.5px]"
+                    className="mono px-4 text-center text-body-sm"
                     style={{ color: present ? 'var(--success)' : 'var(--fg-faint)' }}
                   >
                     <span aria-label={`${item.event_name} ${present ? 'present' : 'absent'} on ${platform}`}>
@@ -133,9 +134,9 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
   }
 
   return (
-    <SurfPanel title="Platform presence" subtitle={subtitle}>
+    <Panel title="Platform presence" subtitle={subtitle}>
       {body}
-    </SurfPanel>
+    </Panel>
   )
 }
 
@@ -311,7 +312,7 @@ export function ScanDetail({
       </div>
 
       {/* Source & query */}
-      <SurfPanel title="Source & query">
+      <Panel title="Source & query">
         <KV
           label="Data source"
           value={
@@ -345,11 +346,11 @@ export function ScanDetail({
         <KV label="Mode" value={SCAN_MODE_DETAIL_LABEL[scanModeOf(scanConfig)]} />
         <KV label="Time column" value={scanConfig.time_column || <NoneTag />} mono={!!scanConfig.time_column} />
         <KV label="Event name format" value={scanConfig.event_name_format || <NoneTag />} mono={!!scanConfig.event_name_format} />
-      </SurfPanel>
+      </Panel>
 
       {/* Mapping + metrics grid */}
       <div className="grid items-start gap-3 lg:grid-cols-2">
-        <SurfPanel title="Event mapping">
+        <Panel title="Event mapping">
           {/* "Auto-detect" claimed a detection that never happened: with no
               event type AND no event type column a scan cannot name anything,
               and every run of it fails. The form asks the two together now, so
@@ -381,8 +382,8 @@ export function ScanDetail({
                 : <NoneTag />
             }
           />
-        </SurfPanel>
-        <SurfPanel title="Metrics & drift">
+        </Panel>
+        <Panel title="Metrics & drift">
           <KV label="Breakdown columns" value={chipList(scanConfig.metric_breakdown_columns)} />
           <KV
             label="Values limit"
@@ -392,14 +393,14 @@ export function ScanDetail({
           <KV label="Distribution drift" value={chipList(scanConfig.distribution_drift_fields)} />
           <KV label="JSON value paths" value={chipList(scanConfig.json_value_paths)} />
           <KV label="Cardinality threshold" value={scanConfig.cardinality_threshold} mono />
-        </SurfPanel>
+        </Panel>
       </div>
 
       {/* Platform presence matrix */}
       <PlatformPresencePanel slug={slug} scanConfigId={scanConfig.id} />
 
       {/* Recent runs */}
-      <SurfPanel
+      <Panel
         title="Recent runs"
         subtitle={recentJobsSubtitle}
         right={canApplyGroups ? (
@@ -446,7 +447,7 @@ export function ScanDetail({
             style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)' }}
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold" style={{ color: 'var(--danger)' }}>
+              <span className="inline-flex items-center gap-1.5 text-body font-semibold" style={{ color: 'var(--danger)' }}>
                 <XCircle className="size-3.5" aria-hidden="true" />
                 Failed last {failingStreakShown} runs
               </span>
@@ -523,7 +524,7 @@ export function ScanDetail({
             </TableBody>
           </Table>
         )}
-      </SurfPanel>
+      </Panel>
     </div>
   )
 }
@@ -593,14 +594,14 @@ function JobRow({
               ? formatRelativeTime(job.started_at)
               : `queued ${formatRelativeTime(job.created_at)}`}
           </TableCell>
-          <TableCell className={`mono px-4 text-right text-[11.5px] ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-subtle)' }}>{duration}</TableCell>
+          <TableCell className={`mono px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-subtle)' }}>{duration}</TableCell>
           {/* The header says "Rows read" for every row, but a catalog run and a
               metrics run count different populations under different caps. Per
               cell is the only place that distinction fits. */}
-          <TableCell className="mono tnum px-4 text-right text-[11.5px]" title={jobRowsReadTitle(job)}>
+          <TableCell className="mono tnum px-4 text-right text-caption" title={jobRowsReadTitle(job)}>
             {rows == null ? '—' : rows.toLocaleString()}
           </TableCell>
-          <TableCell className={`mono tnum px-4 text-right text-[11.5px] ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-muted)' }}>
+          <TableCell className={`mono tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-muted)' }}>
             {events == null ? '—' : events.toLocaleString()}
           </TableCell>
           <TableCell className="px-4">
@@ -609,42 +610,37 @@ function JobRow({
           <TableCell className="px-2">
             <div className="flex items-center justify-end gap-1 pointer-coarse:gap-2">
               {isActive && onCancel && (
-                <Button
+                <IconButton
                   variant="ghost"
-                  size="icon"
                   className={`${RUN_CONTROL_SIZE} text-muted-foreground hover:text-[var(--danger)]`}
-                  title="Stop run"
-                  aria-label="Stop run"
+                  label="Stop run"
                   disabled={cancelPending}
                   onClick={onCancel}
                 >
                   <Ban className="size-3" aria-hidden="true" />
-                </Button>
+                </IconButton>
               )}
               {job.status === 'failed' && onRetry && (
-                <Button
+                <IconButton
                   variant="ghost"
-                  size="icon"
                   className={`${RUN_CONTROL_SIZE} text-muted-foreground hover:text-[var(--accent)]`}
-                  title="Retry scan"
-                  aria-label="Retry scan"
+                  label="Retry scan"
                   disabled={retryPending}
                   onClick={onRetry}
                 >
                   <RotateCcw className="size-3" aria-hidden="true" />
-                </Button>
+                </IconButton>
               )}
               {(job.result_summary || job.error_message) && (
-                <Button
+                <IconButton
                   variant="ghost"
-                  size="icon"
                   className={RUN_CONTROL_SIZE}
-                  aria-label={expanded ? 'Collapse run details' : 'Expand run details'}
+                  label={expanded ? 'Collapse run details' : 'Expand run details'}
                   aria-expanded={expanded}
                   onClick={onToggle}
                 >
                   <ChevronDown className={`size-3 transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
-                </Button>
+                </IconButton>
               )}
             </div>
           </TableCell>

@@ -760,7 +760,10 @@ describe('MonitorsSection rule row details', () => {
     renderSection({ rules: [makeRule({ total_deliveries: 1, incident_count: 1 })] })
 
     const remove = await screen.findByRole('button', { name: 'Delete rule Prod drops' })
-    expect(remove).toHaveAttribute('title', expect.stringContaining('1 delivery and 1 incident'))
+    // A real tooltip now (DS-12), shown on keyboard focus as well as hover,
+    // rather than a `title` only a mouse could reach.
+    fireEvent.focus(remove)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('1 delivery and 1 incident')
   })
 
   it('links the settings toggle to the row it opens, which spans the table (ALR-46)', async () => {

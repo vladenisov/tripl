@@ -3,13 +3,15 @@ import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowLeft, Bell, BellOff, RefreshCw, Settings2 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
-import { InfoRow, PageHead, Panel } from '@/components/settings/kit'
+import { InfoRow, Panel } from '@/components/settings/kit'
+import { PageHeader } from '@/components/primitives/page-header'
 import { ErrorState } from '@/components/error-state'
 import { FormRow } from '@/components/ui/form-row'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
+import { formatNumber } from '@/lib/format'
 import {
   MUTE_PRESETS,
   muteChoiceName,
@@ -129,10 +131,10 @@ export default function MonitorDetailPage() {
         </div>
       ) : (
         <>
-          <PageHead
+          <PageHeader
             eyebrow="Observe"
             title={monitor.rule_name}
-            right={
+            actions={
               // Editing a rule is an editor's job; the link would land a
               // viewer on a read-only Monitors section.
               slug && canWrite ? (
@@ -253,7 +255,7 @@ function ActionButton({
       aria-label={ariaLabel}
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+      className="inline-flex h-8 items-center gap-[6px] rounded-control border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
       style={{ background: 'var(--surface)', color: 'var(--fg)', borderColor: 'var(--border)' }}
     >
       {icon}
@@ -359,7 +361,7 @@ function MuteControl({
         </>
       )}
       {errorMessage && (
-        <span role="alert" className="text-[11.5px]" style={{ color: 'var(--danger)' }}>
+        <span role="alert" className="text-caption" style={{ color: 'var(--danger)' }}>
           {errorMessage}
         </span>
       )}
@@ -370,8 +372,8 @@ function MuteControl({
 function RecencyStrip({ monitor }: { monitor: MonitorDetail }) {
   const isFiring = monitor.status === 'firing'
   return (
-    <div
-      className="flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3"
+    <MiniStatStrip
+      className="rounded-lg border px-4 py-3"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
     >
       <MiniStat
@@ -383,35 +385,31 @@ function RecencyStrip({ monitor }: { monitor: MonitorDetail }) {
         // and the delta only says the state has not cleared since (LIVE-18).
         delta={isFiring ? 'still firing' : undefined}
       />
-      <MiniStatDivider />
       <MiniStat
         label="Last notified"
         value={monitor.last_notified_at ? formatRelativeTime(monitor.last_notified_at) : 'never'}
       />
-      <MiniStatDivider />
       <MiniStat
         label="Last delivery"
         value={monitor.last_delivery_at ? formatRelativeTime(monitor.last_delivery_at) : 'never'}
         tone={monitor.last_delivery_status === 'failed' ? 'danger' : 'neutral'}
         delta={monitor.last_delivery_status ?? undefined}
       />
-      <MiniStatDivider />
-      <MiniStat label="Deliveries" value={monitor.total_deliveries.toLocaleString()} />
-      <MiniStatDivider />
+      <MiniStat label="Deliveries" value={formatNumber(monitor.total_deliveries)} />
       {/* The tone used to be set with no delta, and MiniStat paints the tone
           on the delta only — so the emphasis never rendered (MON-42). The
           delta now says what the tone is about. */}
       <MiniStat
         label="Active scopes"
-        value={monitor.active_scope_count.toLocaleString()}
+        value={formatNumber(monitor.active_scope_count)}
         tone={monitor.firing_scope_count > 0 ? 'danger' : 'neutral'}
         delta={
           monitor.firing_scope_count > 0
-            ? `${monitor.firing_scope_count.toLocaleString()} firing`
+            ? `${formatNumber(monitor.firing_scope_count)} firing`
             : undefined
         }
       />
-    </div>
+    </MiniStatStrip>
   )
 }
 
@@ -474,7 +472,7 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
       />
       <InfoRow
         label="Min expected"
-        value={monitor.min_expected_count > 0 ? `${monitor.min_expected_count.toLocaleString()} events` : 'No minimum'}
+        value={monitor.min_expected_count > 0 ? `${formatNumber(monitor.min_expected_count)} events` : 'No minimum'}
         mono={false}
       />
       {/* The same rule was described as "360m" here and "6h" on the alerting
@@ -494,7 +492,7 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
         className="gap-1 px-[18px] py-[11px] sm:gap-4"
         style={{ borderTop: '1px solid var(--border-subtle)' }}
         caption={
-          <span className="text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             Watching
           </span>
         }
@@ -516,7 +514,7 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
                 </Chip>
               ))
             ) : (
-              <span className="text-[12.5px]" style={{ color: 'var(--fg-faint)' }}>
+              <span className="text-body-sm" style={{ color: 'var(--fg-faint)' }}>
                 No scopes selected
               </span>
             )}
@@ -547,7 +545,7 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
         className="gap-1 px-[18px] py-[11px] sm:items-center sm:gap-4"
         style={{ borderBottom: '1px solid var(--border-subtle)' }}
         caption={
-          <span className="text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             Destination
           </span>
         }
@@ -559,14 +557,14 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
           {slug ? (
             <Link
               to={`/p/${slug}/settings/alerting`}
-              className="min-w-0 truncate text-[12.5px] no-underline hover:underline"
+              className="min-w-0 truncate text-body-sm no-underline hover:underline"
               style={{ color: 'var(--fg)' }}
               title={monitor.destination_name}
             >
               {monitor.destination_name}
             </Link>
           ) : (
-            <span className="min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }} title={monitor.destination_name}>
+            <span className="min-w-0 truncate text-body-sm" style={{ color: 'var(--fg)' }} title={monitor.destination_name}>
               {monitor.destination_name}
             </span>
           )}
@@ -667,12 +665,12 @@ function DeliveryRow({
         <Chip tone="neutral" size="xs">
           {delivery.channel}
         </Chip>
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{delivery.scan_name}</span>
+        <span className="min-w-0 flex-1 truncate text-body-sm font-medium">{delivery.scan_name}</span>
         <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-          {delivery.matched_count.toLocaleString()} matched
+          {formatNumber(delivery.matched_count)} matched
         </span>
         <span
-          className="mono text-[10.5px]"
+          className="mono text-2xs"
           style={{ color: 'var(--fg-faint)' }}
           title={formatDateTime(delivery.created_at)}
         >
@@ -688,14 +686,14 @@ function DeliveryRow({
         )}
       </div>
       {delivery.status === 'failed' && delivery.error_message && (
-        <p className="mt-1.5 text-[11.5px]" style={{ color: 'var(--danger)' }}>
+        <p className="mt-1.5 text-caption" style={{ color: 'var(--danger)' }}>
           {delivery.error_message}
         </p>
       )}
       {/* A failed retry used to hand the button back as "Retry" with no word
           about what happened (MON-31). */}
       {retryError && !retrying && (
-        <p role="alert" className="mt-1.5 text-[11.5px]" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="mt-1.5 text-caption" style={{ color: 'var(--danger)' }}>
           Retry failed: {retryError}
         </p>
       )}

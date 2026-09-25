@@ -354,3 +354,10 @@ export interface ScanDryRunJob {
   created_at: string
   updated_at: string
 }
+
+/**
+ * Canonical status for the scan run-status pill. A frontend type, not an API
+ * one: it lives here rather than in the scans page module so lib/statusLexicon
+ * can name it without importing a page (DS-41).
+ */
+export type RunPillStatus = 'succeeded' | 'failed' | 'running' | 'pending' | 'cancelled' | 'never'

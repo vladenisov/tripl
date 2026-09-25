@@ -13,11 +13,12 @@ import {
   type MetricKind,
   type MetricScanInterval,
   type MetricStatus,
+  DEFAULT_ENTITY_COLOR,
 } from '@/types'
 import { readFactOperandConfig, type FactOperandConfig } from '@/lib/factOperandConfig'
 import { filterRowErrors, filtersFromConfig, type FactFilter } from './factFilters'
 
-export const DEFAULT_METRIC_COLOR = '#6366f1'
+export const DEFAULT_METRIC_COLOR = DEFAULT_ENTITY_COLOR
 
 export const FACT_COMPOSITIONS = ['single', 'ratio'] as const
 export type FactComposition = (typeof FACT_COMPOSITIONS)[number]

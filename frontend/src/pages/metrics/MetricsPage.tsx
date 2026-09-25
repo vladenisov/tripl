@@ -1,7 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { PageHead } from '@/components/settings/kit'
+import { PageHeader } from '@/components/primitives/page-header'
 import { FactTablesList } from '@/pages/fact-tables/FactTablesList'
 import { MetricsCatalog } from './MetricsCatalog'
 import { useCanWriteProject } from '@/lib/permissions'
@@ -48,7 +48,7 @@ export default function MetricsPage({ tab = 'catalog' }: { tab?: MetricsTab }) {
   return (
     <div className="min-w-0 space-y-6 pb-12">
       <div className="space-y-4">
-        <PageHead eyebrow="Observe" title="Metrics" right={action} />
+        <PageHeader eyebrow="Observe" title="Metrics" actions={action} />
         <MetricsTabs slug={slug} tab={tab} />
       </div>
 
@@ -59,10 +59,13 @@ export default function MetricsPage({ tab = 'catalog' }: { tab?: MetricsTab }) {
   )
 }
 
+// Route links, so a `<nav>` of links with `aria-current="page"` rather than a
+// tablist: the tab roles promised arrow-key roving and tabpanels that links
+// never had, and screen readers announced a widget that did not behave like one
+// (DS-35 / MET-38).
 function MetricsTabs({ slug, tab }: { slug?: string; tab: MetricsTab }) {
   return (
-    <div
-      role="tablist"
+    <nav
       aria-label="Metrics sections"
       className="flex gap-1 border-b"
       style={{ borderColor: 'var(--border)' }}
@@ -73,10 +76,8 @@ function MetricsTabs({ slug, tab }: { slug?: string; tab: MetricsTab }) {
           <Link
             key={t.id}
             to={slug ? t.path(slug) : '#'}
-            role="tab"
-            aria-selected={active}
             aria-current={active ? 'page' : undefined}
-            className="-mb-px px-3 py-2 text-[12.5px] font-medium no-underline transition-colors"
+            className="-mb-px px-3 py-2 text-body-sm font-medium no-underline transition-colors"
             style={{
               color: active ? 'var(--fg)' : 'var(--fg-muted)',
               borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
@@ -86,6 +87,6 @@ function MetricsTabs({ slug, tab }: { slug?: string; tab: MetricsTab }) {
           </Link>
         )
       })}
-    </div>
+    </nav>
   )
 }

@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-route
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MonitoringSignal, ScanConfig } from '@/types'
 import AnomaliesPage from './AnomaliesPage'
+import { PageHeader } from '@/components/primitives/page-header'
 
 vi.mock('@/api/eventMetrics', () => ({
   eventMetricsApi: { getActiveSignals: vi.fn() },
@@ -769,5 +770,20 @@ describe('AnomaliesPage — filter keyboard and wrapping (MON-12)', () => {
 
     fireEvent.keyDown(all!, { key: 'End' })
     expect(major).toHaveAttribute('aria-checked', 'true')
+  })
+})
+
+// LIVE-11: Anomalies sat beside Metrics and Coverage under the kit's own page
+// head (22px title, 12px description) while its siblings used PageHeader.
+describe('AnomaliesPage — the shared page header (LIVE-11)', () => {
+  it('renders the same title element as its Observe siblings', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([])
+    renderAnomalies()
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Anomalies' })
+
+    const { container } = render(<PageHeader eyebrow="Observe" title="Metrics" />)
+    const reference = container.querySelector('h1')
+    expect(reference).not.toBeNull()
+    expect(heading.className).toBe(reference?.className)
   })
 })

@@ -5,7 +5,7 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
-import { Field, SCard, Select, TextInput } from '@/components/settings/kit'
+import { Field, SCard, NativeSelect, TextInput } from '@/components/settings/kit'
 import { NumberSettingInput, SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
 import type {
   EditableSettings,
@@ -133,7 +133,7 @@ export function EmailSection({
           hint={SECURITY_HINTS[form.email.smtp_security]}
           last
         >
-          <Select
+          <NativeSelect
             id="email-smtp-security"
             value={form.email.smtp_security}
             onChange={value => setField('email', 'smtp_security', value)}

@@ -645,7 +645,7 @@ export default function CommandPalette({
             {aiQuestion ? (
               <>
                 <Sparkles className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-                <span className="flex-1 truncate text-[13px]" style={{ color: 'var(--fg)' }}>{aiQuestion}</span>
+                <span className="flex-1 truncate text-body" style={{ color: 'var(--fg)' }}>{aiQuestion}</span>
                 <button
                   ref={aiBackRef}
                   type="button"
@@ -667,7 +667,7 @@ export default function CommandPalette({
                   value={query}
                   onValueChange={setQuery}
                   placeholder="Search projects, event types, events…"
-                  className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-[var(--fg-subtle)]"
+                  className="flex-1 bg-transparent text-body outline-none placeholder:text-[var(--fg-subtle)]"
                 />
                 <Kbd>esc</Kbd>
               </>
@@ -689,7 +689,7 @@ export default function CommandPalette({
               )}
               {aiResult && (
                 <div className="space-y-3">
-                  <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed" style={{ color: 'var(--fg)' }}>
+                  <p className="whitespace-pre-wrap text-body-sm leading-relaxed" style={{ color: 'var(--fg)' }}>
                     {aiResult.answer}
                   </p>
                   {aiResult.sources.length > 0 && (
@@ -735,7 +735,7 @@ export default function CommandPalette({
               </div>
             )}
             {showOpenProjectHint && (
-              <div className="px-3.5 py-2 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              <div className="px-3.5 py-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
                 Open a project to search its catalog and ask AI.
               </div>
             )}
@@ -758,7 +758,7 @@ export default function CommandPalette({
                   // palette reported an outage as a fact about the user's data.
                   <Group heading="Knowledge search">
                     <div
-                      className="px-3.5 py-2 text-[11.5px]"
+                      className="px-3.5 py-2 text-caption"
                       style={{ color: 'var(--destructive)' }}
                     >
                       Knowledge search failed. Results may be missing — try again.
@@ -767,7 +767,7 @@ export default function CommandPalette({
                 ) : knowledgeState === 'empty' ? (
                   <Group heading={`Knowledge matching "${debouncedQuery}"`}>
                     <div
-                      className="px-3.5 py-2 text-[11.5px]"
+                      className="px-3.5 py-2 text-caption"
                       style={{ color: 'var(--fg-subtle)' }}
                     >
                       No knowledge matches.
@@ -781,7 +781,7 @@ export default function CommandPalette({
                   // of the round trip.
                   <Group heading="Searching knowledge…">
                     <div
-                      className="px-3.5 py-2 text-[11.5px]"
+                      className="px-3.5 py-2 text-caption"
                       style={{ color: 'var(--fg-subtle)' }}
                     >
                       Searching.
@@ -843,7 +843,7 @@ export default function CommandPalette({
                     })}
                     {knowledgeState === 'searching' && (
                       <div
-                        className="flex items-center gap-2 px-3.5 py-2 text-[11.5px]"
+                        className="flex items-center gap-2 px-3.5 py-2 text-caption"
                         style={{ color: 'var(--fg-subtle)' }}
                       >
                         <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
@@ -952,7 +952,7 @@ function Item({
     <Command.Item
       value={value}
       onSelect={onSelect}
-      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[12.5px] aria-selected:bg-[var(--surface-hover)]"
+      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-body-sm aria-selected:bg-[var(--surface-hover)]"
       style={{ color: 'var(--fg)' }}
     >
       <Icon
@@ -962,7 +962,7 @@ function Item({
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="truncate">{label}</span>
         {description && (
-          <span className="truncate text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+          <span className="truncate text-2xs" style={{ color: 'var(--fg-faint)' }}>
             {description}
           </span>
         )}
@@ -989,7 +989,7 @@ function Item({
         </span>
       )}
       {hint && (
-        <span className="mono shrink-0 truncate text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="mono shrink-0 truncate text-2xs" style={{ color: 'var(--fg-faint)' }}>
           {hint}
         </span>
       )}

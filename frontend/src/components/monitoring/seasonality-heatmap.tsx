@@ -7,6 +7,8 @@ import { ErrorState } from '@/components/error-state'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { SeasonalityCell } from '@/types/metrics'
 import { seasonalityKey } from '@/lib/queryKeys'
+import { formatCompactNumber, formatNumber } from '@/lib/format'
+import { pluralize } from '@/lib/plural'
 
 interface SeasonalityHeatmapProps {
   slug: string
@@ -32,19 +34,24 @@ const MAX_FILL_OPACITY = 0.96
 // Discrete stops used to paint the legend gradient bar.
 const LEGEND_STOPS = [0, 0.25, 0.5, 0.75, 1] as const
 
-function formatCount(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
-  return String(value)
-}
+// The shared compact count: this file's own copy printed "1.0k" where every
+// chart prints "1k" (MON-36 / DS-30).
+const formatCount = formatCompactNumber
 
 function fillOpacity(intensity: number): number {
   return MIN_FILL_OPACITY + (MAX_FILL_OPACITY - MIN_FILL_OPACITY) * intensity
 }
 
+// The grid is cut server-side from UTC bucket starts (weekday()/hour of an
+// aware UTC datetime), so every slot names its zone: a UTC+3 reader would
+// otherwise take "Wed 14:00" for their own afternoon (MON-5).
 function slotLabel(weekday: number, hour: number): string {
   const day = WEEKDAYS_SHORT[weekday] ?? `Day ${weekday}`
-  return `${day} ${hour.toString().padStart(2, '0')}:00`
+  return `${day} ${hour.toString().padStart(2, '0')}:00 UTC`
+}
+
+function eventCount(count: number): string {
+  return `${formatNumber(count)} ${pluralize(count, 'event', 'events')}`
 }
 
 interface HeatScale {
@@ -189,8 +196,8 @@ export function SeasonalityHeatmap({
   const { busiest, quietest } = scale
   const gridSummary =
     busiest && quietest
-      ? `Volume by weekday and hour. Busiest slot ${slotLabel(busiest.weekday, busiest.hour)} with ${busiest.count.toLocaleString()} events; quietest active slot ${slotLabel(quietest.weekday, quietest.hour)} with ${quietest.count.toLocaleString()} events.`
-      : 'Volume by weekday and hour.'
+      ? `Volume by weekday and hour (UTC). Busiest slot ${slotLabel(busiest.weekday, busiest.hour)} with ${eventCount(busiest.count)}; quietest active slot ${slotLabel(quietest.weekday, quietest.hour)} with ${eventCount(quietest.count)}.`
+      : 'Volume by weekday and hour (UTC).'
 
   return (
     <Card>
@@ -198,7 +205,7 @@ export function SeasonalityHeatmap({
         <div>
           <h2 className="text-sm font-semibold">Hour × weekday heatmap</h2>
           <p className="text-xs text-muted-foreground">
-            Total volume by day-of-week and hour-of-day. A red ring and dot mark
+            Total volume by day-of-week and hour-of-day, in UTC. A red ring and dot mark
             slots with detected anomalies. Total in window:{' '}
             <span className="font-medium">{formatCount(data.total_count)}</span>.
           </p>
@@ -236,7 +243,9 @@ export function SeasonalityHeatmap({
             <caption className="sr-only">{gridSummary}</caption>
             <thead>
               <tr>
-                <th className="w-10" />
+                <th scope="col" className="w-10 pb-1 pr-2 text-right font-normal text-muted-foreground">
+                  UTC
+                </th>
                 {HOURS_FULL.map(hour => (
                   <th
                     key={hour}
@@ -258,8 +267,10 @@ export function SeasonalityHeatmap({
                     const count = cell?.count ?? 0
                     const anomalyCount = cell?.anomaly_count ?? 0
                     const hasAnomaly = anomalyCount > 0
-                    const tooltipText = `${slotLabel(weekday, hour)} — ${count.toLocaleString()} events${
-                      hasAnomaly ? ` · ${anomalyCount} anomaly bucket(s)` : ''
+                    const tooltipText = `${slotLabel(weekday, hour)} — ${eventCount(count)}${
+                      hasAnomaly
+                        ? ` · ${anomalyCount} ${pluralize(anomalyCount, 'anomaly bucket', 'anomaly buckets')}`
+                        : ''
                     }`
                     return (
                       <td

@@ -39,25 +39,17 @@ export const EVENT_STATUS_TONE: Record<EventStatus, ChipTone> = {
   ready_for_dev: 'info',
   implemented: 'success',
   live: 'success',
-  deprecated: 'warning',
+  // Neutral, not warning: In Review is already amber, and a deprecated event
+  // needs no action, so the two no longer share one colour (DS-45).
+  deprecated: 'neutral',
   archived: 'neutral',
-}
-
-/** Badge variant from badge.tsx variants */
-export type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'outline' | 'success' | 'warning' | 'info'
-
-export const EVENT_STATUS_BADGE_VARIANT: Record<EventStatus, BadgeVariant> = {
-  draft: 'secondary',
-  in_review: 'warning',
-  ready_for_dev: 'info',
-  implemented: 'success',
-  live: 'success',
-  deprecated: 'warning',
-  archived: 'secondary',
 }
 
 /**
  * Status indicator dot tone (used in EventRow). Derived from the canonical
- * tone scale so the dot and the status chip never drift apart.
+ * tone scale so the dot and the status chip never drift apart. Tones are
+ * shared between statuses (Implemented and Live are both green), so a dot is
+ * never the only carrier of a status: it sits beside the status chip or names
+ * the status itself (`Dot`'s `label`).
  */
 export const EVENT_STATUS_DOT_TONE: Record<EventStatus, DotTone> = EVENT_STATUS_TONE

@@ -34,18 +34,18 @@ export function ImplementationTicketRow({ ticket }: { ticket: ImplementationTick
           href={ticket.external_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="shrink-0 text-[12.5px] font-medium underline"
+          className="shrink-0 text-body-sm font-medium underline"
           style={{ color: 'var(--accent)' }}
         >
           {label}
           <ArrowUpRight className="ml-0.5 inline size-3" aria-hidden="true" />
         </a>
       ) : (
-        <span className="shrink-0 text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
+        <span className="shrink-0 text-body-sm font-medium" style={{ color: 'var(--fg)' }}>
           {label}
         </span>
       )}
-      <span className="truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
         {ticket.summary}
       </span>
       <div className="flex-1" />

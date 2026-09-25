@@ -109,7 +109,7 @@ export function ScanPreviewPanel({
               worse than no answer — so it says so and offers the redo. */}
           {dryRunStale && !dryRunPending && (
             <div className="flex flex-wrap items-center gap-2">
-              <p className="m-0 flex-1 text-[11.5px]" style={{ color: 'var(--warning)' }}>
+              <p className="m-0 flex-1 text-caption" style={{ color: 'var(--warning)' }}>
                 The form changed since this check ran, so it no longer describes this scan.
               </p>
               <Button type="button" variant="outline" size="sm" onClick={onRecheck}>

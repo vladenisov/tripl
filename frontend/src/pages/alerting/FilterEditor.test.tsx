@@ -148,3 +148,19 @@ describe('FilterEditor — event scope picker (tripl-jfm3.106)', () => {
     )
   })
 })
+
+describe('FilterEditor — icon buttons carry names (DS-13 / ALR-23)', () => {
+  it('names each row remove button by position and field, and each chip by its value', async () => {
+    mockEventsFetch()
+    renderEventFilter([
+      { uid: 'filter-1', field: 'event', operator: 'in', values: ['evt-1'] },
+      { uid: 'filter-2', field: 'direction', operator: 'eq', values: [] },
+    ])
+
+    expect(screen.getByRole('button', { name: 'Remove filter 1: Event' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove filter 2: Direction' })).toBeInTheDocument()
+    // The chip's X says which value it drops, not a bare "Remove value".
+    expect(await screen.findByRole('button', { name: 'Remove checkout_started' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove value' })).toBeNull()
+  })
+})

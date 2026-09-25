@@ -51,7 +51,7 @@ export function ColumnCheckboxPicker({
             return (
               <label
                 key={name}
-                className="flex items-center gap-2 rounded-[7px] border bg-background p-2 text-xs"
+                className="flex items-center gap-2 rounded-control border bg-background p-2 text-xs"
                 style={{ borderColor: 'var(--border)' }}
               >
                 <Checkbox

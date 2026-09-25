@@ -1,3 +1,4 @@
+import { formatNumber } from '@/lib/format'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bell, BellOff, ChevronDown, ChevronRight, History, Pencil, Plus, Trash2 } from 'lucide-react'
@@ -5,12 +6,13 @@ import { Link } from 'react-router-dom'
 
 import { alertingApi, type AlertRuleUpdatePayload } from '@/api/alerting'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { Switch } from '@/components/ui/switch'
 import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/settings/kit'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
@@ -361,32 +363,29 @@ export function MonitorsSection({
       {/* Hidden entirely when nothing is configured, so an all-zero
           FIRING/WARNING/HEALTHY row never sits above the empty state. */}
       {rules.length > 0 && (
-        <div
-          className="flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3"
+        <MiniStatStrip
+          className="rounded-lg border px-4 py-3"
           style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
         >
           <MiniStat
             label="Firing"
-            value={summary ? summary.firing_count.toLocaleString() : '—'}
+            value={summary ? formatNumber(summary.firing_count) : '—'}
             tone={summary && summary.firing_count > 0 ? 'danger' : 'neutral'}
             pulse={!!summary && summary.firing_count > 0}
             delta={summary && summary.firing_count > 0 ? 'now' : undefined}
           />
-          <MiniStatDivider />
           <MiniStat
             label="Warning"
-            value={summary ? summary.warning_count.toLocaleString() : '—'}
+            value={summary ? formatNumber(summary.warning_count) : '—'}
             tone={summary && summary.warning_count > 0 ? 'warning' : 'neutral'}
           />
-          <MiniStatDivider />
           <MiniStat
             label="Healthy"
-            value={summary ? summary.healthy_count.toLocaleString() : '—'}
+            value={summary ? formatNumber(summary.healthy_count) : '—'}
             tone="success"
           />
-          <MiniStatDivider />
-          <MiniStat label="Rules" value={rules.length.toLocaleString()} />
-        </div>
+          <MiniStat label="Rules" value={formatNumber(rules.length)} />
+        </MiniStatStrip>
       )}
 
       <Panel
@@ -443,7 +442,7 @@ export function MonitorsSection({
               <div role="rowgroup">
                 <div
                   role="row"
-                  className={`${ruleGridClass(canWrite)} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                  className={`${ruleGridClass(canWrite)} border-b py-2 text-2xs font-semibold uppercase tracking-[0.05em]`}
                   style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                 >
                   <span role="columnheader">Rule</span>
@@ -635,7 +634,7 @@ function RuleRow({
               neither this row nor its expansion can carry. */}
           <Link
             to={`/p/${slug}/monitors/${rule.id}`}
-            className="min-w-0 break-words text-[12.5px] font-medium no-underline hover:underline"
+            className="min-w-0 break-words text-body-sm font-medium no-underline hover:underline"
             style={{ color: 'var(--fg)' }}
           >
             {rule.name}
@@ -722,10 +721,10 @@ function RuleRow({
         {state ? (
           <Chip tone={tone} size="xs">{STATUS_LABEL[state.status]}</Chip>
         ) : (
-          <span className="text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>—</span>
+          <span className="text-2xs" style={{ color: 'var(--fg-faint)' }}>—</span>
         )}
       </span>
-      <span role="cell" className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+      <span role="cell" className="mono text-2xs" style={{ color: 'var(--fg-faint)' }}>
         {state?.last_anomaly_at ? formatRelativeTime(state.last_anomaly_at) : '—'}
       </span>
       <span role="cell" className="flex shrink-0 items-center justify-end gap-1.5">
@@ -756,42 +755,39 @@ function RuleRow({
           step="alerting/simulate"
           when={rule.name === SCENARIO_SEEDED.firingRuleName}
         >
-          <Button
+          <IconButton
             variant="ghost"
-            size="icon"
             className="h-8 w-8"
             onClick={onReplay}
-            title="Replay this rule over past data, without saving anything"
-            aria-label={`Replay ${rule.name}`}
+            tooltip="Replay this rule over past data, without saving anything"
+            label={`Replay ${rule.name}`}
           >
             <History aria-hidden="true" className="h-4 w-4" />
-          </Button>
+          </IconButton>
         </ScenarioCoachMark>
         {canWrite && (
           <>
-            <Button
+            <IconButton
               variant="ghost"
-              size="icon"
               className="h-8 w-8"
-              aria-label={`Edit rule ${rule.name}`}
+              label={`Edit rule ${rule.name}`}
               onClick={onEdit}
             >
               <Pencil aria-hidden="true" className="h-4 w-4" />
-            </Button>
-            <Button
+            </IconButton>
+            <IconButton
               variant="ghost"
-              size="icon"
               className="h-8 w-8 text-muted-foreground hover:text-destructive"
-              aria-label={`Delete rule ${rule.name}`}
+              label={`Delete rule ${rule.name}`}
               // The shared cascade sentence, so the control and its confirm
               // count the same way — and "1 delivery", not "1 deliveries"
               // (ALR-45).
-              title={`Deletes the rule. ${describeDeletionImpact(rule.total_deliveries, rule.incident_count)}`}
+              tooltip={`Deletes the rule. ${describeDeletionImpact(rule.total_deliveries, rule.incident_count)}`}
               disabled={isDeletePending}
               onClick={onDelete}
             >
               <Trash2 aria-hidden="true" className="h-4 w-4" />
-            </Button>
+            </IconButton>
           </>
         )}
       </span>
@@ -910,25 +906,23 @@ function MuteControl({
 
   if (muted) {
     return (
-      <Button
+      <IconButton
         variant="ghost"
-        size="icon"
         className="h-8 w-8"
         disabled={isPending}
         onClick={() => onMute(null)}
-        aria-label={unmuteName(ruleName)}
-        title="Unmute this rule"
+        label={unmuteName(ruleName)}
+        tooltip="Unmute this rule"
       >
         <Bell aria-hidden="true" className="h-4 w-4" />
-      </Button>
+      </IconButton>
     )
   }
 
   return (
     <>
-      <Button
+      <IconButton
         variant="ghost"
-        size="icon"
         className="h-8 w-8"
         disabled={isPending}
         aria-expanded={open}
@@ -937,11 +931,11 @@ function MuteControl({
         // writes nothing, which is why it is named by `muteName` and not by
         // `muteChoiceName`. The button that commits carries its duration
         // (tripl-oxkt.7).
-        aria-label={muteName(ruleName)}
-        title="Mute this rule for a while"
+        label={muteName(ruleName)}
+        tooltip="Mute this rule for a while"
       >
         <BellOff aria-hidden="true" className="h-4 w-4" />
-      </Button>
+      </IconButton>
       {open && (
         <span className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--fg-faint)' }}>
           <span>for</span>

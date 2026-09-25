@@ -412,7 +412,7 @@ export function DemoBanner({
               </span>
             )}
             <span
-              className={cn('inline-flex text-[11.5px] whitespace-nowrap', DETAIL_WHEN_ROOMY)}
+              className={cn('inline-flex text-caption whitespace-nowrap', DETAIL_WHEN_ROOMY)}
               style={{ color: 'var(--fg-muted)' }}
             >
               {freshnessLabel}
@@ -494,7 +494,7 @@ export function DemoBanner({
 
         {limitsOpen && (
           <ul
-            className="space-y-1 border-t px-3 py-2 text-[11.5px] leading-[1.45]"
+            className="space-y-1 border-t px-3 py-2 text-caption leading-[1.45]"
             style={{ borderColor: 'var(--warning)', color: 'var(--fg-muted)' }}
           >
             {DEMO_LIMITS.map((limit) => (
@@ -510,7 +510,7 @@ export function DemoBanner({
       {/* Outside the folding panel: a failure is shown with the pill closed
           too. */}
       {mutationError && (
-        <p className="mt-1.5 px-1 text-[11.5px]" style={{ color: 'var(--danger)' }} role="alert">
+        <p className="mt-1.5 px-1 text-caption" style={{ color: 'var(--danger)' }} role="alert">
           {getErrorMessage(mutationError)}
         </p>
       )}

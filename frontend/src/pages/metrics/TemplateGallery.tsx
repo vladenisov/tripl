@@ -46,13 +46,13 @@ export function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
                 </span>
                 <span className="min-w-0">
                   <span
-                    className="block text-[12.5px] font-semibold"
+                    className="block text-body-sm font-semibold"
                     style={{ color: 'var(--fg)' }}
                   >
                     {template.label}
                   </span>
                   <span
-                    className="mt-0.5 block text-[11.5px] leading-[1.4]"
+                    className="mt-0.5 block text-caption leading-[1.4]"
                     style={{ color: 'var(--fg-subtle)' }}
                   >
                     {template.description}
@@ -66,7 +66,7 @@ export function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
           <button
             type="button"
             onClick={onSkip}
-            className="inline-flex h-8 items-center rounded-[7px] px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ border: '1px solid var(--border)', color: 'var(--fg-muted)' }}
           >
             Start from scratch

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { eventPhotosApi } from '@/api/eventPhotos'
 import type { EventPhoto } from '@/types'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { Card, CardContent } from '@/components/ui/card'
 import { CommentThread } from '@/components/comment-thread'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -412,10 +413,9 @@ function PhotoTile({
           {photo.original_filename || (isFigma ? 'Figma frame' : 'photo')}
         </span>
         {onDelete && (
-          <Button
-            size="icon"
+          <IconButton
             variant="destructive"
-            aria-label="Delete photo"
+            label="Delete photo"
             className="h-7 w-7 shrink-0"
             disabled={deleting}
             onClick={event => {
@@ -424,7 +424,7 @@ function PhotoTile({
             }}
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-          </Button>
+          </IconButton>
         )}
       </div>
       <div className="absolute right-1 top-1 rounded bg-black/50 px-1.5 py-0.5 text-[10px] text-white">

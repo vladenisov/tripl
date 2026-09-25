@@ -1,4 +1,4 @@
-import { Fragment, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useId, useMemo, useRef, useState } from 'react'
 import {
   Area,
   Bar,
@@ -15,13 +15,21 @@ import { cn } from '@/lib/utils'
 import {
   axisWidthForValues,
   CHART_SURFACE_TAB_INDEX,
+  dayBoundaryTicks,
+  EVENTS_NOUN,
   formatAnomalyCount,
   formatCount,
+  formatDayTick,
+  formatSeriesValue,
   formatTick,
   formatTooltipLabel,
+  SERIES_COLORS,
+  seriesNounPlural,
   summarizeBuckets,
   summarizeForecastRange,
+  type SeriesNoun,
 } from '@/components/ui/chart-format'
+import { formatNumber } from '@/lib/format'
 import type { MetricsGranularity } from '@/lib/metrics'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
 import type { ChartAnnotation, EventMetricPoint, ForecastPoint } from '@/types'
@@ -37,7 +45,8 @@ interface MetricsChartProps {
   color?: string
   height?: number
   granularity?: MetricsGranularity
-  seriesLabel?: string
+  /** What the values count; the pair form pluralizes ("1 event"). */
+  seriesLabel?: SeriesNoun
   /**
    * Optional formatter for the numeric values on the Y axis and in the
    * tooltip (e.g. percent-unit catalog metrics render stored fractions ×100).
@@ -46,6 +55,13 @@ interface MetricsChartProps {
    * compact-count ticks and `value seriesLabel` tooltip lines.
    */
   valueFormatter?: (value: number) => string
+  /**
+   * Formats the tooltip values when they need more than the axis does: a tick
+   * leaves a trailing unit off ('0.0045'), the tooltip spells the value out
+   * ('0.0045 s', '$1,234'). Falls back to `valueFormatter`. Like it, the
+   * string carries its own unit, so the `seriesLabel` suffix is skipped.
+   */
+  tooltipFormatter?: (value: number) => string
   /**
    * The sigma threshold the detector actually scored this scope with, served on
    * the metrics response as `sigma_threshold`: the PROJECT setting, narrowed by
@@ -95,7 +111,8 @@ interface MetricsMultiSeriesChartProps {
   className?: string
   height?: number
   granularity?: MetricsGranularity
-  seriesLabel?: string
+  /** See MetricsChartProps.seriesLabel. */
+  seriesLabel?: SeriesNoun
   emptyLabel?: string
   /**
    * Optional formatter for Y-axis ticks and tooltip values, mirroring
@@ -105,6 +122,8 @@ interface MetricsMultiSeriesChartProps {
    * default compact-count ticks and `value seriesLabel` tooltip lines.
    */
   valueFormatter?: (value: number) => string
+  /** See MetricsChartProps.tooltipFormatter. */
+  tooltipFormatter?: (value: number) => string
   /** See MetricsChartProps.from / .to (MON-22). */
   from?: string
   to?: string
@@ -135,20 +154,54 @@ function collectMultiSeriesYValues(
 }
 
 /**
+ * X-axis tick props for a bucket axis. A sub-day series spanning two days or
+ * more gets one tick per local day, labelled with the date alone; anything
+ * shorter keeps recharts' spacing and the full bucket label (LIVE-27).
+ * `preserveStartEnd` keeps the first day when the axis is too narrow for every
+ * tick — the default `preserveEnd` dropped it at 768px.
+ */
+function useTimeAxisTicks(
+  rows: Array<{ bucket: string }>,
+  granularity: MetricsGranularity,
+) {
+  const ticks = useMemo(
+    () => dayBoundaryTicks(rows.map(row => row.bucket), granularity),
+    [rows, granularity],
+  )
+  return ticks
+    ? {
+        ticks,
+        interval: 'preserveStartEnd' as const,
+        tickFormatter: (value: unknown) => formatDayTick(String(value)),
+      }
+    : { tickFormatter: (value: unknown) => formatTick(String(value), granularity) }
+}
+
+/**
  * Track whether the chart's container has a positive on-screen size. Recharts'
  * ResponsiveContainer logs "The width(-1) and height(-1) of chart should be
  * greater than 0" when it mounts inside a zero-size parent (a collapsed tab, or
  * a collapsible mid-open animation). Gate the ResponsiveContainer on a real
  * measured size so recharts never receives -1. The wrapper keeps its fixed
  * height and `w-full` regardless, so nothing shifts while we wait for a size.
+ *
+ * A callback ref, not a mount-time effect: MiniMetricsChart attaches the ref
+ * only once it has data, so an effect that ran once on mount found no element
+ * and left a chart that later received points blank; and after data -> [] ->
+ * data it kept observing the detached old node. The callback re-runs on every
+ * attach and detach.
  */
 function useChartContainerReady() {
-  const ref = useRef<HTMLDivElement | null>(null)
   const [ready, setReady] = useState(false)
+  const observerRef = useRef<ResizeObserver | null>(null)
 
-  useLayoutEffect(() => {
-    const element = ref.current
-    if (!element) return
+  const ref = useCallback((element: HTMLDivElement | null) => {
+    observerRef.current?.disconnect()
+    observerRef.current = null
+    if (!element) {
+      setReady(false)
+      return
+    }
     const measure = () => {
       const { width, height } = element.getBoundingClientRect()
       setReady(width > 0 && height > 0)
@@ -157,7 +210,7 @@ function useChartContainerReady() {
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(measure)
     observer.observe(element)
-    return () => observer.disconnect()
+    observerRef.current = observer
   }, [])
 
   return { ref, ready }
@@ -308,19 +361,22 @@ export function CustomTooltip({
   label,
   granularity,
   seriesLabel,
-  valueFormatter,
+  valueFormatter: axisFormatter,
+  tooltipFormatter,
   sigmaThreshold = DEFAULT_SIGMA_THRESHOLD,
 }: {
   active?: boolean
   payload?: Array<{ value: number; dataKey?: string; payload: ChartDataPoint }>
   label?: string | number
   granularity: MetricsGranularity
-  seriesLabel: string
+  seriesLabel: SeriesNoun
   valueFormatter?: (value: number) => string
+  tooltipFormatter?: (value: number) => string
   sigmaThreshold?: number
 }) {
   const point = payload?.[0]?.payload
   if (!active || !point) return null
+  const valueFormatter = tooltipFormatter ?? axisFormatter
   const sigmaLabel = Number.isFinite(sigmaThreshold) && sigmaThreshold > 0
     ? sigmaThreshold
     : DEFAULT_SIGMA_THRESHOLD
@@ -328,7 +384,7 @@ export function CustomTooltip({
   // secondary lines route through it instead of the default whole-number
   // rounding (which would collapse fractional metric values to 0).
   const formatSecondary = (value: number) =>
-    valueFormatter ? valueFormatter(value) : Math.round(value).toLocaleString()
+    valueFormatter ? valueFormatter(value) : formatNumber(Math.round(value))
 
   if (point.is_forecast && point.forecast_expected != null) {
     return (
@@ -337,7 +393,7 @@ export function CustomTooltip({
         <p className="text-sm font-semibold">
           ~{valueFormatter
             ? valueFormatter(point.forecast_expected)
-            : `${Math.round(point.forecast_expected).toLocaleString()} ${seriesLabel}`}
+            : formatSeriesValue(Math.round(point.forecast_expected), seriesLabel)}
         </p>
         <p className="text-xs text-muted-foreground">Forecast (next bucket)</p>
         {point.forecast_band && (
@@ -367,7 +423,7 @@ export function CustomTooltip({
     <div className="rounded-lg border bg-background px-3 py-2 shadow-md">
       <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
       <p className="text-sm font-semibold">
-        {valueFormatter ? valueFormatter(count) : `${count.toLocaleString()} ${seriesLabel}`}
+        {valueFormatter ? valueFormatter(count) : formatSeriesValue(count, seriesLabel)}
       </p>
       {expectedCount !== null && (
         <p className="text-xs text-muted-foreground">
@@ -399,7 +455,8 @@ export function MultiSeriesTooltip({
   label,
   granularity,
   seriesLabel,
-  valueFormatter,
+  valueFormatter: axisFormatter,
+  tooltipFormatter,
 }: {
   active?: boolean
   payload?: Array<{
@@ -411,9 +468,11 @@ export function MultiSeriesTooltip({
   }>
   label?: string | number
   granularity: MetricsGranularity
-  seriesLabel: string
+  seriesLabel: SeriesNoun
   valueFormatter?: (value: number) => string
+  tooltipFormatter?: (value: number) => string
 }) {
+  const valueFormatter = tooltipFormatter ?? axisFormatter
   if (!active || !payload?.length) return null
   const visiblePayload = payload.filter(item => typeof item.value === 'number')
   if (!visiblePayload.length) return null
@@ -431,7 +490,7 @@ export function MultiSeriesTooltip({
             <span className="font-medium">
               {valueFormatter
                 ? valueFormatter(Number(item.value))
-                : `${Number(item.value).toLocaleString()} ${seriesLabel}`}
+                : formatSeriesValue(Number(item.value), seriesLabel)}
             </span>
           </div>
         ))}
@@ -503,8 +562,9 @@ export function MetricsChart({
   color,
   height = 300,
   granularity = 'hour',
-  seriesLabel = 'events',
+  seriesLabel = EVENTS_NOUN,
   valueFormatter,
+  tooltipFormatter,
   sigmaThreshold = DEFAULT_SIGMA_THRESHOLD,
   nonNegative,
   from,
@@ -533,6 +593,11 @@ export function MetricsChart({
     () => axisWidthForValues(collectChartYValues(chartData), valueFormatter ?? formatCount),
     [chartData, valueFormatter],
   )
+  const xAxisTicks = useTimeAxisTicks(chartData, granularity)
+  const bucketIndex = useMemo(
+    () => new Map(chartData.map((row, index) => [row.bucket, index])),
+    [chartData],
+  )
 
   if (!data.length) {
     return (
@@ -550,7 +615,7 @@ export function MetricsChart({
     <div
       ref={containerRef}
       role="img"
-      aria-label={`${seriesLabel} over time`}
+      aria-label={`${seriesNounPlural(seriesLabel)} over time`}
       aria-describedby={descId}
       className={cn('w-full', className)}
       style={{ height }}
@@ -577,14 +642,23 @@ export function MetricsChart({
             </span>
           </>
         )}
-        {snappedAnnotations.map(annotation => (
-          <Fragment key={annotation.id}>
+        {/* Humanized like every other bucket in this summary, and separated:
+            the raw ISO instants used to run together
+            ("2026-09-24T10:00:00Z: Deploy2026-…", DS-25). */}
+        {snappedAnnotations.length > 0 && (
+          <>
             {' '}
-            <span data-testid="chart-annotation">
-              {annotation.bucket}: {annotation.label}
-            </span>
-          </Fragment>
-        ))}
+            {snappedAnnotations.map((annotation, index) => (
+              <Fragment key={annotation.id}>
+                {index > 0 && '; '}
+                <span data-testid="chart-annotation">
+                  {formatTooltipLabel(annotation.bucket, granularity)}: {annotation.label}
+                </span>
+              </Fragment>
+            ))}
+            .
+          </>
+        )}
       </div>
       {containerReady ? (
         <ResponsiveContainer width="100%" height="100%">
@@ -602,7 +676,7 @@ export function MetricsChart({
           <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
           <XAxis
             dataKey="bucket"
-            tickFormatter={value => formatTick(String(value), granularity)}
+            {...xAxisTicks}
             className="text-xs fill-muted-foreground"
             tickLine={false}
             axisLine={false}
@@ -622,6 +696,7 @@ export function MetricsChart({
                 granularity={granularity}
                 seriesLabel={seriesLabel}
                 valueFormatter={valueFormatter}
+                tooltipFormatter={tooltipFormatter}
                 sigmaThreshold={sigmaThreshold}
               />
             }
@@ -684,9 +759,16 @@ export function MetricsChart({
               stroke={annotation.color}
               strokeDasharray="2 3"
               strokeWidth={1.5}
+              // Inside the plot, on the side with room: `top` drew the label
+              // above the plot area, where the right edge clipped a label on
+              // the newest bucket ("injected dem…", LIVE-22). A line in the
+              // right half puts its label to its left, and vice versa.
               label={{
                 value: truncateAnnotationLabel(annotation.label),
-                position: 'top',
+                position:
+                  (bucketIndex.get(annotation.bucket) ?? 0) > (chartData.length - 1) / 2
+                    ? 'insideTopRight'
+                    : 'insideTopLeft',
                 fill: annotation.color,
                 fontSize: 10,
               }}
@@ -700,25 +782,15 @@ export function MetricsChart({
   )
 }
 
-const MULTI_SERIES_COLORS = [
-  'var(--chart-1)',
-  'var(--chart-2)',
-  'var(--chart-3)',
-  'var(--chart-4)',
-  'var(--chart-5)',
-  '#0f766e',
-  '#b45309',
-  '#be123c',
-]
-
 export function MetricsMultiSeriesChart({
   series,
   className,
   height = 300,
   granularity = 'hour',
-  seriesLabel = 'events',
+  seriesLabel = EVENTS_NOUN,
   emptyLabel = 'No breakdown metrics available',
   valueFormatter,
+  tooltipFormatter,
   from,
   to,
 }: MetricsMultiSeriesChartProps) {
@@ -728,7 +800,7 @@ export function MetricsMultiSeriesChart({
       .map((item, index) => ({
         ...item,
         key: `series_${index}`,
-        color: item.color ?? MULTI_SERIES_COLORS[index % MULTI_SERIES_COLORS.length],
+        color: item.color ?? SERIES_COLORS[index % SERIES_COLORS.length],
         hasAnomaly: item.data.some(point => point.is_anomaly),
       })),
     [series],
@@ -756,6 +828,8 @@ export function MetricsMultiSeriesChart({
     () => axisWidthForValues(collectMultiSeriesYValues(chartData), valueFormatter ?? formatCount),
     [chartData, valueFormatter],
   )
+  const xAxisTicks = useTimeAxisTicks(chartData, granularity)
+  const descId = useId()
 
   if (!chartSeries.length || !chartData.length) {
     return (
@@ -765,17 +839,18 @@ export function MetricsMultiSeriesChart({
     )
   }
 
-  const multiSeriesLabel = seriesLabel
-
   return (
     <div
       ref={containerRef}
       role="img"
-      aria-label={`${multiSeriesLabel} breakdown over time`}
+      aria-label={`${seriesNounPlural(seriesLabel)} breakdown over time`}
+      // role="img" makes its children presentational, so the summary is only
+      // read through this reference (DS-25).
+      aria-describedby={descId}
       className={cn('w-full', className)}
       style={{ height }}
     >
-      <div className="sr-only">
+      <div id={descId} className="sr-only">
         <p>Chart with {chartSeries.length} series: {chartSeries.map(s => s.label).join(', ')}.</p>
         {chartSeries.map(item => {
           const anomalies = item.data.filter(point => point.is_anomaly)
@@ -794,7 +869,7 @@ export function MetricsMultiSeriesChart({
           <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
           <XAxis
             dataKey="bucket"
-            tickFormatter={value => formatTick(String(value), granularity)}
+            {...xAxisTicks}
             className="text-xs fill-muted-foreground"
             tickLine={false}
             axisLine={false}
@@ -814,6 +889,7 @@ export function MetricsMultiSeriesChart({
                 granularity={granularity}
                 seriesLabel={seriesLabel}
                 valueFormatter={valueFormatter}
+                tooltipFormatter={tooltipFormatter}
               />
             }
           />
@@ -1035,6 +1111,10 @@ export function MiniMetricsChart({
   const { chartStyle } = useTheme()
   const chartColor = color || 'var(--chart-1)'
   const gradientId = useId().replace(/:/g, '')
+  const descId = useId()
+  // Same gate as the full-size charts: a mini chart inside a collapsed card
+  // mounted recharts at -1×-1 and logged a warning on every render (DS-27).
+  const { ref: containerRef, ready: containerReady } = useChartContainerReady()
 
   if (!data.length) {
     return (
@@ -1052,14 +1132,17 @@ export function MiniMetricsChart({
 
   return (
     <div
+      ref={containerRef}
       role="img"
       aria-label={chartLabel}
+      aria-describedby={descId}
       className={cn('w-full', className)}
       style={{ height }}
     >
-      <span className="sr-only">
-        {chartLabel}: {data.length} data points{anomalyCount > 0 ? `, ${formatAnomalyCount(anomalyCount)}` : ''}.
+      <span id={descId} className="sr-only">
+        {data.length} data points{anomalyCount > 0 ? `, ${formatAnomalyCount(anomalyCount)}` : ''}.
       </span>
+      {containerReady ? (
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart
           data={data}
@@ -1080,6 +1163,7 @@ export function MiniMetricsChart({
           })}
         </ComposedChart>
       </ResponsiveContainer>
+      ) : null}
     </div>
   )
 }

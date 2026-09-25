@@ -1,6 +1,7 @@
 import { useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
 import { Field, SCard, SHeader } from '@/components/settings/kit'
+import { UserAvatar } from '@/components/ui/user-avatar'
 import { ROLE_OPTIONS } from '@/types'
 import { ComingLaterCard } from './ComingLaterCard'
 
@@ -14,18 +15,6 @@ function browserTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 }
 
-function initialsFrom(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) return '•'
-  if (trimmed.includes(' ')) {
-    return trimmed
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((w) => w[0]!.toUpperCase())
-      .join('')
-  }
-  return trimmed.slice(0, 2).toUpperCase()
-}
 
 const UNBUILT = [
   { title: 'Avatar and name', detail: 'uploading a picture and editing the name set when the account was created.' },
@@ -52,7 +41,6 @@ const UNBUILT = [
  */
 export default function ProfileSection() {
   const { user } = useAuth()
-  const initials = initialsFrom(user?.name ?? user?.email ?? '')
   const roleLabel = ROLE_OPTIONS.find((r) => r.value === user?.role)?.label ?? user?.role ?? '—'
 
   return (
@@ -62,18 +50,15 @@ export default function ProfileSection() {
       <SCard title="Your details">
         <Field label="Name" hint="Set when the account was created." htmlFor={false}>
           <div className="flex items-center gap-3">
-            <span
-              aria-hidden="true"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold text-white"
-              style={{ background: 'oklch(0.62 0.13 240)' }}
-            >
-              {initials}
-            </span>
-            <span className="text-[13px]">{user?.name || '—'}</span>
+            {/* The shared avatar on --avatar-bg, the colour the sidebar shows for
+                the same account. A hand-picked lighter blue here fell below AA
+                for the white initials and read as a second identity (WS-38). */}
+            <UserAvatar name={user?.name || user?.email} size={40} />
+            <span className="text-body">{user?.name || '—'}</span>
           </div>
         </Field>
         <Field label="Email" hint="Used for sign-in and notifications." htmlFor={false}>
-          <span className="mono text-[13px]">{user?.email ?? '—'}</span>
+          <span className="mono text-body">{user?.email ?? '—'}</span>
         </Field>
         <Field label="Role" hint="Set by a workspace owner." htmlFor={false}>
           <Chip tone="accent" size="md">
@@ -81,7 +66,7 @@ export default function ProfileSection() {
           </Chip>
         </Field>
         <Field label="Timezone" hint="Read from this browser; timestamps follow it." last htmlFor={false}>
-          <span className="mono text-[13px]">{browserTimezone()}</span>
+          <span className="mono text-body">{browserTimezone()}</span>
         </Field>
       </SCard>
 

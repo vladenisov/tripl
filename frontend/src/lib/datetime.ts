@@ -1,3 +1,5 @@
+import { APP_LOCALE } from '@/lib/format'
+
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/
 
 /**
@@ -18,7 +20,7 @@ function parseForDisplay(value: string): Date {
 export function formatDate(value: string) {
   const date = parseForDisplay(value)
   if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+  return date.toLocaleDateString(APP_LOCALE, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 // Explicit, unambiguous calendar date as `YYYY-MM-DD`. The bare
@@ -35,29 +37,35 @@ export function formatIsoDate(value: string): string {
   return `${year}-${month}-${day}`
 }
 
-// Returns '' for an empty or unparseable input (never the literal "Invalid Date").
+/**
+ * Date+time of an instant, in the viewer's LOCAL zone and the app locale.
+ *
+ * Time-zone policy (DS-24 / MON-5): every instant the app prints — "first
+ * seen", delivery times, signal buckets, and the 15-minute / hour / 6-hour
+ * ticks and tooltips of the charts (components/ui/chart-format.ts) — reads in
+ * the viewer's local zone, so a spike, its signal card and its annotation all
+ * say the same time. The exceptions are calendar buckets the server cut in UTC
+ * (a chart's day / week / month bucket) and grids built from them (the
+ * seasonality heatmap), which are labelled in UTC and say so.
+ *
+ * Same output as `formatTimestamp` without seconds: the two used to be
+ * near-identical copies (DS-30). Returns '' for an empty or unparseable input
+ * (never the literal "Invalid Date").
+ */
 export function formatDateTime(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  return formatTimestamp(value)
 }
 
-// Locale-aware date+time for raw timestamps (metric buckets, "first seen",
-// delivery times). Passes explicit field options so it renders a full,
-// unambiguous date+time in the viewer's locale instead of the bare
-// `toLocaleString()` host default (US `m/d/yyyy, h:mm:ss AM` on many machines).
-// Pass `{ seconds: true }` where second-level precision matters (e.g. audit log).
-// Returns '' for an empty or unparseable input (never the literal "Invalid Date").
+// Date+time for raw timestamps (metric buckets, "first seen", delivery times)
+// in the app locale. Passes explicit field options so it renders a full,
+// unambiguous date+time instead of the bare `toLocaleString()` host default
+// (`m/d/yyyy, h:mm:ss AM`). Pass `{ seconds: true }` where second-level
+// precision matters (e.g. audit log). Returns '' for an empty or unparseable
+// input (never the literal "Invalid Date").
 export function formatTimestamp(value: string, options: { seconds?: boolean } = {}) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString(APP_LOCALE, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

@@ -8,7 +8,7 @@
  */
 import { useId, type ComponentProps, type ReactNode } from 'react'
 import { ChevronDown } from 'lucide-react'
-import { FormRow } from '@/components/ui/form-row'
+import { Field } from '@/components/settings/kit'
 import { cn } from '@/lib/utils'
 import { EvFieldContext, useEvDescribedBy } from './evFieldContext'
 
@@ -18,7 +18,7 @@ import { EvFieldContext, useEvDescribedBy } from './evFieldContext'
 // a control inside a disabled fieldset, which is how the read-only view and the
 // locked Event type select now look locked rather than live.
 export const EV_INPUT_CLASS =
-  'w-full rounded-[7px] border bg-[var(--bg)] px-[11px] text-[13px] text-[var(--fg)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:bg-[var(--surface-hover)] disabled:text-[var(--fg-muted)]'
+  'w-full rounded-control border bg-[var(--bg)] px-[11px] text-body text-[var(--fg)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:bg-[var(--surface-hover)] disabled:text-[var(--fg-muted)]'
 export const SELECT_CLASS = `${EV_INPUT_CLASS} h-[34px] cursor-pointer appearance-none pr-[30px]`
 export const TEXT_INPUT_CLASS = `${EV_INPUT_CLASS} h-[34px]`
 
@@ -83,38 +83,26 @@ export function EvField({
   const hintId = hint ? `${uid}-hint` : undefined
   const notesId = notes ? `${uid}-notes` : undefined
   const describedBy = [hintId, notesId].filter(Boolean).join(' ') || undefined
+  // The kit Field row (DS-17): one implementation of the caption, the phone
+  // stacking and the decorative required star — the control itself carries
+  // `required` / `aria-required`, which is what a screen reader announces
+  // (EVT-48). This keeps the form's 200px caption column and hands the hint and
+  // notes ids to the Ev* controls through EvFieldContext. A row naming no
+  // control is labelled as a group rather than by a `<label>` pointing nowhere.
   return (
-    // Stacks below `sm`: a fixed 200px caption left a 375px phone ~40px per
-    // control, so Name showed two letters and a select only its chevron (EVT-6).
-    <FormRow
+    <Field
+      label={label}
+      hint={hint ? <span id={hintId}>{hint}</span> : undefined}
+      htmlFor={htmlFor ?? false}
+      required={required}
+      last={last}
       labelWidth={200}
-      captionClassName="sm:pt-[6px]"
-      className="px-[18px] py-[15px]"
-      style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
-      caption={
-        <>
-          <label htmlFor={htmlFor} className="text-[13px] font-medium">
-            {label}
-            {/* The star is decoration; the control itself carries `required`
-                or `aria-required`, which is what a screen reader announces
-                instead of "star" (EVT-48). */}
-            {required && (
-              <span className="ml-[3px]" style={{ color: 'var(--danger)' }} aria-hidden="true">*</span>
-            )}
-          </label>
-          {hint && (
-            <div id={hintId} className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-              {hint}
-            </div>
-          )}
-        </>
-      }
     >
       <EvFieldContext.Provider value={{ describedBy }}>
         {children}
         {notes && <div id={notesId}>{notes}</div>}
       </EvFieldContext.Provider>
-    </FormRow>
+    </Field>
   )
 }
 

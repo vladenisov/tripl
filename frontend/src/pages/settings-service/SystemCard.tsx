@@ -198,7 +198,7 @@ export function SystemCard({ system }: { system: SystemSettings }) {
           {rows.map(row => (
             <div
               key={row.label}
-              className="flex flex-col gap-1.5 rounded-[10px] border px-3 py-2.5"
+              className="flex flex-col gap-1.5 rounded-card border px-3 py-2.5"
               style={{
                 // A tile that needs attention says so with its own border, not
                 // only with a dot the eye skips scanning a grid of them.
@@ -218,13 +218,13 @@ export function SystemCard({ system }: { system: SystemSettings }) {
                   size={7}
                 />
                 <span
-                  className="text-[10.5px] uppercase tracking-[0.05em]"
+                  className="text-2xs uppercase tracking-[0.05em]"
                   style={{ color: 'var(--fg-faint)' }}
                 >
                   {row.label}
                 </span>
               </div>
-              <span className="text-[12.5px] font-medium" style={{ color: VALUE_COLOR[row.tone] }}>
+              <span className="text-body-sm font-medium" style={{ color: VALUE_COLOR[row.tone] }}>
                 {row.value}
               </span>
               <span className="text-[11px] leading-[1.4]" style={{ color: 'var(--fg-subtle)' }}>

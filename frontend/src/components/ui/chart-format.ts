@@ -3,13 +3,29 @@
 // chart.tsx and the chart tests import these.
 
 import type { MetricsGranularity } from '@/lib/metrics'
+import { APP_LOCALE, formatCompactNumber, formatNumber } from '@/lib/format'
+import { pluralize } from '@/lib/plural'
 
-// Bucket starts are UTC instants (see getBucketStart / backend bucketing.py), so
-// every label is rendered in UTC. Formatting them in the viewer's local timezone
-// would print a Monday week bucket as "Week of Sun Jun 7" west of Greenwich and
-// a day bucket under the wrong date entirely — the axis would disagree with the
-// bucket the server actually computed (tripl-64n8.2).
+// Time-zone policy for bucket labels (DS-24 / MON-5), mirrored next to
+// `formatDateTime` in lib/datetime.ts:
+//
+//  - Day, week and month buckets are CALENDAR buckets the server cut in UTC
+//    (see getBucketStart / backend bucketing.py). They are labelled in UTC:
+//    formatted in the viewer's zone, a Monday week bucket would print as "Week
+//    of Sun Jun 7" west of Greenwich and a day bucket under the wrong date
+//    (tripl-64n8.2).
+//  - 15-minute, hour and 6-hour buckets are INSTANTS. They are labelled in the
+//    viewer's local zone, like every other timestamp in the app (formatDateTime,
+//    the signal card, the annotation list, the `datetime-local` annotation
+//    input). Labelled in UTC with no zone, a spike at 14:00 local read "11:00"
+//    on the chart for a UTC+3 reader while the anomaly card beside it said
+//    "14:00".
 const UTC = 'UTC'
+
+/** True for the granularities whose buckets are instants, not calendar days. */
+export function isSubDayGranularity(granularity: MetricsGranularity): boolean {
+  return granularity === '15min' || granularity === 'hour' || granularity === '6h'
+}
 
 export function formatTick(dateStr: string, granularity: MetricsGranularity): string {
   const d = new Date(dateStr)
@@ -18,28 +34,82 @@ export function formatTick(dateStr: string, granularity: MetricsGranularity): st
     // A 15-minute bucket needs its minutes on the axis: without them, the four
     // buckets of an hour all render as the same tick.
     case '15min':
-      return d.toLocaleString('en-US', {
+      return d.toLocaleString(APP_LOCALE, {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
-        timeZone: UTC,
       })
+    // Buckets start on the UTC hour, which in a half- or quarter-hour zone
+    // (Asia/Kolkata +5:30, Adelaide, Kathmandu) is xx:30 or xx:45 local: an
+    // hour-only tick read "05 AM" under a "05:30 AM" tooltip.
     case 'hour':
     case '6h':
-      return d.toLocaleString('en-US', {
+      return d.toLocaleString(APP_LOCALE, {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
-        timeZone: UTC,
+        ...(d.getMinutes() !== 0 ? { minute: '2-digit' } : {}),
       })
     case 'day':
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: UTC })
+      return d.toLocaleDateString(APP_LOCALE, { month: 'short', day: 'numeric', timeZone: UTC })
     case 'week':
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: UTC })
+      return d.toLocaleDateString(APP_LOCALE, { month: 'short', day: 'numeric', timeZone: UTC })
     case 'month':
-      return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: UTC })
+      return d.toLocaleDateString(APP_LOCALE, { month: 'short', year: 'numeric', timeZone: UTC })
   }
+}
+
+/** A day-boundary tick on a sub-day axis: the local date alone ("Sep 20"). */
+export function formatDayTick(dateStr: string): string {
+  return new Date(dateStr).toLocaleDateString(APP_LOCALE, { month: 'short', day: 'numeric' })
+}
+
+const DAY_MS = 86_400_000
+// Below two days an hourly axis is read by the hour; from two days on, the
+// reader wants to find a day, so the ticks move to day boundaries (LIVE-27).
+const DAY_TICK_MIN_SPAN_MS = 2 * DAY_MS
+const MAX_DAY_TICKS = 8
+
+/**
+ * Explicit x-axis ticks for a sub-day series spanning two days or more: the
+ * first bucket of each LOCAL calendar day, thinned to at most `maxTicks`.
+ * Recharts' own spacing put a 7-day hourly chart's ticks every ~21 hours
+ * ("Sep 20, 01 AM", "Sep 20, 10 PM", "Sep 21, 07 PM"), long labels that
+ * crowded each other and never landed on a day (LIVE-27).
+ *
+ * Returns null when the default ticks should stay: a calendar granularity, a
+ * span under two days, or no day boundary inside the data. `buckets` must be in
+ * ascending order, as every chart's rows are. The first bucket only counts
+ * when it sits exactly on local midnight — otherwise "Sep 20" would label a
+ * bucket from the middle of that day.
+ */
+export function dayBoundaryTicks(
+  buckets: string[],
+  granularity: MetricsGranularity,
+  maxTicks: number = MAX_DAY_TICKS,
+): string[] | null {
+  if (!isSubDayGranularity(granularity) || buckets.length < 2) return null
+  const first = Date.parse(buckets[0] ?? '')
+  const last = Date.parse(buckets[buckets.length - 1] ?? '')
+  if (!Number.isFinite(first) || !Number.isFinite(last) || last - first < DAY_TICK_MIN_SPAN_MS) {
+    return null
+  }
+  const boundaries: string[] = []
+  let previousDay: string | null = null
+  for (const bucket of buckets) {
+    const d = new Date(bucket)
+    if (Number.isNaN(d.getTime())) continue
+    const day = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+    const startsDay = previousDay === null
+      ? d.getHours() === 0 && d.getMinutes() === 0
+      : day !== previousDay
+    if (startsDay) boundaries.push(bucket)
+    previousDay = day
+  }
+  if (boundaries.length === 0) return null
+  const step = Math.max(1, Math.ceil(boundaries.length / Math.max(1, maxTicks)))
+  return boundaries.filter((_, index) => index % step === 0)
 }
 
 export function formatTooltipLabel(dateStr: string, granularity: MetricsGranularity): string {
@@ -49,35 +119,91 @@ export function formatTooltipLabel(dateStr: string, granularity: MetricsGranular
     case '15min':
     case 'hour':
     case '6h':
-      return d.toLocaleString('en-US', {
+      return d.toLocaleString(APP_LOCALE, {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
-        timeZone: UTC,
       })
     case 'day':
-      return d.toLocaleDateString('en-US', {
+      return d.toLocaleDateString(APP_LOCALE, {
         month: 'short',
         day: 'numeric',
         year: 'numeric',
         timeZone: UTC,
       })
     case 'week':
-      return `Week of ${d.toLocaleDateString('en-US', {
+      return `Week of ${d.toLocaleDateString(APP_LOCALE, {
         month: 'short',
         day: 'numeric',
         year: 'numeric',
         timeZone: UTC,
       })}`
     case 'month':
-      return d.toLocaleDateString('en-US', {
+      return d.toLocaleDateString(APP_LOCALE, {
         month: 'long',
         year: 'numeric',
         timeZone: UTC,
       })
   }
 }
+
+/**
+ * What a chart's values count. A plain string is printed as written (callers
+ * pass units like "%" or "events (p95)"); the pair form agrees with the number,
+ * so a one-event bucket reads "1 event", not "1 events" (DS-26).
+ */
+export type SeriesNoun = string | { singular: string; plural: string }
+
+/** The default noun of every volume chart. */
+export const EVENTS_NOUN = { singular: 'event', plural: 'events' } as const
+
+function nounPair(noun: SeriesNoun): { singular: string; plural: string } | null {
+  if (typeof noun !== 'string') return noun
+  // The bare "events" most callers pass is the default noun spelled as a string.
+  return noun === EVENTS_NOUN.plural ? EVENTS_NOUN : null
+}
+
+/** The plural spelling, for labels that name the series rather than a count. */
+export function seriesNounPlural(noun: SeriesNoun): string {
+  return typeof noun === 'string' ? noun : noun.plural
+}
+
+/**
+ * `1 event`, `1,234 events`, `12 %`: a tooltip value in the app locale (the
+ * same one the bucket label beside it uses) followed by the agreeing noun.
+ */
+export function formatSeriesValue(value: number, noun: SeriesNoun): string {
+  const text = formatNumber(value)
+  const pair = nounPair(noun)
+  if (pair) return `${text} ${pluralize(value, pair.singular, pair.plural)}`
+  return noun ? `${text} ${noun}` : text
+}
+
+/**
+ * The categorical palette for multi-series charts (DS-23 / MON-36), one list
+ * for the chart and the monitoring tabs that pin series to slots.
+ *
+ * Each slot reads a `--series-N` theme token when the theme defines one. The
+ * fallbacks are fixed hues with a light and a dark value (`light-dark()`, which
+ * follows the `color-scheme` the theme sets on the root), never a neutral,
+ * accent or status token: the By version chart draws the latest release in
+ * `--primary` (the accent), a pre-release in `--warning` and "Other" in
+ * `--muted-foreground` (grey), and anomaly dots in `--danger`, so a slot built
+ * from any of those drew two series in one colour, and under the rose accent
+ * the first slot was the anomaly red. The hues skip the red / amber band
+ * (danger, warning, the rose and amber accents) and the default teal accent.
+ */
+export const SERIES_COLORS = [
+  'var(--series-1, light-dark(oklch(0.52 0.15 258), oklch(0.72 0.13 258)))',
+  'var(--series-2, light-dark(oklch(0.52 0.13 148), oklch(0.75 0.15 148)))',
+  'var(--series-3, light-dark(oklch(0.52 0.17 305), oklch(0.74 0.14 305)))',
+  'var(--series-4, light-dark(oklch(0.55 0.11 105), oklch(0.8 0.14 105)))',
+  'var(--series-5, light-dark(oklch(0.55 0.1 225), oklch(0.78 0.11 225)))',
+  'var(--series-6, light-dark(oklch(0.53 0.18 340), oklch(0.74 0.15 340)))',
+  'var(--series-7, light-dark(oklch(0.42 0.08 170), oklch(0.66 0.1 170)))',
+  'var(--series-8, light-dark(oklch(0.45 0.14 280), oklch(0.8 0.09 280)))',
+] as const
 
 // Pluralization-aware anomaly-count sentence shared by every chart sr-only
 // summary (single-series, multi-series, compact) so the singular/plural split is
@@ -123,26 +249,11 @@ export function summarizeForecastRange(
   return `Forecast from ${start} to ${end}`
 }
 
-// Compact axis/tick labels that never blow out the reserved Y-axis width:
-// 380000 -> "380k", 1_500_000 -> "1.5M", 1_000_000 -> "1M". Whole numbers at
-// >= 100 of a unit, one decimal (trailing .0 stripped) below, so a label stays
-// <= ~5 characters across the 100k–9.9M range instead of the old "380.0k"
-// (6 chars) that clipped its left digits against a fixed 48px axis.
-//
-// Sub-1000 values are ROUNDED, not stringified verbatim: a fractional
-// confidence-band bound like -0.99 would otherwise render as
-// "-0.9900000000000001" (19 chars of float noise), which the axis-width probe
-// below turned into a ~140px Y-axis that shoved the whole plot right.
+// Compact axis/tick labels that never blow out the reserved Y-axis width
+// ("380k", "1.5M"). Defined once in lib/format.ts; the chart and its tests keep
+// the historical name.
 export function formatCount(value: number): string {
-  const abs = Math.abs(value)
-  // 999_500 already rounds up to "1M" — escalate before it renders "1000k".
-  if (abs >= 999_500) return `${compactUnit(value / 1_000_000)}M`
-  if (abs >= 1_000) return `${compactUnit(value / 1_000)}k`
-  return String(Math.round(value))
-}
-
-function compactUnit(scaled: number): number {
-  return Math.abs(scaled) >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10
+  return formatCompactNumber(value)
 }
 
 // Approximate advance width (px) of one tick character at `text-xs` (12px) in

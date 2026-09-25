@@ -48,14 +48,21 @@ vi.mock('@uiw/react-codemirror', () => ({
     placeholder,
     readOnly,
     'aria-label': ariaLabel,
+    onCreateEditor,
   }: {
     value: string
     onChange: (v: string) => void
     placeholder?: string
     readOnly?: boolean
     'aria-label'?: string
+    onCreateEditor?: (view: { contentDOM: HTMLElement; dom: HTMLElement }) => void
   }) => (
     <textarea
+      // SqlEditor puts its id and ARIA on CodeMirror's contenteditable through
+      // the editor view (DS-6); the textarea stands in for that element.
+      ref={el => {
+        if (el) onCreateEditor?.({ contentDOM: el, dom: el })
+      }}
       aria-label={ariaLabel}
       readOnly={readOnly}
       value={value}

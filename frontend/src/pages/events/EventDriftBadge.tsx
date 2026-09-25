@@ -1,3 +1,4 @@
+import { formatRelativeTime } from '@/lib/datetime'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
@@ -21,17 +22,6 @@ const DRIFT_LABEL: Record<string, string> = {
   range_violation: 'range',
 }
 
-function formatRelative(iso: string) {
-  const ts = Date.parse(iso)
-  if (Number.isNaN(ts)) return iso
-  const diff = Date.now() - ts
-  const days = Math.floor(diff / 86_400_000)
-  if (days >= 1) return `${days}d ago`
-  const hours = Math.floor(diff / 3_600_000)
-  if (hours >= 1) return `${hours}h ago`
-  const mins = Math.floor(diff / 60_000)
-  return `${Math.max(1, mins)}m ago`
-}
 
 export function EventDriftBadge({
   slug,
@@ -211,7 +201,7 @@ export function EventDriftBadge({
                   className="shrink-0 text-[10px] tnum"
                   style={{ color: 'var(--fg-faint)' }}
                 >
-                  {formatRelative(drift.detected_at)}
+                  {formatRelativeTime(drift.detected_at)}
                 </span>
               </li>
             ))}

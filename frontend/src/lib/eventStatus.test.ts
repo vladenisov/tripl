@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   EVENT_STATUSES,
-  EVENT_STATUS_BADGE_VARIANT,
   EVENT_STATUS_DOT_TONE,
   EVENT_STATUS_LABELS,
   EVENT_STATUS_TONE,
@@ -20,11 +19,10 @@ describe('event status lifecycle', () => {
     ])
   })
 
-  it('has a label, tone, badge variant and dot tone for every status', () => {
+  it('has a label, tone and dot tone for every status', () => {
     for (const status of EVENT_STATUSES) {
       expect(EVENT_STATUS_LABELS[status]).toBeTruthy()
       expect(EVENT_STATUS_TONE[status]).toBeTruthy()
-      expect(EVENT_STATUS_BADGE_VARIANT[status]).toBeTruthy()
       expect(EVENT_STATUS_DOT_TONE[status]).toBeTruthy()
     }
   })
@@ -36,7 +34,7 @@ describe('event status lifecycle', () => {
       ready_for_dev: 'info',
       implemented: 'success',
       live: 'success',
-      deprecated: 'warning',
+      deprecated: 'neutral',
       archived: 'neutral',
     })
   })

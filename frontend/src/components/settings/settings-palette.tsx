@@ -248,7 +248,7 @@ export function SettingsCommandPalette({
               value={query}
               onValueChange={setQuery}
               placeholder="Search settings and projects…"
-              className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-[var(--fg-subtle)]"
+              className="flex-1 bg-transparent text-body outline-none placeholder:text-[var(--fg-subtle)]"
             />
             <Kbd>esc</Kbd>
           </div>
@@ -274,7 +274,7 @@ export function SettingsCommandPalette({
                       key={row.value}
                       value={row.value}
                       onSelect={row.onSelect}
-                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[12.5px] aria-selected:bg-[var(--surface-hover)]"
+                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-body-sm aria-selected:bg-[var(--surface-hover)]"
                       style={{ color: 'var(--fg)' }}
                     >
                       <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
@@ -288,7 +288,7 @@ export function SettingsCommandPalette({
                         </span>
                       )}
                       <span
-                        className="mono shrink-0 truncate text-[10.5px]"
+                        className="mono shrink-0 truncate text-2xs"
                         style={{ color: 'var(--fg-faint)' }}
                       >
                         {row.hint}

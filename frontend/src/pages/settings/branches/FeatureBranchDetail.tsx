@@ -11,6 +11,7 @@ import { useAuth } from '@/components/auth-context'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Panel } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { useBranchContext, useBranchLinkProps } from '@/hooks/useBranch'
@@ -88,7 +89,7 @@ export function BranchDetail({ slug, branch, notFound, diff, diffLoad, confirm }
   if (notFound) {
     return (
       <Panel title="Branch not found">
-        <div className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           <p>This branch no longer exists — it may have been deleted.</p>
           <Link
             to={`/p/${slug}/settings/branches`}
@@ -105,7 +106,7 @@ export function BranchDetail({ slug, branch, notFound, diff, diffLoad, confirm }
   if (!branch) {
     return (
       <Panel title="Branch">
-        <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           Select a branch to review its diff.
         </p>
       </Panel>
@@ -115,7 +116,7 @@ export function BranchDetail({ slug, branch, notFound, diff, diffLoad, confirm }
   if (branch.kind === 'main') {
     return (
       <Panel title={branch.name} subtitle="The live production plan">
-        <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           This is the default branch — every change merges here. Select a feature branch to
           review its diff.
         </p>
@@ -466,17 +467,15 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
                 history, the comments and the ticket link of work that is on
                 main now (PLAN-9). */}
             {canWrite && branch.status !== 'merged' && (
-              <Button
+              <IconButton
                 variant="ghost"
-                size="icon"
                 className="size-8 text-muted-foreground hover:text-[var(--danger)]"
                 onClick={handleDelete}
                 disabled={deleteMut.isPending}
-                title="Delete branch"
-                aria-label="Delete branch"
+                label="Delete branch"
               >
                 <Trash2 className="size-3.5" aria-hidden="true" />
-              </Button>
+              </IconButton>
             )}
           </>
         }
@@ -515,7 +514,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
         {diffLoad.status === 'success' && behind && !landed ? (
           <p
             role="note"
-            className="flex items-start gap-1.5 border-t px-4 py-2.5 text-[11.5px]"
+            className="flex items-start gap-1.5 border-t px-4 py-2.5 text-caption"
             style={{ borderColor: 'var(--border-subtle)', color: 'var(--warning)' }}
           >
             <AlertTriangle className="mt-[2px] size-3 shrink-0" aria-hidden="true" />
@@ -565,7 +564,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
         {actionError ? (
           <p
             role="alert"
-            className="border-t px-4 py-2.5 text-[11.5px]"
+            className="border-t px-4 py-2.5 text-caption"
             style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
           >
             {actionError}
@@ -574,7 +573,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
         {deleteMut.isError ? (
           <p
             role="alert"
-            className="border-t px-4 py-2.5 text-[11.5px]"
+            className="border-t px-4 py-2.5 text-caption"
             style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
           >
             Could not delete the branch: {getErrorMessage(deleteMut.error)}
@@ -582,7 +581,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
         ) : null}
         {actionSuccess ? (
           <p
-            className="border-t px-4 py-2.5 text-[11.5px]"
+            className="border-t px-4 py-2.5 text-caption"
             style={{ borderColor: 'var(--border-subtle)', color: 'var(--success)' }}
           >
             {actionSuccess}
@@ -606,9 +605,9 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
         {diffLoad.status !== 'success' ? (
           // The empty state is a settled answer, so it waits for one: while the
           // request is in flight the card says so instead (tripl-kjhi.2).
-          <DiffLoadNotice load={diffLoad} className="px-4 py-7 text-center text-[12.5px]" />
+          <DiffLoadNotice load={diffLoad} className="px-4 py-7 text-center text-body-sm" />
         ) : visibleEntries.length === 0 ? (
-          <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             No changes in this branch.
           </p>
         ) : (
@@ -638,7 +637,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
         {revertMut.isError ? (
           <p
             role="alert"
-            className="border-t px-4 py-2.5 text-[11.5px]"
+            className="border-t px-4 py-2.5 text-caption"
             style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
           >
             {getErrorMessage(revertMut.error)}
@@ -665,11 +664,11 @@ function SummaryCount({
 }) {
   return (
     <div className="flex items-center gap-1.5">
-      <span className="mono text-[15px] font-semibold" style={{ color: `var(--${tone})` }}>
+      <span className="mono text-lead font-semibold" style={{ color: `var(--${tone})` }}>
         {sym}
         {n}
       </span>
-      <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
         {label}
       </span>
     </div>
@@ -695,7 +694,7 @@ function DiffLoadNotice({
       <p
         role={live ? 'status' : undefined}
         aria-live={live ? 'polite' : undefined}
-        className={className ?? 'text-[11.5px]'}
+        className={className ?? 'text-caption'}
         style={{ color: 'var(--fg-subtle)' }}
       >
         Loading changes…
@@ -705,7 +704,7 @@ function DiffLoadNotice({
   return (
     <p
       role={live ? 'alert' : undefined}
-      className={className ?? 'text-[11.5px]'}
+      className={className ?? 'text-caption'}
       style={{ color: 'var(--danger)' }}
     >
       Could not load the changes: {getErrorMessage(load.error)}{' '}

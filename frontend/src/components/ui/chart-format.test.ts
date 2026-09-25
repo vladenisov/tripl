@@ -1,23 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   axisWidthForValues,
+  dayBoundaryTicks,
+  EVENTS_NOUN,
   formatAnomalyCount,
   formatCount,
+  formatDayTick,
+  formatSeriesValue,
   formatTick,
   formatTooltipLabel,
+  SERIES_COLORS,
+  seriesNounPlural,
   summarizeBuckets,
   summarizeForecastRange,
 } from './chart-format'
 
 /**
- * Axis and tooltip labels name a UTC bucket start, so they must render in UTC.
- * Rendered in the viewer's local zone, a Monday week bucket prints as "Week of
- * Jun 7" (Sunday) west of Greenwich and a day bucket prints under the wrong
- * date — the axis would then disagree with the bucket the server computed
- * (tripl-64n8.2). Node re-reads `process.env.TZ` on every Date operation, so
- * stubbing it swings the host zone under the formatter.
+ * Calendar buckets (day / week / month) name a UTC bucket start, so they render
+ * in UTC. Rendered in the viewer's local zone, a Monday week bucket prints as
+ * "Week of Jun 7" (Sunday) west of Greenwich and a day bucket prints under the
+ * wrong date — the axis would then disagree with the bucket the server
+ * computed (tripl-64n8.2). Sub-day buckets are instants and render in local
+ * time, like every other timestamp in the app (DS-24 / MON-5). Node re-reads
+ * `process.env.TZ` on every Date operation, so stubbing it swings the host zone
+ * under the formatter.
  */
-describe('bucket labels render in UTC', () => {
+describe('bucket labels follow the zone policy', () => {
   const ZONES = ['UTC', 'Pacific/Kiritimati', 'America/Anchorage']
 
   afterEach(() => {
@@ -52,15 +60,18 @@ describe('bucket labels render in UTC', () => {
     }
   })
 
-  it('labels an hour bucket by its UTC hour in every zone', () => {
-    // 23:00 UTC is the next local day east of Greenwich and the same local day
-    // (14:00) west of it — the label must not drift either way.
+  it('labels an hour bucket by its LOCAL hour, like the rest of the app', () => {
+    // 23:00 UTC is 13:00 on the 8th in Kiritimati (UTC+14) and 15:00 on the
+    // 7th in Anchorage (UTC-8 in June). The chart used to print "11 PM" in
+    // every zone while the signal card beside it printed local time.
     const lateHour = '2026-06-07T23:00:00.000Z'
-    for (const timeZone of ZONES) {
-      expect(inZone(timeZone, () => formatTooltipLabel(lateHour, 'hour')))
-        .toBe('Jun 7, 11:00 PM')
-      expect(inZone(timeZone, () => formatTick(lateHour, 'hour'))).toBe('Jun 7, 11 PM')
-    }
+    expect(inZone('UTC', () => formatTooltipLabel(lateHour, 'hour'))).toBe('Jun 7, 11:00 PM')
+    expect(inZone('UTC', () => formatTick(lateHour, 'hour'))).toBe('Jun 7, 11 PM')
+    expect(inZone('Pacific/Kiritimati', () => formatTooltipLabel(lateHour, 'hour')))
+      .toBe('Jun 8, 01:00 PM')
+    expect(inZone('America/Anchorage', () => formatTick(lateHour, 'hour'))).toBe('Jun 7, 03 PM')
+    expect(inZone('America/Anchorage', () => formatTick(lateHour, '15min')))
+      .toBe('Jun 7, 03:00 PM')
   })
 
   it('labels a month bucket by its UTC month in every zone', () => {
@@ -154,8 +165,8 @@ describe('formatAnomalyCount', () => {
   })
 })
 
-// Consecutive UTC day buckets; formatTooltipLabel renders these in UTC (see the
-// "bucket labels render in UTC" suite above), so the humanized strings are stable.
+// Consecutive UTC day buckets; formatTooltipLabel renders day buckets in UTC (see the
+// "bucket labels follow the zone policy" suite above), so the strings are stable.
 const DAY_BUCKETS = [
   '2026-06-08T00:00:00.000Z',
   '2026-06-09T00:00:00.000Z',
@@ -202,5 +213,133 @@ describe('summarizeForecastRange', () => {
     expect(
       summarizeForecastRange(['2026-06-08T00:00:00.000Z', '2026-06-12T00:00:00.000Z'], 'day'),
     ).toBe('Forecast from Jun 8, 2026 to Jun 12, 2026')
+  })
+})
+
+// LIVE-27: a 7-day hourly axis used to tick every ~21 hours at odd times.
+describe('dayBoundaryTicks', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  function hourly(startIso: string, hours: number): string[] {
+    const start = Date.parse(startIso)
+    return Array.from({ length: hours }, (_, index) =>
+      new Date(start + index * 3_600_000).toISOString(),
+    )
+  }
+
+  it('puts one tick on each local midnight for a multi-day hourly series', () => {
+    vi.stubEnv('TZ', 'UTC')
+    const buckets = hourly('2026-09-20T13:00:00.000Z', 24 * 3)
+    const ticks = dayBoundaryTicks(buckets, 'hour')
+    // The first bucket is mid-day, so it gets no tick of its own.
+    expect(ticks).toEqual([
+      '2026-09-21T00:00:00.000Z',
+      '2026-09-22T00:00:00.000Z',
+      '2026-09-23T00:00:00.000Z',
+    ])
+    expect(ticks?.map(formatDayTick)).toEqual(['Sep 21', 'Sep 22', 'Sep 23'])
+  })
+
+  it('follows the local calendar day, not the UTC one', () => {
+    vi.stubEnv('TZ', 'Asia/Tokyo') // UTC+9: local midnight is 15:00 UTC
+    const ticks = dayBoundaryTicks(hourly('2026-09-20T00:00:00.000Z', 24 * 3), 'hour')
+    expect(ticks?.[0]).toBe('2026-09-20T15:00:00.000Z')
+  })
+
+  // A UTC hour bucket starts at xx:30 in a half-hour zone; an hour-only tick
+  // read "05 AM" under a "05:30 AM" tooltip.
+  it('keeps the minutes on an hourly tick in a half-hour zone', () => {
+    const bucket = '2026-09-20T00:00:00.000Z'
+    vi.stubEnv('TZ', 'Asia/Kolkata')
+    expect(formatTick(bucket, 'hour')).toMatch(/05:30\sAM/)
+    expect(formatTick(bucket, '6h')).toMatch(/05:30\sAM/)
+    vi.stubEnv('TZ', 'UTC')
+    expect(formatTick(bucket, 'hour')).toMatch(/12\sAM$/)
+    expect(formatTick(bucket, 'hour')).not.toMatch(/:/)
+  })
+
+  it('counts a first bucket that sits exactly on local midnight', () => {
+    vi.stubEnv('TZ', 'UTC')
+    const ticks = dayBoundaryTicks(hourly('2026-09-20T00:00:00.000Z', 24 * 2 + 1), 'hour')
+    expect(ticks?.[0]).toBe('2026-09-20T00:00:00.000Z')
+  })
+
+  it('thins the ticks to at most eight on a long range', () => {
+    vi.stubEnv('TZ', 'UTC')
+    const ticks = dayBoundaryTicks(hourly('2026-09-01T00:00:00.000Z', 24 * 30), 'hour')
+    expect(ticks).not.toBeNull()
+    expect(ticks!.length).toBeLessThanOrEqual(8)
+    expect(ticks![0]).toBe('2026-09-01T00:00:00.000Z')
+  })
+
+  it('keeps the default ticks under two days and for calendar buckets', () => {
+    vi.stubEnv('TZ', 'UTC')
+    expect(dayBoundaryTicks(hourly('2026-09-20T00:00:00.000Z', 30), 'hour')).toBeNull()
+    expect(
+      dayBoundaryTicks(['2026-09-20T00:00:00.000Z', '2026-09-27T00:00:00.000Z'], 'day'),
+    ).toBeNull()
+  })
+})
+
+// DS-26: "1 events" in a single-event bucket, and two locales in one tooltip.
+describe('formatSeriesValue', () => {
+  it('agrees the default noun with the count', () => {
+    expect(formatSeriesValue(1, EVENTS_NOUN)).toBe('1 event')
+    expect(formatSeriesValue(1234, EVENTS_NOUN)).toBe('1,234 events')
+    expect(formatSeriesValue(0, EVENTS_NOUN)).toBe('0 events')
+  })
+
+  it('treats the bare "events" string as the default noun', () => {
+    expect(formatSeriesValue(1, 'events')).toBe('1 event')
+  })
+
+  it('prints any other string as written', () => {
+    expect(formatSeriesValue(0.08, '%')).toBe('0.08 %')
+    expect(formatSeriesValue(2, { singular: 'row', plural: 'rows' })).toBe('2 rows')
+  })
+
+  it('names the series by its plural', () => {
+    expect(seriesNounPlural(EVENTS_NOUN)).toBe('events')
+    expect(seriesNounPlural('events (p95)')).toBe('events (p95)')
+  })
+})
+
+// DS-23 / MON-36: fixed hexes that ignored dark mode, and a danger-red series.
+describe('SERIES_COLORS', () => {
+  it('reads a theme token for every slot and never the danger colour', () => {
+    expect(SERIES_COLORS).toHaveLength(8)
+    SERIES_COLORS.forEach((color, index) => {
+      expect(color.startsWith(`var(--series-${index + 1},`)).toBe(true)
+      expect(color).not.toMatch(/#[0-9a-f]{3,6}/i)
+      expect(color).not.toContain('--chart-5')
+      expect(color).not.toMatch(/^var\(--series-\d+, var\(--(danger|destructive)\)\)$/)
+    })
+  })
+
+  // The By version chart draws the latest release in --primary (the accent), a
+  // pre-release in --warning and "Other" in --muted-foreground (= --fg-subtle):
+  // a slot built from any of those drew two lines in one colour, and under the
+  // rose accent --chart-1 was the anomaly red.
+  it('builds no fallback from a neutral, accent or status token', () => {
+    const reserved = /--(primary|accent|chart-\d|warning|danger|destructive|success|info|muted-foreground|fg-subtle|fg)\b/
+    SERIES_COLORS.forEach(color => {
+      const fallback = color.replace(/^var\(--series-\d+,\s*/, '')
+      expect(fallback).not.toMatch(reserved)
+      expect(fallback).toMatch(/^light-dark\(oklch\([^)]*\), oklch\([^)]*\)\)\)$/)
+    })
+    expect(new Set(SERIES_COLORS).size).toBe(SERIES_COLORS.length)
+  })
+
+  it('keeps every fallback hue out of the danger / warning band', () => {
+    SERIES_COLORS.forEach(color => {
+      const hues = [...color.matchAll(/oklch\([\d.]+ [\d.]+ ([\d.]+)\)/g)].map(m => Number(m[1]))
+      expect(hues).toHaveLength(2)
+      hues.forEach(hue => {
+        expect(hue < 0 || hue > 85).toBe(true)
+        expect(hue).toBeLessThan(355)
+      })
+    })
   })
 })

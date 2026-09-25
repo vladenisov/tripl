@@ -16,7 +16,7 @@ export function ComingLaterCard({
   return (
     <SCard title="Coming later" description={description}>
       <ul
-        className="m-0 list-disc space-y-1.5 py-[15px] pl-[38px] pr-[18px] text-[12.5px] leading-[1.5]"
+        className="m-0 list-disc space-y-1.5 py-[15px] pl-[38px] pr-[18px] text-body-sm leading-[1.5]"
         style={{ color: 'var(--fg-subtle)' }}
       >
         {items.map((item) => (

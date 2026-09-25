@@ -33,7 +33,7 @@ import { getErrorMessage } from '@/lib/utils'
 import {
   Field,
   SCard,
-  Select,
+  NativeSelect,
   SHeader,
   TextArea,
   TextInput,
@@ -472,7 +472,7 @@ function ProjectGeneralBody({
               hint="The clock alert delivery schedules are read in. Type to jump, e.g. Europe/Moscow."
               last
             >
-              <Select
+              <NativeSelect
                 id="proj-timezone"
                 value={timezone}
                 onChange={setTimezone}
@@ -530,7 +530,7 @@ function ProjectGeneralBody({
           <SCard title="Search index">
             <div className={DANGER_ROW_CLASS}>
               <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium">Rebuild search index</div>
+                <div className="text-body font-medium">Rebuild search index</div>
                 <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
                   Rebuild project search when existing events, descriptions, or fields do not appear
                   in global search.

@@ -12,6 +12,7 @@ import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
   DropdownMenu,
@@ -199,20 +200,19 @@ export function ProjectCard({
         {canDelete && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button
+              <IconButton
                 variant="ghost"
-                size="icon"
                 className="shrink-0 text-muted-foreground"
-                aria-label={`Project actions for ${project.name}`}
+                label={`Project actions for ${project.name}`}
                 disabled={isDeleting || deleteLocked}
               >
                 <MoreHorizontal className="h-3.5 w-3.5" />
-              </Button>
+              </IconButton>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" sideOffset={6} className="w-[176px]">
               <DropdownMenuItem
                 variant="destructive"
-                className="text-[12.5px]"
+                className="text-body-sm"
                 onSelect={onDelete}
               >
                 <Trash2 className="h-3.5 w-3.5 shrink-0" />
@@ -406,7 +406,7 @@ function LatestScanJobSummary({
 }) {
   if (!job) {
     return (
-      <div className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
         No scan runs yet. Configure a scan and run it once to start surfacing execution
         history here.
       </div>
@@ -434,7 +434,7 @@ function LatestScanJobSummary({
         <p className="text-[12px] font-medium">{job.scan_name}</p>
         <Badge variant={getScanJobStatusVariant(job.status)}>{job.status}</Badge>
       </div>
-      <div className="space-y-0.5 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="space-y-0.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
         <p>{describeScanJobTiming(job)}</p>
         {/* What this number counts, spelled out: warehouse rows this run read
             from the data source, not the Monitoring tile's metric bucket
@@ -496,7 +496,7 @@ function LatestSignalSummary({
 }) {
   if (!signal) {
     return (
-      <div className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
         No recent monitoring signals. Once metrics collection finds anomalies, the latest signal
         will appear here.
       </div>

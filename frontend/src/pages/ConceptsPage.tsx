@@ -188,7 +188,7 @@ function MapCard({ area }: { area: Area }) {
   const Icon = area.icon
   return (
     <div
-      className="flex flex-col rounded-[10px] border p-4"
+      className="flex flex-col rounded-card border p-4"
       style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
     >
       <div className="flex items-center gap-2">
@@ -199,7 +199,7 @@ function MapCard({ area }: { area: Area }) {
           <Icon className="h-4 w-4" style={{ color: area.accent }} aria-hidden="true" />
         </span>
         <div className="min-w-0">
-          <div className="text-[13px] font-semibold leading-tight">{area.label}</div>
+          <div className="text-body font-semibold leading-tight">{area.label}</div>
           <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
             {area.tagline}
           </div>
@@ -224,7 +224,7 @@ function TermRow({ term, slug }: { term: Term; slug: string | undefined }) {
   return (
     <div className="px-4 py-3">
       <div className="flex items-baseline justify-between gap-3">
-        <h3 className="text-[13px] font-semibold">{term.term}</h3>
+        <h4 className="text-body font-semibold">{term.term}</h4>
         {href && (
           // The name STARTS with the visible label: "Open Signals in the app" on
           // a link that reads "Anomalies" failed WCAG 2.5.3, so a voice user
@@ -268,7 +268,7 @@ export default function ConceptsPage() {
           entities listed at a glance. The glossary below defines every term. */}
       <section aria-labelledby="concept-map-heading" className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 id="concept-map-heading" className="text-[13px] font-semibold">
+          <h2 id="concept-map-heading" className="text-body font-semibold">
             How tripl models your plan
           </h2>
           <div
@@ -293,11 +293,13 @@ export default function ConceptsPage() {
       {/* Glossary — grouped by the same three jobs so the vocabulary maps onto
           the model above. Each term links to where it lives, when it has a home. */}
       <section aria-labelledby="glossary-heading" className="space-y-4">
-        <h2 id="glossary-heading" className="text-[13px] font-semibold">
+        <h2 id="glossary-heading" className="text-body font-semibold">
           Glossary
         </h2>
         {AREAS.map((area) => (
-          <Panel key={area.key} title={area.label} subtitle={area.tagline}>
+          // h2 Glossary → h3 area → h4 term: the panels sit under the page's own
+          // h2, so they must not flatten the outline back to level 2.
+          <Panel key={area.key} title={area.label} subtitle={area.tagline} headingLevel={3}>
             <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
               {area.terms.map((term) => (
                 <TermRow key={term.term} term={term} slug={slug} />

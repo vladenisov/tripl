@@ -1,3 +1,4 @@
+import { PageHeader } from '@/components/primitives/page-header'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -60,7 +61,7 @@ export default function InvitePage() {
         className="space-y-4 rounded-xl border p-6"
         style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
       >
-        <h1 className="text-lg font-semibold">Join this tripl workspace</h1>
+        <PageHeader title="Join this tripl workspace" />
 
         {previewQuery.isLoading && (
           <p className="text-sm" style={{ color: 'var(--fg-subtle)' }}>

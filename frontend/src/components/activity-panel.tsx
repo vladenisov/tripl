@@ -252,7 +252,7 @@ export function ActivityPanel({
         style={{ borderColor: 'var(--border)' }}
       >
         <Dot tone={activityQuery.isError ? 'warning' : 'accent'} pulse={activityQuery.isFetching} size={7} />
-        <span className="text-[12.5px] font-semibold">Recent activity</span>
+        <span className="text-body-sm font-semibold">Recent activity</span>
         {!isQuiet && (
           <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
             {activityQuery.isError ? 'offline' : 'auto-refresh'}
@@ -303,7 +303,7 @@ export function ActivityPanel({
         {activityQuery.isError && !isInitialLoading && !hasItems && (
           <div className="px-3.5 py-3">
             <div
-              className="rounded-md border p-3 text-[11.5px]"
+              className="rounded-md border p-3 text-caption"
               style={{
                 background: 'var(--surface)',
                 borderColor: 'var(--border-subtle)',
@@ -331,7 +331,7 @@ export function ActivityPanel({
           </div>
         )}
         {isQuiet && (
-          <div className="px-3.5 py-6 text-center text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="px-3.5 py-6 text-center text-caption" style={{ color: 'var(--fg-subtle)' }}>
             No recent activity
           </div>
         )}

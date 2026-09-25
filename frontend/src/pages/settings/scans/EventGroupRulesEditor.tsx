@@ -1,5 +1,6 @@
 import { Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { EventGroupRule, ScanConfigPreview } from '@/types'
@@ -96,16 +97,15 @@ export function EventGroupRulesEditor({
                 <option value="any">Any</option>
               </select>
             </div>
-            <Button
+            <IconButton
               type="button"
               variant="ghost"
-              size="icon"
               className="self-end text-muted-foreground hover:text-destructive"
-              aria-label={`Remove group rule "${rule.name}"`}
+              label={`Remove group rule "${rule.name}"`}
               onClick={() => onChange(rules.filter((_, index) => index !== ruleIndex))}
             >
               <Trash2 className="h-4 w-4" aria-hidden />
-            </Button>
+            </IconButton>
           </div>
           <div className="space-y-2">
             {rule.conditions.map((condition, conditionIndex) => (
@@ -136,19 +136,18 @@ export function EventGroupRulesEditor({
                     placeholder="^button:"
                   />
                 </div>
-                <Button
+                <IconButton
                   type="button"
                   variant="ghost"
-                  size="icon"
                   className="self-end text-muted-foreground hover:text-destructive"
-                  aria-label="Remove condition"
+                  label="Remove condition"
                   disabled={rule.conditions.length === 1}
                   onClick={() => updateRule(ruleIndex, {
                     conditions: rule.conditions.filter((_, index) => index !== conditionIndex),
                   })}
                 >
                   <Trash2 className="h-4 w-4" aria-hidden />
-                </Button>
+                </IconButton>
               </div>
             ))}
             <Button

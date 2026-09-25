@@ -4,13 +4,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { invitationsApi, type Invitation, type InvitationCreated } from '@/api/invitations'
 import { usersApi } from '@/api/users'
 import { useAuth } from '@/components/auth-context'
+import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { UserAvatar } from '@/components/ui/user-avatar'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
-import { Select, TextInput } from '@/components/settings/kit'
+import { NativeSelect, TextInput } from '@/components/settings/kit'
 import { ROLE_OPTIONS, type Role, type UserListItem } from '@/types'
 import { formatIsoDate } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
@@ -22,17 +24,6 @@ function roleChip(role: Role) {
   return ROLE_OPTIONS.find((r) => r.value === role)?.chip ?? 'bg-muted text-muted-foreground'
 }
 
-function initialsOf(u: UserListItem): string {
-  const base = (u.name ?? u.email).trim()
-  if (base.includes(' ')) {
-    return base
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((w) => w[0]!.toUpperCase())
-      .join('')
-  }
-  return base.slice(0, 2).toUpperCase()
-}
 
 /** What the Owner role hands over, said the same way wherever it is granted. */
 const OWNER_POWERS =
@@ -176,7 +167,7 @@ function InviteMemberCard() {
       {dialog}
 
       <div>
-        <h3 className="text-[13px] font-semibold">Invite a member</h3>
+        <h3 className="text-body font-semibold">Invite a member</h3>
         <p className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
           Creates a single-use link for one address, at the role you pick. Use this instead of
           opening self-service registration.
@@ -218,7 +209,7 @@ function InviteMemberCard() {
           <label className="mb-1 block text-[11px]" htmlFor="invite-role">
             Role
           </label>
-          <Select
+          <NativeSelect
             id="invite-role"
             value={role}
             onChange={(next) => setRole(next as Role)}
@@ -241,7 +232,7 @@ function InviteMemberCard() {
       {role === 'owner' && (
         <p
           id="invite-owner-warning"
-          className="m-0 text-[11.5px]"
+          className="m-0 text-caption"
           style={{ color: 'var(--warning)' }}
         >
           {OWNER_POWERS}
@@ -469,9 +460,7 @@ export default function UsersPage() {
             />
           </div>
         ) : users.length === 0 ? (
-          <div className="px-4 py-6 text-sm" style={{ color: 'var(--fg-subtle)' }}>
-            No users yet.
-          </div>
+          <EmptyState size="sm" headingLevel={3} title="No users yet." />
         ) : (
           users.map((u: UserListItem) => (
             <div
@@ -486,14 +475,9 @@ export default function UsersPage() {
                     here and in blue in the sidebar footer 30px away — one account
                     rendered as two (tripl-h3bb). A hue carries no meaning worth
                     that. */}
-                <div
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
-                  style={{ background: 'var(--avatar-bg)' }}
-                >
-                  {initialsOf(u)}
-                </div>
+                <UserAvatar name={u.name ?? u.email} size={28} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12.5px] font-medium leading-tight">
+                  <div className="truncate text-body-sm font-medium leading-tight">
                     {u.name ?? u.email}
                   </div>
                   <div
@@ -516,7 +500,7 @@ export default function UsersPage() {
                 </span>
                 <div className="w-32 shrink-0 text-right">
                   {isOwner && u.id !== currentUser?.id ? (
-                    <Select
+                    <NativeSelect
                       value={u.role}
                       aria-label={`Role for ${u.name ?? u.email}`}
                       onChange={(next) => {

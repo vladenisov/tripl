@@ -11,15 +11,20 @@ const badgeVariants = cva(
           "border-transparent bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
         secondary:
           "border-transparent bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/80",
+        // Solid red: reserved for counts that demand attention. A red STATE
+        // ("Failed", "Noisy") is the soft `danger` below, like every other
+        // tone — the solid fill was louder than anything else on the page and
+        // broke the statusLexicon's tone contract (DS-37).
         destructive:
           "border-transparent bg-destructive text-destructive-foreground [a&]:hover:bg-destructive/90",
-        outline: "text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
+        outline: "text-foreground [a&]:hover:bg-surface-hover [a&]:hover:text-foreground",
         // Tone tokens, not palette shades: `--success` is pinned as the AA-safe
         // ink for its own `--success-soft` fill in BOTH themes, so these need no
         // `dark:` twin to hand-maintain (src/theme-contrast.test.ts).
         success: "border-transparent bg-success-soft text-success",
         warning: "border-transparent bg-warning-soft text-warning",
         info: "border-transparent bg-info-soft text-info",
+        danger: "border-transparent bg-danger-soft text-danger",
       },
     },
     defaultVariants: {

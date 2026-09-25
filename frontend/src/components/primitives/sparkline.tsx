@@ -18,6 +18,18 @@ type SparklineProps = {
   responsive?: boolean
 }
 
+/**
+ * The value span the drawing scales to. Only a flat series needs a stand-in
+ * (anything non-zero avoids dividing by zero). This used to be
+ * `Math.max(1, max - min)`, which clamped every span below one unit to one: a
+ * conversion rate stored as a fraction moving from 0.05 to 0.09 got 0.04 of
+ * the height, under a pixel, and every percent or ratio metric drew a flat
+ * line that read as "no change" (DS-4).
+ */
+function sparklineRange(min: number, max: number): number {
+  return max - min || Math.abs(max) || 1
+}
+
 function SparklineInner({
   data,
   color = "var(--accent)",
@@ -42,14 +54,18 @@ function SparklineInner({
 
   const min = Math.min(...data)
   const max = Math.max(...data)
-  const range = Math.max(1, max - min)
 
   if (variant === "bar") {
+    // Bars stand on zero, not on the smallest value: measured from `min`, the
+    // lowest bar was 1px however large it was (DS-4). A series that dips below
+    // zero keeps its minimum as the floor.
+    const floor = Math.min(0, min)
+    const barRange = sparklineRange(floor, max)
     const barW = Math.max(1.5, width / data.length - 1)
     return (
       <svg {...size} aria-hidden="true" className={className} style={{ display: "block", ...style }}>
         {data.map((v, i) => {
-          const h = Math.max(1, ((v - min) / range) * (height - 2))
+          const h = Math.max(1, ((v - floor) / barRange) * (height - 2))
           const isAnom = anomalyIdx === i
           return (
             <rect
@@ -68,6 +84,7 @@ function SparklineInner({
     )
   }
 
+  const range = sparklineRange(min, max)
   const stepX = width / Math.max(1, data.length - 1)
   const points = data.map<[number, number]>((v, i) => [
     i * stepX,

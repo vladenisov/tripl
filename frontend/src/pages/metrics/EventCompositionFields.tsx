@@ -1,11 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { eventTypesApi } from '@/api/eventTypes'
-import { SCard, Select, TextInput } from '@/components/settings/kit'
+import { SCard, NativeSelect, TextInput, Field } from '@/components/settings/kit'
 import { eventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { METRIC_COMPOSITIONS, type EventType, type MetricComposition } from '@/types'
 import { EventRefPicker, type EventRef } from './EventRefPicker'
-import { FormField } from '@/components/settings/form-field'
 import { errorAria, type FieldErrors } from '@/lib/fieldErrors'
 import type { MetricDraft } from './metricDraft'
 
@@ -57,21 +56,22 @@ export function EventCompositionFields({
 
   return (
     <SCard title="Event composition" description="Combine existing event series.">
-      <FormField label="Composition" htmlFor="metric-composition" required>
-        <Select
+      <Field label="Composition" htmlFor="metric-composition" required>
+        <NativeSelect
           id="metric-composition"
           value={draft.composition}
           onChange={value => patch({ composition: value as MetricComposition })}
           options={METRIC_COMPOSITIONS.map(c => ({ value: c, label: COMPOSITION_LABEL[c] }))}
         />
-      </FormField>
-      <FormField
+      </Field>
+      <Field
         label={isRatio ? 'Numerator event' : 'Event'}
         htmlFor="metric-numerator"
         required
         last={draft.composition === 'single'}
         hint="An event, or an event type to count every event of that type."
         error={errors['metric-numerator']}
+        announceError={false}
       >
         <EventRefPicker
           slug={slug}
@@ -85,15 +85,16 @@ export function EventCompositionFields({
           disabled={disabled}
           {...errorAria(errors, 'metric-numerator')}
         />
-      </FormField>
+      </Field>
       {isRatio && (
-        <FormField
+        <Field
           label="Denominator event"
           htmlFor="metric-denominator"
           required
           last
           hint="Required for a ratio metric."
           error={errors['metric-denominator']}
+          announceError={false}
         >
           <EventRefPicker
             slug={slug}
@@ -107,10 +108,10 @@ export function EventCompositionFields({
             disabled={disabled}
             {...errorAria(errors, 'metric-denominator')}
           />
-        </FormField>
+        </Field>
       )}
       {draft.composition === 'per_distinct_user' && (
-        <FormField
+        <Field
           label="User ID column"
           htmlFor="metric-user-id-column"
           last
@@ -125,7 +126,7 @@ export function EventCompositionFields({
               placeholder="user_id"
             />
           </div>
-        </FormField>
+        </Field>
       )}
     </SCard>
   )

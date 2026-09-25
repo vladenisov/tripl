@@ -14,7 +14,8 @@ import { MetricBreakdownPicker } from './MetricBreakdownPicker'
 import { ScanCausalNote } from './ScanCausalNote'
 import { ScanPreviewPanel } from './ScanPreviewPanel'
 import { LazySqlEditor } from '@/components/sql-editor-lazy'
-import { Field, SCard } from './scanLayout'
+import { Field } from '@/components/settings/kit'
+import { SCard } from './scanLayout'
 import type { ScanFormMode } from './scanMode'
 import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
 import {
@@ -115,7 +116,7 @@ function CollapsibleSection({
           <h3 className="m-0 text-sm font-semibold" style={{ color: 'var(--fg)' }}>
             {title}
           </h3>
-          <p className="mt-1 text-[12.5px] leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="mt-1 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
             {explanation}
           </p>
         </div>
@@ -220,7 +221,7 @@ export function ScanEssentialsSection({
         className="border-b px-[18px] py-4"
         style={{ borderColor: 'var(--border-subtle)' }}
       >
-        <legend className="mb-2 text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+        <legend className="mb-2 text-body font-medium" style={{ color: 'var(--fg)' }}>
           What this scan does
         </legend>
         <div className="flex flex-col gap-2">
@@ -245,7 +246,7 @@ export function ScanEssentialsSection({
               <div className="min-w-0">
                 <label
                   htmlFor={`scan-mode-${option.value}`}
-                  className="block text-[13px] font-medium"
+                  className="block text-body font-medium"
                   style={{ color: 'var(--fg)' }}
                 >
                   {option.label}
@@ -269,7 +270,7 @@ export function ScanEssentialsSection({
         <ScanCausalNote variant="form" mode={state.mode} />
       </div>
 
-      <Field label="Name" id="scan-name">
+      <Field label="Name" htmlFor="scan-name">
         <Input
           id="scan-name"
           value={state.name}
@@ -277,7 +278,7 @@ export function ScanEssentialsSection({
           placeholder="e.g. Main events scan"
         />
       </Field>
-      <Field label="Data source" id="scan-data-source">
+      <Field label="Data source" htmlFor="scan-data-source">
         {sourceLocked ? (
           <Input id="scan-data-source" value={sourceName} disabled className="max-w-[280px]" />
         ) : (
@@ -296,7 +297,7 @@ export function ScanEssentialsSection({
       </Field>
       {/* id={false}: SqlEditor is a CodeMirror contenteditable, not a labelable
           element — it names itself with ariaLabel below. */}
-      <Field label="Base query" id={false} hint="Used as a subquery. tripl wraps it to scan windows.">
+      <Field label="Base query" htmlFor={false} hint="Used as a subquery. tripl wraps it to scan windows.">
         <LazySqlEditor
           ariaLabel="SQL base query"
           value={state.baseQuery}
@@ -312,7 +313,7 @@ export function ScanEssentialsSection({
       <Field
         label="Preview"
         // No control to point a label at — a button and, on failure, an error.
-        id={false}
+        htmlFor={false}
         hint="Loads sample rows so the pickers below can offer real columns. What this scan would create is answered underneath them."
       >
         <div className="flex flex-col gap-2">
@@ -340,7 +341,7 @@ export function ScanEssentialsSection({
           gone with it; the empty option now names the answer it stands for. */}
       <Field
         label="Event type"
-        id="scan-event-type"
+        htmlFor="scan-event-type"
         hint="Give every row the same event type, or read each event's name from a column."
       >
         <select
@@ -356,7 +357,7 @@ export function ScanEssentialsSection({
       {namesEventsFromColumn && (
         <Field
           label="Event type column"
-          id="scan-event-type-column"
+          htmlFor="scan-event-type-column"
           hint={
             state.eventTypeId
               ? 'The Event type above names these events, so this column names nothing — and it never becomes an event field either. Clear it if you did not mean to set it.'
@@ -407,7 +408,7 @@ export function ScanEssentialsSection({
           warning, because empty is a legitimate answer there. */}
       <Field
         label="Time column"
-        id="scan-time-column"
+        htmlFor="scan-time-column"
         hint={
           monitoring
             ? 'The timestamp tripl buckets metric points by. Required for monitoring.'
@@ -452,7 +453,7 @@ export function ScanEssentialsSection({
         )}
       </Field>
       {monitoring && (
-        <Field label="Schedule" id="scan-interval" hint="How often this scan runs." last={!preview}>
+        <Field label="Schedule" htmlFor="scan-interval" hint="How often this scan runs." last={!preview}>
           <select
             id="scan-interval"
             value={state.interval}
@@ -541,7 +542,7 @@ export function EventNamingSection({ form }: SectionProps) {
       explanation="Reshape the names tripl derives above — rewrite them from a template, collapse high-cardinality values, or merge several into one. Leave this alone and each name is used as it is."
       defaultOpen={defaultOpen}
     >
-      <Field label="Event name format" id="scan-event-name-format" hint="Template, e.g. {action}:{category}.">
+      <Field label="Event name format" htmlFor="scan-event-name-format" hint="Template, e.g. {action}:{category}.">
         <Input
           id="scan-event-name-format"
           value={state.eventNameFormat}
@@ -552,7 +553,7 @@ export function EventNamingSection({ form }: SectionProps) {
       </Field>
       <Field
         label="Cardinality threshold"
-        id="cardinality-threshold"
+        htmlFor="cardinality-threshold"
         hint="Columns with more distinct values than this are collapsed into a template like {country} instead of one event per value."
         last
       >
@@ -707,7 +708,7 @@ export function LimitsSection({ form }: SectionProps) {
       {monitoring && state.interval && (
         <Field
           label="Replay chunk size"
-          id="scan-chunk-interval"
+          htmlFor="scan-chunk-interval"
           hint="Splits long replays into smaller warehouse queries. Must be at least as long as the schedule."
         >
           <select
@@ -732,7 +733,7 @@ export function LimitsSection({ form }: SectionProps) {
       {state.timeColumn ? (
         <Field
           label="Lookback (hours)"
-          id="scan-lookback-hours"
+          htmlFor="scan-lookback-hours"
           hint={`How far back each run reads, counted on ${state.timeColumn}. Default 24.`}
         >
           <Input
@@ -750,13 +751,13 @@ export function LimitsSection({ form }: SectionProps) {
       ) : (
         /* id={false}: this branch replaces the input with a sentence, so there is
            nothing here for a `<label htmlFor>` to point at (tripl-6h2b). */
-        <Field label="Lookback (hours)" id={false}>
+        <Field label="Lookback (hours)" htmlFor={false}>
           <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
             {NO_LOOKBACK_WITHOUT_TIME_COLUMN}
           </p>
         </Field>
       )}
-      <Field label="Row cap per run" id="scan-row-limit" last={!monitoring}>
+      <Field label="Row cap per run" htmlFor="scan-row-limit" last={!monitoring}>
         <Input
           id="scan-row-limit"
           type="number"
@@ -777,7 +778,7 @@ export function LimitsSection({ form }: SectionProps) {
           saved while monitoring survives a switch to Catalog only and comes back
           the moment monitoring does. */}
       {monitoring && (
-        <Field label="Row cap per metrics run" id="scan-metrics-row-limit" last>
+        <Field label="Row cap per metrics run" htmlFor="scan-metrics-row-limit" last>
           <Input
             id="scan-metrics-row-limit"
             type="number"

@@ -193,7 +193,8 @@ describe('ScanFormSections — where event names come from', () => {
     await screen.findByText('New scan')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
-    fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
+    // The SQL editor is lazy-loaded, so it may land a tick after the form.
+    fireEvent.change(await screen.findByPlaceholderText('SELECT * FROM analytics.events'), {
       target: { value: 'SELECT * FROM analytics.events' },
     })
 

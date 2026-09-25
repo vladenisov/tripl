@@ -53,7 +53,7 @@ function ValueCell({ value }: { value: unknown }) {
 
   if (parsed === null) {
     return (
-      <span className="mono wrap-anywhere text-[11.5px]" style={{ color: 'var(--fg)' }}>
+      <span className="mono wrap-anywhere text-caption" style={{ color: 'var(--fg)' }}>
         {text}
       </span>
     )
@@ -72,7 +72,7 @@ function ValueCell({ value }: { value: unknown }) {
           style={{ color: 'var(--fg-faint)', transform: open ? 'rotate(90deg)' : 'none' }}
           aria-hidden="true"
         />
-        <span className="mono truncate text-[11.5px]" style={{ color: 'var(--fg)' }}>
+        <span className="mono truncate text-caption" style={{ color: 'var(--fg)' }}>
           {text}
         </span>
       </button>
@@ -165,7 +165,7 @@ export function DiffValue({
     value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)
   if (isEmpty) {
     return (
-      <span className="mono text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>
+      <span className="mono text-caption" style={{ color: 'var(--fg-faint)' }}>
         ∅
       </span>
     )
@@ -173,7 +173,7 @@ export function DiffValue({
   if (Array.isArray(value)) {
     if (value.every((item) => typeof item !== 'object' || item === null)) {
       return (
-        <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
+        <span className="mono wrap-anywhere text-caption" style={{ color }}>
           {value.map((item) => String(item)).join(', ')}
         </span>
       )
@@ -188,7 +188,7 @@ export function DiffValue({
           {value.map((item, idx) => (
             <span
               key={idx}
-              className="mono wrap-anywhere text-[11.5px]"
+              className="mono wrap-anywhere text-caption"
               style={{ color }}
             >
               {inlineRecord(item)}
@@ -200,7 +200,7 @@ export function DiffValue({
   }
   if (isFlatRecord(value)) {
     return (
-      <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
+      <span className="mono wrap-anywhere text-caption" style={{ color }}>
         {inlineRecord(value)}
       </span>
     )
@@ -216,7 +216,7 @@ export function DiffValue({
     )
   }
   return (
-    <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
+    <span className="mono wrap-anywhere text-caption" style={{ color }}>
       {String(value)}
     </span>
   )
@@ -229,7 +229,7 @@ function WordDiffText({ segments, side }: { segments: WordSegment[]; side: 'befo
   const Mark = side === 'before' ? 'del' : 'ins'
   return (
     <span
-      className="mono wrap-anywhere whitespace-pre-wrap text-[11.5px]"
+      className="mono wrap-anywhere whitespace-pre-wrap text-caption"
       style={{ color: 'var(--fg)' }}
     >
       {segments.map((segment, index) =>

@@ -1,3 +1,4 @@
+import { PageHeader } from '@/components/primitives/page-header'
 import { useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -257,12 +258,12 @@ export default function EventBulkForm() {
         <button
           type="button"
           onClick={goBack}
-          className="mb-[14px] inline-flex items-center gap-1 text-[11.5px] transition-colors hover:text-[var(--fg)]"
+          className="mb-[14px] inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
           style={{ color: 'var(--fg-muted)' }}
         >
           <ChevronLeft size={13} /> Events
         </button>
-        <h1 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">Add many events</h1>
+        <PageHeader className="mb-[18px]" title="Add many events" />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         <SurfCard title="What to create">
@@ -299,13 +300,13 @@ export default function EventBulkForm() {
         </SurfCard>
 
         {etId && unsupported && (
-          <p className="mb-[18px] text-[12.5px]" role="alert" style={{ color: 'var(--warning)' }}>
+          <p className="mb-[18px] text-body-sm" role="alert" style={{ color: 'var(--warning)' }}>
             {unsupported}
           </p>
         )}
 
         {etId && !unsupported && unmappedColumns.length > 0 && (
-          <p className="mb-[18px] text-[12.5px]" role="alert" style={{ color: 'var(--warning)' }}>
+          <p className="mb-[18px] text-body-sm" role="alert" style={{ color: 'var(--warning)' }}>
             The scan builds the name from {unmappedColumns.join(', ')}, which this event type has
             no field for — the events would carry the name and none of the values behind it. Add
             the fields to the event type first.
@@ -408,7 +409,7 @@ export default function EventBulkForm() {
           <button
             type="button"
             onClick={goBack}
-            className="inline-flex h-8 items-center rounded-[7px] px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
             Cancel
@@ -417,7 +418,7 @@ export default function EventBulkForm() {
             type="button"
             onClick={() => createMut.mutate()}
             disabled={!canWrite || ready.length === 0 || checking || createMut.isPending}
-            className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
+            className="inline-flex h-8 items-center gap-[6px] rounded-control px-3 text-[12px] font-medium disabled:opacity-60"
             style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
             {createMut.isPending ? <Loader2 className="animate-spin" size={12} /> : <Plus size={12} />}

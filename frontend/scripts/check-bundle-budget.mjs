@@ -27,7 +27,13 @@ const DIST = path.resolve(import.meta.dirname, '..', 'dist')
 // path 742 953 with the entry unchanged). Both lowered for tripl-fj5g.15: the
 // demo scenario model loads only for demo projects and the alerting tab's
 // sections load per tab (entry 127 029, critical path 724 527).
-const ENTRY_BUDGET = 134_000
+// Entry raised for the design-system follow-up (#198 / #206, frontend review
+// r4): no new component code joined the first load — the entry grew by the
+// lazy-route dependency map (`__vite__mapDeps`), which now names the shared
+// on-demand chunks the refactor created (IconButton, the anchored combobox
+// list, the kit form row used by the event forms, lib/format) in every lazy
+// route that imports them (entry 134 119).
+const ENTRY_BUDGET = 140_800
 const CRITICAL_PATH_BUDGET = 761_000
 
 // Chunks that are split out so that only the pages using them pay for them:
