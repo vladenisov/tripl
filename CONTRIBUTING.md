@@ -20,7 +20,7 @@ sections below accurate.
 | [uv](https://docs.astral.sh/uv/) | latest | Backend Python env, deps, and task runner |
 | Python | 3.14 (pinned in `backend/.python-version`) | Backend runtime — `uv` will fetch it for you |
 | Node.js | `>=26 <27` (pinned in `frontend/.node-version`) | Frontend build/test |
-| [pnpm](https://pnpm.io/) | `11.6.0` (pinned via `packageManager`) | Frontend deps and scripts |
+| [pnpm](https://pnpm.io/) | `11.19.0` (pinned via `packageManager`) | Frontend deps and scripts |
 | Docker + Compose v2 | recent | Local dev stack |
 
 The repo pins the package managers, so use **`uv`** for the backend and
@@ -31,7 +31,7 @@ Enable the pinned pnpm with Corepack (ships with Node):
 
 ```bash
 corepack enable
-corepack prepare pnpm@11.6.0 --activate
+corepack prepare pnpm@11.19.0 --activate
 ```
 
 :::note ClickHouse / BigQuery / Postgres warehouses are external

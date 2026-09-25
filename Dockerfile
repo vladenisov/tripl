@@ -11,7 +11,7 @@
 
 # ---- frontend build -> dist/ ----
 FROM node:26-trixie-slim AS frontend-build
-ARG PNPM_VERSION=11.6.0
+ARG PNPM_VERSION=11.19.0
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN npm install --global pnpm@${PNPM_VERSION}
