@@ -20,7 +20,7 @@ import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
 import { getErrorMessage } from '@/lib/utils'
 import type { ProjectBranchSettings } from '@/types'
 import { parseMinApprovals } from './branchDiffModel'
-import { branchSettingsKey } from './branchQueryKeys'
+import { branchSettingsKey } from '@/lib/queryKeys'
 
 interface MergePolicyDialogProps {
   slug: string

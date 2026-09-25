@@ -18,13 +18,13 @@ import { runPillStatus } from "./scans/scanRunStatus"
 import { scanModeOf } from "./scans/scanMode"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
-import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, scanActivityKey, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
+import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
 import { countOf, pluralize } from "@/lib/plural"
 import { getErrorMessage } from '@/lib/utils'
-import { projectEventTypesKey, scanJobsKey, scanJobsLimitedKey, scansKey } from '@/lib/queryKeys'
+import { projectEventTypesKey, scanActivityKey, scanJobsKey, scanJobsLimitedKey, scansKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useProjectDataSources } from '@/hooks/useProjectDataSources'
 import { useCanWriteProject, useIsOwner } from '@/lib/permissions'

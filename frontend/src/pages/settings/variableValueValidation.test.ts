@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { invalidValuesFor, valueRuleFor } from './variableValueValidation'
+import { invalidValuesFor, splitValueList, valueRuleFor } from './variableValueValidation'
 
 describe('variableValueValidation (PLAN-24)', () => {
   it('checks each typed value against its type', () => {
@@ -16,5 +16,25 @@ describe('variableValueValidation (PLAN-24)', () => {
     expect(invalidValuesFor('string_array', ['anything'])).toEqual([])
     expect(valueRuleFor('string')).toEqual({})
     expect(valueRuleFor('number').validate?.('7')).toBe(true)
+  })
+})
+
+describe('splitValueList (tripl-fj5g.25)', () => {
+  it('still splits plain scalars on commas, trimming and dropping blanks', () => {
+    expect(splitValueList('a, b,c')).toEqual(['a', 'b', 'c'])
+    expect(splitValueList(' 1 ,, 2 , ')).toEqual(['1', '2'])
+  })
+
+  it('keeps a JSON object or array with commas in it whole', () => {
+    expect(splitValueList('{"a": 1, "b": [2, 3]}')).toEqual(['{"a": 1, "b": [2, 3]}'])
+    expect(splitValueList('[1, 2], {"k": "x,y"}, plain')).toEqual(['[1, 2]', '{"k": "x,y"}', 'plain'])
+  })
+
+  it('keeps a quoted string whole, escaped quotes included', () => {
+    expect(splitValueList('"a, b", "say \\"hi, there\\""')).toEqual(['"a, b"', '"say \\"hi, there\\""'])
+  })
+
+  it('does not let a stray closer swallow later commas', () => {
+    expect(splitValueList('a], b')).toEqual(['a]', 'b'])
   })
 })

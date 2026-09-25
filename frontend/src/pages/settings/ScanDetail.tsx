@@ -25,12 +25,13 @@ import { JobDetails } from './scans/JobDetails'
 import { ReplayChunkProgress } from './scans/ReplayChunkProgress'
 import { jobRowsReadTitle } from './scans/runReport'
 import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanMode'
-import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanActivityKey, scanJobsHaveActiveWork } from './scans/scanUtils'
+import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import {
   platformPresenceKey,
   projectEventsKey,
   projectEventTypesKey,
+  scanActivityKey,
   scanJobsKey,
   scansKey,
 } from '@/lib/queryKeys'

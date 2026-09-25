@@ -7,8 +7,9 @@ import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { useBranchLinkProps } from '@/hooks/useBranch'
-import type { PlanDiffEntry, PlanDiffKind, PlanFieldChange, PlanValueChange } from '@/types'
-import { DiffPair, DiffValue } from '../DiffValue'
+import type { PlanDiffEntry, PlanDiffKind } from '@/types'
+import { DiffValue } from '../DiffValue'
+import { PlanFieldChangeList } from '../PlanFieldChangeList'
 import { diffEntryDetail, housekeepingLine } from './branchDiffModel'
 import {
   ENTITY_LABEL,
@@ -250,10 +251,25 @@ export function ChangeRow({
           ) : null}
           {hasFieldChanges ? (
             <DetailSection title="Field changes">
-              <FieldChangeList
+              <PlanFieldChangeList
                 changes={fieldChanges}
-                reverting={reverting}
-                onRevert={onRevert ? (field) => onRevert(entry, field) : undefined}
+                renderAction={
+                  onRevert
+                    ? (change) => (
+                        <button
+                          type="button"
+                          disabled={reverting}
+                          onClick={() => onRevert(entry, change.field)}
+                          aria-label={`Revert ${change.field}`}
+                          className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+                          style={{ color: 'var(--fg-muted)' }}
+                        >
+                          <Undo2 className="size-3" aria-hidden="true" />
+                          Revert
+                        </button>
+                      )
+                    : undefined
+                }
               />
             </DetailSection>
           ) : null}
@@ -344,92 +360,6 @@ function DetailSection({ title, children }: { title: string; children: ReactNode
         {title}
       </div>
       {children}
-    </div>
-  )
-}
-
-function FieldChangeList({
-  changes,
-  reverting,
-  onRevert,
-}: {
-  changes: PlanFieldChange[]
-  reverting: boolean
-  onRevert?: (field: string) => void
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      {changes.map((change) => (
-        <div
-          key={change.field}
-          className="rounded-md border px-2.5 py-2"
-          style={{ borderColor: 'var(--border-subtle)' }}
-        >
-          <div className="mb-1 flex items-center justify-between gap-2">
-            <span className="mono text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
-              {change.field}
-            </span>
-            {onRevert && (
-              <button
-                type="button"
-                disabled={reverting}
-                onClick={() => onRevert(change.field)}
-                aria-label={`Revert ${change.field}`}
-                className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
-                style={{ color: 'var(--fg-muted)' }}
-              >
-                <Undo2 className="size-3" aria-hidden="true" />
-                Revert
-              </button>
-            )}
-          </div>
-          {change.items && change.items.length > 0 ? (
-            // A collection changed one member at a time — show those members,
-            // not two dumps of the whole list.
-            <div className="flex flex-col gap-1">
-              {change.items.map((item) => (
-                <ValueChangeRow key={item.key} item={item} />
-              ))}
-            </div>
-          ) : (
-            <div className="flex flex-wrap items-start gap-1.5">
-              <DiffPair before={change.before} after={change.after} />
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-/** What a member's gutter symbol means, for the ear (PLAN-19). */
-const MEMBER_KIND_WORD: Record<PlanDiffKind, string> = {
-  added: 'added',
-  changed: 'changed',
-  removed: 'removed',
-}
-
-/** One member of a changed collection: `~ currency  USD → EUR`. */
-function ValueChangeRow({ item }: { item: PlanValueChange }) {
-  const meta = KIND_META[item.kind]
-  return (
-    <div className="flex flex-wrap items-baseline gap-1.5 text-[11.5px]">
-      <span
-        className="mono w-3 shrink-0 text-center font-bold"
-        style={{ color: `var(--${meta.tone})` }}
-        aria-hidden="true"
-      >
-        {meta.sym}
-      </span>
-      <span className="sr-only">{MEMBER_KIND_WORD[item.kind]}:</span>
-      <span className="mono shrink-0" style={{ color: 'var(--fg)' }}>
-        {item.key}
-      </span>
-      {item.kind === 'changed' ? (
-        <DiffPair before={item.before} after={item.after} />
-      ) : (
-        <DiffValue value={item.kind === 'added' ? item.after : item.before} tone={meta.tone} />
-      )}
     </div>
   )
 }

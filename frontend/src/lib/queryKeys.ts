@@ -37,6 +37,34 @@ export const dataSourcesKey = () => ['dataSources'] as const
 /** Plan branches for one project — `GET /projects/{slug}/branches`. */
 export const planBranchesKey = (slug: string | undefined) => ['planBranches', slug] as const
 
+/** The list WITH ahead/behind counts. A sibling of `planBranchesKey`, not an
+ * extension: the counted list builds one plan snapshot per open branch plus
+ * one for main, with no cap, and a status change (submit, approve, request
+ * changes) moves no count. So it is refreshed only by what changes a plan —
+ * see `invalidateBranchCounts` in pages/settings/branches/branchQueryKeys.ts —
+ * not by every invalidation of the plain list. */
+export const planBranchCountsKey = (slug: string) => ['planBranchCounts', slug] as const
+
+/** One branch's review screen: its diff against main, detail, conflicts,
+ * comments and implementation tickets. Which of them each branch action
+ * refreshes lives next to the Branches tab (branches/branchQueryKeys.ts). */
+export const planBranchDiffKey = (slug: string, branchId: string | undefined) =>
+  ['planBranchDiff', slug, branchId] as const
+export const planBranchDetailKey = (slug: string, branchId: string) =>
+  ['planBranchDetail', slug, branchId] as const
+export const planBranchConflictsKey = (slug: string, branchId: string) =>
+  ['planBranchConflicts', slug, branchId] as const
+export const planBranchCommentsKey = (slug: string, branchId: string) =>
+  ['planBranchComments', slug, branchId] as const
+export const planBranchTicketsKey = (slug: string, branchId: string) =>
+  ['planBranchImplementationTickets', slug, branchId] as const
+
+/** The project's merge policy — `GET /branch-settings`. */
+export const branchSettingsKey = (slug: string) => ['branchSettings', slug] as const
+
+/** `GET /tracker-config`, read by the branch tickets panel and TrackerConfigDialog. */
+export const trackerConfigKey = (slug: string) => ['trackerConfig', slug] as const
+
 /**
  * Project variables, ITEMS ONLY — `variablesApi.list`, an array.
  *
@@ -572,6 +600,15 @@ export const scanJobsKey = (slug: string | undefined, scanConfigId: string) =>
   [...projectScanJobsKey(slug), scanConfigId] as const
 export const scanJobsLimitedKey = (slug: string | undefined, scanConfigId: string, limit: number) =>
   [...scanJobsKey(slug, scanConfigId), { limit }] as const
+
+/**
+ * `GET /scans/activity` (every scan's latest job, exact failing streak and 24h
+ * rows). Under the `['scanJobs', slug]` prefix on purpose, so the stream's
+ * scan-job invalidation reaches it; a mutation on ONE scan invalidates only
+ * `scanJobsKey(slug, id)`, so it must invalidate this key too.
+ */
+export const scanActivityKey = (slug: string | undefined) =>
+  [...projectScanJobsKey(slug), 'activity'] as const
 
 export const platformPresenceKey = (slug: string | undefined, scanConfigId: string) =>
   ['platformPresence', slug, scanConfigId] as const

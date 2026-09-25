@@ -118,6 +118,15 @@ describe('query key values (SHELL-50)', () => {
     [keys.projectKey('demo'), ['project', 'demo']],
     [keys.projectsKey(), ['projects']],
 
+    [keys.planBranchCountsKey('demo'), ['planBranchCounts', 'demo']],
+    [keys.planBranchDiffKey('demo', 'b-1'), ['planBranchDiff', 'demo', 'b-1']],
+    [keys.planBranchDetailKey('demo', 'b-1'), ['planBranchDetail', 'demo', 'b-1']],
+    [keys.planBranchConflictsKey('demo', 'b-1'), ['planBranchConflicts', 'demo', 'b-1']],
+    [keys.planBranchCommentsKey('demo', 'b-1'), ['planBranchComments', 'demo', 'b-1']],
+    [keys.planBranchTicketsKey('demo', 'b-1'), ['planBranchImplementationTickets', 'demo', 'b-1']],
+    [keys.branchSettingsKey('demo'), ['branchSettings', 'demo']],
+    [keys.trackerConfigKey('demo'), ['trackerConfig', 'demo']],
+
     [
       keys.eventsListKey('demo', 'b-1', {
         filterEtId: 'et-1',
@@ -172,6 +181,7 @@ describe('query key values (SHELL-50)', () => {
     [keys.scanConfigKey('demo', 'sc-1'), ['scanConfig', 'demo', 'sc-1']],
     [keys.scanJobsKey('demo', 'sc-1'), ['scanJobs', 'demo', 'sc-1']],
     [keys.scanJobsLimitedKey('demo', 'sc-1', 5), ['scanJobs', 'demo', 'sc-1', { limit: 5 }]],
+    [keys.scanActivityKey('demo'), ['scanJobs', 'demo', 'activity']],
     [keys.platformPresenceKey('demo', 'sc-1'), ['platformPresence', 'demo', 'sc-1']],
     [keys.demoScenarioScanWatchKey('demo', 'j-1'), ['demo-scenario-scan-watch', 'demo', 'j-1']],
     [keys.demoScenarioCollectWatchKey('demo', 'm-1', 1), ['demo-scenario-collect-watch', 'demo', 'm-1', 1]],
@@ -253,6 +263,8 @@ describe('query key values (SHELL-50)', () => {
       filterTag: '',
     }, { from: 'f', to: 't' })],
     [keys.projectScanJobsKey('demo'), keys.scanJobsLimitedKey('demo', 'sc-1', 5)],
+    // The stream's scan-job invalidation reaches the activity summary.
+    [keys.projectScanJobsKey('demo'), keys.scanActivityKey('demo')],
     [keys.scanJobsKey('demo', 'sc-1'), keys.scanJobsLimitedKey('demo', 'sc-1', 5)],
     [keys.projectFactTableKey('demo'), keys.factTableKey('demo', 'ft-1')],
     [keys.metricsCatalogRootKey(), keys.metricsCatalogListKey('demo', 'all', 'all', '')],

@@ -11,13 +11,8 @@ import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { displayUser } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { PlanBranchSummary } from '@/types'
-import {
-  TICKET_POLL_MS,
-  TICKET_POLL_WINDOW_MS,
-  planBranchCommentsKey,
-  planBranchTicketsKey,
-  trackerConfigKey,
-} from './branchQueryKeys'
+import { planBranchCommentsKey, planBranchTicketsKey, trackerConfigKey } from '@/lib/queryKeys'
+import { TICKET_POLL_MS, TICKET_POLL_WINDOW_MS } from './branchQueryKeys'
 
 /**
  * The tracker ticket a merge opened for this branch (tripl-2ayb).

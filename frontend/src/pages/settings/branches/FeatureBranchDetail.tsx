@@ -21,7 +21,14 @@ import { formatRelativeTime } from '@/lib/datetime'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
-import { planBranchesKey, projectMetaFieldsKey } from '@/lib/queryKeys'
+import {
+  branchSettingsKey,
+  planBranchConflictsKey,
+  planBranchDetailKey,
+  planBranchDiffKey,
+  planBranchesKey,
+  projectMetaFieldsKey,
+} from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import type {
   PlanBranchApproval,
@@ -54,14 +61,10 @@ import {
   branchAuthor,
 } from './branchMeta'
 import {
-  branchSettingsKey,
   invalidateBranchCounts,
   invalidateBranchPlan,
   invalidateBranchReview,
   invalidateMainPlan,
-  planBranchConflictsKey,
-  planBranchDetailKey,
-  planBranchDiffKey,
 } from './branchQueryKeys'
 import { BranchReviewSummary } from './BranchReviewers'
 import { CommentsPanel, ImplementationTicketsPanel } from './BranchSidePanels'
