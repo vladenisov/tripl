@@ -3,15 +3,17 @@ import { QueryClient, QueryClientProvider, type InfiniteData } from '@tanstack/r
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EventListItem, EventListResponse } from '@/types'
-import { useEventMutations } from './useEventMutations'
+import {
+  buildBulkUndo,
+  bulkPreviousValues,
+  permuteInfinitePages,
+  useEventMutations,
+} from './useEventMutations'
 
 vi.mock('@/api/events', () => ({
   eventsApi: {
-    del: vi.fn(),
     bulkDelete: vi.fn(),
     bulkUpdate: vi.fn(),
-    update: vi.fn(),
-    move: vi.fn(),
     reorder: vi.fn(),
   },
 }))
@@ -101,9 +103,9 @@ describe('useEventMutations optimistic apply/rollback', () => {
   it('bulkDelete optimistically removes from both cache shapes', async () => {
     vi.mocked(eventsApi.bulkDelete).mockResolvedValue(undefined as never)
     seedCaches([makeItem('a'), makeItem('b'), makeItem('c')])
-    const onOptimistic = vi.fn()
+    const onSuccess = vi.fn()
     const { result } = renderHook(
-      () => useEventMutations({ slug: SLUG, branchId: BRANCH, onBulkDeleteOptimistic: onOptimistic }),
+      () => useEventMutations({ slug: SLUG, branchId: BRANCH, onBulkDeleteSuccess: onSuccess }),
       { wrapper },
     )
 
@@ -113,7 +115,37 @@ describe('useEventMutations optimistic apply/rollback', () => {
       expect(infiniteItems().map(e => e.id)).toEqual(['b'])
     })
     expect(flatItems().map(e => e.id)).toEqual(['b'])
-    expect(onOptimistic).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps the selection when a bulk mutation fails (EVT-11)', async () => {
+    // Clearing it optimistically lost a "select all 2,400" sweep on a 4xx/5xx,
+    // so the operator had to redo it before they could retry.
+    vi.mocked(eventsApi.bulkUpdate).mockRejectedValue(new Error('boom'))
+    vi.mocked(eventsApi.bulkDelete).mockRejectedValue(new Error('boom'))
+    seedCaches([makeItem('a'), makeItem('b')])
+    const onDeleteSuccess = vi.fn()
+    const onUpdateSuccess = vi.fn()
+    const { result } = renderHook(
+      () =>
+        useEventMutations({
+          slug: SLUG,
+          branchId: BRANCH,
+          onBulkDeleteSuccess: onDeleteSuccess,
+          onBulkUpdateSuccess: onUpdateSuccess,
+        }),
+      { wrapper },
+    )
+
+    result.current.bulkUpdateMut.mutate({ eventIds: ['a'], status: 'live' })
+    result.current.bulkDeleteMut.mutate(['b'])
+
+    await waitFor(() => {
+      expect(result.current.bulkUpdateMut.isError).toBe(true)
+      expect(result.current.bulkDeleteMut.isError).toBe(true)
+    })
+    expect(onUpdateSuccess).not.toHaveBeenCalled()
+    expect(onDeleteSuccess).not.toHaveBeenCalled()
   })
 
   it('bulkDelete restores both cache shapes on error', async () => {
@@ -130,31 +162,146 @@ describe('useEventMutations optimistic apply/rollback', () => {
     expect(flatItems().map(e => e.id)).toEqual(['a', 'b', 'c'])
   })
 
-  it('setStatus optimistically patches status in both cache shapes', async () => {
-    vi.mocked(eventsApi.update).mockResolvedValue(undefined as never)
-    seedCaches([makeItem('a'), makeItem('b')])
+  it('reconciles a multi-page list with one request, not one per page (EVT-12)', async () => {
+    vi.mocked(eventsApi.bulkUpdate).mockResolvedValue(undefined as never)
+    const infinite: InfiniteData<EventListResponse> = {
+      pages: [
+        { items: [makeItem('a')], total: 3 },
+        { items: [makeItem('b')], total: 3 },
+        { items: [makeItem('c')], total: 3 },
+      ],
+      pageParams: [0, 1, 2],
+    }
+    queryClient.setQueryData(INFINITE_KEY, infinite)
     const { result } = renderMutations()
 
-    result.current.setStatusMut.mutate({ id: 'a', status: 'implemented' })
+    result.current.bulkUpdateMut.mutate({ eventIds: ['a'], status: 'live' })
 
-    await waitFor(() => {
-      expect(infiniteItems().find(e => e.id === 'a')?.status).toBe('implemented')
-    })
-    expect(flatItems().find(e => e.id === 'a')?.status).toBe('implemented')
-    expect(infiniteItems().find(e => e.id === 'b')?.status).toBe('draft')
+    await waitFor(() => expect(result.current.bulkUpdateMut.isSuccess).toBe(true))
+    const after = queryClient.getQueryData<InfiniteData<EventListResponse>>(INFINITE_KEY)!
+    expect(after.pages).toHaveLength(1)
+    expect(after.pageParams).toEqual([0])
   })
 
-  it('setStatus rolls both cache shapes back on error', async () => {
-    vi.mocked(eventsApi.update).mockRejectedValue(new Error('boom'))
-    seedCaches([makeItem('a', { status: 'draft' })])
+  it('does not re-request the list after a successful drag (EVT-12)', async () => {
+    vi.mocked(eventsApi.reorder).mockResolvedValue([] as never)
+    seedCaches([makeItem('a'), makeItem('b'), makeItem('c')])
     const { result } = renderMutations()
 
-    result.current.setStatusMut.mutate({ id: 'a', status: 'archived' })
+    result.current.reorderEventsMut.mutate(['c', 'b'])
 
-    await waitFor(() => {
-      expect(result.current.setStatusMut.isError).toBe(true)
+    await waitFor(() => expect(result.current.reorderEventsMut.isSuccess).toBe(true))
+    expect(infiniteItems().map(e => e.id)).toEqual(['a', 'c', 'b'])
+    expect(queryClient.getQueryState(INFINITE_KEY)?.isInvalidated).toBe(true)
+    expect(queryClient.isFetching()).toBe(0)
+  })
+
+  it('keeps a drag across a page boundary in the order dropped', async () => {
+    // Each page was permuted on its own: 'c' (page 2) dragged above 'b'
+    // (page 1) stayed below it, and nothing refetched to correct it.
+    vi.mocked(eventsApi.reorder).mockResolvedValue([] as never)
+    queryClient.setQueryData<InfiniteData<EventListResponse>>(INFINITE_KEY, {
+      pages: [
+        { items: [makeItem('a'), makeItem('b')], total: 4 },
+        { items: [makeItem('c'), makeItem('d')], total: 4 },
+      ],
+      pageParams: [0, 2],
     })
-    expect(infiniteItems().find(e => e.id === 'a')?.status).toBe('draft')
-    expect(flatItems().find(e => e.id === 'a')?.status).toBe('draft')
+    const { result } = renderMutations()
+
+    result.current.reorderEventsMut.mutate(['c', 'b'])
+
+    await waitFor(() => expect(result.current.reorderEventsMut.isSuccess).toBe(true))
+    const after = queryClient.getQueryData<InfiniteData<EventListResponse>>(INFINITE_KEY)!
+    expect(after.pages.map(page => page.items.map(e => e.id))).toEqual([['a', 'c'], ['b', 'd']])
+  })
+
+  it('undoes every group as one mutation: selection kept, lists refreshed once (EVT-11)', async () => {
+    vi.mocked(eventsApi.bulkUpdate).mockResolvedValue(undefined as never)
+    seedCaches([makeItem('a', { status: 'archived' }), makeItem('b', { status: 'archived' })])
+    const onUpdateSuccess = vi.fn()
+    const { result } = renderHook(
+      () => useEventMutations({ slug: SLUG, branchId: BRANCH, onBulkUpdateSuccess: onUpdateSuccess }),
+      { wrapper },
+    )
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    result.current.bulkUndoMut.mutate([
+      { eventIds: ['a'], status: 'draft' },
+      { eventIds: ['b'], status: 'live' },
+    ])
+
+    await waitFor(() => expect(result.current.bulkUndoMut.isSuccess).toBe(true))
+    expect(eventsApi.bulkUpdate).toHaveBeenCalledTimes(2)
+    expect(infiniteItems().map(e => e.status)).toEqual(['draft', 'live'])
+    // The selection made since the original action is not the undo's to clear.
+    expect(onUpdateSuccess).not.toHaveBeenCalled()
+    expect(invalidate).toHaveBeenCalledTimes(1)
+  })
+
+  it('rolls every undo group back when one fails', async () => {
+    vi.mocked(eventsApi.bulkUpdate)
+      .mockResolvedValueOnce(undefined as never)
+      .mockRejectedValueOnce(new Error('boom'))
+    seedCaches([makeItem('a', { status: 'archived' }), makeItem('b', { status: 'archived' })])
+    const { result } = renderMutations()
+
+    result.current.bulkUndoMut.mutate([
+      { eventIds: ['a'], status: 'draft' },
+      { eventIds: ['b'], status: 'live' },
+    ])
+
+    await waitFor(() => expect(result.current.bulkUndoMut.isError).toBe(true))
+    expect(flatItems().map(e => e.status)).toEqual(['archived', 'archived'])
+  })
+})
+
+describe('bulkPreviousValues', () => {
+  it('reads the values from the rows it is given', () => {
+    const rows = [
+      makeItem('a', { status: 'live', reviewed: true, owner_id: 'u1' } as Partial<EventListItem>),
+      makeItem('b'),
+    ]
+    expect(bulkPreviousValues(rows, ['a', 'z'])).toEqual(
+      new Map([['a', { status: 'live', sunset_at: null, reviewed: true, owner_id: 'u1' }]]),
+    )
+  })
+})
+
+describe('permuteInfinitePages', () => {
+  it('permutes across pages and keeps each page its size', () => {
+    const data: InfiniteData<EventListResponse> = {
+      pages: [
+        { items: [makeItem('a'), makeItem('b'), makeItem('c')], total: 5 },
+        { items: [makeItem('d'), makeItem('e')], total: 5 },
+      ],
+      pageParams: [0, 3],
+    }
+    const after = permuteInfinitePages(data, ['e', 'b', 'd'])
+    expect(after.pages.map(page => page.items.map(e => e.id))).toEqual([['a', 'e', 'c'], ['b', 'd']])
+    expect(after.pageParams).toEqual([0, 3])
+  })
+})
+
+describe('buildBulkUndo', () => {
+  const previous = new Map([
+    ['a', { status: 'draft' as const, sunset_at: null, reviewed: false, owner_id: 'u1' }],
+    ['b', { status: 'draft' as const, sunset_at: null, reviewed: true, owner_id: null }],
+  ])
+
+  it('groups ids by the value they held before', () => {
+    expect(buildBulkUndo(['a', 'b'], { owner_id: 'u2' }, previous)).toEqual([
+      { eventIds: ['a'], owner_id: 'u1' },
+      { eventIds: ['b'], owner_id: null },
+    ])
+    expect(buildBulkUndo(['a', 'b'], { status: 'live' }, previous)).toEqual([
+      { eventIds: ['a', 'b'], status: 'draft' },
+    ])
+  })
+
+  it('offers no undo when any row was never loaded', () => {
+    // "Select all N matching" covers rows the table never fetched; a partial
+    // undo would leave the sweep half reverted.
+    expect(buildBulkUndo(['a', 'z'], { reviewed: true }, previous)).toBeNull()
   })
 })

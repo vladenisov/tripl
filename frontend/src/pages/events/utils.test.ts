@@ -8,6 +8,7 @@ import {
   formatRelativeTime,
   mapLatestSignals,
   pickLatestSignal,
+  changedSlice,
   reorderWithSelection,
   applyEventNameFormat,
   resolveTemplateTokens,
@@ -505,5 +506,17 @@ describe('applyEventNameFormat', () => {
     })
     expect(result.name).toBe('pv:{screen}:{payload.extra.variant}')
     expect(result.missing).toEqual(['screen', 'payload.extra.variant'])
+  })
+})
+
+describe('changedSlice (EVT-3)', () => {
+  it('returns only the span a drag changed', () => {
+    const prev = ['a', 'b', 'c', 'd', 'e', 'f']
+    expect(changedSlice(prev, ['a', 'c', 'd', 'b', 'e', 'f'])).toEqual(['c', 'd', 'b'])
+    expect(changedSlice(prev, ['f', 'a', 'b', 'c', 'd', 'e'])).toEqual(['f', 'a', 'b', 'c', 'd', 'e'])
+  })
+
+  it('returns nothing when nothing moved', () => {
+    expect(changedSlice(['a', 'b'], ['a', 'b'])).toEqual([])
   })
 })

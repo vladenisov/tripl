@@ -37,6 +37,13 @@ const PIN_SHADOW = '8px 0 10px -8px color-mix(in srgb, var(--fg) 30%, transparen
  * the measurement below locates the column by, and what keeps a column that
  * never leaves out of the off-screen count.
  */
+/**
+ * Widest the pinned EVENT column's content may grow. Narrow viewports get a
+ * share of the screen rather than a fixed width, so the pinned cluster never
+ * covers the columns it is meant to label (EVT-7).
+ */
+export const PINNED_EVENT_CONTENT_MAX_WIDTH = 'min(360px, 45vw)'
+
 export const PINNED_EVENT_CELL_STYLE: CSSProperties = {
   left: `var(${PIN_LEFT_VAR}, ${PIN_LEFT_FALLBACK_PX}px)`,
   boxShadow: `var(${PIN_SHADOW_VAR}, none)`,

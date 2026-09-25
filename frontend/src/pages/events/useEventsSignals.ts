@@ -1,29 +1,20 @@
 import { useMemo } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
+import type { VirtualItem } from '@tanstack/react-virtual'
 
 import { metricsApi } from '@/api/metrics'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { EventListItem } from '@/types'
 
+import { visibleBucketRange } from './useEventRowMetrics'
 import { EMPTY_SIGNALS, chunkEventIds, mapLatestSignals, pickLatestSignal } from './utils'
 
 /**
- * Fetches monitoring signals for the project tabs and per-row events, and
- * derives the lookup maps the host page needs. Two shapes instead of one
- * because the per-row signals are keyed by the event ids they cover, bucketed
- * so an infinite-scroll append does not re-key (and re-send) the whole list.
+ * Monitoring signals for the project tabs: the project total and one per
+ * event type. The per-row signals live in `useEventRowSignals`, which needs the
+ * virtualizer's window and so runs later in the page.
  */
-export function useEventsSignals({
-  slug,
-  rawEvents,
-}: {
-  slug: string | undefined
-  rawEvents: EventListItem[]
-}) {
-  const eventIdsForSignals = useMemo(
-    () => rawEvents.map(event => event.id),
-    [rawEvents],
-  )
+export function useEventsSignals({ slug }: { slug: string | undefined }) {
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const tabSignalsQuery = useQuery({
@@ -34,18 +25,61 @@ export function useEventsSignals({
   })
   const tabSignals = tabSignalsQuery.data ?? EMPTY_SIGNALS
 
-  // Bucketed for the same reason the window-metrics query next door is
-  // (tripl-jfm3.51): keying on the whole accumulated id list minted a fresh
-  // cache entry on every infinite-scroll append and re-sent every id already
-  // loaded, so page 12 posted 2,400 ids to learn about the 200 that were new
-  // (tripl-jfm3.121). Index-aligned buckets keep each loaded bucket's key
-  // stable, so an append fetches one bucket.
+  const projectTotalSignal = useMemo(
+    () => pickLatestSignal(tabSignals, 'project_total'),
+    [tabSignals],
+  )
+  const eventTypeSignals = useMemo(
+    () => mapLatestSignals(tabSignals, 'event_type'),
+    [tabSignals],
+  )
+
+  return {
+    projectTotalSignal,
+    eventTypeSignals,
+  }
+}
+
+/**
+ * Per-row monitoring signals, keyed by event id, for the rows on screen.
+ *
+ * Bucketed for the same reason the window-metrics query is (tripl-jfm3.51):
+ * keying on the whole accumulated id list minted a fresh cache entry on every
+ * infinite-scroll append and re-sent every id already loaded, so page 12 posted
+ * 2,400 ids to learn about the 200 that were new (tripl-jfm3.121).
+ * Index-aligned buckets keep each loaded bucket's key stable, so an append
+ * fetches one bucket.
+ *
+ * And only the buckets on screen get a query, as in useEventRowMetrics: each
+ * one polls, so after scrolling 2,400 rows 24 signal queries kept refreshing
+ * every minute for rows long out of view (EVT-19).
+ */
+export function useEventRowSignals({
+  slug,
+  events,
+  virtualItems,
+}: {
+  slug: string | undefined
+  /** The rows the table lists (after client-side filters), in table order. */
+  events: EventListItem[]
+  /** Rows the table is currently rendering; empty when not virtualizing. */
+  virtualItems: readonly VirtualItem[]
+}) {
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   const eventIdBuckets = useMemo(
-    () => chunkEventIds(eventIdsForSignals),
-    [eventIdsForSignals],
+    () => chunkEventIds(events.map(event => event.id)),
+    [events],
+  )
+  const { first: firstVisibleBucket, last: lastVisibleBucket } = visibleBucketRange(virtualItems)
+  const visibleBuckets = useMemo(
+    () =>
+      eventIdBuckets.filter(
+        (_bucket, index) => index >= firstVisibleBucket && index <= lastVisibleBucket,
+      ),
+    [eventIdBuckets, firstVisibleBucket, lastVisibleBucket],
   )
   const rowSignals = useQueries({
-    queries: eventIdBuckets.map(bucketIds => ({
+    queries: visibleBuckets.map(bucketIds => ({
       queryKey: ['activeSignals', slug, 'rows', bucketIds.join(',')],
       queryFn: () => metricsApi.getActiveSignals(slug!, bucketIds),
       enabled: !!slug && bucketIds.length > 0,
@@ -56,22 +90,5 @@ export function useEventsSignals({
     combine: results => results.flatMap(result => result.data ?? EMPTY_SIGNALS),
   })
 
-  const projectTotalSignal = useMemo(
-    () => pickLatestSignal(tabSignals, 'project_total'),
-    [tabSignals],
-  )
-  const eventTypeSignals = useMemo(
-    () => mapLatestSignals(tabSignals, 'event_type'),
-    [tabSignals],
-  )
-  const eventSignals = useMemo(
-    () => mapLatestSignals(rowSignals, 'event'),
-    [rowSignals],
-  )
-
-  return {
-    projectTotalSignal,
-    eventTypeSignals,
-    eventSignals,
-  }
+  return useMemo(() => mapLatestSignals(rowSignals, 'event'), [rowSignals])
 }

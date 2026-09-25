@@ -37,10 +37,14 @@ export function EventDriftBadge({
   slug,
   eventTypeId,
   count,
+  typeLabel,
 }: {
   slug: string
   eventTypeId: string
   count: number
+  /** The type's display name, shown on the badge when several types' badges
+   *  sit side by side and the count alone cannot say whose it is. */
+  typeLabel?: string
 }) {
   const [open, setOpen] = useState(false)
   const qc = useQueryClient()
@@ -95,10 +99,11 @@ export function EventDriftBadge({
         <button
           type="button"
           className="inline-flex h-4 items-center gap-0.5 rounded-sm bg-warning-soft px-1.5 text-[10px] font-semibold uppercase tracking-wide text-warning hover:bg-warning/25"
-          aria-label={`${count} schema drift${count === 1 ? '' : 's'} on this event type`}
+          aria-label={`${count} schema drift${count === 1 ? '' : 's'} on ${typeLabel ? `event type ${typeLabel}` : 'this event type'}`}
           title="Schema drift detected"
         >
           <AlertTriangle className="h-2.5 w-2.5" />
+          {typeLabel && <span className="max-w-[14ch] truncate normal-case">{typeLabel}</span>}
           <span className="tnum">{count}</span>
         </button>
       </PopoverTrigger>

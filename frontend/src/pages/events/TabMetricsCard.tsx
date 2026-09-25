@@ -54,6 +54,7 @@ export function TabMetricsCard({
   isOpen,
   onOpenChange,
   filters,
+  unappliedFilters = [],
   branchId,
 }: {
   slug: string
@@ -63,6 +64,8 @@ export function TabMetricsCard({
   isOpen: boolean
   onOpenChange: (open: boolean) => void
   filters: TabMetricsFilters
+  /** Active table filters this chart does not apply — see `unappliedChartFilters`. */
+  unappliedFilters?: string[]
   // The active plan branch: the tag / status filter must select the events the
   // table beside it lists, not main's (tripl-vk1p).
   branchId?: string | null
@@ -95,7 +98,8 @@ export function TabMetricsCard({
         from: range.from,
         to: range.to,
       }, branchId),
-    enabled: !!slug,
+    // Collapsed, the card shows no chart, so it neither fetches nor polls.
+    enabled: !!slug && isOpen,
     refetchInterval,
     placeholderData: (prev) => prev,
   })
@@ -120,6 +124,7 @@ export function TabMetricsCard({
             <p className="text-[11px] leading-tight text-muted-foreground">
               Last {rangeDays} days, grouped by {granularity}
               {tabMetrics?.scan_config_name ? ` · scan: ${tabMetrics.scan_config_name}` : ''}.
+              {unappliedFilters.length > 0 && ` Not narrowed by ${unappliedFilters.join(', ')}.`}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">

@@ -306,7 +306,7 @@ function PhotoTile({
           />
         )}
       </button>
-      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/70 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/70 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100">
         <span className="truncate text-xs text-white" title={photo.original_filename}>
           {photo.original_filename || (isFigma ? 'Figma frame' : 'photo')}
         </span>

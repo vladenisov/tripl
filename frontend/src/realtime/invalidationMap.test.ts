@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { QueryClient, QueryKey } from '@tanstack/react-query'
+import { QueryClient, type InfiniteData, type QueryKey } from '@tanstack/react-query'
 import {
   PROJECT_EVENT_TYPES,
   invalidateForEvent,
@@ -76,8 +76,8 @@ describe('invalidationKeysFor', () => {
 
 describe('invalidateForEvent', () => {
   it('invalidates every mapped key exactly once', () => {
-    const invalidateQueries = vi.fn()
-    const queryClient = { invalidateQueries } as unknown as QueryClient
+    const queryClient = new QueryClient()
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
 
     invalidateForEvent(queryClient, 'scan_job.updated', SLUG)
 
@@ -86,5 +86,22 @@ describe('invalidateForEvent', () => {
     for (const key of expected) {
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: key })
     }
+  })
+
+  it('refreshes the events lists the way a bulk edit does, not page by page', () => {
+    // A scan landing re-requested every page of a list nobody had on screen.
+    const queryClient = new QueryClient()
+    const key = ['events', SLUG, null, 'list']
+    queryClient.setQueryData<InfiniteData<{ items: string[] }>>(key, {
+      pages: [{ items: ['a'] }, { items: ['b'] }, { items: ['c'] }],
+      pageParams: [0, 1, 2],
+    })
+
+    invalidateForEvent(queryClient, 'scan_job.updated', SLUG)
+
+    const after = queryClient.getQueryData<InfiniteData<unknown>>(key)!
+    expect(after.pageParams).toEqual([0])
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    queryClient.clear()
   })
 })

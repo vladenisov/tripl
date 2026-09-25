@@ -1,18 +1,22 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Navigate, useLocation } from 'react-router-dom'
+import { Link, Navigate, useLocation, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Plus } from 'lucide-react'
+import { FileQuestion, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { usersApi } from '@/api/users'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { Button } from '@/components/ui/button'
+import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
-import type { EventStatus } from '@/lib/eventStatus'
+import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
+import { EVENT_STATUS_LABELS, type EventStatus } from '@/lib/eventStatus'
 import { getErrorMessage } from '@/lib/utils'
+import type { EventListItem } from '@/types'
 
 import { BulkActionBar } from './events/BulkActionBar'
-import { EventsHeader } from './events/EventsHeader'
+import { bulkUpdateConfirmation } from './events/bulkConfirm'
+import { EventsHeader, EventTypeDriftBadges, type EventTypeDrift } from './events/EventsHeader'
 import { EventsTable } from './events/EventsTable'
 import { EventsToolbar } from './events/EventsToolbar'
 import { TabMetricsCard } from './events/TabMetricsCard'
@@ -25,7 +29,12 @@ import {
 import { useColumnVisibility } from './events/useColumnVisibility'
 import { useEventsBulkDelete } from './events/useEventsBulkDelete'
 import { useEventsDndSensors } from './events/useEventsDndSensors'
-import { useEventMutations } from './events/useEventMutations'
+import {
+  buildBulkUndo,
+  bulkPreviousValues,
+  useEventMutations,
+  type BulkUpdatePatch,
+} from './events/useEventMutations'
 import { useEventRowActions } from './events/useEventRowActions'
 import { useEventsPageData } from './events/useEventsPageData'
 import { useEventRowMetrics } from './events/useEventRowMetrics'
@@ -38,11 +47,12 @@ import {
 import { useEventsQuery } from './events/useEventsQuery'
 import { useEventsRouteState } from './events/useEventsRouteState'
 import { useEventsSelection } from './events/useEventsSelection'
-import { useEventsSignals } from './events/useEventsSignals'
+import { useEventRowSignals, useEventsSignals } from './events/useEventsSignals'
 import { useEventsTableOverflow } from './events/useEventsTableOverflow'
 import { useEventsTableVirtualization } from './events/useEventsTableVirtualization'
 import { useEventsViewState } from './events/useEventsViewState'
 import { useSavedViews } from './events/useSavedViews'
+import { unappliedChartFilters } from './events/utils'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
@@ -55,11 +65,45 @@ interface EventsPageProps {
   embedded?: boolean
 }
 
-export default function EventsPage({ lockType, embedded = false }: EventsPageProps = {}) {
+/**
+ * `/events/:tab/:eventId` is a link to the editor. The redirect happens here,
+ * before the list mounts: rendered inside the page it ran after every list,
+ * tag, count, signal and metrics query had already been sent, all thrown away
+ * by the navigation (EVT-50).
+ */
+export default function EventsPage(props: EventsPageProps = {}) {
+  const { slug, tab, eventId } = useParams<{ slug: string; tab?: string; eventId?: string }>()
+  const { search } = useLocation()
+  if (slug && eventId) {
+    const activeTab = props.lockType || tab || 'all'
+    // Carry the query string through. `?branch=` is the one that matters: the
+    // branch provider reads it only when it mounts, so dropping it here turns a
+    // shared branch-diff link into a main-plan edit — which then renders a
+    // normal form and 404s at Save, because the read is lenient and the write
+    // is not. useEventsRouteState.openEvent already preserves them on the way in.
+    return <Navigate to={`/p/${slug}/events/${activeTab}/${eventId}/edit${search}`} replace />
+  }
+  return <EventsListPage {...props} />
+}
+
+/** How a finished bulk update reads in its toast. */
+function bulkUpdateSummary(
+  count: number,
+  patch: BulkUpdatePatch,
+  ownerName: (id: string) => string,
+): string {
+  const events = `${count.toLocaleString()} event${count === 1 ? '' : 's'}`
+  if (patch.status) return `Set ${events} to ${EVENT_STATUS_LABELS[patch.status]}`
+  if (patch.reviewed) return `Marked ${events} reviewed`
+  if (patch.owner_id === null) return `Unassigned ${events}`
+  if (patch.owner_id) return `Assigned ${events} to ${ownerName(patch.owner_id)}`
+  return `Updated ${events}`
+}
+
+function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
   const {
     activeTab,
     openEvent,
-    openEventId,
     openNewEvent,
     showForm,
     slug,
@@ -82,6 +126,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   const [showBulk, setShowBulk] = useState(false)
   const [expandedCell, setExpandedCell] = useState<string | null>(null)
   const { hiddenColumns, toggleColumn, colMenuOpen, setColMenuOpen } = useColumnVisibility()
+  const { confirm, dialog } = useConfirm()
   const {
     savedViews,
     savedViewName,
@@ -90,16 +135,16 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     saveCurrentView,
     applySavedView,
     deleteSavedView,
-  } = useSavedViews({ slug, activeTab })
-  const { confirm, dialog } = useConfirm()
+  } = useSavedViews({ slug, activeTab, confirm })
   const {
     eventTypes,
+    eventTypesLoaded,
     metaFields,
     allTags,
     inReviewCount,
     dataError,
     refetchPageData,
-  } = useEventsPageData({ slug, openEventId, branchId })
+  } = useEventsPageData({ slug, branchId })
 
   const {
     search,
@@ -126,17 +171,16 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     isFilterPending,
     filterEtId,
     queryStatuses,
+    serverFilters,
+    isUnknownTab,
     eventsQuery,
+    reportFirstPageInView,
     rawEvents,
     total,
     fetchAllMatching,
-    fetchAllMatchingIds,
-  } = useEventsQuery({ slug, activeTab, eventTypes, branchId })
+  } = useEventsQuery({ slug, activeTab, eventTypes, eventTypesLoaded, branchId })
 
-  const { projectTotalSignal, eventTypeSignals, eventSignals } = useEventsSignals({
-    slug,
-    rawEvents,
-  })
+  const { projectTotalSignal, eventTypeSignals } = useEventsSignals({ slug })
 
   const activeEt = useMemo(
     () => eventTypes.find(e => e.name === activeTab) ?? null,
@@ -206,16 +250,36 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     toggleEventSelected,
     toggleAllVisibleSelected,
     selectAll,
+    selectMany,
     clearSelection,
-  } = useEventsSelection({ events })
+  } = useEventsSelection({
+    events,
+    // A selection belongs to the result set it was made in: a new tab, branch
+    // or server filter drops it (EVT-10). Sort order is not part of it: it
+    // reorders the same set, so switching sort keeps the selection.
+    scopeKey: JSON.stringify([activeTab, branchId, { ...serverFilters, order_by: undefined }]),
+  })
 
   const mutations = useEventMutations({
     slug,
     branchId,
-    onBulkDeleteOptimistic: clearSelection,
-    onBulkUpdateOptimistic: clearSelection,
+    onBulkDeleteSuccess: clearSelection,
+    onBulkUpdateSuccess: clearSelection,
   })
-  const { bulkDeleteMut, bulkUpdateMut } = mutations
+  const { bulkDeleteMut, bulkUpdateMut, bulkUndoMut } = mutations
+
+  // Drag-reorder renumbers the catalog order of the rows it is sent, so it is
+  // only offered while the rows ARE in catalog order. Under "Busiest first" one
+  // small drag rewrote the manual order of every loaded row into volume order,
+  // with nothing visible changing (EVT-3). Filters and search keep catalog
+  // order, so a drag among the rows they leave still means what it shows.
+  const canReorder = canWrite && sort !== 'volume'
+
+  // `useEventsFiltering` returns the exact `rawEvents` reference when no
+  // client-side field/meta filter is active and a fresh filtered array
+  // otherwise, so identity tells whether the server `total` still counts the
+  // rows the table shows.
+  const isClientFiltered = events !== rawEvents
 
   const dndSensors = useEventsDndSensors()
 
@@ -227,17 +291,17 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   const {
     tableScrollRef,
     virtualize,
+    visibleRange,
     virtualItems,
     totalVirtualSize,
+    measureRow,
+    isScanningForMatches,
   } = useEventsTableVirtualization({
     events,
     total,
     eventsQuery,
-    // `useEventsFiltering` returns the exact `rawEvents` reference when no
-    // client-side field/meta filter is active and a fresh filtered array
-    // otherwise, so identity tells the virtualizer whether the server `total`
-    // is still authoritative for spacer sizing.
-    isClientFiltered: events !== rawEvents,
+    isClientFiltered,
+    reportFirstPageInView,
   })
 
   const onToggleExpandedCell = useCallback((cellKey: string | null) => {
@@ -247,10 +311,41 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   const { handleDragEnd, onRowAction } = useEventRowActions({
     openEvent,
     mutations,
-    confirm,
     visibleEventIds,
     selectedSet,
+    canReorder,
   })
+
+  const eventSignals = useEventRowSignals({ slug, events, virtualItems })
+
+  // Schema drift, once per event type (EVT-33). `drift_count` on a row is its
+  // type's count, so the loaded rows name every drifting type they cover.
+  const typeDrifts = useMemo((): EventTypeDrift[] => {
+    const byType = new Map<string, EventTypeDrift>()
+    for (const ev of rawEvents) {
+      if (!(ev.drift_count > 0)) continue
+      const existing = byType.get(ev.event_type_id)
+      const coach = ev.name === SCENARIO_SEEDED.schemaDriftEventName
+      if (existing) {
+        existing.count = Math.max(existing.count, ev.drift_count)
+        existing.coach ||= coach
+        continue
+      }
+      const type = eventTypes.find(et => et.id === ev.event_type_id)
+      byType.set(ev.event_type_id, {
+        eventTypeId: ev.event_type_id,
+        label: type?.display_name ?? type?.name ?? 'Unknown type',
+        count: ev.drift_count,
+        coach,
+      })
+    }
+    return [...byType.values()]
+  }, [eventTypes, rawEvents])
+
+  const shownTypeDrifts = useMemo(
+    () => (activeEt ? typeDrifts.filter(d => d.eventTypeId === activeEt.id) : typeDrifts),
+    [activeEt, typeDrifts],
+  )
 
   const handleBulkDelete = useEventsBulkDelete({
     selectedEventIds,
@@ -259,26 +354,98 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     confirm,
   })
 
+  const ownerName = useCallback(
+    (id: string) => {
+      const user = usersById.get(id)
+      return user ? user.name ?? user.email : 'the chosen owner'
+    },
+    [usersById],
+  )
+
   // Bulk actions operate on the FULL selection (`selectedEventIds`), not just
   // the loaded rows, so "select all N matching" can sweep events that have not
-  // scrolled into view yet.
+  // scrolled into view yet. Each one asks first when the sweep reaches rows off
+  // screen, is large, or archives (EVT-10), and says what it did when it lands,
+  // with an Undo where every row's previous value is known (EVT-11).
+  const runBulkUpdate = useCallback(async (patch: BulkUpdatePatch, actionLabel: string) => {
+    const eventIds = selectedEventIds
+    if (!eventIds.length) return
+    // What each row holds in the list the table renders, taken before anything
+    // changes, for the Undo.
+    const undo = buildBulkUndo(eventIds, patch, bulkPreviousValues(rawEvents, eventIds))
+    const confirmation = bulkUpdateConfirmation({
+      selectedCount: eventIds.length,
+      selectedVisibleCount: selectedVisibleEventIds.length,
+      actionLabel,
+      archives: patch.status === 'archived',
+    })
+    if (confirmation && !(await confirm(confirmation))) return
+    bulkUpdateMut.mutate({ eventIds, ...patch }, {
+      onSuccess: () => {
+        toast.success(bulkUpdateSummary(eventIds.length, patch, ownerName), {
+          // One mutation for every group: it leaves the selection the operator
+          // has made since alone and refreshes the lists once. A failure
+          // raises the global error toast.
+          action: undo ? { label: 'Undo', onClick: () => bulkUndoMut.mutate(undo) } : undefined,
+        })
+      },
+    })
+  }, [
+    bulkUndoMut,
+    bulkUpdateMut,
+    confirm,
+    ownerName,
+    rawEvents,
+    selectedEventIds,
+    selectedVisibleEventIds,
+  ])
+
   const handleBulkSetStatus = useCallback((status: EventStatus) => {
-    if (!selectedEventIds.length) return
-    bulkUpdateMut.mutate({ eventIds: selectedEventIds, status })
-  }, [bulkUpdateMut, selectedEventIds])
+    void runBulkUpdate({ status }, `Set status to ${EVENT_STATUS_LABELS[status]}`)
+  }, [runBulkUpdate])
 
   const handleBulkMarkReviewed = useCallback(() => {
-    if (!selectedEventIds.length) return
-    bulkUpdateMut.mutate({ eventIds: selectedEventIds, reviewed: true })
-  }, [bulkUpdateMut, selectedEventIds])
+    void runBulkUpdate({ reviewed: true }, 'Mark reviewed')
+  }, [runBulkUpdate])
 
-  // Pull every id matching the current filters/tab and select them, so triage
-  // can accept or archive an entire prefix/queue in one bulk action.
+  // `null` is a value here, not an absence: the bulk patch keys off which fields
+  // were SENT, so `owner_id: null` clears the owner across the selection and an
+  // omitted `owner_id` leaves it alone (tripl-0zpq.276).
+  const handleBulkAssignOwner = useCallback((userId: string | null) => {
+    void runBulkUpdate(
+      { owner_id: userId },
+      userId === null ? 'Unassign owner' : `Assign to ${ownerName(userId)}`,
+    )
+  }, [ownerName, runBulkUpdate])
+
+  // The per-column field/meta filters are client-side; the server sweeps below
+  // know only the server filters. Everything that acts on "the current view"
+  // beyond the loaded rows — select-all, CSV — re-applies them through this one
+  // function, so the view the table shows is the view they act on. The full
+  // column sets, not the visible ones: hiding a column in the picker does not
+  // clear its filter, and the table still narrows by it.
+  const applyColumnFilters = useCallback(
+    (rows: EventListItem[]) =>
+      filterEventsByColumns(rows, {
+        fieldColumns,
+        metaFields,
+        fieldFilters: debouncedFieldFilters,
+        metaFilters: debouncedMetaFilters,
+        getFieldValue: (event, col) => resolveFieldValue(event, col, allFieldDefs),
+        getMetaValue: resolveMetaValue,
+      }),
+    [allFieldDefs, debouncedFieldFilters, debouncedMetaFilters, fieldColumns, metaFields],
+  )
+
+  // Pull every id matching the current view and select them, so triage can
+  // accept or archive an entire prefix/queue in one bulk action. The column
+  // filters apply here too: selecting the server's 5,000 under a column filter
+  // showing 12 rows, then deleting, deleted 5,000 events (EVT-2).
   const [isSelectingAll, setIsSelectingAll] = useState(false)
   const handleSelectAllMatching = useCallback(async () => {
     setIsSelectingAll(true)
     try {
-      const ids = await fetchAllMatchingIds()
+      const ids = applyColumnFilters(await fetchAllMatching()).map(event => event.id)
       if (ids.length) selectAll(ids)
     } catch (error) {
       // The sweep is a bare awaited request — no query cache, no mutation, so
@@ -288,15 +455,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     } finally {
       setIsSelectingAll(false)
     }
-  }, [fetchAllMatchingIds, selectAll])
-
-  // `null` is a value here, not an absence: the bulk patch keys off which fields
-  // were SENT, so `owner_id: null` clears the owner across the selection and an
-  // omitted `owner_id` leaves it alone (tripl-0zpq.276).
-  const handleBulkAssignOwner = useCallback((userId: string | null) => {
-    if (!selectedEventIds.length) return
-    bulkUpdateMut.mutate({ eventIds: selectedEventIds, owner_id: userId })
-  }, [bulkUpdateMut, selectedEventIds])
+  }, [applyColumnFilters, fetchAllMatching, selectAll])
 
   // CSV of the WHOLE filtered view, not just the pages scrolled so far: the
   // catalog runs to thousands of events and the only previous way out of it was
@@ -315,16 +474,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     void (async () => {
       setIsExporting(true)
       try {
-        // The full column sets, not the visible ones: hiding a column in the
-        // picker does not clear its filter, and the table still narrows by it.
-        const rows = filterEventsByColumns(await fetchAllMatching(), {
-          fieldColumns,
-          metaFields,
-          fieldFilters: debouncedFieldFilters,
-          metaFilters: debouncedMetaFilters,
-          getFieldValue: (event, col) => resolveFieldValue(event, col, allFieldDefs),
-          getMetaValue: resolveMetaValue,
-        })
+        const rows = applyColumnFilters(await fetchAllMatching())
         // Never hand back a header-only file: an empty CSV is indistinguishable
         // from a broken export, so say which of the two this is.
         if (rows.length === 0) {
@@ -358,13 +508,10 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     activeEt,
     activeTab,
     allFieldDefs,
+    applyColumnFilters,
     canExportCsv,
-    debouncedFieldFilters,
-    debouncedMetaFilters,
     eventTypesById,
     fetchAllMatching,
-    fieldColumns,
-    metaFields,
     hideLastSeen,
     hideOwner,
     hideReviewed,
@@ -408,42 +555,78 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   // branch-aware server count (not the main-branch project summary), so this stays
   // correct on working branches; the one accepted edge is an archived-only "all"
   // tab reading 0, recoverable via the tab bar.
-  const hasNoEvents = eventsQuery.isSuccess && total === 0 && !hasActiveFilters && !search
+  //
+  // Only on the "all" tab: an empty Review queue, Archived tab or type tab is an
+  // empty slice of a populated project, and collapsing there took away saved
+  // views, columns, sort, export and "Add many events" (EVT-15).
+  const hasNoEvents =
+    activeTab === 'all' && eventsQuery.isSuccess && total === 0 && !hasActiveFilters && !search
 
   // Editing is a full page, not an inline Sheet. The "New event" action toggles
-  // showForm and "Edit"/row-edit navigates to /events/:tab/:eventId; both are
-  // redirected here to the dedicated new/edit routes.
+  // showForm, which is redirected here to the dedicated new route (row edits
+  // navigate to /events/:tab/:eventId, which EventsPage redirects before this
+  // component mounts).
   // Always keep the :tab segment so the new/edit routes (/events/:tab/new and
   // /events/:tab/:eventId/edit) match — '/events/new' would otherwise resolve to
   // the /events/:tab list route with tab='new'. tab='all' is handled everywhere.
+  // The query string travels too, for the `?branch=` reason given above.
   const eventsBase = `/p/${slug}/events/${activeTab}`
-  // Carry the query string through. `?branch=` is the one that matters: the
-  // branch provider reads it only when it mounts, so dropping it here turns a
-  // shared branch-diff link into a main-plan edit — which then renders a normal
-  // form and 404s at Save, because the read is lenient and the write is not.
-  // useEventsRouteState.openEvent already preserves them on the way in.
   if (slug && showForm) {
     return <Navigate to={`${eventsBase}/new${locationSearch}`} replace />
   }
   if (slug && showBulk) {
     return <Navigate to={`${eventsBase}/bulk${locationSearch}`} replace />
   }
-  if (slug && openEventId) {
-    return <Navigate to={`${eventsBase}/${openEventId}/edit${locationSearch}`} replace />
+
+  // A type tab that names no type: a stale bookmark to a deleted or renamed
+  // type used to list every event under that type's heading (EVT-13).
+  if (isUnknownTab && !blockingError) {
+    return (
+      <EmptyState
+        icon={FileQuestion}
+        title="Unknown event type"
+        description={`This project has no event type named "${activeTab}". It may have been renamed or deleted.`}
+        action={
+          embedded ? undefined : (
+            <Button asChild size="sm" variant="outline">
+              <Link to={`/p/${slug}/events${locationSearch}`}>Show all events</Link>
+            </Button>
+          )
+        }
+      />
+    )
   }
 
   return (
-    <div className={embedded ? 'flex min-h-[420px] flex-col' : 'flex min-h-[calc(100vh-7rem)] flex-col'}>
+    <div
+      className={embedded ? 'flex min-h-[420px] flex-col' : 'flex min-h-[calc(100vh-7rem)] flex-col'}
+      // Room for the floating bulk bar, so it never sits over the table's last
+      // rows and footer while a selection is open (EVT-5).
+      style={canWrite && selectedCount > 0 ? { paddingBottom: '7rem' } : undefined}
+    >
       {dialog}
 
       {!embedded && (
         <EventsHeader
           total={total}
+          columnFilter={
+            isClientFiltered ? { matching: events.length, checked: rawEvents.length } : null
+          }
           inReviewCount={inReviewCount}
           projectTotalSignal={projectTotalSignal}
           eventTypeSignals={eventTypeSignals}
           activeType={activeEt}
+          slug={slug}
+          typeDrifts={shownTypeDrifts}
         />
+      )}
+      {/* The embedded table (an event type's detail view) has no header, and
+          the rows no longer carry the badge (EVT-33), so the type's drift
+          shows here or nowhere. */}
+      {embedded && slug && shownTypeDrifts.length > 0 && (
+        <div className="mb-3 flex items-center">
+          <EventTypeDriftBadges slug={slug} typeDrifts={shownTypeDrifts} namesType={!!activeEt} />
+        </div>
       )}
 
       {blockingError && (
@@ -489,7 +672,8 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               activeSavedViewName={activeSavedViewName}
               savedViewName={savedViewName}
               onSavedViewNameChange={setSavedViewName}
-              onSaveCurrentView={saveCurrentView}
+              onSaveCurrentView={() => { void saveCurrentView() }}
+              showSavedViews={!embedded}
               onApplySavedView={applySavedView}
               onDeleteSavedView={deleteSavedView}
               columnsMenuOpen={colMenuOpen}
@@ -512,11 +696,13 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
           <BulkActionBar
             selectedCount={canWrite ? selectedCount : 0}
             selectedVisibleCount={selectedVisibleEventIds.length}
-            matchingTotal={total}
-            onSelectAllMatching={handleSelectAllMatching}
+            // Under a column filter the server total is not the match count,
+            // so the button offers "all matching" without a number.
+            matchingTotal={isClientFiltered ? null : total}
+            onSelectAllMatching={() => { void handleSelectAllMatching() }}
             isSelectingAll={isSelectingAll}
             isDeleting={bulkDeleteMut.isPending}
-            isUpdating={bulkUpdateMut.isPending}
+            isUpdating={bulkUpdateMut.isPending || bulkUndoMut.isPending}
             onSetStatus={handleBulkSetStatus}
             onMarkReviewed={handleBulkMarkReviewed}
             onAssignOwner={handleBulkAssignOwner}
@@ -540,6 +726,13 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
                 queryStatuses,
                 filterTag,
               }}
+              unappliedFilters={unappliedChartFilters({
+                filterSilentDays,
+                filterReviewed,
+                filterOpenQuestions,
+                hasColumnFilters:
+                  Object.values(fieldFilters).some(Boolean) || Object.values(metaFilters).some(Boolean),
+              })}
             />
           )}
 
@@ -554,6 +747,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               dndSensors={dndSensors}
               handleDragEnd={handleDragEnd}
               visibleEventIds={visibleEventIds}
+              canReorder={canReorder}
               allVisibleSelected={allVisibleSelected}
               someVisibleSelected={someVisibleSelected}
               toggleAllVisibleSelected={toggleAllVisibleSelected}
@@ -578,9 +772,15 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               updateMetaFilter={updateMetaFilter}
               events={events}
               total={total}
+              loadedCount={rawEvents.length}
+              isClientFiltered={isClientFiltered}
+              isScanningForMatches={isScanningForMatches}
+              isLoading={eventsQuery.isPending}
               virtualize={virtualize}
               virtualItems={virtualItems}
+              visibleRange={visibleRange}
               totalVirtualSize={totalVirtualSize}
+              measureRow={measureRow}
               colCount={colCount}
               expandedCell={expandedCell}
               eventWindowMetricsByEvent={eventWindowMetricsByEvent}
@@ -592,12 +792,19 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               getFieldValue={getFieldValue}
               getFieldValueRow={getFieldValueRow}
               toggleEventSelected={toggleEventSelected}
+              selectMany={selectMany}
               onToggleExpandedCell={onToggleExpandedCell}
               onRowAction={onRowAction}
               // Lets a zero-row table explain which query came back empty
               // instead of always offering "create your first event"
               // (tripl-jfm3.30).
-              emptyContext={{ activeTab, hasActiveFilters, search }}
+              emptyContext={{
+                activeTab,
+                hasActiveFilters,
+                search,
+                typeLabel: activeEt?.display_name,
+              }}
+              onNewEvent={canWrite ? openNewEvent : undefined}
             />
           </div>
         </>

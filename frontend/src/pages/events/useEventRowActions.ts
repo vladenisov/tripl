@@ -5,14 +5,7 @@ import type { EventListItem } from '@/types'
 
 import type { RowAction } from './EventRow'
 import type { EventMutations } from './useEventMutations'
-import { reorderWithSelection } from './utils'
-
-type ConfirmFn = (options: {
-  title: string
-  message: string
-  variant?: 'danger' | 'primary'
-  confirmLabel?: string
-}) => Promise<boolean>
+import { changedSlice, reorderWithSelection } from './utils'
 
 /**
  * Bundles the row-level dispatch + drag-end handler for the events table.
@@ -22,30 +15,31 @@ type ConfirmFn = (options: {
 export function useEventRowActions({
   openEvent,
   mutations,
-  confirm,
   visibleEventIds,
   selectedSet,
+  canReorder,
 }: {
   openEvent: (ev: EventListItem) => void
   mutations: EventMutations
-  confirm: ConfirmFn
   visibleEventIds: string[]
   selectedSet: Set<string>
+  /** False while the rows are not in catalog order (see EventsPage). */
+  canReorder: boolean
 }) {
   const rowCtxRef = useRef({
     openEvent,
     mutations,
-    confirm,
     visibleEventIds,
     selectedSet,
+    canReorder,
   })
   useEffect(() => {
     rowCtxRef.current = {
       openEvent,
       mutations,
-      confirm,
       visibleEventIds,
       selectedSet,
+      canReorder,
     }
   })
 
@@ -54,6 +48,7 @@ export function useEventRowActions({
       const { active, over } = event
       if (!over) return
       const ctx = rowCtxRef.current
+      if (!ctx.canReorder) return
       // Multi-select drag moves the whole selection as a block; a single row
       // moves on its own. `reorderWithSelection` returns null when there is
       // nothing to apply.
@@ -63,43 +58,19 @@ export function useEventRowActions({
         String(active.id),
         String(over.id),
       )
-      if (next) ctx.mutations.reorderEventsMut.mutate(next)
+      if (!next) return
+      // Only the rows whose position changed. The server hands the existing
+      // order slots of the ids it is sent back out in the order sent, so the
+      // span between the first and last moved row is a complete answer — and
+      // one drag no longer posts every loaded id (EVT-3).
+      const slice = changedSlice(ctx.visibleEventIds, next)
+      if (slice.length > 1) ctx.mutations.reorderEventsMut.mutate(slice)
     },
     [],
   )
 
   const onRowAction = useCallback((action: RowAction, ev: EventListItem) => {
-    const ctx = rowCtxRef.current
-    const { mutations } = ctx
-    switch (action) {
-      case 'edit':
-        ctx.openEvent(ev)
-        return
-      case 'move-up':
-        mutations.moveEventMut.mutate({ id: ev.id, direction: 'up', visibleEventIds: ctx.visibleEventIds })
-        return
-      case 'move-down':
-        mutations.moveEventMut.mutate({ id: ev.id, direction: 'down', visibleEventIds: ctx.visibleEventIds })
-        return
-      case 'set-status-archived':
-        mutations.setStatusMut.mutate({ id: ev.id, status: 'archived' })
-        return
-      case 'set-status-draft':
-        mutations.setStatusMut.mutate({ id: ev.id, status: 'draft' })
-        return
-      case 'delete': {
-        void (async () => {
-          const ok = await ctx.confirm({
-            title: 'Delete event',
-            message: `Are you sure you want to delete "${ev.name}"?`,
-            confirmLabel: 'Delete',
-            variant: 'danger',
-          })
-          if (ok) mutations.deleteMut.mutate(ev.id)
-        })()
-        return
-      }
-    }
+    if (action === 'edit') rowCtxRef.current.openEvent(ev)
   }, [])
 
   return { handleDragEnd, onRowAction }

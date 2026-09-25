@@ -4,9 +4,6 @@ import { useId } from 'react'
 export interface DraftDiscussionNoteProps {
   value: string
   onChange: (next: string) => void
-  /** Why the note that was drafted did not get posted, when a previous attempt
-   *  failed. Rendered as an alert above the box rather than swallowed. */
-  error?: string | null
 }
 
 /**
@@ -21,7 +18,7 @@ export interface DraftDiscussionNoteProps {
  * this page travels with the event into the spec the implementer reads, while
  * this is the one box that does not.
  */
-export function DraftDiscussionNote({ value, onChange, error }: DraftDiscussionNoteProps) {
+export function DraftDiscussionNote({ value, onChange }: DraftDiscussionNoteProps) {
   const id = useId()
   return (
     <div className="flex flex-col gap-2 rounded-md border bg-card p-3">
@@ -33,11 +30,6 @@ export function DraftDiscussionNote({ value, onChange, error }: DraftDiscussionN
         A question or note about this event, kept out of the spec. It is posted as the first comment
         the moment the event is created.
       </label>
-      {error && (
-        <p role="alert" className="text-xs text-destructive">
-          {error}
-        </p>
-      )}
       <textarea
         id={id}
         value={value}

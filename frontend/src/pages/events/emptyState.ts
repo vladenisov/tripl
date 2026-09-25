@@ -21,6 +21,9 @@ export interface EventsEmptyContext {
   hasActiveFilters: boolean
   /** Current search box contents. */
   search: string
+  /** The event type's display name on a type tab. The tab segment is the
+   *  internal key ("se"), which the type chip stopped showing (tripl-w9od). */
+  typeLabel?: string
 }
 
 const TAB_EMPTY: Record<string, { title: string; description: string }> = {
@@ -40,6 +43,7 @@ export function eventsEmptyCopy({
   activeTab,
   hasActiveFilters,
   search,
+  typeLabel,
 }: EventsEmptyContext): EventsEmptyCopy {
   // A filter or search that matches nothing is about the query, never the
   // project — it takes priority over the tab's own copy.
@@ -54,8 +58,8 @@ export function eventsEmptyCopy({
   if (tabCopy) return { ...tabCopy, isFirstRun: false }
   if (activeTab !== 'all') {
     return {
-      title: `No events in ${activeTab}`,
-      description: 'This event type has no events yet. Add one, or pick another tab.',
+      title: `No events in ${typeLabel || activeTab}`,
+      description: 'This event type has no events yet.',
       isFirstRun: true,
     }
   }
