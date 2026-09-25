@@ -1,5 +1,6 @@
 import { format } from 'node:util'
 import { afterEach, beforeEach, expect, vi } from 'vitest'
+import type { TestingLibraryMatchers } from '@testing-library/jest-dom/matchers'
 import type { AxeMatchers } from 'vitest-axe/matchers'
 
 // This file runs for both projects in vite.config.ts: the `node` one (pure
@@ -9,7 +10,14 @@ import type { AxeMatchers } from 'vitest-axe/matchers'
 const hasDom = typeof window !== 'undefined' && typeof document !== 'undefined'
 
 if (hasDom) {
-  await import('@testing-library/jest-dom/vitest')
+  // Not '@testing-library/jest-dom/vitest': that entry's type augmentation is
+  // written for vitest 4's `Assertion<T>` and cannot merge with vitest 5's
+  // `Assertion<R, T>` (testing-library/jest-dom#738). Register the same
+  // matchers here and declare their types below.
+  // Its types say `export =`, but the ESM build has named exports only — the
+  // same namespace jest-dom's own vitest entry passes to expect.extend.
+  const jestDomMatchers = await import('@testing-library/jest-dom/matchers')
+  expect.extend(jestDomMatchers as unknown as Parameters<typeof expect.extend>[0])
   const { configure } = await import('@testing-library/react')
   const axeMatchers = await import('vitest-axe/matchers')
 
@@ -26,14 +34,16 @@ if (hasDom) {
   configure({ asyncUtilTimeout: 5000 })
 }
 
-// The package's `extend-expect` type augmentation has a broken runtime import,
-// so declare the matcher types against vitest's `Assertion` interface here.
-// The `T = any` default must match vitest's own declaration exactly (TS2428).
+// Neither vitest-axe (broken `extend-expect` runtime import) nor jest-dom
+// (vitest 4 signature, see above) ships a usable augmentation, so declare both
+// matcher sets against vitest's `Assertion` here. The type parameters must match
+// vitest's own declaration exactly (TS2428): vitest 5 declares
+// `Assertion<R extends void | Promise<void> = void, T = unknown>`.
 declare module 'vitest' {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars, @typescript-eslint/no-empty-object-type
-  interface Assertion<T = any> extends AxeMatchers {}
-  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-  interface AsymmetricMatchersContaining extends AxeMatchers {}
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any
+  interface Assertion<R extends void | Promise<void> = void, T = unknown> extends AxeMatchers, TestingLibraryMatchers<any, R> {}
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  interface AsymmetricMatchersContaining extends AxeMatchers, TestingLibraryMatchers<any, any> {}
 }
 
 // jsdom's `localStorage` varies by version — CI's build omits it entirely, so a
