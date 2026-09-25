@@ -81,7 +81,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
 
       <div className="flex flex-wrap items-center gap-2 pr-10">
         <Sparkles className="h-4 w-4" style={{ color: 'var(--accent)' }} />
-        <h2 id="demo-welcome-heading" className="text-lead font-semibold">
+        <h2 id="demo-welcome-heading" className="text-heading font-semibold">
           Welcome to your demo workspace
         </h2>
         {/* No "Local synthetic data" badge here: the demo banner right above
@@ -90,7 +90,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
           type="button"
           onClick={() => setExpanded((open) => !open)}
           aria-expanded={expanded}
-          className="flex items-center gap-1 rounded px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--accent)' }}
         >
           {expanded ? 'Hide the tour & chapters' : 'Show me around'}
@@ -134,7 +134,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
 
           {available && (
             <div className="mt-4 max-w-xl">
-              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="mb-1.5 micro-label" style={{ color: 'var(--fg-subtle)' }}>
                 Coached chapters
               </p>
               <ChapterPicker chapters={chapters} onPick={openChapter} compact />
@@ -142,7 +142,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
           )}
 
           <div className="mt-4">
-            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="mb-1.5 micro-label" style={{ color: 'var(--fg-subtle)' }}>
               Metric building blocks
             </p>
             <div className="flex flex-wrap gap-1.5">
@@ -151,7 +151,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
                   key={block.id}
                   to={block.to}
                   title={block.blurb}
-                  className="rounded-full px-2.5 py-1 text-[11px] font-medium no-underline transition-colors hover:bg-[var(--surface-hover)]"
+                  className="rounded-full px-2.5 py-1 text-caption font-medium no-underline transition-colors hover:bg-[var(--surface-hover)]"
                   style={{ background: 'var(--surface)', color: 'var(--fg-muted)', border: '1px solid var(--border-subtle)' }}
                 >
                   {block.label}

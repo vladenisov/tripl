@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { INPUT_BASE, INPUT_DISABLED } from '@/components/settings/input-style'
+import { INPUT_BASE, INPUT_CLASS, INPUT_DISABLED } from '@/components/settings/input-style'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 
 /**
@@ -127,7 +127,9 @@ export function ColumnSuggestInput({
           aria-describedby={ariaDescribedBy}
           aria-required={ariaRequired}
           autoComplete="off"
-          className="mono"
+          // The shared invalid edge + halo and the faint placeholder (MT-7):
+          // aria-invalid alone drew nothing on this hand-rolled control.
+          className={`${INPUT_CLASS} mono`}
           // The disabled cue comes from the shared primitive, not from a local
           // knock-down. This box used to dim itself with `opacity: 0.6`, the same
           // treatment that on the dark theme left a dead field 3/255 of fill and
@@ -170,7 +172,7 @@ export function ColumnSuggestInput({
             onMouseDown={e => e.preventDefault()}
             onClick={() => pick(name)}
             onMouseEnter={() => setHighlight(i)}
-            className="mono flex w-full items-center rounded-[5px] px-2 py-[5px] text-left text-[12px]"
+            className="mono flex w-full items-center rounded-control px-2 py-[5px] text-left text-body-sm"
             style={{
               background: i === activeIdx ? 'var(--surface-hover)' : 'transparent',
               color: 'var(--fg)',

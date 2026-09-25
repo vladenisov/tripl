@@ -33,7 +33,7 @@ export function ErrorState({
     <div
       role="alert"
       className={cn(
-        'rounded-xl border border-destructive/35 bg-destructive/5 text-left',
+        'rounded-card border border-destructive/35 bg-destructive/5 text-left',
         compact ? 'p-3' : 'p-5',
         className,
       )}
@@ -44,14 +44,16 @@ export function ErrorState({
         </div>
         <div className="min-w-0 flex-1">
           {/* h2 for the same reason as EmptyState: an error surface replaces a
-              page's content directly under its h1 (tripl-jfm3.69). */}
-          <Heading className={cn('font-semibold text-foreground', compact ? 'text-sm' : 'text-base')}>{title}</Heading>
+              page's content directly under its h1 (tripl-jfm3.69). On
+              EmptyState's scale too: heading/body, or body-sm/caption when
+              compact, so it no longer out-sizes the panel around it (DS-21). */}
+          <Heading className={cn('font-semibold text-foreground', compact ? 'text-body-sm' : 'text-heading')}>{title}</Heading>
           {description && (
-            <p className={cn('mt-1 text-muted-foreground', compact ? 'text-xs' : 'text-sm')}>
+            <p className={cn('mt-1 text-muted-foreground', compact ? 'text-caption' : 'text-body')}>
               {description}
             </p>
           )}
-          <p className={cn('mt-1 break-words text-destructive', compact ? 'text-xs' : 'text-sm')}>
+          <p className={cn('mt-1 break-words text-destructive', compact ? 'text-caption' : 'text-body')}>
             {message}
           </p>
           {onRetry && (

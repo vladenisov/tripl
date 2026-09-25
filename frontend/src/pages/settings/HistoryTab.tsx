@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, GitBranch, History, Plus } from 'lucide-react'
+import { ChevronRight, GitBranch, Plus } from 'lucide-react'
 
 import { planRevisionsApi } from '@/api/planRevisions'
 import { Chip } from '@/components/primitives/chip'
+import { PageContainer } from '@/components/primitives/page-container'
+import { PageHeader } from '@/components/primitives/page-header'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -93,27 +95,24 @@ export function HistoryTab({ slug }: { slug: string }) {
   })
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold flex items-center gap-2">
-            <History className="h-4 w-4" />
-            Plan history
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            Immutable snapshots of the project's tracking plan. Diff against the
-            previous revision shows what changed.
-          </p>
-        </div>
-        <Button
-          size="sm"
-          onClick={() => setSnapshotOpen(true)}
-          disabled={createMut.isPending}
-        >
-          <Plus className="mr-1 h-3.5 w-3.5" />
-          Snapshot now
-        </Button>
-      </div>
+    <PageContainer className="space-y-4">
+      {/* The shared page header (DS-1 / PL-25), the same as Plan branches':
+          no inline icon, one description size, actions on the right. */}
+      <PageHeader
+        eyebrow="Plan"
+        title="Plan history"
+        description="Immutable snapshots of the project's tracking plan. Diff against the previous revision shows what changed."
+        actions={
+          <Button
+            size="sm"
+            onClick={() => setSnapshotOpen(true)}
+            disabled={createMut.isPending}
+          >
+            <Plus className="size-3.5" />
+            Snapshot now
+          </Button>
+        }
+      />
 
       {/* 2:3, not 1:2. A revision's identity is its summary — product-generated
           ones read "Base snapshot for branch '<name>'" (~300px) — and at 1fr the
@@ -124,12 +123,12 @@ export function HistoryTab({ slug }: { slug: string }) {
           <CardContent className="p-0">
             {listQuery.isError && listQuery.data !== undefined && (
               // A failed refresh keeps the list on screen (review 204).
-              <p role="alert" className="px-3 py-2 text-xs text-destructive">
+              <p role="alert" className="px-3 py-2 text-body-sm text-destructive">
                 Couldn't refresh plan history: {getErrorMessage(listQuery.error)}
               </p>
             )}
             {listQuery.isPending ? (
-              <div className="p-4 text-sm text-muted-foreground" role="status">Loading…</div>
+              <div className="p-4 text-body text-muted-foreground" role="status">Loading…</div>
             ) : listQuery.isError && listQuery.data === undefined ? (
               // A failed load is not "No revisions yet" (PLAN-41).
               <div className="p-3">
@@ -142,7 +141,7 @@ export function HistoryTab({ slug }: { slug: string }) {
                 />
               </div>
             ) : revisions.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground">
+              <div className="p-4 text-body text-muted-foreground">
                 No revisions yet. Create the first snapshot to capture the current
                 plan state.
               </div>
@@ -160,7 +159,7 @@ export function HistoryTab({ slug }: { slug: string }) {
             )}
             {(hasNewer || hasOlder) && (
               <div className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
-                <p className="text-xs text-muted-foreground">
+                <p className="text-body-sm text-muted-foreground">
                   {`Showing ${offset + 1}–${offset + revisions.length} of ${countOf(total, 'revision', 'revisions')}.`}
                 </p>
                 <div className="flex items-center gap-2">
@@ -168,7 +167,7 @@ export function HistoryTab({ slug }: { slug: string }) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-7 px-2 text-xs"
+                    className="h-7 px-2 text-body-sm"
                     disabled={!hasNewer || listQuery.isFetching}
                     onClick={() => goToOffset(Math.max(0, offset - PAGE_SIZE))}
                   >
@@ -178,7 +177,7 @@ export function HistoryTab({ slug }: { slug: string }) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-7 px-2 text-xs"
+                    className="h-7 px-2 text-body-sm"
                     disabled={!hasOlder || listQuery.isFetching}
                     onClick={() => goToOffset(offset + PAGE_SIZE)}
                   >
@@ -191,7 +190,7 @@ export function HistoryTab({ slug }: { slug: string }) {
         </Card>
 
         <Card>
-          <CardContent className="space-y-3 p-4">
+          <CardContent className="space-y-3">
             <DiffPanel
               effectiveSelected={effectiveSelected}
               compareTo={compareTo}
@@ -209,7 +208,7 @@ export function HistoryTab({ slug }: { slug: string }) {
             <DialogTitle>Snapshot plan</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
-            <Label htmlFor="snapshot-summary">Summary (optional)</Label>
+            <Label htmlFor="snapshot-summary" optional>Summary</Label>
             <Input
               id="snapshot-summary"
               placeholder="e.g. Before launching v2 onboarding"
@@ -217,7 +216,7 @@ export function HistoryTab({ slug }: { slug: string }) {
               onChange={(e) => setSummaryText(e.target.value)}
             />
             {createMut.isError && (
-              <p className="text-xs text-destructive">
+              <p className="text-body-sm text-destructive">
                 Failed: {getErrorMessage(createMut.error)}
               </p>
             )}
@@ -235,7 +234,7 @@ export function HistoryTab({ slug }: { slug: string }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -277,7 +276,7 @@ function RevisionRow({
               card, and the tooltip stays as the fallback for a summary longer
               than that. */}
           <div
-            className="line-clamp-2 break-words text-xs font-medium"
+            className="line-clamp-2 break-words text-body-sm font-medium"
             title={rev.summary || undefined}
           >
             {rev.summary || <span className="text-muted-foreground">(no summary)</span>}
@@ -287,7 +286,7 @@ function RevisionRow({
               of a line, which reads as a formatting fault (tripl-lzge). At
               ~10px the whole string is ~280px and fits; the ellipsis is the
               fallback, and `title` keeps it readable either way. */}
-          <div className="truncate text-[10px] text-muted-foreground tnum" title={metaLine}>
+          <div className="truncate text-micro text-muted-foreground tnum" title={metaLine}>
             {metaLine}
           </div>
         </div>
@@ -311,26 +310,26 @@ function DiffPanel({
   isError: boolean
 }) {
   if (!effectiveSelected) {
-    return <p className="text-sm text-muted-foreground">Pick a revision to view its diff.</p>
+    return <p className="text-body text-muted-foreground">Pick a revision to view its diff.</p>
   }
   if (!compareTo) {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="text-body text-muted-foreground">
         This is the oldest revision — nothing to diff against. Create another
         snapshot after making schema changes to see what moved.
       </p>
     )
   }
   if (isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading diff…</p>
+    return <p className="text-body text-muted-foreground">Loading diff…</p>
   }
   if (isError || !diff) {
-    return <p className="text-sm text-destructive">Failed to load diff.</p>
+    return <p className="text-body text-destructive">Failed to load diff.</p>
   }
   const total = diff.entries.length
   if (total === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="text-body text-muted-foreground">
         No schema changes between these two revisions.
       </p>
     )
@@ -338,7 +337,7 @@ function DiffPanel({
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2 text-body-sm">
         <Chip tone={KIND_META.added.tone} size="xs">+{diff.summary.added}</Chip>
         <Chip tone={KIND_META.removed.tone} size="xs">−{diff.summary.removed}</Chip>
         <Chip tone={KIND_META.changed.tone} size="xs">~{diff.summary.changed}</Chip>
@@ -348,7 +347,7 @@ function DiffPanel({
         {diff.entries.map((entry, idx) => (
           <li
             key={`${entry.entity_type}:${entry.parent ?? ''}:${entry.name}:${idx}`}
-            className="rounded-md border bg-muted/20 px-3 py-2 text-xs"
+            className="rounded-md border bg-muted/20 px-3 py-2 text-body-sm"
           >
             <div className="flex flex-wrap items-center gap-2">
               {/* The branch review's words for the same kinds — history used to
@@ -372,7 +371,7 @@ function DiffPanel({
                 <PlanFieldChangeList changes={entry.field_changes ?? []} />
               </div>
             ) : entry.changes.length > 0 && (
-              <ul className="mt-1.5 space-y-0.5 pl-1 text-[11px] text-muted-foreground">
+              <ul className="mt-1.5 space-y-0.5 pl-1 text-caption text-muted-foreground">
                 {entry.changes.map((change) => (
                   <li key={change} className="font-mono">{change}</li>
                 ))}

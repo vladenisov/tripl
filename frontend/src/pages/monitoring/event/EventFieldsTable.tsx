@@ -5,7 +5,7 @@ import { VariableValueContextTrigger } from '@/components/variable-value-context
 import type { Event as TEvent, EventType, FieldDefinition } from '@/types'
 import { SURFACE_CARD, SURFACE_STYLE } from './surface'
 
-const EV_TH_CLASS = 'h-auto px-[14px] py-2 text-left text-2xs font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
+const EV_TH_CLASS = 'h-auto px-[14px] py-2 text-left micro-label text-[var(--fg-subtle)]'
 const EV_TD_CLASS = 'px-[14px] py-[9px] text-body-sm align-middle'
 
 export function EventFieldsTable({
@@ -26,13 +26,13 @@ export function EventFieldsTable({
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
       <div className="flex items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-        <span className="flex-1 text-body-sm font-semibold">Fields</span>
-        <span className="mono text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+        <h2 className="m-0 flex-1 text-body-sm font-semibold">Fields</h2>
+        <span className="tnum text-micro" style={{ color: 'var(--fg-subtle)' }}>
           {fields.length} · {requiredCount} required
         </span>
       </div>
       {fields.length === 0 ? (
-        <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           No fields defined.
         </div>
       ) : (
@@ -54,7 +54,7 @@ export function EventFieldsTable({
               return (
                 <TableRow key={field.id} style={{ borderColor: 'var(--border-subtle)' }}>
                   <TableCell className={EV_TD_CLASS}>
-                    <span className="mono text-[12px]">{def.name}</span>
+                    <span className="mono text-body-sm">{def.name}</span>
                     {def.is_required && <span className="ml-[3px]" style={{ color: 'var(--danger)' }}>*</span>}
                   </TableCell>
                   <TableCell className={`${EV_TD_CLASS} hidden md:table-cell`}>

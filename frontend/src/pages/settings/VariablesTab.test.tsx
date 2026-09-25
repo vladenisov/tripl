@@ -418,8 +418,8 @@ describe('VariablesTab', () => {
     )
 
     renderVariablesTab()
-    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
-    fireEvent.change(screen.getByPlaceholderText('my_variable'), { target: { value: 'variant' } })
+    fireEvent.click(await screen.findByRole('button', { name: /new variable/i }))
+    fireEvent.change(screen.getByPlaceholderText('e.g. spot_id'), { target: { value: 'variant' } })
 
     const valueInput = screen.getByLabelText('Add possible value')
     fireEvent.change(valueInput, { target: { value: 'a' } })
@@ -446,13 +446,34 @@ describe('VariablesTab', () => {
   it('rejects an invalid binding path in the chip input', async () => {
     mockList([])
     renderVariablesTab()
-    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /new variable/i }))
 
     const bindingInput = screen.getByLabelText('Add data binding')
     fireEvent.change(bindingInput, { target: { value: 'not a path!' } })
     fireEvent.keyDown(bindingInput, { key: 'Enter' })
 
     expect(await screen.findByText(/invalid path/i)).toBeInTheDocument()
+  })
+
+  // AU-4: the name rule is said inline, not by the browser's
+  // "Please match the requested format." bubble.
+  it('says the variable name rule inline instead of a browser bubble', async () => {
+    mockList([])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /new variable/i }))
+    expect(screen.getByRole('dialog', { name: 'New variable' })).toBeInTheDocument()
+
+    const nameInput = screen.getByLabelText('Name')
+    expect(nameInput).not.toHaveAttribute('pattern')
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(nameInput).toHaveAttribute('aria-invalid', 'true')
+    expect(nameInput).toHaveAccessibleDescription('Required')
+
+    fireEvent.change(nameInput, { target: { value: 'Spot ID' } })
+    expect(nameInput).toHaveAccessibleDescription(
+      'Use lowercase letters, digits and _; start with a letter.',
+    )
+    expect(variablesApi.create).not.toHaveBeenCalled()
   })
 
   it('creates a variable with neither values nor bindings', async () => {
@@ -463,13 +484,13 @@ describe('VariablesTab', () => {
       makeVariable({ id: 'var-new', name: 'variant', allowed_values: [], bindings: [] }),
     )
     renderVariablesTab()
-    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /new variable/i }))
 
-    expect(screen.getByText('Possible values (optional)')).toBeInTheDocument()
-    expect(screen.getByText('Data bindings (optional)')).toBeInTheDocument()
+    expect(screen.getByLabelText('Possible values (optional)')).toBeInTheDocument()
+    expect(screen.getByLabelText('Data bindings (optional)')).toBeInTheDocument()
     expect(screen.getByText(/scans match this variable by its name/)).toBeInTheDocument()
 
-    fireEvent.change(screen.getByPlaceholderText('my_variable'), { target: { value: 'variant' } })
+    fireEvent.change(screen.getByPlaceholderText('e.g. spot_id'), { target: { value: 'variant' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
     await waitFor(() =>
@@ -589,15 +610,23 @@ describe('VariablesTab', () => {
       await screen.findByRole('button', { name: 'Edit variable page_data.extra.variant' }),
     )
 
-    const nameInput = screen.getByPlaceholderText('variable_name') as HTMLInputElement
-    // Unchanged legacy dotted name → no pattern restriction.
+    const dialog = await screen.findByRole('dialog', { name: 'Edit: page_data.extra.variant' })
+    const nameInput = within(dialog).getByLabelText('Name') as HTMLInputElement
+    const save = within(dialog).getByRole('button', { name: 'Save' })
+    // Unchanged legacy dotted name → valid; the rule is said inline, never a
+    // native `pattern` bubble (AU-4).
     expect(nameInput.value).toBe('page_data.extra.variant')
     expect(nameInput).not.toHaveAttribute('pattern')
+    expect(nameInput).not.toHaveAttribute('aria-invalid')
 
-    // Renaming applies the strict dot-free pattern.
+    // Renaming applies the strict dot-free rule.
     fireEvent.change(nameInput, { target: { value: 'page_data.renamed' } })
-    expect(nameInput).toHaveAttribute('pattern', '^[a-z][a-z0-9_]*$')
-    expect(nameInput.validity.patternMismatch).toBe(true)
+    fireEvent.click(save)
+    expect(nameInput).toHaveAttribute('aria-invalid', 'true')
+    expect(nameInput).toHaveAccessibleDescription(
+      'Use lowercase letters, digits and _; start with a letter.',
+    )
+    expect(variablesApi.update).not.toHaveBeenCalled()
   })
 
   it('bulk-updates selected variables from the bulk bar', async () => {
@@ -1513,7 +1542,7 @@ describe('VariablesTab — bindings versus tokens', () => {
     ])
 
     renderVariablesTab()
-    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /new variable/i }))
     const dialog = await screen.findByRole('dialog')
 
     // The pair, in this project's own vocabulary: the scan reads the path, the
@@ -1533,7 +1562,7 @@ describe('VariablesTab — bindings versus tokens', () => {
     mockList([makeVariable({ id: 'var-1', name: 'variant' })])
 
     renderVariablesTab()
-    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /new variable/i }))
     const dialog = await screen.findByRole('dialog')
 
     expect(
@@ -1558,7 +1587,7 @@ describe('VariablesTab — a viewer reads without write controls', () => {
 
     const edit = await screen.findByRole('button', { name: 'Edit variable user_id' })
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
-    expect(screen.queryByRole('button', { name: /Add variable/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New variable/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: SELECT_ALL })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Exclude variable/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete variable user_id' })).not.toBeInTheDocument()
@@ -1607,7 +1636,7 @@ describe('VariablesTab — review batch 15 (PLAN-23 … PLAN-33)', () => {
   it('refuses a documented value the chosen type cannot hold (PLAN-24)', async () => {
     mockList([])
     renderVariablesTab()
-    fireEvent.click(await screen.findByRole('button', { name: /Add variable/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /New variable/ }))
 
     fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'number' } })
     const values = screen.getByLabelText('Add possible value')
@@ -1730,8 +1759,9 @@ describe('VariablesTab — review batch 15 (PLAN-23 … PLAN-33)', () => {
     queryClient.setQueryData(['events', 'demo', null, 'list'], { items: [], total: 0 })
     fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
 
-    fireEvent.change(screen.getByPlaceholderText('variable_name'), { target: { value: 'arm' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit: variant' })
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'arm' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
       expect(queryClient.getQueryState(['events', 'demo', null, 'list'])?.isInvalidated).toBe(true),

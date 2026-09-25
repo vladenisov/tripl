@@ -16,7 +16,7 @@ export default function MembersSection() {
         description="People with access to this tripl workspace and every project inside it."
       />
       <Suspense
-        fallback={<div className="text-sm" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>}
+        fallback={<div className="text-body" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>}
       >
         <UsersPage />
       </Suspense>

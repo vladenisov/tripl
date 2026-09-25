@@ -89,7 +89,7 @@ export function ScanCausalNote(props: ScanCausalNoteProps) {
   return (
     <p
       data-testid="scan-causal-note"
-      className="m-0 max-w-[620px] text-[12px] leading-snug"
+      className="m-0 max-w-[620px] text-body-sm leading-snug"
       // A saved config that asked for a schedule and never got dispatched is a
       // fault, not a preference — it is the only variant that reads as a warning.
       style={{ color: isMisconfigured ? 'var(--warning)' : 'var(--fg-subtle)' }}

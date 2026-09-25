@@ -9,7 +9,6 @@
 
 import { FlaskConical } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
-import { Badge } from '@/components/ui/badge'
 
 /** "Local synthetic data" — the top-level marker for a demo workspace. */
 export function DemoDataBadge({ className }: { className?: string }) {
@@ -30,17 +29,17 @@ export function SyntheticSourceBadge({ size = 'xs' }: { size?: 'xs' | 'sm' | 'md
 }
 
 /**
- * Marks an alert delivery recorded by a local demo sink (no external send). Uses
- * the table-friendly Badge to match `AlertDeliveryRow`'s status badge, and never
- * a success variant — a simulated delivery must not read as a real one.
+ * Marks an alert delivery recorded by a local demo sink (no external send). A
+ * status pill like `AlertDeliveryRow`'s, and never a success tone — a simulated
+ * delivery must not read as a real one.
  */
 export function LocalDeliveryBadge({ simulated }: { simulated?: boolean }) {
   return (
-    <Badge
-      variant="warning"
+    <Chip
+      tone="warning"
       title="Recorded locally by the demo sink — nothing was sent to an external channel"
     >
       {simulated ? 'Local · simulated' : 'Local'}
-    </Badge>
+    </Chip>
   )
 }

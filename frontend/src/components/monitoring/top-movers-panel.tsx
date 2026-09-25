@@ -5,14 +5,15 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight } from 'lucide-react'
 
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { ErrorState } from '@/components/error-state'
-import { Card, CardContent } from '@/components/ui/card'
+import { Chip } from '@/components/primitives/chip'
+import { LoadingState } from '@/components/primitives/loading-state'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { MetricsChart } from '@/components/ui/chart'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { granularityForInterval } from '@/lib/metricAdapters'
 import { formatSignalSeverity } from '@/lib/monitoring'
 import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { signalDirectionColor, signalDirectionTone } from '@/lib/statusLexicon'
-import { cn } from '@/lib/utils'
 import type {
   BreakdownTimelinePoint,
   ChartAnnotation,
@@ -88,8 +89,8 @@ export function TopMoversPanel({
   if (isLoading) {
     return (
       <Card>
-        <CardContent className="p-4 text-sm text-muted-foreground">
-          Loading top movers…
+        <CardContent>
+          <LoadingState label="Loading top movers…" className="text-body-sm" />
         </CardContent>
       </Card>
     )
@@ -119,30 +120,32 @@ export function TopMoversPanel({
   }
 
   return (
+    // The shared section-card geometry (DS-4 / MO-10): a header bar with the
+    // 12.5px h2 and its subtitle, then the rows.
     <Card>
-      <CardContent className="space-y-3 p-4">
-        <div>
-          <h2 className="text-sm font-semibold">Top movers</h2>
-          <p className="text-xs text-muted-foreground">
-            Breakdown rows ranked by |z|, for this anomaly bucket. Click a row to
-            see its timeline.
+      <CardHeader>
+        <CardTitle as="h2">Top movers</CardTitle>
+        <CardDescription>
+          Breakdown rows ranked by |z|, for this anomaly bucket. Click a row to
+          see its timeline.
+        </CardDescription>
+        {isError && (
+          <p role="status" className="mt-1 text-body-sm text-muted-foreground">
+            Refresh failed — showing the last loaded rows.{' '}
+            <button
+              type="button"
+              className="underline underline-offset-2 hover:text-foreground"
+              onClick={() => {
+                void refetch()
+              }}
+            >
+              Retry
+            </button>
           </p>
-          {isError && (
-            <p role="status" className="mt-1 text-xs text-muted-foreground">
-              Refresh failed — showing the last loaded rows.{' '}
-              <button
-                type="button"
-                className="underline underline-offset-2 hover:text-foreground"
-                onClick={() => {
-                  void refetch()
-                }}
-              >
-                Retry
-              </button>
-            </p>
-          )}
-        </div>
-        <ul className="divide-y divide-border text-sm">
+        )}
+      </CardHeader>
+      <CardContent className="py-1">
+        <ul className="divide-y divide-border text-body">
           {data.map(item => {
             const rowKey = `${item.breakdown_column}:${item.breakdown_value}:${item.is_other}`
             const isExpanded = expandedKey === rowKey
@@ -193,38 +196,29 @@ function TopMoverRow({
     <button
       type="button"
       onClick={onToggle}
-      className="flex w-full items-center justify-between gap-3 py-2 text-left transition-colors hover:bg-muted/40"
+      className="flex min-h-(--row-h) w-full items-center justify-between gap-3 py-2 text-left transition-colors hover:bg-muted/40"
       aria-expanded={isExpanded}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <ChevronIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium">
+          <p className="truncate text-body font-medium">
             <span className="text-muted-foreground">{item.breakdown_column}=</span>
             <span className="font-mono">
               {item.is_other ? '(other)' : item.breakdown_value}
             </span>
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             actual {formatCount(item.actual_count)} · expected {formatCount(item.expected_count)}
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2 whitespace-nowrap text-right text-xs">
+      <div className="flex items-center gap-2 whitespace-nowrap text-right text-body-sm">
         {/* The shared direction colours: a spike was painted green here, the
             opposite of every other signal surface (MON-19). */}
-        <span
-          data-tone={tone}
-          className={cn(
-            'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-medium',
-            tone === 'danger'
-              ? 'bg-danger-soft text-danger'
-              : 'bg-warning-soft text-warning',
-          )}
-        >
-          <Icon aria-hidden="true" className="h-3 w-3" />
+        <Chip tone={tone} size="xs" icon={<Icon aria-hidden="true" />}>
           {delta > 0 ? '+' : ''}{formatCount(delta)}
-        </span>
+        </Chip>
         {pct && (
           <span
             className="text-muted-foreground"
@@ -237,7 +231,8 @@ function TopMoverRow({
             {pct}
           </span>
         )}
-        <span className="font-mono text-muted-foreground">
+        {/* A figure, so sans with tabular digits (DS-17). */}
+        <span className="tnum text-muted-foreground">
           {formatSignalSeverity(item)}
         </span>
       </div>
@@ -350,7 +345,7 @@ function BreakdownDrilldown({
 
   if (isLoading) {
     return (
-      <div className="px-2 pb-3 pt-1 text-xs text-muted-foreground" data-testid="breakdown-drilldown">
+      <div className="px-2 pb-3 pt-1 text-body-sm text-muted-foreground" data-testid="breakdown-drilldown">
         Loading timeline…
       </div>
     )
@@ -375,7 +370,7 @@ function BreakdownDrilldown({
 
   if (points.length === 0) {
     return (
-      <div className="px-2 pb-3 pt-1 text-xs text-muted-foreground" data-testid="breakdown-drilldown">
+      <div className="px-2 pb-3 pt-1 text-body-sm text-muted-foreground" data-testid="breakdown-drilldown">
         No timeline data for this breakdown value yet.
       </div>
     )
@@ -392,7 +387,8 @@ function BreakdownDrilldown({
         height={140}
         granularity={granularityForInterval(data?.interval) ?? 'hour'}
         seriesLabel={{ singular: `event (${valueLabel})`, plural: `events (${valueLabel})` }}
-        color="var(--chart-2)"
+        // No `color`: a volume series takes the chart's single-series default
+        // (DS-27), as on the Volume tab.
       />
     </div>
   )

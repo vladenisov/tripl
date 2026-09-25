@@ -12,6 +12,9 @@ import { scanJobsHaveActiveWork } from './scans/scanUtils'
 import type { DataSource, ScanConfig, ScanJob } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Dot } from '@/components/primitives/dot'
+import { PageContainer } from '@/components/primitives/page-container'
+import { PageHeader } from '@/components/primitives/page-header'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ErrorState } from '@/components/error-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getErrorMessage } from '@/lib/utils'
@@ -20,7 +23,7 @@ import { ScanDetail } from './ScanDetail'
 import { ScanCausalNote } from './scans/ScanCausalNote'
 import { ScanConfigurationTab } from './scans/ScanConfigForm'
 import { ScanBadges } from './scans/ScanConfigRow'
-import { BackLink, SrcIcon } from './scans/scanLayout'
+import { BackLink } from './scans/scanLayout'
 import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
 import { deriveScanRunInfo } from './scans/scanUtils'
 import { dataSourcesKey, eventTypesKey, scanActivityKey, scanJobsKey, scansKey } from '@/lib/queryKeys'
@@ -130,7 +133,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
     return (
       <div className="space-y-4">
         <BackLink onClick={goBack} />
-        <p className="text-sm text-muted-foreground">Scan not found.</p>
+        <p className="text-body text-muted-foreground">Scan not found.</p>
       </div>
     )
   }
@@ -150,122 +153,103 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   const meta = STATUS_META[runInfo.status]
 
   return (
-    <div className="flex flex-col gap-4">
+    <PageContainer className="space-y-4">
       {unsaved.dialog}
-      <BackLink onClick={goBack} />
-
-      {/* Stacks below `sm`: one row of icon, title block, Run now and Edit left
-          the title a ~70px column at 375px, one word per line (DATA-11). */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <SrcIcon dbType={dataSource?.db_type ?? null} size={36} />
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-              <h1 className="m-0 text-title font-semibold tracking-tight">{sc.name}</h1>
-              <span className="inline-flex items-center gap-1.5">
-                <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
-                <span className="text-xs" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
-                  {SCAN_STATUS_LABEL[runInfo.status]}
-                </span>
-              </span>
-            </div>
-            <p className="mt-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-              {/* "Reads from", not "Ingests from": the causal note directly below
-                  says what a run DOES ("adds events to your tracking plan"), and
-                  two verbs for one act, one line apart, is the vocabulary drift
-                  this epic opened with. "Reads" is what concepts.md already uses
-                  for the warehouse side. */}
+      {/* The shared page header (DS-1): the scan's name is the page's h1 under
+          the "Govern · Scan" eyebrow, with its run status beside it. */}
+      <PageHeader
+        back={<BackLink onClick={goBack} />}
+        eyebrow="Govern · Scan"
+        title={sc.name}
+        titleAddon={
+          <span className="inline-flex items-center gap-1.5">
+            <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
+            <span className="text-body-sm" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
+              {SCAN_STATUS_LABEL[runInfo.status]}
+            </span>
+          </span>
+        }
+        description={
+          <>
+            {/* "Reads from", not "Ingests from": the causal note directly below
+                says what a run DOES ("adds events to your tracking plan"), and
+                two verbs for one act, one line apart, is the vocabulary drift
+                this epic opened with. "Reads" is what concepts.md already uses
+                for the warehouse side. */}
+            <p className="m-0">
               Reads from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
             </p>
             {/* One line under the header saying what this scan produces and what
-                reads it. Mounted here rather than inside ScanDetail so it sits
-                above the tab strip and holds for both tabs (tripl-3y7z.2). */}
+                reads it. Above the tab strip, so it holds for both tabs
+                (tripl-3y7z.2). */}
             <div className="mt-1">
               <ScanCausalNote variant="config" config={sc} />
             </div>
-          </div>
-        </div>
-        {/* Run is an editor's action, editing the configuration an owner's
-            (DATA-6); the Configuration tab itself stays open to read. */}
-        {(canRun || isOwner) && (
-          <div className="flex shrink-0 items-center gap-2">
-            {canRun && (
-              <ScenarioCoachMark step="live-loop/run-scan">
-                <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
-                  <Play className="size-3" />
-                  {runMut.isPending ? 'Starting…' : 'Run now'}
+          </>
+        }
+        actions={
+          // Run is an editor's action, editing the configuration an owner's
+          // (DATA-6); the Configuration tab itself stays open to read.
+          (canRun || isOwner) && (
+            <>
+              {canRun && (
+                <ScenarioCoachMark step="live-loop/run-scan">
+                  <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
+                    <Play className="size-3.5" />
+                    {runMut.isPending ? 'Starting…' : 'Run now'}
+                  </Button>
+                </ScenarioCoachMark>
+              )}
+              {isOwner && (
+                <Button
+                  variant={tab === 'configuration' ? 'default' : 'outline'}
+                  size="sm"
+                  // A phone has the Configuration tab a few pixels below; a second
+                  // way there only costs the title its width.
+                  className="hidden sm:inline-flex"
+                  onClick={() => setTab('configuration')}
+                >
+                  <Sliders className="size-3.5" />
+                  Edit
                 </Button>
-              </ScenarioCoachMark>
-            )}
-            {isOwner && (
-              <Button
-                variant={tab === 'configuration' ? 'default' : 'outline'}
-                size="sm"
-                // A phone has the Configuration tab a few pixels below; a second
-                // way there only costs the title its width.
-                className="hidden sm:inline-flex"
-                onClick={() => setTab('configuration')}
-              >
-                <Sliders className="size-3.5" />
-                Edit
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
+              )}
+            </>
+          )
+        }
+      />
 
       {runMut.isError && (
-        <p className="text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(runMut.error)}</p>
+        <p className="text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(runMut.error)}</p>
       )}
 
       <ScanBadges sc={sc} intervalLabel={INTERVAL_LABEL} />
 
-      <div role="tablist" aria-label="Scan detail sections" className="flex gap-1 border-b" style={{ borderColor: 'var(--border)' }}>
-        {(['overview', 'configuration'] as const).map((id, idx, arr) => (
-          <button
-            key={id}
-            id={`scan-tab-${id}`}
-            role="tab"
-            aria-selected={tab === id}
-            aria-controls={`scan-tabpanel-${id}`}
-            tabIndex={tab === id ? 0 : -1}
-            type="button"
-            onClick={() => setTab(id)}
-            onKeyDown={(e) => {
-              // The APG tabs keys: arrows wrap, Home/End jump to the ends (DS-35).
-              const target =
-                e.key === 'ArrowRight' ? arr[(idx + 1) % arr.length]
-                : e.key === 'ArrowLeft' ? arr[(idx - 1 + arr.length) % arr.length]
-                : e.key === 'Home' ? arr[0]
-                : e.key === 'End' ? arr[arr.length - 1]
-                : undefined
-              if (!target) return
-              e.preventDefault()
-              setTab(target)
-              document.getElementById(`scan-tab-${target}`)?.focus()
-            }}
-            className="-mb-px px-3 py-2 text-body-sm font-medium"
-            style={{
-              color: tab === id ? 'var(--fg)' : 'var(--fg-muted)',
-              borderBottom: tab === id ? '2px solid var(--accent)' : '2px solid transparent',
-            }}
-          >
-            {id === 'overview' ? 'Overview' : 'Configuration'}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'overview' ? (
-        <div id="scan-tabpanel-overview" role="tabpanel" aria-labelledby="scan-tab-overview">
+      {/* The shared Radix tabs (DS-16 / AL-46): arrow-key roving and the
+          tab/tabpanel wiring come from the primitive instead of a hand-rolled
+          tablist. The value stays URL-controlled, and a switch still goes
+          through the unsaved-changes guard. Manual activation: arrows move
+          focus and Enter/Space selects. With selection on focus, the focus
+          the guard's dialog hands back to the tab on "Keep editing" would
+          select it again and re-open the dialog. */}
+      <Tabs
+        value={tab}
+        onValueChange={next => setTab(next as DetailTab)}
+        activationMode="manual"
+        className="gap-4"
+      >
+        <TabsList aria-label="Scan detail sections">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="configuration">Configuration</TabsTrigger>
+        </TabsList>
+        <TabsContent value="overview">
           <ScanDetail
             slug={slug}
             scanConfig={sc as ScanConfig}
             eventTypes={eventTypes}
             dataSource={dataSource}
           />
-        </div>
-      ) : (
-        <div id="scan-tabpanel-configuration" role="tabpanel" aria-labelledby="scan-tab-configuration">
+        </TabsContent>
+        <TabsContent value="configuration">
           <ScanConfigurationTab
             slug={slug}
             scanConfig={sc as ScanConfig}
@@ -276,8 +260,8 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             }}
             onDirtyChange={setConfigDirty}
           />
-        </div>
-      )}
-    </div>
+        </TabsContent>
+      </Tabs>
+    </PageContainer>
   )
 }

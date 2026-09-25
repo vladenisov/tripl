@@ -74,7 +74,7 @@ export function ProvisioningPhaseList({
         })}
       </ol>
       {!complete && (
-        <p className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+        <p className="text-caption" style={{ color: 'var(--fg-faint)' }}>
           Estimated steps — the server reports only the final result, not the stage it is on.
         </p>
       )}

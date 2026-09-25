@@ -1,4 +1,7 @@
 import { PageHeader } from '@/components/primitives/page-header'
+import { PageContainer } from '@/components/primitives/page-container'
+import { Button } from '@/components/ui/button'
+import { SaveBar } from '@/components/forms/SaveBar'
 import { useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -51,6 +54,9 @@ interface ProbeSummary {
 }
 
 const EMPTY_NAMES: ReadonlySet<string> = new Set()
+
+/** Not a blocker: the probe answers within a second or two. */
+const CHECKING_STATUS = 'Checking the names…'
 
 const STATUS_LABEL: Record<BulkRow['status'], string> = {
   ready: 'will be created',
@@ -191,6 +197,21 @@ export default function EventBulkForm() {
   // Create pressed then sends a batch the server refuses whole (EVT-37).
   const checking = rows.length > 0 && (draft !== debouncedDraft || probes.pending)
   const uncheckedCount = overLimitCount + probes.unchecked.size
+  // Why Create is greyed out, on the sticky bar beside it (AU-6): a disabled
+  // button alone left the reason off screen or unsaid.
+  const blockingReason = !canWrite
+    ? 'Read-only access'
+    : !etId
+      ? 'Pick an event type'
+      : unsupported || unmappedColumns.length > 0
+        ? 'This event type cannot be filled from a pasted list'
+        : rows.length === 0
+          ? 'Paste at least one event name'
+          : checking
+            ? CHECKING_STATUS
+            : ready.length === 0
+              ? 'No line can be created'
+              : null
 
   const createMut = useMutation({
     meta: SILENT_ERROR_META,
@@ -222,13 +243,13 @@ export default function EventBulkForm() {
 
   if (eventTypesQuery.error) {
     return (
-      <div className="mx-auto max-w-[880px] p-6">
+      <PageContainer width="narrow">
         <ErrorState
           title="Failed to load the event types"
           error={eventTypesQuery.error}
           onRetry={() => void eventTypesQuery.refetch()}
         />
-      </div>
+      </PageContainer>
     )
   }
 
@@ -252,18 +273,25 @@ export default function EventBulkForm() {
     : 'Add a title after a tab, e.g. sign_up, a tab, then User signs up.'
 
   return (
-    <div className="h-full overflow-y-auto">
+    // The narrow page container (DS-3), from the shell's own left edge.
+    <PageContainer width="narrow" className="space-y-0 pb-0">
       {unsaved.dialog}
-      <div className="mx-auto max-w-[880px] px-4 sm:px-6 pb-12 pt-4">
-        <button
-          type="button"
-          onClick={goBack}
-          className="mb-[14px] inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
-          style={{ color: 'var(--fg-muted)' }}
-        >
-          <ChevronLeft size={13} /> Events
-        </button>
-        <PageHeader className="mb-[18px]" title="Add many events" />
+      <div>
+        <PageHeader
+          className="mb-[18px]"
+          eyebrow="Plan · Event"
+          title="Add many events"
+          back={
+            <button
+              type="button"
+              onClick={goBack}
+              className="inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              <ChevronLeft className="size-3.5" aria-hidden="true" /> Events
+            </button>
+          }
+        />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         <SurfCard title="What to create">
@@ -272,7 +300,7 @@ export default function EventBulkForm() {
               id="bulk-event-type"
               value={etId}
               onChange={setEtId}
-              required
+              ariaRequired
             >
               <option value="">Select type…</option>
               {eventTypes.map(et => (
@@ -323,7 +351,7 @@ export default function EventBulkForm() {
                   : `${columnHint} ${titleHint}`
               }
             >
-              <div className="px-[18px] py-[15px]">
+              <div className="px-4 py-3">
                 <label htmlFor="bulk-draft" className="sr-only">Events to create</label>
                 <textarea
                   id="bulk-draft"
@@ -356,35 +384,37 @@ export default function EventBulkForm() {
                       below the fold. The line number only matters for matching
                       a row back to the paste; a phone keeps the event, title
                       and verdict. */}
-                  <Table scroll={false} className="text-[12px]" aria-label="Events to create">
+                  <Table scroll={false} className="text-body-sm" aria-label="Events to create">
                     <TableHeader>
                       <TableRow className="hover:bg-transparent">
-                        <TableHead scope="col" className="hidden px-[18px] md:table-cell">Line</TableHead>
-                        <TableHead scope="col" className="max-md:pl-[18px]">Event</TableHead>
-                        <TableHead scope="col" className="px-[18px]">Title</TableHead>
-                        <TableHead scope="col" className="px-[18px]">Status</TableHead>
+                        <TableHead scope="col" className="hidden px-4 md:table-cell">Line</TableHead>
+                        <TableHead scope="col" className="max-md:pl-4">Event</TableHead>
+                        <TableHead scope="col" className="px-4">Title</TableHead>
+                        <TableHead scope="col" className="px-4">Status</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {rows.map(row => (
                         <TableRow key={row.line}>
                           <TableCell
-                            className="hidden px-[18px] py-[6px] tabular-nums md:table-cell"
+                            className="hidden px-4 py-[6px] tabular-nums md:table-cell"
                             style={{ color: 'var(--fg-subtle)' }}
                           >
                             {row.line}
                           </TableCell>
-                          <TableCell className="mono py-[6px] max-md:pl-[18px]">{row.name}</TableCell>
+                          {/* Sans like the catalog's names (DS-17); the paste above stays
+                              mono, since it is raw identifier input. */}
+                          <TableCell className="py-[6px] max-md:pl-4">{row.name}</TableCell>
                           {/* The parse is the only place a stray fourth column
                               becomes visible before it is stored as a title. */}
                           <TableCell
-                            className="px-[18px] py-[6px]"
+                            className="px-4 py-[6px]"
                             style={{ color: row.title ? undefined : 'var(--fg-subtle)' }}
                           >
                             {row.title || '—'}
                           </TableCell>
                           <TableCell
-                            className="px-[18px] py-[6px]"
+                            className="px-4 py-[6px]"
                             style={{ color: STATUS_COLOR[row.status] }}
                           >
                             {rowVerdict(row)}
@@ -405,27 +435,23 @@ export default function EventBulkForm() {
           </div>
         )}
 
-        <div className="mt-1 flex justify-end gap-[10px]">
-          <button
-            type="button"
-            onClick={goBack}
-            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
-          >
+        {/* The sticky action row (AU-6 / AU-7): the Button primitives rather
+            than hand-painted ones, and Create stays on screen however long the
+            parsed list gets. */}
+        <SaveBar status={blockingReason} statusTone={blockingReason === CHECKING_STATUS ? 'muted' : 'danger'}>
+          <Button type="button" variant="ghost" onClick={goBack}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             onClick={() => createMut.mutate()}
             disabled={!canWrite || ready.length === 0 || checking || createMut.isPending}
-            className="inline-flex h-8 items-center gap-[6px] rounded-control px-3 text-[12px] font-medium disabled:opacity-60"
-            style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
-            {createMut.isPending ? <Loader2 className="animate-spin" size={12} /> : <Plus size={12} />}
+            {createMut.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
             {ready.length === 1 ? 'Create 1 event' : `Create ${ready.length} events`}
-          </button>
-        </div>
+          </Button>
+        </SaveBar>
       </div>
-    </div>
+    </PageContainer>
   )
 }

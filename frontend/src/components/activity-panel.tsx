@@ -254,13 +254,13 @@ export function ActivityPanel({
         <Dot tone={activityQuery.isError ? 'warning' : 'accent'} pulse={activityQuery.isFetching} size={7} />
         <span className="text-body-sm font-semibold">Recent activity</span>
         {!isQuiet && (
-          <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
             {activityQuery.isError ? 'offline' : 'auto-refresh'}
           </span>
         )}
         <div className="flex-1" />
         {activityQuery.isFetching && (
-          <Loader2 className="h-[13px] w-[13px] animate-spin" style={{ color: 'var(--fg-subtle)' }} />
+          <Loader2 className="size-3.5 animate-spin" style={{ color: 'var(--fg-subtle)' }} />
         )}
         <button
           type="button"
@@ -271,7 +271,7 @@ export function ActivityPanel({
           style={{ color: 'var(--fg-subtle)' }}
           aria-label="Refresh activity"
         >
-          <RefreshCw className="h-[13px] w-[13px]" aria-hidden="true" />
+          <RefreshCw className="size-3.5" aria-hidden="true" />
         </button>
       </div>
       <div className="flex-1 overflow-y-auto py-2">
@@ -279,7 +279,7 @@ export function ActivityPanel({
         {activityQuery.isError && hasItems && (
           <div
             role="status"
-            className="mx-3.5 mb-2 flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11px]"
+            className="mx-3.5 mb-2 flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-caption"
             style={{
               background: 'var(--surface)',
               borderColor: 'var(--border-subtle)',
@@ -292,7 +292,7 @@ export function ActivityPanel({
               onClick={() => {
                 void activityQuery.refetch()
               }}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-[var(--surface-hover)]"
+              className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 transition-colors hover:bg-[var(--surface-hover)]"
               style={{ color: 'var(--fg)' }}
             >
               <RefreshCw className="h-3 w-3" aria-hidden="true" />
@@ -321,7 +321,7 @@ export function ActivityPanel({
                 onClick={() => {
                   void activityQuery.refetch()
                 }}
-                className="mt-2 inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11px] transition-colors hover:bg-[var(--surface-hover)]"
+                className="mt-2 inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-caption transition-colors hover:bg-[var(--surface-hover)]"
                 style={{ color: 'var(--fg)' }}
               >
                 <RefreshCw className="h-3 w-3" />
@@ -346,11 +346,11 @@ export function ActivityPanel({
       </div>
       {!isQuiet && (
         <div
-          className="flex items-center gap-2 border-t px-3 py-2.5 text-[11px]"
+          className="flex items-center gap-2 border-t px-3 py-2.5 text-caption"
           style={{ borderColor: 'var(--border)', color: 'var(--fg-subtle)' }}
         >
           <Zap className="h-3 w-3" />
-          <span className="mono">
+          <span>
             last 7 days · {countOf(items.length, 'item', 'items')}
           </span>
         </div>
@@ -376,7 +376,7 @@ function ActivityRow({
   const content = (
     <>
       <div
-        className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded"
+        className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-sm"
         style={{
           background: 'var(--surface)',
           color: item.severity === 'low' ? 'var(--fg-muted)' : sevColor,
@@ -385,15 +385,16 @@ function ActivityRow({
         <KindIcon className="h-3 w-3" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-[12px] font-medium leading-[1.35]">{item.title}</div>
+        <div className="text-body-sm font-medium leading-[1.35]">{item.title}</div>
         <div
-          className="mt-0.5 text-[11px] leading-[1.3]"
+          className="mt-0.5 text-caption leading-[1.3]"
           style={{ color: 'var(--fg-subtle)' }}
         >
           {item.detail}
         </div>
+        {/* Sans, not mono: a relative time is prose, not an identifier (DS-17). */}
         <div
-          className="mono mt-[3px] text-[11px] font-medium"
+          className="mt-[3px] text-caption font-medium"
           style={{ color: 'var(--fg-muted)' }}
         >
           {formatRelativeTime(item.occurred_at, now)}
@@ -468,7 +469,7 @@ function ActivityGroupRow({
         }}
       >
         <div
-          className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded"
+          className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-sm"
           style={{
             background: 'var(--surface)',
             color: severity === 'low' ? 'var(--fg-muted)' : sevColor,
@@ -477,7 +478,7 @@ function ActivityGroupRow({
           <KindIcon className="h-3 w-3" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1 text-[12px] font-medium leading-[1.35]">
+          <div className="flex items-center gap-1 text-body-sm font-medium leading-[1.35]">
             <Chevron
               className="h-3 w-3 shrink-0"
               style={{ color: 'var(--fg-muted)' }}
@@ -486,13 +487,13 @@ function ActivityGroupRow({
             <span>{groupSummary(items)}</span>
           </div>
           <div
-            className="mt-0.5 truncate text-[11px] leading-[1.3]"
+            className="mt-0.5 truncate text-caption leading-[1.3]"
             style={{ color: 'var(--fg-subtle)' }}
           >
             {groupPreview(items)}
           </div>
           <div
-            className="mono mt-[3px] text-[11px] font-medium"
+            className="mt-[3px] text-caption font-medium"
             style={{ color: 'var(--fg-muted)' }}
           >
             {formatRelativeTime(first.occurred_at, now)}
@@ -520,11 +521,11 @@ function ActivitySkeleton() {
     <div className="space-y-1 py-1">
       {[0, 1, 2, 3, 4].map((item) => (
         <div key={item} className="flex gap-2.5 px-3.5 py-[9px]">
-          <div className="h-[22px] w-[22px] rounded bg-[var(--surface)]" />
+          <div className="h-[22px] w-[22px] rounded-sm bg-[var(--surface)]" />
           <div className="min-w-0 flex-1 space-y-1.5">
-            <div className="h-3 w-4/5 rounded bg-[var(--surface)]" />
-            <div className="h-2.5 w-3/5 rounded bg-[var(--surface)]" />
-            <div className="h-2 w-16 rounded bg-[var(--surface)]" />
+            <div className="h-3 w-4/5 rounded-sm bg-[var(--surface)]" />
+            <div className="h-2.5 w-3/5 rounded-sm bg-[var(--surface)]" />
+            <div className="h-2 w-16 rounded-sm bg-[var(--surface)]" />
           </div>
         </div>
       ))}

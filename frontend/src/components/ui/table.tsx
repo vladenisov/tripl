@@ -20,7 +20,7 @@ function Table({
       data-slot="table-container"
       className={cn("relative w-full", scroll && "tripl-scroll-x overflow-x-auto")}
     >
-      <table data-slot="table" className={cn("w-full caption-bottom text-sm", className)} {...props} />
+      <table data-slot="table" className={cn("w-full caption-bottom text-body", className)} {...props} />
     </div>
   )
 }
@@ -43,12 +43,16 @@ function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
   )
 }
 
+// Rows and cells follow the density setting (DS-9): --row-h is the row's
+// height (a floor, as on any table row) and --cell-px the cell gutter, so
+// compact/cozy/comfy change every ui/Table, not only `.tripl-table`. The cell's
+// vertical padding stays small so the row height, not the padding, decides.
 function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   return (
     <tr
       data-slot="table-row"
       className={cn(
-        "hover:bg-muted/50 data-[state=selected]:bg-muted border-b transition-colors",
+        "h-(--row-h) hover:bg-muted/50 data-[state=selected]:bg-muted border-b transition-colors",
         className
       )}
       {...props}
@@ -65,7 +69,7 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        "text-muted-foreground h-10 px-3 text-left align-middle text-2xs font-semibold uppercase tracking-[0.04em] whitespace-nowrap [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "text-muted-foreground h-10 px-(--cell-px) text-left align-middle micro-label whitespace-nowrap [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}
@@ -78,7 +82,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
     <td
       data-slot="table-cell"
       className={cn(
-        "px-3 py-2.5 align-middle [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "px-(--cell-px) py-1.5 align-middle [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}
@@ -90,7 +94,7 @@ function TableCaption({ className, ...props }: React.ComponentProps<"caption">) 
   return (
     <caption
       data-slot="table-caption"
-      className={cn("text-muted-foreground mt-4 text-sm", className)}
+      className={cn("text-muted-foreground mt-4 text-body", className)}
       {...props}
     />
   )

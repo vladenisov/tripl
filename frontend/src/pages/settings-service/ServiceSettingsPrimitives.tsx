@@ -1,7 +1,7 @@
 import { useId } from 'react'
 import { CheckCircle2, RotateCcw, XCircle } from 'lucide-react'
 import type { SettingSource } from '@/types'
-import { Badge } from '@/components/ui/badge'
+import { Chip, type ChipTone, type ChipVariant } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SCard, TextInput } from '@/components/settings/kit'
@@ -23,22 +23,25 @@ import {
 
 const SOURCE_BADGE: Record<
   SettingSource,
-  { label: string; variant: 'info' | 'outline' | 'secondary'; title: string }
+  { label: string; tone: ChipTone; variant: ChipVariant; title: string }
 > = {
   override: {
     label: 'Override',
-    variant: 'info',
+    tone: 'info',
+    variant: 'soft',
     title: 'Stored in this instance’s settings table. A section reset clears it.',
   },
   env: {
     label: 'Env',
+    tone: 'neutral',
     variant: 'outline',
     title:
       'Delivered by an environment variable or .env line: the value differs from the built-in default.',
   },
   default: {
     label: 'Default',
-    variant: 'secondary',
+    tone: 'neutral',
+    variant: 'soft',
     title:
       'The built-in default. Either nothing was delivered for this setting, or what was delivered happens to match the default — from here the two are indistinguishable.',
   },
@@ -56,11 +59,12 @@ const SOURCE_BADGE: Record<
  * tooltip says so rather than letting the label overreach.
  */
 export function SourceBadge({ source }: { source: SettingSource }) {
-  const { label, variant, title } = SOURCE_BADGE[source]
+  const { label, tone, variant, title } = SOURCE_BADGE[source]
+  // The badge taxonomy's pill (DS-6): the size comes from `size`.
   return (
-    <Badge variant={variant} className="text-[10px]" title={title}>
+    <Chip tone={tone} variant={variant} size="xs" title={title}>
       {label}
-    </Badge>
+    </Chip>
   )
 }
 
@@ -74,8 +78,8 @@ export function StatusBadge({ active, label }: { active: boolean; label: string 
     <span
       className={
         active
-          ? 'inline-flex items-center gap-1 text-xs text-success'
-          : 'inline-flex items-center gap-1 text-xs text-destructive'
+          ? 'inline-flex items-center gap-1 text-body-sm text-success'
+          : 'inline-flex items-center gap-1 text-body-sm text-destructive'
       }
     >
       {active ? <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> : <XCircle className="h-3 w-3" aria-hidden="true" />}
@@ -90,17 +94,20 @@ export function InstanceSettingsSkeleton() {
     <div aria-busy="true" aria-label="Loading instance settings">
       {[3, 2].map((rows, card) => (
         <SCard key={card}>
-          <div className="px-[18px] py-4">
+          <div className="px-4 py-4">
             <Skeleton className="h-3.5 w-32" />
           </div>
           {Array.from({ length: rows }, (_, row) => (
-            <div
-              key={row}
-              className="flex flex-col gap-2 px-[18px] py-[15px] sm:flex-row sm:items-center sm:gap-6"
-              style={{ borderTop: '1px solid var(--border-subtle)' }}
-            >
-              <Skeleton className="h-3 w-28 shrink-0" />
-              <Skeleton className="h-[34px] w-full" />
+            // Same 560px container step as the FormRow it stands in for, so the
+            // layout does not jump when the data lands.
+            <div key={row} className="@container">
+              <div
+                className="flex flex-col gap-2 px-4 py-[15px] @min-[560px]:flex-row @min-[560px]:items-center @min-[560px]:gap-6"
+                style={{ borderTop: '1px solid var(--border-subtle)' }}
+              >
+                <Skeleton className="h-3 w-28 shrink-0" />
+                <Skeleton className="h-[34px] w-full" />
+              </div>
             </div>
           ))}
         </SCard>

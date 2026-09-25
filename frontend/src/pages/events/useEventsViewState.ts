@@ -57,9 +57,10 @@ export function useEventsViewState({
   }, [activeEt, activeTab, eventTypeSignals, projectTotalSignal])
   const activeTabLabel = useMemo(() => {
     if (activeEt) return activeEt.display_name
-    if (activeTab === 'review') return 'Review Queue'
-    if (activeTab === 'archived') return 'Archived Events'
-    return 'All Events'
+    // Sentence case, like every other label (DS-29).
+    if (activeTab === 'review') return 'Review queue'
+    if (activeTab === 'archived') return 'Archived events'
+    return 'All events'
   }, [activeEt, activeTab])
 
   const visibleFieldColumns = useMemo(

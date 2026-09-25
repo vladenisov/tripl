@@ -35,6 +35,12 @@ export type NavItem = {
   match: (path: string) => boolean
   count?: string
   tone?: NavTone
+  /**
+   * The count is an unacknowledged alert backlog: the sidebar paints it solid
+   * red (DS-6, DS-28). Only Alerting's open incidents set it; a danger tone
+   * alone (Anomalies) stays a neutral count.
+   */
+  urgent?: boolean
   // Hidden from non-owners by the sidebar. This mirrors a real 403 on the
   // route behind it — it is a "don't walk them into a wall" affordance, never
   // the gate itself (see settings/nav.ts for the same flag on that side).
@@ -227,6 +233,7 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           // the two cannot disagree. Omitted when the inbox is clear.
           count: openIncidents > 0 ? formatCount(openIncidents) : undefined,
           tone: openIncidents > 0 ? 'danger' : undefined,
+          urgent: openIncidents > 0 || undefined,
         },
       ],
     },

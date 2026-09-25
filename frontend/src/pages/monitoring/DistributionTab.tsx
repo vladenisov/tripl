@@ -1,8 +1,10 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { ErrorState } from '@/components/error-state'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent } from '@/components/ui/card'
+import { Chip, type ChipTone } from '@/components/primitives/chip'
+import { LoadingState } from '@/components/primitives/loading-state'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -12,6 +14,7 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { DistributionDriftBand, DistributionDriftPoint } from '@/types'
 import { formatPercent } from './chartSeries'
 import { distributionDriftsKey } from '@/lib/queryKeys'
+import { ChartCardHeader } from './MetricsRangeControls'
 
 export type DistributionScope =
   | { scope_type: 'project_total'; scope_ref: string; scan_config_id: string }
@@ -67,10 +70,11 @@ export function DistributionTab({
   )
 }
 
-function driftBandClassName(band: DistributionDriftBand) {
-  if (band === 'significant') return 'border-destructive/60 bg-destructive/10 text-destructive'
-  if (band === 'minor') return 'border-warning/50 bg-warning-soft text-warning'
-  return 'border-success/40 bg-success-soft text-success'
+/** A drift band is a status, so it is a toned Chip like every other (DS-6). */
+function driftBandTone(band: DistributionDriftBand): ChipTone {
+  if (band === 'significant') return 'danger'
+  if (band === 'minor') return 'warning'
+  return 'success'
 }
 
 function DistributionShareBar({
@@ -84,7 +88,7 @@ function DistributionShareBar({
 }) {
   return (
     <div className="grid gap-2 rounded-md border bg-background p-3">
-      <div className="flex items-center justify-between gap-3 text-xs">
+      <div className="flex items-center justify-between gap-3 text-body-sm">
         <span className="min-w-0 truncate font-mono">{label}</span>
         <span className="shrink-0 text-muted-foreground">
           {formatPercent(baselineShare)} {'->'} {formatPercent(currentShare)}
@@ -147,8 +151,11 @@ function DistributionDriftPanel({
   if (isLoading) {
     return (
       <Card>
-        <CardContent className="flex h-56 items-center justify-center text-sm text-muted-foreground">
-          Loading distribution data…
+        <CardContent>
+          <LoadingState
+            label="Loading distribution data…"
+            className="flex h-48 items-center justify-center text-body-sm"
+          />
         </CardContent>
       </Card>
     )
@@ -157,12 +164,12 @@ function DistributionDriftPanel({
   if (!data.length || !fields.length) {
     return (
       <Card>
-        <CardContent className="flex h-56 flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
+        <CardContent className="flex h-56 flex-col items-center justify-center gap-1 text-center text-body text-muted-foreground">
           <p>No distribution drift data available</p>
           {/* "the scan" is the one resolved above (`scanConfigId`) — this scope's
               samples come from that scan and no other, so "run a scan" pointed the
               reader at the wrong control as well as at the wire's noun. */}
-          <p className="max-w-md text-xs">
+          <p className="max-w-md text-body-sm">
             Add fields to{' '}
             <span className="font-mono">distribution_drift_fields</span> on the scan,
             then run it to start collecting distribution samples for this scope.
@@ -174,47 +181,38 @@ function DistributionDriftPanel({
 
   return (
     <div className="space-y-4">
+      {/* The shared section-card geometry (DS-4 / MO-10): a header bar with
+          the 12.5px h2 and the field picker, then the body. */}
       <Card>
-        <CardContent className="space-y-4 p-4 sm:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">Distribution</h2>
-            <Select value={activeField} onValueChange={onSelectedFieldChange}>
-              <SelectTrigger className="h-8 w-full sm:w-[220px]" aria-label="Distribution field">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {fields.map(field => (
-                  <SelectItem key={field} value={field}>
-                    {field}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
+        <ChartCardHeader title={<CardTitle as="h2">Distribution</CardTitle>}>
+          <Select value={activeField} onValueChange={onSelectedFieldChange}>
+            <SelectTrigger className="w-full sm:w-[220px]" aria-label="Distribution field">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {fields.map(field => (
+                <SelectItem key={field} value={field}>
+                  {field}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </ChartCardHeader>
+        <CardContent className="space-y-4">
+          {/* The one KPI idiom (DS-5); unboxed, as it already sits in a card. */}
           {latest && (
-            <div className="grid gap-3 md:grid-cols-4">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
-                <p className="text-sm font-medium">{formatTimestamp(latest.bucket)}</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">PSI</p>
-                <p className="text-sm font-medium">{latest.psi.toFixed(3)}</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Band</p>
-                <Badge variant="outline" className={driftBandClassName(latest.band)}>
-                  {latest.band}
-                </Badge>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">Rows</p>
-                <p className="text-sm font-medium">
-                  {latest.baseline_total.toLocaleString()} {'->'} {latest.current_total.toLocaleString()}
-                </p>
-              </div>
-            </div>
+            <MiniStatStrip>
+              <MiniStat label="Bucket" value={formatTimestamp(latest.bucket)} />
+              <MiniStat label="PSI" value={latest.psi.toFixed(3)} />
+              <MiniStat
+                label="Band"
+                value={<Chip tone={driftBandTone(latest.band)}>{latest.band}</Chip>}
+              />
+              <MiniStat
+                label="Rows"
+                value={`${latest.baseline_total.toLocaleString()} -> ${latest.current_total.toLocaleString()}`}
+              />
+            </MiniStatStrip>
           )}
 
           {latest && latest.top_movers.length > 0 && (
@@ -233,6 +231,11 @@ function DistributionDriftPanel({
       </Card>
 
       <Card>
+        {/* Titled like every other section card: it was the one untitled
+            card on the page (MO-10). */}
+        <CardHeader>
+          <CardTitle as="h2">Drift history · last 12 buckets</CardTitle>
+        </CardHeader>
         <CardContent className="p-0">
           {/* A phone drops the Band column: the PSI beside it carries the same
               verdict. Top contribution stays — the movers card above covers
@@ -257,13 +260,11 @@ function DistributionDriftPanel({
                     </TableCell>
                     <TableCell className="px-4 py-3 font-medium">{row.psi.toFixed(3)}</TableCell>
                     <TableCell className="hidden px-4 py-3 md:table-cell">
-                      <Badge variant="outline" className={driftBandClassName(row.band)}>
-                        {row.band}
-                      </Badge>
+                      <Chip tone={driftBandTone(row.band)}>{row.band}</Chip>
                     </TableCell>
                     <TableCell className="px-4 py-3">
                       {topMover ? (
-                        <span className="font-mono text-xs">
+                        <span className="font-mono text-body-sm">
                           {topMover.value}: {formatPercent(topMover.baseline_share)} {'->'} {formatPercent(topMover.current_share)}
                         </span>
                       ) : (

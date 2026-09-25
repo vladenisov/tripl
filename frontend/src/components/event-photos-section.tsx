@@ -188,12 +188,14 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
 
   return (
     <Card>
-      <CardContent className="p-6">
+      {/* The Card's own p-4 body and the section-title scale (12.5px
+          semibold), not a p-6 body under an 18px title (DS-4, MO-9). */}
+      <CardContent>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <ImagePlus className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">Photos &amp; specs</h2>
-            <span className="text-xs text-muted-foreground">({photos.length})</span>
+            <ImagePlus className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+            <h2 className="text-body-sm font-semibold">Photos &amp; specs</h2>
+            <span className="tnum text-caption text-muted-foreground">({photos.length})</span>
           </div>
           {canWrite && (
             <div className="flex items-center gap-2">
@@ -278,16 +280,16 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
           }`}
         >
           {photosQuery.isLoading ? (
-            <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
+            <div className="flex h-24 items-center justify-center text-body text-muted-foreground">
               Loading photos…
             </div>
           ) : photos.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-1 py-6 text-center text-sm text-muted-foreground">
-              <ImagePlus className="h-6 w-6 text-muted-foreground/70" />
+            <div className="flex flex-col items-center justify-center gap-1 py-6 text-center text-body text-muted-foreground">
+              <ImagePlus className="size-5 text-muted-foreground/70" />
               {canWrite ? (
                 <>
                   <div>Drop images here, click <span className="font-medium">Upload</span>, or attach a Figma URL above</div>
-                  <div className="text-xs">
+                  <div className="text-body-sm">
                     JPEG, PNG, GIF, or WebP{maxSizeMb !== undefined && `, up to ${maxSizeMb} MB each`}
                   </div>
                 </>
@@ -315,7 +317,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
         {uploads.length > 0 && (
           <ul className="mt-3 space-y-1.5" aria-label="Uploads">
             {uploads.map(item => (
-              <li key={item.key} className="text-xs">
+              <li key={item.key} className="text-body-sm">
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate" title={item.name}>{item.name}</span>
                   <span className={item.status === 'failed' ? 'shrink-0 text-destructive' : 'shrink-0 text-muted-foreground'}>
@@ -338,13 +340,13 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
         )}
 
         {skipped.length > 0 && (
-          <div role="status" className="mt-3 rounded-md border px-3 py-2 text-xs text-muted-foreground">
+          <div role="status" className="mt-3 rounded-md border px-3 py-2 text-body-sm text-muted-foreground">
             Not uploaded: {skipped.join(', ')}.
           </div>
         )}
 
         {error && (
-          <div role="alert" className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div role="alert" className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-body-sm text-destructive">
             {error}
           </div>
         )}
@@ -355,7 +357,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
       <Dialog open={opened !== null} onOpenChange={open => !open && setOpened(null)}>
         {/* No description: the image and its thread are the content. Saying so
             outright keeps Radix from warning about a missing one. */}
-        <DialogContent className="max-w-5xl bg-background p-2" aria-describedby={undefined}>
+        <DialogContent className="max-w-5xl p-2" aria-describedby={undefined}>
           <DialogTitle className="sr-only">
             {opened?.original_filename || 'Photo viewer'}
           </DialogTitle>
@@ -394,8 +396,8 @@ function PhotoTile({
       >
         {isFigma ? (
           <div className="flex aspect-square w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-purple-500/10 via-orange-500/10 to-pink-500/10 p-3 text-center">
-            <Frame className="h-8 w-8 text-foreground/70" />
-            <span className="line-clamp-2 text-xs font-medium text-foreground/80">
+            <Frame className="size-5 text-foreground/70" />
+            <span className="line-clamp-2 text-body-sm font-medium text-foreground/80">
               {photo.original_filename || 'Figma frame'}
             </span>
           </div>
@@ -409,14 +411,17 @@ function PhotoTile({
         )}
       </button>
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/70 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100">
-        <span className="truncate text-xs text-white" title={photo.original_filename}>
+        <span className="truncate text-body-sm text-white" title={photo.original_filename}>
           {photo.original_filename || (isFigma ? 'Figma frame' : 'photo')}
         </span>
         {onDelete && (
           <IconButton
-            variant="destructive"
+            // The row-level destructive look, not the solid red kept for a
+            // confirm dialog's button (DS-20). The page surface behind it keeps
+            // the red icon legible over the photo's dark gradient.
+            variant="danger"
             label="Delete photo"
-            className="h-7 w-7 shrink-0"
+            className="h-7 w-7 shrink-0 bg-(--bg) hover:bg-(--danger-soft)"
             disabled={deleting}
             onClick={event => {
               event.stopPropagation()
@@ -427,7 +432,7 @@ function PhotoTile({
           </IconButton>
         )}
       </div>
-      <div className="absolute right-1 top-1 rounded bg-black/50 px-1.5 py-0.5 text-[10px] text-white">
+      <div className="absolute right-1 top-1 rounded-sm bg-black/50 px-1.5 py-0.5 text-micro text-white">
         {isFigma ? 'Figma' : formatSize(photo.size_bytes)}
       </div>
     </div>
@@ -465,7 +470,7 @@ function PhotoViewer({
         )}
         {/* No close button of its own: DialogContent already renders a labelled
             one, and a second, unlabelled X beside it read as "button" (EVT-51). */}
-        <div className="flex items-center justify-between gap-2 px-2 pt-2 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between gap-2 px-2 pt-2 text-body-sm text-muted-foreground">
           <span className="truncate">
             {photo.original_filename}
             {!isFigma && ` · ${formatSize(photo.size_bytes)}`}

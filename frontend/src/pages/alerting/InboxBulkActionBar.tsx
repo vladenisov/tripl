@@ -271,7 +271,7 @@ export function InboxBulkActionBar({
               event.preventDefault()
               run({ action: 'note' })
             }}
-            className="min-h-0 w-full min-w-60 py-1.5 text-[11px] leading-5"
+            className="min-h-0 w-full min-w-60 py-1.5 text-caption leading-5"
           />
           <div className="flex flex-wrap items-center gap-2">
             {/* Saves the note and NOTHING else — `note` moves no status and
@@ -284,7 +284,7 @@ export function InboxBulkActionBar({
             <Button
               size="sm"
               variant="outline"
-              className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
+              className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
               aria-label={`Save this note on ${target}`}
               title="Copies this note onto every selected incident, and moves no status. Ctrl+Enter (⌘+Enter on a Mac) does the same."
               disabled={actionsDisabled || trimmedNote.length === 0}
@@ -292,11 +292,11 @@ export function InboxBulkActionBar({
             >
               Save note
             </Button>
-            <span className="text-[10px]" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="text-micro" style={{ color: 'var(--fg-subtle)' }}>
               …or press an action below to save it with that.
             </span>
             {noteBudget && (
-              <span role="status" className="text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+              <span role="status" className="text-micro" style={{ color: 'var(--fg-muted)' }}>
                 {noteBudget}
               </span>
             )}
@@ -304,8 +304,8 @@ export function InboxBulkActionBar({
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2.5">
-      <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
-        <span className="mono font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
+      <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+        <span className="tnum font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
       </span>
       {isOverCap && (
         // `role="status"`, so it is ANNOUNCED and not merely visible: every
@@ -313,7 +313,7 @@ export function InboxBulkActionBar({
         // and a row of controls that stops working without saying why is the
         // failure this line exists to prevent. Warning rather than danger —
         // nothing has gone wrong, the operator simply has to untick some rows.
-        <span role="status" className="text-[11px]" style={{ color: 'var(--warning)' }}>
+        <span role="status" className="text-caption" style={{ color: 'var(--warning)' }}>
           {overCapNotice(overCapBy)}
         </span>
       )}
@@ -332,7 +332,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
+        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
         aria-expanded={noteOpen}
         aria-label={`Add a note to ${target}`}
         title="One sentence, copied onto every selected incident. Saved on its own, or carried by whichever action you press next."
@@ -355,7 +355,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
+        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
         aria-label={`Acknowledge ${target}`}
         title="Stops re-delivery on each one until its scope goes quiet, then each reopens by itself. Reversible."
         disabled={actionsDisabled}
@@ -366,7 +366,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
+        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
         aria-label={`Resolve ${target}`}
         title="Same suppression as Acknowledge, different bucket in the filter. Each reopens by itself once its scope goes quiet. Reversible."
         disabled={actionsDisabled}
@@ -377,7 +377,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
+        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
         aria-expanded={muteOpen}
         // The shared "Mute <target>" sentence, given a count instead of a scope.
         // The incident card's other branch ("Change mute on …") has no meaning
@@ -393,7 +393,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
+        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
         // One word for one slot, and it is the surface's own word, not mute
         // vocabulary: `reopen` lifts acknowledge, resolve and false-positive as
         // well as a mute. The card can say "Unmute" because it knows the one
@@ -407,7 +407,7 @@ export function InboxBulkActionBar({
         Reopen
       </Button>
       {muteOpen && (
-        <div className="flex flex-wrap items-center gap-1 text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+        <div className="flex flex-wrap items-center gap-1 text-micro" style={{ color: 'var(--fg-muted)' }}>
           <span>Mute for</span>
           {/* INBOX_MUTE_CHOICES, not MUTE_PRESETS, and not re-typed literals.
               The shared module documents the scope rule: the open-ended choice
@@ -423,7 +423,7 @@ export function InboxBulkActionBar({
               key={choice.label}
               size="sm"
               variant="outline"
-              className="h-9 px-3 text-xs sm:h-6 sm:px-2 sm:text-[10px]"
+              className="h-9 px-3 text-body-sm sm:h-6 sm:px-2 sm:text-micro"
               // Visible face and accessible name differ on the open-ended
               // button by design — "Mute 4 selected incidents for Until I
               // unmute" is not English. See `muteChoiceName` for the reasoning
@@ -441,7 +441,7 @@ export function InboxBulkActionBar({
       <button
         type="button"
         onClick={onClear}
-        className="flex size-9 items-center justify-center rounded sm:size-6 text-[var(--fg-subtle)] hover:text-[var(--fg)]"
+        className="flex size-9 items-center justify-center rounded-sm sm:size-6 text-[var(--fg-subtle)] hover:text-[var(--fg)]"
         aria-label="Clear selection"
       >
         <X className="h-3.5 w-3.5" />

@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Textarea } from '@/components/ui/textarea'
 import {
-  ALERT_INBOX_STATUSES,
   alertInboxStatusLabel,
   alertInboxStatusTone,
   incidentDirectionGlyph,
@@ -341,6 +340,15 @@ export function AlertingInbox({
   // and remounting is the one reset that also drops the pending debounce —
   // otherwise it fired afterwards and re-applied what was just cleared (ALR-50).
   const [filterBarGeneration, setFilterBarGeneration] = useState(0)
+  // Status and every other filter off, in one write when the page offers one.
+  const clearAllFilters = () => {
+    if (onClearAllFilters) {
+      onClearAllFilters()
+    } else {
+      onStatusFilterChange('')
+      onFiltersChange(EMPTY_INBOX_FILTERS)
+    }
+  }
 
   const windowTruncatedAt = inbox?.window_truncated_at ?? null
   const subtitle = isLoading
@@ -380,7 +388,7 @@ export function AlertingInbox({
       {/* Once, at the head of the section — not on each of the cards, which is
           the same sentence up to fifty times for one fact about the account. */}
       {!canWrite && (
-        <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+        <p className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
           {VIEWER_READ_ONLY_NOTICE}
         </p>
       )}
@@ -389,7 +397,7 @@ export function AlertingInbox({
           one". Say which, and where to fix it. */}
       {!hasRules && (
         <Panel title="Inbox" subtitle="0 groups">
-          <p className="p-4 text-sm text-muted-foreground">
+          <p className="p-4 text-body text-muted-foreground">
             No rules yet, so nothing can raise an incident. Add one under{' '}
             <button
               type="button"
@@ -425,12 +433,11 @@ export function AlertingInbox({
                   aria-label={`Select all ${selectableIds.length} shown incidents`}
                   title="Shift-click two incident checkboxes to select everything between them."
                 />
-                <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+                <span className="whitespace-nowrap text-caption text-muted-foreground">
                   Select all {selectableIds.length} shown
                 </span>
               </div>
             )}
-            <StatusFilterChips value={statusFilter} onChange={onStatusFilterChange} />
           </div>
         }
       >
@@ -443,6 +450,9 @@ export function AlertingInbox({
             key={filterBarGeneration}
             value={filters}
             onChange={onFiltersChange}
+            status={statusFilter}
+            onStatusChange={onStatusFilterChange}
+            onClearAll={clearAllFilters}
           />
           {/* ABOVE the loading/error/empty/list ternary, not inside its last
               branch. The cap drops rows before grouping and before the status
@@ -458,7 +468,7 @@ export function AlertingInbox({
           {windowTruncatedAt && (
             <p
               role="status"
-              className="rounded-md border border-dashed p-3 text-xs text-muted-foreground"
+              className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground"
             >
               This project sent more alerts in the last 30 days than the Inbox reads at
               once, so the list starts at {formatDateTime(windowTruncatedAt)}. An incident
@@ -467,15 +477,15 @@ export function AlertingInbox({
             </p>
           )}
           {isLoading ? (
-            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
               Loading incidents…
             </div>
           ) : isError ? (
-            <p role="alert" className="rounded-lg border border-dashed p-4 text-sm text-destructive">
+            <p role="alert" className="rounded-lg border border-dashed p-4 text-body text-destructive">
               Could not load the inbox: {getErrorMessage(loadError)}
             </p>
           ) : items.length === 0 && !pinnedGroup ? (
-            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
               {statusFilter || hasActiveInboxFilters(filters) ? (
                 <>
                   {/* Naming the filter is the difference between "nothing has
@@ -498,12 +508,7 @@ export function AlertingInbox({
                   <button
                     type="button"
                     onClick={() => {
-                      if (onClearAllFilters) {
-                        onClearAllFilters()
-                      } else {
-                        onStatusFilterChange('')
-                        onFiltersChange(EMPTY_INBOX_FILTERS)
-                      }
+                      clearAllFilters()
                       setFilterBarGeneration(generation => generation + 1)
                     }}
                     className="underline underline-offset-2"
@@ -522,14 +527,14 @@ export function AlertingInbox({
                   number that looks project-wide while describing one page is
                   how "52 open" turns into a decision nobody can retrace. */}
               {!statusFilter && items.length > 0 && (
-                <p className="text-2xs text-muted-foreground">
+                <p className="text-micro text-muted-foreground">
                   Of the {countOf(items.length, 'incident', 'incidents')} loaded: {openCount} open ·{' '}
                   {handledCount} handled
                 </p>
               )}
               {pinnedGroup && (
                 <div className="space-y-1">
-                  <p className="text-2xs text-muted-foreground">
+                  <p className="text-micro text-muted-foreground">
                     Linked from an alert. This incident is outside the list below.
                   </p>
                   {renderCard(pinnedGroup, true)}
@@ -540,7 +545,7 @@ export function AlertingInbox({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-9 text-xs sm:h-7 sm:text-[11px]"
+                  className="h-9 text-body-sm sm:h-7 sm:text-caption"
                   disabled={isLoadingMore}
                   onClick={onLoadMore}
                 >
@@ -552,43 +557,6 @@ export function AlertingInbox({
         </div>
       </Panel>
       )}
-    </div>
-  )
-}
-
-function StatusFilterChips({
-  value,
-  onChange,
-}: {
-  value: InboxStatusFilter
-  onChange: (next: InboxStatusFilter) => void
-}) {
-  const options: { key: InboxStatusFilter; label: string }[] = [
-    { key: '', label: 'All' },
-    ...ALERT_INBOX_STATUSES.map(status => ({
-      key: status as InboxStatusFilter,
-      label: alertInboxStatusLabel(status),
-    })),
-  ]
-  return (
-    <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Filter by status">
-      {options.map(option => (
-        <button
-          key={option.key || 'all'}
-          type="button"
-          aria-pressed={value === option.key}
-          onClick={() => onChange(option.key)}
-          // 36px tall on a phone, the compact chip from `sm` up (ALR-30).
-          className="min-h-9 rounded border px-2.5 py-1 text-xs transition-colors sm:min-h-0 sm:px-2 sm:py-0.5 sm:text-[11px]"
-          style={{
-            borderColor: value === option.key ? 'var(--accent)' : 'var(--border)',
-            color: value === option.key ? 'var(--fg)' : 'var(--fg-subtle)',
-            fontWeight: value === option.key ? 600 : 400,
-          }}
-        >
-          {option.label}
-        </button>
-      ))}
     </div>
   )
 }
@@ -764,7 +732,7 @@ const IncidentCard = memo(function IncidentCard({
   return (
     <div
       id={`incident-${id}`}
-      className="rounded-md border p-3 text-xs"
+      className="rounded-md border p-3 text-body-sm"
       style={isPinned ? { borderColor: 'var(--accent)' } : undefined}
     >
       <div className="flex items-start gap-2">
@@ -899,13 +867,13 @@ const IncidentCard = memo(function IncidentCard({
           )}
         </div>
         <div
-          className="mt-1 text-[11px] text-muted-foreground"
+          className="mt-1 text-caption text-muted-foreground"
           title={incidentMagnitudeTitle(group)}
         >
           {incidentMagnitudeLabel(group)}
           {worstDelta && <> · {worstDelta}</>}
         </div>
-        <div className="mt-1 text-[10px] text-muted-foreground">
+        <div className="mt-1 text-micro text-muted-foreground">
           {/* Each rule is linked by ITS OWN id: `rules` pairs id with name, so
               the card can no longer send "Volume rule" to whichever monitor
               sorted first (tripl-oxkt.4). The monitor page is where the coarse
@@ -927,7 +895,7 @@ const IncidentCard = memo(function IncidentCard({
           {group.scan_names.join(', ')}
         </div>
         {siblings.length > 0 && (
-          <div className="mt-1 text-[10px] text-muted-foreground">
+          <div className="mt-1 text-micro text-muted-foreground">
             {siblings.map(sibling => (
               <a
                 key={sibling.correlation_group_id}
@@ -941,7 +909,7 @@ const IncidentCard = memo(function IncidentCard({
           </div>
         )}
         {decision && (
-          <div className="mt-1 text-[10px] text-muted-foreground">{decision}</div>
+          <div className="mt-1 text-micro text-muted-foreground">{decision}</div>
         )}
       </div>
       </div>
@@ -965,14 +933,14 @@ const IncidentCard = memo(function IncidentCard({
           and it never lapses, so it sinks out of the 30-day window for good and
           that filter is the only route back to its Unmute (tripl-oxkt.2). */}
       {group.muted && (
-        <div className="mt-2 text-[10px] text-muted-foreground">
+        <div className="mt-2 text-micro text-muted-foreground">
           {group.muted_until
             ? `muted until ${formatDateTime(group.muted_until)}`
             : 'muted — no end date, until you unmute it'}
         </div>
       )}
       {group.note && (
-        <p className="mt-2 rounded border-l-2 border-muted-foreground/30 bg-muted/40 px-2 py-1 text-[11px] leading-5">
+        <p className="mt-2 rounded-sm border-l-2 border-muted-foreground/30 bg-muted/40 px-2 py-1 text-caption leading-5">
           {group.note}
         </p>
       )}
@@ -1018,7 +986,7 @@ const IncidentCard = memo(function IncidentCard({
                   event.preventDefault()
                   runAction('note')
                 }}
-                className="min-h-0 w-full py-1.5 text-[11px] leading-5"
+                className="min-h-0 w-full py-1.5 text-caption leading-5"
               />
               <div className="flex flex-wrap items-center gap-2">
                 {/* An explicit save, because a note used to be reachable only as a
@@ -1029,7 +997,7 @@ const IncidentCard = memo(function IncidentCard({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
+                  className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
                   title="Ctrl+Enter (⌘+Enter on a Mac) saves without leaving the box."
                   disabled={isPending || !canSaveNote}
                   onClick={() => runAction('note')}
@@ -1039,7 +1007,7 @@ const IncidentCard = memo(function IncidentCard({
                 {noteBudget && (
                   // `role="status"`: it appears mid-sentence, while the reader is
                   // looking at their own typing rather than at the row below it.
-                  <span role="status" className="text-[10px] text-muted-foreground">
+                  <span role="status" className="text-micro text-muted-foreground">
                     {noteBudget}
                   </span>
                 )}
@@ -1049,7 +1017,7 @@ const IncidentCard = memo(function IncidentCard({
             <button
               type="button"
               onClick={openNote}
-              className="inline-flex min-h-9 items-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground sm:min-h-0 sm:text-2xs"
+              className="inline-flex min-h-9 items-center text-body-sm text-muted-foreground underline underline-offset-2 hover:text-foreground sm:min-h-0 sm:text-micro"
             >
               {group.note ? 'Edit note' : 'Add note'}
             </button>
@@ -1066,7 +1034,7 @@ const IncidentCard = memo(function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
+            className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
             aria-label={`Acknowledge ${target}`}
             title="Stops re-delivery until the scope goes quiet, then this reopens by itself. Reversible."
             disabled={isPending || group.status !== 'open'}
@@ -1077,7 +1045,7 @@ const IncidentCard = memo(function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
+            className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
             aria-label={`Resolve ${target}`}
             title="Same suppression as Ack, different bucket in the filter. Reopens by itself once the scope goes quiet. Reversible."
             disabled={isPending || group.status === 'resolved'}
@@ -1088,7 +1056,7 @@ const IncidentCard = memo(function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
+            className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
             aria-expanded={muteOpen}
             // Two WHOLE names, not one verb fragment glued to the target: the
             // "Mute <target>" half is the vocabulary the Monitors surfaces
@@ -1122,7 +1090,7 @@ const IncidentCard = memo(function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
+            className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
             aria-label={isMuted ? unmuteName(target) : `Reopen ${target}`}
             title={
               isMuted
@@ -1147,7 +1115,7 @@ const IncidentCard = memo(function IncidentCard({
             <Button
               size="sm"
               variant="outline"
-              className="h-9 px-3 text-xs text-destructive sm:h-7 sm:px-2 sm:text-[10px]"
+              className="h-9 px-3 text-body-sm text-destructive sm:h-7 sm:px-2 sm:text-micro"
               aria-label={`Mark ${target} as a false positive`}
               title="Closes this incident and permanently makes detection stricter on its scopes only. Asks first, and reports how many scopes it actually changed."
               disabled={isPending || group.status === 'false_positive'}
@@ -1160,7 +1128,7 @@ const IncidentCard = memo(function IncidentCard({
       </div>
 
       {muteOpen && (
-        <div className="mt-2 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+        <div className="mt-2 flex flex-wrap items-center gap-1 text-micro text-muted-foreground">
           {/* Durations on the buttons, not a silent constant in the mutation:
               every mute was 7 days and nothing said so (tripl-oxkt.7).
 
@@ -1180,7 +1148,7 @@ const IncidentCard = memo(function IncidentCard({
               key={choice.label}
               size="sm"
               variant="outline"
-              className="h-9 px-3 text-xs sm:h-6 sm:px-2 sm:text-[10px]"
+              className="h-9 px-3 text-body-sm sm:h-6 sm:px-2 sm:text-micro"
               // The open-ended button's visible face and its accessible name
               // differ on purpose, and the reason now lives with the branch
               // that makes them differ — see `muteChoiceName` (tripl-yapg).
@@ -1200,7 +1168,7 @@ const IncidentCard = memo(function IncidentCard({
 
       {/* Inside the failing card, not once below all twenty of them. */}
       {errorMessage && (
-        <p role="alert" className="mt-2 text-2xs text-destructive">
+        <p role="alert" className="mt-2 text-micro text-destructive">
           {errorMessage}
         </p>
       )}
@@ -1212,7 +1180,7 @@ const IncidentCard = memo(function IncidentCard({
         type="button"
         aria-expanded={isExpanded}
         onClick={() => toggleIncident(id)}
-        className="mt-2 inline-flex min-h-9 items-center text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground sm:min-h-0 sm:text-2xs"
+        className="mt-2 inline-flex min-h-9 items-center text-body-sm underline underline-offset-2 text-muted-foreground hover:text-foreground sm:min-h-0 sm:text-micro"
       >
         {isExpanded ? 'Hide' : 'Show'} what was sent (
         {countOf(group.delivery_count, 'delivery', 'deliveries')})

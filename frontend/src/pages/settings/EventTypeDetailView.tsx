@@ -17,6 +17,10 @@ import { ErrorState } from '@/components/error-state'
 import type { EventType, EventTypeOwner } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/primitives/chip'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
+import { PageContainer } from '@/components/primitives/page-container'
+import { PageHeader } from '@/components/primitives/page-header'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { EVENT_STATUSES } from '@/lib/eventStatus'
 import { getErrorMessage } from '@/lib/utils'
 import { describeEventTypeDeletionImpact } from './eventTypeDeletionImpact'
@@ -31,7 +35,6 @@ import {
   ColorPicker,
   FieldsEditor,
   OwnersEditor,
-  SCard,
   SField,
   SInput,
   STextarea,
@@ -134,7 +137,7 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
     return (
       <div className="space-y-4">
         <BackLink label="Event types" onClick={goBack} />
-        <p className="text-sm text-muted-foreground">
+        <p className="text-body text-muted-foreground">
           {branchId === null
             ? 'This event type does not exist on main.'
             : 'This event type does not exist on the selected branch.'}
@@ -146,110 +149,82 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
   if (!et) return null
 
   return (
-    <div className="flex min-w-0 flex-col">
-      <BackLink label="Event types" onClick={goBack} />
-      {isError && (
-        <p role="alert" className="mb-2 text-xs text-destructive">
-          Couldn't refresh this event type: {getErrorMessage(error)}
-        </p>
-      )}
-
-      {/* Wraps: as one row the swatch, title, name, chip and two buttons left a
-          phone's title a few characters wide (PLAN-45). Below `sm` the buttons
-          take their own line under the title. */}
-      <div className="mb-3.5 flex flex-wrap items-start gap-x-3.5 gap-y-2.5">
-        <span
-          className="mt-1.5 size-3.5 shrink-0 rounded"
-          style={{ background: et.color || DEFAULT_ENTITY_COLOR }}
-          aria-hidden="true"
-        />
-        <div className="min-w-0 flex-1 basis-[calc(100%-2rem)] sm:basis-0">
-          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <h1 className="m-0 min-w-0 break-words text-title font-semibold tracking-[-0.01em]">{et.display_name}</h1>
+    <PageContainer className="space-y-3.5">
+      {/* The shared page header (DS-1): the type's name is the page's h1, the
+          eyebrow names the parent collection. Its actions wrap under the title
+          on a phone (PLAN-45). */}
+      <PageHeader
+        back={<BackLink label="Event types" onClick={goBack} />}
+        eyebrow="Plan · Event type"
+        title={
+          <span className="inline-flex items-center gap-2.5">
+            <span
+              className="size-3.5 shrink-0 rounded-sm"
+              style={{ background: et.color || DEFAULT_ENTITY_COLOR }}
+              aria-hidden="true"
+            />
+            {et.display_name}
+          </span>
+        }
+        titleAddon={
+          <>
             <span className="mono text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
               {et.name}
             </span>
             <MergeGateChip slug={slug} eventType={et} />
-          </div>
-          {et.description && (
-            <p className="mt-1.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-              {et.description}
-            </p>
-          )}
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button variant="outline" size="sm" onClick={goEvents}>
-            <ExternalLink className="size-3" />
-            View events
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => setTab('settings')}>
-            <SettingsIcon className="size-3" />
-            Settings
-          </Button>
-        </div>
-      </div>
+          </>
+        }
+        description={et.description || undefined}
+        actions={
+          <>
+            <Button variant="outline" size="sm" onClick={goEvents}>
+              <ExternalLink className="size-3.5" />
+              View events
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => setTab('settings')}>
+              <SettingsIcon className="size-3.5" />
+              Settings
+            </Button>
+          </>
+        }
+      />
+      {isError && (
+        <p role="alert" className="text-body-sm text-destructive">
+          Couldn't refresh this event type: {getErrorMessage(error)}
+        </p>
+      )}
 
-      <div
-        role="tablist"
-        aria-label="Event type sections"
-        className="flex gap-1 border-b"
-        style={{ borderColor: 'var(--border)' }}
+      {/* The shared Radix tabs (DS-16 / AL-46), URL-controlled; a switch goes
+          through the page guard. Manual activation: with selection on focus,
+          the focus the guard's dialog hands back on "Keep editing" would
+          select the tab again and re-open the dialog. */}
+      <Tabs
+        value={tab}
+        onValueChange={(next) => setTab(next as DetailTab)}
+        activationMode="manual"
+        className="gap-[18px]"
       >
-        {TABS.map((t, idx) => {
-          const active = t.id === tab
-          return (
-            <button
-              key={t.id}
-              id={`et-tab-${t.id}`}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              aria-controls={`et-tabpanel-${t.id}`}
-              onClick={() => setTab(t.id)}
-              onKeyDown={(e) => {
-                // The APG tabs keys: arrows wrap, Home/End jump to the ends (DS-35).
-                const target =
-                  e.key === 'ArrowRight' ? TABS[(idx + 1) % TABS.length]
-                  : e.key === 'ArrowLeft' ? TABS[(idx - 1 + TABS.length) % TABS.length]
-                  : e.key === 'Home' ? TABS[0]
-                  : e.key === 'End' ? TABS[TABS.length - 1]
-                  : undefined
-                if (!target) return
-                e.preventDefault()
-                setTab(target.id)
-                document.getElementById(`et-tab-${target.id}`)?.focus()
-              }}
-              tabIndex={active ? 0 : -1}
-              className="-mb-px px-3 py-2 text-body-sm font-medium transition-colors"
-              style={{
-                color: active ? 'var(--fg)' : 'var(--fg-muted)',
-                borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
-              }}
-            >
+        <TabsList aria-label="Event type sections">
+          {TABS.map((t) => (
+            <TabsTrigger key={t.id} value={t.id}>
               {t.label}
-            </button>
-          )
-        })}
-      </div>
-
-      <div
-        id={`et-tabpanel-${tab}`}
-        role="tabpanel"
-        aria-labelledby={`et-tab-${tab}`}
-        className="pt-[18px]"
-      >
-        {tab === 'events' && (
-          // The real, filterable events table embedded inline and scoped to this
-          // type (lockType decouples it from the URL :tab segment; embedded hides
-          // the page header + aggregate chart). No route change — matches mockup.
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="events">
+          {/* The real, filterable events table embedded inline and scoped to
+              this type (lockType decouples it from the URL :tab segment;
+              embedded hides the page header + aggregate chart). */}
           <EventsPage lockType={et.name} embedded />
-        )}
-        {tab === 'summary' && <SummaryTab et={et} />}
-        {tab === 'settings' && (
+        </TabsContent>
+        <TabsContent value="summary">
+          <SummaryTab et={et} />
+        </TabsContent>
+        <TabsContent value="settings">
           <SettingsTab slug={slug} eventType={et} branchId={branchId} onDeleted={goBack} />
-        )}
-      </div>
-    </div>
+        </TabsContent>
+      </Tabs>
+    </PageContainer>
   )
 }
 
@@ -272,25 +247,17 @@ function SummaryTab({ et }: { et: EventType }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      {/* The one KPI strip (DS-5), counts in sans + tabular digits (DS-17). */}
+      <MiniStatStrip boxed>
         {stats.map((s) => (
-          <div
+          <MiniStat
             key={s.label}
-            className="rounded-card border px-3.5 py-3"
-            style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
-          >
-            <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-              {s.label}
-            </div>
-            <div
-              className="mono tnum mt-1 text-title font-medium"
-              style={{ color: s.warning ? 'var(--warning)' : 'var(--fg)' }}
-            >
-              {s.value}
-            </div>
-          </div>
+            label={s.label}
+            value={s.value}
+            valueTone={s.warning ? 'warning' : undefined}
+          />
         ))}
-      </div>
+      </MiniStatStrip>
 
       <div className="grid items-start gap-3 md:grid-cols-2">
         <Panel title="About">
@@ -310,7 +277,7 @@ function SummaryTab({ et }: { et: EventType }) {
 
         <Panel title="Sensitive fields" subtitle="Fields carrying a sensitivity label">
           {sensitiveFields.length === 0 ? (
-            <p className="px-4 py-6 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="px-4 py-6 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
               No sensitive fields.
             </p>
           ) : (
@@ -416,7 +383,8 @@ function GeneralCard({
       }}
     >
       <fieldset disabled={!canWrite} className="contents">
-        <SCard
+        <Panel
+          className="mb-3"
           title="General"
           footer={
             canWrite ? (
@@ -443,10 +411,10 @@ function GeneralCard({
           <SField label="Color" last>
             <ColorPicker value={color} onChange={setColor} />
           </SField>
-        </SCard>
+        </Panel>
       </fieldset>
       {updateMut.isError && (
-        <p role="alert" className="mb-3 text-sm" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="mb-3 text-body" style={{ color: 'var(--danger)' }}>
           {getErrorMessage(updateMut.error)}
         </p>
       )}
@@ -520,17 +488,18 @@ function DangerZoneCard({
   }
 
   return (
-    <SCard title="Danger zone" tone="danger">
+    <Panel className="mb-3" title="Danger zone" tone="danger">
       {dialog}
-      <div className="flex items-center gap-[18px] px-[18px] py-3.5">
+      <div className="flex items-center gap-[18px] px-4 py-3.5">
         <div className="flex-1">
           <div className="text-body font-medium">Delete event type</div>
-          <div className="mt-0.5 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="mt-0.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             {impact}
           </div>
         </div>
+        {/* Bare red in a row; the solid red is the confirm dialog's (DS-20). */}
         <Button
-          variant="destructive"
+          variant="danger"
           size="sm"
           disabled={!canDelete || deleteMut.isPending}
           onClick={handleDelete}
@@ -539,7 +508,7 @@ function DangerZoneCard({
           Delete
         </Button>
       </div>
-    </SCard>
+    </Panel>
   )
 }
 
@@ -576,7 +545,7 @@ function BackLink({ label, onClick }: { label: string; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="mb-3.5 inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
+      className="inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
       style={{ color: 'var(--fg-muted)' }}
     >
       <ArrowLeft className="size-3" />

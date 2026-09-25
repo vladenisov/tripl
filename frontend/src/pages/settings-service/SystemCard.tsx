@@ -218,7 +218,7 @@ export function SystemCard({ system }: { system: SystemSettings }) {
                   size={7}
                 />
                 <span
-                  className="text-2xs uppercase tracking-[0.05em]"
+                  className="micro-label"
                   style={{ color: 'var(--fg-faint)' }}
                 >
                   {row.label}
@@ -227,7 +227,7 @@ export function SystemCard({ system }: { system: SystemSettings }) {
               <span className="text-body-sm font-medium" style={{ color: VALUE_COLOR[row.tone] }}>
                 {row.value}
               </span>
-              <span className="text-[11px] leading-[1.4]" style={{ color: 'var(--fg-subtle)' }}>
+              <span className="text-caption leading-[1.4]" style={{ color: 'var(--fg-subtle)' }}>
                 {row.note}
               </span>
             </div>

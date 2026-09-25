@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ConnectionCoreFields } from './connection-core-fields'
-import { EMPTY_CONNECTION_CORE_FORM } from './connection-core'
+import { EMPTY_CONNECTION_CORE_FORM, connectionCoreMissing } from './connection-core'
 
 function renderEdit(secretSet: boolean): HTMLElement {
   render(
@@ -98,5 +98,46 @@ describe('BigQuery key file input', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not read that file')
     expect(input).toHaveAttribute('aria-invalid', 'true')
     expect(onChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('Create dialog core fields', () => {
+  function renderCreate(missing = {}) {
+    render(
+      <ConnectionCoreFields
+        idPrefix="ds"
+        dbType="clickhouse"
+        value={{ ...EMPTY_CONNECTION_CORE_FORM, port: 0 }}
+        onChange={() => {}}
+        mode="create"
+        missing={missing}
+      />,
+    )
+  }
+
+  // DA-37: `localhost`, `default` and eight dots read as a filled-in form.
+  it('uses example placeholders that cannot pass for values', () => {
+    renderCreate()
+
+    expect(screen.getByLabelText('Host')).toHaveAttribute('placeholder', 'e.g. clickhouse.internal')
+    expect(screen.getByLabelText('Database')).toHaveAttribute('placeholder', 'e.g. analytics')
+    expect(screen.getByLabelText('Username')).toHaveAttribute('placeholder', 'e.g. default')
+    expect(screen.getByLabelText('Password')).toHaveAttribute('placeholder', 'Password')
+  })
+
+  // AU-4: every empty required field is flagged inline, not by a browser bubble.
+  it('flags each missing required field inline', () => {
+    renderCreate(
+      connectionCoreMissing('clickhouse', { ...EMPTY_CONNECTION_CORE_FORM, port: 0 }, 'create', 'Required'),
+    )
+
+    for (const label of ['Host', 'Port', 'Database']) {
+      const input = screen.getByLabelText(label)
+      expect(input).not.toHaveAttribute('required')
+      expect(input).toBeRequired()
+      expect(input).toHaveAttribute('aria-invalid', 'true')
+      expect(input).toHaveAccessibleDescription('Required')
+    }
+    expect(screen.getByLabelText('Username')).not.toHaveAttribute('aria-invalid')
   })
 })

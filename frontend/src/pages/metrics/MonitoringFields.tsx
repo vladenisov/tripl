@@ -2,6 +2,7 @@ import { ColumnCheckboxPicker } from '@/components/column-checkbox-picker'
 import { ColumnSuggestInput } from '@/components/column-suggest'
 import { SCard, ToggleRow, Field } from '@/components/settings/kit'
 import type { MetricDraft } from './metricDraft'
+import { examplePlaceholder } from '@/components/forms/placeholders'
 
 interface MonitoringFieldsProps {
   draft: MetricDraft
@@ -57,7 +58,7 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
               />
             </div>
             {unknown.length > 0 && (
-              <p className="mt-[6px] text-[12px] leading-[1.45]" style={{ color: 'var(--warning, var(--fg-muted))' }}>
+              <p className="mt-[6px] text-body-sm leading-[1.45]" style={{ color: 'var(--warning, var(--fg-muted))' }}>
                 Not returned by this metric's source: {unknown.join(', ')}. Untick them, or
                 collection will fail for them.
               </p>
@@ -70,7 +71,7 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
                 value={draft.appVersionColumn}
                 onChange={value => patch({ appVersionColumn: value })}
                 suggestions={columnChoices}
-                placeholder="app_version"
+                placeholder={examplePlaceholder('app_version')}
               />
             </div>
           </Field>
@@ -81,7 +82,7 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
                 value={draft.platformColumn}
                 onChange={value => patch({ platformColumn: value })}
                 suggestions={columnChoices}
-                placeholder="platform"
+                placeholder={examplePlaceholder('platform')}
               />
             </div>
           </Field>

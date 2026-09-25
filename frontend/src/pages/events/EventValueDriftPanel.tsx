@@ -11,6 +11,8 @@ import {
 } from '@/lib/variableDrift'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { Button } from '@/components/ui/button'
+import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
 import { getErrorMessage } from '@/lib/utils'
 import { branchVariableDriftsKey, eventVariableDriftsKey, variablesKey } from '@/lib/queryKeys'
 
@@ -77,16 +79,16 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
 
   return (
     <div className={hasActive ? 'rounded-md border border-warning/40 bg-warning-soft p-3' : 'rounded-md border bg-muted/30 p-3'}>
-      <div className={`mb-1 text-xs font-semibold uppercase tracking-wide ${hasActive ? 'text-warning' : 'text-muted-foreground'}`}>
+      <div className={`mb-1 text-body-sm font-semibold uppercase tracking-wide ${hasActive ? 'text-warning' : 'text-muted-foreground'}`}>
         Value drift — observed values outside the documented lists
       </div>
       {visibleDrifts.length > 0 && (
         <ul className="space-y-1.5">
           {visibleDrifts.map(({ drift, state }) => (
-            <li key={drift.id} className="rounded border bg-background px-2 py-1.5">
+            <li key={drift.id} className="rounded-sm border bg-background px-2 py-1.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="font-mono text-xs font-medium">
+                  <div className="font-mono text-body-sm font-medium">
                     {`\${${drift.variable_name}}`}
                     {/* Keyed on the review state, not on the raw status: a
                         snooze whose time has passed is active again, and
@@ -94,12 +96,12 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
                         opposite of what the badge counts. The note carries the
                         expiry, so a deferral says when it comes back. */}
                     {state !== 'active' && (
-                      <span className="ml-1.5 rounded border px-1 py-0.5 text-[10px] font-normal text-muted-foreground">{driftStatusNote(drift, now)}</span>
+                      <Chip size="xs" variant="outline" className="ml-1.5 font-sans">{driftStatusNote(drift, now)}</Chip>
                     )}
                   </div>
                   <div className="mt-0.5 flex flex-wrap gap-1">
                     {drift.observed_values.map(value => (
-                      <span key={value} className="rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
+                      <CodeToken key={value} className="border-warning/40" title={value}>{value}</CodeToken>
                     ))}
                   </div>
                 </div>
@@ -111,21 +113,21 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
                 <div className="flex shrink-0 flex-wrap gap-1">
                   {state === 'active' ? (
                     <>
-                      <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
+                      <Button type="button" size="xs" variant="outline" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
                         Accept
                       </Button>
-                      <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
+                      <Button type="button" size="xs" variant="outline" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
                         Accept for event
                       </Button>
-                      <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={actionMut.isPending} onClick={() => snooze(drift.id)}>
+                      <Button type="button" size="xs" variant="ghost" disabled={actionMut.isPending} onClick={() => snooze(drift.id)}>
                         Snooze 7d
                       </Button>
-                      <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
+                      <Button type="button" size="xs" variant="ghost" className="text-muted-foreground" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
                         False positive
                       </Button>
                     </>
                   ) : (
-                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'reopen' })}>
+                    <Button type="button" size="xs" variant="outline" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'reopen' })}>
                       {DRIFT_REVIVE_LABEL[state]}
                     </Button>
                   )}
@@ -136,13 +138,13 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
         </ul>
       )}
       {quietDrifts.length > 0 && (
-        <Button type="button" size="sm" variant="ghost" className="mt-1.5 h-6 px-2 text-[11px] text-muted-foreground" onClick={() => setShowQuiet(value => !value)}>
+        <Button type="button" size="xs" variant="ghost" className="mt-1.5 text-muted-foreground" onClick={() => setShowQuiet(value => !value)}>
           {showQuiet ? 'Hide' : 'Show'} {quietDrifts.length}{' '}
           {collapsedDriftLabel({ snoozed: snoozedDrifts.length, resolved: resolvedDrifts.length })}
         </Button>
       )}
       {actionMut.isError && (
-        <p className="mt-2 text-sm text-destructive">{getErrorMessage(actionMut.error)}</p>
+        <p className="mt-2 text-body text-destructive">{getErrorMessage(actionMut.error)}</p>
       )}
     </div>
   )

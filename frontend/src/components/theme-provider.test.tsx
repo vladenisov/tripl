@@ -45,3 +45,35 @@ describe('ThemeProvider color-scheme (DS-14)', () => {
     expect(document.documentElement.style.colorScheme).toBe('light')
   })
 })
+
+describe('ThemeProvider accent', () => {
+  afterEach(() => {
+    document.documentElement.className = ''
+  })
+
+  it.each([
+    ['amber', 'indigo'],
+    ['rose', 'magenta'],
+  ])('moves a stored retired accent %s to %s (DS-8)', (retired, replacement) => {
+    localStorage.setItem('theme-test-accent-accent', retired)
+    render(
+      <ThemeProvider defaultTheme="light" storageKey="theme-test-accent">
+        <Probe />
+      </ThemeProvider>,
+    )
+    expect(document.documentElement).toHaveClass(`accent-${replacement}`)
+    expect(document.documentElement).not.toHaveClass(`accent-${retired}`)
+    expect(localStorage.getItem('theme-test-accent-accent')).toBe(replacement)
+  })
+
+  it('falls back to the default for an unknown stored accent', () => {
+    localStorage.setItem('theme-test-accent-accent', 'constructor')
+    render(
+      <ThemeProvider defaultTheme="light" storageKey="theme-test-accent">
+        <Probe />
+      </ThemeProvider>,
+    )
+    expect(document.documentElement).toHaveClass('accent-teal')
+    expect(localStorage.getItem('theme-test-accent-accent')).toBe('constructor')
+  })
+})

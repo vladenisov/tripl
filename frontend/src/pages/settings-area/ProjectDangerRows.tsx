@@ -9,12 +9,19 @@ import { RESET_PERIODS } from './projectGeneralFields'
 
 /**
  * A settings row with text on the left and an action group on the right, which
- * stacks below `sm`. Side by side at 375px, a period Select (up to 280px) plus
- * a button left the text a few characters wide and pushed the row past the
- * card (WS-14) — the kit's Field switches to a column there for the same reason.
+ * stacks until the ROW is 560px wide. Side by side at 375px, a period Select
+ * (up to 280px) plus a button left the text a few characters wide and pushed
+ * the row past the card (WS-14). Keyed to the viewport's `sm`, the same thing
+ * happened at 768px, where the pinned settings rail leaves the card ~430px and
+ * the hint became a one-word-per-line column (ST-1). So it reads the width of
+ * its container, like the kit's FormRow: put it inside a
+ * {@link DANGER_ROW_CONTAINER_CLASS} element.
  */
 export const DANGER_ROW_CLASS =
-  'flex flex-col gap-3 px-[18px] py-[14px] sm:flex-row sm:items-center sm:gap-[18px]'
+  'flex flex-col gap-3 px-4 py-[14px] @min-[560px]:flex-row @min-[560px]:items-center @min-[560px]:gap-[18px]'
+
+/** The query container a {@link DANGER_ROW_CLASS} row measures. */
+export const DANGER_ROW_CONTAINER_CLASS = '@container'
 
 export function DangerRow({
   title,
@@ -29,16 +36,18 @@ export function DangerRow({
 }) {
   return (
     <div
-      className={DANGER_ROW_CLASS}
+      className={DANGER_ROW_CONTAINER_CLASS}
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
     >
-      <div className="min-w-0 flex-1">
-        <div className="text-body font-medium">{title}</div>
-        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-          {hint}
+      <div className={DANGER_ROW_CLASS}>
+        <div className="min-w-0 flex-1">
+          <div className="text-body font-medium">{title}</div>
+          <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+            {hint}
+          </div>
         </div>
+        {action}
       </div>
-      {action}
     </div>
   )
 }
@@ -68,29 +77,29 @@ export function DangerResetRow({
   feedback: ReactNode
 }) {
   return (
-    <div
-      className={DANGER_ROW_CLASS}
-      style={{ borderBottom: '1px solid var(--border-subtle)' }}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="text-body font-medium">{title}</div>
-        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-          {hint}
+    <div className={DANGER_ROW_CONTAINER_CLASS} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+      <div className={DANGER_ROW_CLASS}>
+        <div className="min-w-0 flex-1">
+          <div className="text-body font-medium">{title}</div>
+          <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+            {hint}
+          </div>
+          {feedback}
         </div>
-        {feedback}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <NativeSelect
-          aria-label={`${title} period`}
-          value={period}
-          onChange={onPeriodChange}
-          options={RESET_PERIODS}
-          disabled={busy}
-        />
-        <Button variant="destructive" size="sm" disabled={busy} onClick={onReset}>
-          <RotateCcw className="h-3 w-3" />
-          {busy ? 'Resetting…' : buttonLabel}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <NativeSelect
+            aria-label={`${title} period`}
+            value={period}
+            onChange={onPeriodChange}
+            options={RESET_PERIODS}
+            disabled={busy}
+          />
+          {/* Bare red in a row; the solid red is the confirm's (DS-20). */}
+          <Button variant="danger" size="sm" disabled={busy} onClick={onReset}>
+            <RotateCcw className="h-3 w-3" />
+            {busy ? 'Resetting…' : buttonLabel}
+          </Button>
+        </div>
       </div>
     </div>
   )
@@ -118,31 +127,30 @@ export function DangerRetireVariablesRow({
   feedback: ReactNode
 }) {
   return (
-    <div
-      className={DANGER_ROW_CLASS}
-      style={{ borderBottom: '1px solid var(--border-subtle)' }}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="text-body font-medium">Retire unused variables</div>
-        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-          Delete variables a scan created that no event field value references and that carry no
-          observed values, drift or documented values. Nothing edited by hand is touched.
+    <div className={DANGER_ROW_CONTAINER_CLASS} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+      <div className={DANGER_ROW_CLASS}>
+        <div className="min-w-0 flex-1">
+          <div className="text-body font-medium">Retire unused variables</div>
+          <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+            Delete variables a scan created that no event field value references and that carry no
+            observed values, drift or documented values. Nothing edited by hand is touched.
+          </div>
+          {feedback}
         </div>
-        {feedback}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" disabled={busy} onClick={onPreview}>
-          {busy ? 'Checking…' : 'Preview'}
-        </Button>
-        <Button
-          variant="destructive"
-          size="sm"
-          disabled={busy || !preview || preview.retirable === 0}
-          onClick={onRetire}
-        >
-          <Trash2 className="h-3 w-3" />
-          Retire
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" disabled={busy} onClick={onPreview}>
+            {busy ? 'Checking…' : 'Preview'}
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={busy || !preview || preview.retirable === 0}
+            onClick={onRetire}
+          >
+            <Trash2 className="h-3 w-3" />
+            Retire
+          </Button>
+        </div>
       </div>
     </div>
   )

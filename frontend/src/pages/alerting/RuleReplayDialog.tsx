@@ -7,6 +7,7 @@ import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogFooter,
   DialogHeader,
@@ -20,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Badge } from '@/components/ui/badge'
+import { Chip } from '@/components/primitives/chip'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { AlertMessageFormat, AlertRule, AlertRuleSimulateResponse, ScanConfig } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
@@ -119,8 +120,8 @@ function ThresholdRow({
   const changed = used !== saved
   return (
     <div className="min-w-0">
-      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className={changed ? 'text-xs font-medium text-foreground' : 'text-xs text-muted-foreground'}>
+      <dt className="micro-label text-muted-foreground">{label}</dt>
+      <dd className={changed ? 'text-body-sm font-medium text-foreground' : 'text-body-sm text-muted-foreground'}>
         {used}
         {changed && <span className="text-muted-foreground"> (saved {saved})</span>}
       </dd>
@@ -139,15 +140,14 @@ function FiringsCountBadge({
 }) {
   return (
     <div className="flex flex-col items-start rounded-md border bg-muted/30 px-3 py-2">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="micro-label text-muted-foreground">{label}</div>
       <div className="flex items-center gap-2">
-        <span className="text-base font-semibold tnum">{count}</span>
-        <span className="text-xs text-muted-foreground">{count === 1 ? 'firing' : 'firings'}</span>
+        <span className="text-heading font-semibold tnum">{count}</span>
+        <span className="text-body-sm text-muted-foreground">{count === 1 ? 'firing' : 'firings'}</span>
         {noisy && (
-          <Badge variant="danger" className="gap-1 text-[10px]">
-            <AlertTriangle className="h-3 w-3" />
+          <Chip tone="danger" icon={<AlertTriangle aria-hidden="true" />}>
             Noisy
-          </Badge>
+          </Chip>
         )}
       </div>
     </div>
@@ -282,22 +282,25 @@ export function RuleReplayDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-4xl min-w-0 flex-col overflow-hidden">
-        <DialogHeader className="shrink-0">
+      {/* overflow-hidden: DialogBody owns the scroll, so wide replay data
+          scrolls inside its own region and never widens or side-scrolls the
+          dialog itself. */}
+      <DialogContent className="max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-hidden">
+        <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <History className="h-4 w-4" />
             Replay rule “{rule.name}”{draft ? ' with your unsaved edits' : ''}
           </DialogTitle>
         </DialogHeader>
 
-        <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto pr-1">
+        <DialogBody className="min-w-0 space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
+              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
                 Window
               </div>
               <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
-                <SelectTrigger aria-label="Replay window" className="h-8 w-32 text-xs">
+                <SelectTrigger aria-label="Replay window" className="w-32">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -314,7 +317,7 @@ export function RuleReplayDialog({
                 writing 300 onto the rule that is live-routing to a real channel
                 and waiting to find out (tripl-oxkt.17). */}
             <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
+              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
                 Cooldown (min)
               </div>
               <Input
@@ -327,16 +330,16 @@ export function RuleReplayDialog({
                 placeholder={`${baseLabel}: ${base.cooldown_minutes}`}
                 value={cooldownText}
                 onChange={(e) => setCooldownText(e.target.value)}
-                className="h-8 w-32 text-xs"
+                className="w-32"
               />
               {cooldownInvalid && (
-                <p role="alert" className="text-2xs text-destructive">
+                <p role="alert" className="text-micro text-destructive">
                   Whole minutes from 0 to {COOLDOWN_OVERRIDE_MAX}, or blank for the saved value.
                 </p>
               )}
             </div>
             <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
+              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
                 Min %
               </div>
               <Input
@@ -348,16 +351,16 @@ export function RuleReplayDialog({
                 placeholder={`${baseLabel}: ${base.min_percent_delta}`}
                 value={minPercentText}
                 onChange={(e) => setMinPercentText(e.target.value)}
-                className="h-8 w-28 text-xs"
+                className="w-28"
               />
               {minPercentInvalid && (
-                <p role="alert" className="text-2xs text-destructive">
+                <p role="alert" className="text-micro text-destructive">
                   0 or more, or blank for the saved value.
                 </p>
               )}
             </div>
             <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
+              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
                 Min expected
               </div>
               <Input
@@ -369,16 +372,16 @@ export function RuleReplayDialog({
                 placeholder={`${baseLabel}: ${base.min_expected_count}`}
                 value={minExpectedText}
                 onChange={(e) => setMinExpectedText(e.target.value)}
-                className="h-8 w-28 text-xs"
+                className="w-28"
               />
               {minExpectedInvalid && (
-                <p role="alert" className="text-2xs text-destructive">
+                <p role="alert" className="text-micro text-destructive">
                   0 or more, or blank for the saved value.
                 </p>
               )}
             </div>
             <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
+              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
                 Sigma
               </div>
               <Input
@@ -391,16 +394,15 @@ export function RuleReplayDialog({
                 placeholder="detector default"
                 value={sigmaText}
                 onChange={(e) => setSigmaText(e.target.value)}
-                className="h-8 w-28 text-xs"
+                className="w-28"
               />
               {sigmaOutOfRange && (
-                <p role="alert" className="text-2xs text-destructive">
+                <p role="alert" className="text-micro text-destructive">
                   Between {SIGMA_MIN_EXCLUSIVE} and {SIGMA_MAX}, or blank for the detector default.
                 </p>
               )}
             </div>
             <Button
-              size="sm"
               onClick={() => simulateMut.mutate(currentRequest)}
               // Blocked on any invalid override rather than sent
               // and 422'd: the replay would fail for a reason the dialog never
@@ -416,7 +418,7 @@ export function RuleReplayDialog({
               {simulateMut.isPending ? 'Replaying…' : 'Replay'}
             </Button>
             {displayResult && (
-              <div className={`ml-auto text-right text-xs text-muted-foreground ${resultIsStale ? 'opacity-50' : ''}`}>
+              <div className={`ml-auto text-right text-body-sm text-muted-foreground ${resultIsStale ? 'opacity-50' : ''}`}>
                 <div>
                   Considered{' '}
                   <span className="font-medium text-foreground">
@@ -436,20 +438,20 @@ export function RuleReplayDialog({
           </div>
 
           {simulateMut.isError && (
-            <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+            <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-body text-destructive">
               Replay failed: {getErrorMessage(simulateMut.error)}
             </div>
           )}
 
           {resultIsStale && (
-            <p role="status" className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+            <p role="status" className="rounded-md border border-dashed p-2 text-body-sm text-muted-foreground">
               Settings changed since this replay — press Replay again to see results for them.
             </p>
           )}
 
           {result && (
             <div className={resultIsStale ? 'space-y-3 opacity-50' : 'space-y-3'}>
-              <div className="flex flex-wrap items-center gap-3 text-sm">
+              <div className="flex flex-wrap items-center gap-3 text-body">
                 <FiringsCountBadge
                   label={draft ? 'Your edits' : 'Saved thresholds'}
                   count={result.saved.firings.length}
@@ -505,14 +507,14 @@ export function RuleReplayDialog({
                         : String(displayResult.sigma_threshold_saved)}
                     />
                   </dl>
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-caption text-muted-foreground">
                     Nothing here is saved to the rule — it keeps routing on its stored thresholds.
                   </p>
                 </div>
               )}
 
               {displayResult && displayResult.firings.length === 0 ? (
-                <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
+                <div className="rounded-md border border-dashed p-4 text-center text-body text-muted-foreground">
                   No firings in this window. Try widening the range or relaxing thresholds.
                 </div>
               ) : (
@@ -529,7 +531,7 @@ export function RuleReplayDialog({
                         scope names the series and Δ% carries the comparison. */}
                     <Table
                       scroll={false}
-                      className="min-w-[560px] table-fixed text-left text-xs md:min-w-[840px]"
+                      className="min-w-[560px] table-fixed text-left text-body-sm md:min-w-[840px]"
                     >
                       <TableHeader className="bg-muted/50">
                         <TableRow className="hover:bg-transparent">
@@ -545,7 +547,7 @@ export function RuleReplayDialog({
                       <TableBody>
                         {displayResult.firings.map((firing) => (
                           <TableRow key={firing.anomaly_id}>
-                            <TableCell className="whitespace-nowrap py-1.5 font-mono">{formatDateTime(firing.bucket)}</TableCell>
+                            <TableCell className="whitespace-nowrap py-1.5 tnum">{formatDateTime(firing.bucket)}</TableCell>
                             {/* The kind through the shared `scopeKindLabel`, the
                                 same words the Inbox chips use, rather than the
                                 raw enum. The column shipped printing
@@ -572,7 +574,7 @@ export function RuleReplayDialog({
                               </span>{' '}
                               {firing.scope_name}
                               {firing.drift_field && (
-                                <div className="truncate text-[11px] text-muted-foreground">
+                                <div className="truncate text-caption text-muted-foreground">
                                   {firing.drift_type}: {firing.drift_field}
                                 </div>
                               )}
@@ -587,12 +589,7 @@ export function RuleReplayDialog({
                                   ?? `Scan ${firing.scan_config_id.slice(0, 8)}`)}
                             </TableCell>
                             <TableCell className="py-1.5">
-                              <Badge
-                                variant={firing.direction === 'spike' ? 'default' : 'secondary'}
-                                className="text-[10px]"
-                              >
-                                {firing.direction}
-                              </Badge>
+                              <Chip variant="outline">{firing.direction}</Chip>
                             </TableCell>
                             {/* Both columns through the same formatter: rounding
                                 only the baseline would leave "5780" beside
@@ -618,20 +615,20 @@ export function RuleReplayDialog({
 
               {displayResult?.rendered_message && (
                 <div className="min-w-0 space-y-1">
-                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <div className="text-caption uppercase tracking-wide text-muted-foreground">
                     Preview — the message this run would have sent, as{' '}
                     {MESSAGE_FORMAT_LABEL[base.message_format]}
                   </div>
-                  <pre className="max-h-48 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-md border bg-muted/30 px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
+                  <pre className="max-h-48 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-md border bg-muted/30 px-3 py-2 font-mono text-caption [overflow-wrap:anywhere]">
                     {displayResult.rendered_message}
                   </pre>
                 </div>
               )}
             </div>
           )}
-        </div>
+        </DialogBody>
 
-        <DialogFooter className="shrink-0">
+        <DialogFooter>
           <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Close
           </Button>

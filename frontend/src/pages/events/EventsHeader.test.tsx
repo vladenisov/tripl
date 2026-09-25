@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
-import type { EventType } from '@/types'
+import type { EventType, MonitoringSignal } from '@/types'
 import { EventsHeader } from './EventsHeader'
 
 const PAGE_VIEW = {
@@ -97,6 +97,48 @@ describe('EventsHeader', () => {
     expect(
       screen.getByRole('button', { name: '1 schema drift on event type Structured' }),
     ).toBeInTheDocument()
+  })
+
+  it('says "none"/"open" for chart signals, never "live" (EV-5 / DS-7)', () => {
+    // "Live" is the lifecycle status in green one column over; an open anomaly
+    // must not borrow the word.
+    const { rerender } = render(
+      <EventsHeader
+        total={3}
+        inReviewCount={0}
+        projectTotalSignal={null}
+        eventTypeSignals={new Map()}
+      />,
+    )
+    const stat = () => screen.getByText('Chart signals').closest('dl')
+    expect(stat()).toHaveTextContent('none')
+    expect(stat()).not.toHaveTextContent(/live|quiet/)
+
+    rerender(
+      <EventsHeader
+        total={3}
+        inReviewCount={0}
+        projectTotalSignal={{ id: 's-1' } as unknown as MonitoringSignal}
+        eventTypeSignals={new Map()}
+      />,
+    )
+    expect(stat()).toHaveTextContent('open')
+    expect(stat()).not.toHaveTextContent(/live/)
+  })
+
+  it('puts the nav group in the eyebrow and the stats in the boxed strip under the title (DS-2 / DS-5)', () => {
+    const { container } = render(
+      <EventsHeader
+        total={3}
+        inReviewCount={0}
+        projectTotalSignal={null}
+        eventTypeSignals={new Map()}
+      />,
+    )
+    expect(container.querySelector('[data-slot="page-eyebrow"]')).toHaveTextContent('Plan')
+    expect(
+      container.querySelector('[data-slot="page-stats"] [data-slot="mini-stat-strip"]'),
+    ).not.toBeNull()
   })
 
   it('under a column filter, counts the matches, not the server total', () => {

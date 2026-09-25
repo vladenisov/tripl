@@ -1,4 +1,5 @@
 import type { DataSource, ScanConfig } from '@/types'
+import { Button } from '@/components/ui/button'
 import { Link } from 'react-router-dom'
 import { Chip } from '@/components/primitives/chip'
 import { Ban, CheckCircle2, Clock, Loader2, MinusCircle, Play, XCircle, type LucideIcon } from 'lucide-react'
@@ -32,7 +33,7 @@ export function RunStatusPill({ status, title }: { status: RunPillStatus; title?
       tone={tone}
       size="xs"
       title={title}
-      icon={<Icon className={cn('size-2.5', spin && 'animate-spin')} aria-hidden="true" />}
+      icon={<Icon className={cn('size-3', spin && 'animate-spin')} aria-hidden="true" />}
     >
       {label}
     </Chip>
@@ -166,18 +167,20 @@ export function ScanListRow({
   // control must live here — not only on the detail page. Reuses the detail
   // page's Play icon; stopPropagation keeps the row's own navigate from firing
   // (tripl-q7i1.5).
+  // The shared Button at the dense row-action size (DS-14), not a hand-rolled
+  // 11px bordered button.
   const runButton = onRun ? (
-    <button
+    <Button
       type="button"
+      size="xs"
+      variant="outline"
       aria-label={`Run ${sc.name} now`}
       disabled={runPending}
-      className="inline-flex items-center gap-1 whitespace-nowrap rounded border px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-      style={{ borderColor: 'var(--border-strong)', color: 'var(--fg-muted)' }}
       onClick={e => { e.stopPropagation(); onRun() }}
     >
       <Play className="size-3" aria-hidden="true" />
       {runPending ? 'Starting…' : 'Run now'}
-    </button>
+    </Button>
   ) : null
 
   return (
@@ -190,8 +193,9 @@ export function ScanListRow({
     // and the last run and the actions share the second, instead of a table
     // whose status and Run now sat off-screen to the right (LIVE-15). Same
     // cells, only their display changes, so nothing is rendered twice.
+    // `sm:h-(--row-h)`: the Density setting reaches this list too (DS-9).
     <tr
-      className="flex cursor-pointer flex-wrap items-center border-t transition-colors hover:bg-[var(--surface-hover)] sm:table-row"
+      className="flex cursor-pointer flex-wrap items-center border-t transition-colors hover:bg-[var(--surface-hover)] sm:table-row sm:h-(--row-h)"
       style={{ borderColor: 'var(--border-subtle)' }}
       onClick={onNavigate}
     >
@@ -219,12 +223,12 @@ export function ScanListRow({
                   like a healthy monitoring scan. */}
               <ScanModeBadge sc={sc} />
             </div>
-            <div className="truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
               {dataSource?.name ?? 'Unknown source'} · {cadenceLabel}
             </div>
             {/* Secondary: dropped on phones, where it pushed the name to a few letters. */}
             <div
-              className="mono hidden max-w-[280px] truncate text-2xs sm:block"
+              className="mono hidden max-w-[280px] truncate text-micro sm:block"
               style={{ color: 'var(--fg-faint)' }}
               title={sc.base_query}
             >
@@ -241,13 +245,14 @@ export function ScanListRow({
           <span className="inline-flex items-center gap-1.5">
             <RunStatusPill status={pillStatus} title={failedMessage ?? undefined} />
             {runInfo.status !== 'idle' && runInfo.status !== 'running' && (
-              <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+              // A relative time, not code: sans with tabular digits (DS-17).
+              <span className="tnum text-caption" style={{ color: 'var(--fg-subtle)' }}>
                 {runInfo.lastRunLabel}
               </span>
             )}
           </span>
           {failedMessage && (
-            <span className="text-[11px] leading-tight" style={{ color: 'var(--danger)' }}>
+            <span className="text-caption leading-tight" style={{ color: 'var(--danger)' }}>
               {failedMessage}
             </span>
           )}
@@ -264,15 +269,15 @@ export function ScanListRow({
             runButton
           ))}
           {onReviewEvents && (
-            <button
+            <Button
               type="button"
+              size="xs"
+              variant="outline"
               aria-label={`Review events from ${sc.name}`}
-              className="whitespace-nowrap rounded border px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ borderColor: 'var(--border-strong)', color: 'var(--fg-muted)' }}
               onClick={e => { e.stopPropagation(); onReviewEvents() }}
-                    >
+            >
               Review events
-            </button>
+            </Button>
           )}
           <span className="text-[var(--fg-faint)]" aria-hidden="true">›</span>
         </div>

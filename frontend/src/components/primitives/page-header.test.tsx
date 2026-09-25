@@ -33,4 +33,28 @@ describe('PageHeader', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Coverage' })).toBeInTheDocument()
     expect(container.querySelector('p, button, a')).toBeNull()
   })
+
+  // DS-1: one h1 per page, whatever the slots; DS-5: the stat row sits under
+  // the title block, not in the actions slot.
+  it('renders exactly one h1 and puts the stats row after the title block', () => {
+    const { container } = render(
+      <PageHeader
+        eyebrow="Plan"
+        title="Variables"
+        count={4}
+        description="Template placeholders used in event field values."
+        actions={<button type="button">Add variable</button>}
+        stats={<span>Stat row</span>}
+      />,
+    )
+    expect(container.querySelectorAll('h1')).toHaveLength(1)
+    const stats = container.querySelector('[data-slot="page-stats"]')
+    expect(stats).toHaveTextContent('Stat row')
+    expect(container.firstElementChild?.lastElementChild).toBe(stats)
+  })
+
+  it('renders no stats wrapper without stats', () => {
+    const { container } = render(<PageHeader title="Scans" />)
+    expect(container.querySelector('[data-slot="page-stats"]')).toBeNull()
+  })
 })

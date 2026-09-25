@@ -18,8 +18,8 @@ import {
   KV,
   NoneTag,
   SrcIcon,
-  StatCard,
 } from './scans/scanLayout'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { RunStatusPill } from './scans/ScanConfigRow'
 import { runPillStatus } from './scans/scanRunStatus'
 import { JobDetails } from './scans/JobDetails'
@@ -65,7 +65,7 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
 
   let body: React.ReactNode
   if (isLoading) {
-    body = <p className="px-4 py-3 text-sm text-muted-foreground">Loading platform presence…</p>
+    body = <p className="px-4 py-3 text-body text-muted-foreground">Loading platform presence…</p>
   } else if (isError) {
     // Without this branch a failed fetch fell through to "No platform column
     // configured" — false for a scan that has one (DATA-21).
@@ -83,13 +83,13 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
     )
   } else if (!data?.platform_column) {
     body = (
-      <p className="px-4 py-3 text-sm" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="px-4 py-3 text-body" style={{ color: 'var(--fg-subtle)' }}>
         No platform column configured
       </p>
     )
   } else if (data.items.length === 0 || data.platforms.length === 0) {
     body = (
-      <p className="px-4 py-3 text-sm" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="px-4 py-3 text-body" style={{ color: 'var(--fg-subtle)' }}>
         No platform data yet
       </p>
     )
@@ -111,13 +111,13 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
         <TableBody>
           {data.items.map(item => (
             <TableRow key={item.event_id}>
-              <TableCell className="px-4 text-xs">{item.event_name}</TableCell>
+              <TableCell className="px-4 text-body-sm">{item.event_name}</TableCell>
               {data.platforms.map(platform => {
                 const present = item.present_platforms.includes(platform)
                 return (
                   <TableCell
                     key={platform}
-                    className="mono px-4 text-center text-body-sm"
+                    className="px-4 text-center text-body-sm"
                     style={{ color: present ? 'var(--success)' : 'var(--fg-faint)' }}
                   >
                     <span aria-label={`${item.event_name} ${present ? 'present' : 'absent'} on ${platform}`}>
@@ -290,26 +290,33 @@ export function ScanDetail({
   return (
     <div className="flex flex-col gap-4">
       {dialog}
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard
+      {/* The one page-KPI strip (DS-5): figures in sans + tabular digits, not
+          18px mono tiles (DA-23 / DS-17). */}
+      <MiniStatStrip boxed>
+        {/* An active run is "Running", not "just now": the relative time of a
+            run still in progress read as a finished one (DA-23). */}
+        <MiniStat
           label="Last run"
-          value={lastJob ? formatRelativeTime(lastJob.completed_at ?? lastJob.started_at ?? lastJob.created_at) : 'never'}
+          value={
+            lastJob && (lastJob.status === 'pending' || lastJob.status === 'running')
+              ? 'Running'
+              : lastJob
+                ? formatRelativeTime(lastJob.completed_at ?? lastJob.started_at ?? lastJob.created_at)
+                : 'never'
+          }
         />
         {/* One label, two populations: a catalog run reports scan_rows_processed
-            and a metrics run reports query_rows_scanned. The card cannot say
+            and a metrics run reports query_rows_scanned. The figure cannot say
             which, so the title does. */}
-        <StatCard
-          label="Rows read · last run"
-          value={lastRows == null ? '—' : lastRows.toLocaleString()}
-          title={jobRowsReadTitle(lastJob)}
-        />
-        <StatCard label="Events written" value={lastEvents == null ? '—' : lastEvents.toLocaleString()} />
+        <div title={jobRowsReadTitle(lastJob)}>
+          <MiniStat label="Rows read · last run" value={lastRows == null ? '—' : lastRows.toLocaleString()} />
+        </div>
+        <MiniStat label="Events written" value={lastEvents == null ? '—' : lastEvents.toLocaleString()} />
         {/* "Metric points", not "Metric rows": these are time-series points on a
             metric, and "Metrics" is the name of a different surface (Observe ›
             Metrics, the user-defined catalog). */}
-        <StatCard label="Metric points" value={lastMetricPoints == null ? '—' : lastMetricPoints.toLocaleString()} />
-      </div>
+        <MiniStat label="Metric points" value={lastMetricPoints == null ? '—' : lastMetricPoints.toLocaleString()} />
+      </MiniStatStrip>
 
       {/* Source & query */}
       <Panel title="Source & query">
@@ -323,7 +330,7 @@ export function ScanDetail({
           }
         />
         <div className="border-t px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-          <div className="mb-1.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="mb-1.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             Base query <span style={{ color: 'var(--fg-faint)' }}>· used as subquery</span>
           </div>
           {/* Wrap the query; do not scroll it sideways. The demo's own base
@@ -339,7 +346,7 @@ export function ScanDetail({
               same treatment the alert payload `<pre>`s already use, and a
               vertical scrollbar is one a reader can actually see. */}
           <pre
-            className="mono m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-3 text-xs"
+            className="mono m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-3 text-body-sm"
             style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)', color: 'var(--fg)' }}
           >{scanConfig.base_query}</pre>
         </div>
@@ -421,13 +428,13 @@ export function ScanDetail({
         ) : undefined}
       >
         {applyGroupsMut.isError && (
-          <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(applyGroupsMut.error)}</p>
+          <p className="px-4 py-2 text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(applyGroupsMut.error)}</p>
         )}
         {cancelMut.isError && (
-          <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(cancelMut.error)}</p>
+          <p className="px-4 py-2 text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(cancelMut.error)}</p>
         )}
         {retryMut.isError && (
-          <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(retryMut.error)}</p>
+          <p className="px-4 py-2 text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(retryMut.error)}</p>
         )}
         {/* Always mounted, so the live region exists before it has anything to
             say; padded only once it does, instead of a blank strip over the
@@ -436,7 +443,7 @@ export function ScanDetail({
           role="status"
           aria-live="polite"
           aria-atomic="true"
-          className={applyGroupsMessage ? 'px-4 py-2 text-sm' : 'sr-only'}
+          className={applyGroupsMessage ? 'px-4 py-2 text-body' : 'sr-only'}
           style={{ color: 'var(--fg-subtle)' }}
         >
           {applyGroupsMessage}
@@ -462,14 +469,14 @@ export function ScanDetail({
               </Button>
             </div>
             {streakError && (
-              <div className="text-[12px]" style={{ color: 'var(--danger)' }}>
+              <div className="text-body-sm" style={{ color: 'var(--danger)' }}>
                 <p>{streakError.message}</p>
                 <ScanErrorTechnicalDetails technical={streakError.technical} />
               </div>
             )}
           </div>
         )}
-        {isLoading && <p className="px-4 py-3 text-sm text-muted-foreground">Loading runs…</p>}
+        {isLoading && <p className="px-4 py-3 text-body text-muted-foreground">Loading runs…</p>}
         {/* A failed jobs fetch previously fell through to "No runs yet" — surface
             the error with a retry instead of a false empty (tripl-2su6.9). */}
         {jobsError && !isLoading && (
@@ -485,7 +492,7 @@ export function ScanDetail({
           </div>
         )}
         {jobs.length === 0 && !isLoading && !jobsError && (
-          <p className="px-4 py-3 text-sm text-muted-foreground">No runs yet. Use “Run now” to start.</p>
+          <p className="px-4 py-3 text-body text-muted-foreground">No runs yet. Use “Run now” to start.</p>
         )}
         {jobs.length > 0 && (
           <Table>
@@ -510,7 +517,7 @@ export function ScanDetail({
                         type="button"
                         onClick={() => setStreakExpanded((v) => !v)}
                         aria-expanded={streakExpanded}
-                        className="text-[12px] font-medium hover:underline"
+                        className="text-body-sm font-medium hover:underline"
                         style={{ color: 'var(--fg-subtle)' }}
                       >
                         {streakExpanded ? 'Hide' : 'Show'} {failingStreak} repeated failed runs
@@ -587,21 +594,23 @@ function JobRow({
           would be worse than the hint going unheard. */}
       <ScenarioCoachMark step="live-loop/watch-scan" when={watched}>
         <TableRow>
-          <TableCell className="px-4 text-xs" style={{ color: 'var(--fg-muted)' }}>
+          <TableCell className="px-4 text-body-sm" style={{ color: 'var(--fg-muted)' }}>
             {/* A queued run has no start yet; its queue time says more than a
                 dash, and it is what the scans list shows for it (DATA-23). */}
             {job.started_at
               ? formatRelativeTime(job.started_at)
               : `queued ${formatRelativeTime(job.created_at)}`}
           </TableCell>
-          <TableCell className={`mono px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-subtle)' }}>{duration}</TableCell>
+          {/* Durations and counts are figures: sans with tabular digits, not
+              mono (DS-17). */}
+          <TableCell className={`tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-subtle)' }}>{duration}</TableCell>
           {/* The header says "Rows read" for every row, but a catalog run and a
               metrics run count different populations under different caps. Per
               cell is the only place that distinction fits. */}
-          <TableCell className="mono tnum px-4 text-right text-caption" title={jobRowsReadTitle(job)}>
+          <TableCell className="tnum px-4 text-right text-caption" title={jobRowsReadTitle(job)}>
             {rows == null ? '—' : rows.toLocaleString()}
           </TableCell>
-          <TableCell className={`mono tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-muted)' }}>
+          <TableCell className={`tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-muted)' }}>
             {events == null ? '—' : events.toLocaleString()}
           </TableCell>
           <TableCell className="px-4">

@@ -117,7 +117,7 @@ export function InertScopeNotice({
   const copy = SCOPE_COPY[scope]
   return (
     <div
-      className="flex items-start gap-2 rounded-md px-3 py-2 text-[12px]"
+      className="flex items-start gap-2 rounded-md px-3 py-2 text-body-sm"
       style={{ background: 'var(--warning-soft)', color: 'var(--fg-muted)' }}
     >
       <AlertTriangle

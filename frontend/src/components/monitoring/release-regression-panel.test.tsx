@@ -200,7 +200,7 @@ describe('ReleaseRegressionPanel', () => {
       .toHaveAttribute('href', '/p/demo/monitoring/event/e1')
     expect(screen.getByRole('link', { name: 'Checkout' }))
       .toHaveAttribute('href', '/p/demo/monitoring/event-type/t1')
-    expect(screen.getByLabelText('2 regressions')).toBeInTheDocument()
+    expect(screen.getByText('2 regressions')).toBeInTheDocument()
   })
 
   it('lists every distinct withheld reason, not only the first', async () => {

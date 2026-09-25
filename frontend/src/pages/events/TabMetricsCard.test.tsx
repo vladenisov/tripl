@@ -125,6 +125,14 @@ describe('TabMetricsCard', () => {
     },
   )
 
+  it('titles the card in sentence case by what it draws (DS-29)', async () => {
+    installFetch()
+    renderCard(null, { isOpen: false })
+
+    expect(await screen.findByRole('heading', { name: 'Event volume' })).toBeInTheDocument()
+    expect(screen.queryByText(/Dynamics/)).not.toBeInTheDocument()
+  })
+
   it('neither fetches nor polls while the chart is collapsed (EVT-20)', async () => {
     const fetchSpy = installFetch()
     renderCard(null, { isOpen: false })

@@ -7,6 +7,7 @@ import { useAuth } from '@/components/auth-context'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
+import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { UserAvatar } from '@/components/ui/user-avatar'
@@ -19,10 +20,18 @@ import { getErrorMessage } from '@/lib/utils'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
 import { invitationsKey, usersKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { SAVED_FEEDBACK_MS, useTransientFlag } from './settings-area/projectGeneralFields'
+import { FieldError } from '@/components/forms/FieldError'
+import { focusFirstInvalid, invalidAria } from '@/components/forms/validation'
 
-function roleChip(role: Role) {
-  return ROLE_OPTIONS.find((r) => r.value === role)?.chip ?? 'bg-muted text-muted-foreground'
-}
+// The format rule said in words, where `type="email"` + `required` showed the
+// browser's bubble instead (AU-4).
+const INVITE_EMAIL_MESSAGE = 'Enter an email address, like name@example.com.'
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+// The badge taxonomy's status pill (DS-6), in the tones ROLE_OPTIONS.chip
+// spelled out as raw classes.
+const ROLE_TONE: Readonly<Record<Role, ChipTone>> = { owner: 'warning', editor: 'info', viewer: 'neutral' }
 
 
 /** What the Owner role hands over, said the same way wherever it is granted. */
@@ -53,6 +62,7 @@ const COPIED_RESET_MS = 2000
 function InviteMemberCard() {
   const qc = useQueryClient()
   const [email, setEmail] = useState('')
+  const [emailError, setEmailError] = useState<string | null>(null)
   const [role, setRole] = useState<Role>('editor')
   const [minted, setMinted] = useState<InvitationCreated | null>(null)
   const [everCopied, setEverCopied] = useState(false)
@@ -130,6 +140,14 @@ function InviteMemberCard() {
 
   const handleCreate = async () => {
     if (!email.trim() || createMut.isPending) return
+    if (!EMAIL_SHAPE.test(email.trim())) {
+      setEmailError(INVITE_EMAIL_MESSAGE)
+      requestAnimationFrame(() => {
+        const input = document.getElementById('invite-email')
+        if (input?.parentElement) focusFirstInvalid(input.parentElement)
+      })
+      return
+    }
     if (minted && !everCopied) {
       const ok = await confirm({
         title: 'Replace the uncopied invite link?',
@@ -168,7 +186,7 @@ function InviteMemberCard() {
 
       <div>
         <h3 className="text-body font-semibold">Invite a member</h3>
-        <p className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="mt-0.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           Creates a single-use link for one address, at the role you pick. Use this instead of
           opening self-service registration.
         </p>
@@ -178,6 +196,7 @@ function InviteMemberCard() {
           were 32px and 24px tall, bordered differently from every other field,
           and had no focus ring at all for keyboard users (WS-20). */}
       <form
+        noValidate
         className="flex flex-wrap items-end gap-2"
         onSubmit={(e) => {
           e.preventDefault()
@@ -185,7 +204,7 @@ function InviteMemberCard() {
         }}
       >
         <div className="min-w-[200px] flex-1">
-          <label className="mb-1 block text-[11px]" htmlFor="invite-email">
+          <label className="mb-1 block text-caption" htmlFor="invite-email">
             Email
           </label>
           {/* The kit field, like the role Select beside it, so the two
@@ -193,12 +212,17 @@ function InviteMemberCard() {
           <TextInput
             id="invite-email"
             type="email"
-            required
+            aria-required
             autoComplete="off"
             value={email}
-            onChange={setEmail}
-            placeholder="teammate@example.com"
+            onChange={(next) => {
+              setEmail(next)
+              setEmailError(null)
+            }}
+            placeholder="e.g. teammate@example.com"
+            {...invalidAria('invite-email', emailError)}
           />
+          <FieldError inputId="invite-email" message={emailError} announce />
         </div>
         {/* The kit's Select, not a bare one. A native <select> keeps the
             platform's own widget: Chrome paints it with the UA's light
@@ -206,7 +230,7 @@ function InviteMemberCard() {
             with a black chevron — the only unthemed control on the page
             (tripl-h3bb). */}
         <div className="w-32">
-          <label className="mb-1 block text-[11px]" htmlFor="invite-role">
+          <label className="mb-1 block text-caption" htmlFor="invite-role">
             Role
           </label>
           <NativeSelect
@@ -240,7 +264,7 @@ function InviteMemberCard() {
       )}
 
       {createMut.isError && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className="text-body-sm text-destructive">
           {getErrorMessage(createMut.error)}
         </p>
       )}
@@ -248,23 +272,24 @@ function InviteMemberCard() {
       {minted && (
         <div
           className="space-y-1.5 rounded-lg border p-3"
-          style={{ borderColor: 'var(--border-strong)', background: 'var(--bg-elevated)' }}
+          style={{ borderColor: 'var(--border-strong)', background: 'var(--surface)' }}
         >
           <div className="flex items-start justify-between gap-2">
-            <p className="text-xs font-medium">
+            <p className="text-body-sm font-medium">
               {roleLabel(minted.invitation.role)} invite link for {minted.invitation.email} — copy
               it now
             </p>
             <Button
               type="button"
-              size="xs"
+              size="sm"
               variant="ghost"
+              className="max-md:min-h-10"
               onClick={() => void handleDismiss()}
             >
               Dismiss
             </Button>
           </div>
-          <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
             This link is shown once and cannot be retrieved later. It expires{' '}
             {formatIsoDate(minted.expires_at)} and works a single time.
           </p>
@@ -278,7 +303,7 @@ function InviteMemberCard() {
               // A manual Ctrl/Cmd+C (the no-clipboard path) is a copy too;
               // otherwise every later invite warns about a link already copied.
               onCopy={() => setEverCopied(true)}
-              className="mono h-8 flex-1 text-[11px]"
+              className="mono h-8 flex-1 text-caption"
             />
             <Button
               type="button"
@@ -294,7 +319,7 @@ function InviteMemberCard() {
             {copyState === 'copied' ? 'Invite link copied to the clipboard.' : ''}
           </p>
           {copyState === 'failed' && (
-            <p role="alert" className="text-[11px]" style={{ color: 'var(--danger)' }}>
+            <p role="alert" className="text-caption" style={{ color: 'var(--danger)' }}>
               Couldn’t reach the clipboard. The link above is selected — press Ctrl/⌘+C to copy it.
             </p>
           )}
@@ -314,7 +339,7 @@ function InviteMemberCard() {
 
       {invites.length > 0 && (
         <div className="space-y-1">
-          <p className="text-[11px] font-medium" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="text-caption font-medium" style={{ color: 'var(--fg-subtle)' }}>
             Pending invitations
           </p>
           {invites.map((inv: Invitation) => (
@@ -323,20 +348,23 @@ function InviteMemberCard() {
               className="flex items-center gap-2 border-b py-1.5 last:border-0"
               style={{ borderColor: 'var(--border-subtle)' }}
             >
-              <span className="mono min-w-0 flex-1 truncate text-[11px]">{inv.email}</span>
-              <span className="text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+              <span className="mono min-w-0 flex-1 truncate text-caption">{inv.email}</span>
+              <span className="text-micro" style={{ color: 'var(--fg-faint)' }}>
                 {roleLabel(inv.role)}
               </span>
               <span
-                className="text-[10px]"
+                className="text-micro"
                 style={{ color: inv.is_expired ? 'var(--danger)' : 'var(--fg-faint)' }}
               >
                 {inv.is_expired ? 'expired' : `expires ${formatIsoDate(inv.expires_at)}`}
               </span>
+              {/* 28px, 40px on phones: a 24px Revoke sat beside other text
+                  (ST-12). */}
               <Button
                 type="button"
-                size="xs"
+                size="sm"
                 variant="outline"
+                className="max-md:min-h-10"
                 onClick={() => {
                   void handleRevoke(inv)
                 }}
@@ -350,7 +378,7 @@ function InviteMemberCard() {
       )}
 
       {revokeMut.isError && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className="text-body-sm text-destructive">
           {getErrorMessage(revokeMut.error)}
         </p>
       )}
@@ -364,6 +392,9 @@ export default function UsersPage() {
   const isOwner = isOwnerRole(currentUser?.role)
 
   const { confirm, dialog } = useConfirm()
+  // A role change applies at once, with no Save step; it now says so on the
+  // row, the way a settings page says "Saved" (ST-3).
+  const [roleUpdated, markRoleUpdated, clearRoleUpdated] = useTransientFlag(SAVED_FEEDBACK_MS)
 
   const listQuery = useQuery({ queryKey: usersKey(), queryFn: () => usersApi.list() })
   const updateMut = useMutation({
@@ -371,7 +402,11 @@ export default function UsersPage() {
     meta: SILENT_ERROR_META,
     mutationFn: ({ userId, role }: { userId: string; role: Role }) =>
       usersApi.updateRole(userId, role),
-    onSuccess: () => qc.invalidateQueries({ queryKey: usersKey() }),
+    onMutate: clearRoleUpdated,
+    onSuccess: () => {
+      markRoleUpdated()
+      return qc.invalidateQueries({ queryKey: usersKey() })
+    },
   })
   const users = listQuery.data ?? []
 
@@ -417,7 +452,7 @@ export default function UsersPage() {
           different scopes (tripl-h3bb). All that is left is the one fact the
           header does not carry, and only for the people it applies to. */}
       {!isOwner && (
-        <p className="text-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
           Only owners can change roles.
         </p>
       )}
@@ -481,7 +516,7 @@ export default function UsersPage() {
                     {u.name ?? u.email}
                   </div>
                   <div
-                    className="mono truncate text-[11px] leading-tight"
+                    className="mono truncate text-caption leading-tight"
                     style={{ color: 'var(--fg-subtle)' }}
                   >
                     {u.email}
@@ -493,10 +528,10 @@ export default function UsersPage() {
                     roster is read by whoever administers the instance, from
                     wherever they are, and formatIsoDate is the locale-proof one. */}
                 <span
-                  className="hidden w-36 shrink-0 text-right text-[11px] sm:block"
+                  className="hidden w-36 shrink-0 text-right text-caption sm:block"
                   style={{ color: 'var(--fg-faint)' }}
                 >
-                  Joined <span className="mono">{formatIsoDate(u.created_at)}</span>
+                  Joined <span className="tnum">{formatIsoDate(u.created_at)}</span>
                 </span>
                 <div className="w-32 shrink-0 text-right">
                   {isOwner && u.id !== currentUser?.id ? (
@@ -510,19 +545,32 @@ export default function UsersPage() {
                       options={ROLE_OPTIONS}
                     />
                   ) : (
-                    <span
-                      className={`inline-flex items-center rounded px-2 py-0.5 text-[10px] font-medium ${roleChip(u.role)}`}
-                    >
+                    <Chip tone={ROLE_TONE[u.role] ?? 'neutral'} size="xs">
                       {ROLE_OPTIONS.find((r) => r.value === u.role)?.label ?? u.role}
-                    </span>
+                    </Chip>
                   )}
                 </div>
               </div>
               {/* On the row it belongs to, naming the person: it used to sit
                   under the whole list, where it said nothing about whose role
-                  had failed to change (WS-19). */}
+                  had failed to change (WS-19). The status region is always
+                  mounted and only its text toggles: a live region inserted
+                  already holding its text is often not announced. */}
+              {(() => {
+                const updated =
+                  roleUpdated && updateMut.isSuccess && updateMut.variables?.userId === u.id
+                return (
+                  <p
+                    role="status"
+                    className={`m-0 text-right text-body-sm${updated ? ' mt-1.5' : ''}`}
+                    style={{ color: 'var(--success)' }}
+                  >
+                    {updated ? 'Role updated' : ''}
+                  </p>
+                )
+              })()}
               {updateMut.isError && updateMut.variables?.userId === u.id && (
-                <p role="alert" className="m-0 mt-1.5 text-right text-xs text-destructive">
+                <p role="alert" className="m-0 mt-1.5 text-right text-body-sm text-destructive">
                   Could not change the role of {u.name ?? u.email}: {getErrorMessage(updateMut.error)}
                 </p>
               )}

@@ -14,6 +14,12 @@ import type {
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import MetricsPage, { type MetricsTab } from './MetricsPage'
 
+/** The catalog's filters are FilterSelect chips (DS-15), not native selects. */
+async function pickFilter(label: string, option: string) {
+  fireEvent.click(screen.getByRole('combobox', { name: new RegExp(`^${label} filter`) }))
+  fireEvent.click(await screen.findByRole('option', { name: option }))
+}
+
 vi.mock('@/api/metricsCatalog', () => ({
   metricsCatalogApi: {
     list: vi.fn(),
@@ -430,6 +436,26 @@ describe('MetricsPage', () => {
       expect(await screen.findByText('2 selected')).toBeInTheDocument()
     })
 
+    it('shows a partial selection as mixed, and clears it from there (EV-26)', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+          makeItem({ id: 'm-2', display_name: 'Revenue', name: 'revenue' }),
+        ],
+        total: 2,
+      })
+
+      renderMetrics()
+
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Checkout conversion' }))
+      const header = screen.getByRole('checkbox', { name: 'Select all metrics' })
+      expect(header).toHaveAttribute('aria-checked', 'mixed')
+
+      fireEvent.click(header)
+      await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument())
+      expect(screen.getByRole('checkbox', { name: 'Select Checkout conversion' })).not.toBeChecked()
+    })
+
     it('clears the selection when the filter view changes', async () => {
       mockList({
         items: [
@@ -444,9 +470,7 @@ describe('MetricsPage', () => {
       fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Checkout conversion' }))
       expect(await screen.findByText('1 selected')).toBeInTheDocument()
 
-      fireEvent.change(screen.getByLabelText('Filter by status'), {
-        target: { value: 'active' },
-      })
+      await pickFilter('Status', 'Active')
       await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument())
     })
 
@@ -467,9 +491,7 @@ describe('MetricsPage', () => {
 
       // A status filter narrows the list — partial orders can't be persisted,
       // so the handles disappear.
-      fireEvent.change(screen.getByLabelText('Filter by status'), {
-        target: { value: 'active' },
-      })
+      await pickFilter('Status', 'Active')
       await waitFor(() =>
         expect(
           screen.queryByRole('button', { name: 'Reorder Checkout conversion' }),
@@ -755,7 +777,7 @@ describe('MetricsPage', () => {
 
       // Changing the status filter swaps the loaded set, so the signal filter is
       // dropped and both rows return (the mock ignores server-side filter args).
-      fireEvent.change(screen.getByLabelText('Filter by status'), { target: { value: 'active' } })
+      await pickFilter('Status', 'Active')
       expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
       expect(anomaliesFilter).toHaveAttribute('aria-pressed', 'false')
     })

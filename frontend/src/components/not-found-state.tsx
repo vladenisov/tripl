@@ -1,17 +1,7 @@
-import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
 
 const DEFAULT_DESCRIPTION = 'The page you’re looking for doesn’t exist or may have moved.'
-
-const ACTION_CLASS =
-  'inline-flex items-center rounded-md px-4 py-2 text-sm font-medium no-underline transition-opacity hover:opacity-90'
-
-const PRIMARY_ACTION: CSSProperties = { background: 'var(--accent)', color: 'var(--bg-sunken)' }
-
-const SECONDARY_ACTION: CSSProperties = {
-  border: '1px solid var(--border-strong)',
-  color: 'var(--fg)',
-}
 
 /** The project a missing page sat under, when the URL named one that exists. */
 interface NotFoundProject {
@@ -44,13 +34,13 @@ export function NotFoundState({
 }: NotFoundStateProps) {
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center px-6 text-center">
-      <p className="text-sm font-semibold tracking-wide" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="tnum text-body-sm font-semibold tracking-wide" style={{ color: 'var(--fg-subtle)' }}>
         404
       </p>
       <h1 className="mt-2 text-title font-semibold" style={{ color: 'var(--fg)' }}>
         {title}
       </h1>
-      <p className="mt-2 max-w-sm text-sm" style={{ color: 'var(--fg-muted)' }}>
+      <p className="mt-2 max-w-sm text-body" style={{ color: 'var(--fg-muted)' }}>
         {description}
       </p>
       {/* A project-scoped 404 keeps that project's sidebar and breadcrumb, so
@@ -58,22 +48,16 @@ export function NotFoundState({
           reader actually was (tripl-tvqk). When we know the project, it leads
           and the portfolio stays as the secondary way out. */}
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
+        {/* Button, not links hand-painted in the accent: those skipped the
+            primitive's hover, focus ring and dark-mode fill (DS-14, AU-7). */}
         {project && (
-          <Link
-            to={`/p/${project.slug}/events`}
-            className={ACTION_CLASS}
-            style={PRIMARY_ACTION}
-          >
-            Back to {project.name}
-          </Link>
+          <Button asChild size="lg">
+            <Link to={`/p/${project.slug}/events`}>Back to {project.name}</Link>
+          </Button>
         )}
-        <Link
-          to="/workspace"
-          className={ACTION_CLASS}
-          style={project ? SECONDARY_ACTION : PRIMARY_ACTION}
-        >
-          {project ? 'All projects' : 'Back to all projects'}
-        </Link>
+        <Button asChild size="lg" variant={project ? 'outline' : 'default'}>
+          <Link to="/workspace">{project ? 'All projects' : 'Back to all projects'}</Link>
+        </Button>
       </div>
     </div>
   )

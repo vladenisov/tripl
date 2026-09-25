@@ -9,8 +9,9 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { factTablesApi } from '@/api/factTables'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
 import { LazySqlEditor } from '@/components/sql-editor-lazy'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { formatDateTime } from '@/lib/datetime'
 import { factColumnValueKind } from '@/lib/factColumnValueKind'
 import {
@@ -231,13 +232,16 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
     : null
 
   return (
+    // The shared section-card geometry (DS-4 / MO-10): a header bar with the
+    // 12.5px h2, then the body.
     <Card>
-      <CardContent className="space-y-3 p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <BookOpen aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Definition</h2>
-          <Chip tone="accent" size="xs">{METRIC_KIND_LABEL[kind]}</Chip>
-        </div>
+      <CardHeader className="flex-row flex-wrap items-center gap-2">
+        <BookOpen aria-hidden="true" className="size-4 text-muted-foreground" />
+        <CardTitle as="h2">Definition</CardTitle>
+        {/* The metric's kind is a category tag: an outline chip (DS-6). */}
+        <Chip variant="outline" size="xs">{METRIC_KIND_LABEL[kind]}</Chip>
+      </CardHeader>
+      <CardContent className="space-y-3">
 
         {kind === 'sql' && <SqlExpression config={config} />}
         {kind === 'fact' && (
@@ -282,15 +286,16 @@ function SqlExpression({ config }: { config: Record<string, unknown> }) {
   const valueColumn = configString(config, 'value_column')
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-1.5 text-body-sm text-muted-foreground">
+        {/* Column names are identifiers: code tokens, not pills (DS-6). */}
         <span>time</span>
-        <Chip size="xs" variant="outline" className="font-mono">{timeColumn ?? '—'}</Chip>
+        <CodeToken>{timeColumn ?? '—'}</CodeToken>
         <span>value</span>
-        <Chip size="xs" variant="outline" className="font-mono">{valueColumn ?? '—'}</Chip>
+        <CodeToken>{valueColumn ?? '—'}</CodeToken>
       </div>
       {metricSql && (
         <details className="rounded-md border">
-          <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-muted-foreground">
+          <summary className="cursor-pointer select-none px-3 py-1.5 text-body-sm font-medium text-muted-foreground">
             Show SQL
           </summary>
           <div className="border-t p-2">
@@ -322,7 +327,7 @@ function FactFilterLines({
 }) {
   if (!hasFilters(filters)) return null
   return (
-    <ul className="space-y-0.5 pl-4 text-xs">
+    <ul className="space-y-0.5 pl-4 text-body-sm">
       {filters.rowFilters.map(name => (
         <li key={`row-filter-${name}`}>
           <span className="text-muted-foreground">filter · </span>
@@ -362,7 +367,7 @@ function FactOperandBlock({
 }) {
   return (
     <div className="space-y-0.5">
-      <p className="font-mono text-sm">
+      <p className="font-mono text-body">
         {operand.aggregation}({operand.column ?? '*'})
         <span className="text-muted-foreground"> from </span>
         {operand.factTableId ? (
@@ -407,7 +412,7 @@ function FactExpression({
             factTableColumnType={factTableColumnType}
           />
         )}
-        <p aria-hidden="true" className="text-sm text-muted-foreground">÷</p>
+        <p aria-hidden="true" className="text-body text-muted-foreground">÷</p>
         {denominator && (
           <FactOperandBlock
             slug={slug}
@@ -455,22 +460,22 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
       className="rounded-md border"
       onToggle={event => setOpen(event.currentTarget.open)}
     >
-      <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-muted-foreground">
+      <summary className="cursor-pointer select-none px-3 py-1.5 text-body-sm font-medium text-muted-foreground">
         Generated batch SQL
       </summary>
       <div className="space-y-2 border-t p-2">
-        <p className="px-1 text-xs text-muted-foreground">
+        <p className="px-1 text-body-sm text-muted-foreground">
           Primary queries executed by Collect now. Compatible aggregates from dependent metrics
           are folded into one query per fact table, interval, and replay chunk.
         </p>
-        {query.isFetching && <p className="px-1 text-xs text-muted-foreground">Loading SQL…</p>}
+        {query.isFetching && <p className="px-1 text-body-sm text-muted-foreground">Loading SQL…</p>}
         {query.isError && (
-          <p role="alert" className="px-1 text-xs text-destructive">
+          <p role="alert" className="px-1 text-body-sm text-destructive">
             Could not generate batch SQL.
           </p>
         )}
         {query.isSuccess && queries.length === 0 && (
-          <p className="px-1 text-xs text-muted-foreground">No generated SQL is available.</p>
+          <p className="px-1 text-body-sm text-muted-foreground">No generated SQL is available.</p>
         )}
         {queries.map((item, index) => {
           const editorLabel = queries.length > 1
@@ -481,7 +486,7 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
               key={`${item.fact_table_id}-${item.interval}-${item.window_from}-${index}`}
               className="space-y-1"
             >
-              <p className="px-1 text-[11px] text-muted-foreground">
+              <p className="px-1 text-caption text-muted-foreground">
                 <span className="font-medium text-foreground">{item.label}</span>
                 {' · '}{item.metric_ids.length} metric{item.metric_ids.length === 1 ? '' : 's'}
                 {' · '}{formatDateTime(item.window_from)} → {formatDateTime(item.window_to)}
@@ -497,7 +502,7 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
           )
         })}
         {query.data?.breakdown_queries_omitted && (
-          <p className="px-1 text-[11px] text-muted-foreground">
+          <p className="px-1 text-caption text-muted-foreground">
             Breakdown queries are generated separately and are not shown here.
           </p>
         )}
@@ -508,19 +513,19 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
 
 function MetricSchedule({ definition }: { definition: MetricDefinitionDetailResponse }) {
   if (definition.status !== 'active' || !definition.interval) {
-    return <span className="text-xs text-muted-foreground">Not scheduled</span>
+    return <span className="text-body-sm text-muted-foreground">Not scheduled</span>
   }
   if (definition.collection_due) {
-    return <span className="text-xs font-medium text-warning">Due now</span>
+    return <span className="text-body-sm font-medium text-warning">Due now</span>
   }
   if (definition.next_collection_at) {
     return (
-      <span className="text-xs text-muted-foreground">
+      <span className="text-body-sm text-muted-foreground">
         Next update {formatDateTime(definition.next_collection_at)}
       </span>
     )
   }
-  return <span className="text-xs text-muted-foreground">Not scheduled</span>
+  return <span className="text-body-sm text-muted-foreground">Not scheduled</span>
 }
 
 function EventCompositionExpression({
@@ -534,7 +539,7 @@ function EventCompositionExpression({
   const userIdColumn = configString(definition.config, 'user_id_column')
   if (definition.composition === 'ratio') {
     return (
-      <p className="text-sm">
+      <p className="text-body">
         <span className="font-mono">{numerator}</span>
         <span className="text-muted-foreground"> ÷ </span>
         <span className="font-mono">
@@ -546,7 +551,7 @@ function EventCompositionExpression({
   if (definition.composition === 'per_distinct_user') {
     return (
       <div className="flex flex-wrap items-center gap-1.5">
-        <p className="text-sm">
+        <p className="text-body">
           <span className="text-muted-foreground">distinct users of </span>
           <span className="font-mono">{numerator}</span>
         </p>
@@ -558,5 +563,5 @@ function EventCompositionExpression({
       </div>
     )
   }
-  return <p className="font-mono text-sm">{numerator}</p>
+  return <p className="font-mono text-body">{numerator}</p>
 }

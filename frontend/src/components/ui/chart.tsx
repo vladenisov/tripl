@@ -37,6 +37,15 @@ import { annotationDisplayColor, truncateAnnotationLabel } from '@/lib/chartAnno
 import { signalDirectionColor } from '@/lib/statusLexicon'
 import { windowPaddingBuckets } from '@/components/ui/chart-window'
 
+/**
+ * The default colour of a single-series chart (DS-27): the first categorical
+ * slot, a fixed hue that does not follow the user's accent. "Volume over time"
+ * used to be drawn in the accent on one page, teal on another and violet on a
+ * third. Anomalies are marked with danger dots and bands, never by recolouring
+ * the line, so pass `color` only for a series that means something else.
+ */
+export const SINGLE_SERIES_COLOR = SERIES_COLORS[0]
+
 interface MetricsChartProps {
   data: EventMetricPoint[]
   forecast?: ForecastPoint[]
@@ -346,7 +355,7 @@ function AnomalyTooltipLine({
   const z = zScore != null && Number.isFinite(zScore) ? ` (z=${zScore.toFixed(1)})` : ''
   return (
     <p
-      className="text-xs font-medium"
+      className="text-body-sm font-medium"
       style={{ color: direction ? signalDirectionColor(direction) : 'var(--danger)' }}
     >
       {prefix}: {direction ?? 'flagged'}{z}
@@ -388,16 +397,16 @@ export function CustomTooltip({
 
   if (point.is_forecast && point.forecast_expected != null) {
     return (
-      <div className="rounded-lg border border-dashed bg-background px-3 py-2 shadow-md">
-        <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
-        <p className="text-sm font-semibold">
+      <div className="rounded-card border border-dashed bg-popover text-popover-foreground px-3 py-2 shadow-md">
+        <p className="text-body-sm text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+        <p className="text-body font-semibold">
           ~{valueFormatter
             ? valueFormatter(point.forecast_expected)
             : formatSeriesValue(Math.round(point.forecast_expected), seriesLabel)}
         </p>
-        <p className="text-xs text-muted-foreground">Forecast (next bucket)</p>
+        <p className="text-body-sm text-muted-foreground">Forecast (next bucket)</p>
         {point.forecast_band && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             ±{sigmaLabel}σ band: {formatSecondary(point.forecast_band[0])}–{formatSecondary(point.forecast_band[1])}
           </p>
         )}
@@ -408,9 +417,9 @@ export function CustomTooltip({
   // A padding bucket out at the window's edge (MON-22): no value, not zero.
   if (point.count == null && point.expected_count == null) {
     return (
-      <div className="rounded-lg border bg-background px-3 py-2 shadow-md">
-        <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
-        <p className="text-xs text-muted-foreground">No data for this bucket</p>
+      <div className="rounded-card border bg-popover text-popover-foreground px-3 py-2 shadow-md">
+        <p className="text-body-sm text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+        <p className="text-body-sm text-muted-foreground">No data for this bucket</p>
       </div>
     )
   }
@@ -420,23 +429,23 @@ export function CustomTooltip({
   const deviation = expectedCount === null ? null : count - expectedCount
 
   return (
-    <div className="rounded-lg border bg-background px-3 py-2 shadow-md">
-      <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
-      <p className="text-sm font-semibold">
+    <div className="rounded-card border bg-popover text-popover-foreground px-3 py-2 shadow-md">
+      <p className="text-body-sm text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+      <p className="text-body font-semibold">
         {valueFormatter ? valueFormatter(count) : formatSeriesValue(count, seriesLabel)}
       </p>
       {expectedCount !== null && (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-body-sm text-muted-foreground">
           Expected: {formatSecondary(expectedCount)}
         </p>
       )}
       {point.band && (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-body-sm text-muted-foreground">
           ±{sigmaLabel}σ band: {formatSecondary(point.band[0])}–{formatSecondary(point.band[1])}
         </p>
       )}
       {deviation !== null && (
-        <p className={cn('text-xs', point.is_anomaly ? 'text-destructive' : 'text-muted-foreground')}>
+        <p className={cn('text-body-sm', point.is_anomaly ? 'text-destructive' : 'text-muted-foreground')}>
           Deviation: {deviation > 0 ? '+' : ''}{formatSecondary(deviation)}
         </p>
       )}
@@ -478,11 +487,11 @@ export function MultiSeriesTooltip({
   if (!visiblePayload.length) return null
 
   return (
-    <div className="max-w-xs rounded-lg border bg-background px-3 py-2 shadow-md">
-      <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+    <div className="max-w-xs rounded-card border bg-popover text-popover-foreground px-3 py-2 shadow-md">
+      <p className="text-body-sm text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
       <div className="mt-1 space-y-1">
         {visiblePayload.map(item => (
-          <div key={item.dataKey} className="flex items-center justify-between gap-4 text-xs">
+          <div key={item.dataKey} className="flex items-center justify-between gap-4 text-body-sm">
             <span className="flex min-w-0 items-center gap-1">
               <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
               <span className="truncate">{item.name}</span>
@@ -571,7 +580,7 @@ export function MetricsChart({
   to,
 }: MetricsChartProps) {
   const { chartStyle } = useTheme()
-  const chartColor = color || 'var(--chart-1)'
+  const chartColor = color || SINGLE_SERIES_COLOR
   const gradientId = useId().replace(/:/g, '')
   const descId = useId()
   const clampAtZero = nonNegative ?? valueFormatter === undefined
@@ -601,7 +610,7 @@ export function MetricsChart({
 
   if (!data.length) {
     return (
-      <div className={cn('flex items-center justify-center text-muted-foreground text-sm', className)} style={{ height }}>
+      <div className={cn('flex items-center justify-center text-muted-foreground text-body', className)} style={{ height }}>
         No metrics data available
       </div>
     )
@@ -677,14 +686,14 @@ export function MetricsChart({
           <XAxis
             dataKey="bucket"
             {...xAxisTicks}
-            className="text-xs fill-muted-foreground"
+            className="text-body-sm fill-muted-foreground"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
           />
           <YAxis
             tickFormatter={valueFormatter ?? formatCount}
-            className="text-xs fill-muted-foreground"
+            className="text-body-sm fill-muted-foreground"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
@@ -770,7 +779,7 @@ export function MetricsChart({
                     ? 'insideTopRight'
                     : 'insideTopLeft',
                 fill: annotation.color,
-                fontSize: 10,
+                fontSize: 'var(--text-micro)',
               }}
               ifOverflow="extendDomain"
             />
@@ -833,7 +842,7 @@ export function MetricsMultiSeriesChart({
 
   if (!chartSeries.length || !chartData.length) {
     return (
-      <div className={cn('flex items-center justify-center text-muted-foreground text-sm', className)} style={{ height }}>
+      <div className={cn('flex items-center justify-center text-muted-foreground text-body', className)} style={{ height }}>
         {emptyLabel}
       </div>
     )
@@ -870,14 +879,14 @@ export function MetricsMultiSeriesChart({
           <XAxis
             dataKey="bucket"
             {...xAxisTicks}
-            className="text-xs fill-muted-foreground"
+            className="text-body-sm fill-muted-foreground"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
           />
           <YAxis
             tickFormatter={valueFormatter ?? formatCount}
-            className="text-xs fill-muted-foreground"
+            className="text-body-sm fill-muted-foreground"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
@@ -1109,7 +1118,7 @@ export function MiniMetricsChart({
   label,
 }: MiniMetricsChartProps) {
   const { chartStyle } = useTheme()
-  const chartColor = color || 'var(--chart-1)'
+  const chartColor = color || SINGLE_SERIES_COLOR
   const gradientId = useId().replace(/:/g, '')
   const descId = useId()
   // Same gate as the full-size charts: a mini chart inside a collapsed card
@@ -1119,7 +1128,7 @@ export function MiniMetricsChart({
   if (!data.length) {
     return (
       <div
-        className={cn('flex items-center justify-center text-[11px] text-muted-foreground', className)}
+        className={cn('flex items-center justify-center text-caption text-muted-foreground', className)}
         style={{ height }}
       >
         No recent events

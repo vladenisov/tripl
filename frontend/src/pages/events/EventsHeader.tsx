@@ -60,7 +60,7 @@ function StatHelp({ help }: { help: string }) {
             className="inline-flex shrink-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             aria-label={help}
           >
-            <Info className="h-3 w-3" style={{ color: 'var(--fg-faint)' }} aria-hidden />
+            <Info className="size-3" style={{ color: 'var(--fg-faint)' }} aria-hidden />
           </button>
         </TooltipTrigger>
         <TooltipContent side="bottom" align="end" className="max-w-xs whitespace-normal">
@@ -150,56 +150,57 @@ export function EventsHeader({
    */
   typeDrifts?: EventTypeDrift[]
 }) {
-  const liveSignalCount = eventTypeSignals.size + (projectTotalSignal ? 1 : 0)
-  const hasLiveSignal = eventTypeSignals.size > 0 || !!projectTotalSignal
+  const openSignalCount = eventTypeSignals.size + (projectTotalSignal ? 1 : 0)
+  const hasOpenSignal = openSignalCount > 0
 
   return (
     <PageHeader
       className="mb-3"
+      eyebrow="Plan"
       title={activeType ? `${activeType.display_name} events` : 'Events'}
       titleAddon={
         slug ? (
           <EventTypeDriftBadges slug={slug} typeDrifts={typeDrifts} namesType={!!activeType} />
         ) : undefined
       }
-      actions={
-        <>
-          {/* Wraps rather than overflows: the scoped "In review · project" caption
-              is the widest label in the row, and on a phone-width viewport the
-              three stats no longer fit the line the heading leaves them. */}
-          <MiniStatStrip>
-            {/* The one place the count appears in the header: the heading used to
-                repeat it beside the h1, unformatted, while the footer formatted
-                the same number (EVT-16). */}
-            {columnFilter ? (
-              <MiniStat
-                label="Matching"
-                value={formatNumber(columnFilter.matching)}
-                delta={`${formatNumber(columnFilter.checked)} of ${formatNumber(total)} checked`}
-              />
-            ) : (
-              <MiniStat label="Total" value={formatNumber(total)} />
-            )}
-            {/* The help icon rides on the caption it explains: beside the whole
-                stat it sat far from the label, next to the following stat
-                (LIVE-23). */}
+      // The page KPIs sit under the title in the one boxed strip, as on
+      // Overview, Metrics and Anomalies, instead of right-aligned in the
+      // actions slot (DS-5). The strip wraps on a phone-width viewport.
+      stats={
+        <MiniStatStrip boxed>
+          {/* The one place the count appears in the header: the heading used to
+              repeat it beside the h1, unformatted, while the footer formatted
+              the same number (EVT-16). */}
+          {columnFilter ? (
             <MiniStat
-              label="Chart signals"
-              value={String(liveSignalCount)}
-              delta={hasLiveSignal ? 'live' : 'quiet'}
-              tone={hasLiveSignal ? 'danger' : 'success'}
-              pulse={hasLiveSignal}
-              labelAddon={<StatHelp help={CHART_SIGNALS_HELP} />}
+              label="Matching"
+              value={formatNumber(columnFilter.matching)}
+              delta={`${formatNumber(columnFilter.checked)} of ${formatNumber(total)} checked`}
             />
-            <MiniStat
-              label="In review · project"
-              value={String(inReviewCount)}
-              delta={inReviewCount > 0 ? 'pending' : undefined}
-              tone={inReviewCount > 0 ? 'warning' : 'success'}
-              labelAddon={<StatHelp help={IN_REVIEW_HELP} />}
-            />
-          </MiniStatStrip>
-        </>
+          ) : (
+            <MiniStat label="Total" value={formatNumber(total)} />
+          )}
+          {/* The help icon rides on the caption it explains: beside the whole
+              stat it sat far from the label, next to the following stat
+              (LIVE-23). "Open"/"none", not "live"/"quiet": "Live" is the
+              lifecycle status of a shipped event, in green, one column over
+              (EV-5 / DS-7). */}
+          <MiniStat
+            label="Chart signals"
+            value={String(openSignalCount)}
+            delta={hasOpenSignal ? 'open' : 'none'}
+            tone={hasOpenSignal ? 'danger' : 'success'}
+            pulse={hasOpenSignal}
+            labelAddon={<StatHelp help={CHART_SIGNALS_HELP} />}
+          />
+          <MiniStat
+            label="In review · project"
+            value={String(inReviewCount)}
+            delta={inReviewCount > 0 ? 'pending' : undefined}
+            tone={inReviewCount > 0 ? 'warning' : 'success'}
+            labelAddon={<StatHelp help={IN_REVIEW_HELP} />}
+          />
+        </MiniStatStrip>
       }
     />
   )

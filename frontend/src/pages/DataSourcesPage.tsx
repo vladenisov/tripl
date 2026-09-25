@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogFooter,
   DialogHeader,
@@ -29,12 +30,17 @@ import { ConnectionCoreFields } from '@/components/data-sources/connection-core-
 import {
   EMPTY_CONNECTION_CORE_FORM,
   buildCoreCreatePayload,
+  connectionCoreMissing,
   buildCoreUpdatePayload,
   connectionCoreSecretError,
   coreConnectionChanged,
   dataSourceToCoreForm,
   type ConnectionCoreForm,
+  type CoreMissing,
 } from '@/components/data-sources/connection-core'
+import { FieldError } from '@/components/forms/FieldError'
+import { examplePlaceholder } from '@/components/forms/placeholders'
+import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from '@/components/forms/validation'
 import {
   EMPTY_CONNECTION_SETTINGS_FORM,
   SELECT_CLASS,
@@ -90,15 +96,18 @@ function isHealthCheckStale(ds: DataSource, now: number = Date.now()): boolean {
 interface ConnectionErrors {
   secret: string | null
   pem: PemErrors
+  /** Required core fields left empty, flagged inline under each (AU-4). */
+  missing: CoreMissing
 }
 
-const NO_CONNECTION_ERRORS: ConnectionErrors = { secret: null, pem: {} }
+const NO_CONNECTION_ERRORS: ConnectionErrors = { secret: null, pem: {}, missing: {} }
 
 function connectionErrors(
   dbType: DbType,
   core: ConnectionCoreForm,
   settings: ConnectionSettingsForm,
   baseline: ConnectionSettingsForm,
+  mode: 'create' | 'edit',
 ): ConnectionErrors {
   const pem: PemErrors = {}
   const all = connectionSettingsErrors(dbType, settings)
@@ -106,11 +115,25 @@ function connectionErrors(
     const error = all[field]
     if (error && settings[field] !== baseline[field]) pem[field] = error
   }
-  return { secret: connectionCoreSecretError(dbType, core), pem }
+  return {
+    secret: connectionCoreSecretError(dbType, core),
+    pem,
+    missing: connectionCoreMissing(dbType, core, mode, REQUIRED_MESSAGE),
+  }
 }
 
 function hasConnectionErrors(errors: ConnectionErrors): boolean {
-  return !!errors.secret || Object.keys(errors.pem).length > 0
+  return !!errors.secret || Object.keys(errors.pem).length > 0 || Object.keys(errors.missing).length > 0
+}
+
+/**
+ * After a refused submit, move focus to the first flagged control once the
+ * render that marks it has landed (AL-4 / AU-4): in a long dialog the
+ * message could sit below the fold with nothing pointing at it.
+ */
+function focusFirstInvalidSoon(root: HTMLElement | null) {
+  if (!root) return
+  requestAnimationFrame(() => focusFirstInvalid(root))
 }
 
 export default function DataSourcesPage() {
@@ -130,6 +153,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [createErrors, setCreateErrors] = useState<ConnectionErrors>(NO_CONNECTION_ERRORS)
   const [editErrors, setEditErrors] = useState<ConnectionErrors>(NO_CONNECTION_ERRORS)
   const [editNameError, setEditNameError] = useState<string | null>(null)
+  const [createNameError, setCreateNameError] = useState<string | null>(null)
+  const createFormRef = useRef<HTMLFormElement>(null)
+  const editFormRef = useRef<HTMLFormElement>(null)
 
   const [name, setName] = useState('')
   const [dbType, setDbType] = useState<DbType>('clickhouse')
@@ -359,15 +385,19 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   })
   const draftTestShown = draftTestMut.variables?.key === draftKey && !draftTestMut.isPending
   const testDraft = () => {
-    const errors = connectionErrors(dbType, core, settings, EMPTY_CONNECTION_SETTINGS_FORM)
+    const errors = connectionErrors(dbType, core, settings, EMPTY_CONNECTION_SETTINGS_FORM, 'create')
     setCreateErrors(errors)
-    if (hasConnectionErrors(errors)) return
+    if (hasConnectionErrors(errors)) {
+      focusFirstInvalidSoon(createFormRef.current)
+      return
+    }
     draftTestMut.mutate({ key: draftKey, payload: buildCreatePayload() })
   }
 
   const resetForm = () => {
     setShowForm(false)
     setName('')
+    setCreateNameError(null)
     setDbType('clickhouse')
     setCore(EMPTY_CONNECTION_CORE_FORM)
     setSettings(EMPTY_CONNECTION_SETTINGS_FORM)
@@ -378,18 +408,24 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   }
 
   const submitCreate = () => {
-    const errors = connectionErrors(dbType, core, settings, EMPTY_CONNECTION_SETTINGS_FORM)
+    const errors = connectionErrors(dbType, core, settings, EMPTY_CONNECTION_SETTINGS_FORM, 'create')
+    const nameError = name.trim() ? null : REQUIRED_MESSAGE
     setCreateErrors(errors)
-    if (hasConnectionErrors(errors)) return
+    setCreateNameError(nameError)
+    if (nameError || hasConnectionErrors(errors)) {
+      focusFirstInvalidSoon(createFormRef.current)
+      return
+    }
     createMut.mutate()
   }
 
   const submitEdit = () => {
     if (!editingDs) return
-    // `required` stops a browser submit; this also catches a name of spaces,
-    // which the backend would otherwise answer with a raw 422 (DATA-33).
+    // The form is `noValidate`; this catches an empty name and a name of
+    // spaces, which the backend would otherwise answer with a raw 422 (DATA-33).
     if (!editName.trim()) {
       setEditNameError('Enter a name.')
+      focusFirstInvalidSoon(editFormRef.current)
       return
     }
     setEditNameError(null)
@@ -398,9 +434,12 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       return
     }
     const baseline = connectionSettingsToForm(editingDs.connection_settings)
-    const errors = connectionErrors(editingDs.db_type, editCore, editSettings, baseline)
+    const errors = connectionErrors(editingDs.db_type, editCore, editSettings, baseline, 'edit')
     setEditErrors(errors)
-    if (hasConnectionErrors(errors)) return
+    if (hasConnectionErrors(errors)) {
+      focusFirstInvalidSoon(editFormRef.current)
+      return
+    }
     const settingsChanged = JSON.stringify(editSettings) !== JSON.stringify(baseline)
     updateMut.mutate({
       id: editingDs.id,
@@ -455,7 +494,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
           overflowed off the LEFT edge at 375px, where nothing can scroll to it,
           and "Connections" read as "TIONS" (DATA-35 / LIVE-4). */}
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-        <MiniStatStrip>
+        <MiniStatStrip boxed>
           <MiniStat label="Connections" value={statsPending ? '—' : String(dataSources.length)} />
           <MiniStat
             label="Healthy"
@@ -481,15 +520,34 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={(v) => { if (!v) createGuard.requestClose(resetForm) }}>
         <DialogContent className="sm:max-w-lg">
-          <form onSubmit={(e) => { e.preventDefault(); submitCreate() }}>
+          {/* noValidate: every empty required field is flagged inline on
+              submit, not by the browser's bubble on the first one (AU-4).
+              DialogBody scrolls; the title and actions stay in view (AL-4). */}
+          <form
+            ref={createFormRef}
+            noValidate
+            className="flex min-h-0 flex-col gap-4"
+            onSubmit={(e) => { e.preventDefault(); submitCreate() }}
+          >
             <DialogHeader>
               <DialogTitle>New data source</DialogTitle>
             </DialogHeader>
-            <div className="grid gap-4 py-4">
+            <DialogBody className="grid gap-4">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="grid gap-2 sm:col-span-2">
                   <Label htmlFor="ds-name">Name</Label>
-                  <Input id="ds-name" value={name} onChange={(e) => setName(e.target.value)} required placeholder="Production ClickHouse" />
+                  <Input
+                    id="ds-name"
+                    value={name}
+                    onChange={(e) => {
+                      setName(e.target.value)
+                      setCreateNameError(null)
+                    }}
+                    aria-required
+                    placeholder={examplePlaceholder('Production ClickHouse')}
+                    {...invalidAria('ds-name', createNameError)}
+                  />
+                  <FieldError inputId="ds-name" message={createNameError} />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="ds-type">Type</Label>
@@ -514,6 +572,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 onChange={patchCore}
                 mode="create"
                 secretError={createErrors.secret}
+                missing={createErrors.missing}
               />
               <ConnectionSettingsFields
                 idPrefix="ds"
@@ -523,22 +582,22 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 pemErrors={createErrors.pem}
               />
               {createMut.isError && (
-                <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>
+                <p className="text-body text-destructive">{getErrorMessage(createMut.error)}</p>
               )}
               {draftTestShown && draftTestMut.data && (
                 <p
                   role="status"
-                  className={draftTestMut.data.success ? 'text-sm text-success' : 'text-sm text-destructive'}
+                  className={draftTestMut.data.success ? 'text-body text-success' : 'text-body text-destructive'}
                 >
                   {draftTestMut.data.message}
                 </p>
               )}
               {draftTestShown && draftTestMut.isError && (
-                <p role="alert" className="text-sm text-destructive">
+                <p role="alert" className="text-body text-destructive">
                   {getErrorMessage(draftTestMut.error)}
                 </p>
               )}
-            </div>
+            </DialogBody>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => createGuard.requestClose(resetForm)}>Cancel</Button>
               <Button
@@ -558,11 +617,16 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       {/* Edit dialog */}
       <Dialog open={!!editingDs} onOpenChange={(v) => { if (!v) editGuard.requestClose(closeEdit) }}>
         <DialogContent className="sm:max-w-lg">
-          <form onSubmit={(e) => { e.preventDefault(); submitEdit() }}>
+          <form
+            ref={editFormRef}
+            noValidate
+            className="flex min-h-0 flex-col gap-4"
+            onSubmit={(e) => { e.preventDefault(); submitEdit() }}
+          >
             <DialogHeader>
               <DialogTitle>Edit data source</DialogTitle>
             </DialogHeader>
-            <div className="grid gap-4 py-4">
+            <DialogBody className="grid gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="edit-ds-name">Name</Label>
                 <Input
@@ -572,21 +636,16 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                     setEditName(e.target.value)
                     setEditNameError(null)
                   }}
-                  required
-                  aria-invalid={editNameError ? true : undefined}
-                  aria-describedby={editNameError ? 'edit-ds-name-error' : undefined}
+                  aria-required
+                  {...invalidAria('edit-ds-name', editNameError)}
                 />
-                {editNameError && (
-                  <p id="edit-ds-name-error" role="alert" className="text-xs text-destructive">
-                    {editNameError}
-                  </p>
-                )}
+                <FieldError inputId="edit-ds-name" message={editNameError} announce />
               </div>
               {editingDs && (
                 <>
                   {editingDs.is_synthetic ? (
                     <div className="grid gap-2">
-                      <p className="text-sm text-muted-foreground">
+                      <p className="text-body text-muted-foreground">
                         Demo sources have no warehouse connection to configure.
                       </p>
                       <Label htmlFor="edit-ds-timeout">Timeout, s</Label>
@@ -596,7 +655,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                         min={1}
                         value={editCore.timeoutSeconds}
                         onChange={(e) => patchEditCore({ timeoutSeconds: e.target.value })}
-                        placeholder="300"
+                        placeholder="Default"
                       />
                     </div>
                   ) : (
@@ -609,6 +668,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                         mode="edit"
                         secretSet={editingDs.password_set}
                         secretError={editErrors.secret}
+                        missing={editErrors.missing}
                       />
                       <ConnectionSettingsFields
                         idPrefix="edit-ds"
@@ -623,9 +683,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 </>
               )}
               {updateMut.isError && (
-                <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>
+                <p className="text-body text-destructive">{getErrorMessage(updateMut.error)}</p>
               )}
-            </div>
+            </DialogBody>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => editGuard.requestClose(closeEdit)}>Cancel</Button>
               <Button type="submit" disabled={updateMut.isPending}>Save</Button>
@@ -747,18 +807,19 @@ function DataSourceCard({
   const secretLabel = isBigQuery ? 'Service account key set' : 'Password set'
 
   return (
+    // A card in the page, on the page's surface (DS-10): --bg-elevated is for
+    // floating layers now. The one card radius (DS-24).
     <div
-      className="flex flex-col overflow-hidden rounded-lg border transition-colors hover:border-[var(--border-strong)]"
-      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
+      className="flex flex-col overflow-hidden rounded-card border transition-colors hover:border-[var(--border-strong)]"
+      style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
     >
       <div className="flex items-start gap-3 p-3.5">
         <div
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md font-bold uppercase"
+          // Sans: mono is never set bold (DS-17).
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-micro font-bold uppercase"
           style={{
             background: 'var(--accent-soft)',
             color: 'var(--accent)',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 10,
             letterSpacing: '0.04em',
           }}
         >
@@ -770,7 +831,7 @@ function DataSourceCard({
           </div>
           {!connectionRedacted && (
             <div
-              className="mono mt-0.5 truncate text-[11px]"
+              className="mono mt-0.5 truncate text-caption"
               style={{ color: 'var(--fg-subtle)' }}
               title={connectionLabel}
             >
@@ -798,7 +859,8 @@ function DataSourceCard({
         {ds.username && <Chip size="xs">{ds.username}</Chip>}
         {ds.timeout_seconds != null && <Chip size="xs">timeout {ds.timeout_seconds}s</Chip>}
         <div className="flex-1" />
-        <span className="mono text-2xs" style={{ color: 'var(--fg-faint)' }}>
+        {/* A relative time is not code: sans + tabular digits (DS-17). */}
+        <span className="tnum text-micro" style={{ color: 'var(--fg-faint)' }}>
           {formatRelativeTime(ds.updated_at)}
         </span>
       </div>
@@ -835,7 +897,7 @@ function DataSourceCard({
             </span>
             {lastTestAt && (
               <span
-                className="mono ml-auto shrink-0 text-2xs"
+                className="tnum ml-auto shrink-0 text-micro"
                 style={{ color: 'var(--fg-faint)' }}
               >
                 {stale ? 're-test to confirm' : formatRelativeTime(lastTestAt)}

@@ -201,11 +201,10 @@ describe('MonitorDetailPage', () => {
     expect(
       screen.getByText('Scan failed: could not connect to the data source.'),
     ).toBeInTheDocument()
-    // Back link to the monitors list
-    expect(screen.getByRole('link', { name: 'Monitors' })).toHaveAttribute(
-      'href',
-      '/p/demo/monitors',
-    )
+    // The eyebrow names the nav group and the collection, in place of the
+    // separate "Monitors" back link above the header (DS-2 / MO-40).
+    expect(screen.getByText('Observe · Alert rule')).toHaveAttribute('data-slot', 'page-eyebrow')
+    expect(screen.queryByRole('link', { name: 'Monitors' })).not.toBeInTheDocument()
   })
 
   it('offers a viewer no mute or retry, and says who can (MON-6)', async () => {

@@ -4,6 +4,7 @@ import type {
   DbType,
   PostgresSslMode,
 } from '@/types'
+import { INPUT_INVALID_CLASS, INPUT_PLACEHOLDER_CLASS, INPUT_TEXT_CLASS } from '@/components/settings/input-style'
 
 // Form state for the typed, per-warehouse connection settings. Kept as strings
 // (what inputs produce) and converted to the API shape by
@@ -65,17 +66,20 @@ export const MAX_DATASET_ALLOWLIST = MAX_SCHEMA_DATASETS - 1
 // the scan form (scanUtils re-exports it). The copies used to differ in
 // background and, worse, the scan form's had no focus ring at all, so its
 // selects were invisible to keyboard users (DATA-48).
+// The ui-kit control spec (DS-14): 32px, `rounded-control`, 12.5px text from
+// `md` (16px on phones so iOS does not zoom, MT-27), and the one `aria-invalid`
+// look (MT-7).
 export const SELECT_CLASS =
-  'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm ' +
-  'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
+  `flex h-8 w-full rounded-control border border-input bg-background px-2.5 py-1 ${INPUT_TEXT_CLASS} shadow-sm ` +
+  `focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${INPUT_INVALID_CLASS}`
 
 export const TEXTAREA_CLASS =
-  'flex w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs shadow-sm ' +
-  'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
+  `flex w-full rounded-control border border-input bg-background px-2.5 py-1.5 font-mono ${INPUT_TEXT_CLASS} shadow-sm ` +
+  `focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${INPUT_INVALID_CLASS} ${INPUT_PLACEHOLDER_CLASS}`
 
-export const HELP_CLASS = 'text-xs text-muted-foreground'
+export const HELP_CLASS = 'text-body-sm text-muted-foreground'
 
-export const ERROR_CLASS = 'text-xs text-destructive'
+export const ERROR_CLASS = 'text-body-sm text-destructive'
 
 /**
  * Attributes every credential input and textarea carries (DATA-28, DATA-29).

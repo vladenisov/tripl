@@ -5,9 +5,11 @@ import { eventMetricsApi } from '@/api/eventMetrics'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
 import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
+import { LoadingState } from '@/components/primitives/loading-state'
+import { Card, CardContent, CardTitle } from '@/components/ui/card'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { formatNumber } from '@/lib/format'
@@ -164,73 +166,73 @@ export function VersionsTab({
 
   return (
     <>
+      {/* The shared section-card geometry (DS-4 / MO-10): a header bar with a
+          12.5px h2 and the controls, then the chart in the card body. */}
       <Card>
-        <CardContent className="p-4 sm:p-6">
-          <ChartCardHeader
-            title={(
-              <>
-                <GitBranch aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
-                <h2 className="text-lg font-semibold">By version</h2>
-                {latestVersion && (
-                  latestIsPreRelease ? (
-                    <Badge
-                      variant="outline"
-                      className="gap-1 border-[var(--warning)]/60 bg-[var(--warning-soft)] font-mono text-[var(--warning)]"
-                      title="Newest release by version, but it hasn't taken a real share of traffic yet — treat it as a pre-release / not-yet-rolled-out build."
-                    >
-                      <AlertTriangle aria-hidden="true" className="h-3 w-3" />
-                      <span>pre-release {latestVersion}</span>
-                      {latestAdoptionShare !== null && (
-                        <span className="opacity-80">· {formatPercent(latestAdoptionShare)}</span>
-                      )}
-                    </Badge>
-                  ) : (
-                    <Badge variant="outline" className="gap-1 font-mono">
-                      <span>latest {latestVersion}</span>
-                      {latestAdoptionShare !== null && (
-                        <span className="text-muted-foreground">· {formatPercent(latestAdoptionShare)}</span>
-                      )}
-                    </Badge>
-                  )
-                )}
-              </>
-            )}
-          >
-            <div className="inline-flex h-8 items-center rounded-md border bg-muted/30 p-0.5">
-              <Button
-                type="button"
-                size="sm"
-                variant={selectedVersionFilter === 'all' ? 'secondary' : 'ghost'}
-                className="h-6 px-2 text-xs"
-                onClick={() => onVersionFilterChange('all')}
-              >
-                All versions
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={selectedVersionFilter === 'latest' ? 'secondary' : 'ghost'}
-                className="h-6 gap-1 px-2 text-xs"
-                onClick={() => onVersionFilterChange('latest')}
-                disabled={!latestVersion}
-                title={latestIsPreRelease
+        <ChartCardHeader
+          title={(
+            <>
+              <GitBranch aria-hidden="true" className="size-4 text-muted-foreground" />
+              <CardTitle as="h2">By version</CardTitle>
+              {latestVersion && (
+                latestIsPreRelease ? (
+                  // A warning flag, the one pill idiom (DS-6).
+                  <Chip
+                    tone="warning"
+                    icon={<AlertTriangle aria-hidden="true" />}
+                    title="Newest release by version, but it hasn't taken a real share of traffic yet — treat it as a pre-release / not-yet-rolled-out build."
+                  >
+                    <span>pre-release {latestVersion}</span>
+                    {latestAdoptionShare !== null && (
+                      <span className="opacity-80">· {formatPercent(latestAdoptionShare)}</span>
+                    )}
+                  </Chip>
+                ) : (
+                  <Chip variant="outline">
+                    <span>latest {latestVersion}</span>
+                    {latestAdoptionShare !== null && (
+                      <span className="text-muted-foreground">· {formatPercent(latestAdoptionShare)}</span>
+                    )}
+                  </Chip>
+                )
+              )}
+            </>
+          )}
+        >
+          {/* Two views of one chart: the shared segmented control (DS-16),
+              the same height as the range control beside it. */}
+          <SegmentedControl
+            aria-label="Versions shown"
+            value={selectedVersionFilter}
+            onChange={onVersionFilterChange}
+            options={[
+              { value: 'all', label: 'All versions' },
+              {
+                value: 'latest',
+                disabled: !latestVersion,
+                title: latestIsPreRelease
                   ? 'The newest release is a pre-release with little traffic — not yet rolled out.'
-                  : undefined}
-              >
-                Latest
-                {latestIsPreRelease && (
-                  <AlertTriangle aria-hidden="true" className="h-3 w-3 text-[var(--warning)]" />
-                )}
-              </Button>
-            </div>
-            <MetricsRangeControls
-              rangeDays={rangeDays}
-              granularity={granularity}
-              nativeGranularity={nativeGranularity}
-              onRangeDaysChange={onRangeDaysChange}
-              onGranularityChange={onGranularityChange}
-            />
-          </ChartCardHeader>
+                  : undefined,
+                label: (
+                  <>
+                    Latest
+                    {latestIsPreRelease && (
+                      <AlertTriangle aria-hidden="true" className="size-3 text-[var(--warning)]" />
+                    )}
+                  </>
+                ),
+              },
+            ]}
+          />
+          <MetricsRangeControls
+            rangeDays={rangeDays}
+            granularity={granularity}
+            nativeGranularity={nativeGranularity}
+            onRangeDaysChange={onRangeDaysChange}
+            onGranularityChange={onGranularityChange}
+          />
+        </ChartCardHeader>
+        <CardContent>
           {seriesQuery.isError ? (
             <ErrorState
               compact
@@ -239,9 +241,10 @@ export function VersionsTab({
               onRetry={() => void seriesQuery.refetch()}
             />
           ) : seriesQuery.isLoading ? (
-            <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
-              Loading version metrics…
-            </div>
+            <LoadingState
+              label="Loading version metrics…"
+              className="flex h-[280px] items-center justify-center text-body-sm"
+            />
           ) : (
             <>
               <MetricsMultiSeriesChart
@@ -262,7 +265,7 @@ export function VersionsTab({
                 valueKind={legendKind}
               />
               {seriesQuery.data?.interval && (
-                <p className="mt-2 text-xs text-muted-foreground">
+                <p className="mt-2 text-body-sm text-muted-foreground">
                   Collection interval: {seriesQuery.data.interval}
                 </p>
               )}
@@ -272,35 +275,30 @@ export function VersionsTab({
       </Card>
 
       <Card>
-        <CardContent className="p-4 sm:p-6">
-          <ChartCardHeader
-            title={(
-              <>
-                <h2 className="text-lg font-semibold">Version adoption</h2>
-                {latestAdoptionShare !== null && (
-                  latestIsPreRelease ? (
-                    <Badge
-                      variant="outline"
-                      className="gap-1 border-[var(--warning)]/60 bg-[var(--warning-soft)] text-[var(--warning)]"
-                    >
-                      <AlertTriangle aria-hidden="true" className="h-3 w-3" />
-                      Pre-release {formatPercent(latestAdoptionShare)}
-                    </Badge>
-                  ) : (
-                    <Badge variant="outline">
-                      Latest {formatPercent(latestAdoptionShare)}
-                    </Badge>
-                  )
-                )}
-              </>
-            )}
-          >
-            {adoptionQuery.data?.app_version_column && (
-              <Badge variant="secondary" className="font-mono">
-                {adoptionQuery.data.app_version_column}
-              </Badge>
-            )}
-          </ChartCardHeader>
+        <ChartCardHeader
+          title={(
+            <>
+              <CardTitle as="h2">Version adoption</CardTitle>
+              {latestAdoptionShare !== null && (
+                latestIsPreRelease ? (
+                  <Chip tone="warning" icon={<AlertTriangle aria-hidden="true" />}>
+                    Pre-release {formatPercent(latestAdoptionShare)}
+                  </Chip>
+                ) : (
+                  <Chip variant="outline">
+                    Latest {formatPercent(latestAdoptionShare)}
+                  </Chip>
+                )
+              )}
+            </>
+          )}
+        >
+          {/* A column name: a code token, not a pill (DS-6). */}
+          {adoptionQuery.data?.app_version_column && (
+            <CodeToken>{adoptionQuery.data.app_version_column}</CodeToken>
+          )}
+        </ChartCardHeader>
+        <CardContent>
           {adoptionQuery.isError ? (
             <ErrorState
               compact
@@ -309,9 +307,10 @@ export function VersionsTab({
               onRetry={() => void adoptionQuery.refetch()}
             />
           ) : adoptionQuery.isLoading ? (
-            <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">
-              Loading adoption…
-            </div>
+            <LoadingState
+              label="Loading adoption…"
+              className="flex h-[240px] items-center justify-center text-body-sm"
+            />
           ) : (
             <>
               <MetricsMultiSeriesChart
@@ -357,22 +356,15 @@ function VersionLegend({
         return (
           <div
             key={`${item.version}-${item.isOther}`}
-            className="flex min-w-0 items-center gap-2 rounded-md border bg-background px-2 py-1 text-xs"
+            className="flex min-w-0 items-center gap-2 rounded-md border bg-background px-2 py-1 text-body-sm"
           >
             <SeriesSwatch color={item.color} dash={item.dash} />
             <span className="min-w-0 truncate font-mono">{item.isOther ? 'Other' : item.version}</span>
             {item.isLatest && (
-              <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                latest{shareSuffix}
-              </Badge>
+              <Chip size="xs">latest{shareSuffix}</Chip>
             )}
             {item.isPreRelease && (
-              <Badge
-                variant="outline"
-                className="h-5 gap-1 border-[var(--warning)]/60 bg-[var(--warning-soft)] px-1.5 text-[10px] text-[var(--warning)]"
-              >
-                pre-release{shareSuffix}
-              </Badge>
+              <Chip tone="warning" size="xs">pre-release{shareSuffix}</Chip>
             )}
             <span className="shrink-0 text-muted-foreground">
               {valueKind === 'latest' ? `latest value: ${value}` : value}

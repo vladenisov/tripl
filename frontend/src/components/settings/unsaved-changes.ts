@@ -41,6 +41,20 @@ export type UnsavedChangesValue = {
  */
 export const LEAVE_CONFIRMED = { leaveConfirmed: true } as const
 
+/**
+ * The wording of every "you have unsaved work" confirm (AU-42). The form's own
+ * Cancel opened a dialog offering "Cancel" and "Discard", two meanings of
+ * Cancel in two seconds; the safe answer is now named for what it does, and
+ * is the one the dialog focuses (AlertDialog focuses its cancel button).
+ * Shared by the page/dialog guards (useUnsavedChangesGuard) and the settings
+ * takeover's rail guard, so the app asks the question one way.
+ */
+export const UNSAVED_CONFIRM_COPY = {
+  title: 'Leave without saving?',
+  confirmLabel: 'Discard changes',
+  cancelLabel: 'Keep editing',
+} as const
+
 /** No-op by default so a section renders fine outside the takeover shell. */
 const UnsavedChangesContext = createContext<UnsavedChangesValue>({
   registerUnsaved: () => {},

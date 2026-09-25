@@ -5,6 +5,8 @@ import { MoreHorizontal, Plus, Settings2, Ticket } from 'lucide-react'
 
 import { planBranchesApi, type PlanBranchListResponse } from '@/api/planBranches'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { PageContainer } from '@/components/primitives/page-container'
+import { PageHeader } from '@/components/primitives/page-header'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -128,19 +130,17 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
   return (
     <>
       {dialog}
-      <div className="flex flex-col gap-[18px]">
-        {/* Wraps on a phone: the three buttons are ~400px of `shrink-0`
+      <PageContainer className="space-y-[18px]">
+        {/* The shared page header (DS-1 / PL-25), the same as Plan history's.
+            Its actions wrap on a phone: the three buttons are ~400px of
             content, and a non-wrapping header pushed "New branch" off-screen
             at 375px (PLAN-13). */}
-        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-          <div className="min-w-0 basis-72 flex-1">
-            <h2 className="text-lg font-semibold">Plan branches</h2>
-            <p className="mt-1 max-w-[640px] text-sm text-muted-foreground">
-              Propose and review changes to the tracking plan in isolation, then merge to
-              main — version control for your schema.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+        <PageHeader
+          eyebrow="Plan"
+          title="Plan branches"
+          description="Propose and review changes to the tracking plan in isolation, then merge to main — version control for your schema."
+          actions={
+          <>
             {/* The two settings buttons fold into one menu below `sm`, leaving
                 New branch — the page's primary action — on the row (PLAN-13). */}
             <Button
@@ -191,12 +191,13 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
                 New branch
               </Button>
             )}
-          </div>
-        </div>
+          </>
+          }
+        />
         {!canWrite && <ReadOnlyNotice />}
 
         {isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading branches…</p>
+          <p className="text-body text-muted-foreground">Loading branches…</p>
         ) : (
           // `minmax(0,1fr)`, not `1fr`: a bare `1fr` track is `minmax(auto,1fr)`,
           // so its MINIMUM is the detail column's min-content width and the
@@ -223,7 +224,7 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
             />
           </div>
         )}
-      </div>
+      </PageContainer>
 
       <MergePolicyDialog slug={slug} open={policyOpen} onOpenChange={setPolicyOpen} />
 

@@ -81,12 +81,14 @@ export function BulkActionBar({
         boxShadow: 'var(--shadow-lg)',
       }}
     >
-      <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
-        <span className="mono font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
+      <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+        {/* Sans + tabular figures: a count is not code, and mono has no
+            real semibold (DS-17). */}
+        <span className="tnum font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
       </span>
       {selectedVisibleCount !== undefined && selectedVisibleCount < selectedCount && (
-        <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-          · <span className="mono">{selectedVisibleCount}</span> on screen
+        <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          · <span className="tnum">{selectedVisibleCount}</span> on screen
         </span>
       )}
       {canSelectAll && (
@@ -94,7 +96,7 @@ export function BulkActionBar({
           type="button"
           onClick={onSelectAllMatching}
           disabled={disabled}
-          className="text-[12px] font-medium underline-offset-2 hover:underline disabled:opacity-50"
+          className="text-body-sm font-medium underline-offset-2 hover:underline disabled:opacity-50"
           style={{ color: 'var(--accent)' }}
         >
           {isSelectingAll
@@ -110,12 +112,12 @@ export function BulkActionBar({
         onValueChange={v => { if (v) onSetStatus(v as EventStatus) }}
         disabled={disabled}
       >
-        <SelectTrigger className="h-7 w-auto min-w-[8rem] whitespace-nowrap border-[var(--border-strong)] text-xs data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Set status">
+        <SelectTrigger className="h-7 w-auto min-w-[8rem] whitespace-nowrap border-[var(--border-strong)] data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Set status">
           <SelectValue placeholder="Set status…" />
         </SelectTrigger>
         <SelectContent>
           {EVENT_STATUSES.map(s => (
-            <SelectItem key={s} value={s} className="text-xs">
+            <SelectItem key={s} value={s}>
               {EVENT_STATUS_LABELS[s]}
             </SelectItem>
           ))}
@@ -124,11 +126,10 @@ export function BulkActionBar({
       <Button
         variant="outline"
         size="sm"
-        className="h-7 text-xs"
         onClick={onMarkReviewed}
         disabled={disabled}
       >
-        <CheckCheck className="mr-1 h-3.5 w-3.5" />
+        <CheckCheck />
         Mark reviewed
       </Button>
       {owners.length > 0 && (
@@ -137,7 +138,7 @@ export function BulkActionBar({
           onValueChange={v => { if (v) onAssignOwner(v === UNASSIGN_VALUE ? null : v) }}
           disabled={disabled}
         >
-          <SelectTrigger className="h-7 w-auto min-w-[9.5rem] whitespace-nowrap border-[var(--border-strong)] text-xs data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Assign owner">
+          <SelectTrigger className="h-7 w-auto min-w-[9.5rem] whitespace-nowrap border-[var(--border-strong)] data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Assign owner">
             <SelectValue placeholder="Assign owner…" />
           </SelectTrigger>
           <SelectContent>
@@ -147,11 +148,11 @@ export function BulkActionBar({
               "clear it across the selection" (tripl-0zpq.276); without an entry
               here it was reachable from the API and MCP only.
             */}
-            <SelectItem value={UNASSIGN_VALUE} className="text-xs">
+            <SelectItem value={UNASSIGN_VALUE}>
               Unassign
             </SelectItem>
             {owners.map(u => (
-              <SelectItem key={u.id} value={u.id} className="text-xs">
+              <SelectItem key={u.id} value={u.id}>
                 {u.name ?? u.email}
               </SelectItem>
             ))}
@@ -161,18 +162,17 @@ export function BulkActionBar({
       <Button
         variant="danger"
         size="sm"
-        className="h-7 text-xs"
         onClick={onDelete}
         disabled={disabled}
       >
-        <Trash2 className="mr-1 h-3.5 w-3.5" />
+        <Trash2 />
         Delete selected
       </Button>
       <div className="hidden h-5 w-px sm:block" style={{ background: 'var(--border)' }} />
       <button
         type="button"
         onClick={onClear}
-        className="flex h-6 w-6 items-center justify-center rounded text-[var(--fg-subtle)] hover:text-[var(--fg)]"
+        className="flex h-6 w-6 items-center justify-center rounded-sm text-[var(--fg-subtle)] hover:text-[var(--fg)]"
         aria-label="Clear selection"
       >
         <X className="h-3.5 w-3.5" />

@@ -1,4 +1,3 @@
-import { useRef, type KeyboardEvent } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
@@ -6,8 +5,12 @@ import { scansApi } from '@/api/scans'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Panel } from '@/components/settings/kit'
+import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
+import { Button } from '@/components/ui/button'
+import { FilterBar, FilterSelect } from '@/components/ui/filter-bar'
 import { Dot } from '@/components/primitives/dot'
+import { LoadingState } from '@/components/primitives/loading-state'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { formatNumber } from '@/lib/format'
@@ -82,83 +85,6 @@ function UnnamedScope({ signal }: { signal: MonitoringSignal }) {
     >
       {unnamedScopeLabel(signal)}
     </span>
-  )
-}
-
-/** Arrow keys → the index they move to in a radio group of `count` options. */
-function radioStep(key: string, index: number, count: number): number | null {
-  if (key === 'ArrowRight' || key === 'ArrowDown') return (index + 1) % count
-  if (key === 'ArrowLeft' || key === 'ArrowUp') return (index - 1 + count) % count
-  if (key === 'Home') return 0
-  if (key === 'End') return count - 1
-  return null
-}
-
-/**
- * Single-select segmented control. Shared so both filters stay identical.
- *
- * A real radio group (MON-12): one Tab stop — the checked option — and the
- * arrow keys move the selection, as `role="radio"` promises. Every option used
- * to be its own Tab stop with arrows doing nothing. It also wraps: the scan
- * facet lists every scan, and as a non-wrapping `inline-flex` its right-hand
- * options were sliced off by the panel's `overflow-hidden` on a phone.
- */
-function SegmentedFilter<T extends string>({
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  label: string
-  options: ReadonlyArray<{ id: T; label: string }>
-  value: T
-  onChange: (id: T) => void
-}) {
-  const buttons = useRef<Array<HTMLButtonElement | null>>([])
-  // The checked option is the Tab stop; with none checked, the first one is.
-  const checkedIndex = options.findIndex((option) => option.id === value)
-  const tabStop = checkedIndex >= 0 ? checkedIndex : 0
-  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const next = radioStep(event.key, index, options.length)
-    const option = next === null ? undefined : options[next]
-    if (next === null || !option) return
-    event.preventDefault()
-    onChange(option.id)
-    buttons.current[next]?.focus()
-  }
-  return (
-    <div
-      role="radiogroup"
-      aria-label={label}
-      className="flex max-w-full flex-wrap items-center gap-0.5 rounded-md border p-0.5"
-      style={{ borderColor: 'var(--border)', background: 'var(--bg-sunken)' }}
-    >
-      {options.map((option, index) => {
-        const active = option.id === value
-        return (
-          <button
-            key={option.id}
-            ref={(element) => {
-              buttons.current[index] = element
-            }}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            tabIndex={index === tabStop ? 0 : -1}
-            onClick={() => onChange(option.id)}
-            onKeyDown={(event) => onKeyDown(event, index)}
-            className="min-w-0 max-w-[14rem] truncate rounded-[5px] px-2.5 py-1 text-[11px] font-medium transition-colors"
-            style={
-              active
-                ? { background: 'var(--accent-soft)', color: 'var(--accent)' }
-                : { color: 'var(--fg-muted)' }
-            }
-          >
-            {option.label}
-          </button>
-        )
-      })}
-    </div>
   )
 }
 
@@ -332,26 +258,20 @@ export default function AnomaliesPage() {
     activeScanId === CATALOG_METRICS ? 'Catalog metrics' : (scanNames.get(activeScanId) ?? 'this scan')
 
   return (
-    <div
-      className={
-        isEmpty
-          ? 'flex min-h-[calc(100vh-7rem)] min-w-0 flex-col gap-6'
-          : 'min-w-0 space-y-6 pb-12'
-      }
+    <PageContainer
+      className={isEmpty ? 'flex min-h-[calc(100vh-7rem)] flex-col gap-6 space-y-0 pb-0' : undefined}
     >
       <PageHeader
         eyebrow="Observe"
         title="Anomalies"
         actions={
           slug ? (
-            <Link
-              to={`/p/${slug}/settings/monitoring`}
-              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ color: 'var(--fg-muted)' }}
-            >
-              <Settings2 className="h-3.5 w-3.5" />
-              Detection settings
-            </Link>
+            <Button asChild variant="outline" size="sm">
+              <Link to={`/p/${slug}/settings/monitoring`} className="no-underline">
+                <Settings2 aria-hidden="true" />
+                Detection settings
+              </Link>
+            </Button>
           ) : undefined
         }
       />
@@ -368,10 +288,7 @@ export default function AnomaliesPage() {
           compact
         />
       ) : (
-        <MiniStatStrip
-          className={`rounded-lg border px-4 py-3 ${isEmpty ? 'opacity-60' : ''}`}
-          style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
-        >
+        <MiniStatStrip boxed className={isEmpty ? 'opacity-60' : undefined}>
           <MiniStat
             label="Open signals"
             value={signalsQuery.data ? formatNumber(visibleCount) : '—'}
@@ -424,33 +341,36 @@ export default function AnomaliesPage() {
                 : undefined
             }
             right={
-              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+              // Filter chips, the one filter idiom (DS-15): each shows its
+              // current value ("Magnitude: Significant") and applies instantly.
+              // A segmented control is for switching views, not for filtering.
+              <FilterBar className="min-w-0 max-w-full">
                 {/* Only worth the header room once there is something to choose
                     between: a single-scan project gains nothing from it. */}
                 {scanOptions.length > 1 && (
-                  <SegmentedFilter
-                    label="Filter by scan"
-                    options={[
-                      { id: ALL_SCANS, label: `All scans ${byMagnitude.length}` },
-                      ...scanOptions,
-                    ]}
+                  <FilterSelect
+                    label="Scan"
                     value={activeScanId}
-                    onChange={setScanId}
+                    onValueChange={setScanId}
+                    anyValue={ALL_SCANS}
+                    anyLabel={`All scans ${byMagnitude.length}`}
+                    options={scanOptions.map((option) => ({ value: option.id, label: option.label }))}
+                    className="max-w-[18rem]"
                   />
                 )}
-                <SegmentedFilter
-                  label="Filter by anomaly magnitude"
-                  options={MAGNITUDE_PRESETS}
+                <FilterSelect
+                  label="Magnitude"
                   value={level}
-                  onChange={setLevel}
+                  onValueChange={(next) => setLevel(toMagnitudeLevel(next))}
+                  anyValue="all"
+                  anyLabel="All"
+                  options={MAGNITUDE_PRESETS.map((preset) => ({ value: preset.id, label: preset.label }))}
                 />
-              </div>
+              </FilterBar>
             }
           >
             {signalsQuery.isLoading ? (
-              <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                Loading…
-              </div>
+              <LoadingState className="px-4 py-6 text-body-sm" />
             ) : allFiltered ? (
               <div className="px-4 py-10">
                 <EmptyState
@@ -470,8 +390,9 @@ export default function AnomaliesPage() {
                         : 'Every open signal is smaller than this threshold. Lower the filter to see the smaller anomalies.'
                   }
                   action={
-                    <button
+                    <Button
                       type="button"
+                      variant="outline"
                       onClick={() => {
                         if (!scanHasNothingOpen && !emptiedByScan) {
                           setLevel('all')
@@ -483,13 +404,11 @@ export default function AnomaliesPage() {
                         // hand back a second empty page.
                         if (byMagnitude.length === 0) setLevel('all')
                       }}
-                      className="rounded-md border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
-                      style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
                     >
                       {scanHasNothingOpen || emptiedByScan
                         ? `Show all scans (${formatNumber(byMagnitude.length || total)})`
                         : `Show all ${formatNumber(total)}`}
-                    </button>
+                    </Button>
                   }
                 />
               </div>
@@ -499,7 +418,7 @@ export default function AnomaliesPage() {
                   <div role="rowgroup">
                     <div
                       role="row"
-                      className={`${ANOMALY_GRID} border-b py-2 text-2xs font-semibold uppercase tracking-[0.05em]`}
+                      className={`${ANOMALY_GRID} border-b py-2 micro-label`}
                       style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                     >
                       <span role="columnheader">Anomaly</span>
@@ -528,7 +447,7 @@ export default function AnomaliesPage() {
             )}
           </Panel>
         ))}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -575,7 +494,9 @@ function AnomalyRow({
   return (
     <div
       role="row"
-      className={`${ANOMALY_GRID} relative border-b py-2.5 last:border-0 ${
+      // The row height follows the Density setting (DS-9), as the Events
+      // table's does.
+      className={`${ANOMALY_GRID} relative min-h-(--row-h) border-b py-2 last:border-0 ${
         href ? 'transition-colors hover:bg-[var(--surface-hover)]' : ''
       }`}
       style={{ borderColor: 'var(--border-subtle)' }}
@@ -600,7 +521,7 @@ function AnomalyRow({
           <span
             // Dropped on phones, where it left the scope name a few letters.
             // `relative` lifts it over the row link so its tooltip still shows.
-            className="relative hidden shrink-0 whitespace-nowrap text-2xs sm:inline"
+            className="relative hidden shrink-0 whitespace-nowrap text-micro sm:inline"
             style={{ color: 'var(--fg-faint)' }}
             title="This scope fired as part of a project-total spike or drop on the same bucket"
           >
@@ -608,13 +529,15 @@ function AnomalyRow({
           </span>
         )}
       </span>
-      <span role="cell" className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+      {/* Figures and relative times in sans with tabular digits: they are
+          numbers, not code (DS-17). */}
+      <span role="cell" className="tnum truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
         {formatSignalValues(signal)}
       </span>
-      <span role="cell" className="mono text-right text-[11px]" style={{ color: severityColor }}>
+      <span role="cell" className="tnum text-right text-caption" style={{ color: severityColor }}>
         {formatSignalSeverity(signal)}
       </span>
-      <span role="cell" className="mono text-right text-2xs" style={{ color: 'var(--fg-faint)' }}>
+      <span role="cell" className="tnum text-right text-micro" style={{ color: 'var(--fg-faint)' }}>
         {/* `relative` lifts it over the row link, so the absolute time in its
             tooltip is reachable (MON-40). */}
         <time
@@ -630,7 +553,7 @@ function AnomalyRow({
           <time
             dateTime={signal.detected_at}
             title={`Detected ${formatTimestamp(signal.detected_at)} (${localTimeZone()})`}
-            className="relative block text-[10px]"
+            className="relative block text-micro"
           >
             detected {formatRelativeTime(signal.detected_at)}
           </time>

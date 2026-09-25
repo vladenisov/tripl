@@ -76,7 +76,7 @@ export function ConflictsPanel({ slug, branch }: { slug: string; branch: PlanBra
             className="rounded-md border p-2"
             style={{ borderColor: 'var(--border-subtle)' }}
           >
-            <div className="mono mb-1 text-xs font-semibold" style={{ color: 'var(--fg)' }}>
+            <div className="mono mb-1 text-body-sm font-medium" style={{ color: 'var(--fg)' }}>
               {entity.entity_type}: {entity.name}
             </div>
             <div className="space-y-2">
@@ -122,13 +122,13 @@ function ConflictFieldRow({
   onResolve?: (choice: ResolutionChoice) => void
 }) {
   return (
-    <div className="text-xs">
+    <div className="text-body-sm">
       <div className="flex flex-wrap items-baseline gap-2">
         <span className="font-medium" style={{ color: 'var(--fg)' }}>
           {field.field}
         </span>
         <span
-          className="text-[11px]"
+          className="text-caption"
           style={{ color: field.choice ? 'var(--success)' : 'var(--danger)' }}
         >
           {field.choice ? CHOSEN_TEXT[field.choice] : 'Unresolved'}
@@ -149,7 +149,7 @@ function ConflictFieldRow({
               type="button"
               size="sm"
               variant={field.choice === choice ? 'default' : 'outline'}
-              className="h-6 px-2 text-[11px]"
+              className="h-6 px-2 text-caption"
               aria-pressed={field.choice === choice}
               disabled={pending}
               onClick={() => onResolve(choice)}

@@ -59,6 +59,23 @@ const NO_QUERY_KEY_LITERALS = [
   },
 ]
 
+// The type, icon and radius scales (DS-13, DS-23, DS-24; index.css @theme):
+// sizes come from the named steps, not a pixel value typed at the call site.
+// That is how the app drifted to seven text sizes half a pixel apart. Tests
+// may still spell a banned class, which is how they assert it is gone.
+const ARBITRARY_TEXT_SIZE = /(^|[\s:'"`])text-\[\d/
+const ARBITRARY_ICON_SIZE = /(^|[\s:'"`])(size-\[(1\d|20)px\]|h-\[(1\d|20)px\] w-\[(1\d|20)px\])/
+const ARBITRARY_RADIUS = /(^|[\s:'"`])rounded(-[a-z]+)?-\[\d/
+const SIZE_MESSAGES = [
+  [ARBITRARY_TEXT_SIZE, 'Use a named text size (text-micro, caption, body-sm, body, heading, title, display) instead of text-[Npx].'],
+  [ARBITRARY_ICON_SIZE, 'Use the icon scale (size-3, size-3.5, size-4, size-5) instead of an arbitrary pixel size.'],
+  [ARBITRARY_RADIUS, 'Use rounded-sm, rounded-control or rounded-card instead of rounded-[Npx].'],
+]
+const NO_ARBITRARY_SIZES = SIZE_MESSAGES.flatMap(([pattern, message]) => [
+  { selector: `Literal[value=${pattern}]`, message },
+  { selector: `TemplateElement[value.raw=${pattern}]`, message },
+])
+
 // Pages build selects from the kit's NativeSelect, not a raw <select> that
 // copies the control styling by hand and drifts from it: two form-control
 // systems with different sizes, borders and disabled states is how DS-9 began.
@@ -127,14 +144,20 @@ export default defineConfig([
           depth: 3,
         },
       ],
-      'no-restricted-syntax': ['error', ...NO_BARE_LAZY, ...NO_QUERY_KEY_LITERALS],
+      'no-restricted-syntax': ['error', ...NO_BARE_LAZY, ...NO_QUERY_KEY_LITERALS, ...NO_ARBITRARY_SIZES],
     },
   },
   {
     files: ['src/pages/**/*.tsx'],
     ignores: ['**/*.test.tsx', ...RAW_SELECT_LEGACY],
     rules: {
-      'no-restricted-syntax': ['error', ...NO_BARE_LAZY, ...NO_QUERY_KEY_LITERALS, ...NO_RAW_SELECT],
+      'no-restricted-syntax': [
+        'error',
+        ...NO_BARE_LAZY,
+        ...NO_QUERY_KEY_LITERALS,
+        ...NO_RAW_SELECT,
+        ...NO_ARBITRARY_SIZES,
+      ],
     },
   },
   {
@@ -145,7 +168,7 @@ export default defineConfig([
   {
     // The one module allowed to call React.lazy: the wrapper itself.
     files: ['src/lib/lazyWithReload.ts'],
-    rules: { 'no-restricted-syntax': ['error', ...NO_QUERY_KEY_LITERALS] },
+    rules: { 'no-restricted-syntax': ['error', ...NO_QUERY_KEY_LITERALS, ...NO_ARBITRARY_SIZES] },
   },
   ...oxlint.buildFromOxlintConfigFile(`${import.meta.dirname}/.oxlintrc.json`),
   {

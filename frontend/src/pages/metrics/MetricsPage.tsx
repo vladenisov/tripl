@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/primitives/page-header'
+import { PageContainer } from '@/components/primitives/page-container'
 import { FactTablesList } from '@/pages/fact-tables/FactTablesList'
 import { MetricsCatalog } from './MetricsCatalog'
 import { useCanWriteProject } from '@/lib/permissions'
@@ -46,7 +47,7 @@ export default function MetricsPage({ tab = 'catalog' }: { tab?: MetricsTab }) {
     ) : undefined
 
   return (
-    <div className="min-w-0 space-y-6 pb-12">
+    <PageContainer>
       <div className="space-y-4">
         <PageHeader eyebrow="Observe" title="Metrics" actions={action} />
         <MetricsTabs slug={slug} tab={tab} />
@@ -55,7 +56,7 @@ export default function MetricsPage({ tab = 'catalog' }: { tab?: MetricsTab }) {
       {!canWrite && <ReadOnlyNotice />}
 
       {tab === 'fact-tables' ? <FactTablesList slug={slug} /> : <MetricsCatalog slug={slug} />}
-    </div>
+    </PageContainer>
   )
 }
 

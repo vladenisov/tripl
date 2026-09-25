@@ -224,7 +224,7 @@ export function DemoProvisioningDialog({
             {requestId ? (
               // --fg-subtle, not --fg-faint: faint falls below AA on the
               // tinted --danger-soft fill (DEMO-24).
-              <p className="font-mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="font-mono text-caption" style={{ color: 'var(--fg-subtle)' }}>
                 Reference: {requestId}
               </p>
             ) : null}

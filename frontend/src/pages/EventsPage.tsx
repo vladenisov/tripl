@@ -545,7 +545,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
   const blockingError = eventsQuery.error ?? dataError
 
   // A project with no events yet has nothing to filter, sort, column, or chart,
-  // so we collapse the toolbar to just the "New Event" action and hide the empty
+  // so we collapse the toolbar to just the "New event" action and hide the empty
   // "<Tab> Dynamics" card until events exist. Guard on the *unfiltered* result:
   // an active filter or search that merely matches nothing on a populated
   // project must keep the full toolbar so the user can still clear it.
@@ -647,9 +647,9 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
             // Mirrors the toolbar's own primary action (EventsToolbar.tsx) — the
             // lane for this fix cannot add a "minimal" mode to that component.
             canWrite && <div className="mb-3 flex justify-end">
-              <Button onClick={openNewEvent} size="sm" className="h-8 text-xs">
-                <Plus className="h-3.5 w-3.5" />
-                New Event
+              <Button onClick={openNewEvent} size="sm">
+                <Plus />
+                New event
               </Button>
             </div>
           ) : (

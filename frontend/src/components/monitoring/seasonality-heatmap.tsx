@@ -2,7 +2,8 @@ import { useMemo } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
 import { eventMetricsApi } from '@/api/eventMetrics'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { LoadingState } from '@/components/primitives/loading-state'
 import { ErrorState } from '@/components/error-state'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { SeasonalityCell } from '@/types/metrics'
@@ -139,8 +140,8 @@ export function SeasonalityHeatmap({
   if (isLoading) {
     return (
       <Card>
-        <CardContent className="p-6 text-sm text-muted-foreground">
-          Loading heatmap…
+        <CardContent>
+          <LoadingState label="Loading heatmap…" className="text-body-sm" />
         </CardContent>
       </Card>
     )
@@ -167,7 +168,7 @@ export function SeasonalityHeatmap({
   if (!data || data.max_count === 0) {
     return (
       <Card>
-        <CardContent className="p-6 text-sm text-muted-foreground">
+        <CardContent className="text-body-sm text-muted-foreground">
           Not enough data to build a seasonality heatmap for this scope yet.
         </CardContent>
       </Card>
@@ -181,9 +182,11 @@ export function SeasonalityHeatmap({
   if (data.hourly_resolution === false) {
     return (
       <Card>
-        <CardContent className="space-y-2 p-6">
-          <h2 className="text-sm font-semibold">Hour × weekday heatmap</h2>
-          <p className="text-sm text-muted-foreground">
+        <CardHeader>
+          <CardTitle as="h2">Hour × weekday heatmap</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-body-sm text-muted-foreground">
             This scan collects every <span className="font-medium">{data.interval}</span>, so
             there is no hour-of-day detail to plot — every bucket falls on a few fixed hours.
             Set the scan to an hourly (or finer) interval to see this heatmap.
@@ -200,23 +203,25 @@ export function SeasonalityHeatmap({
       : 'Volume by weekday and hour (UTC).'
 
   return (
+    // The shared section-card geometry (DS-4 / MO-10): a header bar with the
+    // 12.5px h2 and its subtitle, then the grid in the body.
     <Card>
-      <CardContent className="space-y-3 p-4">
-        <div>
-          <h2 className="text-sm font-semibold">Hour × weekday heatmap</h2>
-          <p className="text-xs text-muted-foreground">
-            Total volume by day-of-week and hour-of-day, in UTC. A red ring and dot mark
-            slots with detected anomalies. Total in window:{' '}
-            <span className="font-medium">{formatCount(data.total_count)}</span>.
-          </p>
-        </div>
+      <CardHeader>
+        <CardTitle as="h2">Hour × weekday heatmap</CardTitle>
+        <CardDescription>
+          Total volume by day-of-week and hour-of-day, in UTC. A red ring and dot mark
+          slots with detected anomalies. Total in window:{' '}
+          <span className="font-medium">{formatCount(data.total_count)}</span>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
         {/* The ramp is a RANK scale, not a count scale: buildScale spreads active
             slots across the luminance range by quantile so a skewed distribution
             does not collapse into a uniform block. Labelling the ends with the
             min and max while implying a linear count in between made a mid-tone
             unreadable — it means "middle of the pack", not the midpoint of these
             two numbers (tripl-jfm3.127). */}
-        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-micro text-muted-foreground">
           <span className="tabular-nums">{formatCount(scale.minCount)}</span>
           <div
             className="flex h-2 w-24 overflow-hidden rounded-sm ring-1 ring-border/60"
@@ -239,7 +244,7 @@ export function SeasonalityHeatmap({
           </span>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full table-fixed text-[10px]">
+          <table className="w-full table-fixed text-micro">
             <caption className="sr-only">{gridSummary}</caption>
             <thead>
               <tr>

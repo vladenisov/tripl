@@ -712,17 +712,20 @@ describe('MonitoringDetailPage back affordance (tripl-lkox)', () => {
     })
   }
 
-  it('names Anomalies on a project-total drilldown, the area it is reached from', async () => {
+  it('names Observe and the scope in the eyebrow of a project-total drilldown', async () => {
     // navigation.ts assigns /monitoring/project-total/ (and /monitoring/
-    // event-type/) to Anomalies, and the breadcrumb above the button says so.
-    // The label branched on `metric` alone, so the only navigation affordance
-    // above the fold offered "Back to events" — somewhere the reader had not
-    // been.
+    // event-type/) to Anomalies, under Observe. The eyebrow names the nav group
+    // and the scope, as on every Observe page, in place of the separate back
+    // button that sat above the header (DS-2 / MO-40); it must never point the
+    // reader at Events, where they had not been.
     installProjectTotalOnlyFetch()
-    renderMonitoringPage()
+    const { container } = renderMonitoringPage()
 
-    expect(await screen.findByRole('button', { name: /back to anomalies/i })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /back to events/i })).toBeNull()
+    await screen.findByRole('heading', { level: 1, name: 'Project total' })
+    expect(container.querySelector('[data-slot="page-eyebrow"]')).toHaveTextContent(
+      'Observe · Project total',
+    )
+    expect(screen.queryByRole('button', { name: /back to/i })).toBeNull()
   })
 })
 
@@ -904,18 +907,15 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(await screen.findByRole('heading', { name: 'checkout_completed' })).toBeInTheDocument()
   })
 
-  it('titles the page and the breadcrumb when the event has no name (tripl-wkwv.5)', async () => {
-    // windy-ios holds one event whose name is the empty string. Both the <h1>
-    // and the aria-current breadcrumb rendered it raw, so the page had an empty
-    // top-level heading and the trail ended in nothing.
+  it('titles the page when the event has no name (tripl-wkwv.5)', async () => {
+    // windy-ios holds one event whose name is the empty string. The <h1>
+    // rendered it raw, so the page had an empty top-level heading.
     installEventDetailFetch({ event: { ...eventFixture(), name: '' } })
     renderEventDetail()
 
     expect(
       await screen.findByRole('heading', { level: 1, name: '(unnamed event)' }),
     ).toBeInTheDocument()
-    const breadcrumb = within(screen.getByRole('navigation', { name: 'Breadcrumb' }))
-    expect(breadcrumb.getByText('(unnamed event)')).toHaveAttribute('aria-current', 'page')
   })
 
   it('keeps only live actions in the primary row and tucks coming-soon ones into an overflow menu', async () => {
@@ -1181,20 +1181,22 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
       expect(screen.getByTestId('multi-chart')).toHaveAttribute('data-labels', 'ios|android|web'))
   })
 
-  it('shows a Plan / Events / <name> breadcrumb for the event scope', async () => {
+  it('uses the shared page header, with no second in-page breadcrumb (DS-3 / JR-33)', async () => {
     installEventDetailFetch()
-    renderEventDetail()
-    await screen.findByRole('heading', { name: 'checkout_completed' })
+    const { container } = renderEventDetail()
+    const heading = await screen.findByRole('heading', { level: 1, name: 'checkout_completed' })
 
-    const breadcrumb = screen.getByRole('navigation', { name: 'Breadcrumb' })
-    // "Plan" is the sidebar group, not a page; "Events" is a real link to the
-    // catalog rather than a history pop that could land anywhere (MON-38).
-    expect(within(breadcrumb).getByText('Plan')).toBeInTheDocument()
-    expect(within(breadcrumb).queryByRole('button', { name: 'Plan' })).not.toBeInTheDocument()
-    expect(within(breadcrumb).getByRole('link', { name: /Events/ })).toHaveAttribute('href', '/p/demo/events')
-    expect(within(breadcrumb).getByText('checkout_completed')).toBeInTheDocument()
-    // The permanently disabled "Coming soon" Prev/Next buttons are gone.
-    expect(within(breadcrumb).queryByRole('button', { name: /Prev|Next/ })).not.toBeInTheDocument()
+    // The top bar already carries "Plan › Events › <name>"; the in-page trail
+    // under it repeated that 120px lower.
+    expect(screen.queryByRole('navigation', { name: 'Breadcrumb' })).not.toBeInTheDocument()
+    // The eyebrow names the nav group and the collection instead.
+    expect(container.querySelector('[data-slot="page-eyebrow"]')).toHaveTextContent('Plan · Event')
+    // A display name, set in the page title's sans, not mono (DS-17).
+    expect(heading).not.toHaveClass('mono')
+    // The KPI strip sits in the header's stats slot (DS-5).
+    expect(
+      container.querySelector('[data-slot="page-stats"] [data-slot="mini-stat-strip"]'),
+    ).not.toBeNull()
   })
 
   it('explains the empty 24h metrics instead of rendering a bare dash', async () => {

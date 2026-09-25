@@ -1,23 +1,32 @@
-import { useId, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { variablesApi } from '@/api/variables'
 import type { VariableType } from '@/types'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ChipListInput } from '@/components/chip-list-input'
+import { FieldError } from '@/components/forms/FieldError'
+import { examplePlaceholder } from '@/components/forms/placeholders'
+import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from '@/components/forms/validation'
 import { NativeSelect } from '@/components/settings/kit'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { variablesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import type { BindingExample } from './bindingExample'
 import { BindingVersusTokenNote } from './VariablesBindingNote'
-import { INVALID_BINDING_MESSAGE, isValidBinding, VARIABLE_TYPE_OPTIONS } from './variablesShared'
+import {
+  INVALID_BINDING_MESSAGE,
+  VARIABLE_NAME_RULE_MESSAGE,
+  VARIABLE_TYPE_OPTIONS,
+  isValidBinding,
+  isValidVariableName,
+} from './variablesShared'
 import { invalidValuesFor, valueRuleFor } from './variableValueValidation'
 
 /**
- * The New Variable dialog. It owns its form state, so typing in it re-renders
+ * The New variable dialog. It owns its form state, so typing in it re-renders
  * the dialog and not the whole variables page behind it (PLAN-31). Mounted only
  * while open, which also resets the form each time it opens.
  */
@@ -44,6 +53,16 @@ export function VariablesCreateDialog({
   const valuesId = useId()
   const bindingsId = useId()
 
+  const formRef = useRef<HTMLFormElement>(null)
+  // Shown once Create was pressed: an empty form is not an invalid one.
+  const [submitted, setSubmitted] = useState(false)
+  const nameError = !name.trim()
+    ? REQUIRED_MESSAGE
+    : isValidVariableName(name)
+      ? null
+      : VARIABLE_NAME_RULE_MESSAGE
+  const shownNameError = submitted ? nameError : null
+
   const valueRule = valueRuleFor(varType)
   // Values typed before the type changed are not re-checked by the chip input,
   // so the form says which of them the new type would refuse (PLAN-24).
@@ -67,17 +86,39 @@ export function VariablesCreateDialog({
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
       <DialogContent>
+        {/* noValidate: the name rule is said inline, not as the browser's
+            "Please match the requested format." (AU-4). Only the body scrolls,
+            so the title and Create stay in view (AL-4). */}
         <form
+          ref={formRef}
+          noValidate
+          className="flex min-h-0 flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault()
+            setSubmitted(true)
+            if (nameError) {
+              requestAnimationFrame(() => {
+                if (formRef.current) focusFirstInvalid(formRef.current)
+              })
+              return
+            }
             if (invalidValues.length === 0) createMut.mutate()
           }}
         >
-          <DialogHeader><DialogTitle>New Variable</DialogTitle></DialogHeader>
-          <div className="grid gap-4 py-4">
+          <DialogHeader><DialogTitle>New variable</DialogTitle></DialogHeader>
+          <DialogBody className="grid gap-4">
             <div className="grid gap-2">
-              <Label htmlFor={nameId}>Name (lowercase, e.g. spot_id)</Label>
-              <Input id={nameId} value={name} onChange={e => setName(e.target.value)} required placeholder="my_variable" pattern="^[a-z][a-z0-9_]*$" />
+              <Label htmlFor={nameId}>Name</Label>
+              <Input
+                id={nameId}
+                value={name}
+                onChange={e => setName(e.target.value)}
+                aria-required
+                placeholder={examplePlaceholder('spot_id')}
+                className="mono"
+                {...invalidAria(nameId, shownNameError)}
+              />
+              <FieldError inputId={nameId} message={shownNameError} />
             </div>
             {/* One column on phones: two side by side left each ~150px in a
                 343px dialog (PLAN-53). */}
@@ -97,7 +138,7 @@ export function VariablesCreateDialog({
               </div>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor={valuesId}>Possible values (optional)</Label>
+              <Label htmlFor={valuesId} optional>Possible values</Label>
               <ChipListInput
                 inputId={valuesId}
                 values={allowedValues}
@@ -107,7 +148,7 @@ export function VariablesCreateDialog({
                 {...valueRule}
               />
               {invalidValues.length > 0 && (
-                <p role="alert" className="text-xs text-destructive">
+                <p role="alert" className="text-body-sm text-destructive">
                   Not valid for this type: {invalidValues.join(', ')}. Remove them or pick another type.
                 </p>
               )}
@@ -117,13 +158,13 @@ export function VariablesCreateDialog({
                   said so, which read as "the other two are not". Bindings least
                   of all: a scan matches a variable by NAME first, so a variable
                   named after its column needs none. */}
-              <Label htmlFor={bindingsId}>Data bindings (optional)</Label>
+              <Label htmlFor={bindingsId} optional>Data bindings</Label>
               <ChipListInput inputId={bindingsId} values={bindings} onChange={setBindings} placeholder={`e.g. ${example.binding}`} ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
-              <p className="text-[11px] text-muted-foreground">Leave it empty and scans match this variable by its name. Add a binding only when the warehouse column or JSON path is spelled differently.</p>
+              <p className="text-caption text-muted-foreground">Leave it empty and scans match this variable by its name. Add a binding only when the warehouse column or JSON path is spelled differently.</p>
               <BindingVersusTokenNote example={example} />
             </div>
-            {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
-          </div>
+            {createMut.isError && <p className="text-body text-destructive">{getErrorMessage(createMut.error)}</p>}
+          </DialogBody>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={createMut.isPending || invalidValues.length > 0}>Create</Button>

@@ -290,13 +290,16 @@ describe('ScansTab', () => {
       .map((el) => el.parentElement?.textContent)
     // The KPI tile: the label sits directly over the config count.
     expect(scansSurfaces).toContain('Scans1')
-    // The list panel is "All scans", an h3 under the page's h2 — two same-named
-    // headings at one level gave the page no single title (DS-16). Its title
+    // The list panel is "All scans", an h2 under the page's h1 "Scans" — two
+    // same-named headings at one level gave the page no single title (DS-16,
+    // DA-10). Its title
     // sits directly over its count subtitle, and the count agrees with its
     // noun. This fixture has ONE scan on purpose — the state every project is
     // in the moment it finishes the onboarding checklist's "Run a scan" step —
     // so "1 scans" would fail here.
-    const listPanel = screen.getByRole('heading', { level: 3, name: 'All scans' })
+    expect(screen.getByRole('heading', { level: 1, name: 'Scans' })).toBeInTheDocument()
+    expect(screen.getByText('Govern')).toBeInTheDocument()
+    const listPanel = screen.getByRole('heading', { level: 2, name: 'All scans' })
     expect(listPanel.parentElement?.textContent).toContain('All scans1 scan')
     // Heading and tile, and nothing else — a third would make the tile
     // assertion above ambiguous again.
@@ -661,8 +664,9 @@ describe('ScansTab', () => {
     fireEvent.click(screen.getByLabelText('Catalog only'))
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
-    // The SQL editor is a lazy chunk.
-    fireEvent.change(await screen.findByPlaceholderText('SELECT * FROM analytics.events'), {
+    // The SQL editor is a lazy chunk. Its placeholder is the example as an SQL
+    // comment (MT-6), so match the example inside it.
+    fireEvent.change(await screen.findByPlaceholderText(/SELECT \* FROM analytics\.events/), {
       target: { value: 'SELECT * FROM analytics.events' },
     })
     await screen.findByRole('option', { name: 'Click' })

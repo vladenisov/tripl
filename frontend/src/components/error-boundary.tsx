@@ -86,7 +86,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     const card = (
       <div
         role="alert"
-        className="w-full max-w-lg rounded-xl border border-destructive/35 bg-destructive/5 p-5 text-left"
+        className="w-full max-w-lg rounded-card border border-destructive/35 bg-destructive/5 p-5 text-left"
       >
         <div className="flex items-center gap-3">
           <div className="mt-0.5 rounded-full bg-destructive/10 p-2 text-destructive">
@@ -96,15 +96,15 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             {/* h2 on a page: the page's own h1 is what this replaced, and the
                 shell around it keeps its landmarks. */}
             {onPage ? (
-              <h2 className="text-base font-semibold text-foreground">
+              <h2 className="text-heading font-semibold text-foreground">
                 {chunkFailed ? 'This page needs a reload' : 'This page hit an error'}
               </h2>
             ) : (
-              <h1 className="text-base font-semibold text-foreground">
+              <h1 className="text-heading font-semibold text-foreground">
                 {chunkFailed ? 'The app needs a reload' : 'Something went wrong'}
               </h1>
             )}
-            <p className="mt-1 text-sm text-muted-foreground">
+            <p className="mt-1 text-body text-muted-foreground">
               {chunkFailed
                 ? 'A newer version of tripl was deployed since this tab opened, and part of the page could not be loaded. Reload to get the current version.'
                 : 'Something unexpected stopped this from rendering. Try again, and if it keeps happening, reload the page.'}
@@ -112,12 +112,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             <div className="mt-3 flex flex-wrap gap-2">
               {!chunkFailed && (
                 <Button type="button" variant="outline" onClick={this.reset}>
-                  <RefreshCw className="mr-2 h-4 w-4" />
+                  <RefreshCw aria-hidden="true" />
                   Try again
                 </Button>
               )}
               <Button type="button" variant={chunkFailed ? 'default' : 'ghost'} onClick={reloadPage}>
-                <RotateCw className="mr-2 h-4 w-4" />
+                <RotateCw aria-hidden="true" />
                 Reload page
               </Button>
             </div>

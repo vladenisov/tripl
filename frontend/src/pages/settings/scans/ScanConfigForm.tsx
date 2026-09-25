@@ -1,4 +1,7 @@
 import { PageHeader } from '@/components/primitives/page-header'
+import { PageContainer } from '@/components/primitives/page-container'
+import { SaveBar } from '@/components/forms/SaveBar'
+import { SCard } from '@/components/settings/kit'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, RotateCcw, Trash2 } from 'lucide-react'
@@ -12,7 +15,6 @@ import type { EventType, ScanConfig } from '@/types'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
 import { ReplayDialog } from './ReplayDialog'
-import { SCard } from './scanLayout'
 import {
   AppVersionSection,
   EventNamingSection,
@@ -162,13 +164,7 @@ export function ScanConfigurationTab({
           Save under Limits also committed a half-edited query two cards up
           (DATA-14). Sticky, so it is in reach from whichever card was edited. */}
       {canEdit && (
-        <div
-          className="sticky bottom-0 z-10 mb-5 flex items-center gap-2.5 rounded-xl border px-[18px] py-3"
-          style={{ borderColor: 'var(--border)', background: 'var(--bg-sunken)' }}
-        >
-          <span role="status" className="flex-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            {saveStatus}
-          </span>
+        <SaveBar className="mb-5" status={saveStatus}>
           <Button
             type="button"
             size="sm"
@@ -178,20 +174,20 @@ export function ScanConfigurationTab({
           >
             {updateMut.isPending ? 'Saving…' : 'Save'}
           </Button>
-        </div>
+        </SaveBar>
       )}
 
       {canEdit && (
         <SCard title="Danger zone" tone="danger">
           <div
-            className="flex items-center gap-[18px] border-b px-[18px] py-3.5"
+            className="flex items-center gap-[18px] border-b px-4 py-3.5"
             style={{ borderColor: 'var(--border-subtle)' }}
           >
             <div className="flex-1">
               <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
                 Run a one-off replay
               </div>
-              <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+              <div className="mt-0.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                 Re-scan a historical time range into events and metrics.
               </div>
             </div>
@@ -208,22 +204,23 @@ export function ScanConfigurationTab({
             </Button>
           </div>
           {replayOpen && (
-            <div className="border-b px-[18px] py-3.5" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div className="border-b px-4 py-3.5" style={{ borderColor: 'var(--border-subtle)' }}>
               <ReplayDialog slug={slug} scanConfig={scanConfig} open={replayOpen} onOpenChange={setReplayOpen} />
             </div>
           )}
-          <div className="flex items-center gap-[18px] px-[18px] py-3.5">
+          <div className="flex items-center gap-[18px] px-4 py-3.5">
             <div className="flex-1">
               <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
                 Delete scan
               </div>
-              <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+              <div className="mt-0.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                 Stops adding events from this query. Events already in your plan are kept.
               </div>
             </div>
+            {/* Bare red in a row; the solid red is the confirm dialog's (DS-20). */}
             <Button
               type="button"
-              variant="destructive"
+              variant="danger"
               size="sm"
               disabled={deleteMut.isPending}
               onClick={handleDelete}
@@ -233,7 +230,7 @@ export function ScanConfigurationTab({
             </Button>
           </div>
           {deleteMut.isError && (
-            <div className="px-[18px] pb-3.5">
+            <div className="px-4 pb-3.5">
               <ErrorState compact title="Could not delete scan" error={deleteMut.error} />
             </div>
           )}
@@ -296,18 +293,8 @@ export function ScanCreatePage({
   }
 
   return (
-    <div className="max-w-[880px] pb-12">
+    <PageContainer width="narrow" className="space-y-0">
       {unsaved.dialog}
-      <div className="mb-3.5">
-        <button
-          type="button"
-          onClick={onBack}
-          className="inline-flex items-center gap-1 text-caption"
-          style={{ color: 'var(--fg-muted)' }}
-        >
-          <span aria-hidden>←</span> Scans
-        </button>
-      </div>
       {/* "…to ingest events and roll up metrics" promised monitoring before the
           user had chosen it, and read as a contradiction with Catalog only two
           lines below. What the scan does is now the first question, and the note
@@ -315,8 +302,19 @@ export function ScanCreatePage({
           pointing at what. */}
       <PageHeader
         className="mb-[18px]"
+        eyebrow="Govern · Scan"
         title="New scan"
         description="Point a warehouse query at tripl, and choose what it does with the rows."
+        back={
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex items-center gap-1 text-caption"
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            <span aria-hidden>←</span> Scans
+          </button>
+        }
       />
 
       <ScanEssentialsSection {...sectionProps} />
@@ -331,19 +329,22 @@ export function ScanCreatePage({
         </div>
       )}
 
-      <div className="mt-1 flex items-center gap-2.5">
-        <span className="flex-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
-          {/* In Catalog + monitoring the preview is not optional: the time column
-              is chosen from the columns it returns. In Catalog only it is not
-              "optional" either any more — it is how you find out what this scan
-              would put in your plan before you create it (tripl-3y7z.6). */}
-          {loaded
+      {/* Sticky, like the edit form's bar: Create sat under five cards and was
+          a full scroll away from the query at the top (AU-6 / MT-4). */}
+      <SaveBar
+        status={
+          // In Catalog + monitoring the preview is not optional: the time column
+          // is chosen from the columns it returns. In Catalog only it is not
+          // "optional" either any more — it is how you find out what this scan
+          // would put in your plan before you create it (tripl-3y7z.6).
+          loaded
             ? 'Creates the scan. Run it from its page when you are ready.'
             : form.state.mode === 'monitoring'
               ? 'Load a preview to choose a time column and see what this scan would create.'
-              : 'Load a preview to see what this scan would create.'}
-        </span>
-        <Button type="button" variant="ghost" size="sm" onClick={onBack}>
+              : 'Load a preview to see what this scan would create.'
+        }
+      >
+        <Button type="button" variant="outline" size="sm" onClick={onBack}>
           Cancel
         </Button>
         <Button
@@ -353,10 +354,10 @@ export function ScanCreatePage({
           title={createBlocker ?? undefined}
           onClick={() => createMut.mutate()}
         >
-          <Plus className="size-3" />
+          <Plus className="size-3.5" />
           {createMut.isPending ? 'Creating…' : 'Create scan'}
         </Button>
-      </div>
-    </div>
+      </SaveBar>
+    </PageContainer>
   )
 }

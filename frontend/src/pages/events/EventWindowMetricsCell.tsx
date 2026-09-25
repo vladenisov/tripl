@@ -14,7 +14,8 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
   signalTone,
 }: {
   eventName: string
-  color: string
+  /** The event type's colour; unset falls back to the fixed single-series hue. */
+  color?: string
   totalCount: number | undefined
   data: EventMetricPoint[]
   anomalyIdx?: number | null
@@ -26,12 +27,11 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
   const isEmptyOrZero = noData || totalCount === 0
   const label = noData ? '—' : formatCompactCount(totalCount)
   const counts = data.map((p) => p.count)
-  const sparkColor =
-    signalTone === 'danger'
-      ? 'var(--danger)'
-      : signalTone === 'warning'
-        ? 'var(--warning)'
-        : color || 'var(--accent)'
+  // The line keeps its series hue whatever the signal (DS-27): an anomaly is
+  // the red dot at `anomalyIdx`, and the tone only colours the count. An unset
+  // colour lets Sparkline and the chart fall back to SINGLE_SERIES_COLOR, not
+  // the user's accent.
+  const sparkColor = color || undefined
   const ariaLabel = noData
     ? `${eventName} metrics: no data for the last 48 hours`
     : `${eventName} metrics: ${label} events in last 48 hours`
@@ -46,10 +46,10 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
         <span
           role="img"
           aria-label={ariaLabel}
-          className="tnum mono grid w-[106px] grid-cols-[60px_38px] items-center gap-2 text-caption font-medium hover:text-foreground"
+          className="tnum grid w-[106px] grid-cols-[60px_38px] items-center gap-2 text-caption font-medium hover:text-foreground"
           style={{
             color: signalTone
-              ? sparkColor
+              ? `var(--${signalTone})`
               : isEmptyOrZero
                 ? 'var(--fg-faint)'
                 : 'var(--fg-muted)',
@@ -70,18 +70,18 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
         </span>
       </TooltipTrigger>
       <TooltipContent
-        className="w-[22rem] max-w-[calc(100vw-2rem)] border bg-background p-0 text-foreground shadow-md"
+        className="w-[22rem] max-w-[calc(100vw-2rem)] border bg-popover p-0 text-foreground shadow-md"
         side="top"
       >
         <div className="space-y-3 p-3">
           <div className="space-y-1">
-            <p className="break-words text-xs font-medium">{eventName}</p>
-            <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+            <p className="break-words text-body-sm font-medium">{eventName}</p>
+            <div className="flex items-center justify-between gap-3 text-caption text-muted-foreground">
               <span>Last 48 hours</span>
               <span>{noData ? 'No data' : `${formatCompactCount(totalCount)} events`}</span>
             </div>
           </div>
-          <MiniMetricsChart data={data} color={color} height={104} label="Event volume trend" />
+          <MiniMetricsChart data={data} color={sparkColor} height={104} label="Event volume trend" />
         </div>
       </TooltipContent>
     </Tooltip>

@@ -5,7 +5,7 @@ import { SENSITIVITY_OPTIONS, SENSITIVITY_STYLE, type Sensitivity } from '@/type
 // sensitivity scale keeps its own colours, the shape and sizing are Chip's.
 export function SensitivityChip({ value }: { value: Sensitivity }) {
   if (!value || value === 'none') {
-    return <span className="text-fg-faint text-2xs">—</span>
+    return <span className="text-fg-faint text-micro">—</span>
   }
   const style = SENSITIVITY_STYLE[value]
   const label = SENSITIVITY_OPTIONS.find((o) => o.value === value)?.label ?? value.toUpperCase()

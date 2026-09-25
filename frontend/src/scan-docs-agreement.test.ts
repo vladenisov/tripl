@@ -55,7 +55,7 @@ const SCAN_CONFIG_NOUN = /\bscan config(?:uration)?s?\b/i
 describe('the scan docs describe the product this branch ships', () => {
   it('feature-reference names the three tiles the Scans page renders', () => {
     const page = readFileSync(join(SRC, 'pages', 'settings', 'ScansTab.tsx'), 'utf8')
-    const labels = [...page.matchAll(/<StatCard[\s\S]*?label="([^"]+)"/g)].map((m) => m[1])
+    const labels = [...page.matchAll(/<MiniStat\s[\s\S]*?label="([^"]+)"/g)].map((m) => m[1])
     expect(labels, 'ScansTab.tsx should still render exactly three KPI tiles').toHaveLength(3)
 
     const doc = readDoc('use/feature-reference.md')

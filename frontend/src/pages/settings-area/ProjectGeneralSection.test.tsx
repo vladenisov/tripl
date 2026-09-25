@@ -107,13 +107,38 @@ describe('ProjectGeneralSection', () => {
     const input = await screen.findByLabelText('Releases to keep')
     expect(input).toHaveValue(3)
     fireEvent.change(input, { target: { value: '4' } })
-    const card = screen.getByText('Version monitoring').closest('section')
-    expect(card).not.toBeNull()
-    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: 'Save' }))
+    // One Save for the page (ST-3); it sends only the part that changed.
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
 
     await waitFor(() => {
       expect(patchBody).toEqual({ app_version_keep_releases: 4 })
     })
+  })
+
+  it('has one save bar with Discard for both cards (ST-3)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection()
+
+    const nameInput = await screen.findByLabelText('Name')
+    await waitFor(() => expect(nameInput).toHaveValue('Demo'))
+    // No per-card Save buttons any more.
+    expect(screen.getAllByRole('button', { name: /Save/ })).toHaveLength(1)
+    const save = screen.getByRole('button', { name: /Save changes/ })
+    const discard = screen.getByRole('button', { name: 'Discard' })
+    expect(save).toBeDisabled()
+    expect(discard).toBeDisabled()
+
+    fireEvent.change(nameInput, { target: { value: 'Demo 2' } })
+    fireEvent.change(screen.getByLabelText('Releases to keep'), { target: { value: '5' } })
+    expect(save).toBeEnabled()
+    fireEvent.click(discard)
+    expect(nameInput).toHaveValue('Demo')
+    expect(screen.getByLabelText('Releases to keep')).toHaveValue(3)
+    expect(save).toBeDisabled()
   })
 
   it('rebuilds the search index', async () => {
@@ -423,6 +448,8 @@ describe('ProjectGeneralSection unsaved-changes guard (WS-13)', () => {
 
     fireEvent.change(screen.getByLabelText('Releases to keep'), { target: { value: '5' } })
     await waitFor(() => expect(lastRegistered()).not.toBeNull())
+    // The rail marks General as holding unsaved edits (ST-3).
+    expect(lastRegistered()!.dirtyPaths).toEqual(['project/general'])
   })
 })
 

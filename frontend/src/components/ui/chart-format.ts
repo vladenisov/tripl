@@ -256,9 +256,10 @@ export function formatCount(value: number): string {
   return formatCompactNumber(value)
 }
 
-// Approximate advance width (px) of one tick character at `text-xs` (12px) in
-// the default sans stack — digits/'k'/'M'/'%' average out a touch under this.
-const Y_AXIS_CHAR_PX = 7.4
+// Approximate advance width (px) of one tick character at `text-body-sm`
+// (12.5px, the axis tick size in chart.tsx) in the default sans stack —
+// digits/'k'/'M'/'%' average out a touch under this. It was 7.4 for 12px.
+const Y_AXIS_CHAR_PX = 7.7
 // Gap between the (hidden) tick line and the label — matches YAxis tickMargin.
 const Y_AXIS_TICK_MARGIN = 8
 // Breathing room so the leftmost digit never touches the chart edge.
@@ -268,7 +269,7 @@ const Y_AXIS_MIN_WIDTH = 40
 // Hard ceiling so a pathological label (float noise, NaN/Infinity, or an
 // oversized custom formatter) can never reserve a Y-axis wide enough to shove
 // the plot area sideways. A compact count/percent label tops out near 6 chars
-// (~61px), so 80px leaves headroom without ever eating the chart.
+// (~63px), so 80px leaves headroom without ever eating the chart.
 const Y_AXIS_MAX_WIDTH = 80
 
 /**

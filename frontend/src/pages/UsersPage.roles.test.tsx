@@ -154,6 +154,26 @@ describe('UsersPage — role changes (WS-19)', () => {
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 
+  // ST-3: an instant-apply control says it applied, on the row.
+  it('confirms an applied role change on the row', async () => {
+    mockApi()
+    renderUsersPage()
+
+    fireEvent.change(await screen.findByLabelText('Role for Vi'), { target: { value: 'editor' } })
+
+    expect(await screen.findByText('Role updated')).toHaveAttribute('role', 'status')
+  })
+
+  it('keeps the row status region mounted, empty, before any change', async () => {
+    mockApi()
+    renderUsersPage()
+
+    await screen.findByLabelText('Role for Vi')
+    const statuses = screen.getAllByRole('status')
+    expect(statuses.length).toBeGreaterThan(0)
+    expect(screen.queryByText('Role updated')).not.toBeInTheDocument()
+  })
+
   it('shows a failed change on the row of the person it was for', async () => {
     mockApi({ patchStatus: 403 })
     renderUsersPage()
@@ -169,6 +189,19 @@ describe('UsersPage — invite links (WS-21, WS-22)', () => {
     fireEvent.change(await screen.findByLabelText('Email'), { target: { value: email } })
     fireEvent.click(screen.getByRole('button', { name: 'Create invite link' }))
   }
+
+  // AU-4: the email rule is said inline, not by the browser's bubble.
+  it('says an address is malformed inline and sends nothing', async () => {
+    const calls = mockApi()
+    renderUsersPage()
+
+    await mint('not-an-address')
+
+    const email = screen.getByLabelText('Email')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter an email address')
+    expect(email).toHaveAttribute('aria-invalid', 'true')
+    expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0)
+  })
 
   it('names the role on the minted link and lets it be dismissed', async () => {
     mockApi()
@@ -263,7 +296,7 @@ describe('UsersPage — invite links (WS-21, WS-22)', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Copy' }))
 
       expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
-      expect(screen.getByRole('status')).toHaveTextContent(/copied to the clipboard/)
+      expect(screen.getByText('Invite link copied to the clipboard.')).toHaveAttribute('role', 'status')
       await waitFor(
         () => expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument(),
         { timeout: 3000 },

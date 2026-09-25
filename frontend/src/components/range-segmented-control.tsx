@@ -1,43 +1,35 @@
-import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { RANGE_OPTIONS } from '@/lib/metrics'
-import { cn } from '@/lib/utils'
 
 /**
- * The 7d / 30d / 90d range picker as one segmented pill group — the shape the
- * Events chart already uses. The monitoring drilldown drew three separate
- * outlined buttons instead, so the two charts' range controls looked like two
- * different widgets (LIVE-26).
+ * The 7d / 30d / 90d range picker — one segmented group, the shape every chart
+ * header uses (LIVE-26). Drawn with the shared SegmentedControl (DS-16): a
+ * raised option on a sunken track instead of a solid accent fill, and 32px
+ * tall (the old 24px/11px options were below any tap target, MO-31), so it
+ * lines up with a default SelectTrigger beside it. `size="sm"` (28px) sits
+ * next to `size="sm"` buttons and `h-7` selects.
  */
 export function RangeSegmentedControl({
   value,
   onChange,
   options = RANGE_OPTIONS,
+  size = 'md',
   className,
 }: {
   value: number
   onChange: (days: number) => void
   options?: ReadonlyArray<{ label: string; days: number }>
+  size?: 'sm' | 'md'
   className?: string
 }) {
   return (
-    <div
-      role="group"
+    <SegmentedControl
       aria-label="Time range"
-      className={cn('flex items-center gap-1 rounded-lg border bg-background p-1', className)}
-    >
-      {options.map(option => (
-        <Button
-          key={option.days}
-          type="button"
-          variant={value === option.days ? 'default' : 'ghost'}
-          size="sm"
-          aria-pressed={value === option.days}
-          className="h-6 px-2 text-[11px]"
-          onClick={() => onChange(option.days)}
-        >
-          {option.label}
-        </Button>
-      ))}
-    </div>
+      value={value}
+      onChange={onChange}
+      options={options.map(option => ({ value: option.days, label: option.label }))}
+      size={size}
+      className={className}
+    />
   )
 }

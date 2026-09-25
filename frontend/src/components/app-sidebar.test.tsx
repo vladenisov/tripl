@@ -262,7 +262,7 @@ describe('AppSidebar', () => {
 
     renderSidebar('/p/demo/events/page_view')
     const eventTypeLink = await screen.findByRole('link', { name: 'Page view' })
-    expect(eventTypeLink).toHaveStyle({ background: 'var(--surface-hover)' })
+    expect(eventTypeLink).toHaveClass('bg-sidebar-active')
     expect(eventTypeLink).toHaveAttribute('aria-current', 'page')
     // Events matches the same /events prefix but is not the page (SHELL-45).
     expect(screen.getByRole('link', { name: /^Events/ })).not.toHaveAttribute('aria-current')
@@ -356,7 +356,28 @@ describe('AppSidebar', () => {
     // they have no bearing on (tripl-89ps).
     renderSidebar('/p/demo/settings/monitoring')
     const anomalies = await screen.findByRole('link', { name: /Anomalies/ })
-    expect(anomalies).toHaveStyle({ background: 'var(--surface-hover)' })
+    expect(anomalies).toHaveClass('bg-sidebar-active')
+  })
+
+  it('keeps nav icons neutral and paints only the open-incident count red (DS-28)', async () => {
+    mockProjectsFetch()
+
+    renderSidebar('/p/demo/events')
+    await screen.findByText('10')
+
+    const anomalies = screen.getByRole('link', { name: /Anomalies/ })
+    const alerting = screen.getByRole('link', { name: /Alerting/ })
+    // The icon names the section, not its status.
+    expect(anomalies.querySelector('svg')).toHaveStyle({ color: 'var(--fg-subtle)' })
+    // Open signals are a count: neutral. Open incidents are unacknowledged
+    // alerts: the one red pill.
+    const anomalyCount = anomalies.querySelector('[data-slot="count-badge"]')
+    const incidentCount = alerting.querySelector('[data-slot="count-badge"]')
+    // Not --surface-active: that is the light sidebar's hover fill.
+    expect(anomalyCount).toHaveClass('bg-surface')
+    expect(anomalyCount).not.toHaveClass('bg-surface-active')
+    expect(anomalyCount).not.toHaveClass('bg-destructive')
+    expect(incidentCount).toHaveClass('bg-destructive')
   })
 
   it('renders a workspace-scoped nav on /workspace instead of the last project', async () => {

@@ -69,19 +69,23 @@ export function ChipListInput({
     <div>
       <div
         ref={rootRef}
-        className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-input bg-transparent px-2 py-1 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50"
+        className="flex min-h-8 flex-wrap items-center gap-1 rounded-control border border-input bg-transparent px-2.5 py-1 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50"
       >
         {values.map(value => (
+          // A code value, so the CodeToken look (sunken, square, mono; DS-6),
+          // with room for its remove button. On phones the chip is 32px and
+          // the remove button a 28px square: an 11px icon in a 22px chip was
+          // nearly impossible to hit (AU-39).
           <span
             key={value}
-            className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]"
+            className="flex items-center gap-1 rounded-sm border border-border-subtle bg-bg-sunken py-0.5 pl-1.5 pr-0.5 font-mono text-caption max-sm:h-8"
           >
             {value}
             <button
               type="button"
               aria-label={`Remove ${value}`}
               // The icon is 12px; the pointer target grows to 24px (WCAG 2.5.8).
-              className="hit-target-24 rounded-sm hover:text-destructive"
+              className="hit-target-24 grid place-items-center rounded-sm hover:text-destructive max-sm:size-7"
               onClick={() => onChange(values.filter(v => v !== value))}
             >
               <X className="h-3 w-3" aria-hidden="true" />
@@ -93,7 +97,7 @@ export function ChipListInput({
           aria-label={ariaLabel}
           aria-invalid={invalid || undefined}
           aria-describedby={invalid ? errorId : undefined}
-          className="h-6 min-w-28 flex-1 bg-transparent text-sm outline-none"
+          className="h-6 min-w-28 flex-1 bg-transparent text-body outline-none"
           value={draft}
           onChange={e => {
             setDraft(e.target.value)
@@ -120,7 +124,7 @@ export function ChipListInput({
         />
       </div>
       {invalid && (
-        <p id={errorId} role="alert" className="mt-1 text-xs text-destructive">
+        <p id={errorId} role="alert" className="mt-1 text-body-sm text-destructive">
           {problem}
         </p>
       )}

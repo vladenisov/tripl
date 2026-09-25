@@ -1,8 +1,20 @@
 import { createRef, useState } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { INPUT_BASE, INPUT_EDGE } from './input-style'
-import { Field, NativeSelect, PageHead, Panel, RadioCards, SCard, SHeader, TextArea, TextInput, ToggleRow } from './kit'
+import {
+  Field,
+  NativeSelect,
+  PageHead,
+  Panel,
+  RadioCards,
+  SCard,
+  SettingsSaveBar,
+  SHeader,
+  TextArea,
+  TextInput,
+  ToggleRow,
+} from './kit'
 
 describe('Panel header', () => {
   /**
@@ -369,5 +381,78 @@ describe('Kit page headers share PageHeader (DS-19)', () => {
     expect(phHeading.className).toBe(shClass)
     expect(screen.getByText('Govern')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run' })).toBeInTheDocument()
+  })
+})
+
+// DS-4 / MO-10: Panel, SCard and ui/Card share one section-card geometry.
+describe('Section card geometry', () => {
+  it('gives SCard the Panel radius, gutter and title size', () => {
+    const { container } = render(
+      <SCard title="Project details" footer={<button type="button">Save</button>}>
+        <div>body</div>
+      </SCard>,
+    )
+    expect(container.querySelector('section')).toHaveClass('rounded-card')
+    expect(container.querySelector('header')).toHaveClass('px-4', 'py-3')
+    expect(screen.getByRole('heading', { name: 'Project details' })).toHaveClass('text-body-sm', 'font-semibold')
+    expect(container.querySelector('footer')).toHaveClass('px-4')
+  })
+
+  it('renders a Panel footer under the body only when given one', () => {
+    const { container, rerender } = render(<Panel title="Destinations">rows</Panel>)
+    expect(container.querySelector('[data-slot="panel-footer"]')).toBeNull()
+
+    rerender(
+      <Panel title="Destinations" footer={<button type="button">Test</button>}>
+        rows
+      </Panel>,
+    )
+    const footer = container.querySelector('[data-slot="panel-footer"]')
+    expect(footer).toContainElement(screen.getByRole('button', { name: 'Test' }))
+    expect(container.querySelector('[data-slot="panel-body"]')?.nextElementSibling).toBe(footer)
+  })
+})
+
+// ST-3: one save model for a settings page.
+describe('SettingsSaveBar', () => {
+  it('disables both actions until the draft is dirty', () => {
+    render(<SettingsSaveBar note="Applies on save." dirty={false} onDiscard={() => {}} onSave={() => {}} />)
+    expect(screen.getByText('Applies on save.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  })
+
+  it('saves and discards a dirty draft', () => {
+    const onSave = vi.fn()
+    const onDiscard = vi.fn()
+    render(<SettingsSaveBar dirty onDiscard={onDiscard} onSave={onSave} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(onDiscard).toHaveBeenCalledTimes(1)
+  })
+
+  it('blocks Save on an invalid draft and says why', () => {
+    render(<SettingsSaveBar dirty invalid onDiscard={() => {}} onSave={() => {}} />)
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled()
+    expect(screen.getByText('Fix the highlighted fields to save.')).toBeInTheDocument()
+  })
+
+  it('announces a save error and shows progress while saving', () => {
+    render(
+      <SettingsSaveBar
+        dirty
+        pending
+        error="Save failed"
+        warning="Also unsaved: Email."
+        onDiscard={() => {}}
+        onSave={() => {}}
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('Save failed')
+    expect(screen.getByText('Also unsaved: Email.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Saving...' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeDisabled()
   })
 })

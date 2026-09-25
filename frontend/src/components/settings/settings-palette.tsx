@@ -255,7 +255,7 @@ export function SettingsCommandPalette({
           <Command.List className="flex-1 overflow-y-auto py-1.5">
             {groups.length === 0 && (
               <div
-                className="px-3.5 py-8 text-center text-[12px]"
+                className="px-3.5 py-8 text-center text-body-sm"
                 style={{ color: 'var(--fg-subtle)' }}
               >
                 No matches.
@@ -265,7 +265,7 @@ export function SettingsCommandPalette({
               <Command.Group
                 key={group.heading}
                 heading={group.heading}
-                className="px-1.5 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pt-1.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.08em] [&_[cmdk-group-heading]]:text-[var(--fg-faint)]"
+                className="px-1.5 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pt-1.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:micro-label [&_[cmdk-group-heading]]:text-[var(--fg-faint)]"
               >
                 {group.rows.map(row => {
                   const Icon = row.icon
@@ -281,14 +281,14 @@ export function SettingsCommandPalette({
                       <span className="min-w-0 flex-1 truncate">{row.label}</span>
                       {row.active && (
                         <span
-                          className="shrink-0 text-[10px] uppercase tracking-[0.08em]"
+                          className="shrink-0 micro-label"
                           style={{ color: 'var(--fg-faint)' }}
                         >
                           current
                         </span>
                       )}
                       <span
-                        className="mono shrink-0 truncate text-2xs"
+                        className="mono shrink-0 truncate text-micro"
                         style={{ color: 'var(--fg-faint)' }}
                       >
                         {row.hint}

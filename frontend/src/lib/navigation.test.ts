@@ -96,6 +96,8 @@ describe('buildNavGroups', () => {
     const observe = buildNavGroups('demo', summary).find((g) => g.label === 'Observe')!
     const badged = observe.items.filter((i) => i.count !== undefined)
     expect(badged.map((i) => i.id)).toEqual(['anomalies', 'alerting'])
+    // Only the open-incident backlog is an unacknowledged alert (DS-6, DS-28).
+    expect(badged.filter((i) => i.urgent).map((i) => i.id)).toEqual(['alerting'])
   })
 
   it('binds the Anomalies badge to the open-signal count', () => {

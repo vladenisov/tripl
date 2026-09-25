@@ -10,7 +10,7 @@ import { eventsApi } from "@/api/events"
 import { useActiveBranchId } from "@/hooks/useBranch"
 import { useDebouncedValue } from "@/hooks/useDebouncedValue"
 import { eventNameLabel } from "@/lib/eventName"
-import { Badge } from "@/components/ui/badge"
+import { Chip } from "@/components/primitives/chip"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { IconButton } from "@/components/ui/icon-button"
@@ -86,7 +86,7 @@ export function FilterEditor({
         </Button>
       </div>
       {filters.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-body-sm text-muted-foreground">
           No filters. Alerts match all anomalies that pass the basic thresholds above.
         </p>
       ) : (
@@ -105,7 +105,7 @@ export function FilterEditor({
           ))}
         </div>
       )}
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && <p className="text-body-sm text-destructive">{error}</p>}
     </div>
   )
 }
@@ -328,12 +328,12 @@ function FilterRow({
         </IconButton>
       </div>
       {error && (
-        <p id={`${errorIdBase}-error`} className="text-xs text-destructive">{error}</p>
+        <p id={`${errorIdBase}-error`} className="text-body-sm text-destructive">{error}</p>
       )}
       {selectedValues.length > 0 && !single && (
         <div className="flex flex-wrap gap-1">
           {selectedValues.map(value => (
-            <Badge key={value} variant="secondary" className="text-[10px] gap-1">
+            <Chip key={value} size="xs">
               <span className="truncate max-w-40">{labelByValue.get(value) ?? value}</span>
               <button
                 type="button"
@@ -343,7 +343,7 @@ function FilterRow({
               >
                 <X className="h-3 w-3" aria-hidden="true" />
               </button>
-            </Badge>
+            </Chip>
           ))}
         </div>
       )}
@@ -424,7 +424,7 @@ function FilterValuePicker({
                 <button
                   key={option.value}
                   type="button"
-                  className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted ${checked ? 'bg-muted' : ''}`}
+                  className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-body hover:bg-muted ${checked ? 'bg-muted' : ''}`}
                   onClick={() => onToggle(option.value)}
                 >
                   <span className="truncate">{option.label}</span>
@@ -432,7 +432,7 @@ function FilterValuePicker({
               )
             }
             return (
-              <label key={option.value} className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-md hover:bg-muted">
+              <label key={option.value} className="flex items-center gap-2 text-body px-2 py-1.5 rounded-md hover:bg-muted">
                 <Checkbox
                   checked={checked}
                   onCheckedChange={() => onToggle(option.value)}
@@ -442,13 +442,13 @@ function FilterValuePicker({
             )
           })}
           {options.length === 0 && (
-            <p className="text-sm text-muted-foreground px-2 py-1">
+            <p className="text-body text-muted-foreground px-2 py-1">
               {loading ? 'Searching…' : 'No matches.'}
             </p>
           )}
         </div>
         {hiddenCount > 0 && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             {hiddenCount} more match — keep typing to narrow the list.
           </p>
         )}

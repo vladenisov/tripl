@@ -31,6 +31,7 @@ import {
 } from './factFilters'
 import { errorAria, fieldErrorId, type FieldErrors } from '@/lib/fieldErrors'
 import { filterFieldId } from './metricDraft'
+import { sqlPlaceholder } from '@/components/forms/placeholders'
 
 interface FactFilterEditorProps {
   filters: FactFilter[]
@@ -175,7 +176,7 @@ export function FactFilterEditor({
                         ariaLabel={`Filter ${index + 1} SQL`}
                         value={filter.sql}
                         onChange={value => setSql(filter.id, value)}
-                        placeholder="status = 'completed' AND amount > 0"
+                        placeholder={sqlPlaceholder("A condition on this fact table's columns, e.g.", "status = 'completed' AND amount > 0")}
                         dialect={dialect}
                         tables={tables}
                         minHeight="60px"
@@ -192,13 +193,13 @@ export function FactFilterEditor({
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)]"
                     style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
                   >
-                    <Trash2 size={13} />
+                    <Trash2 size={14} />
                   </button>
                 </div>
                 {error && rowId && (
                   <p
                     id={fieldErrorId(rowId)}
-                    className="text-[12px] leading-[1.45]"
+                    className="text-body-sm leading-[1.45]"
                     style={{ color: 'var(--danger)' }}
                   >
                     {error}
@@ -216,7 +217,7 @@ export function FactFilterEditor({
             <button
               type="button"
               disabled={disabled}
-              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
               style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
             >
               <Plus size={12} /> Add filter
@@ -242,7 +243,7 @@ export function FactFilterEditor({
             disabled={disabled || checkPending || !!checkBlockedReason}
             onClick={onCheck}
             aria-describedby={checkBlockedReason ? checkHintId : undefined}
-            className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+            className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
             style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
           >
             {checkPending ? (
@@ -336,7 +337,7 @@ function ConditionRow({
         <TextInput
           value={filter.value}
           onChange={value => onChange({ ...filter, value })}
-          placeholder="value"
+          placeholder="Value"
           disabled={disabled}
           aria-label={`Filter ${index + 1} condition value`}
         />
@@ -382,7 +383,7 @@ function FilterCheckPanel({ result, transportError }: FilterCheckPanelProps) {
       className="flex items-center gap-[6px] rounded-card border px-4 py-3 text-body-sm"
       style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
     >
-      <CheckCircle2 size={13} style={{ color: 'var(--success, var(--fg-muted))' }} />
+      <CheckCircle2 size={14} style={{ color: 'var(--success, var(--fg-muted))' }} />
       {result.row_count > 0
         ? 'Filters ran clean against the warehouse.'
         : 'Filters ran clean against the warehouse, but matched no rows in the last 7 days.'}

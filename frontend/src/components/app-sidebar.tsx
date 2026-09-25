@@ -22,6 +22,7 @@ import { useAuth } from '@/components/auth-context'
 import { BranchSwitcher } from '@/components/branch-switcher'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
+import { CountBadge } from '@/components/primitives/count-badge'
 import { useTweaksPanel } from '@/components/tweaks-panel-context'
 import {
   DropdownMenu,
@@ -40,7 +41,6 @@ import {
   switchProjectPath,
   type NavGroup,
   type NavItem,
-  type NavTone,
 } from '@/lib/navigation'
 import { cn } from '@/lib/utils'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
@@ -85,45 +85,64 @@ const WORKSPACE_NAV_GROUP: NavGroup = {
   ],
 }
 
-function toneColor(tone: NavTone | undefined, active: boolean): string {
-  if (active) return 'var(--accent)'
-  switch (tone) {
-    case 'danger':
-      return 'var(--danger)'
-    case 'warning':
-      return 'var(--warning)'
-    case 'accent':
-      return 'var(--accent)'
-    case 'info':
-      return 'var(--info)'
-    default:
-      return 'var(--fg-subtle)'
-  }
+/**
+ * Nav icons name a section, never a status: they stay neutral and only the
+ * current page's icon takes the accent. The danger/warning tint used to stack
+ * with the red count and the bell for the same anomalies (DS-28).
+ */
+function navIconColor(active: boolean): string {
+  return active ? 'var(--accent)' : 'var(--fg-subtle)'
 }
 
 /**
  * One look for every sidebar link: hover and keyboard focus come from CSS (the
  * old inline `style.background` writes had no keyboard twin and could stick
  * after the active item changed), and the current page carries a bar on its
- * left edge, so "you are here" is not told by a tint alone (SHELL-24).
+ * left edge, so "you are here" is not told by a tint alone (SHELL-24). Hover
+ * and active use the sidebar's own tokens: `surface-hover` on the sunken
+ * sidebar was a 1.02:1 change in light theme, i.e. no feedback (DS-11).
  */
 const NAV_LINK_CLASS =
-  'relative flex items-center gap-2 rounded-[5px] px-2 py-1.5 font-medium no-underline transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
+  'relative flex items-center gap-2 rounded-control px-2 py-1.5 font-medium no-underline transition-colors hover:bg-sidebar-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
 const ACTIVE_MARKER_CLASS =
   "before:absolute before:inset-y-1.5 before:left-0 before:w-[2px] before:rounded-full before:bg-[var(--accent)] before:content-['']"
+const ACTIVE_ROW_CLASS = 'bg-sidebar-active hover:bg-sidebar-active'
 
 function navLinkClass(active: boolean, extra?: string): string {
-  return cn(NAV_LINK_CLASS, active && ACTIVE_MARKER_CLASS, extra)
+  return cn(NAV_LINK_CLASS, active && ACTIVE_MARKER_CLASS, active && ACTIVE_ROW_CLASS, extra)
 }
 
 function navLinkStyle(active: boolean): CSSProperties {
-  return active
-    ? { background: 'var(--surface-hover)', color: 'var(--fg)' }
-    : { color: 'var(--fg-muted)' }
+  return { color: active ? 'var(--fg)' : 'var(--fg-muted)' }
+}
+
+/**
+ * A nav count (DS-6, DS-28): the CountBadge geometry, fed the pre-formatted
+ * figure ("1.2K") the nav model carries. Neutral grey for counts; solid red
+ * only for unacknowledged alerts (Alerting's open incidents). The figure
+ * stays in the link's accessible name ("Anomalies 9"). The neutral pill is
+ * --surface with a hairline, not CountBadge's --surface-active: in light that
+ * is --sidebar-hover, so the pill vanished into a hovered row.
+ */
+function NavCount({ count, urgent }: { count: string; urgent: boolean }) {
+  return (
+    <CountBadge
+      count={count}
+      urgent={urgent}
+      aria-hidden={undefined}
+      data-urgent={urgent || undefined}
+      className={urgent ? undefined : 'bg-surface ring-1 ring-inset ring-border'}
+    />
+  )
+}
+
+/** Only an open-incident backlog is an unacknowledged alert; see NavCount. */
+function isUrgentCount(item: NavItem): boolean {
+  return item.urgent === true
 }
 
 const ICON_BUTTON_CLASS =
-  'relative flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
+  'relative flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-sidebar-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
 
 /** Project settings, bound to THIS project by the address (SHELL-20). */
 function projectSettingsHref(slug: string): string {
@@ -269,12 +288,14 @@ export function AppSidebar() {
           to="/workspace"
           title="Tripl — home"
           aria-label="Tripl — home"
-          className="flex flex-1 items-center gap-2 rounded-md px-1 py-1 no-underline transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex flex-1 items-center gap-2 rounded-md px-1 py-1 no-underline transition-colors hover:bg-sidebar-hover"
         >
           <TrifoldMark size={24} />
+          {/* The wordmark is drawn at a fixed 18px beside the 24px mark; it is
+              a logo, not UI text, so it sits outside the type scale. */}
           <span
-            className="text-[18px] font-bold leading-none tracking-[-0.045em]"
-            style={{ color: 'var(--fg)' }}
+            className="font-bold leading-none tracking-[-0.045em]"
+            style={{ color: 'var(--fg)', fontSize: 18 }}
           >
             tripl
           </span>
@@ -284,10 +305,10 @@ export function AppSidebar() {
           onClick={() => setCollapsed(true)}
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-sidebar-hover"
           style={{ color: 'var(--fg-subtle)' }}
         >
-          <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+          <ChevronLeft className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
 
@@ -315,7 +336,7 @@ export function AppSidebar() {
         <button
           type="button"
           onClick={() => palette.setOpen(true)}
-          className="flex h-[30px] w-full items-center gap-2 rounded-md border px-2.5 text-left text-[12px] transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex h-[30px] w-full items-center gap-2 rounded-md border px-2.5 text-left text-body-sm transition-colors hover:bg-sidebar-hover"
           style={{
             background: 'var(--surface)',
             borderColor: 'var(--border-subtle)',
@@ -371,7 +392,7 @@ export function AppSidebar() {
           <Link
             to={`/p/${slug}/concepts`}
             aria-current={conceptsActive ? 'page' : undefined}
-            className={navLinkClass(conceptsActive, 'mb-2 px-1.5 text-[12px]')}
+            className={navLinkClass(conceptsActive, 'mb-2 px-1.5 text-body-sm')}
             style={navLinkStyle(conceptsActive)}
           >
             <BookOpen
@@ -385,11 +406,11 @@ export function AppSidebar() {
         <div className="flex items-center gap-1.5">
           <UserAvatar name={auth.user?.name ?? auth.user?.email} />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[12px] font-medium leading-[1.1]">
+            <div className="truncate text-body-sm font-medium leading-[1.1]">
               {auth.user?.name ?? auth.user?.email}
             </div>
             <div
-              className="mt-px truncate text-2xs leading-[1.1]"
+              className="mt-px truncate text-micro leading-[1.1]"
               style={{ color: 'var(--fg-subtle)' }}
             >
               {auth.user?.role ? capitalize(auth.user.role) : 'Signed in'}
@@ -403,21 +424,21 @@ export function AppSidebar() {
             title="Appearance"
             aria-label="Appearance"
             onClick={() => tweaks.setOpen(true)}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-sidebar-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             style={{ color: 'var(--fg-subtle)' }}
           >
-            <Palette className="h-3.5 w-3.5" aria-hidden="true" />
+            <Palette className="h-4 w-4" aria-hidden="true" />
           </button>
           <Link
             to="/settings"
             title="Workspace settings"
             aria-label="Workspace settings"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md no-underline transition-colors hover:bg-sidebar-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             style={{
               color: currentPath.startsWith('/settings') ? 'var(--fg)' : 'var(--fg-subtle)',
             }}
           >
-            <Settings className="h-3.5 w-3.5" aria-hidden="true" />
+            <Settings className="h-4 w-4" aria-hidden="true" />
           </Link>
           <button
             type="button"
@@ -425,10 +446,10 @@ export function AppSidebar() {
             aria-label="Sign out"
             onClick={signOut}
             disabled={auth.isLoggingOut}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:opacity-50"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-sidebar-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:opacity-50"
             style={{ color: 'var(--fg-subtle)' }}
           >
-            <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+            <LogOut className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -460,7 +481,7 @@ function NavGroupSection({
   return (
     <div className="mb-3">
       <div
-        className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em]"
+        className="px-2 pb-1 micro-label"
         style={{ color: 'var(--fg-faint)' }}
       >
         {group.label}
@@ -498,25 +519,11 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
     >
       <Icon
         className="h-3.5 w-3.5 shrink-0"
-        style={{ color: toneColor(item.tone, active) }}
+        style={{ color: navIconColor(active) }}
         aria-hidden="true"
       />
       <span className="flex-1 truncate text-left">{item.label}</span>
-      {item.count !== undefined && (
-        <span
-          className="mono text-2xs"
-          style={{
-            color:
-              item.tone === 'danger'
-                ? 'var(--danger)'
-                : item.tone === 'warning'
-                  ? 'var(--warning)'
-                  : 'var(--fg-faint)',
-          }}
-        >
-          {item.count}
-        </span>
-      )}
+      {item.count !== undefined && <NavCount count={item.count} urgent={isUrgentCount(item)} />}
     </Link>
   )
 }
@@ -555,15 +562,11 @@ function EventTypesNavCategory({
       >
         <Icon
           className="h-3.5 w-3.5 shrink-0"
-          style={{ color: toneColor(item.tone, settingsActive || childActive) }}
+          style={{ color: navIconColor(settingsActive || childActive) }}
           aria-hidden="true"
         />
         <span className="flex-1 truncate text-left">{item.label}</span>
-        {item.count !== undefined && (
-          <span className="mono text-2xs" style={{ color: 'var(--fg-faint)' }}>
-            {item.count}
-          </span>
-        )}
+        {item.count !== undefined && <NavCount count={item.count} urgent={false} />}
         <Settings
           className="h-3 w-3 shrink-0"
           style={{ color: settingsActive ? 'var(--accent)' : 'var(--fg-faint)' }}
@@ -604,7 +607,7 @@ function EventTypeNavRow({
     <Link
       to={href}
       aria-current={active ? 'page' : undefined}
-      className={navLinkClass(active, 'text-[12px]')}
+      className={navLinkClass(active, 'text-body-sm')}
       style={navLinkStyle(active)}
     >
       <span
@@ -623,7 +626,7 @@ function eventTypeEventsHref(slug: string, eventTypeName: string): string {
 
 function EmptyNav({ loading }: { loading: boolean }) {
   return (
-    <div className="px-2 py-2 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+    <div className="px-2 py-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
       {loading ? 'Loading projects…' : 'No projects yet'}
     </div>
   )
@@ -644,13 +647,14 @@ function RailLink({
   label,
   icon: Icon,
   active,
-  dot,
+  urgent = false,
 }: {
   to: string
   label: string
   icon: LucideIcon
   active: boolean
-  dot?: NavTone
+  /** The collapsed twin of an urgent NavCount: a red dot (DS-28). */
+  urgent?: boolean
 }) {
   return (
     <RailTip label={label}>
@@ -658,15 +662,15 @@ function RailLink({
         to={to}
         aria-label={label}
         aria-current={active ? 'page' : undefined}
-        className={cn(ICON_BUTTON_CLASS, active && ACTIVE_MARKER_CLASS)}
+        className={cn(ICON_BUTTON_CLASS, active && ACTIVE_MARKER_CLASS, active && ACTIVE_ROW_CLASS)}
         style={navLinkStyle(active)}
       >
-        <Icon className="h-[15px] w-[15px]" aria-hidden="true" />
-        {(dot === 'danger' || dot === 'warning') && (
+        <Icon className="size-4" aria-hidden="true" />
+        {urgent && (
           <span
             aria-hidden="true"
             className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
-            style={{ background: dot === 'danger' ? 'var(--danger)' : 'var(--warning)' }}
+            style={{ background: 'var(--danger)' }}
           />
         )}
       </Link>
@@ -724,7 +728,7 @@ function CollapsedSidebar({
           <Link
             to="/workspace"
             aria-label="Tripl — home"
-            className="mb-1.5 flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)]"
+            className="mb-1.5 flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-sidebar-hover"
           >
             <TrifoldMark size={22} />
           </Link>
@@ -764,7 +768,7 @@ function CollapsedSidebar({
                   label={item.label}
                   icon={item.icon}
                   active={item.match(currentPath)}
-                  dot={item.tone}
+                  urgent={isUrgentCount(item)}
                 />
               ))}
             </div>
@@ -804,23 +808,23 @@ function CollapsedSidebar({
               type="button"
               aria-label={`Account menu — ${userLabel}`}
               title={userLabel}
-              className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[10px] font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+              className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-micro font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               style={{ background: 'var(--avatar-bg)' }}
             >
               {userInitials}
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent side="right" align="end" sideOffset={8} className="w-[200px]">
-            <DropdownMenuLabel className="truncate text-[12px]">{userLabel}</DropdownMenuLabel>
+            <DropdownMenuLabel className="truncate text-body-sm">{userLabel}</DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
               <Link to="/settings" className="flex items-center gap-2 text-body-sm no-underline">
-                <Settings className="h-3.5 w-3.5" aria-hidden="true" />
+                <Settings className="h-4 w-4" aria-hidden="true" />
                 Workspace settings
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onOpenTweaks} className="flex items-center gap-2 text-body-sm">
-              <Palette className="h-3.5 w-3.5" aria-hidden="true" />
+              <Palette className="h-4 w-4" aria-hidden="true" />
               Appearance
             </DropdownMenuItem>
             <DropdownMenuSeparator />
@@ -829,7 +833,7 @@ function CollapsedSidebar({
               disabled={isLoggingOut}
               className="flex items-center gap-2 text-body-sm"
             >
-              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+              <LogOut className="h-4 w-4" aria-hidden="true" />
               {isLoggingOut ? 'Signing out…' : 'Sign out'}
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -871,7 +875,7 @@ function ProjectSwitcher({
           >
             <span
               aria-hidden="true"
-              className="flex h-[22px] w-[22px] items-center justify-center rounded text-[11px] font-bold"
+              className="flex h-[22px] w-[22px] items-center justify-center rounded-sm text-caption font-bold"
               style={{ background: 'var(--surface-active)', color: 'var(--fg-muted)' }}
             >
               {monogram}
@@ -880,11 +884,11 @@ function ProjectSwitcher({
         ) : (
           <button
             type="button"
-            className="flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
+            className="flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-sidebar-hover"
             style={{ background: 'var(--surface)', borderColor: 'var(--border-subtle)' }}
           >
             <div
-              className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-[11px] font-bold"
+              className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-sm text-caption font-bold"
               style={{ background: 'var(--surface-active)', color: 'var(--fg-muted)' }}
             >
               {monogram}
@@ -894,7 +898,7 @@ function ProjectSwitcher({
                 {displayName}
               </div>
               <div
-                className="mt-px text-2xs leading-[1.1] truncate"
+                className="mt-px text-micro leading-[1.1] truncate"
                 style={{ color: 'var(--fg-subtle)' }}
               >
                 {subtitle}
@@ -914,18 +918,18 @@ function ProjectSwitcher({
         className="w-[260px]"
       >
         <DropdownMenuLabel
-          className="text-[10px] font-semibold uppercase tracking-[0.08em]"
+          className="micro-label"
           style={{ color: 'var(--fg-faint)' }}
         >
           Projects
         </DropdownMenuLabel>
         {projects.length === 0 && !loading && (
-          <div className="px-2 py-1.5 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="px-2 py-1.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             No projects yet
           </div>
         )}
         {loading && projects.length === 0 && (
-          <div className="px-2 py-1.5 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="px-2 py-1.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             Loading…
           </div>
         )}
@@ -941,7 +945,7 @@ function ProjectSwitcher({
               <div className="min-w-0 flex-1">
                 <div className="truncate">{project.name}</div>
                 <div
-                  className="mono truncate text-2xs"
+                  className="mono truncate text-micro"
                   style={{ color: 'var(--fg-faint)' }}
                 >
                   {project.slug}

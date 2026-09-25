@@ -25,3 +25,21 @@ describe('Button disabled look (LIVE-32)', () => {
     expect(button.className).toContain('disabled:text-[var(--fg-faint)]')
   })
 })
+
+// The app's control scale (DS-14 / AU-7, DS-23): read off the classes too.
+describe('Button sizes', () => {
+  it('defaults to a 32px, 12.5px control on the shared control radius', () => {
+    render(<Button>Save</Button>)
+    const button = screen.getByRole('button', { name: 'Save' })
+    expect(button).toHaveClass('h-8', 'text-body-sm', 'rounded-control')
+    expect(button).not.toHaveClass('h-9')
+    expect(button).not.toHaveClass('text-sm')
+  })
+
+  it('draws sm at 28px with 14px icons', () => {
+    render(<Button size="sm">Filter</Button>)
+    const button = screen.getByRole('button', { name: 'Filter' })
+    expect(button).toHaveClass('h-7', "[&_svg:not([class*='size-'])]:size-3.5")
+    expect(button).not.toHaveClass("[&_svg:not([class*='size-'])]:size-4")
+  })
+})

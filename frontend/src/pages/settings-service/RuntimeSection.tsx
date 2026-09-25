@@ -25,7 +25,7 @@ export function RuntimeSection({
           <TextInput
             value={form.runtime.app_base_url}
             onChange={value => setField('runtime', 'app_base_url', value)}
-            placeholder="https://tripl.example.com"
+            placeholder="e.g. https://tripl.example.com"
             mono
           />
         </Field>

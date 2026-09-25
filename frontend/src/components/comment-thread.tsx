@@ -1,5 +1,6 @@
 import { useContext, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
 import { Loader2, MessageCircle, Trash2 } from 'lucide-react'
 import { formatDateTime } from '@/lib/datetime'
@@ -198,16 +199,16 @@ export function CommentThread({
   return (
     <div className={className}>
       {dialog}
-      <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+      <div className="mb-2 flex items-center gap-2 text-body font-semibold">
         <MessageCircle className="h-4 w-4 text-muted-foreground" />
         {heading}
-        <span className="text-xs font-normal text-muted-foreground">({comments.length})</span>
+        <span className="text-body-sm font-normal text-muted-foreground">({comments.length})</span>
       </div>
-      <div className="flex-1 space-y-3 overflow-y-auto pr-1 text-sm">
+      <div className="flex-1 space-y-3 overflow-y-auto pr-1 text-body">
         {commentsQuery.isLoading ? (
-          <div className="text-xs text-muted-foreground">Loading…</div>
+          <div className="text-body-sm text-muted-foreground">Loading…</div>
         ) : topLevel.length === 0 ? (
-          <div className="text-xs text-muted-foreground">{emptyText}</div>
+          <div className="text-body-sm text-muted-foreground">{emptyText}</div>
         ) : (
           topLevel.map(comment => (
             <CommentItem
@@ -232,18 +233,18 @@ export function CommentThread({
         )}
       </div>
       {deleteMut.isError && (
-        <p role="alert" className="mt-2 text-xs text-destructive">
+        <p role="alert" className="mt-2 text-body-sm text-destructive">
           Could not delete the comment: {deleteMut.error instanceof Error ? deleteMut.error.message : 'unknown error'}
         </p>
       )}
       {!canWrite ? (
-        <p className="mt-3 border-t pt-3 text-xs text-muted-foreground">
+        <p className="mt-3 border-t pt-3 text-body-sm text-muted-foreground">
           Read-only: commenting is done by an editor or owner.
         </p>
       ) : (
         <div className="mt-3 flex flex-col gap-2 border-t pt-3">
           {replyTo && (
-            <div className="flex items-center justify-between rounded bg-muted px-2 py-1 text-xs">
+            <div className="flex items-center justify-between rounded-sm bg-muted px-2 py-1 text-body-sm">
               <span>Replying to comment</span>
               <button
                 type="button"
@@ -268,7 +269,7 @@ export function CommentThread({
               }
             }}
             placeholder="Write a comment…"
-            className="min-h-[60px] w-full rounded-md border bg-background px-2 py-1 text-sm"
+            className="min-h-[60px] w-full rounded-md border bg-background px-2 py-1 text-body"
           />
           <div className="flex items-center justify-end gap-2">
             <Button
@@ -322,17 +323,14 @@ function CommentItem({
   return (
     <div className="space-y-2">
       <div className="rounded-md border bg-muted/30 px-2 py-1.5">
-        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between gap-2 text-body-sm text-muted-foreground">
           <span>
             {authorName ? `${authorName(comment)} · ` : ''}
             {formatDateTime(comment.created_at)}
           </span>
           <div className="flex items-center gap-2">
-            {stateLabel && (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
-                {stateLabel}
-              </span>
-            )}
+            {/* A thread's state is a status: the shared pill (DS-6). */}
+            {stateLabel && <Chip size="xs">{stateLabel}</Chip>}
             {onAction && (unanswered ? (
               <>
                 <button
@@ -380,13 +378,13 @@ function CommentItem({
             )}
           </div>
         </div>
-        <p className="whitespace-pre-wrap text-sm">{comment.body}</p>
+        <p className="whitespace-pre-wrap text-body">{comment.body}</p>
       </div>
       {replies.length > 0 && (
         <div className="ml-4 space-y-2 border-l pl-3">
           {replies.map(reply => (
             <div key={reply.id} className="rounded-md border bg-muted/20 px-2 py-1.5">
-              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between gap-2 text-body-sm text-muted-foreground">
                 <span>
                   {authorName ? `${authorName(reply)} · ` : ''}
                   {formatDateTime(reply.created_at)}
@@ -403,7 +401,7 @@ function CommentItem({
                   </button>
                 )}
               </div>
-              <p className="whitespace-pre-wrap text-sm">{reply.body}</p>
+              <p className="whitespace-pre-wrap text-body">{reply.body}</p>
             </div>
           ))}
         </div>

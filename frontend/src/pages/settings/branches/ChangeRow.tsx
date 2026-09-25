@@ -134,7 +134,7 @@ export function ChangeRow({
           aria-hidden="true"
         />
         <span
-          className="mono w-4 shrink-0 text-center text-[14px] font-bold"
+          className="w-4 shrink-0 text-center text-heading font-bold"
           style={{ color: `var(--${meta.tone})` }}
         >
           {meta.sym}
@@ -169,7 +169,7 @@ export function ChangeRow({
         <Link
           {...editLink}
           aria-label={`Edit ${renamedTo ?? entry.name}`}
-          className="flex shrink-0 items-center gap-1 pl-1 pr-4 text-[11px] transition-colors hover:underline"
+          className="flex shrink-0 items-center gap-1 pl-1 pr-4 text-caption transition-colors hover:underline"
           style={{ color: 'var(--accent)' }}
         >
           <Pencil className="size-3" aria-hidden="true" />
@@ -186,7 +186,7 @@ export function ChangeRow({
             <p
               key={warning}
               role="note"
-              className="flex items-start gap-1.5 text-[11px] leading-snug"
+              className="flex items-start gap-1.5 text-caption leading-snug"
               style={{ color: 'var(--warning)' }}
             >
               <AlertTriangle className="mt-[1px] size-3 shrink-0" aria-hidden="true" />
@@ -202,7 +202,7 @@ export function ChangeRow({
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface)' }}
         >
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
               {meta.label} {ENTITY_LABEL[entry.entity_type]}
               {entry.parent ? (
                 <>
@@ -219,7 +219,7 @@ export function ChangeRow({
                   type="button"
                   disabled={reverting}
                   onClick={() => onRevert(entry)}
-                  className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+                  className="flex items-center gap-1 text-caption hover:underline disabled:opacity-50"
                   style={{ color: 'var(--fg-muted)' }}
                 >
                   <Undo2 className="size-3" aria-hidden="true" />
@@ -229,7 +229,7 @@ export function ChangeRow({
               {link ? (
                 <Link
                   {...link}
-                  className="flex items-center gap-1 text-[11px] hover:underline"
+                  className="flex items-center gap-1 text-caption hover:underline"
                   style={{ color: 'var(--accent)' }}
                 >
                   {entry.kind === 'removed'
@@ -261,7 +261,7 @@ export function ChangeRow({
                           disabled={reverting}
                           onClick={() => onRevert(entry, change.field)}
                           aria-label={`Revert ${change.field}`}
-                          className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+                          className="flex items-center gap-1 text-caption hover:underline disabled:opacity-50"
                           style={{ color: 'var(--fg-muted)' }}
                         >
                           <Undo2 className="size-3" aria-hidden="true" />
@@ -354,7 +354,7 @@ function DetailSection({ title, children }: { title: string; children: ReactNode
   return (
     <div>
       <div
-        className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide"
+        className="mb-1.5 micro-label"
         style={{ color: 'var(--fg-subtle)' }}
       >
         {title}

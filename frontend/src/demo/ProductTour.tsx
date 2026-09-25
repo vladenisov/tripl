@@ -86,7 +86,7 @@ function indexEntries(steps: readonly TourStep[]): TourStep[] {
 }
 
 const INDEX_LINK_CLASS =
-  'rounded-full px-2.5 py-1 text-[11px] font-medium no-underline transition-colors hover:bg-[var(--surface-hover)]'
+  'rounded-full px-2.5 py-1 text-caption font-medium no-underline transition-colors hover:bg-[var(--surface-hover)]'
 
 export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
   const steps = buildTourSteps(slug)
@@ -254,7 +254,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             className="min-w-0 rounded-lg border p-3"
             style={{ background: 'var(--accent-soft)', borderColor: 'var(--border-subtle)' }}
           >
-            <p className="mb-2 text-[12px] font-medium">
+            <p className="mb-2 text-body-sm font-medium">
               Try it hands-on{' '}
               <span className="font-normal" style={{ color: 'var(--fg-muted)' }}>
                 — pick a chapter, the strip coaches you through it.
@@ -268,7 +268,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
           <button
             type="button"
             onClick={showWelcome}
-            className="self-start rounded px-1 text-[12px] font-medium underline-offset-2 hover:underline"
+            className="self-start rounded-sm px-1 text-body-sm font-medium underline-offset-2 hover:underline"
             style={{ color: 'var(--accent)' }}
           >
             Show the welcome panel on Overview
@@ -284,7 +284,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             onClick={() => setIndexOpen((value) => !value)}
             aria-expanded={indexOpen}
             aria-controls={indexId}
-            className="flex items-center gap-1 rounded px-1 py-0.5 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            className="flex items-center gap-1 rounded-sm px-1 py-0.5 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
             All surfaces
@@ -295,7 +295,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
           </button>
           {indexOpen && (
             <div id={indexId} className="mt-2">
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="mb-2 micro-label" style={{ color: 'var(--fg-subtle)' }}>
                 Jump to any surface
               </p>
               <ul className="flex flex-wrap gap-1.5">
@@ -318,7 +318,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
                   </li>
                 ))}
               </ul>
-              <p className="mb-2 mt-3 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="mb-2 mt-3 micro-label" style={{ color: 'var(--fg-subtle)' }}>
                 Metric building blocks
               </p>
               <ul className="flex flex-wrap gap-1.5">

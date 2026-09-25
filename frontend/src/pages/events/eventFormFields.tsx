@@ -20,6 +20,8 @@ import { VariableInput } from './VariableInput'
 import type { VariableSuggestion } from './variableSuggestions'
 import { resolveTemplateTokens } from './utils'
 import { SelectControl } from './eventFormLayout'
+import { FieldError } from '@/components/forms/FieldError'
+import { CodeToken } from '@/components/primitives/code-token'
 import { isNumberFieldValue } from './eventFormValues'
 
 /**
@@ -47,13 +49,13 @@ export function ScanMaintenanceNotice({
   if (stored.isAuthored) {
     if (current.trim() === '') {
       return (
-        <p className="mt-1 text-xs text-muted-foreground">
+        <p className="mt-1 text-body-sm text-muted-foreground">
           Cleared. Save, and the next scan fills this in again.
         </p>
       )
     }
     return (
-      <p className="mt-1 text-xs text-muted-foreground">
+      <p className="mt-1 text-body-sm text-muted-foreground">
         Edited by hand, so scans leave it alone.{' '}
         {onHandBack && (
           <button
@@ -69,7 +71,7 @@ export function ScanMaintenanceNotice({
   }
   if (current === stored.value) return null
   return (
-    <p className="mt-1 text-xs text-warning">Saving this stops scans from updating the field.</p>
+    <p className="mt-1 text-body-sm text-warning">Saving this stops scans from updating the field.</p>
   )
 }
 
@@ -94,14 +96,14 @@ export function FieldBreakdownLink({
 }) {
   if (state === 'collecting') {
     return (
-      <p className="mt-1 text-xs text-muted-foreground">
+      <p className="mt-1 text-body-sm text-muted-foreground">
         Added to metric breakdowns. Save, and collection starts splitting by{' '}
         <span className="mono">{column}</span>.
       </p>
     )
   }
   return (
-    <p className="mt-1 text-xs">
+    <p className="mt-1 text-body-sm">
       {state === 'collected' ? (
         <Link
           to={href.to}
@@ -163,7 +165,7 @@ export function FieldTemplateHints({
           mistake is made, and point at the mechanism that does collapse a
           family of legacy names onto one event. */}
       {namesEvent && (
-        <p className="text-xs text-warning">
+        <p className="text-body-sm text-warning">
           This field names the event, so <span className="font-mono">{'${variable}'}</span> is
           stored literally and will not match a family of names.{' '}
           {slug ? (
@@ -177,7 +179,7 @@ export function FieldTemplateHints({
         </p>
       )}
       {unknown.map(({ token }) => (
-        <p key={token} className="text-xs text-warning">Unknown variable token: {token}</p>
+        <p key={token} className="text-body-sm text-warning">Unknown variable token: {token}</p>
       ))}
       {documented.map(variable => (
         <div key={variable.id} className="flex flex-wrap items-center gap-1">
@@ -186,10 +188,11 @@ export function FieldTemplateHints({
               key={allowedValue}
               type="button"
               aria-label={`Copy documented value ${allowedValue}`}
-              className="rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-surface-hover"
+              className="rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               onClick={() => void copyValue(allowedValue)}
             >
-              {allowedValue}
+              {/* A code value, so the code token of the badge taxonomy (DS-6). */}
+              <CodeToken className="cursor-pointer hover:bg-surface-hover">{allowedValue}</CodeToken>
             </button>
           ))}
         </div>
@@ -211,6 +214,12 @@ type FieldValueControlProps = {
    * the label's mark is a promise the browser never keeps.
    */
   requiredOverride?: boolean
+  /**
+   * The form flagged this row (an empty required value after Save). The form
+   * is `noValidate`, so `required` is announced (`aria-required`) and checked
+   * by the form, not by a browser bubble (AU-4).
+   */
+  invalid?: boolean
 }
 
 export function FieldValueControl({
@@ -220,11 +229,12 @@ export function FieldValueControl({
   variables,
   inputId,
   requiredOverride,
+  invalid: flagged = false,
 }: FieldValueControlProps) {
   const required = requiredOverride ?? field.is_required
   if (field.field_type === 'boolean') {
     return (
-      <SelectControl id={inputId} value={value} onChange={onChange} required={required}>
+      <SelectControl id={inputId} value={value} onChange={onChange} ariaRequired={required} aria-invalid={flagged}>
         <option value="">—</option>
         <option value="true">true</option>
         <option value="false">false</option>
@@ -233,7 +243,7 @@ export function FieldValueControl({
   }
   if (field.field_type === 'enum' && field.enum_options) {
     return (
-      <SelectControl id={inputId} value={value} onChange={onChange} required={required}>
+      <SelectControl id={inputId} value={value} onChange={onChange} ariaRequired={required} aria-invalid={flagged}>
         <option value="">—</option>
         {field.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
       </SelectControl>
@@ -241,7 +251,14 @@ export function FieldValueControl({
   }
   if (field.field_type === 'json') {
     return (
-      <JsonEditor id={inputId} value={value} onChange={onChange} required={required} variables={variables} />
+      <JsonEditor
+        id={inputId}
+        value={value}
+        onChange={onChange}
+        required={required}
+        invalid={flagged}
+        variables={variables}
+      />
     )
   }
   if (field.field_type === 'number') {
@@ -259,16 +276,24 @@ export function FieldValueControl({
           value={value}
           onChange={onChange}
           variables={variables}
-          required={required}
+          ariaRequired={required}
           type="text"
           inputMode="decimal"
-          invalid={invalid}
+          invalid={invalid || flagged}
           describedBy={invalid ? errorId : undefined}
         />
+        {/* Red, not amber: a value that is neither a number nor a token
+            blocks Save (AU-5). */}
         {invalid && (
-          <p id={errorId} className="mt-1 text-xs text-warning">
-            Enter a number or a <span className="font-mono">{'${variable}'}</span> token.
-          </p>
+          <FieldError
+            id={errorId}
+            className="mt-1 text-body-sm"
+            message={
+              <>
+                Enter a number or a <span className="font-mono">{'${variable}'}</span> token.
+              </>
+            }
+          />
         )}
       </div>
     )
@@ -279,7 +304,8 @@ export function FieldValueControl({
       value={value}
       onChange={onChange}
       variables={variables}
-      required={required}
+      ariaRequired={required}
+      invalid={flagged}
       type={field.field_type === 'url' ? 'url' : 'text'}
     />
   )
@@ -327,7 +353,7 @@ export function MetaFieldControl({
           ariaLabel={`Add ${metaField.display_name}`}
         />
         {template && (
-          <p className="mt-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="mt-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
             Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span> — each
             one opens on its own.
           </p>
@@ -375,7 +401,7 @@ export function MetaFieldControl({
         type={metaField.field_type === 'url' ? 'url' : metaField.field_type === 'date' ? 'date' : 'text'}
       />
       {template && (
-        <p className="mt-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="mt-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
           {example ? (
             // Said with the reader's own template: "uses link template with
             // ${value}" named a mechanism and left the reader to work out that

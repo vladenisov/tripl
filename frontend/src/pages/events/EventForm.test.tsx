@@ -708,11 +708,12 @@ describe('EventForm save and add another', () => {
 
     // Without this the form looked untouched after a save, which is why a
     // second press read as the obvious next action (tripl-u2h9.2).
-    const created = await screen.findByRole('status')
-    expect(created).toHaveTextContent('Created checkout:started')
+    // The line sits in the sticky save bar's status region (AU-6).
+    const created = await screen.findByText(/Created checkout:started/)
+    expect(created.closest('[role="status"]')).not.toBeNull()
 
     fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:completed' } })
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Created checkout:started/)).not.toBeInTheDocument()
   })
 })
 
@@ -1438,7 +1439,7 @@ describe('EventForm unsaved-changes guard (EVT-8)', () => {
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Typed during save' } })
     await act(async () => answerCreate({ name: 'checkout:started' } as never))
 
-    expect(await screen.findByRole('status')).toHaveTextContent('Created checkout:started')
+    expect(await screen.findByText(/Created checkout:started/)).toBeInTheDocument()
     expect(reloadIsGuarded()).toBe(true)
   })
 
@@ -1481,8 +1482,9 @@ describe('EventForm unsaved-changes guard (EVT-8)', () => {
     // The form's own Cancel; the confirm is not open yet.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
-    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    // "Keep editing", not a second "Cancel" two seconds after the form's (AU-42).
+    const confirm = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(router.state.location.pathname).toBe('/p/demo/events/all/new')
     expect(screen.getByLabelText('Title')).toHaveValue('Checkout completed')
@@ -1605,7 +1607,8 @@ describe('EventForm templated number fields (EVT-23)', () => {
     expect(input).toHaveAttribute('aria-invalid', 'true')
     expect(input).toHaveAccessibleDescription(/Enter a number or a \$\{variable\} token/)
     expect(screen.getByRole('button', { name: /Create event/i })).toBeDisabled()
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a number or a variable in: Price')
+    // Beside Save, in the save bar, in the blocking (red) tone (AU-5 / AU-6).
+    expect(screen.getByText('Enter a number or a variable in: Price')).toBeInTheDocument()
   })
 
   it('does not hold the event hostage to a stored value that is not a number', async () => {
@@ -1880,6 +1883,29 @@ describe('EventForm event-type change (EVT-47)', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect(screen.getByLabelText(/Event type/)).toHaveValue('et-1')
     expect(screen.getByLabelText('Payload')).toHaveValue('{"a":1}')
+  })
+})
+
+describe('EventForm required-field validation (AU-4)', () => {
+  it('marks every empty required row inline instead of a browser bubble, and names them by Save', async () => {
+    const otherType = { ...EVENT_TYPE, id: 'et-2', display_name: 'Other' } as EventType
+    const { container } = renderForm(null, { eventTypes: [EVENT_TYPE, otherType] })
+    expect(container.querySelector('form')).toHaveAttribute('novalidate')
+    // Nothing is flagged while the empty form is being filled in.
+    expect(screen.queryByText('Required')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Create event/i }))
+
+    expect(await screen.findAllByText('Required')).toHaveLength(2)
+    expect(screen.getByLabelText(/Event type/)).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText(/^Name/)).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText(/^Name/)).toHaveAccessibleDescription(/Required/)
+    expect(screen.getByText('Fill in: Event type, Name')).toBeInTheDocument()
+    expect(eventsApi.create).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'checkout:started' } })
+    expect(screen.getByLabelText(/^Name/)).not.toHaveAttribute('aria-invalid')
+    expect(screen.getByText('Fill in: Event type')).toBeInTheDocument()
   })
 })
 

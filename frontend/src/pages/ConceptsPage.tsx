@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { ArrowRight, type LucideIcon } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
+import { PageContainer } from '@/components/primitives/page-container'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { PRODUCT_PILLARS, type PillarId } from '@/components/workspace-welcome-pillars'
 
@@ -200,12 +201,12 @@ function MapCard({ area }: { area: Area }) {
         </span>
         <div className="min-w-0">
           <div className="text-body font-semibold leading-tight">{area.label}</div>
-          <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
             {area.tagline}
           </div>
         </div>
       </div>
-      <p className="mt-2.5 text-[12px] leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="mt-2.5 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
         {area.blurb}
       </p>
       <div className="mt-3 flex flex-wrap gap-1.5">
@@ -233,7 +234,7 @@ function TermRow({ term, slug }: { term: Term; slug: string | undefined }) {
           // trimmed text, so " Events in the app" in a span read "OpenEvents".
           <Link
             to={href}
-            className="flex shrink-0 items-center gap-0.5 text-[11px] font-medium no-underline"
+            className="flex shrink-0 items-center gap-0.5 text-caption font-medium no-underline"
             style={{ color: 'var(--accent)' }}
             aria-label={
               term.surface
@@ -246,7 +247,7 @@ function TermRow({ term, slug }: { term: Term; slug: string | undefined }) {
           </Link>
         )}
       </div>
-      <p className="mt-1 text-[12px] leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="mt-1 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
         {term.definition}
       </p>
     </div>
@@ -257,7 +258,7 @@ export default function ConceptsPage() {
   const { slug } = useParams<{ slug: string }>()
 
   return (
-    <div className="min-w-0 space-y-8 pb-12">
+    <PageContainer className="space-y-8">
       <PageHead
         eyebrow="Help & reference"
         title="Concepts"
@@ -272,7 +273,7 @@ export default function ConceptsPage() {
             How tripl models your plan
           </h2>
           <div
-            className="flex items-center gap-1.5 text-[11px] font-medium"
+            className="flex items-center gap-1.5 text-caption font-medium"
             style={{ color: 'var(--fg-faint)' }}
           >
             {AREAS.map((area, i) => (
@@ -308,6 +309,6 @@ export default function ConceptsPage() {
           </Panel>
         ))}
       </section>
-    </div>
+    </PageContainer>
   )
 }

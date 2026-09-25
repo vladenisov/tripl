@@ -38,7 +38,7 @@ const ProjectAlertingTab = lazyWithReload(() => import('@/pages/ProjectAlertingT
 
 function TabFallback() {
   return (
-    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+    <p role="status" aria-live="polite" className="text-body text-muted-foreground">
       Loading…
     </p>
   )
@@ -168,12 +168,12 @@ function SettingsSignpost() {
       className="mb-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-b pb-3"
       style={{ borderColor: 'var(--border)' }}
     >
-      <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
         Project operations — the day-to-day tracking-plan surfaces.
       </p>
       <Link
         to="/settings"
-        className="inline-flex items-center gap-1 text-xs font-medium no-underline transition-colors"
+        className="inline-flex items-center gap-1 text-body-sm font-medium no-underline transition-colors"
         style={{ color: 'var(--accent)' }}
       >
         Workspace settings

@@ -10,7 +10,6 @@ import {
 } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -66,7 +65,7 @@ export function AttentionStat({
       // a min-width here is what used to push the third card onto its own row.
       className="flex min-w-0 items-start gap-2.5 rounded-lg border px-3 py-2.5"
       style={{
-        background: needsAttention ? toneSoft : 'var(--bg-elevated)',
+        background: needsAttention ? toneSoft : 'var(--surface)',
         borderColor: needsAttention ? toneColor : 'var(--border)',
       }}
     >
@@ -83,7 +82,7 @@ export function AttentionStat({
       <dl className="m-0 min-w-0">
         <div className="flex flex-col gap-0.5">
           <dt
-            className="order-2 text-[10px] font-semibold uppercase tracking-[0.07em]"
+            className="order-2 micro-label"
             style={{ color: 'var(--fg-subtle)' }}
           >
             {label}
@@ -92,16 +91,16 @@ export function AttentionStat({
             {pulse && needsAttention && (
               <Dot tone={tone === 'warning' ? 'warning' : 'danger'} size={6} pulse />
             )}
-            <span className="mono tnum text-[20px] font-medium leading-[1.1] tracking-[-0.01em]">
+            <span className="mono tnum text-title font-medium leading-[1.1] tracking-[-0.01em]">
               {value}
             </span>
             {unit ? (
-              <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+              <span className="text-caption" style={{ color: 'var(--fg-faint)' }}>
                 {unit}
               </span>
             ) : null}
           </dd>
-          <dd className="order-3 m-0 text-[11px] leading-[1.35]" style={{ color: 'var(--fg-muted)' }}>
+          <dd className="order-3 m-0 text-caption leading-[1.35]" style={{ color: 'var(--fg-muted)' }}>
             {hint}
           </dd>
         </div>
@@ -111,10 +110,10 @@ export function AttentionStat({
 }
 
 const STATUS_TONE: Readonly<Record<ProjectStatusLabel, StatTone>> = {
-  Setup: 'neutral',
-  'Needs Review': 'warning',
+  'Set up': 'neutral',
+  'Needs review': 'warning',
   Ready: 'success',
-  'In Progress': 'info',
+  'In progress': 'info',
 }
 
 export function ProjectCard({
@@ -160,11 +159,10 @@ export function ProjectCard({
 
   return (
     <Card
-      // `gap-0 p-0`: the Card primitive's own `gap-6 py-6` sat between the
-      // header divider and the chip row, a 40px empty band once added to the
-      // content padding (LIVE-24).
-      className="gap-0 overflow-hidden p-0"
-      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
+      // The Card primitive is the section card now (DS-4): surface fill, no
+      // outer padding or gap, so the header rule meets the chip row directly
+      // (LIVE-24) with no overrides here.
+      className="overflow-hidden"
       aria-busy={isDeleting || undefined}
     >
       <div
@@ -173,27 +171,21 @@ export function ProjectCard({
       >
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-[14px] font-semibold">{project.name}</span>
+            <span className="truncate text-heading font-semibold">{project.name}</span>
             <Chip tone={statusTone} size="xs">
               {status.label}
             </Chip>
-            {hasSignals && (
-              <Chip tone="danger" size="xs">
-                <Dot tone="danger" pulse size={5} />
-                live
-              </Chip>
-            )}
             {isDeleting && (
               <Chip tone="danger" size="xs">
                 Deleting…
               </Chip>
             )}
           </div>
-          <p className="mt-1 line-clamp-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="mt-1 line-clamp-2 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             {project.description ||
               'No project description yet. Add one to capture the scope of this tracking plan.'}
           </p>
-          <p className="mt-1 text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+          <p className="mt-1 text-caption" style={{ color: 'var(--fg-faint)' }}>
             <span className="mono">{project.slug}</span> · Updated {formatDate(project.updated_at)}
           </p>
         </div>
@@ -223,7 +215,7 @@ export function ProjectCard({
         )}
       </div>
 
-      <CardContent className="space-y-4 px-4 py-4">
+      <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-1.5">
           <Chip tone="neutral" size="xs">
             {project.summary.active_event_count > 0 ? `${coverageDisplay} implemented` : 'No active events'}
@@ -284,7 +276,7 @@ export function ProjectCard({
         </div>
 
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="flex items-center justify-between text-caption" style={{ color: 'var(--fg-subtle)' }}>
             <span id={`progress-label-${project.id}`}>Implementation progress</span>
             <span className="mono tnum">
               {project.summary.implemented_event_count}/{project.summary.active_event_count || 0}
@@ -336,7 +328,7 @@ export function ProjectCard({
         <div className="flex flex-wrap gap-2">
           <Button asChild size="sm">
             <Link to={`/p/${project.slug}/events`}>
-              Open Project
+              Open project
               <ArrowRight className="h-3.5 w-3.5" />
             </Link>
           </Button>
@@ -359,12 +351,13 @@ function Metric({ label, value }: { label: string; value: string }) {
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
     >
       <dt
-        className="text-[10px] font-semibold uppercase tracking-[0.06em]"
+        className="micro-label"
         style={{ color: 'var(--fg-faint)' }}
       >
         {label}
       </dt>
-      <dd className="mono tnum m-0 mt-0.5 text-[18px] font-medium tracking-[-0.01em]">{value}</dd>
+      {/* A figure, not an identifier: sans with tabular digits (DS-17). */}
+      <dd className="tnum m-0 mt-0.5 text-heading font-semibold tracking-[-0.01em]">{value}</dd>
     </dl>
   )
 }
@@ -385,12 +378,12 @@ function Panel({
     >
       <div className="mb-2 flex items-center gap-2">
         <div
-          className="flex h-6 w-6 items-center justify-center rounded"
+          className="flex h-6 w-6 items-center justify-center rounded-sm"
           style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
         >
           <Icon className="h-3 w-3" />
         </div>
-        <p className="text-[12px] font-medium">{title}</p>
+        <p className="text-body-sm font-medium">{title}</p>
       </div>
       {children}
     </div>
@@ -431,8 +424,10 @@ function LatestScanJobSummary({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <p className="text-[12px] font-medium">{job.scan_name}</p>
-        <Badge variant={getScanJobStatusVariant(job.status)}>{job.status}</Badge>
+        <p className="text-body-sm font-medium">{job.scan_name}</p>
+        <Chip size="xs" {...scanJobStatusChip(job.status)}>
+          {job.status}
+        </Chip>
       </div>
       <div className="space-y-0.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
         <p>{describeScanJobTiming(job)}</p>
@@ -441,7 +436,7 @@ function LatestScanJobSummary({
             (tripl-h5um). "Rows read" is what the scan detail page calls it. */}
         {rowsRead != null && (
           <p
-            className="mono tnum"
+            className="tnum"
             title="Warehouse rows this run read from the data source. Not an event count."
           >
             {rowsRead.toLocaleString()}{' '}
@@ -454,7 +449,7 @@ function LatestScanJobSummary({
               {scanError.message}
             </p>
             {isOwner && scanError.technical && (
-              <details className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+              <details className="text-caption" style={{ color: 'var(--fg-faint)' }}>
                 <summary className="cursor-pointer select-none">View technical details</summary>
                 <p className="mono mt-1 whitespace-pre-wrap break-words">{scanError.technical}</p>
               </details>
@@ -517,7 +512,7 @@ function LatestSignalSummary({
         {/* "Spike on <scope>" is the sentence the bell and the Anomalies list
             already use, so the scope name cannot be read as a readout of its
             own (tripl-h5um). */}
-        <p className="text-[12px] font-medium">
+        <p className="text-body-sm font-medium">
           {signal.direction === 'drop' ? 'Drop' : 'Spike'} on {signal.scope_name}
         </p>
         {/* The value that series carried in ONE bucket, against the baseline the
@@ -527,23 +522,23 @@ function LatestSignalSummary({
             workspace summary only carries project_total / event_type / event
             scopes, and all three are EventMetric volume (tripl-h5um). */}
         <p
-          className="text-[11px]"
+          className="text-caption"
           style={{ color: 'var(--fg-subtle)' }}
           title="What the detector measured in this one bucket, against the baseline it expected. Not a row count."
         >
-          <span className="mono tnum">{signal.actual_count.toLocaleString()}</span> events in this
-          bucket vs <span className="mono tnum">{formatIncidentCount(signal.expected_count)}</span>{' '}
+          <span className="tnum">{signal.actual_count.toLocaleString()}</span> events in this
+          bucket vs <span className="tnum">{formatIncidentCount(signal.expected_count)}</span>{' '}
           expected
         </p>
         {/* "Bucket" names the timestamp, so it is not read as the scan tile's
             "Completed <time>". */}
-        <p className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+        <p className="text-caption" style={{ color: 'var(--fg-faint)' }}>
           Bucket {formatDateTime(signal.bucket)} · via {signal.scan_name}
         </p>
       </div>
       <Button asChild variant="outline" size="sm">
         <Link to={getMonitoringPath(slug, signal)}>
-          Open Signal
+          Open signal
           <ArrowRight className="h-3.5 w-3.5" />
         </Link>
       </Button>
@@ -551,22 +546,24 @@ function LatestSignalSummary({
   )
 }
 
-type ProjectStatusLabel = 'Setup' | 'Needs Review' | 'Ready' | 'In Progress'
+// Sentence case, like every other label in the shell (SH-28).
+type ProjectStatusLabel = 'Set up' | 'Needs review' | 'Ready' | 'In progress'
 
 function getProjectStatus(summary: ProjectSummary): { label: ProjectStatusLabel } {
-  if (summary.active_event_count === 0) return { label: 'Setup' }
-  if (summary.review_pending_event_count > 0) return { label: 'Needs Review' }
+  if (summary.active_event_count === 0) return { label: 'Set up' }
+  if (summary.review_pending_event_count > 0) return { label: 'Needs review' }
   if (summary.implemented_event_count === summary.active_event_count) return { label: 'Ready' }
-  return { label: 'In Progress' }
+  return { label: 'In progress' }
 }
 
-function getScanJobStatusVariant(
+/** A run's lifecycle as a status chip (DS-6): soft tone, outline while queued. */
+function scanJobStatusChip(
   status: ProjectLatestScanJob['status'],
-): 'outline' | 'secondary' | 'success' | 'destructive' {
-  if (status === 'completed') return 'success'
-  if (status === 'failed') return 'destructive'
-  if (status === 'running') return 'secondary'
-  return 'outline'
+): { tone: 'success' | 'danger' | 'neutral'; variant?: 'outline' } {
+  if (status === 'completed') return { tone: 'success' }
+  if (status === 'failed') return { tone: 'danger' }
+  if (status === 'running') return { tone: 'neutral' }
+  return { tone: 'neutral', variant: 'outline' }
 }
 
 function describeScanJobTiming(job: ProjectLatestScanJob) {

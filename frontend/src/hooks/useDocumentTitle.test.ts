@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { buildDocumentTitle, resolveTitleFromPath, useDocumentTitle } from './useDocumentTitle'
+import {
+  buildDocumentTitle,
+  entityTitleLabel,
+  resolveEntityKind,
+  resolveTitleFromPath,
+  useDocumentTitle,
+} from './useDocumentTitle'
 
 const SEP = ' · '
 
@@ -250,6 +256,32 @@ describe('resolveTitleFromPath', () => {
     expect(resolveTitleFromPath('/nope')).toEqual({ label: 'Page not found' })
     expect(buildDocumentTitle(resolveTitleFromPath('/nope').label)).toBe(
       `Page not found${SEP}tripl`,
+    )
+  })
+})
+
+describe('detail-page tab titles (JR-33)', () => {
+  it('names the kind of entity a detail route shows', () => {
+    expect(resolveEntityKind('/p/acme/monitoring/event-type/et-1')).toBe('Event type volume')
+    expect(resolveEntityKind('/p/acme/monitoring/event/ev-1/breakdowns')).toBe('Event')
+    expect(resolveEntityKind('/p/acme/monitoring/metric/m-1')).toBe('Metric')
+    expect(resolveEntityKind('/p/acme/monitors/r-1')).toBe('Alert rule')
+    expect(resolveEntityKind('/p/acme/scans/s-1')).toBe('Scan')
+  })
+
+  it('is null off a detail route', () => {
+    expect(resolveEntityKind('/p/acme/monitoring')).toBeNull()
+    expect(resolveEntityKind('/p/acme/monitors')).toBeNull()
+    expect(resolveEntityKind('/p/acme/events')).toBeNull()
+    expect(resolveEntityKind('/settings/members')).toBeNull()
+  })
+
+  it('leads the tab with the entity name, then its kind', () => {
+    expect(buildDocumentTitle(entityTitleLabel('Screen View', 'Event type volume'))).toBe(
+      `Screen View${SEP}Event type volume${SEP}tripl`,
+    )
+    expect(buildDocumentTitle(entityTitleLabel('Spike & drift watch', 'Alert rule'))).toBe(
+      `Spike & drift watch${SEP}Alert rule${SEP}tripl`,
     )
   })
 })

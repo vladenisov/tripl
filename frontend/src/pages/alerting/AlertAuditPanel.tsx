@@ -1,10 +1,8 @@
-import { X } from 'lucide-react'
-
 import { Panel } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { FilterBar, FilterSelect } from '@/components/ui/filter-bar'
 import { formatIsoDate } from '@/lib/datetime'
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
@@ -29,6 +27,16 @@ import {
 // Re-exported: the type moved to ./deliveryFilters with the URL codec (ALR-36),
 // and the page and tests have always imported it from here.
 export type { DeliveryFilters } from './deliveryFilters'
+
+// Radix Select cannot carry an empty value, which is what "not filtering" is in
+// `DeliveryFilters`. One sentinel, translated at the edge in both directions.
+const ANY = 'any'
+
+const STATUS_OPTIONS = [
+  { value: 'pending', label: 'Pending' },
+  { value: 'sent', label: 'Sent' },
+  { value: 'failed', label: 'Failed' },
+]
 
 interface AlertAuditPanelProps {
   slug: string
@@ -125,7 +133,7 @@ export function AlertAuditPanel({
     // opposite facts about a project someone is checking after an incident.
     if (isError) {
       return (
-        <p role="alert" className="rounded-lg border border-destructive/40 p-4 text-sm text-destructive">
+        <p role="alert" className="rounded-lg border border-destructive/40 p-4 text-body text-destructive">
           Could not load the delivery log. Retry in a moment; the filters above are unchanged.
         </p>
       )
@@ -135,14 +143,14 @@ export function AlertAuditPanel({
     // reader should keep reading, not watch the table blink to "Loading…".
     if (isLoading && !deliveries && !pinnedDelivery) {
       return (
-        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
           Loading deliveries…
         </div>
       )
     }
     if (strandedPastEnd && !pinnedDelivery) {
       return (
-        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
           This page is now empty — the log changed while you were reading it. Use Newer to go back
           to the last page with deliveries.
         </div>
@@ -150,7 +158,7 @@ export function AlertAuditPanel({
     }
     if (items.length === 0 && !pinnedDelivery) {
       return (
-        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
           {/* "No deliveries yet." on a filtered view asserted that the project
               had never delivered — on a project that had delivered 115 times,
               because Status=Failed matched none of them (tripl-oxkt.10). Say
@@ -195,126 +203,83 @@ export function AlertAuditPanel({
           appending an "s" — the first alert a project ever sends lands here. */}
       <Panel title="Delivery log" subtitle={countOf(total, 'delivery', 'deliveries')}>
         <div className="min-w-0 space-y-4 p-4">
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             Every alert this project actually sent — the deliveries behind the incidents in the Inbox.
             A destination on a delivery schedule sends its rules together, so several rows here can
             share one message.
           </p>
           {!canWrite && (
-            <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+            <p className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
               {VIEWER_READ_ONLY_NOTICE}
             </p>
           )}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="grid gap-2">
-              <Label htmlFor="filter-status">Status</Label>
-              <Select value={deliveryFilters.status || 'all'} onValueChange={value => updateFilters({ status: value === 'all' ? '' : value })}>
-                <SelectTrigger id="filter-status"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="sent">Sent</SelectItem>
-                  <SelectItem value="failed">Failed</SelectItem>
-                </SelectContent>
-              </Select>
+          {/* The app's one filter bar (DS-15), the same as the Inbox's beside
+              it: "{Label}: {value}" chips that apply instantly, then "Clear
+              filters" and the match count. */}
+          <FilterBar
+            active={filtersActive}
+            onClear={clearFilters}
+            count={filtersActive ? `${countOf(total, 'delivery matches', 'deliveries match')} the filter` : undefined}
+          >
+            <FilterSelect
+              label="Status"
+              value={deliveryFilters.status || ANY}
+              onValueChange={value => updateFilters({ status: value === ANY ? '' : value })}
+              options={STATUS_OPTIONS}
+            />
+            {/* From the one catalogue, not a hand-kept copy: a channel added to
+                CHANNEL_META but forgotten here would be deliverable and
+                unfilterable, and this repo has had the same list drift apart
+                four ways before. */}
+            <FilterSelect
+              label="Channel"
+              value={deliveryFilters.channel || ANY}
+              onValueChange={value => updateFilters({ channel: value === ANY ? '' : value })}
+              options={CHANNEL_META.map(({ channel, label }) => ({ value: channel, label }))}
+            />
+            <FilterSelect
+              label="Destination"
+              value={deliveryFilters.destination_id || ANY}
+              onValueChange={value => updateFilters({ destination_id: value === ANY ? '' : value, rule_id: '' })}
+              options={destinations.map(destination => ({ value: destination.id, label: destination.name }))}
+            />
+            <FilterSelect
+              label="Rule"
+              value={deliveryFilters.rule_id || ANY}
+              onValueChange={value => updateFilters({ rule_id: value === ANY ? '' : value })}
+              options={allRules
+                .filter(rule => !deliveryFilters.destination_id || rule.destination_id === deliveryFilters.destination_id)
+                .map(rule => ({ value: rule.id, label: `${rule.destination_name} / ${rule.name}` }))}
+            />
+            <FilterSelect
+              label="Scan"
+              value={deliveryFilters.scan_config_id || ANY}
+              onValueChange={value => updateFilters({ scan_config_id: value === ANY ? '' : value })}
+              options={scans.map(scan => ({ value: scan.id, label: scan.name }))}
+            />
+            {/* No format hint on either input: these are native
+                <input type="date"> controls, which render and parse in the
+                browser's own locale, so a hard-coded "(YYYY-MM-DD)" would
+                contradict what the control shows (tripl-jfm3.37). */}
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="filter-date-from" className="text-caption font-normal text-fg-muted">From</Label>
+              <Input
+                id="filter-date-from"
+                type="date"
+                className="h-7 w-auto text-caption"
+                value={formatIsoDate(deliveryFilters.date_from)}
+                onChange={event => updateFilters({ date_from: toDayBoundary(event.target.value, false) })}
+              />
+              <Label htmlFor="filter-date-to" className="text-caption font-normal text-fg-muted">To</Label>
+              <Input
+                id="filter-date-to"
+                type="date"
+                className="h-7 w-auto text-caption"
+                value={formatIsoDate(deliveryFilters.date_to)}
+                onChange={event => updateFilters({ date_to: toDayBoundary(event.target.value, true) })}
+              />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="filter-channel">Channel</Label>
-              <Select value={deliveryFilters.channel || 'all'} onValueChange={value => updateFilters({ channel: value === 'all' ? '' : value })}>
-                <SelectTrigger id="filter-channel"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {/* From the one catalogue, not a hand-kept copy: a channel
-                      added to CHANNEL_META but forgotten here would be
-                      deliverable and unfilterable, and this repo has had the
-                      same list drift apart four ways before. */}
-                  {CHANNEL_META.map(({ channel, label }) => (
-                    <SelectItem key={channel} value={channel}>
-                      {label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="filter-destination">Destination</Label>
-              <Select value={deliveryFilters.destination_id || 'all'} onValueChange={value => updateFilters({ destination_id: value === 'all' ? '' : value, rule_id: '' })}>
-                <SelectTrigger id="filter-destination"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {destinations.map(destination => (
-                    <SelectItem key={destination.id} value={destination.id}>
-                      {destination.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="filter-rule">Rule</Label>
-              <Select value={deliveryFilters.rule_id || 'all'} onValueChange={value => updateFilters({ rule_id: value === 'all' ? '' : value })}>
-                <SelectTrigger id="filter-rule"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {allRules
-                    .filter(rule => !deliveryFilters.destination_id || rule.destination_id === deliveryFilters.destination_id)
-                    .map(rule => (
-                      <SelectItem key={rule.id} value={rule.id}>
-                        {rule.destination_name} / {rule.name}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="filter-scan">Scan</Label>
-              <Select value={deliveryFilters.scan_config_id || 'all'} onValueChange={value => updateFilters({ scan_config_id: value === 'all' ? '' : value })}>
-                <SelectTrigger id="filter-scan"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {scans.map(scan => (
-                    <SelectItem key={scan.id} value={scan.id}>
-                      {scan.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {/* No format hint on either input: these are native
-                  <input type="date"> controls, which render and parse in the
-                  browser's own locale, so a hard-coded "(YYYY-MM-DD)" would
-                  contradict what the control shows (tripl-jfm3.37). */}
-              <div className="grid gap-2">
-                <Label htmlFor="filter-date-from">From</Label>
-                <Input
-                  id="filter-date-from"
-                  type="date"
-                  value={formatIsoDate(deliveryFilters.date_from)}
-                  onChange={event => updateFilters({ date_from: toDayBoundary(event.target.value, false) })}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="filter-date-to">To</Label>
-                <Input
-                  id="filter-date-to"
-                  type="date"
-                  value={formatIsoDate(deliveryFilters.date_to)}
-                  onChange={event => updateFilters({ date_to: toDayBoundary(event.target.value, true) })}
-                />
-              </div>
-            </div>
-          </div>
-
-          {filtersActive && (
-            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-              <span>{countOf(total, 'delivery matches', 'deliveries match')} the filter.</span>
-              <Button type="button" variant="ghost" size="sm" className="h-9 px-3 text-xs sm:h-7 sm:px-2" onClick={clearFilters}>
-                <X aria-hidden="true" className="mr-1 h-3 w-3" />
-                Clear filters
-              </Button>
-            </div>
-          )}
+          </FilterBar>
 
           {renderDeliveries()}
 
@@ -325,7 +290,7 @@ export function AlertAuditPanel({
                   back, so a reader who scrolled to the bottom concluded their
                   alert had never been sent (tripl-oxkt.12). Wording follows the
                   sibling page, settings/AuditTab.tsx. */}
-              <p className="text-xs text-muted-foreground">
+              <p className="text-body-sm text-muted-foreground">
                 {strandedPastEnd
                   ? `Past the end of ${countOf(total, 'delivery', 'deliveries')}.`
                   : hasNewer
@@ -337,7 +302,7 @@ export function AlertAuditPanel({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-9 px-3 text-xs sm:h-7 sm:px-2"
+                  className="h-9 px-3 text-body-sm sm:h-7 sm:px-2"
                   disabled={!hasNewer}
                   onClick={() => onDeliveryOffsetChange(newerDeliveryOffset(deliveryOffset, total, deliveryLimit))}
                 >
@@ -347,7 +312,7 @@ export function AlertAuditPanel({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-9 px-3 text-xs sm:h-7 sm:px-2"
+                  className="h-9 px-3 text-body-sm sm:h-7 sm:px-2"
                   disabled={!hasOlder}
                   onClick={() => onDeliveryOffsetChange(deliveryOffset + deliveryLimit)}
                 >

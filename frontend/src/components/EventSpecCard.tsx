@@ -2,6 +2,7 @@ import { useMemo, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { Copy } from 'lucide-react'
 import { toast } from 'sonner'
+import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
@@ -13,7 +14,7 @@ import type { Event, EventType, MetaFieldDefinition } from '@/types'
 
 const CARD = 'overflow-hidden rounded-card border'
 const CARD_STYLE = { background: 'var(--surface)', borderColor: 'var(--border)' } as const
-const TH = 'h-auto px-[14px] py-2 text-left text-2xs font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
+const TH = 'h-auto px-[14px] py-2 text-left micro-label text-[var(--fg-subtle)]'
 const TD = 'px-[14px] py-[9px] text-body-sm align-top'
 
 /**
@@ -81,7 +82,7 @@ export function EventSpecCard({
     <section className={CARD} style={CARD_STYLE} aria-label="Spec" data-testid="event-spec-card">
       <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
         <span className="text-body-sm font-semibold">Spec</span>
-        <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
           what to send, and where it must land
         </span>
         <div className="flex-1" />
@@ -113,7 +114,7 @@ export function EventSpecCard({
         </div>
         {event.title && <p className="text-body">{event.title}</p>}
         {rule && (
-          <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
             Named by scan rule <span className="mono">{rule}</span>. The scan matches this event on the
             identity above, so the row must carry exactly these values.
           </p>
@@ -174,21 +175,19 @@ export function EventSpecCard({
                 >
                   <TableCell className={TD}>
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="mono text-[12px]">{row.field.name}</span>
+                      <span className="mono text-body-sm">{row.field.name}</span>
                       {(row.field.is_required || row.namesTheEvent) && (
-                        <span className="text-2xs" style={{ color: 'var(--danger)' }}>required</span>
+                        <span className="text-micro" style={{ color: 'var(--danger)' }}>required</span>
                       )}
+                      {/* A kind tag, so the outline pill (DS-6). */}
                       {row.namesTheEvent && (
-                        <span
-                          className="rounded-sm px-1 text-[10px]"
-                          style={{ background: 'var(--bg-sunken)', color: 'var(--fg-subtle)' }}
-                        >
+                        <Chip size="xs" variant="outline">
                           names the event
-                        </span>
+                        </Chip>
                       )}
                     </div>
                     {row.field.description && (
-                      <div className="mt-[2px] text-[11px]" style={{ color: 'var(--fg-subtle)' }}>{row.field.description}</div>
+                      <div className="mt-[2px] text-caption" style={{ color: 'var(--fg-subtle)' }}>{row.field.description}</div>
                     )}
                   </TableCell>
                   <TableCell className={`${TD} mono hidden text-caption md:table-cell`}>
@@ -234,7 +233,7 @@ export function EventSpecCard({
       )}
 
       <div className="border-t px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-        <div className="mb-1 text-2xs font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="mb-1 micro-label" style={{ color: 'var(--fg-subtle)' }}>
           Example payload
         </div>
         <pre className="mono overflow-x-auto rounded-md p-3 text-caption" style={{ background: 'var(--bg-sunken)' }} data-testid="spec-payload">

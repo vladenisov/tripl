@@ -6,7 +6,7 @@ import {
   useId,
   useRef,
 } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Save } from 'lucide-react'
 import {
   FieldControlIdContext,
   createFieldControlIdSlot,
@@ -15,10 +15,14 @@ import {
 } from '@/components/settings/field-control-id'
 import {
   INPUT_BASE,
+  INPUT_CLASS,
   INPUT_DISABLED,
   INPUT_EDGE,
+  INPUT_FONT_SIZE,
   INPUT_RADIUS,
 } from '@/components/settings/input-style'
+import { Button } from '@/components/ui/button'
+import { SaveBar } from '@/components/forms/SaveBar'
 import { FormRow } from '@/components/ui/form-row'
 import { fieldErrorId } from '@/lib/fieldErrors'
 import { PageHeader } from '@/components/primitives/page-header'
@@ -41,18 +45,37 @@ import { cn } from '@/lib/utils'
  * "canonical" headers that disagreed (DS-19).
  */
 export function SHeader({
+  eyebrow,
   title,
   description,
   actions,
 }: {
+  /** The nav group, e.g. "Settings" (DS-2). */
+  eyebrow?: string
   title: string
   description?: string
   actions?: ReactNode
 }) {
-  return <PageHeader className="mb-7" title={title} description={description} actions={actions} />
+  return (
+    <PageHeader
+      className="mb-7"
+      eyebrow={eyebrow}
+      title={title}
+      description={description}
+      actions={actions}
+    />
+  )
 }
 
 // ───────── Section card ─────────
+/**
+ * A settings section: the `Panel` geometry (DS-4 / MO-10) with an optional
+ * icon well, a description under the title and a sunken footer. Same radius
+ * (`rounded-card`), header padding (`px-4 py-3`), 12.5px semibold title and
+ * 16px side gutter as `Panel` and `ui/Card`; it used to be `rounded-xl` with an
+ * 18px gutter and a 14px title. The kit rows (`Field`, `ToggleRow`,
+ * `InfoRow`) share the 16px gutter so their text lines up with the title.
+ */
 export function SCard({
   title,
   description,
@@ -80,13 +103,13 @@ export function SCard({
     tone === 'danger' ? 'color-mix(in oklab, var(--danger) 40%, var(--border))' : 'var(--border)'
   return (
     <section
-      className="mb-5 overflow-hidden rounded-xl"
+      className="mb-5 overflow-hidden rounded-card"
       style={{ background: 'var(--surface)', border: `1px solid ${borderColor}` }}
       aria-labelledby={title ? headingId : undefined}
     >
       {(title || description) && (
         <header
-          className="flex items-start gap-[11px] px-[18px] py-4"
+          className="flex items-start gap-[11px] px-4 py-3"
           style={{ borderBottom: children ? '1px solid var(--border-subtle)' : 'none' }}
         >
           {icon && (
@@ -109,7 +132,7 @@ export function SCard({
             {title && (
               <Heading
                 id={headingId}
-                className="m-0 text-[14px] font-semibold"
+                className="m-0 text-body-sm font-semibold"
                 style={{ color: tone === 'danger' ? 'var(--danger)' : 'var(--fg)' }}
               >
                 {title}
@@ -129,7 +152,7 @@ export function SCard({
       {children}
       {footer && (
         <footer
-          className="flex items-center gap-2.5 px-[18px] py-3"
+          className="flex items-center gap-2.5 px-4 py-3"
           style={{
             borderTop: '1px solid var(--border-subtle)',
             background: 'var(--bg-sunken)',
@@ -243,14 +266,14 @@ export function Field({
         {labelRight}
       </div>
       {hint && (
-        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
           {hint}
         </div>
       )}
     </>
   )
   const errorLine = hasError ? (
-    <p id={errorId} role={announceError ? 'alert' : undefined} className="mt-1.5 text-[12px] leading-[1.45]" style={{ color: 'var(--danger)' }}>
+    <p id={errorId} role={announceError ? 'alert' : undefined} className="mt-1.5 text-body-sm leading-[1.45]" style={{ color: 'var(--danger)' }}>
       {error}
     </p>
   ) : null
@@ -273,13 +296,13 @@ export function Field({
   }
   if (stacked) {
     return (
-      <div {...rowProps} className="block px-[18px] py-[15px]">
+      <div {...rowProps} className="block px-4 py-[15px]">
         <div style={{ marginBottom: 9 }}>{caption}</div>
         <div className="min-w-0 flex-1">{control}</div>
       </div>
     )
   }
-  // Side-by-side label + control only from `sm` up. The 232px label gutter plus
+  // Side-by-side label + control only once the row is 560px wide (FormRow). The 232px label gutter plus
   // its 24px gap left a phone's control column ~100px wide, so the Name/Slug
   // inputs measured 22px and ran off-screen (tripl-jfm3.40).
   return (
@@ -287,8 +310,8 @@ export function Field({
       {...rowProps}
       caption={caption}
       labelWidth={labelWidth}
-      captionClassName="sm:pt-1.5"
-      className="px-[18px] py-[15px]"
+      captionClassName="@min-[560px]:pt-1.5"
+      className="px-4 py-[15px]"
     >
       {control}
     </FormRow>
@@ -317,7 +340,7 @@ export function ToggleRow({
   const labelId = useId()
   return (
     <div
-      className="flex items-center gap-[18px] px-[18px] py-[14px]"
+      className="flex items-center gap-[18px] px-4 py-[14px]"
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
     >
       <div className="min-w-0 flex-1">
@@ -326,7 +349,7 @@ export function ToggleRow({
           {labelRight}
         </div>
         {hint && (
-          <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
             {hint}
           </div>
         )}
@@ -349,7 +372,7 @@ export function InfoRow({
   last?: boolean
 }) {
   return (
-    // Stacks below `sm` like `Field`: a fixed 200px caption left a phone
+    // Stacks below 560px like `Field`: a fixed 200px caption left a phone
     // ~100px for the value, so scan and destination names truncated to a few
     // letters (MON-32). A string value that still truncates carries a `title`.
     <FormRow
@@ -359,7 +382,7 @@ export function InfoRow({
           {label}
         </span>
       }
-      className="gap-1 px-[18px] py-[11px] sm:items-center sm:gap-4"
+      className="gap-1 px-4 py-[11px] @min-[560px]:items-center @min-[560px]:gap-4"
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
     >
       <span
@@ -400,13 +423,15 @@ export function Toggle({
       style={{
         // Off is `--input`, the 3:1 form-control token ui/switch uses too:
         // --border-strong measured ~1.6:1 (light) and ~1.3:1 (dark) on the
-        // card, so an off toggle barely read as a control (DS-8).
+        // card, so an off toggle barely read as a control (DS-8). On is the
+        // bright --accent, as in ui/switch: --accent-solid would sit at the
+        // off track's lightness in dark (see theme-contrast.test.ts).
         background: value ? 'var(--accent)' : 'var(--input)',
         cursor: disabled ? 'not-allowed' : 'pointer',
       }}
     >
       <span
-        className="inline-block h-[16px] w-[16px] rounded-full bg-white transition-transform"
+        className="inline-block size-4 rounded-full bg-background shadow-lg transition-transform"
         style={{ transform: value ? 'translateX(16px)' : 'translateX(2px)' }}
       />
     </button>
@@ -475,7 +500,7 @@ export function TextInput({
       aria-invalid={(ariaInvalid ?? fieldAria.invalid) || undefined}
       aria-describedby={ariaDescribedBy ?? fieldAria.describedBy}
       onChange={(e) => onChange?.(e.target.value)}
-      className={mono ? 'mono' : undefined}
+      className={cn(INPUT_CLASS, mono && 'mono')}
       style={{
         ...INPUT_BASE,
         // Before the affix branches, not after: INPUT_DISABLED rewrites the
@@ -578,14 +603,14 @@ export function TextArea({
   return (
     <textarea
       {...props}
-      className={mono ? 'mono' : undefined}
+      className={cn(INPUT_CLASS, mono && 'mono')}
       style={{
         width: '100%',
         borderRadius: INPUT_RADIUS,
         border: INPUT_EDGE,
         background: 'var(--bg)',
         color: 'var(--fg)',
-        fontSize: 12.5,
+        fontSize: INPUT_FONT_SIZE,
         padding: '8px 10px',
         lineHeight: 1.5,
         resize: 'vertical',
@@ -638,7 +663,7 @@ export function NativeSelect({
         aria-invalid={(ariaInvalid ?? fieldAria.invalid) || undefined}
         aria-describedby={ariaDescribedBy ?? fieldAria.describedBy}
         onChange={(e) => onChange?.(e.target.value)}
-        className="w-full appearance-none"
+        className={cn(INPUT_CLASS, 'w-full appearance-none')}
         style={{
           ...INPUT_BASE,
           paddingRight: 30,
@@ -660,7 +685,7 @@ export function NativeSelect({
       {/* A disabled select still shows a chevron, so it gets dimmed to the
           border scale — at hint brightness it kept promising a menu. */}
       <ChevronDown
-        className="pointer-events-none absolute right-[11px] top-1/2 h-[13px] w-[13px] -translate-y-1/2"
+        className="pointer-events-none absolute right-[11px] top-1/2 size-3.5 -translate-y-1/2"
         style={{ color: disabled ? 'var(--border-strong)' : 'var(--fg-subtle)' }}
       />
     </div>
@@ -749,7 +774,7 @@ export function RadioCards({
             disabled={disabled}
             onClick={() => onChange?.(o.value)}
             onKeyDown={(event) => onKeyDown(event, index)}
-            className="flex flex-col gap-0.5 rounded-[9px] px-[13px] py-[11px] text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex flex-col gap-0.5 rounded-card px-[13px] py-[11px] text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
             style={{
               border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
               background: active ? 'var(--accent-soft)' : 'var(--bg)',
@@ -757,7 +782,7 @@ export function RadioCards({
           >
             <span className="flex items-start gap-2.5">
               <span
-                className="mt-px flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full"
+                className="mt-px flex size-4 shrink-0 items-center justify-center rounded-full"
                 // The ring is the control's indicator, so it answers to the
                 // 3:1 form-control token like every other field edge (DS-8).
                 style={{
@@ -766,7 +791,7 @@ export function RadioCards({
               >
                 {active && (
                   <span
-                    className="h-[7px] w-[7px] rounded-full"
+                    className="size-2 rounded-full"
                     style={{ background: 'var(--accent)' }}
                   />
                 )}
@@ -832,6 +857,10 @@ export type PanelSubtitleTone = 'success' | 'warning' | 'danger' | 'info' | 'neu
  * scan screens had drifted (radius, padding, and a header that did not wrap on
  * phones) and are gone (DS-15). `className` / `bodyClassName` cover what they
  * customised; a panel with neither title nor right slot drops the header.
+ *
+ * The one section card (DS-4 / MO-10): `ui/Card` and `SCard` share its
+ * geometry. Title 12.5px semibold, subtitle 11.5px; `footer` adds the sunken
+ * action bar `SCard` has.
  */
 export function Panel({
   title,
@@ -840,6 +869,7 @@ export function Panel({
   right,
   tone,
   children,
+  footer,
   headingLevel = 2,
   className,
   bodyClassName,
@@ -850,6 +880,8 @@ export function Panel({
   right?: ReactNode
   tone?: PanelTone
   children: ReactNode
+  /** A sunken bar under the body for the section's actions (Save, Test). */
+  footer?: ReactNode
   /** 2 under a page's h1 (the usual case); 3 when nested under an h2. */
   headingLevel?: 2 | 3
   /** Extra classes on the card (e.g. spacing). */
@@ -888,7 +920,7 @@ export function Panel({
               </Heading>
             )}
             {subtitle && (
-              <div className="mt-0.5 text-2xs" style={{ color: subtitleColor }}>
+              <div className="mt-0.5 text-caption" style={{ color: subtitleColor }}>
                 {subtitle}
               </div>
             )}
@@ -905,6 +937,85 @@ export function Panel({
       <div data-slot="panel-body" className={cn('tripl-scroll-x tripl-panel-body', bodyClassName)}>
         {children}
       </div>
+      {footer && (
+        <footer
+          data-slot="panel-footer"
+          className="flex flex-wrap items-center gap-2.5 border-t px-4 py-3"
+          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
+        >
+          {footer}
+        </footer>
+      )}
     </section>
+  )
+}
+
+// ───────── Save bar ─────────
+
+/**
+ * The one save model for a settings page (ST-3): a bar pinned to the top of
+ * the scrolling pane with Discard and Save changes, so every page with a
+ * draft saves the same way. It is Instance settings' bar, lifted out so Project
+ * General can drop its per-card footer Save buttons and use it too.
+ *
+ * Built on forms/SaveBar's `placement="top"`, so settings and authoring
+ * forms share one bar (live status line, 40px touch buttons on phones). The
+ * caller owns the draft: `dirty` enables both buttons,
+ * `invalid` blocks Save and shows `invalidMessage`, `error` is the last save's
+ * failure (announced), `note` says what saving does.
+ */
+export function SettingsSaveBar({
+  note,
+  warning,
+  error,
+  dirty,
+  invalid = false,
+  invalidMessage = 'Fix the highlighted fields to save.',
+  pending = false,
+  onDiscard,
+  onSave,
+  saveLabel = 'Save changes',
+  className,
+}: {
+  note?: ReactNode
+  /** A second, warning-toned line, e.g. "Also unsaved: Email, AI." */
+  warning?: ReactNode
+  error?: ReactNode
+  dirty: boolean
+  invalid?: boolean
+  invalidMessage?: ReactNode
+  pending?: boolean
+  onDiscard: () => void
+  onSave: () => void
+  saveLabel?: string
+  className?: string
+}) {
+  const status =
+    note || warning ? (
+      <>
+        {note && <p className="m-0">{note}</p>}
+        {warning && <p className="m-0 mt-1 text-(--warning)">{warning}</p>}
+      </>
+    ) : undefined
+  return (
+    <SaveBar placement="top" status={status} error={error} className={className}>
+      {invalid && dirty && (
+        <span className="text-body-sm text-(--danger)">{invalidMessage}</span>
+      )}
+      <Button type="button" variant="outline" onClick={onDiscard} disabled={!dirty || pending}>
+        Discard
+      </Button>
+      <Button
+        type="button"
+        onClick={onSave}
+        disabled={!dirty || invalid || pending}
+        // A neutral surface when disabled: the default half-opacity teal
+        // read as an enabled button.
+        className="disabled:bg-[var(--bg-sunken)] disabled:text-[var(--fg-subtle)] disabled:opacity-100 disabled:shadow-none"
+      >
+        <Save className="h-3.5 w-3.5" aria-hidden="true" />
+        {pending ? 'Saving...' : saveLabel}
+      </Button>
+    </SaveBar>
   )
 }

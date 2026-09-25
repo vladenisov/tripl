@@ -88,7 +88,7 @@ function auditDetail(index: number, payload: Record<string, unknown>): AuditEntr
   return { ...auditRow(index), payload }
 }
 
-/** Every action the Action <select> offers, in DOM order (minus "All actions"). */
+/** Every action the Action <select> offers, in DOM order (minus "Action: any"). */
 function offeredActions(): string[] {
   const select = screen.getByLabelText('Action') as HTMLSelectElement
   return Array.from(select.querySelectorAll('option'))
@@ -431,6 +431,8 @@ describe('AuditTab — rows and filters (PLAN-48 / PLAN-49)', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/before “From”/)
     expect(screen.getByLabelText('To')).toHaveAttribute('aria-invalid', 'true')
+    // Said once, by the alert; the filter bar's live count stays quiet.
+    expect(screen.queryByText(/match the filter|range is backwards/)).toBeNull()
     // The From change alone is a valid range and asked once; the backwards one
     // is never sent.
     await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
@@ -478,11 +480,11 @@ describe('AuditTab — the action vocabulary comes from the backend (PLAN-49)', 
     expect(offeredActions()).toContain('event.create')
   })
 
-  it('offers only "All actions" until the vocabulary has loaded', () => {
+  it('offers only "Action: any" until the vocabulary has loaded', () => {
     actionsMock.mockReturnValue(new Promise(() => {}))
     renderTab()
 
     const select = screen.getByLabelText('Action') as HTMLSelectElement
-    expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['All actions'])
+    expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['Action: any'])
   })
 })

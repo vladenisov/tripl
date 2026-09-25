@@ -375,13 +375,19 @@ describe('Layout page title (LIVE-34)', () => {
     expect(within(banner).queryByText('Detail')).toBeNull()
   })
 
-  it('keeps the route title until the entity has loaded', async () => {
+  it('leaves the entity crumb blank until the entity has loaded (JR-33)', async () => {
     renderLayout('/p/demo/monitoring/metric/m-1', undefined, undefined, {
       page: <NamedDetail />,
     })
     await screen.findByText('Detail body')
 
-    expect(within(screen.getByRole('banner')).getByText('Detail')).toBeInTheDocument()
+    // No generic "Detail" flashes in the top bar before the name arrives.
+    const banner = screen.getByRole('banner')
+    expect(within(banner).queryByText('Detail')).toBeNull()
+    // The area's page stands in as the title, so the header never ends in a
+    // bare chevron and still names the page on phones.
+    const titleEl = within(banner).getByText('Metrics')
+    expect(titleEl).toHaveClass('font-semibold')
   })
 })
 

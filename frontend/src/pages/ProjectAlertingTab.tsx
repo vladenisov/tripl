@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   keepPreviousData,
@@ -54,6 +54,8 @@ import {
 } from './alerting/inboxFilters'
 import { CHANNEL_META } from './alerting/channelMeta'
 import { PageHead, Panel } from '@/components/settings/kit'
+import { PageContainer } from '@/components/primitives/page-container'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { DestinationChannel } from './alerting/constants'
 import { DestinationDialog, type DestinationDialogTarget } from './alerting/DestinationDialog'
 import {
@@ -101,7 +103,7 @@ function SectionSuspense({ children }: { children: ReactNode }) {
   return (
     <Suspense
       fallback={
-        <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+        <p role="status" aria-live="polite" className="text-body text-muted-foreground">
           Loading…
         </p>
       }
@@ -136,14 +138,6 @@ const SECTION_LABELS: Record<AlertingSection, string> = {
   // deep link written so far carries it (tripl-oxkt.18).
   audit: 'Delivery log',
 }
-
-// The two halves of the tab contract, named once. The strip declared
-// role="tablist"/role="tab"/aria-selected and NOTHING else — no id, no
-// aria-controls, no role="tabpanel" on the section bodies — so a screen reader
-// announced "tab 1 of 3" over a widget with no panels attached to it
-// (tripl-oxkt.19).
-const tabId = (value: AlertingSection) => `alerting-tab-${value}`
-const panelId = (value: AlertingSection) => `alerting-panel-${value}`
 
 // One page of incidents. 20 was not only too small to reach 37 of 57 production
 // groups — it was TIGHTER than the endpoint's own default of 50 while doing
@@ -275,35 +269,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       { replace: true },
     )
 
-  // The other half of that contract: a roving tabIndex and the arrow keys that
-  // move it. Three plain buttons meant Tab walked all three and the arrows did
-  // nothing, which is precisely the behaviour role="tab" promises to replace
-  // (tripl-oxkt.19). Refs, because selection follows focus here (the APG's
-  // automatic-activation pattern) and the focus has to travel with it — a
-  // second arrow press otherwise starts from the button the reader left.
-  const tabRefs = useRef<Partial<Record<AlertingSection, HTMLButtonElement | null>>>({})
   /** What is selected AND still on screen, as of the last render. See its write site. */
   const selectedIncidentIdsInViewRef = useRef<string[]>([])
-  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, value: AlertingSection) => {
-    const last = ALERTING_SECTIONS.length - 1
-    const index = ALERTING_SECTIONS.indexOf(value)
-    // Wrapping, per the APG: the strip is a ring, not a line with two dead ends.
-    const next =
-      event.key === 'ArrowLeft'
-        ? ALERTING_SECTIONS[index === 0 ? last : index - 1]
-        : event.key === 'ArrowRight'
-          ? ALERTING_SECTIONS[index === last ? 0 : index + 1]
-          : event.key === 'Home'
-            ? ALERTING_SECTIONS[0]
-            : event.key === 'End'
-              ? ALERTING_SECTIONS[last]
-              : null
-    if (!next) return
-    // An arrow inside a tablist moves the tab, it does not also scroll the page.
-    event.preventDefault()
-    selectSection(next)
-    tabRefs.current[next]?.focus()
-  }
 
   const destinationsQuery = useQuery({
     queryKey: alertDestinationsKey(slug),
@@ -1105,14 +1072,14 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       onRetry={() => void destinationsQuery.refetch()}
     />
   ) : destinationsQuery.isPending ? (
-    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+    <p role="status" aria-live="polite" className="text-body text-muted-foreground">
       Loading…
     </p>
   ) : null
   // A refresh that failed while a list is on screen keeps the list (and any
   // editor open over it) and says so in one line, instead of replacing it.
   const destinationsRefreshFailed = destinationsQuery.isError && destinationsLoaded ? (
-    <p role="status" className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+    <p role="status" className="flex flex-wrap items-center gap-2 text-body-sm text-muted-foreground">
       Could not refresh alert destinations; showing the last loaded list.
       <button
         type="button"
@@ -1125,7 +1092,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   ) : null
 
   return (
-    <div className="space-y-6">
+    <PageContainer>
       {dialog}
       <PageHead
         eyebrow="Observe"
@@ -1146,41 +1113,30 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       {/* No tab strip while nothing is configured: with no destinations, no
           rules and no deliveries, every section but the checklist is empty by
           construction, and offering them is four doors onto one room. */}
+      <Tabs
+        value={section}
+        onValueChange={next => selectSection(next as AlertingSection)}
+        className="gap-6"
+      >
       {!showGuidedSetup && (
-        <div
-          className="flex flex-wrap items-center gap-1 border-b"
-          style={{ borderColor: 'var(--border-subtle)' }}
-          role="tablist"
-          aria-label="Alerting sections"
-        >
+        // `ui/Tabs` (AL-46): Radix brings the roving tabIndex, the wrapping
+        // arrow keys, Home/End and the tab/tabpanel ids the hand-rolled strip
+        // reimplemented (tripl-oxkt.19). Selection follows focus and still
+        // pushes `?section=`, so Back returns to the previous section.
+        <TabsList aria-label="Alerting sections">
           {ALERTING_SECTIONS.map(value => (
-            <button
+            <TabsTrigger
               key={value}
-              type="button"
-              role="tab"
-              id={tabId(value)}
+              value={value}
               // Only the selected tab points at a panel: exactly one section is
               // mounted at a time, and an aria-controls naming an id that is not
               // in the document is a broken reference, not a hint.
-              aria-controls={section === value ? panelId(value) : undefined}
-              aria-selected={section === value}
-              // Roving tabIndex: the strip is ONE stop, and the arrows move
-              // within it.
-              tabIndex={section === value ? 0 : -1}
-              ref={node => { tabRefs.current[value] = node }}
-              onKeyDown={event => handleTabKeyDown(event, value)}
-              onClick={() => selectSection(value)}
-              className="-mb-px border-b-2 px-3 py-1.5 text-body-sm transition-colors"
-              style={{
-                borderColor: section === value ? 'var(--accent)' : 'transparent',
-                color: section === value ? 'var(--fg)' : 'var(--fg-subtle)',
-                fontWeight: section === value ? 600 : 400,
-              }}
+              {...(section === value ? {} : { 'aria-controls': undefined })}
             >
               {SECTION_LABELS[value]}
-            </button>
+            </TabsTrigger>
           ))}
-        </div>
+        </TabsList>
       )}
 
       {showGuidedSetup ? (
@@ -1197,7 +1153,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
               configures a destination must not watch the panel rename itself
               (tripl-oxkt.18). */}
           <Panel title="Delivery log" subtitle="0 deliveries">
-            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
               No deliveries yet.
             </div>
           </Panel>
@@ -1208,12 +1164,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           onto the wrapper because these children used to be direct children of
           the page's own stack (tripl-oxkt.19). */}
       {section === 'monitors' && (
-        <div
-          className="space-y-6"
-          role="tabpanel"
-          id={panelId('monitors')}
-          aria-labelledby={tabId('monitors')}
-        >
+        <TabsContent value="monitors" className="space-y-6">
         <SectionSuspense>
         {destinationsRefreshFailed}
         {destinationsUnavailable ?? (
@@ -1232,16 +1183,11 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         />
         )}
         </SectionSuspense>
-        </div>
+        </TabsContent>
       )}
 
       {section === 'destinations' && (
-        <div
-          className="space-y-6"
-          role="tabpanel"
-          id={panelId('destinations')}
-          aria-labelledby={tabId('destinations')}
-        >
+        <TabsContent value="destinations" className="space-y-6">
         <SectionSuspense>
         {destinationsRefreshFailed}
         {destinationsUnavailable ?? (
@@ -1258,16 +1204,11 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         />
         )}
         </SectionSuspense>
-        </div>
+        </TabsContent>
       )}
 
       {section === 'inbox' && (
-        <div
-          className="space-y-6"
-          role="tabpanel"
-          id={panelId('inbox')}
-          aria-labelledby={tabId('inbox')}
-        >
+        <TabsContent value="inbox" className="space-y-6">
         <SectionSuspense>
         {/* The Inbox does not need the destinations list to show incidents,
             but its "No rules yet" gate reads it — so while it is missing the
@@ -1275,7 +1216,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
             than silently (ALR-10). */}
         {destinationsRefreshFailed}
         {destinationsQuery.isError && !destinationsLoaded && (
-          <p role="status" className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <p role="status" className="flex flex-wrap items-center gap-2 text-body-sm text-muted-foreground">
             Could not load alert destinations and rules; the incidents below are unaffected.
             <button
               type="button"
@@ -1339,16 +1280,11 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           />
         )}
         </SectionSuspense>
-        </div>
+        </TabsContent>
       )}
 
       {section === 'audit' && (
-        <div
-          className="space-y-6"
-          role="tabpanel"
-          id={panelId('audit')}
-          aria-labelledby={tabId('audit')}
-        >
+        <TabsContent value="audit" className="space-y-6">
         <SectionSuspense>
         <AlertAuditPanel
           slug={slug}
@@ -1370,10 +1306,11 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           scans={scans}
         />
         </SectionSuspense>
-        </div>
+        </TabsContent>
       )}
       </>
       )}
+      </Tabs>
 
       {/* Gated on the role as well as on the open state: `refresh()` can
           rewrite the session mid-visit, and a create form left open across a
@@ -1389,6 +1326,6 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           onCreated={handleDestinationCreated}
         />
       )}
-    </div>
+    </PageContainer>
   )
 }

@@ -9,6 +9,7 @@ import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import type { ScenarioStepId } from '@/demo/scenarioModel'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { FieldError } from '@/components/forms/FieldError'
 import { EvField, EvInput, SurfCard } from './eventFormLayout'
 import {
   FieldBreakdownLink,
@@ -51,20 +52,22 @@ export function TagsBreakdownsCard({
         {tags.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-[6px]">
             {tags.map(t => (
+              // Taller on a phone, with a 28px remove target: an 11px icon in a
+              // 22px chip could not be hit with a finger (AU-39).
               <span
                 key={t}
-                className="inline-flex h-[22px] items-center gap-[5px] rounded-full pl-[9px] pr-[6px] text-caption"
+                className="inline-flex h-[22px] items-center gap-[5px] rounded-full pl-[9px] pr-[6px] text-caption max-sm:h-8"
                 style={{ background: 'var(--surface-hover)' }}
               >
                 {t}
                 <button
                   type="button"
                   onClick={() => onTagsChange(tags.filter(x => x !== t))}
-                  className="flex transition-colors hover:text-[var(--danger)]"
+                  className="grid place-items-center rounded-full transition-colors hover:text-[var(--danger)] max-sm:-mr-1 max-sm:size-7"
                   style={{ color: 'var(--fg-subtle)' }}
                   aria-label={`Remove ${t} tag`}
                 >
-                  <X size={11} aria-hidden="true" />
+                  <X className="size-3" aria-hidden="true" />
                 </button>
               </span>
             ))}
@@ -153,6 +156,7 @@ export function FieldValuesCard({
   onToggleBreakdown,
   coachStep,
   coachActive,
+  errors = {},
 }: {
   slug: string
   event: TEvent | null
@@ -169,6 +173,9 @@ export function FieldValuesCard({
   onToggleBreakdown: (column: string) => void
   coachStep: ScenarioStepId
   coachActive: boolean
+  /** Messages the form shows under a row after a refused Save, keyed by the
+   *  control id (`field-<id>`): "Required" for an empty required value. */
+  errors?: Record<string, string>
 }) {
   const branchId = useActiveBranchId()
   const branchLink = useBranchLinkProps()
@@ -191,6 +198,8 @@ export function FieldValuesCard({
         // carries the flag (tripl-u2h9.4).
         const required = f.is_required || namesEvent
         const value = fieldValues[f.id] ?? ''
+        const inputId = `field-${f.id}`
+        const error = errors[inputId]
         return (
           <EvField
             key={f.id}
@@ -210,6 +219,7 @@ export function FieldValuesCard({
             last={i === fields.length - 1}
             notes={
               <>
+                <FieldError inputId={inputId} message={error} />
                 <FieldTemplateHints value={value} variables={variables} namesEvent={namesEvent} slug={slug} />
                 <ScanMaintenanceNotice
                   stored={storedFieldValues.get(f.id) ?? null}
@@ -254,7 +264,8 @@ export function FieldValuesCard({
                   // its schema flag says, and marking one without the other
                   // is how the form came to promise a check nothing ran.
                   requiredOverride={required}
-                  inputId={`field-${f.id}`}
+                  inputId={inputId}
+                  invalid={!!error}
                   value={value}
                   onChange={v => onFieldValueChange(f.id, v)}
                   variables={variables}

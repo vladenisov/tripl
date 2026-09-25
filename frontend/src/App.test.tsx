@@ -240,8 +240,9 @@ describe('App', () => {
     })
     // …and the Scans surface really mounted, rather than the redirect merely
     // rewriting the URL under a different page.
-    // Exactly one heading names the page; the list panel below it is "All scans".
-    expect(await screen.findByRole('heading', { level: 2, name: 'Scans' })).toBeInTheDocument()
+    // Exactly one heading names the page (the PageHeader h1); the list panel
+    // below it is "All scans".
+    expect(await screen.findByRole('heading', { level: 1, name: 'Scans' })).toBeInTheDocument()
   })
 
   it('redirects the legacy /p/:slug/settings/scans/:id URL and keeps the scan id', async () => {

@@ -394,7 +394,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
                 href={ticket.href}
                 target="_blank"
                 rel="noreferrer"
-                className="mono inline-flex items-center gap-0.5 text-[11px] hover:underline"
+                className="mono inline-flex items-center gap-0.5 text-caption hover:underline"
                 style={{ color: 'var(--accent)' }}
                 title={`Open ${ticket.key} in ${ticket.field.display_name}`}
               >
@@ -664,7 +664,7 @@ function SummaryCount({
 }) {
   return (
     <div className="flex items-center gap-1.5">
-      <span className="mono text-lead font-semibold" style={{ color: `var(--${tone})` }}>
+      <span className="tnum text-heading font-semibold" style={{ color: `var(--${tone})` }}>
         {sym}
         {n}
       </span>

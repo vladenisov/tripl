@@ -83,8 +83,8 @@ export function VariablesBulkBar({
       }}
     >
       <div className="flex flex-wrap items-center gap-2.5">
-        <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
-          <span className="mono font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
+        <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+          <span className="tnum font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
         </span>
         {/* Staged, then applied with a confirm. Changing the select used to
             retype the whole selection at once, and arrowing through a closed
@@ -102,27 +102,27 @@ export function VariablesBulkBar({
               ]}
             />
           </div>
-          <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={isPending || !typeDraft} onClick={applyType}>
+          <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-body-sm" disabled={isPending || !typeDraft} onClick={applyType}>
             Set type
           </Button>
         </div>
         <div className="flex items-center gap-1">
           <Input
             aria-label="Bulk description"
-            className="h-7 w-36 text-xs"
+            className="h-7 w-36 text-body-sm"
             placeholder="Set description…"
             value={description}
             onChange={e => setDescription(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); applyDescription() } }}
           />
-          <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={isPending || !description.trim()} onClick={applyDescription}>
+          <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-body-sm" disabled={isPending || !description.trim()} onClick={applyDescription}>
             Apply
           </Button>
         </div>
         <div className="flex items-center gap-1">
           <Input
             aria-label="Bulk add values"
-            className="h-7 w-40 text-xs"
+            className="h-7 w-40 text-body-sm"
             placeholder="Add values (comma-sep)…"
             title={VALUE_LIST_HINT}
             aria-describedby={valuesHintId}
@@ -130,12 +130,12 @@ export function VariablesBulkBar({
             onChange={e => setValuesDraft(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addValues() } }}
           />
-          <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={isPending || !valuesDraft.trim()} onClick={addValues}>
+          <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-body-sm" disabled={isPending || !valuesDraft.trim()} onClick={addValues}>
             Add values
           </Button>
           <span id={valuesHintId} className="sr-only">{VALUE_LIST_HINT}</span>
         </div>
-        <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs text-destructive" disabled={isPending} onClick={onDelete}>
+        <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-body-sm text-destructive" disabled={isPending} onClick={onDelete}>
           <Trash2 className="mr-1 h-3 w-3" aria-hidden="true" />Delete
         </Button>
         <IconButton type="button" variant="ghost" className="h-7 w-7" label="Clear selection" disabled={isPending} onClick={onClear}>
@@ -143,7 +143,7 @@ export function VariablesBulkBar({
         </IconButton>
       </div>
       {error != null && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className="text-body-sm text-destructive">
           The bulk change failed: {getErrorMessage(error)}
         </p>
       )}

@@ -11,6 +11,15 @@ import { EventTypesTab, FieldsEditor } from './EventTypesTab'
 import { EventTypeDetail } from './EventTypeDetailView'
 import { at } from '@/test/at'
 
+/**
+ * Radix tabs select on mouse-down (and keyboard), not on click, so a bare
+ * `fireEvent.click` never reaches them.
+ */
+function selectTab(tab: HTMLElement) {
+  fireEvent.mouseDown(tab, { button: 0, ctrlKey: false })
+  fireEvent.click(tab)
+}
+
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -320,13 +329,13 @@ describe('FieldsEditor field edit subpage (PLAN-46)', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
-    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(screen.getByLabelText('Name')).toHaveValue('order_id')
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'New field' })).not.toBeInTheDocument(),
     )
@@ -363,7 +372,7 @@ describe('EventTypeDetail tabbed page', () => {
   it('renders settings tab with page-style cards and no dialogs', async () => {
     renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+    selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     expect(await screen.findByText('General')).toBeInTheDocument()
     expect(screen.getByText('Fields')).toBeInTheDocument()
     expect(screen.getByText('Owners')).toBeInTheDocument()
@@ -375,7 +384,7 @@ describe('EventTypeDetail tabbed page', () => {
   it('edits a field via an in-place subpage (no popup)', async () => {
     renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+    selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     // open the field edit subpage for order_id
     fireEvent.click(await screen.findByText('order_id'))
     expect(await screen.findByText('Edit field · order_id')).toBeInTheDocument()
@@ -390,7 +399,7 @@ describe('EventTypeDetail tabbed page', () => {
   it('shows a viewer the settings with no way to change them', async () => {
     renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input), VIEWER)
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+    selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     expect(await screen.findByText('General')).toBeInTheDocument()
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
     expect(screen.queryByRole('button', { name: /Save changes/ })).not.toBeInTheDocument()
@@ -409,19 +418,19 @@ describe('EventTypeDetail tabbed page', () => {
   it('asks before a tab switch throws away a field draft (DATA-12)', async () => {
     renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+    selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'coupon' } })
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Summary' }))
-    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    selectTab(screen.getByRole('tab', { name: 'Summary' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(screen.getByRole('tab', { name: 'Settings' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByLabelText('Name')).toHaveValue('coupon')
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Summary' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    selectTab(screen.getByRole('tab', { name: 'Summary' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'Summary' })).toHaveAttribute('aria-selected', 'true'),
     )
@@ -430,9 +439,9 @@ describe('EventTypeDetail tabbed page', () => {
   it('switches tabs at once with no draft', async () => {
     renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+    selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
-    fireEvent.click(screen.getByRole('tab', { name: 'Summary' }))
+    selectTab(screen.getByRole('tab', { name: 'Summary' }))
 
     expect(screen.getByRole('tab', { name: 'Summary' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
@@ -441,7 +450,7 @@ describe('EventTypeDetail tabbed page', () => {
   it('opens a page-style add-field subpage', async () => {
     renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+    selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
     expect(await screen.findByText('New field')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()

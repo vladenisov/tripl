@@ -22,11 +22,11 @@ export function DraftDiscussionNote({ value, onChange }: DraftDiscussionNoteProp
   const id = useId()
   return (
     <div className="flex flex-col gap-2 rounded-md border bg-card p-3">
-      <div className="flex items-center gap-2 text-sm font-semibold">
+      <div className="flex items-center gap-2 text-body font-semibold">
         <MessageCircle className="h-4 w-4 text-muted-foreground" />
         Discussion
       </div>
-      <label htmlFor={id} className="text-xs text-muted-foreground">
+      <label htmlFor={id} className="text-body-sm text-muted-foreground">
         A question or note about this event, kept out of the spec. It is posted as the first comment
         the moment the event is created.
       </label>
@@ -35,7 +35,7 @@ export function DraftDiscussionNote({ value, onChange }: DraftDiscussionNoteProp
         value={value}
         onChange={event => onChange(event.target.value)}
         placeholder="Should this fire on cancel too?"
-        className="min-h-[60px] w-full rounded-md border bg-background px-2 py-1 text-sm"
+        className="min-h-[60px] w-full rounded-md border bg-background px-2 py-1 text-body"
       />
     </div>
   )

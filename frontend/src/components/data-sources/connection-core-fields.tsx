@@ -2,6 +2,9 @@ import type { DbType, JsonPathDiscovery } from '@/types'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useId, useState, type ChangeEvent } from 'react'
+import { FieldError } from '@/components/forms/FieldError'
+import { examplePlaceholder } from '@/components/forms/placeholders'
+import { invalidAria } from '@/components/forms/validation'
 import {
   ERROR_CLASS,
   FIELD_COL_CLASS,
@@ -11,7 +14,7 @@ import {
   SELECT_CLASS,
   TEXTAREA_CLASS,
 } from './connection-settings'
-import type { ConnectionCoreForm } from './connection-core'
+import type { ConnectionCoreForm, CoreMissing } from './connection-core'
 
 // ClickHouse JSON path discovery options (the preview step that enumerates
 // candidate JSON paths). Defaults to "dynamic" — the effective backend default
@@ -46,6 +49,12 @@ interface ConnectionCoreFieldsProps {
   secretSet?: boolean
   /** Why the typed secret cannot be saved (a malformed key file), shown inline. */
   secretError?: string | null
+  /**
+   * Required fields left empty on the last submit or test, from
+   * `connectionCoreMissing`. The inputs carry `aria-required` rather than
+   * `required`: the dialogs are `noValidate` and flag every empty field inline.
+   */
+  missing?: CoreMissing
 }
 
 /**
@@ -66,10 +75,12 @@ export function ConnectionCoreFields({
   mode,
   secretSet = false,
   secretError = null,
+  missing = {},
 }: ConnectionCoreFieldsProps) {
   const isEdit = mode === 'edit'
   const secretErrorId = useId()
   const secretName = dbType === 'bigquery' ? 'Service account key' : 'Password'
+  const keyError = missing.secret ?? secretError
 
   // Three states, three different sentences.
   //
@@ -80,10 +91,11 @@ export function ConnectionCoreFields({
   // "default" placeholder next to it read as an 8-character stored password,
   // still directly above "Password: not set." (tripl-s8rg). The empty state now
   // says it is empty, the way the instance SMTP password field already does
-  // ("Not configured"); the dots are left to `create`, where nothing is stored
-  // yet by definition and the box is the one you have to type into.
+  // ("Not configured").
+  // On create the box is labelled by what it wants, not by eight dots that
+  // read as a password already typed in (DA-37).
   const passwordPlaceholder = !isEdit
-    ? '••••••••'
+    ? 'Password'
     : secretSet
       ? 'Leave empty to keep'
       : 'No password stored'
@@ -109,9 +121,11 @@ export function ConnectionCoreFields({
                 id={`${idPrefix}-project-id`}
                 value={value.host}
                 onChange={(e) => onChange({ host: e.target.value })}
-                required
-                placeholder="my-gcp-project"
+                aria-required
+                placeholder={examplePlaceholder('my-gcp-project')}
+                {...invalidAria(`${idPrefix}-project-id`, missing.host)}
               />
+              <FieldError inputId={`${idPrefix}-project-id`} message={missing.host} />
               <p className={HELP_CLASS}>
                 The GCP project the queries run in and that gets billed for the bytes they scan.
               </p>
@@ -122,9 +136,11 @@ export function ConnectionCoreFields({
                 id={`${idPrefix}-default-dataset`}
                 value={value.databaseName}
                 onChange={(e) => onChange({ databaseName: e.target.value })}
-                required
-                placeholder="analytics"
+                aria-required
+                placeholder={examplePlaceholder('analytics')}
+                {...invalidAria(`${idPrefix}-default-dataset`, missing.databaseName)}
               />
+              <FieldError inputId={`${idPrefix}-default-dataset`} message={missing.databaseName} />
               <p className={HELP_CLASS}>
                 Where unqualified table names resolve. Anything else must be in the dataset
                 allowlist below.
@@ -137,25 +153,25 @@ export function ConnectionCoreFields({
               id={`${idPrefix}-service-account-json`}
               value={value.secret}
               onChange={(e) => onChange({ secret: e.target.value })}
-              required={!isEdit}
+              aria-required={!isEdit || undefined}
               rows={6}
               placeholder={
                 isEdit && secretSet
                   ? 'A key is stored. Leave empty to keep it.'
-                  : '{"type":"service_account", ...}'
+                  : 'Paste the key file’s JSON, or load the file below'
               }
               className={TEXTAREA_CLASS}
-              aria-invalid={secretError ? true : undefined}
-              aria-describedby={secretError ? secretErrorId : undefined}
+              aria-invalid={keyError ? true : undefined}
+              aria-describedby={keyError ? secretErrorId : undefined}
               {...SECRET_INPUT_PROPS}
             />
             <KeyFileInput
               id={`${idPrefix}-service-account-file`}
               onLoad={(text) => onChange({ secret: text })}
             />
-            {secretError && (
+            {keyError && (
               <p id={secretErrorId} role="alert" className={ERROR_CLASS}>
-                {secretError}
+                {keyError}
               </p>
             )}
             {secretStatus ?? (
@@ -176,9 +192,11 @@ export function ConnectionCoreFields({
                 id={`${idPrefix}-host`}
                 value={value.host}
                 onChange={(e) => onChange({ host: e.target.value })}
-                required
-                placeholder="localhost"
+                aria-required
+                placeholder={examplePlaceholder('clickhouse.internal')}
+                {...invalidAria(`${idPrefix}-host`, missing.host)}
               />
+              <FieldError inputId={`${idPrefix}-host`} message={missing.host} />
             </div>
             <div className={FIELD_COL_CLASS}>
               <Label htmlFor={`${idPrefix}-port`}>Port</Label>
@@ -187,8 +205,10 @@ export function ConnectionCoreFields({
                 type="number"
                 value={value.port}
                 onChange={(e) => onChange({ port: Number(e.target.value) })}
-                required
+                aria-required
+                {...invalidAria(`${idPrefix}-port`, missing.port)}
               />
+              <FieldError inputId={`${idPrefix}-port`} message={missing.port} />
             </div>
             <div className={`sm:col-span-2 ${FIELD_COL_CLASS}`}>
               <Label htmlFor={`${idPrefix}-database`}>Database</Label>
@@ -196,9 +216,11 @@ export function ConnectionCoreFields({
                 id={`${idPrefix}-database`}
                 value={value.databaseName}
                 onChange={(e) => onChange({ databaseName: e.target.value })}
-                required
-                placeholder="default"
+                aria-required
+                placeholder={examplePlaceholder('analytics')}
+                {...invalidAria(`${idPrefix}-database`, missing.databaseName)}
               />
+              <FieldError inputId={`${idPrefix}-database`} message={missing.databaseName} />
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -208,7 +230,7 @@ export function ConnectionCoreFields({
                 id={`${idPrefix}-username`}
                 value={value.username}
                 onChange={(e) => onChange({ username: e.target.value })}
-                placeholder="default"
+                placeholder={examplePlaceholder('default')}
                 {...SECRET_INPUT_PROPS}
               />
             </div>
@@ -291,7 +313,7 @@ function KeyFileInput({ id, onLoad }: { id: string; onLoad: (text: string) => vo
   return (
     <div className="grid gap-1">
       <div className="flex items-center gap-2">
-        <Label htmlFor={id} className="text-xs font-normal text-muted-foreground">
+        <Label htmlFor={id} className="text-body-sm font-normal text-muted-foreground">
           Or load the key file
         </Label>
         <input
@@ -301,7 +323,7 @@ function KeyFileInput({ id, onLoad }: { id: string; onLoad: (text: string) => vo
           onChange={handleChange}
           aria-invalid={loadError ? true : undefined}
           aria-describedby={loadError ? errorId : undefined}
-          className="text-xs file:mr-2 file:rounded-md file:border file:border-input file:bg-background file:px-2 file:py-0.5 file:text-xs"
+          className="text-body-sm file:mr-2 file:rounded-md file:border file:border-input file:bg-background file:px-2 file:py-0.5 file:text-body-sm"
         />
       </div>
       {loadError && (

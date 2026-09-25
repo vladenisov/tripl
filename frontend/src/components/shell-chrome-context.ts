@@ -17,6 +17,12 @@ export const ShellChromeContext = createContext<ShellChromeContextValue>({
 })
 
 /**
+ * Where the shell forwards the entity a detail page names, so the browser-tab
+ * title (driven from the app root, above the shell) can use it too (JR-33).
+ */
+export const DocumentEntityTitleContext = createContext<(title: string | null) => void>(() => {})
+
+/**
  * Keep the activity rail out of the way while this page is shown — a 404 has
  * one job, the way back, and a 20-item feed beside it pulled the eye away
  * from it (LIVE-35).

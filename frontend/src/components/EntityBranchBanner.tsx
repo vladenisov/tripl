@@ -61,7 +61,7 @@ export function EntityBranchBanner({
     if (rowIsMain) return null
     return (
       <div
-        className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+        className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-body-sm text-muted-foreground"
         data-testid="entity-branch-banner"
       >
         <span>
@@ -86,7 +86,7 @@ export function EntityBranchBanner({
   return (
     <div
       role="status"
-      className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/50 bg-warning-soft px-3 py-2 text-xs text-warning"
+      className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/50 bg-warning-soft px-3 py-2 text-body-sm text-warning"
       data-testid="entity-branch-banner"
     >
       <span>

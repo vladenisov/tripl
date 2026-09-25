@@ -11,40 +11,64 @@
      on <html>; these are the stylesheet's half of the same answer (DS-14). */
   color-scheme: light;
 
-  /* The radius scale is derived from this one value in @theme below
-     (--radius-sm/-md/-lg/-xl); it used to be declared a second time here with
-     literal values that merely happened to match (DS-36). */
-  --radius: 0.5rem;
+  /* The control radius as a plain variable, for inline styles that cannot
+     use a utility (settings/input-style.ts). Same value as --radius-control in
+     @theme below (DS-24); it was 8px, one pixel off every other control. */
+  --radius: 7px;
 
   --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", Menlo, ui-monospace, monospace;
 
-  /* Light surface scale (default) */
-  --bg: oklch(0.99 0.002 250);
+  /* Light surface scale (default). White cards on a slightly grey canvas: the
+     canvas used to be 0.99 against 1.0 cards (1.03:1), so panels, the stat
+     strip and the page read as one flat sheet held apart by a hairline
+     (DS-22). */
+  --bg: oklch(0.975 0.003 250);
   --bg-elevated: oklch(1 0 0);
-  --bg-sunken: oklch(0.975 0.003 250);
+  --bg-sunken: oklch(0.965 0.004 250);
   --surface: oklch(1 0 0);
-  --surface-hover: oklch(0.97 0.004 250);
+  /* 0.962, not 0.97: with the canvas at 0.975 a 0.97 hover measured 1.02:1
+     and gave no feedback on --bg. It cannot go much darker: the status and
+     accent inks on their soft fills over it sit at ~4.55:1 here (AA 4.5).
+     Controls painted on --bg hover with --surface-active instead. */
+  --surface-hover: oklch(0.962 0.004 250);
   --surface-active: oklch(0.945 0.006 250);
 
-  /* Text scale. Every step is verified against the surface tokens below by
-     `src/theme-contrast.test.ts`: --fg-subtle and --fg-faint carry real body
-     copy (captions, timestamps, placeholders, empty-cell markers) at 10–12.5px,
-     so they must clear WCAG AA 4.5:1 on --bg / --bg-sunken / --bg-elevated /
-     --surface / --surface-hover — not just look decorative. */
+  /* Text scale: three steps (DS-12). `--fg` for primary text,
+     `--fg-secondary` for secondary text and labels, `--fg-tertiary` for
+     captions, timestamps, placeholders and disabled text. The four old names
+     stay as aliases so unmigrated code keeps working: --fg-muted is secondary,
+     --fg-subtle and --fg-faint are both tertiary. They used to be four steps
+     that collapsed to one grey in dark mode (0.72 / 0.68 / 0.635).
+     The .dark block redeclares only the two base steps; the aliases resolve
+     on <html>, where the theme class sits.
+     Every step is verified against the surface tokens by
+     `src/theme-contrast.test.ts`: tertiary carries real body copy at
+     10.5–12.5px, so it clears WCAG AA 4.5:1 on every surface, the pressed
+     --surface-active included (DS-A), and on the accent / warning tints. */
   --fg: oklch(0.18 0.015 250);
-  --fg-muted: oklch(0.40 0.012 250);
-  --fg-subtle: oklch(0.50 0.01 250);
-  --fg-faint: oklch(0.545 0.008 250);
+  --fg-secondary: oklch(0.42 0.012 250);
+  --fg-tertiary: oklch(0.5 0.01 250);
+  --fg-muted: var(--fg-secondary);
+  --fg-subtle: var(--fg-tertiary);
+  --fg-faint: var(--fg-tertiary);
 
-  --border: oklch(0.91 0.005 250);
+  --border: oklch(0.9 0.005 250);
   --border-strong: oklch(0.82 0.008 250);
-  --border-subtle: oklch(0.94 0.004 250);
+  --border-subtle: oklch(0.93 0.004 250);
 
   --accent: oklch(0.49 0.083 192);
   --accent-hover: oklch(0.45 0.077 192);
   --accent-soft: oklch(0.49 0.083 192 / 0.12);
   --accent-fg: oklch(1 0 0);
+  /* The brand colour as a SOLID FILL under a label: primary buttons, checked
+     switches and checkboxes (SH-40). In light it is the accent itself; the
+     dark theme swaps in a deeper, calmer fill with white text, because the
+     bright dark-theme accent under near-black ink was the loudest thing on
+     every screen. --accent stays bright for rings, links, ink and chart lines.
+     Use as `bg-accent-solid text-accent-solid-fg`. */
+  --accent-solid: var(--accent);
+  --accent-solid-fg: var(--accent-fg);
 
   /* Status tones. Each `--<tone>` is the TEXT color for its own `--<tone>-soft`
      fill — that is what Chip, Dot, Badge and every status chip paint — so its
@@ -68,7 +92,12 @@
      following the surface scale. */
   --avatar-bg: oklch(0.52 0.118 240);
 
+  /* Density (DS-9). Cozy values here; the `.density-*` class on <html> sets
+     the active set (see the density section below). */
   --row-h: 36px;
+  --cell-px: 10px;
+  --control-h: 32px;
+  --panel-pad: 16px;
   --header-h: 44px;
 
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.05);
@@ -93,7 +122,9 @@
   /* shadcn mapping — keeps existing UI kit working */
   --background: var(--bg);
   --foreground: var(--fg);
-  --card: var(--bg-elevated);
+  /* A card sits IN the page, not above it: same fill as a panel. Floating
+     layers (popover, dialog, toast) take --bg-elevated (DS-10). */
+  --card: var(--surface);
   --card-foreground: var(--fg);
   --popover: var(--bg-elevated);
   --popover-foreground: var(--fg);
@@ -119,7 +150,10 @@
      src/theme-contrast.test.ts. */
   --input: oklch(0.62 0.008 250);
   --ring: var(--accent);
-  --chart-1: var(--accent);
+  /* The single-series default (DS-27): a fixed hue, the first categorical
+     slot, so "volume over time" is the same blue on every page and under every
+     accent. It used to be the accent, which drew it lime, violet or rose. */
+  --chart-1: var(--series-1);
   --chart-2: var(--success);
   --chart-3: var(--info);
   --chart-4: var(--warning);
@@ -145,7 +179,13 @@
   --sidebar-foreground: var(--fg);
   --sidebar-primary: var(--accent);
   --sidebar-primary-foreground: var(--accent-fg);
-  --sidebar-accent: var(--surface-hover);
+  /* Sidebar row states (DS-11). The light sidebar is --bg-sunken, and
+     --surface-hover sat 0.005 L away from it (~1.02:1): hover gave no feedback.
+     --sidebar-hover is --surface-active here and --surface-hover in dark;
+     --sidebar-active is the soft accent, paired with `text-fg font-medium`. */
+  --sidebar-hover: var(--surface-active);
+  --sidebar-active: var(--accent-soft);
+  --sidebar-accent: var(--sidebar-hover);
   --sidebar-accent-foreground: var(--fg);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--accent);
@@ -165,25 +205,27 @@
   --series-7: oklch(0.66 0.1 170);
   --series-8: oklch(0.8 0.09 280);
 
+  /* Elevation ladder (DS-10): raised layers get LIGHTER. --bg-elevated (menus,
+     selects, popovers, dialogs, toasts) used to be 0.17, darker than the 0.185
+     cards under it, so anything floating looked recessed. */
   --bg: oklch(0.14 0.01 250);
-  --bg-elevated: oklch(0.17 0.012 250);
+  --bg-elevated: oklch(0.205 0.013 250);
   --bg-sunken: oklch(0.11 0.01 250);
-  --surface: oklch(0.185 0.012 250);
-  --surface-hover: oklch(0.22 0.014 250);
-  --surface-active: oklch(0.255 0.016 250);
+  --surface: oklch(0.175 0.012 250);
+  --surface-hover: oklch(0.225 0.014 250);
+  --surface-active: oklch(0.26 0.016 250);
 
-  /* See the light-theme note above: --fg-subtle / --fg-faint are body-copy
-     tokens, so their lightness is pinned by the AA floor against the dark
-     surface scale rather than by taste. They used to sit at 0.52 / 0.38, which
-     measured 3.38:1 and 1.87:1 on --surface. */
+  /* See the light-theme note above: the two base steps are pinned by the AA
+     floor against the dark surface scale, and spread so the three levels stay
+     apart (DS-12). */
   --fg: oklch(0.96 0.003 250);
-  --fg-muted: oklch(0.72 0.008 250);
-  --fg-subtle: oklch(0.68 0.008 250);
-  --fg-faint: oklch(0.635 0.008 250);
+  --fg-secondary: oklch(0.74 0.008 250);
+  --fg-tertiary: oklch(0.64 0.008 250);
 
   --border: oklch(0.26 0.014 250);
   --border-strong: oklch(0.34 0.015 250);
-  --border-subtle: oklch(0.21 0.012 250);
+  /* Row dividers: 0.21 measured 1.05:1 on --surface (DS-22). */
+  --border-subtle: oklch(0.235 0.013 250);
   /* See the light-theme note: pinned to the 1.4.11 floor, not to --border. */
   --input: oklch(0.53 0.008 250);
 
@@ -191,6 +233,11 @@
   --accent-hover: oklch(0.76 0.129 192);
   --accent-soft: oklch(0.72 0.122 192 / 0.14);
   --accent-fg: oklch(0.14 0.01 250);
+  /* See :root. White on a deeper fill of the same hue (SH-40). */
+  --accent-solid: oklch(0.53 0.085 192);
+  --accent-solid-fg: oklch(1 0 0);
+
+  --sidebar-hover: var(--surface-hover);
 
   /* See the light-theme note: same contract, and the dark values already
      cleared it — except --danger, whose chroma was outside sRGB (0.22 at this
@@ -217,26 +264,43 @@
   --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.45);
 }
 
-/* accent variants (applied to <html>) */
+/* accent variants (applied to <html>).
+   Every hue sits at least 35° from every status tone (22° / 65–75° / 152° /
+   240°), checked by src/theme-contrast.test.ts (DS-8): amber was
+   byte-identical to --warning and rose 7° from --danger, so a personal colour
+   choice made every primary action read as a warning or a destructive one.
+   They are replaced by indigo and magenta (stored "amber" / "rose" choices are
+   migrated by ThemeProvider); lime moved from 130° to 116° to clear success,
+   and violet from 290° to 303° to stay apart from indigo.
+   The `.dark .accent-*` half of each dark selector lets an element carry an
+   accent of its own: the Appearance swatches preview each accent in the
+   current theme by setting the class on the swatch (DS-19). */
 .accent-teal { --accent: oklch(0.49 0.083 192); --accent-hover: oklch(0.45 0.077 192); --accent-soft: oklch(0.49 0.083 192 / 0.12); --accent-fg: oklch(1 0 0); }
-.dark.accent-teal { --accent: oklch(0.72 0.122 192); --accent-hover: oklch(0.76 0.129 192); --accent-soft: oklch(0.72 0.122 192 / 0.14); --accent-fg: oklch(0.14 0.01 250); }
+.dark .accent-teal, .dark.accent-teal { --accent: oklch(0.72 0.122 192); --accent-hover: oklch(0.76 0.129 192); --accent-soft: oklch(0.72 0.122 192 / 0.14); --accent-fg: oklch(0.14 0.01 250); --accent-solid: oklch(0.53 0.085 192); }
 
-.accent-violet { --accent: oklch(0.52 0.18 290); --accent-hover: oklch(0.47 0.19 290); --accent-soft: oklch(0.52 0.18 290 / 0.12); --accent-fg: oklch(1 0 0); }
-.dark.accent-violet { --accent: oklch(0.72 0.155 290); --accent-hover: oklch(0.76 0.13 290); --accent-soft: oklch(0.72 0.155 290 / 0.14); --accent-fg: oklch(0.14 0.01 250); }
+.accent-violet { --accent: oklch(0.52 0.18 303); --accent-hover: oklch(0.47 0.19 303); --accent-soft: oklch(0.52 0.18 303 / 0.12); --accent-fg: oklch(1 0 0); }
+.dark .accent-violet, .dark.accent-violet { --accent: oklch(0.73 0.15 303); --accent-hover: oklch(0.77 0.125 303); --accent-soft: oklch(0.73 0.15 303 / 0.14); --accent-fg: oklch(0.14 0.01 250); --accent-solid: oklch(0.52 0.16 303); }
 
-.accent-lime { --accent: oklch(0.485 0.129 130); --accent-hover: oklch(0.445 0.119 130); --accent-soft: oklch(0.485 0.129 130 / 0.14); --accent-fg: oklch(1 0 0); }
-.dark.accent-lime { --accent: oklch(0.82 0.18 130); --accent-hover: oklch(0.85 0.18 130); --accent-soft: oklch(0.82 0.18 130 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
+.accent-lime { --accent: oklch(0.48 0.11 116); --accent-hover: oklch(0.44 0.1 116); --accent-soft: oklch(0.48 0.11 116 / 0.14); --accent-fg: oklch(1 0 0); }
+.dark .accent-lime, .dark.accent-lime { --accent: oklch(0.82 0.17 116); --accent-hover: oklch(0.85 0.17 116); --accent-soft: oklch(0.82 0.17 116 / 0.16); --accent-fg: oklch(0.14 0.01 250); --accent-solid: oklch(0.5 0.11 116); }
 
-.accent-amber { --accent: oklch(0.5 0.111 65); --accent-hover: oklch(0.46 0.102 65); --accent-soft: oklch(0.5 0.111 65 / 0.14); --accent-fg: oklch(1 0 0); }
-.dark.accent-amber { --accent: oklch(0.78 0.15 75); --accent-hover: oklch(0.82 0.15 75); --accent-soft: oklch(0.78 0.15 75 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
+.accent-indigo { --accent: oklch(0.5 0.15 277); --accent-hover: oklch(0.46 0.15 277); --accent-soft: oklch(0.5 0.15 277 / 0.12); --accent-fg: oklch(1 0 0); }
+.dark .accent-indigo, .dark.accent-indigo { --accent: oklch(0.72 0.13 277); --accent-hover: oklch(0.76 0.11 277); --accent-soft: oklch(0.72 0.13 277 / 0.14); --accent-fg: oklch(0.14 0.01 250); --accent-solid: oklch(0.52 0.14 277); }
 
-.accent-rose { --accent: oklch(0.515 0.19 15); --accent-hover: oklch(0.465 0.184 15); --accent-soft: oklch(0.515 0.19 15 / 0.12); --accent-fg: oklch(1 0 0); }
-.dark.accent-rose { --accent: oklch(0.74 0.158 15); --accent-hover: oklch(0.78 0.128 15); --accent-soft: oklch(0.74 0.158 15 / 0.16); --accent-fg: oklch(0.14 0.01 250); }
+.accent-magenta { --accent: oklch(0.52 0.17 338); --accent-hover: oklch(0.47 0.17 338); --accent-soft: oklch(0.52 0.17 338 / 0.12); --accent-fg: oklch(1 0 0); }
+.dark .accent-magenta, .dark.accent-magenta { --accent: oklch(0.74 0.15 338); --accent-hover: oklch(0.78 0.12 338); --accent-soft: oklch(0.74 0.15 338 / 0.16); --accent-fg: oklch(0.14 0.01 250); --accent-solid: oklch(0.53 0.16 338); }
 
-/* density */
-.density-compact { --row-h: 28px; }
-.density-cozy { --row-h: 36px; }
-.density-comfy { --row-h: 44px; }
+/* density (DS-9). The Appearance setting is app-wide, so it drives a set of
+   tokens, not one table: --row-h (list and table row height), --cell-px (cell
+   and row horizontal padding), --control-h (a standalone control that should
+   track the row height) and --panel-pad (panel / card body padding). Consume
+   them as `h-(--row-h)`, `px-(--cell-px)`, `h-(--control-h)`, `p-(--panel-pad)`.
+   ui/Table rows and cells use the first two. Buttons, inputs and filter chips
+   stay at fixed heights (sm 28px, default 32px), so a toolbar row keeps one
+   height at every density. */
+.density-compact { --row-h: 28px; --cell-px: 8px; --control-h: 28px; --panel-pad: 12px; }
+.density-cozy { --row-h: 36px; --cell-px: 10px; --control-h: 32px; --panel-pad: 16px; }
+.density-comfy { --row-h: 44px; --cell-px: 12px; --control-h: 36px; --panel-pad: 20px; }
 
 /* ── Tripl-styled data table ───────────────────────────────────────────── */
 
@@ -431,18 +495,24 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-muted-foreground: var(--sidebar-muted-foreground);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-active: var(--sidebar-active);
   --color-surface: var(--surface);
   --color-surface-hover: var(--surface-hover);
   --color-surface-active: var(--surface-active);
   --color-bg-elevated: var(--bg-elevated);
   --color-bg-sunken: var(--bg-sunken);
   --color-fg: var(--fg);
+  --color-fg-secondary: var(--fg-secondary);
+  --color-fg-tertiary: var(--fg-tertiary);
   --color-fg-muted: var(--fg-muted);
   --color-fg-subtle: var(--fg-subtle);
   --color-fg-faint: var(--fg-faint);
   --color-border-strong: var(--border-strong);
   --color-border-subtle: var(--border-subtle);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-solid: var(--accent-solid);
+  --color-accent-solid-fg: var(--accent-solid-fg);
   --color-success: var(--success);
   --color-success-soft: var(--success-soft);
   --color-warning: var(--warning);
@@ -451,27 +521,75 @@
   --color-danger-soft: var(--danger-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
-  --radius-sm: calc(var(--radius) - 2px);
-  --radius-md: var(--radius);
-  --radius-lg: calc(var(--radius) + 4px);
-  --radius-xl: calc(var(--radius) + 8px);
-  /* Named radii for the two shapes the app draws by hand (DS-20): a control
-     (`rounded-control`, was rounded-[7px]) and a card (`rounded-card`, was
-     rounded-[10px]). */
+  /* Radius: three values (DS-24). `rounded-sm` 4px for code chips, tokens
+     and checkboxes; `rounded-control` 7px for buttons, inputs, menus and
+     segmented controls; `rounded-card` 10px for cards, dialogs, popovers and
+     banners. `rounded-full` is for status pills and avatars only. Tailwind's
+     md / lg / xl are remapped onto the scale, so the ui/* kit converges
+     without a rewrite: xs is the small step, md and lg are a control, xl and
+     2xl are a card. There used to be seven radii in use (4, 5, 6, 7, 8, 10,
+     12, 16px). */
+  --radius-sm: 4px;
   --radius-control: 7px;
   --radius-card: 10px;
+  --radius-xs: var(--radius-sm);
+  --radius-md: var(--radius-control);
+  --radius-lg: var(--radius-control);
+  --radius-xl: var(--radius-card);
+  --radius-2xl: var(--radius-card);
 
-  /* Type scale (DS-20). The app's dense UI sits between Tailwind's steps, and
-     authors picked from 21 arbitrary sizes — 10, 10.5, 11, 11.5, 12, 12.5px
-     are six steps inside 2.5px. New code uses these; the arbitrary values are
-     migrated as files are touched. Named so none of them collides with
-     Tailwind's own text-xs/sm/base, which the ui/* kit still uses. */
-  --text-2xs: 10.5px;
+  /* Type scale (DS-13): five UI steps and two display steps, each with its
+     line height. Use these, never `text-[Npx]`, `text-xs` or `text-sm`.
+       text-micro     10.5/14  table headers, stat labels, eyebrows (with
+                               `micro-label` for the uppercase label look)
+       text-caption   11.5/16  meta, timestamps, chips, helper text
+       text-body-sm   12.5/18  tables, panel body, controls, buttons
+       text-body      13.5/20  long-form copy, dialog body, forms
+       text-heading   15/22    section / card title, dialog title (600)
+       text-title     21/28    the page h1 only (600)
+       text-display   28/34    hero KPI figures (600, with .tnum)
+     `text-2xs` and `text-lead` are deprecated aliases of micro and heading,
+     kept until the call sites are migrated.
+
+     Icon scale (DS-23), tied to the type scale; stroke width stays 2:
+       size-3   12px  inside chips and captions
+       size-3.5 14px  sm buttons, table actions, nav rows
+       size-4   16px  default buttons, panel header icons
+       size-5   20px  empty states
+     No other icon sizes (13, 15, 10, 11, 18px are migrated onto these). */
+  --text-micro: 10.5px;
+  --text-micro--line-height: 14px;
   --text-caption: 11.5px;
+  --text-caption--line-height: 16px;
   --text-body-sm: 12.5px;
-  --text-body: 13px;
-  --text-lead: 15px;
+  --text-body-sm--line-height: 18px;
+  --text-body: 13.5px;
+  --text-body--line-height: 20px;
+  --text-heading: 15px;
+  --text-heading--line-height: 22px;
   --text-title: 21px;
+  --text-title--line-height: 28px;
+  --text-title--letter-spacing: -0.01em;
+  --text-display: 28px;
+  --text-display--line-height: 34px;
+  --text-display--letter-spacing: -0.01em;
+  --text-2xs: 10.5px;
+  --text-2xs--line-height: 14px;
+  --text-lead: 15px;
+  --text-lead--line-height: 22px;
+}
+
+/* The micro label (DS-13): uppercase eyebrow for table headers, stat labels
+   and section labels. Carries size, weight, case and tracking in one class, so
+   call sites stop re-spelling `text-[10px] font-semibold uppercase
+   tracking-[0.06em]` with drifting values. Colour stays at the call site
+   (usually `text-fg-tertiary`). */
+@utility micro-label {
+  font-size: var(--text-micro);
+  line-height: var(--text-micro--line-height);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 /* ── Global Base Styles ────────────────────────────────────────────────── */
@@ -529,6 +647,11 @@
 }
 
 .mono { font-family: var(--font-mono); font-feature-settings: "tnum"; }
+/* JetBrains Mono ships at 400 and 500 only (main.tsx). Mono is for machine
+   identifiers and code, never bold (DS-17); where a call site still asks for
+   600/700 the browser used to fake-embolden it. Without synthesis it falls
+   back to the nearest real face (500). */
+.mono, .font-mono { font-synthesis-weight: none; }
 .tnum { font-variant-numeric: tabular-nums; }
 
 .kbd {
@@ -558,7 +681,7 @@
 }
 .coach-ring {
   pointer-events: none;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   animation: coach-ring 1.8s ease-in-out infinite;
 }
 
@@ -680,7 +803,7 @@
 .sql-editor .cm-editor {
   background: var(--bg-sunken);
   border: 1px solid var(--input);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-control);
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--fg);
@@ -699,6 +822,15 @@
   outline: none;
   border-color: var(--ring);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent);
+}
+
+/* The invalid look every kit control has (INPUT_INVALID_CLASS, MT-7): a
+   --danger edge and a soft danger halo. sql-editor.tsx puts aria-invalid on
+   .cm-content, so the frame reads it through :has(); after the focus rule so
+   an invalid query stays red while it is being fixed. */
+.sql-editor .cm-editor:has(.cm-content[aria-invalid="true"]) {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
 }
 
 .sql-editor .cm-editor .cm-gutters {
@@ -732,7 +864,7 @@
   background: var(--popover);
   color: var(--popover-foreground);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-control);
   box-shadow: var(--shadow-md);
   font-family: var(--font-mono);
 }
@@ -763,6 +895,7 @@
 
 .sql-editor .cm-editor .cm-placeholder {
   color: var(--fg-faint);
+  font-style: italic;
 }
 
 /* Soft-wrap long lines in the SQL editor (tripl-h2sx.33).

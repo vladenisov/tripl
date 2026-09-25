@@ -22,6 +22,7 @@ export default function ConfirmDialogGuardedContent({
   title,
   message,
   confirmLabel,
+  cancelLabel = 'Cancel',
   variant,
   requireText,
   pending,
@@ -33,6 +34,7 @@ export default function ConfirmDialogGuardedContent({
   title: string
   message: ReactNode
   confirmLabel: string
+  cancelLabel?: string
   variant: 'danger' | 'primary'
   requireText?: string
   pending: boolean
@@ -60,7 +62,7 @@ export default function ConfirmDialogGuardedContent({
         {requireText !== undefined && (
           <div className="grid gap-2">
             <label htmlFor={inputId} className="text-body-sm">
-              Type <span className="mono font-semibold">{requireText}</span> to confirm
+              Type <span className="mono font-medium">{requireText}</span> to confirm
             </label>
             <Input
               id={inputId}
@@ -80,7 +82,7 @@ export default function ConfirmDialogGuardedContent({
         )}
         <AlertDialogFooter>
           <AlertDialogCancel type="button" disabled={pending}>
-            Cancel
+            {cancelLabel}
           </AlertDialogCancel>
           <Button
             type="submit"

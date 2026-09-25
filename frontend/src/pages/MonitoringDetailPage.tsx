@@ -1,14 +1,19 @@
 import { DEFAULT_ENTITY_COLOR } from '@/types'
 import { useMemo, useRef } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, GitBranch, GitCompareArrows, Layers, TrendingUp } from 'lucide-react'
+import { AlertTriangle, GitBranch, GitCompareArrows, Layers, TrendingUp } from 'lucide-react'
 import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { scansApi } from '@/api/scans'
+import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
+import { LoadingState } from '@/components/primitives/loading-state'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
+import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { EmptyState } from '@/components/empty-state'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
@@ -19,11 +24,8 @@ import { EventSpecCard } from '@/components/EventSpecCard'
 import { MetricDefinitionCard } from '@/components/monitoring/metric-definition-card'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
 import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardTitle } from '@/components/ui/card'
 import { MetricsChart } from '@/components/ui/chart-lazy'
-import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
@@ -85,31 +87,25 @@ export default function MonitoringDetailPage() {
     eventId?: string
   }>()
   const navigate = useNavigate()
-  const location = useLocation()
   // Edit, collect, delete and annotations are EditorUserDep; a viewer reads the
   // page without them instead of meeting each as a 403 (MON-6).
   const canWrite = useCanWriteProject()
-  // Same history-first pop for both list-backed scopes, with the list as the
-  // cold-start fallback: location.key is 'default' only when this page was
-  // opened directly (deep link / refresh) with no in-app history to pop back to.
-  const popOr = (fallback: string) => () => {
-    if (location.key !== 'default') navigate(-1)
-    else navigate(fallback)
-  }
   // The legacy `/events/detail/:eventId` route carries no `:scope`; default to
   // the event scope when an eventId is present so the page never crashes on an
   // undefined scope (it now redirects to the canonical URL, but stay defensive).
   const scope = resolveDetailScope(scopeParam, eventId)
   // One page, THREE surfaces — the same three-way split navigation.ts makes for
-  // these exact routes: `/monitoring/event/` is an Events drilldown,
+  // these exact routes: `/monitoring/event/` is an Events drilldown (Plan),
   // `/monitoring/metric/` a Metrics one, and everything left under
-  // `/monitoring/` (event-type, project-total) belongs to Anomalies (tripl-lkox).
-  const backAffordance: { label: string; onClick: () => void }
-    = scope === 'metric'
-      ? { label: 'Back to metrics', onClick: () => navigate(`/p/${slug}/metrics`) }
-      : scope === 'event'
-        ? { label: 'Back to events', onClick: popOr(`/p/${slug}/events`) }
-        : { label: 'Back to anomalies', onClick: popOr(`/p/${slug}/anomalies`) }
+  // `/monitoring/` (event-type, project-total) belongs to Anomalies
+  // (tripl-lkox). The eyebrow names the nav group and the scope, the rule
+  // every Observe page follows, instead of a separate back button above the
+  // header (DS-2 / MO-40); the top bar's breadcrumb is the way back.
+  const eyebrow = scope === 'metric'
+    ? 'Observe · Metric'
+    : scope === 'event_type'
+      ? 'Observe · Event type'
+      : 'Observe · Project total'
 
   // Tab, range, granularity and filters live in the URL (MON-24).
   const [search, searchActions] = useMonitoringDetailSearch()
@@ -327,8 +323,8 @@ export default function MonitoringDetailPage() {
 
   const headerTitle = (() => {
     if (scope === 'metric') return metricDefinition?.display_name ?? 'Metric'
-    if (scope === 'project_total') return 'Project Total'
-    if (scope === 'event_type') return eventType?.display_name ?? 'Event Type'
+    if (scope === 'project_total') return 'Project total'
+    if (scope === 'event_type') return eventType?.display_name ?? 'Event type'
     // The label an analyst wrote leads when there is one; the identity the scan
     // matches on then sits beneath it in mono (tripl-kjhi.3).
     return event?.title || (event?.name ?? 'Event')
@@ -344,17 +340,11 @@ export default function MonitoringDetailPage() {
     return event?.description || 'Monitoring detail for the selected event.'
   })()
   const latestSignal = metrics?.latest_signal
-  const latestSignalBadgeClassName = latestSignal?.state === 'recent'
-    ? 'gap-1 border-warning/50 bg-warning-soft text-warning'
-    : 'gap-1'
   const latestSignalLabel = latestSignal
     ? `${latestSignal.state === 'recent' ? 'Recent' : 'Latest scan'} ${latestSignal.direction === 'drop' ? 'drop' : 'spike'} anomaly`
     : null
 
   const isEventScope = scope === 'event'
-  const containerClassName = isEventScope
-    ? 'mx-auto max-w-[1000px] space-y-5 px-4 pb-12 pt-4 sm:px-6'
-    : 'space-y-6 p-4 sm:p-6'
 
   // Only the queries that define the entity blank the page; every tab renders
   // its own failure inside itself (MON-8). A disabled query never errors, so
@@ -363,7 +353,7 @@ export default function MonitoringDetailPage() {
   const failedEntityQuery = entityQueries.find(query => query.isError)
   if (failedEntityQuery) {
     return (
-      <div className={containerClassName}>
+      <PageContainer>
         <ErrorState
           title="Failed to load monitoring details"
           description="The monitoring page could not fetch data from the backend."
@@ -377,7 +367,7 @@ export default function MonitoringDetailPage() {
             }
           }}
         />
-      </div>
+      </PageContainer>
     )
   }
 
@@ -385,9 +375,9 @@ export default function MonitoringDetailPage() {
   // painting the generic one first made the layout jump (MON-9).
   if (isEventScope && !event) {
     return (
-      <div className={containerClassName}>
+      <PageContainer>
         <EventDetailSkeleton />
-      </div>
+      </PageContainer>
     )
   }
 
@@ -397,10 +387,12 @@ export default function MonitoringDetailPage() {
     || rollupPending
 
   return (
-    <div className={containerClassName}>
+    // The list pages' container: no padding of its own inside the shell's, and
+    // no narrower centred column, so the page lines up with the banner and the
+    // top bar (DS-3 / MO-9).
+    <PageContainer>
       {isEventScope && event ? (
         <EventDetailHero
-          slug={slug ?? ''}
           event={event}
           eventType={eventType}
           metrics={metrics}
@@ -417,13 +409,11 @@ export default function MonitoringDetailPage() {
           onMetrics={() => metricsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
         />
       ) : (
-        <>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <Button variant="ghost" size="sm" onClick={backAffordance.onClick}>
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              {backAffordance.label}
-            </Button>
-            {scope === 'metric' && canWrite && slug && (
+        <PageHeader
+          eyebrow={eyebrow}
+          title={headerTitle}
+          actions={
+            scope === 'metric' && canWrite && slug ? (
               <MetricHeaderActions
                 slug={slug}
                 scopeId={scopeId}
@@ -431,52 +421,46 @@ export default function MonitoringDetailPage() {
                 editPath={metricEditPath}
                 collect={metricCollect}
               />
-            )}
-          </div>
-
-          <PageHeader
-            title={headerTitle}
-            titleAddon={
-              <>
-                {headerIdentity && (
-                  <span className="mono text-body" style={{ color: 'var(--fg-muted)' }} data-testid="header-identity">
-                    {headerIdentity}
-                  </span>
-                )}
-                {eventType && (
-                  // The type's colour as a dot beside neutral text: white text
-                  // on a user-picked fill was unreadable on yellow, lime or any
-                  // pastel (DS-33). Same idiom as the events list rows.
-                  <Badge variant="outline" className="gap-1.5" data-testid="event-type-badge">
-                    <span
-                      aria-hidden="true"
-                      className="inline-block h-2 w-2 shrink-0 rounded-full"
-                      style={{ backgroundColor: eventType.color || DEFAULT_ENTITY_COLOR }}
-                    />
-                    {eventType.display_name}
-                  </Badge>
-                )}
-                {scope === 'project_total' && metrics?.scan_config_id && (
-                  <Badge variant="outline" className="font-mono">
-                    {metrics.scan_config_id.slice(0, 8)}
-                  </Badge>
-                )}
-                {latestSignal && latestSignalLabel && (
-                  <Badge
-                    variant={latestSignal.state === 'recent' ? 'outline' : 'destructive'}
-                    className={latestSignalBadgeClassName}
-                  >
-                    <AlertTriangle className="h-3 w-3" />
-                    {latestSignalLabel}
-                  </Badge>
-                )}
-              </>
-            }
-            description={headerDescription}
-          />
-
-          <Separator />
-        </>
+            ) : undefined
+          }
+          titleAddon={
+            <>
+              {headerIdentity && (
+                <span className="mono text-body" style={{ color: 'var(--fg-muted)' }} data-testid="header-identity">
+                  {headerIdentity}
+                </span>
+              )}
+              {eventType && (
+                // The type's colour as a dot beside neutral text: white text
+                // on a user-picked fill was unreadable on yellow, lime or any
+                // pastel (DS-33). A kind tag, so an outline chip (DS-6).
+                <Chip variant="outline" data-testid="event-type-badge">
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: eventType.color || DEFAULT_ENTITY_COLOR }}
+                  />
+                  {eventType.display_name}
+                </Chip>
+              )}
+              {scope === 'project_total' && metrics?.scan_config_id && (
+                // An id, so a code token rather than a pill (DS-6).
+                <CodeToken>{metrics.scan_config_id.slice(0, 8)}</CodeToken>
+              )}
+              {latestSignal && latestSignalLabel && (
+                // A status chip, soft like every other status: a recent signal
+                // in the warning tone, the latest scan's in danger (DS-6).
+                <Chip
+                  tone={latestSignal.state === 'recent' ? 'warning' : 'danger'}
+                  icon={<AlertTriangle className="size-3" aria-hidden="true" />}
+                >
+                  {latestSignalLabel}
+                </Chip>
+              )}
+            </>
+          }
+          description={headerDescription}
+        />
       )}
 
       {/* What this catalog metric computes, visible without opening Edit. */}
@@ -563,36 +547,26 @@ export default function MonitoringDetailPage() {
 
           <TabsContent value="volume" className="space-y-6">
             {latestSignal && (
-              <Card>
-                <CardContent className="grid grid-cols-2 gap-3 p-4 md:grid-cols-4">
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
-                    <p className="text-sm font-medium">{formatTimestamp(latestSignal.bucket)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
-                    <p className="text-sm font-medium">
-                      {isMetricScope
-                        ? formatMetricValue(latestSignal.actual_count, metricUnit)
-                        : formatNumber(latestSignal.actual_count)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Expected</p>
-                    <p className="text-sm font-medium">
-                      {isMetricScope
-                        ? formatMetricValue(latestSignal.expected_count, metricUnit)
-                        : // Value-aware: an event count can still carry a
-                          // sub-unit baseline, which plain rounding wrote as "0".
-                          formatIncidentCount(latestSignal.expected_count)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Z-Score</p>
-                    <p className="text-sm font-medium">{latestSignal.z_score.toFixed(2)}</p>
-                  </div>
-                </CardContent>
-              </Card>
+              // The page-KPI strip every other page uses (DS-5), not a grid
+              // of captions inside a card.
+              <MiniStatStrip boxed>
+                <MiniStat label="Bucket" value={formatTimestamp(latestSignal.bucket)} />
+                <MiniStat
+                  label="Actual"
+                  value={isMetricScope
+                    ? formatMetricValue(latestSignal.actual_count, metricUnit)
+                    : formatNumber(latestSignal.actual_count)}
+                />
+                <MiniStat
+                  label="Expected"
+                  value={isMetricScope
+                    ? formatMetricValue(latestSignal.expected_count, metricUnit)
+                    : // Value-aware: an event count can still carry a
+                      // sub-unit baseline, which plain rounding wrote as "0".
+                      formatIncidentCount(latestSignal.expected_count)}
+                />
+                <MiniStat label="Z-score" value={latestSignal.z_score.toFixed(2)} />
+              </MiniStatStrip>
             )}
 
             {/* scan_config_id is NULL only for metric-scope signals, which the
@@ -611,21 +585,24 @@ export default function MonitoringDetailPage() {
               />
             )}
 
+            {/* One section-card geometry (DS-4 / MO-10): the header bar with
+                a 12.5px h2 and the range controls, a 16px body. */}
             <Card>
-              <CardContent className="p-4 sm:p-6">
-                <ChartCardHeader title={<h2 className="text-lg font-semibold">{volumeLabel}</h2>}>
-                  <MetricsRangeControls
-                    rangeDays={rangeDays}
-                    granularity={granularity}
-                    nativeGranularity={nativeGranularity}
-                    onRangeDaysChange={searchActions.setRangeDays}
-                    onGranularityChange={setGranularity}
-                  />
-                </ChartCardHeader>
+              <ChartCardHeader title={<CardTitle as="h2">{volumeLabel}</CardTitle>}>
+                <MetricsRangeControls
+                  rangeDays={rangeDays}
+                  granularity={granularity}
+                  nativeGranularity={nativeGranularity}
+                  onRangeDaysChange={searchActions.setRangeDays}
+                  onGranularityChange={setGranularity}
+                />
+              </ChartCardHeader>
+              <CardContent>
                 {chartIsLoading ? (
-                  <div className="h-[200px] flex items-center justify-center text-sm text-muted-foreground">
-                    Loading monitoring data…
-                  </div>
+                  <LoadingState
+                    label="Loading monitoring data…"
+                    className="flex h-[200px] items-center justify-center text-body-sm"
+                  />
                 ) : chartData.length === 0 ? (
                   <div className="h-[200px] flex items-center justify-center">
                     <EmptyState
@@ -640,7 +617,10 @@ export default function MonitoringDetailPage() {
                     forecast={chartForecast}
                     annotations={annotationsQuery.data ?? []}
                     height={200}
-                    color={eventType?.color || metricDefinition?.color || 'var(--chart-3)'}
+                    // The entity's own colour when it has one; otherwise the
+                    // chart's fixed single-series default (DS-27), not an
+                    // arbitrary chart slot.
+                    color={eventType?.color || metricDefinition?.color || undefined}
                     granularity={granularity}
                     seriesLabel={metricSeriesLabel}
                     valueFormatter={metricValueFormatter}
@@ -656,7 +636,7 @@ export default function MonitoringDetailPage() {
                   />
                 )}
                 {metrics?.interval && (
-                  <p className="text-xs text-muted-foreground mt-2">
+                  <p className="text-body-sm text-muted-foreground mt-2">
                     Collection interval: {metrics.interval}
                   </p>
                 )}
@@ -711,7 +691,7 @@ export default function MonitoringDetailPage() {
               />
             ) : (
               <Card>
-                <CardContent className="p-6 text-sm text-muted-foreground">
+                <CardContent className="text-body-sm text-muted-foreground">
                   No scan found for this scope yet — run a scan to populate
                   the heatmap.
                 </CardContent>
@@ -739,8 +719,8 @@ export default function MonitoringDetailPage() {
                 // Same reason as the volume chart: no summed values for a
                 // ratio metric while its definition is on the way.
                 <Card>
-                  <CardContent className="p-6 text-sm text-muted-foreground">
-                    Loading breakdowns…
+                  <CardContent>
+                    <LoadingState label="Loading breakdowns…" className="text-body-sm" />
                   </CardContent>
                 </Card>
               ) : (
@@ -774,6 +754,6 @@ export default function MonitoringDetailPage() {
       {scope === 'event' && scopeId && (
         <EventPhotosSection slug={slug!} eventId={scopeId} />
       )}
-    </div>
+    </PageContainer>
   )
 }

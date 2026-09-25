@@ -76,10 +76,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
           compact
         />
       ) : (
-        <MiniStatStrip
-          className={`rounded-lg border px-4 py-3 ${isEmpty ? 'opacity-60' : ''}`}
-          style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
-        >
+        <MiniStatStrip boxed className={isEmpty ? 'opacity-60' : undefined}>
           <MiniStat
             label="Fact tables"
             value={data ? formatNumber(data.total ?? factTables.length) : '—'}
@@ -133,7 +130,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
             subtitle={data ? `${formatNumber(data.total ?? factTables.length)} total` : undefined}
           >
             {factTablesQuery.isLoading ? (
-              <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              <div className="px-4 py-6 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                 Loading…
               </div>
             ) : (
@@ -141,7 +138,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
                 {dataSourceNamesState === 'error' && (
                   <div
                     role="status"
-                    className="flex flex-wrap items-center gap-2 border-b px-4 py-2 text-[12px]"
+                    className="flex flex-wrap items-center gap-2 border-b px-4 py-2 text-body-sm"
                     style={{ borderColor: 'var(--border-subtle)', color: 'var(--warning)' }}
                   >
                     Data source names could not be loaded.
@@ -161,7 +158,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
                   <div role="rowgroup">
                     <div
                       role="row"
-                      className={`${FACT_TABLE_GRID} border-b py-2 text-2xs font-semibold uppercase tracking-[0.05em]`}
+                      className={`${FACT_TABLE_GRID} border-b py-2 micro-label`}
                       style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                     >
                       <span role="columnheader">Fact table</span>
@@ -254,7 +251,8 @@ function FactTableRow({ table, slug, dataSourceName, dataSourceNamesState }: Fac
   return (
     <div
       role="row"
-      className={`${FACT_TABLE_GRID} border-b py-2.5 last:border-0 ${
+      // `--row-h` floor: the Appearance density reaches this list too (DS-9).
+      className={`${FACT_TABLE_GRID} min-h-(--row-h) border-b py-1.5 last:border-0 ${
         href ? 'transition-colors hover:bg-[var(--surface-hover)]' : ''
       }`}
       style={{ borderColor: 'var(--border-subtle)' }}
@@ -275,21 +273,21 @@ function FactTableRow({ table, slug, dataSourceName, dataSourceNamesState }: Fac
         ) : (
           <span className="truncate text-body-sm font-medium">{table.display_name}</span>
         )}
-        <span className="mono truncate text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="mono truncate text-caption" style={{ color: 'var(--fg-faint)' }}>
           {table.name}
         </span>
       </span>
-      <span role="cell" className="truncate text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span role="cell" className="truncate text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
         <DataSourceCell
           hasSource={!!table.data_source_id}
           name={dataSourceName}
           state={dataSourceNamesState}
         />
       </span>
-      <span role="cell" className="mono truncate text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span role="cell" className="mono truncate text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
         {table.timestamp_column || <span style={{ color: 'var(--fg-faint)' }}>—</span>}
       </span>
-      <span role="cell" className="mono text-right text-2xs" style={{ color: 'var(--fg-faint)' }}>
+      <span role="cell" className="tnum text-right text-micro" style={{ color: 'var(--fg-faint)' }}>
         {formatRelativeTime(table.updated_at)}
       </span>
     </div>

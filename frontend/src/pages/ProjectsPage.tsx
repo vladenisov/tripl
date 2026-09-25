@@ -5,6 +5,8 @@ import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
+import { PageContainer } from '@/components/primitives/page-container'
+import { PageHeader } from '@/components/primitives/page-header'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { WorkspaceWelcome } from '@/components/workspace-welcome'
@@ -153,7 +155,7 @@ export default function MainPage() {
     !projectsQuery.isLoading && !projectsQuery.isError && projects.length === 0
 
   return (
-    <div className="space-y-6">
+    <PageContainer>
       {dialog}
 
       <DemoProvisioningDialog
@@ -168,49 +170,46 @@ export default function MainPage() {
       />
 
       {/* Title + create actions. Stats moved into the single stat row below so
-          the header no longer doubles as a stat strip (UX-10). */}
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 space-y-2">
-          {/* One name for this page wherever it is named — the sidebar, the
-              top bar, the tab and the palette all say "All projects" (LIVE-34). */}
-          <h1 className="m-0 text-title font-semibold tracking-[-0.01em]">
-            All projects
-          </h1>
-          <p className="max-w-2xl text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-            See which tracking plans are filling out, which projects still need review, and how much
-            scan and alerting coverage exists across the workspace.
-          </p>
-        </div>
-        {canCreateProject && !isEmptyWorkspace && (
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleGenerateDemo()}
-                disabled={isProvisioningDemo || demoBlockedReason !== null}
-                aria-describedby={demoBlockedReason ? 'demo-generation-blocked' : undefined}
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
-              </Button>
-              <Button size="sm" onClick={() => setShowForm(true)}>
-                <Plus className="h-3.5 w-3.5" />
-                New project
-              </Button>
+          the header no longer doubles as a stat strip (UX-10). The shared page
+          header (DS-1): the eyebrow is the sidebar group, as on every page. */}
+      <PageHeader
+        eyebrow="Workspace"
+        // One name for this page wherever it is named — the sidebar, the
+        // top bar, the tab and the palette all say "All projects" (LIVE-34).
+        title="All projects"
+        description="See which tracking plans are filling out, which projects still need review, and how much scan and alerting coverage exists across the workspace."
+        actions={
+          canCreateProject && !isEmptyWorkspace ? (
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleGenerateDemo()}
+                  disabled={isProvisioningDemo || demoBlockedReason !== null}
+                  aria-describedby={demoBlockedReason ? 'demo-generation-blocked' : undefined}
+                >
+                  <Sparkles />
+                  {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
+                </Button>
+                <Button size="sm" onClick={() => setShowForm(true)}>
+                  <Plus />
+                  New project
+                </Button>
+              </div>
+              {demoBlockedReason && (
+                <p
+                  id="demo-generation-blocked"
+                  className="m-0 max-w-[320px] text-right text-caption"
+                  style={{ color: 'var(--fg-subtle)' }}
+                >
+                  {demoBlockedReason}
+                </p>
+              )}
             </div>
-            {demoBlockedReason && (
-              <p
-                id="demo-generation-blocked"
-                className="m-0 max-w-[320px] text-right text-caption"
-                style={{ color: 'var(--fg-subtle)' }}
-              >
-                {demoBlockedReason}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
+          ) : undefined
+        }
+      />
 
       {showForm && (
         <CreateProjectDialog
@@ -250,8 +249,8 @@ export default function MainPage() {
               calm row stops being centred in a 200px-tall box with ~160px of
               void around it (tripl-oqig). */}
           <div
-            className="flex flex-col gap-3 rounded-lg border p-3"
-            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
+            className="flex flex-col gap-3 rounded-card border p-3"
+            style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
           >
             <MiniStatStrip className="px-1">
               <MiniStat label="Projects" value={String(portfolio.projectCount)} />
@@ -360,7 +359,7 @@ export default function MainPage() {
           <section className="space-y-3">
             <div className="flex items-end justify-between gap-3">
               <div>
-                <h2 className="text-[14px] font-semibold tracking-tight">Project portfolio</h2>
+                <h2 className="text-heading font-semibold tracking-tight">Project portfolio</h2>
                 <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
                   Recently updated projects with planning, review, scan, and alerting coverage.
                 </p>
@@ -387,7 +386,7 @@ export default function MainPage() {
           </section>
         </>
       )}
-    </div>
+    </PageContainer>
   )
 }
 

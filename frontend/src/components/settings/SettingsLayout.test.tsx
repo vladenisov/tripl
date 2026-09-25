@@ -335,7 +335,7 @@ describe('SettingsLayout unsaved-changes guard', () => {
     })
 
     expect(await screen.findByRole('alertdialog')).toHaveTextContent(
-      'Leave with unsaved changes?',
+      'Leave without saving?',
     )
     // Not committed: the reader is still on the section, with the draft intact.
     expect(router.state.location.pathname).toBe('/settings/instance/ai')
@@ -348,7 +348,7 @@ describe('SettingsLayout unsaved-changes guard', () => {
       await router.navigate(-1)
     })
 
-    fireEvent.click(await screen.findByRole('button', { name: /cancel/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /keep editing/i }))
 
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect(router.state.location.pathname).toBe('/settings/instance/ai')
@@ -361,7 +361,7 @@ describe('SettingsLayout unsaved-changes guard', () => {
       await router.navigate(-1)
     })
 
-    fireEvent.click(await screen.findByRole('button', { name: /leave/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /discard changes/i }))
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/p/demo/events'))
   })
@@ -372,7 +372,7 @@ describe('SettingsLayout unsaved-changes guard', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Profile' }))
 
     expect(await screen.findByRole('alertdialog')).toHaveTextContent(
-      'Leave with unsaved changes?',
+      'Leave without saving?',
     )
     expect(screen.getByRole('alertdialog')).toHaveTextContent(DRAFT_MESSAGE)
   })
@@ -383,7 +383,7 @@ describe('SettingsLayout unsaved-changes guard', () => {
     fireEvent.click(screen.getByRole('link', { name: /Back to project/i }))
 
     expect(await screen.findByRole('alertdialog')).toHaveTextContent(
-      'Leave with unsaved changes?',
+      'Leave without saving?',
     )
   })
 
@@ -397,7 +397,7 @@ describe('SettingsLayout unsaved-changes guard', () => {
     fireEvent.click(within(palette).getByText('Profile'))
 
     expect(await screen.findByRole('alertdialog')).toHaveTextContent(
-      'Leave with unsaved changes?',
+      'Leave without saving?',
     )
     expect(screen.getByRole('alertdialog')).toHaveTextContent(DRAFT_MESSAGE)
   })

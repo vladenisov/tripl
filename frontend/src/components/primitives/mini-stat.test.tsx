@@ -85,3 +85,38 @@ describe('MiniStat labelAddon', () => {
     expect(caption).toContainElement(screen.getByRole('button', { name: 'About chart signals' }))
   })
 })
+
+// DS-17: a KPI figure is a number, not code.
+describe('MiniStat figure', () => {
+  it('sets the value in sans with tabular digits, never mono', () => {
+    render(<MiniStat label="Last run" value="1h ago" />)
+    const value = screen.getByText('1h ago')
+    expect(value).toHaveClass('tnum')
+    expect(value).not.toHaveClass('mono')
+    expect(value).not.toHaveClass('font-mono')
+  })
+})
+
+// DS-5: one page-KPI container instead of each page spelling it out.
+describe('MiniStatStrip boxed', () => {
+  it('draws the sunken card box when boxed', () => {
+    const { container } = render(
+      <MiniStatStrip boxed>
+        <MiniStat label="A" value="1" />
+      </MiniStatStrip>,
+    )
+    const strip = container.querySelector('[data-slot="mini-stat-strip"]')
+    expect(strip).toHaveClass('rounded-card', 'border', 'bg-bg-sunken', 'px-4', 'py-3')
+  })
+
+  it('draws no box by default', () => {
+    const { container } = render(
+      <MiniStatStrip>
+        <MiniStat label="A" value="1" />
+      </MiniStatStrip>,
+    )
+    const strip = container.querySelector('[data-slot="mini-stat-strip"]')
+    expect(strip).not.toHaveClass('rounded-card')
+    expect(strip).not.toHaveClass('bg-bg-sunken')
+  })
+})

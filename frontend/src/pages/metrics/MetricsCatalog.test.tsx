@@ -31,6 +31,12 @@ import { ApiError } from '@/api/client'
 import { stopAllMetricCollectionWatches } from '@/hooks/useMetricCollectionWatcher'
 import { MetricsCatalog } from './MetricsCatalog'
 
+/** The catalog's filters are FilterSelect chips (DS-15), not native selects. */
+async function pickFilter(label: string, option: string) {
+  fireEvent.click(screen.getByRole('combobox', { name: new RegExp(`^${label} filter`) }))
+  fireEvent.click(await screen.findByRole('option', { name: option }))
+}
+
 vi.mock('@/api/metricsCatalog', () => ({
   metricsCatalogApi: {
     list: vi.fn(),
@@ -325,7 +331,7 @@ describe('MetricsCatalog — filters keep the rows while they load (MET-11)', ()
 
     // The next list never answers, so what shows is what the placeholder keeps.
     vi.mocked(metricsCatalogApi.list).mockImplementation(() => new Promise(() => {}))
-    fireEvent.change(screen.getByLabelText('Filter by status'), { target: { value: 'draft' } })
+    await pickFilter('Status', 'Draft')
 
     await waitFor(() =>
       expect(metricsCatalogApi.list).toHaveBeenCalledWith(
@@ -350,7 +356,7 @@ describe('MetricsCatalog — filters live in the URL (MET-24)', () => {
       ),
     )
     expect(screen.getByLabelText('Search metrics')).toHaveValue('sign')
-    expect(screen.getByLabelText('Filter by status')).toHaveValue('active')
+    expect(screen.getByRole('combobox', { name: /^Status filter/ })).toHaveTextContent(/Status:\s*Active/)
     expect(screen.getByRole('button', { name: 'Filter by active anomalies' })).toHaveAttribute(
       'aria-pressed',
       'true',

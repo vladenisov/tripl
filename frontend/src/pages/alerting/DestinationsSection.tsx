@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Trash2, Webhook } from 'lucide-react'
 
-import { Badge } from '@/components/ui/badge'
+import { CountBadge } from '@/components/primitives/count-badge'
 import { Button } from '@/components/ui/button'
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
 import type { AlertDestination } from '@/types'
@@ -82,7 +82,7 @@ export function DestinationsSection({
     </Button>
   ))
   const demoChannelNotice = (
-    <p className="text-xs text-muted-foreground">
+    <p className="text-body-sm text-muted-foreground">
       This demo is local-only: alerts render to a built-in sink and are never sent to Slack,
       Telegram, a webhook, email, Jira or Linear. Create a real project to connect a channel.
     </p>
@@ -94,15 +94,15 @@ export function DestinationsSection({
         rather than a tooltip on each of the switches, pencils and bins that
         are simply absent below. */}
     {!canWrite && (
-      <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+      <p className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
         {VIEWER_READ_ONLY_NOTICE}
       </p>
     )}
     <div className="grid gap-6">
       <div className="min-w-0 space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Destinations</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-body font-semibold">Destinations</h3>
+          <p className="text-body-sm text-muted-foreground">
             Signals route to destinations via rules.
           </p>
         </div>
@@ -113,17 +113,17 @@ export function DestinationsSection({
           // one connected block instead of floating below an awkward void.
           <div className="flex flex-col items-center justify-center py-8 text-center">
             <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-              <Webhook className="h-6 w-6 text-muted-foreground" />
+              <Webhook className="size-5 text-muted-foreground" />
             </div>
-            <h3 className="text-sm font-semibold text-foreground">No alert destinations</h3>
-            <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+            <h3 className="text-body font-semibold text-foreground">No alert destinations</h3>
+            <p className="mt-1 max-w-sm text-body text-muted-foreground">
               Connect Slack, Telegram, email, a webhook, Jira or Linear, then attach rules to it.
             </p>
             {isDemo ? (
               <div className="mt-4 max-w-sm">{demoChannelNotice}</div>
             ) : !canWrite ? null : (
               <div className="mt-4 flex flex-col items-center gap-2">
-                <span className="text-xs font-medium text-muted-foreground">Add a channel</span>
+                <span className="text-body-sm font-medium text-muted-foreground">Add a channel</span>
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   {channelButtons}
                 </div>
@@ -135,10 +135,9 @@ export function DestinationsSection({
         {localSinks.length > 0 && (
           <div className="space-y-3">
             <div className="flex items-center gap-2">
-              <h4 className="text-sm font-medium">Local sink</h4>
-              <Badge variant="outline" className="text-[10px]">
-                {localSinks.length}
-              </Badge>
+              <h4 className="text-body font-medium">Local sink</h4>
+              <CountBadge count={localSinks.length} />
+              <span className="sr-only">{`(${localSinks.length})`}</span>
             </div>
             {/* No delete affordance: the sink is part of the demo scenario and
                 owns its seeded rules and deliveries. Reset re-creates it. */}
@@ -159,10 +158,9 @@ export function DestinationsSection({
           .map(({ channel, label }) => (
             <div key={channel} className="space-y-3">
               <div className="flex items-center gap-2">
-                <h4 className="text-sm font-medium">{label}</h4>
-                <Badge variant="outline" className="text-[10px]">
-                  {groupedDestinations[channel].length}
-                </Badge>
+                <h4 className="text-body font-medium">{label}</h4>
+                <CountBadge count={groupedDestinations[channel].length} />
+                <span className="sr-only">{`(${groupedDestinations[channel].length})`}</span>
               </div>
               {groupedDestinations[channel].map(destination => (
                 <div key={destination.id}>
@@ -211,7 +209,7 @@ export function DestinationsSection({
               demoChannelNotice
             ) : (
               <>
-                <span className="text-xs font-medium text-muted-foreground">Add another channel</span>
+                <span className="text-body-sm font-medium text-muted-foreground">Add another channel</span>
                 {channelButtons}
               </>
             )}

@@ -52,9 +52,9 @@ export function EventGroupRulesEditor({
     <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-medium">Event groups</div>
+          <div className="text-body font-medium">Event groups</div>
           {!columns?.length && (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-body-sm text-muted-foreground">
               Load a preview to pick real columns; only event_name is available otherwise.
             </p>
           )}
@@ -65,11 +65,11 @@ export function EventGroupRulesEditor({
           size="sm"
           onClick={() => onChange([...rules, emptyGroupRule()])}
         >
-          <Plus className="mr-2 h-3 w-3" />Add Group Rule
+          <Plus className="mr-2 h-3 w-3" />Add group rule
         </Button>
       </div>
       {rules.length === 0 && (
-        <p className="text-xs text-muted-foreground">No grouping rules.</p>
+        <p className="text-body-sm text-muted-foreground">No grouping rules.</p>
       )}
       {rules.map((rule, ruleIndex) => (
         <div key={rule._uid} className="space-y-3 rounded-md border bg-background p-3">
@@ -80,7 +80,7 @@ export function EventGroupRulesEditor({
                 id={`group-name-${rule._uid}`}
                 value={rule.name}
                 onChange={event => updateRule(ruleIndex, { name: event.target.value })}
-                placeholder="button events"
+                placeholder="e.g. button events"
               />
             </div>
             <div className="grid gap-1">
@@ -133,7 +133,7 @@ export function EventGroupRulesEditor({
                     onChange={event => updateCondition(ruleIndex, conditionIndex, {
                       pattern: event.target.value,
                     })}
-                    placeholder="^button:"
+                    placeholder="e.g. ^button:"
                   />
                 </div>
                 <IconButton
@@ -158,7 +158,7 @@ export function EventGroupRulesEditor({
                 conditions: [...rule.conditions, emptyGroupCondition()],
               })}
             >
-              <Plus className="mr-2 h-3 w-3" />Add Condition
+              <Plus className="mr-2 h-3 w-3" />Add condition
             </Button>
           </div>
         </div>

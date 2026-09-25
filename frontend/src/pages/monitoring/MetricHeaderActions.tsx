@@ -100,12 +100,8 @@ export function MetricHeaderActions({
               : 'Collect now'}
         </Button>
       </ScenarioCoachMark>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={deleteMetric}
-        className="text-[var(--danger)] hover:text-[var(--danger)]"
-      >
+      {/* The destructive-in-a-row variant (DS-20), not a ghost repainted red. */}
+      <Button variant="danger" size="sm" onClick={deleteMetric}>
         <Trash2 className="mr-2 h-4 w-4" />
         Delete
       </Button>

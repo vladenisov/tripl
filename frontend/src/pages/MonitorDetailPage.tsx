@@ -1,10 +1,13 @@
 import { type ReactNode, useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, Bell, BellOff, RefreshCw, Settings2 } from 'lucide-react'
+import { AlertTriangle, Bell, BellOff, RefreshCw, Settings2 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
 import { InfoRow, Panel } from '@/components/settings/kit'
+import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
+import { LoadingState } from '@/components/primitives/loading-state'
+import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
 import { FormRow } from '@/components/ui/form-row'
 import { Chip } from '@/components/primitives/chip'
@@ -106,8 +109,7 @@ export default function MonitorDetailPage() {
 
   if (monitorQuery.isError) {
     return (
-      <div className="min-w-0 space-y-6 pb-12">
-        <BackLink slug={slug} />
+      <PageContainer>
         <ErrorState
           title="Rule unavailable"
           error={monitorQuery.error}
@@ -117,40 +119,40 @@ export default function MonitorDetailPage() {
           retryLabel="Retry"
           compact
         />
-      </div>
+      </PageContainer>
     )
   }
 
   return (
-    <div className="min-w-0 space-y-6 pb-12">
-      <BackLink slug={slug} />
-
+    // The eyebrow names the nav group and the collection, as on every Observe
+    // detail page, instead of a separate back link above the header (DS-2 /
+    // MO-40); the top bar's breadcrumb is the way back.
+    <PageContainer>
       {monitorQuery.isLoading || !monitor ? (
-        <div className="px-1 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-          Loading…
-        </div>
+        <LoadingState className="px-1 py-6 text-body-sm" />
       ) : (
         <>
           <PageHeader
-            eyebrow="Observe"
+            eyebrow="Observe · Alert rule"
             title={monitor.rule_name}
             actions={
               // Editing a rule is an editor's job; the link would land a
               // viewer on a read-only Monitors section.
               slug && canWrite ? (
-                <Link
-                  // A monitor IS an alert rule — the standalone list that used
-                  // the first noun is gone, and rules are edited in the
-                  // Monitors section of Alerting (tripl-89ps). The section has
-                  // to be named: without it the link lands on the incident
-                  // Inbox, which is the default, and "Edit rule" opens triage.
-                  to={`/p/${slug}/settings/alerting?section=monitors`}
-                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
-                  style={{ color: 'var(--fg-muted)' }}
-                >
-                  <Settings2 className="h-3.5 w-3.5" />
-                  Edit rule
-                </Link>
+                <Button asChild variant="outline" size="sm">
+                  <Link
+                    // A monitor IS an alert rule — the standalone list that used
+                    // the first noun is gone, and rules are edited in the
+                    // Monitors section of Alerting (tripl-89ps). The section has
+                    // to be named: without it the link lands on the incident
+                    // Inbox, which is the default, and "Edit rule" opens triage.
+                    to={`/p/${slug}/settings/alerting?section=monitors`}
+                    className="no-underline"
+                  >
+                    <Settings2 aria-hidden="true" />
+                    Edit rule
+                  </Link>
+                </Button>
               ) : undefined
             }
           />
@@ -208,20 +210,7 @@ export default function MonitorDetailPage() {
           />
         </>
       )}
-    </div>
-  )
-}
-
-function BackLink({ slug }: { slug?: string }) {
-  return (
-    <Link
-      to={slug ? `/p/${slug}/monitors` : '/'}
-      className="inline-flex items-center gap-1.5 text-[12px] no-underline transition-colors hover:text-[var(--fg)]"
-      style={{ color: 'var(--fg-muted)' }}
-    >
-      <ArrowLeft className="h-3.5 w-3.5" />
-      Monitors
-    </Link>
+    </PageContainer>
   )
 }
 
@@ -250,17 +239,19 @@ function ActionButton({
   disabled?: boolean
 }) {
   return (
-    <button
+    // The Button primitive's outline look, hover and focus ring (DS-14), not a
+    // hand-painted copy of it.
+    <Button
       type="button"
+      variant="outline"
+      size="sm"
       aria-label={ariaLabel}
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex h-8 items-center gap-[6px] rounded-control border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-      style={{ background: 'var(--surface)', color: 'var(--fg)', borderColor: 'var(--border)' }}
     >
       {icon}
       {label}
-    </button>
+    </Button>
   )
 }
 
@@ -332,7 +323,7 @@ function MuteControl({
               button's accessible name — reading the row left to right is how a
               sighted user gets the sentence, and the aria-label below is how
               everyone else does (tripl-in45). */}
-          <span className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+          <span className="inline-flex items-center gap-1.5 text-body-sm" style={{ color: 'var(--fg-muted)' }}>
             <BellOff className="h-3.5 w-3.5" />
             Mute for
           </span>
@@ -372,10 +363,7 @@ function MuteControl({
 function RecencyStrip({ monitor }: { monitor: MonitorDetail }) {
   const isFiring = monitor.status === 'firing'
   return (
-    <MiniStatStrip
-      className="rounded-lg border px-4 py-3"
-      style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
-    >
+    <MiniStatStrip boxed>
       <MiniStat
         label="Last fired"
         value={monitor.last_anomaly_at ? formatRelativeTime(monitor.last_anomaly_at) : 'never'}
@@ -488,8 +476,8 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
       {/* Stacks below `sm`, like the InfoRows above it (MON-32). */}
       <FormRow
         labelWidth={200}
-        captionClassName="sm:pt-1"
-        className="gap-1 px-[18px] py-[11px] sm:gap-4"
+        captionClassName="@min-[560px]:pt-1"
+        className="gap-1 px-4 py-[11px] @min-[560px]:gap-4"
         style={{ borderTop: '1px solid var(--border-subtle)' }}
         caption={
           <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
@@ -542,7 +530,7 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
     <Panel title="Routes to" subtitle="Where firing alerts are delivered">
       <FormRow
         labelWidth={200}
-        className="gap-1 px-[18px] py-[11px] sm:items-center sm:gap-4"
+        className="gap-1 px-4 py-[11px] @min-[560px]:items-center @min-[560px]:gap-4"
         style={{ borderBottom: '1px solid var(--border-subtle)' }}
         caption={
           <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
@@ -551,7 +539,8 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
         }
       >
         <span className="flex min-w-0 items-center gap-2">
-          <Chip tone="neutral" size="xs">
+          {/* The channel kind is a category tag: an outline chip (DS-6). */}
+          <Chip variant="outline" size="xs">
             {monitor.destination_type}
           </Chip>
           {slug ? (
@@ -582,7 +571,7 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
       />
       {!monitor.destination_enabled && (
         <div
-          className="flex items-center gap-2 px-[18px] py-3 text-[12px]"
+          className="flex items-center gap-2 px-4 py-3 text-body-sm"
           style={{ background: 'var(--danger-soft)', color: 'var(--fg-muted)' }}
         >
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--danger)' }} />
@@ -615,15 +604,13 @@ function FiredHistoryTimeline({
   return (
     <Panel title="Fired history" subtitle={total > 0 ? `${total} total` : undefined}>
       {isLoading ? (
-        <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-          Loading…
-        </div>
+        <LoadingState className="px-4 py-6 text-body-sm" />
       ) : isError ? (
-        <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="px-4 py-6 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           Could not load delivery history.
         </div>
       ) : items.length === 0 ? (
-        <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="px-4 py-6 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           This monitor has not fired yet.
         </div>
       ) : (
@@ -657,20 +644,21 @@ function DeliveryRow({
   retryError: string | null
 }) {
   return (
-    <li className="border-b px-4 py-3 last:border-0" style={{ borderColor: 'var(--border-subtle)' }}>
+    <li className="min-h-(--row-h) border-b px-4 py-3 last:border-0" style={{ borderColor: 'var(--border-subtle)' }}>
       <div className="flex flex-wrap items-center gap-2">
         <Chip tone={DELIVERY_TONE[delivery.status]} size="xs">
           {delivery.status}
         </Chip>
-        <Chip tone="neutral" size="xs">
+        <Chip variant="outline" size="xs">
           {delivery.channel}
         </Chip>
         <span className="min-w-0 flex-1 truncate text-body-sm font-medium">{delivery.scan_name}</span>
-        <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+        {/* A count and a relative time: sans with tabular digits (DS-17). */}
+        <span className="tnum text-caption" style={{ color: 'var(--fg-subtle)' }}>
           {formatNumber(delivery.matched_count)} matched
         </span>
         <span
-          className="mono text-2xs"
+          className="tnum text-micro"
           style={{ color: 'var(--fg-faint)' }}
           title={formatDateTime(delivery.created_at)}
         >

@@ -25,7 +25,6 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  Search,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiError } from '@/api/client'
@@ -44,6 +43,7 @@ import { ErrorState } from '@/components/error-state'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions, useScenarioArtifacts } from '@/demo/demoScenarioContext'
 import { Panel } from '@/components/settings/kit'
+import { FilterBar, FilterSearch, FilterSelect } from '@/components/ui/filter-bar'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
@@ -112,19 +112,18 @@ const STATUS_TONE: Record<MetricStatus, ChipTone> = {
   archived: 'warning',
 }
 
-const KIND_FILTER_OPTIONS: { value: '' | MetricKind; label: string }[] = [
-  { value: '', label: 'All kinds' },
+// The filter chips' options (DS-15). "Not filtering" is the chip's own `any`,
+// which Radix Select needs because it cannot carry the URL's empty value.
+const ANY_FILTER = 'any'
+const KIND_FILTER_OPTIONS: { value: MetricKind; label: string }[] = [
   { value: 'fact', label: 'Fact' },
   { value: 'sql', label: 'SQL' },
   { value: 'event_composition', label: 'Event composition' },
 ]
-
-// 16px below md: iOS zooms the page into any focused control under 16px, and
-// these are the first thing a phone user touches on the catalog (MET-21).
-// `outline-none` beats the global :focus-visible outline (it lives in
-// @layer base), so the filters draw their own ring like ui/input.
-const FILTER_SELECT_CLASS =
-  'h-8 rounded-md border bg-[var(--bg)] px-2 text-[16px] text-[var(--fg)] outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-[12px]'
+const STATUS_FILTER_OPTIONS = METRIC_STATUSES.map(status => ({
+  value: status,
+  label: METRIC_STATUS_LABEL[status],
+}))
 
 // Interval → milliseconds, for the staleness threshold (tripl-nxk2.10).
 const INTERVAL_MS: Record<MetricScanInterval, number> = {
@@ -560,8 +559,10 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
       return next
     })
   }
+  // From "some selected" the header box clears, as its minus sign promises
+  // (EV-26); only an empty selection selects everything.
   const toggleAll = () => {
-    setSelectedIds(allSelected ? new Set() : new Set(visibleMetrics.map(m => m.id)))
+    setSelectedIds(selected.length > 0 ? new Set() : new Set(visibleMetrics.map(m => m.id)))
   }
   // Filter/search changes swap the visible set; carrying hidden selections
   // across views would let a later bulk action silently hit rows the user
@@ -691,10 +692,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
           compact
         />
       ) : (
-        <MiniStatStrip
-          className={`rounded-lg border px-4 py-3 ${isEmpty ? 'opacity-60' : ''}`}
-          style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
-        >
+        <MiniStatStrip boxed className={isEmpty ? 'opacity-60' : undefined}>
           <MiniStat label="Metrics" value={data ? formatNumber(total) : '—'} />
           <MiniStat label="Active" value={data ? formatNumber(active) : '—'} tone="success" />
           <StatFilter
@@ -765,57 +763,35 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 ? `${formatNumber(total)} total${isRefreshing ? ' · Updating…' : ''}`
                 : undefined
             }
-            right={
-              // Full width below sm, so the search takes its own line and the
-              // two selects share the next instead of stacking three deep.
-              <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-                <div className="relative min-w-0 flex-1 basis-full sm:flex-none sm:basis-auto">
-                  <Search
-                    className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
-                    style={{ color: 'var(--fg-subtle)' }}
-                  />
-                  <input
-                    aria-label="Search metrics"
-                    value={searchInput}
-                    onChange={e => changeSearch(e.target.value)}
-                    placeholder="Search…"
-                    className={`${FILTER_SELECT_CLASS} w-full pl-7 sm:w-[160px]`}
-                  />
-                </div>
-                <select
-                  aria-label="Filter by status"
-                  value={statusFilter}
-                  onChange={e => setServerFilter('status', e.target.value)}
-                  className={FILTER_SELECT_CLASS}
-                >
-                  <option value="">All statuses</option>
-                  {METRIC_STATUSES.map(s => (
-                    <option key={s} value={s}>
-                      {METRIC_STATUS_LABEL[s]}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Filter by kind"
-                  value={kindFilter}
-                  onChange={e => setServerFilter('kind', e.target.value)}
-                  className={FILTER_SELECT_CLASS}
-                >
-                  {KIND_FILTER_OPTIONS.map(o => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            }
           >
+            {/* The app's one filter bar (DS-15): search, then "{Label}: {value}"
+                chips that apply instantly. Native selects here drew a different
+                height, font and dropdown from every other control (DS-14). */}
+            <FilterBar
+              active={hasFilters}
+              onClear={clearFilters}
+              className="border-b px-4 py-2"
+            >
+              <FilterSearch things="metrics" value={searchInput} onValueChange={changeSearch} />
+              <FilterSelect
+                label="Status"
+                value={statusFilter || ANY_FILTER}
+                onValueChange={value => setServerFilter('status', value === ANY_FILTER ? '' : value)}
+                options={STATUS_FILTER_OPTIONS}
+              />
+              <FilterSelect
+                label="Kind"
+                value={kindFilter || ANY_FILTER}
+                onValueChange={value => setServerFilter('kind', value === ANY_FILTER ? '' : value)}
+                options={KIND_FILTER_OPTIONS}
+              />
+            </FilterBar>
             {canWrite && selected.length > 0 && (
               <div
                 className="flex flex-wrap items-center gap-2 border-b px-4 py-2"
                 style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
               >
-                <span className="text-[12px] font-medium" style={{ color: 'var(--fg)' }}>
+                <span className="text-body-sm font-medium" style={{ color: 'var(--fg)' }}>
                   {selected.length} selected
                 </span>
                 {METRIC_STATUSES.map(status => (
@@ -823,7 +799,6 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                     key={status}
                     size="sm"
                     variant="outline"
-                    className="h-7 px-2 text-caption"
                     disabled={bulkStatusMut.isPending}
                     onClick={() => bulkStatusMut.mutate(status)}
                   >
@@ -833,7 +808,6 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-7 px-2 text-caption"
                   onClick={() => setSelectedIds(new Set())}
                 >
                   Clear
@@ -848,7 +822,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
             {isTruncated && (
               <div
                 role="status"
-                className="border-b px-4 py-2 text-[12px]"
+                className="border-b px-4 py-2 text-body-sm"
                 style={{ borderColor: 'var(--border-subtle)', color: 'var(--warning)' }}
               >
                 Showing {formatNumber(metrics.length)} of {formatNumber(total)} metrics.
@@ -857,13 +831,13 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               </div>
             )}
             {metricsQuery.isLoading ? (
-              <LoadingState className="px-4 py-6 text-[12px]" />
+              <LoadingState className="px-4 py-6 text-body-sm" />
             ) : visibleMetrics.length === 0 ? (
-              // Names what is filtering and offers the one-click way out; the
-              // stat toggle in particular is not an obvious control to undo
-              // (MET-25).
+              // Names what is filtering, the stat toggle included: it is not an
+              // obvious control to undo (MET-25). The one-click way out is the
+              // filter bar's "Clear filters" directly above.
               <div
-                className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-6 text-[12px]"
+                className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-6 text-body-sm"
                 style={{ color: 'var(--fg-subtle)' }}
               >
                 <span>
@@ -871,11 +845,6 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                     ? `No metrics match ${activeFilterLabels.join(', ')}.`
                     : 'No metrics match the current filters.'}
                 </span>
-                {hasFilters && (
-                  <Button size="sm" variant="outline" className="h-7 px-2 text-caption" onClick={clearFilters}>
-                    Clear filters
-                  </Button>
-                )}
               </div>
             ) : (
               // DndContext renders dnd-kit's own <div role="status"> live region as
@@ -908,7 +877,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                     <div role="rowgroup">
                       <div
                         role="row"
-                        className={`${METRIC_GRID} border-b py-2 text-2xs font-semibold uppercase tracking-[0.05em]`}
+                        className={`${METRIC_GRID} border-b py-2 micro-label`}
                         style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                       >
                         <span role="columnheader" aria-label="Reorder" />
@@ -916,7 +885,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                           {canWrite && (
                             <Checkbox
                               aria-label="Select all metrics"
-                              checked={allSelected}
+                              checked={allSelected ? true : selected.length > 0 ? 'indeterminate' : false}
                               onCheckedChange={toggleAll}
                             />
                           )}
@@ -1028,7 +997,9 @@ function MetricRow({
     <div
       ref={setNodeRef}
       role="row"
-      className={`${METRIC_GRID} border-b py-2.5 last:border-0 ${
+      // Height follows the Appearance density (DS-9): `--row-h` is the floor,
+      // so compact rows sit tighter and comfy rows open up like the Events table.
+      className={`${METRIC_GRID} min-h-(--row-h) border-b py-1.5 last:border-0 ${
         href ? 'cursor-pointer transition-colors hover:bg-[var(--surface-hover)]' : 'cursor-default'
       }`}
       style={{
@@ -1046,7 +1017,7 @@ function MetricRow({
           <button
             type="button"
             aria-label={`Reorder ${metric.display_name}`}
-            className="flex cursor-grab touch-none items-center justify-center rounded p-0.5 hover:bg-[var(--surface-hover)] active:cursor-grabbing"
+            className="flex cursor-grab touch-none items-center justify-center rounded-sm p-0.5 hover:bg-[var(--surface-hover)] active:cursor-grabbing"
             style={{ color: 'var(--fg-faint)' }}
             onClick={event => event.stopPropagation()}
             {...attributes}
@@ -1099,14 +1070,16 @@ function MetricRow({
             {metric.display_name}
           </span>
         )}
-        <Chip tone="neutral" size="xs">
+        {/* A kind tag is an outline pill, a status a soft one (DS-6). */}
+        <Chip variant="outline">
           {METRIC_KIND_LABEL[metric.kind]}
         </Chip>
       </span>
       <span
         role="cell"
         title={latestTitle}
-        className={`mono truncate text-[12px] ${PHONE_CELL.latest}`}
+        // A figure, not an identifier: sans with tabular digits (DS-17).
+        className={`tnum truncate text-body-sm ${PHONE_CELL.latest}`}
         style={{ color: signalTone ? `var(--${signalTone})` : 'var(--fg-subtle)' }}
       >
         {formatMetricValue(metric.latest_value, metric.unit)}
@@ -1115,19 +1088,19 @@ function MetricRow({
         {metric.spark.length > 0 ? (
           <Sparkline data={metric.spark} color={metric.color} anomalyIdx={anomalyIdx} width={96} height={22} />
         ) : (
-          <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+          <span className="text-caption" style={{ color: 'var(--fg-faint)' }}>
             —
           </span>
         )}
       </span>
       <span role="cell" className={PHONE_CELL.status}>
-        <Chip tone={STATUS_TONE[metric.status]} size="xs">
+        <Chip tone={STATUS_TONE[metric.status]}>
           {METRIC_STATUS_LABEL[metric.status]}
         </Chip>
       </span>
       <span
         role="cell"
-        className={`mono text-right text-2xs ${PHONE_CELL.dropped}`}
+        className={`tnum text-right text-micro ${PHONE_CELL.dropped}`}
         style={{ color: 'var(--fg-faint)' }}
       >
         {formatRelativeTime(metric.updated_at)}
@@ -1253,7 +1226,7 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
           <button
             type="button"
             aria-label={`Actions for ${metric.display_name}`}
-            className="flex items-center justify-center rounded p-0.5 hover:bg-[var(--surface-hover)]"
+            className="flex items-center justify-center rounded-sm p-0.5 hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-faint)' }}
             onClick={event => event.stopPropagation()}
           >

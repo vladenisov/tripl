@@ -17,6 +17,8 @@ import type {
 } from '@/types'
 import type { TableSchema } from '@/types/dataSourceSchema'
 import { IntervalField } from './IntervalField'
+import { starterSql } from './metricTemplates'
+import { examplePlaceholder, sqlPlaceholder } from '@/components/forms/placeholders'
 import { errorAria, fieldErrorId, type FieldErrors } from '@/lib/fieldErrors'
 import type { MetricDraft } from './metricDraft'
 
@@ -75,17 +77,17 @@ function SqlPreviewPanel({ result, color, unit }: SqlPreviewPanelProps) {
         </div>
       )}
       {lastValue !== undefined && (
-        <p className="mono mb-[4px] text-[12px]" style={{ color: 'var(--fg)' }}>
+        <p className="mono mb-[4px] text-body-sm" style={{ color: 'var(--fg)' }}>
           min {format(Math.min(...values))} · max {format(Math.max(...values))} · last{' '}
           {format(lastValue)}
         </p>
       )}
       {guidance && (
-        <p className="mb-[4px] text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+        <p className="mb-[4px] text-body-sm" style={{ color: 'var(--fg-muted)' }}>
           {guidance}
         </p>
       )}
-      <p className="mono text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+      <p className="mono text-body-sm" style={{ color: 'var(--fg-muted)' }}>
         {summary}
       </p>
     </div>
@@ -253,7 +255,13 @@ export function SqlDefinitionFields({
               resetPreview()
               patch({ metricSql: value })
             }}
-            placeholder="SELECT date_trunc('hour', created_at) AS bucket, count(*) AS value FROM events GROUP BY 1"
+            // A commented-out example in the selected warehouse's dialect: a
+            // complete query as the placeholder read as SQL already in the
+            // editor, so "SQL is required" looked wrong (MT-6).
+            placeholder={sqlPlaceholder(
+              'Return a time column and a numeric value, e.g.',
+              starterSql('event-volume', dataSources.find(ds => ds.id === draft.dataSourceId)?.db_type),
+            )}
             dialect={dataSources.find(ds => ds.id === draft.dataSourceId)?.db_type}
             tables={schemaTables}
             minHeight="220px"
@@ -267,7 +275,7 @@ export function SqlDefinitionFields({
               type="button"
               onClick={onPreview}
               disabled={!canPreview}
-              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
               style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
             >
               {previewMut.isPending ? (
@@ -305,7 +313,7 @@ export function SqlDefinitionFields({
                 patch({ sqlTimeColumn: value })
               }}
               suggestions={columnSuggestions}
-              placeholder="bucket"
+              placeholder={examplePlaceholder('bucket')}
               aria-required
               {...errorAria(errors, 'metric-sql-time')}
             />
@@ -326,7 +334,7 @@ export function SqlDefinitionFields({
                 patch({ sqlValueColumn: value })
               }}
               suggestions={columnSuggestions}
-              placeholder="value"
+              placeholder={examplePlaceholder('value')}
             />
           </div>
         </Field>

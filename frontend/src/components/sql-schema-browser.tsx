@@ -104,11 +104,11 @@ export function SqlSchemaBrowser({
               className="w-full"
               style={{
                 height: 28,
-                borderRadius: 6,
+                borderRadius: 'var(--radius)',
                 border: '1px solid var(--input)',
                 background: 'var(--bg-sunken)',
                 color: 'var(--fg)',
-                fontSize: 12,
+                fontSize: 'var(--text-body-sm)',
                 padding: '0 8px 0 26px',
               }}
             />
@@ -116,7 +116,7 @@ export function SqlSchemaBrowser({
 
           <ul className="max-h-[220px] overflow-y-auto px-1 py-1.5" aria-label="Schema tables">
             {entries.length === 0 ? (
-              <li className="px-2 py-1.5 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              <li className="px-2 py-1.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                 No matching tables.
               </li>
             ) : (
@@ -128,7 +128,7 @@ export function SqlSchemaBrowser({
                       onClick={() => toggle(table.name)}
                       aria-expanded={isOpen(table.name)}
                       aria-label={`Toggle columns for ${table.name}`}
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--surface-hover)]"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)]"
                       style={{ color: 'var(--fg-faint)' }}
                     >
                       <ChevronRight
@@ -143,7 +143,7 @@ export function SqlSchemaBrowser({
                       type="button"
                       onClick={() => onInsert(table.name)}
                       title={`Insert ${table.name}`}
-                      className="mono min-w-0 flex-1 truncate rounded px-1.5 py-1 text-left text-[12px] transition-colors hover:bg-[var(--surface-hover)]"
+                      className="mono min-w-0 flex-1 truncate rounded-sm px-1.5 py-1 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
                       style={{ color: 'var(--fg)' }}
                     >
                       {table.name}
@@ -157,19 +157,19 @@ export function SqlSchemaBrowser({
                             type="button"
                             onClick={() => onInsert(column.name)}
                             title={`Insert ${column.name}`}
-                            className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-[3px] text-left transition-colors hover:bg-[var(--surface-hover)]"
+                            className="flex w-full items-center justify-between gap-2 rounded-sm px-1.5 py-[3px] text-left transition-colors hover:bg-[var(--surface-hover)]"
                           >
                             <span className="mono truncate text-caption" style={{ color: 'var(--fg-muted)' }}>
                               {column.name}
                             </span>
-                            <span className="mono shrink-0 text-2xs" style={{ color: 'var(--fg-faint)' }}>
+                            <span className="mono shrink-0 text-micro" style={{ color: 'var(--fg-faint)' }}>
                               {column.data_type}
                             </span>
                           </button>
                         </li>
                       ))}
                       {hiddenColumns > 0 && (
-                        <li className="px-1.5 py-[3px] text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                        <li className="px-1.5 py-[3px] text-caption" style={{ color: 'var(--fg-subtle)' }}>
                           {formatNumber(hiddenColumns)} more {hiddenColumns === 1 ? 'column' : 'columns'} —
                           refine the filter to see them.
                         </li>

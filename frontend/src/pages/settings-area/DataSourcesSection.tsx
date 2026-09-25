@@ -17,7 +17,7 @@ export default function DataSourcesSection() {
         description="Where tripl reads events from for reconciliation and metrics. Each connection carries its own credentials."
       />
       <Suspense
-        fallback={<div className="text-sm" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>}
+        fallback={<div className="text-body" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>}
       >
         <DataSourcesPage />
       </Suspense>

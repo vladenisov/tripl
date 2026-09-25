@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { eventsApi } from '@/api/events'
 import { usersApi } from '@/api/users'
-import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
 import { Dot } from '@/components/primitives/dot'
 import { ErrorState } from '@/components/error-state'
 import { ImplementationTicketRow } from '@/components/implementation-ticket-row'
@@ -21,7 +21,7 @@ type EventHistoryItem = { id: string; field: string; created_at: string; new_val
 
 function PropertyRow({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
   return (
-    <div role="row" className="flex gap-3 px-4 py-[6px] text-[12px]">
+    <div role="row" className="flex gap-3 px-4 py-[6px] text-body-sm">
       <span role="rowheader" className="w-[120px] flex-shrink-0" style={{ color: 'var(--fg-subtle)' }}>{label}</span>
       <span role="cell" className={`min-w-0 flex-1 break-words ${mono ? 'mono' : ''}`} style={{ color: 'var(--fg)' }}>
         {value}
@@ -40,9 +40,9 @@ function EventMetaCard({
   if (event.meta_values.length === 0) return null
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-      <div className="border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+      <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
         Meta fields
-      </div>
+      </h2>
       <div role="table" aria-label="Meta fields" className="py-[6px]">
         {event.meta_values.map(mv => {
           const def = metaFieldMap.get(mv.meta_field_definition_id)
@@ -81,12 +81,12 @@ function EventTicketsCard({ slug, event }: { slug: string; event: TEvent }) {
   if (!tickets || tickets.length === 0) return null
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-      <div
-        className="border-b px-4 py-3 text-body-sm font-semibold"
+      <h2
+        className="m-0 border-b px-4 py-3 text-body-sm font-semibold"
         style={{ borderColor: 'var(--border-subtle)' }}
       >
         Implementation tickets
-      </div>
+      </h2>
       <div>
         {tickets.map(ticket => (
           <ImplementationTicketRow key={ticket.id} ticket={ticket} />
@@ -148,9 +148,9 @@ export function EventSideColumn({
   return (
     <div className="flex flex-col gap-[14px]">
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <div className="border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
           Properties
-        </div>
+        </h2>
         <div role="table" aria-label="Properties" className="py-[6px]">
           <PropertyRow label="Event type" value={eventType?.display_name ?? event.event_type?.display_name ?? '—'} />
           <PropertyRow label="Status" value={EVENT_STATUS_LABELS[event.status as EventStatus] ?? event.status} />
@@ -209,20 +209,21 @@ export function EventSideColumn({
       <EventTicketsCard slug={slug} event={event} />
 
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <div className="border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
           Metric breakdowns
-        </div>
+        </h2>
         <div className="flex flex-wrap gap-[6px] px-4 py-[12px]">
           {breakdowns.length > 0
-            ? breakdowns.map(column => <Chip key={column} size="xs" variant="outline">{column}</Chip>)
-            : <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>No event-level breakdowns</span>}
+            // Column names are identifiers: code tokens, not pills (DS-6).
+            ? breakdowns.map(column => <CodeToken key={column}>{column}</CodeToken>)
+            : <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>No event-level breakdowns</span>}
         </div>
       </div>
 
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <div className="border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
           Recent activity
-        </div>
+        </h2>
         <div className="py-[4px]">
           {historyError ? (
             <div className="px-4 py-3">
@@ -238,7 +239,7 @@ export function EventSideColumn({
               <p className="text-caption font-medium" style={{ color: 'var(--fg-muted)' }}>
                 No recent changes
               </p>
-              <p className="mt-1 text-2xs">
+              <p className="mt-1 text-micro">
                 Edits to this event's definition will show up here.
               </p>
             </div>
@@ -252,7 +253,7 @@ export function EventSideColumn({
                   </span>
                   {change.new_value != null && <span style={{ color: 'var(--fg-muted)' }}> → {change.new_value}</span>}
                 </div>
-                <div className="mt-[2px] text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="mt-[2px] text-micro" style={{ color: 'var(--fg-subtle)' }}>
                   {formatRelativeTime(change.created_at)}
                 </div>
               </div>

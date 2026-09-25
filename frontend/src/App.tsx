@@ -12,9 +12,12 @@ import { Button } from './components/ui/button'
 import { Toaster } from './components/ui/sonner'
 import {
   NOT_FOUND_TITLE_LABEL,
+  entityTitleLabel,
+  resolveEntityKind,
   resolveTitleFromPath,
   useDocumentTitle,
 } from './hooks/useDocumentTitle'
+import { DocumentEntityTitleContext } from './components/shell-chrome-context'
 import { postLoginDestination } from './lib/authRedirect'
 import { lazyWithReload } from './lib/lazyWithReload'
 import { projectHomePath } from './lib/navigation'
@@ -48,7 +51,7 @@ function PageFallback({ label }: { label: string }) {
     <div
       role="status"
       aria-live="polite"
-      className="flex min-h-[240px] items-center justify-center text-sm text-muted-foreground"
+      className="flex min-h-[240px] items-center justify-center text-body text-muted-foreground"
     >
       {label}
     </div>
@@ -91,7 +94,7 @@ function FullScreenFallback({ label }: { label: string }) {
     <div
       role="status"
       aria-live="polite"
-      className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground"
+      className="flex min-h-screen items-center justify-center bg-background px-6 text-body text-muted-foreground"
     >
       {label}
     </div>
@@ -148,11 +151,11 @@ function SignedInInterstitial({ purpose }: { purpose: string }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-6">
       <div
-        className="w-full max-w-md space-y-4 rounded-xl border p-6"
+        className="w-full max-w-md space-y-4 rounded-card border p-6"
         style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
       >
-        <h1 className="text-lg font-semibold">You are already signed in</h1>
-        <p className="text-sm" style={{ color: 'var(--fg-muted)' }}>
+        <h1 className="text-heading font-semibold">You are already signed in</h1>
+        <p className="text-body" style={{ color: 'var(--fg-muted)' }}>
           You are signed in as <strong>{who}</strong>. Sign out to {purpose}.
         </p>
         <div className="flex flex-wrap gap-2">
@@ -363,7 +366,7 @@ function HomeRoute() {
  * app shell (Layout) — so every route gets a descriptive title and none is ever
  * left stale from the previous page.
  */
-function DocumentTitle() {
+function DocumentTitle({ entityTitle }: { entityTitle: string | null }) {
   const { pathname } = useLocation()
   const { label, slug } = resolveTitleFromPath(pathname)
   // `enabled: false` — this only READS the shared `['projects']` cache that the
@@ -376,130 +379,154 @@ function DocumentTitle() {
 
   // An invented slug must not be echoed back as if it named a real workspace —
   // the shell shows a not-found state for it, so the tab has to agree.
+  //
+  // A detail page that has loaded its entity names the tab after it instead,
+  // "Screen View · Event type volume · tripl" (JR-33): three open monitoring
+  // tabs used to read "Monitoring · acme · tripl" alike.
+  const entityLabel =
+    entityTitle && !slugIsUnknown
+      ? entityTitleLabel(entityTitle, resolveEntityKind(pathname) ?? label)
+      : null
   useDocumentTitle(
-    slugIsUnknown ? NOT_FOUND_TITLE_LABEL : label,
-    slugIsUnknown ? undefined : slug,
+    entityLabel ?? (slugIsUnknown ? NOT_FOUND_TITLE_LABEL : label),
+    entityLabel || slugIsUnknown ? undefined : slug,
   )
   return null
+}
+
+/**
+ * Holds the entity name a detail page hands the shell (usePageTitle), for
+ * DocumentTitle. `children` are created by App, so a name change re-renders
+ * only this and the title driver, never the route tree.
+ */
+function DocumentTitleRoot({ children }: { children: ReactNode }) {
+  const [entityTitle, setEntityTitle] = useState<string | null>(null)
+  return (
+    <DocumentEntityTitleContext.Provider value={setEntityTitle}>
+      <DocumentTitle entityTitle={entityTitle} />
+      {children}
+    </DocumentEntityTitleContext.Provider>
+  )
 }
 
 export default function App() {
   return (
     <ThemeProvider defaultTheme="dark" storageKey="tripl-ui-theme">
       <AuthProvider>
-        <DocumentTitle />
-        <Routes>
-          <Route path="/auth" element={<AuthRoute />} />
-          {/* Redeeming an invitation needs a signed-out browser. Someone signed
-              in is told so and offered a sign-out that keeps the link, rather
-              than being bounced to / with the token dropped. */}
-          <Route
-            path="/invite/:token"
-            element={
-              <AnonymousOnly signedInPurpose="accept this invitation">
-                {withSuspense('invite', <InvitePage />)}
-              </AnonymousOnly>
-            }
-          />
-          {/* Full-takeover Settings area — its own viewport shell, so each route
-              mounts OUTSIDE the app Layout (no app sidebar) but requires auth. */}
-          <Route path="/settings" element={<SettingsIndexRedirect />} />
-          <Route path="/settings/members" element={<Takeover section="members" />} />
-          <Route path="/settings/api-keys" element={<Takeover section="api-keys" />} />
-          <Route path="/settings/profile" element={<Takeover section="profile" />} />
-          <Route path="/settings/security" element={<Takeover section="security" />} />
-          <Route path="/settings/data-sources" element={<Takeover section="data-sources" />} />
-          <Route path="/settings/data-sources/:dsId" element={<Takeover section="data-sources" />} />
-          <Route path="/settings/project/general" element={<Takeover section="project/general" />} />
-          <Route path="/settings/project/plan-rules" element={<Takeover section="project/plan-rules" />} />
-          <Route path="/settings/instance/:instSection" element={<TakeoverInstance />} />
-          {/* Legacy → takeover redirects. */}
-          <Route path="/settings/users" element={<Navigate to="/settings/members" replace />} />
-          <Route path="/settings/account" element={<Navigate to="/settings/profile" replace />} />
-          <Route path="/settings/runtime" element={<Navigate to="/settings/instance/runtime" replace />} />
-          <Route path="/settings/ai" element={<Navigate to="/settings/instance/ai" replace />} />
-          <Route path="/settings/email" element={<Navigate to="/settings/instance/email" replace />} />
-          <Route path="/settings/storage" element={<Navigate to="/settings/instance/storage" replace />} />
-          <Route
-            path="/settings/observability"
-            element={<Navigate to="/settings/instance/observability" replace />}
-          />
-          <Route path="/settings/system" element={<Navigate to="/settings/instance/system" replace />} />
-          <Route element={<RequireAuth><Layout /></RequireAuth>}>
-            <Route path="/" element={<HomeRoute />} />
-            {/* Stable escape: single-project users land in their project from
-                "/", but the portfolio view stays reachable here (never bounced). */}
-            <Route path="/workspace" element={withSuspense('workspace', <MainPage />)} />
-            <Route path="/projects" element={<Navigate to="/workspace" replace />} />
-            <Route path="/data-sources" element={<Navigate to="/settings/data-sources" replace />} />
-            <Route path="/data-sources/:dsId" element={<DataSourceRedirect />} />
-            <Route path="/users" element={<Navigate to="/settings/members" replace />} />
-            <Route path="/account" element={<Navigate to="/settings/profile" replace />} />
-            <Route path="/p/:slug/monitoring" element={<ProjectSettingsRedirect tab="monitoring" />} />
-            <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />
-            <Route path="/p/:slug/events/detail/:eventId" element={<EventDetailRedirect />} />
-            {/* Keyed per entity: the page is reached from itself (successor links, the
-                bell, Back), and a reused instance kept the previous entity's chart,
-                filters and tab under the new header. */}
+        <DocumentTitleRoot>
+          <Routes>
+            <Route path="/auth" element={<AuthRoute />} />
+            {/* Redeeming an invitation needs a signed-out browser. Someone signed
+                in is told so and offered a sign-out that keeps the link, rather
+                than being bounced to / with the token dropped. */}
             <Route
-              path="/p/:slug/monitoring/:scope/:id"
-              element={withSuspense(
-                'monitoring-detail',
-                <KeyedRoute params={['slug', 'scope', 'id']}><MonitoringDetailPage /></KeyedRoute>,
-              )}
+              path="/invite/:token"
+              element={
+                <AnonymousOnly signedInPurpose="accept this invitation">
+                  {withSuspense('invite', <InvitePage />)}
+                </AnonymousOnly>
+              }
             />
-            <Route path="/p/:slug/events/:tab/new" element={withSuspense('event-edit', <EventEditPage />)} />
-            {/* Before /events/:tab/:eventId, or "bulk" resolves as an event id. */}
-            <Route path="/p/:slug/events/:tab/bulk" element={withSuspense('event-bulk', <EventBulkPage />)} />
-            <Route path="/p/:slug/events/:tab/:eventId/edit" element={withSuspense('event-edit', <EventEditPage />)} />
-            <Route path="/p/:slug/events/:tab/:eventId" element={withSuspense('events', <EventsPage />)} />
-            <Route path="/p/:slug/events/:tab" element={withSuspense('events', <EventsPage />)} />
-            <Route path="/p/:slug/events" element={withSuspense('events', <EventsPage />)} />
-            <Route path="/p/:slug/overview" element={withSuspense('overview', <OverviewPage />)} />
-            <Route path="/p/:slug/monitors" element={<MonitorsRedirect />} />
-            <Route path="/p/:slug/monitors/:monitorId" element={withSuspense('monitor-detail', <MonitorDetailPage />)} />
-            <Route path="/p/:slug/reconciliation" element={withSuspense('reconciliation', <ReconciliationPage />)} />
-            <Route path="/p/:slug/anomalies" element={withSuspense('anomalies', <AnomaliesPage />)} />
-            <Route path="/p/:slug/metrics/new" element={withMetricSuspense('metrics-new', <MetricEditPage />)} />
-            <Route path="/p/:slug/metrics/:metricId/edit" element={withMetricSuspense('metrics-edit', <MetricEditPage />)} />
-            {/* Fact tables live as a tab inside Metrics — create/edit forms first,
-                then the two tab list routes. */}
-            <Route path="/p/:slug/metrics/fact-tables/new" element={withMetricSuspense('fact-tables-new', <FactTableEditPage />)} />
-            <Route path="/p/:slug/metrics/fact-tables/:factTableId/edit" element={withMetricSuspense('fact-tables-edit', <FactTableEditPage />)} />
-            <Route path="/p/:slug/metrics/fact-tables" element={withMetricSuspense('metrics-fact-tables', <MetricsPage tab="fact-tables" />)} />
-            <Route path="/p/:slug/metrics" element={withMetricSuspense('metrics-list', <MetricsPage tab="catalog" />)} />
-            {/* Legacy fact-tables routes → Metrics › Fact tables tab. */}
-            <Route path="/p/:slug/fact-tables/new" element={<FactTablesNewRedirect />} />
-            <Route path="/p/:slug/fact-tables/:factTableId/edit" element={<FactTableEditRedirect />} />
-            <Route path="/p/:slug/fact-tables" element={<FactTablesRedirect />} />
-            <Route path="/p/:slug/coverage" element={withSuspense('coverage', <CoveragePage />)} />
-            <Route path="/p/:slug/concepts" element={withSuspense('concepts', <ConceptsPage />)} />
-            {/* Govern › Scans — a top-level operational surface, not a settings tab. */}
-            <Route path="/p/:slug/scans/:scanId" element={withSuspense('scans', <ProjectScansPage />)} />
-            <Route path="/p/:slug/scans" element={withSuspense('scans', <ProjectScansPage />)} />
-            {/* Legacy Govern › Scans paths. Declared before /p/:slug/settings/:tab
-                so the pair reads in precedence order; the router ranks the static
-                `scans` segment above `:tab` regardless, so DELETING these lines —
-                not reordering them — is what drops a bookmark onto
-                ProjectSettingsPage, which no longer knows the tab and bounces to
-                /p/:slug/events (App.test.tsx pins this). */}
-            <Route path="/p/:slug/settings/scans/:itemId" element={<ScansRedirect />} />
-            <Route path="/p/:slug/settings/scans" element={<ScansRedirect />} />
-            <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
-            <Route path="/p/:slug/settings/:tab" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
-            <Route path="/p/:slug/settings" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
-            <Route path="/p/:slug" element={withSuspense('events', <EventsPage />)} />
-            {/* Project-scoped catch-all. It has to exist separately from the
-                global one below: only a route that declares `:slug` puts the
-                param in scope for Layout, so an unmatched path under a real
-                project keeps THAT project's sidebar and breadcrumb instead of
-                collapsing to the workspace shell (tripl-jfm3.3). */}
-            <Route path="/p/:slug/*" element={<NotFoundPage />} />
-            {/* Catch-all: render the app shell + not-found state for any
-                unmatched authed path instead of a blank screen. */}
-            <Route path="*" element={<NotFoundPage />} />
-          </Route>
-        </Routes>
+            {/* Full-takeover Settings area — its own viewport shell, so each route
+                mounts OUTSIDE the app Layout (no app sidebar) but requires auth. */}
+            <Route path="/settings" element={<SettingsIndexRedirect />} />
+            <Route path="/settings/members" element={<Takeover section="members" />} />
+            <Route path="/settings/api-keys" element={<Takeover section="api-keys" />} />
+            <Route path="/settings/profile" element={<Takeover section="profile" />} />
+            <Route path="/settings/security" element={<Takeover section="security" />} />
+            <Route path="/settings/data-sources" element={<Takeover section="data-sources" />} />
+            <Route path="/settings/data-sources/:dsId" element={<Takeover section="data-sources" />} />
+            <Route path="/settings/project/general" element={<Takeover section="project/general" />} />
+            <Route path="/settings/project/plan-rules" element={<Takeover section="project/plan-rules" />} />
+            <Route path="/settings/instance/:instSection" element={<TakeoverInstance />} />
+            {/* Legacy → takeover redirects. */}
+            <Route path="/settings/users" element={<Navigate to="/settings/members" replace />} />
+            <Route path="/settings/account" element={<Navigate to="/settings/profile" replace />} />
+            <Route path="/settings/runtime" element={<Navigate to="/settings/instance/runtime" replace />} />
+            <Route path="/settings/ai" element={<Navigate to="/settings/instance/ai" replace />} />
+            <Route path="/settings/email" element={<Navigate to="/settings/instance/email" replace />} />
+            <Route path="/settings/storage" element={<Navigate to="/settings/instance/storage" replace />} />
+            <Route
+              path="/settings/observability"
+              element={<Navigate to="/settings/instance/observability" replace />}
+            />
+            <Route path="/settings/system" element={<Navigate to="/settings/instance/system" replace />} />
+            <Route element={<RequireAuth><Layout /></RequireAuth>}>
+              <Route path="/" element={<HomeRoute />} />
+              {/* Stable escape: single-project users land in their project from
+                  "/", but the portfolio view stays reachable here (never bounced). */}
+              <Route path="/workspace" element={withSuspense('workspace', <MainPage />)} />
+              <Route path="/projects" element={<Navigate to="/workspace" replace />} />
+              <Route path="/data-sources" element={<Navigate to="/settings/data-sources" replace />} />
+              <Route path="/data-sources/:dsId" element={<DataSourceRedirect />} />
+              <Route path="/users" element={<Navigate to="/settings/members" replace />} />
+              <Route path="/account" element={<Navigate to="/settings/profile" replace />} />
+              <Route path="/p/:slug/monitoring" element={<ProjectSettingsRedirect tab="monitoring" />} />
+              <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />
+              <Route path="/p/:slug/events/detail/:eventId" element={<EventDetailRedirect />} />
+              {/* Keyed per entity: the page is reached from itself (successor links, the
+                  bell, Back), and a reused instance kept the previous entity's chart,
+                  filters and tab under the new header. */}
+              <Route
+                path="/p/:slug/monitoring/:scope/:id"
+                element={withSuspense(
+                  'monitoring-detail',
+                  <KeyedRoute params={['slug', 'scope', 'id']}><MonitoringDetailPage /></KeyedRoute>,
+                )}
+              />
+              <Route path="/p/:slug/events/:tab/new" element={withSuspense('event-edit', <EventEditPage />)} />
+              {/* Before /events/:tab/:eventId, or "bulk" resolves as an event id. */}
+              <Route path="/p/:slug/events/:tab/bulk" element={withSuspense('event-bulk', <EventBulkPage />)} />
+              <Route path="/p/:slug/events/:tab/:eventId/edit" element={withSuspense('event-edit', <EventEditPage />)} />
+              <Route path="/p/:slug/events/:tab/:eventId" element={withSuspense('events', <EventsPage />)} />
+              <Route path="/p/:slug/events/:tab" element={withSuspense('events', <EventsPage />)} />
+              <Route path="/p/:slug/events" element={withSuspense('events', <EventsPage />)} />
+              <Route path="/p/:slug/overview" element={withSuspense('overview', <OverviewPage />)} />
+              <Route path="/p/:slug/monitors" element={<MonitorsRedirect />} />
+              <Route path="/p/:slug/monitors/:monitorId" element={withSuspense('monitor-detail', <MonitorDetailPage />)} />
+              <Route path="/p/:slug/reconciliation" element={withSuspense('reconciliation', <ReconciliationPage />)} />
+              <Route path="/p/:slug/anomalies" element={withSuspense('anomalies', <AnomaliesPage />)} />
+              <Route path="/p/:slug/metrics/new" element={withMetricSuspense('metrics-new', <MetricEditPage />)} />
+              <Route path="/p/:slug/metrics/:metricId/edit" element={withMetricSuspense('metrics-edit', <MetricEditPage />)} />
+              {/* Fact tables live as a tab inside Metrics — create/edit forms first,
+                  then the two tab list routes. */}
+              <Route path="/p/:slug/metrics/fact-tables/new" element={withMetricSuspense('fact-tables-new', <FactTableEditPage />)} />
+              <Route path="/p/:slug/metrics/fact-tables/:factTableId/edit" element={withMetricSuspense('fact-tables-edit', <FactTableEditPage />)} />
+              <Route path="/p/:slug/metrics/fact-tables" element={withMetricSuspense('metrics-fact-tables', <MetricsPage tab="fact-tables" />)} />
+              <Route path="/p/:slug/metrics" element={withMetricSuspense('metrics-list', <MetricsPage tab="catalog" />)} />
+              {/* Legacy fact-tables routes → Metrics › Fact tables tab. */}
+              <Route path="/p/:slug/fact-tables/new" element={<FactTablesNewRedirect />} />
+              <Route path="/p/:slug/fact-tables/:factTableId/edit" element={<FactTableEditRedirect />} />
+              <Route path="/p/:slug/fact-tables" element={<FactTablesRedirect />} />
+              <Route path="/p/:slug/coverage" element={withSuspense('coverage', <CoveragePage />)} />
+              <Route path="/p/:slug/concepts" element={withSuspense('concepts', <ConceptsPage />)} />
+              {/* Govern › Scans — a top-level operational surface, not a settings tab. */}
+              <Route path="/p/:slug/scans/:scanId" element={withSuspense('scans', <ProjectScansPage />)} />
+              <Route path="/p/:slug/scans" element={withSuspense('scans', <ProjectScansPage />)} />
+              {/* Legacy Govern › Scans paths. Declared before /p/:slug/settings/:tab
+                  so the pair reads in precedence order; the router ranks the static
+                  `scans` segment above `:tab` regardless, so DELETING these lines —
+                  not reordering them — is what drops a bookmark onto
+                  ProjectSettingsPage, which no longer knows the tab and bounces to
+                  /p/:slug/events (App.test.tsx pins this). */}
+              <Route path="/p/:slug/settings/scans/:itemId" element={<ScansRedirect />} />
+              <Route path="/p/:slug/settings/scans" element={<ScansRedirect />} />
+              <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
+              <Route path="/p/:slug/settings/:tab" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
+              <Route path="/p/:slug/settings" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
+              <Route path="/p/:slug" element={withSuspense('events', <EventsPage />)} />
+              {/* Project-scoped catch-all. It has to exist separately from the
+                  global one below: only a route that declares `:slug` puts the
+                  param in scope for Layout, so an unmatched path under a real
+                  project keeps THAT project's sidebar and breadcrumb instead of
+                  collapsing to the workspace shell (tripl-jfm3.3). */}
+              <Route path="/p/:slug/*" element={<NotFoundPage />} />
+              {/* Catch-all: render the app shell + not-found state for any
+                  unmatched authed path instead of a blank screen. */}
+              <Route path="*" element={<NotFoundPage />} />
+            </Route>
+          </Routes>
+        </DocumentTitleRoot>
       </AuthProvider>
       <Toaster />
     </ThemeProvider>

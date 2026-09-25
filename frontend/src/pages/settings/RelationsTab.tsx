@@ -8,7 +8,10 @@ import type { EventType, EventTypeRelation } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { PageContainer } from "@/components/primitives/page-container"
+import { PageHeader } from "@/components/primitives/page-header"
+import { SELECT_CLASS } from "@/components/data-sources/connection-settings"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -97,27 +100,41 @@ export function RelationsTab({ slug }: { slug: string }) {
   }
 
   return (
-    <div className="space-y-4">
+    <PageContainer className="space-y-4">
       {dialog}
+      {/* The shared page header (DS-1): the page had no title of its own,
+          only the Panel's. "New relation" matches the dialog (DS-29). */}
+      <PageHeader
+        eyebrow="Plan"
+        title="Relations"
+        description="Links between event types by a shared field, so drift and coverage can follow the join."
+        actions={
+          canWrite && (
+            <Button size="sm" onClick={() => setShowForm(true)}>
+              <Plus className="size-3.5" />New relation
+            </Button>
+          )
+        }
+      />
       {!canWrite && <ReadOnlyNotice />}
 
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
         <DialogContent>
-          <form onSubmit={e => { e.preventDefault(); createMut.mutate() }}>
-            <DialogHeader><DialogTitle>New Relation</DialogTitle></DialogHeader>
-            <div className="grid gap-4 py-4">
+          <form className="flex min-h-0 flex-col gap-4" onSubmit={e => { e.preventDefault(); createMut.mutate() }}>
+            <DialogHeader><DialogTitle>New relation</DialogTitle></DialogHeader>
+            <DialogBody className="grid gap-4">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="grid gap-2">
-                  <Label htmlFor={srcEtLabelId}>Source Event Type</Label>
-                  <select id={srcEtLabelId} value={srcEtId} onChange={e => { setSrcEtId(e.target.value); setSrcFieldId('') }} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={srcEtLabelId}>Source event type</Label>
+                  <select id={srcEtLabelId} value={srcEtId} onChange={e => { setSrcEtId(e.target.value); setSrcFieldId('') }} className={SELECT_CLASS}>
                     <option value="">Select...</option>
                     {eventTypes.map((et: EventType) => <option key={et.id} value={et.id}>{et.display_name}</option>)}
                   </select>
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor={tgtEtLabelId}>Target Event Type</Label>
-                  <select id={tgtEtLabelId} value={tgtEtId} onChange={e => { setTgtEtId(e.target.value); setTgtFieldId('') }} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={tgtEtLabelId}>Target event type</Label>
+                  <select id={tgtEtLabelId} value={tgtEtId} onChange={e => { setTgtEtId(e.target.value); setTgtFieldId('') }} className={SELECT_CLASS}>
                     <option value="">Select...</option>
                     {eventTypes.map((et: EventType) => <option key={et.id} value={et.id}>{et.display_name}</option>)}
                   </select>
@@ -125,22 +142,22 @@ export function RelationsTab({ slug }: { slug: string }) {
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="grid gap-2">
-                  <Label htmlFor={srcFieldLabelId}>Source Field</Label>
-                  <select id={srcFieldLabelId} value={srcFieldId} onChange={e => setSrcFieldId(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={srcFieldLabelId}>Source field</Label>
+                  <select id={srcFieldLabelId} value={srcFieldId} onChange={e => setSrcFieldId(e.target.value)} className={SELECT_CLASS}>
                     <option value="">Select...</option>
                     {srcEt?.field_definitions.map(f => <option key={f.id} value={f.id}>{f.display_name}</option>)}
                   </select>
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor={tgtFieldLabelId}>Target Field</Label>
-                  <select id={tgtFieldLabelId} value={tgtFieldId} onChange={e => setTgtFieldId(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={tgtFieldLabelId}>Target field</Label>
+                  <select id={tgtFieldLabelId} value={tgtFieldId} onChange={e => setTgtFieldId(e.target.value)} className={SELECT_CLASS}>
                     <option value="">Select...</option>
                     {tgtEt?.field_definitions.map(f => <option key={f.id} value={f.id}>{f.display_name}</option>)}
                   </select>
                 </div>
               </div>
-              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
-            </div>
+              {createMut.isError && <p className="text-body text-destructive">{getErrorMessage(createMut.error)}</p>}
+            </DialogBody>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
               <Button type="submit" disabled={!srcFieldId || !tgtFieldId || createMut.isPending}>Create</Button>
@@ -150,22 +167,15 @@ export function RelationsTab({ slug }: { slug: string }) {
       </Dialog>
 
       <Panel
-        title="Relations"
+        title="All relations"
         subtitle={relationsQuery.isPending
           ? 'Loading…'
           : `${relations.length} relation${relations.length === 1 ? '' : 's'}`}
-        right={
-          canWrite && (
-            <Button size="sm" onClick={() => setShowForm(true)}>
-              <Plus className="mr-2 h-4 w-4" />Add relation
-            </Button>
-          )
-        }
       >
         {relationsQuery.isError && relationsQuery.data !== undefined && (
           // A failed REFRESH keeps the rows on screen: replacing them with an
           // error would unmount whatever is being edited (review 204).
-          <p role="alert" className="px-4 py-2 text-xs text-destructive">
+          <p role="alert" className="px-4 py-2 text-body-sm text-destructive">
             Couldn't refresh relations: {getErrorMessage(relationsQuery.error)}
           </p>
         )}
@@ -205,10 +215,10 @@ export function RelationsTab({ slug }: { slug: string }) {
                   const target = endpoint(r.target_event_type_id, r.target_field_id)
                   return (
                     <TableRow key={r.id}>
-                      <TableCell className="font-mono text-xs">{source}</TableCell>
+                      <TableCell className="font-mono text-body-sm">{source}</TableCell>
                       <TableCell className="text-muted-foreground" aria-hidden="true">→</TableCell>
-                      <TableCell className="font-mono text-xs">{target}</TableCell>
-                      <TableCell className="text-muted-foreground text-xs">{r.relation_type}</TableCell>
+                      <TableCell className="font-mono text-body-sm">{target}</TableCell>
+                      <TableCell className="text-muted-foreground text-body-sm">{r.relation_type}</TableCell>
                       <TableCell>
                         {canWrite && (
                           <IconButton
@@ -228,7 +238,7 @@ export function RelationsTab({ slug }: { slug: string }) {
               </TableBody>
             </Table>
             {deleteMut.isError && (
-              <p role="alert" className="px-4 py-2 text-sm text-destructive">
+              <p role="alert" className="px-4 py-2 text-body text-destructive">
                 Could not delete the relation: {getErrorMessage(deleteMut.error)}
               </p>
             )}
@@ -239,6 +249,6 @@ export function RelationsTab({ slug }: { slug: string }) {
           </div>
         )}
       </Panel>
-    </div>
+    </PageContainer>
   )
 }

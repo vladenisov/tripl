@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Save, Trash2, TriangleAlert } from 'lucide-react'
+import { RefreshCw, Trash2, TriangleAlert } from 'lucide-react'
 import {
   projectsApi,
   type AnomalyResetCounts,
@@ -35,6 +35,7 @@ import {
   SCard,
   NativeSelect,
   SHeader,
+  SettingsSaveBar,
   TextArea,
   TextInput,
 } from '@/components/settings/kit'
@@ -50,8 +51,13 @@ import {
   timeZoneOptions,
   useTransientFlag,
 } from './projectGeneralFields'
-import { DANGER_ROW_CLASS, DangerResetRow, DangerRetireVariablesRow, DangerRow } from './ProjectDangerRows'
-import { SaveStatus } from './SaveStatus'
+import {
+  DANGER_ROW_CLASS,
+  DANGER_ROW_CONTAINER_CLASS,
+  DangerResetRow,
+  DangerRetireVariablesRow,
+  DangerRow,
+} from './ProjectDangerRows'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const MAX_APP_VERSION_KEEP_RELEASES = 100
@@ -153,7 +159,7 @@ export default function ProjectGeneralSection({
 }) {
   if (!slug) {
     return (
-      <div className="text-sm" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="text-body" style={{ color: 'var(--fg-subtle)' }}>
         Select a project to edit its settings.
       </div>
     )
@@ -181,8 +187,7 @@ function ProjectGeneralBody({
   const [appVersionKeepReleases, setAppVersionKeepReleases] = useState('')
   const [timezone, setTimezone] = useState('UTC')
   const [hydratedFor, setHydratedFor] = useState<string | null>(null)
-  const [detailsSaved, markDetailsSaved, clearDetailsSaved] = useTransientFlag(SAVED_FEEDBACK_MS)
-  const [versionSaved, markVersionSaved, clearVersionSaved] = useTransientFlag(SAVED_FEEDBACK_MS)
+  const [saved, markSaved, clearSaved] = useTransientFlag(SAVED_FEEDBACK_MS)
 
   if (projectQuery.data && hydratedFor !== projectQuery.data.id) {
     setName(projectQuery.data.name)
@@ -193,10 +198,14 @@ function ProjectGeneralBody({
     setHydratedFor(projectQuery.data.id)
   }
 
-  const updateMut = useMutation({
+  // One draft, one save (ST-3): the details and the version policy used to
+  // have a Save button each, with no Discard and no rail dot, beside the
+  // instance pages' single sticky bar. The PATCH carries only the part that
+  // changed, so a version-policy edit does not resend the details.
+  const saveMut = useMutation({
     meta: SILENT_ERROR_META,
-    mutationFn: () => projectsApi.update(slug, { name, slug: slugDraft, description, timezone }),
-    onMutate: clearDetailsSaved,
+    mutationFn: (payload: Parameters<typeof projectsApi.update>[1]) => projectsApi.update(slug, payload),
+    onMutate: clearSaved,
     onSuccess: (project) => {
       if (project.slug !== slug) {
         // The old address is gone. Drop its cache entry before the refresh
@@ -214,27 +223,13 @@ function ProjectGeneralBody({
       qc.setQueryData(projectKey(project.slug), project)
       qc.invalidateQueries({ queryKey: projectsKey() })
       qc.invalidateQueries({ queryKey: projectRootKey() })
-      markDetailsSaved()
+      markSaved()
     },
   })
   const reindexMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () => searchApi.reindex(slug),
     onSuccess: () => qc.invalidateQueries({ queryKey: commandPaletteSearchRootKey() }),
-  })
-  const versionPolicyMut = useMutation({
-    meta: SILENT_ERROR_META,
-    mutationFn: () =>
-      projectsApi.update(slug, {
-        app_version_keep_releases: Number(appVersionKeepReleases),
-      }),
-    onMutate: clearVersionSaved,
-    onSuccess: (project) => {
-      qc.setQueryData(projectKey(project.slug), project)
-      qc.invalidateQueries({ queryKey: projectsKey() })
-      qc.invalidateQueries({ queryKey: projectRootKey() })
-      markVersionSaved()
-    },
   })
   // The delete dialog renders a failure in place (WS-9), so no toast as well.
   const deleteMut = useMutation({
@@ -368,13 +363,37 @@ function ProjectGeneralBody({
   // Either card's unsaved edits arm the settings shell's leave guard: the rail,
   // "View project", Back and reload all used to drop them silently (WS-13).
   // A read-only form is never dirty. No settings path keeps this draft: the
-  // section is the only one that renders it.
+  // section is the only one that renders it. `dirtyPaths` puts the rail's
+  // unsaved dot on General, as the instance pages have it (ST-3).
   const { registerUnsaved } = useUnsavedChanges()
   const dirty = canEdit && !!projectQuery.data && (!isPristine || !versionPolicyPristine)
   useEffect(() => {
-    registerUnsaved(dirty ? { keptBy: () => false, message: UNSAVED_PROJECT_MESSAGE } : null)
+    registerUnsaved(
+      dirty
+        ? { keptBy: () => false, message: UNSAVED_PROJECT_MESSAGE, dirtyPaths: ['project/general'] }
+        : null,
+    )
     return () => registerUnsaved(null)
   }, [dirty, registerUnsaved])
+
+  const discard = () => {
+    const project = projectQuery.data
+    if (!project) return
+    setName(project.name)
+    setSlugDraft(project.slug)
+    setDescription(project.description ?? '')
+    setTimezone(project.timezone ?? 'UTC')
+    setAppVersionKeepReleases(String(project.app_version_keep_releases))
+    saveMut.reset()
+  }
+
+  const save = () => {
+    if (!canEdit || slugError || versionPolicyInvalid) return
+    saveMut.mutate({
+      ...(isPristine ? {} : { name, slug: slugDraft, description, timezone }),
+      ...(versionPolicyPristine ? {} : { app_version_keep_releases: appVersionKeepReleasesNumber }),
+    })
+  }
 
   return (
     <div>
@@ -399,12 +418,12 @@ function ProjectGeneralBody({
       />
 
       {projectQuery.isLoading && (
-        <p className="text-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
           Loading project…
         </p>
       )}
       {projectQuery.isError && (
-        <p className="text-sm" style={{ color: 'var(--danger)' }}>
+        <p className="text-body" style={{ color: 'var(--danger)' }}>
           Failed to load project.
         </p>
       )}
@@ -418,30 +437,28 @@ function ProjectGeneralBody({
                 : undefined}
             </ReadOnlyNotice>
           )}
-          <SCard
-            title="Project details"
-            footer={
-              <>
-                {/* Red and announced: a 403 or a 409 for a taken slug used to
-                    render in hint grey, where it read like advice (WS-15). */}
-                <SaveStatus
-                  error={updateMut.isError ? updateMut.error : null}
-                  saved={detailsSaved && isPristine}
-                />
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    if (!canEdit || slugError) return
-                    updateMut.mutate()
-                  }}
-                  disabled={!canEdit || updateMut.isPending || isPristine || !!slugError}
-                >
-                  <Save className="h-3 w-3" />
-                  {updateMut.isPending ? 'Saving…' : 'Save'}
-                </Button>
-              </>
-            }
-          >
+          {canEdit && (
+            // The one save model for a settings page (ST-3), the bar the
+            // instance pages use: Discard and Save changes for both cards.
+            // A failed save is red and announced; a 403 or a 409 for a taken
+            // slug used to render in hint grey, where it read like advice
+            // (WS-15).
+            <SettingsSaveBar
+              className="mb-4"
+              note={
+                saved && !dirty
+                  ? <span style={{ color: 'var(--success)' }}>Saved</span>
+                  : 'Saves the project details and the version policy together.'
+              }
+              error={saveMut.isError ? getErrorMessage(saveMut.error) : undefined}
+              dirty={dirty}
+              invalid={!!slugError || versionPolicyInvalid}
+              pending={saveMut.isPending}
+              onDiscard={discard}
+              onSave={save}
+            />
+          )}
+          <SCard title="Project details">
             <Field label="Name" hint="Shown across the workspace and in the project switcher." htmlFor="proj-name">
               <TextInput id="proj-name" value={name} onChange={setName} disabled={!canEdit} />
             </Field>
@@ -485,27 +502,6 @@ function ProjectGeneralBody({
           <SCard
             title="Version monitoring"
             description="One release-retention policy for event monitoring and catalog metrics."
-            footer={
-              <>
-                <SaveStatus
-                  error={versionPolicyMut.isError ? versionPolicyMut.error : null}
-                  saved={versionSaved && versionPolicyPristine}
-                />
-                <Button
-                  size="sm"
-                  onClick={() => versionPolicyMut.mutate()}
-                  disabled={
-                    !canEdit ||
-                    versionPolicyMut.isPending ||
-                    versionPolicyInvalid ||
-                    versionPolicyPristine
-                  }
-                >
-                  <Save className="h-3 w-3" />
-                  {versionPolicyMut.isPending ? 'Saving…' : 'Save'}
-                </Button>
-              </>
-            }
           >
             <Field
               label="Releases to keep"
@@ -528,41 +524,43 @@ function ProjectGeneralBody({
           </SCard>
 
           <SCard title="Search index">
-            <div className={DANGER_ROW_CLASS}>
-              <div className="min-w-0 flex-1">
-                <div className="text-body font-medium">Rebuild search index</div>
-                <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-                  Rebuild project search when existing events, descriptions, or fields do not appear
-                  in global search.
+            <div className={DANGER_ROW_CONTAINER_CLASS}>
+              <div className={DANGER_ROW_CLASS}>
+                <div className="min-w-0 flex-1">
+                  <div className="text-body font-medium">Rebuild search index</div>
+                  <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+                    Rebuild project search when existing events, descriptions, or fields do not appear
+                    in global search.
+                  </div>
+                  {reindexMut.isSuccess && (
+                    <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
+                      Indexed {reindexMut.data.documents_indexed} documents
+                      {reindexMut.data.embeddings_scheduled ? '; embeddings queued.' : '.'}
+                    </div>
+                  )}
+                  {reindexMut.isError && (
+                    <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
+                      {getErrorMessage(reindexMut.error)}
+                    </div>
+                  )}
                 </div>
-                {reindexMut.isSuccess && (
-                  <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
-                    Indexed {reindexMut.data.documents_indexed} documents
-                    {reindexMut.data.embeddings_scheduled ? '; embeddings queued.' : '.'}
-                  </div>
-                )}
-                {reindexMut.isError && (
-                  <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
-                    {getErrorMessage(reindexMut.error)}
-                  </div>
-                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => reindexMut.mutate()}
+                  disabled={!canReindex || reindexMut.isPending}
+                >
+                  <RefreshCw className={reindexMut.isPending ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
+                  {reindexMut.isPending ? 'Rebuilding…' : 'Rebuild index'}
+                </Button>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => reindexMut.mutate()}
-                disabled={!canReindex || reindexMut.isPending}
-              >
-                <RefreshCw className={reindexMut.isPending ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
-                {reindexMut.isPending ? 'Rebuilding…' : 'Rebuild index'}
-              </Button>
             </div>
           </SCard>
 
           {/* Every row here is owner-only, so a non-owner is not shown a card
               of buttons they can never press. */}
           {canDelete && (
-            <SCard title="Danger zone" tone="danger" icon={<TriangleAlert className="h-[15px] w-[15px]" />}>
+            <SCard title="Danger zone" tone="danger" icon={<TriangleAlert className="size-4" />}>
                   <DangerResetRow
                     title="Reset anomalies"
                     hint="Delete anomaly detections (and the signals derived from them) across the whole project for the chosen period."
@@ -575,11 +573,11 @@ function ProjectGeneralBody({
                     busy={resetAnomaliesMut.isPending}
                     feedback={
                       resetAnomaliesMut.isSuccess ? (
-                        <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
                           {summarizeAnomalyCounts(resetAnomaliesMut.data)}
                         </div>
                       ) : resetAnomaliesMut.isError ? (
-                        <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
                           {getErrorMessage(resetAnomaliesMut.error)}
                         </div>
                       ) : null
@@ -597,11 +595,11 @@ function ProjectGeneralBody({
                     busy={resetDriftsMut.isPending}
                     feedback={
                       resetDriftsMut.isSuccess ? (
-                        <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
                           {summarizeDriftCounts(resetDriftsMut.data)}
                         </div>
                       ) : resetDriftsMut.isError ? (
-                        <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
                           {getErrorMessage(resetDriftsMut.error)}
                         </div>
                       ) : null
@@ -622,19 +620,19 @@ function ProjectGeneralBody({
                     preview={retirementPreview}
                     feedback={
                       retireVariablesMut.isSuccess ? (
-                        <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
                           {summarizeRetirement(retireVariablesMut.data, true)}
                         </div>
                       ) : retireVariablesMut.isError ? (
-                        <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
                           {getErrorMessage(retireVariablesMut.error)}
                         </div>
                       ) : previewRetirementMut.isError ? (
-                        <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
                           {getErrorMessage(previewRetirementMut.error)}
                         </div>
                       ) : retirementPreview ? (
-                        <div className="mt-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                           {summarizeRetirement(retirementPreview, false)}
                         </div>
                       ) : null
@@ -645,8 +643,9 @@ function ProjectGeneralBody({
                 hint="Permanently remove the plan, history and all ingested events. Cannot be undone."
                 last
                 action={
+                  // Bare red in a row; the solid red is the confirm's (DS-20).
                   <Button
-                    variant="destructive"
+                    variant="danger"
                     size="sm"
                     disabled={deleteMut.isPending}
                     onClick={handleDelete}

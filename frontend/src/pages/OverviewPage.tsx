@@ -24,8 +24,10 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { Panel } from '@/components/settings/kit'
+import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { LoadingState } from '@/components/primitives/loading-state'
+import { SERIES_COLORS } from '@/components/ui/chart-format'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useTheme } from '@/components/theme-provider'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
@@ -207,7 +209,7 @@ export default function OverviewPage() {
   }
 
   return (
-    <div className="min-w-0 space-y-8 pb-12">
+    <PageContainer>
       {/* A freshly-created demo lands here (not Events): orient the user and
           launch the tour before anything else. */}
       {projectQuery.data?.is_demo && <DemoWelcomePanel project={projectQuery.data} />}
@@ -226,8 +228,9 @@ export default function OverviewPage() {
         />
       )}
 
-      {/* Header */}
-      <PageHeader eyebrow={projectQuery.data?.name ?? 'Project'} title="Live activity" />
+      {/* Header. The eyebrow is the nav group, never the project name: the
+          top bar's breadcrumb already carries that (DS-2 / MO-40). */}
+      <PageHeader eyebrow="Observe" title="Live activity" />
 
 
       {/* KPI strip */}
@@ -242,10 +245,7 @@ export default function OverviewPage() {
           compact
         />
       ) : (
-        <MiniStatStrip
-          className="rounded-lg border px-4 py-3"
-          style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
-        >
+        <MiniStatStrip boxed>
           <MiniStat
             label="Active events"
             value={summary ? formatNumber(summary.active_event_count) : '—'}
@@ -291,7 +291,7 @@ export default function OverviewPage() {
                 title="New events added per day over the last 14 days"
               >
                 <span
-                  className="text-[10px] font-semibold uppercase tracking-[0.06em]"
+                  className="micro-label"
                   style={{ color: 'var(--fg-faint)' }}
                 >
                   New events · 14d
@@ -348,7 +348,7 @@ export default function OverviewPage() {
           // and nothing here — that is a scan that stopped, the state the
           // failing-scan chip above exists to surface, not an empty project.
           // The drilldown carries a range selector, so it can show the rest.
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             {volumeScanConfigId ? (
               <>
                 No volume in the last {VOLUME_WINDOW_DAYS} days.{' '}
@@ -377,10 +377,12 @@ export default function OverviewPage() {
               aria-label={`Latest bucket volume ${formatNumber(volumeCounts[volumeCounts.length - 1]!)}, ${volumePoints.length} buckets`}
               className="flex shrink-0 flex-col gap-px"
             >
-              <span className="mono tnum text-2xl font-medium tracking-[-0.01em]">
+              {/* The hero figure: sans with tabular digits (DS-17) on the
+                  display step of the type scale (DS-13). */}
+              <span className="tnum text-display font-semibold">
                 {formatNumber(volumeCounts[volumeCounts.length - 1]!)}
               </span>
-              <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+              <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
                 latest bucket · {volumePoints.length} buckets
               </span>
             </div>
@@ -416,7 +418,7 @@ export default function OverviewPage() {
           />
         )}
         {!topEventsQuery.isError && topEvents.length === 0 && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             {topEventsQuery.isLoading ? <LoadingState as="span" /> : 'No event volume in the last 48 hours.'}
           </div>
         )}
@@ -435,8 +437,9 @@ export default function OverviewPage() {
                     column truncated the top rows to one identical string and
                     the ranking became unreadable (tripl-jfm3.31). Capped so the
                     bar track still carries the comparison. */}
+                {/* Sans: an event name is a display name, not code (DS-17). */}
                 <span
-                  className="mono w-[min(45%,22rem)] shrink-0 truncate text-[12px]"
+                  className="w-[min(45%,22rem)] shrink-0 truncate text-body-sm"
                   title={e.name}
                 >
                   {e.name}
@@ -450,12 +453,12 @@ export default function OverviewPage() {
                     className="absolute inset-y-0 left-0 rounded-full"
                     style={{
                       width: `${maxTopVolume > 0 ? (e.total_count / maxTopVolume) * 100 : 0}%`,
-                      background: 'var(--accent)',
+                      background: SERIES_COLORS[0],
                     }}
                   />
                 </div>
                 <span
-                  className="mono tnum w-16 shrink-0 text-right text-[11px]"
+                  className="tnum w-16 shrink-0 text-right text-caption"
                   style={{ color: 'var(--fg-subtle)' }}
                 >
                   {formatNumber(e.total_count)}
@@ -475,7 +478,7 @@ export default function OverviewPage() {
           slug && signals.length > 0 ? (
             <Link
               to={`/p/${slug}/anomalies`}
-              className="rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
+              className="rounded-md px-2 py-1 text-body-sm no-underline transition-colors hover:bg-[var(--surface-hover)]"
               style={{ color: 'var(--accent)' }}
             >
               View all ({formatNumber(signals.length)})
@@ -496,7 +499,7 @@ export default function OverviewPage() {
           />
         )}
         {!signalsQuery.isError && signals.length === 0 && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             {signalsQuery.isLoading ? <LoadingState as="span" /> : 'No active monitoring signals.'}
           </div>
         )}
@@ -532,7 +535,7 @@ export default function OverviewPage() {
           />
         )}
         {!activityQuery.isError && activity.length === 0 && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             {activityQuery.isLoading ? <LoadingState as="span" /> : 'No recent activity.'}
           </div>
         )}
@@ -562,7 +565,7 @@ export default function OverviewPage() {
           />
         )}
         {!sourcesQuery.isError && sources.length === 0 && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             {sourcesQuery.isLoading ? <LoadingState as="span" /> : 'No data sources connected.'}
           </div>
         )}
@@ -575,7 +578,7 @@ export default function OverviewPage() {
         )}
         </div>
       </Panel>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -650,18 +653,18 @@ function SignalRow({
   return (
     <Link
       to={getMonitoringPath(slug, signal)}
-      className="flex items-center gap-2 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)]"
+      className="flex min-h-(--row-h) items-center gap-2 py-1 no-underline transition-colors hover:bg-[var(--surface-hover)]"
       style={{ color: 'inherit' }}
     >
       <Dot tone={signalDirectionTone(signal.direction)} pulse size={7} />
-      <span className="flex-1 truncate text-[12px] font-medium" title={signalTitle}>
+      <span className="flex-1 truncate text-body-sm font-medium" title={signalTitle}>
         {signalSummary}
       </span>
-      <span className="mono shrink-0 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="tnum shrink-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
         {formatSignalValues(signal)}
       </span>
       <span
-        className="mono w-[52px] shrink-0 text-right text-[11px]"
+        className="tnum w-[52px] shrink-0 text-right text-caption"
         style={{ color: signalDirectionColor(signal.direction) }}
       >
         {formatSignalSeverity(signal)}
@@ -699,24 +702,24 @@ function ActivityRow({ item }: { item: ActivityItem }) {
   const content = (
     <>
       <div
-        className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded"
+        className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-sm"
         style={{ background: 'var(--surface)', color: item.severity === 'low' ? 'var(--fg-muted)' : color }}
       >
         <Icon className="h-3 w-3" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[12px] font-medium leading-[1.35]" title={item.title}>{item.title}</div>
-        <div className="mt-0.5 truncate text-[11px] leading-[1.3]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="truncate text-body-sm font-medium leading-[1.35]" title={item.title}>{item.title}</div>
+        <div className="mt-0.5 truncate text-caption leading-[1.3]" style={{ color: 'var(--fg-subtle)' }}>
           {detail}
         </div>
       </div>
-      <span className="mono shrink-0 text-2xs" style={{ color: 'var(--fg-faint)' }}>
+      <span className="tnum shrink-0 text-micro" style={{ color: 'var(--fg-faint)' }}>
         {formatRelativeTime(item.occurred_at)}
       </span>
     </>
   )
   const className =
-    'flex items-start gap-2.5 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)]'
+    'flex min-h-(--row-h) items-start gap-2.5 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)]'
   if (item.target_path) {
     return (
       <Link to={item.target_path} className={className} style={{ color: 'inherit' }}>
@@ -750,24 +753,24 @@ function SourceRow({ source }: { source: DataSource }) {
   // "synthetic") drops below `sm`, and the check time moves to a second line
   // (MON-33, LIVE-20).
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-2">
+    <div className="flex min-h-(--row-h) flex-wrap items-center gap-x-2 gap-y-0.5 py-2">
       <Dot tone={tone} size={7} />
       <Database className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-      <span className="min-w-0 flex-1 basis-32 truncate text-[12px] font-medium" title={source.name}>
+      <span className="min-w-0 flex-1 basis-32 truncate text-body-sm font-medium" title={source.name}>
         {source.name}
       </span>
       {source.is_synthetic && <SyntheticSourceBadge />}
       <span
-        className="mono hidden shrink-0 text-2xs uppercase sm:inline"
+        className="mono hidden shrink-0 text-micro sm:inline"
         style={{ color: 'var(--fg-faint)' }}
       >
         {source.db_type}
       </span>
-      <span className="w-[64px] shrink-0 text-right text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="w-[64px] shrink-0 text-right text-caption" style={{ color: 'var(--fg-subtle)' }}>
         {label}
       </span>
       <span
-        className="ml-auto shrink-0 truncate text-right text-[11px] sm:ml-0 sm:w-[104px]"
+        className="ml-auto shrink-0 truncate text-right text-caption sm:ml-0 sm:w-[104px]"
         style={{ color: 'var(--fg-faint)' }}
         title={checkedTitle}
       >
