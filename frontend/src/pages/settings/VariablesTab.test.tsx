@@ -637,6 +637,26 @@ describe('VariablesTab', () => {
     )
   })
 
+  it('bulk-adds a JSON value with a comma in it as one value (tripl-fj5g.25)', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'payload', variable_type: 'json' })])
+    vi.mocked(variablesApi.bulkUpdate).mockResolvedValue(undefined)
+    renderVariablesTab()
+    fireEvent.click(await screen.findByLabelText('Select variable payload'))
+
+    const input = screen.getByLabelText('Bulk add values')
+    // The splitting rule is announced with the box, not only on hover.
+    expect(input).toHaveAccessibleDescription(/comma inside a JSON object or array/)
+    fireEvent.change(input, { target: { value: '{"a": 1, "b": 2}, [1, 2]' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() =>
+      expect(variablesApi.bulkUpdate).toHaveBeenCalledWith(
+        'demo',
+        { variable_ids: ['var-1'], allowed_values_add: ['{"a": 1, "b": 2}', '[1, 2]'] },
+        null,
+      ),
+    )
+  })
+
   it('select-all covers every matching variable, including off-page ones', async () => {
     mockList(
       Array.from({ length: 60 }, (_, index) =>

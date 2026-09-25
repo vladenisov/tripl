@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 import type { PlanDiffKind, PlanFieldChange, PlanValueChange } from '@/types'
 import { DiffPair, DiffValue } from './DiffValue'
 import { KIND_META } from './branches/branchMeta'
@@ -12,8 +14,19 @@ import { KIND_META } from './branches/branchMeta'
  * (PLAN-51). Kinds wear the branch review's own labels and tones, and a pair
  * renders through the review's own `DiffPair`, so a revision diff gets the
  * same word diff and the same visually hidden "before:"/"after:" (PLAN-19).
+ *
+ * The branch review renders its changed entries through this list too, with a
+ * per-field Revert in `renderAction`; the revision history passes none.
  */
-export function PlanFieldChangeList({ changes }: { changes: PlanFieldChange[] }) {
+export function PlanFieldChangeList({
+  changes,
+  renderAction,
+}: {
+  changes: PlanFieldChange[]
+  /** Optional control shown beside each field's name (e.g. the branch
+   * review's per-field Revert). */
+  renderAction?: (change: PlanFieldChange) => ReactNode
+}) {
   return (
     <div className="flex flex-col gap-2">
       {changes.map((change) => (
@@ -22,12 +35,15 @@ export function PlanFieldChangeList({ changes }: { changes: PlanFieldChange[] })
           className="rounded-md border px-2.5 py-2"
           style={{ borderColor: 'var(--border-subtle)' }}
         >
-          <div className="mb-1">
+          <div className="mb-1 flex items-center justify-between gap-2">
             <span className="mono text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
               {change.field}
             </span>
+            {renderAction?.(change)}
           </div>
           {change.items && change.items.length > 0 ? (
+            // A collection changed one member at a time — show those members,
+            // not two dumps of the whole list.
             <div className="flex flex-col gap-1">
               {change.items.map((item) => (
                 <PlanValueChangeRow key={item.key} item={item} />

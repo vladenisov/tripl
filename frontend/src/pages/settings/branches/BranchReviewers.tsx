@@ -9,8 +9,7 @@ import { displayUser } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
 import type { PlanBranchApproval, PlanBranchDetail, PlanBranchSummary } from '@/types'
-import { planBranchDetailKey } from './branchQueryKeys'
-import { usersKey } from '@/lib/queryKeys'
+import { planBranchDetailKey, usersKey } from '@/lib/queryKeys'
 
 interface BranchReviewSummaryProps {
   slug: string

@@ -1,12 +1,10 @@
 /**
- * The Branches tab's query keys, and which of them each branch action has to
- * refresh.
+ * Which of the Branches tab's caches each branch action has to refresh.
  *
- * Every key here used to be a string literal retyped at each reader and each
+ * Every key used to be a string literal retyped at each reader and each
  * invalidation, which is how a merge came to refresh the branch list but not
- * the conflicts panel, nor any of main's plan caches (PLAN-2, PLAN-4). Only this
- * tab reads these families; `planBranchesKey` stays in lib/queryKeys.ts
- * because the sidebar switcher shares it.
+ * the conflicts panel, nor any of main's plan caches (PLAN-2, PLAN-4). The key
+ * builders themselves live in lib/queryKeys.ts with every other key.
  */
 
 import type { QueryClient } from '@tanstack/react-query'
@@ -17,7 +15,12 @@ import {
   eventTagsKey,
   eventTypesKey,
   metaFieldsKey,
+  planBranchConflictsKey,
+  planBranchCountsKey,
+  planBranchDetailKey,
+  planBranchDiffKey,
   planBranchesKey,
+  planBranchTicketsKey,
   projectEventHistoryKey,
   projectEventKey,
   projectEventsKey,
@@ -31,38 +34,11 @@ import {
   variablesKey,
 } from '@/lib/queryKeys'
 
-/** The list WITH ahead/behind counts. A sibling of `planBranchesKey`, not an
- * extension: the counted list builds one plan snapshot per open branch plus
- * one for main, with no cap, and a status change (submit, approve, request
- * changes) moves no count. So it is refreshed only by what changes a plan —
- * see `invalidateBranchCounts` — not by every invalidation of the plain list. */
-export const planBranchCountsKey = (slug: string) => ['planBranchCounts', slug] as const
-
 /** After a create, a revert, a merge, a delete or a reopen: the only actions
  * that change a branch's content or bring a branch back into the counted set. */
 export function invalidateBranchCounts(qc: QueryClient, slug: string) {
   void qc.invalidateQueries({ queryKey: planBranchCountsKey(slug) })
 }
-
-export const planBranchDiffKey = (slug: string, branchId: string | undefined) =>
-  ['planBranchDiff', slug, branchId] as const
-
-export const planBranchDetailKey = (slug: string, branchId: string) =>
-  ['planBranchDetail', slug, branchId] as const
-
-export const planBranchConflictsKey = (slug: string, branchId: string) =>
-  ['planBranchConflicts', slug, branchId] as const
-
-export const planBranchCommentsKey = (slug: string, branchId: string) =>
-  ['planBranchComments', slug, branchId] as const
-
-export const planBranchTicketsKey = (slug: string, branchId: string) =>
-  ['planBranchImplementationTickets', slug, branchId] as const
-
-export const branchSettingsKey = (slug: string) => ['branchSettings', slug] as const
-
-/** Shared with TrackerConfigDialog, which reads the same `GET /tracker-config`. */
-export const trackerConfigKey = (slug: string) => ['trackerConfig', slug] as const
 
 /**
  * After a tracked merge the worker writes the ticket a moment after the merge

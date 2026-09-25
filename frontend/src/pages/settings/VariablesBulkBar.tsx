@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Trash2, X } from 'lucide-react'
 
 import type { VariableType } from '@/types'
@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/settings/kit'
 import { getErrorMessage } from '@/lib/utils'
+import { VALUE_LIST_HINT, splitValueList } from './variableValueValidation'
 
 export function VariablesBulkBar({
   selectedCount,
@@ -35,6 +36,7 @@ export function VariablesBulkBar({
   const [typeDraft, setTypeDraft] = useState<VariableType | ''>('')
   const [description, setDescription] = useState('')
   const [valuesDraft, setValuesDraft] = useState('')
+  const valuesHintId = useId()
   if (selectedCount === 0) return null
 
   // Drafts are dropped once the change has LANDED. They used to be cleared on
@@ -53,7 +55,7 @@ export function VariablesBulkBar({
   }
 
   const addValues = () => {
-    const values = valuesDraft.split(',').map(value => value.trim()).filter(Boolean)
+    const values = splitValueList(valuesDraft)
     if (values.length === 0) return
     clearOnSuccess(onAddValues(values), () => setValuesDraft(''))
   }
@@ -121,6 +123,8 @@ export function VariablesBulkBar({
             aria-label="Bulk add values"
             className="h-7 w-40 text-xs"
             placeholder="Add values (comma-sep)…"
+            title={VALUE_LIST_HINT}
+            aria-describedby={valuesHintId}
             value={valuesDraft}
             onChange={e => setValuesDraft(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addValues() } }}
@@ -128,6 +132,7 @@ export function VariablesBulkBar({
           <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={isPending || !valuesDraft.trim()} onClick={addValues}>
             Add values
           </Button>
+          <span id={valuesHintId} className="sr-only">{VALUE_LIST_HINT}</span>
         </div>
         <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs text-destructive" disabled={isPending} onClick={onDelete}>
           <Trash2 className="mr-1 h-3 w-3" aria-hidden="true" />Delete

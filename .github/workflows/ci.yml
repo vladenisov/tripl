@@ -717,21 +717,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
+      # pnpm/setup installs pnpm's self-contained binary (version from
+      # frontend/package.json "packageManager") and Node in one step, with no
+      # npm bootstrap and no self-update — pnpm/action-setup printed a
+      # "pnpm v10 installation layout" warning on every run (tripl-fj5g.24).
+      - name: Install pnpm and Node
+        uses: pnpm/setup@v3
         with:
-          # Reads the pnpm version from frontend/package.json "packageManager".
-          package_json_file: frontend/package.json
-
-      - name: Install Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 26
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          working-directory: frontend
+          runtime: node@26
+          cache: true
+          require-lockfile: true
 
       # backend/openapi.json is gated by test_openapi_contract.py, whose failure
       # message tells you to run `pnpm gen:api` — but nothing checked that anyone

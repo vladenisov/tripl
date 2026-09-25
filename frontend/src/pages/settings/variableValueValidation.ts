@@ -69,3 +69,42 @@ export function invalidValuesFor(type: VariableType, values: readonly string[]):
   const rule = RULES[type]
   return rule ? values.filter((value) => !rule.validate(value)) : []
 }
+
+/** How the bulk bar's one-line "Add values" box is read, said beside it. */
+export const VALUE_LIST_HINT =
+  'Separate values with commas. A comma inside a JSON object or array, or inside double quotes, does not split.'
+
+/**
+ * Split one typed line into values on its top-level commas.
+ *
+ * A plain `split(',')` cut `{"a": 1, "b": 2}` into two halves neither of which
+ * is JSON, so a JSON value could not be bulk-added at all. A comma nested in
+ * `[]`/`{}` or inside a double-quoted string (with `\"` escapes) now stays part
+ * of its value; `a, b` still gives `a` and `b`. Values are trimmed and blanks
+ * dropped, as before.
+ */
+export function splitValueList(text: string): string[] {
+  const values: string[] = []
+  let depth = 0
+  let inString = false
+  let start = 0
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]
+    if (inString) {
+      if (char === '\\') i += 1
+      else if (char === '"') inString = false
+    } else if (char === '"') {
+      inString = true
+    } else if (char === '[' || char === '{') {
+      depth += 1
+    } else if (char === ']' || char === '}') {
+      // A stray closer must not push later commas out of reach.
+      depth = Math.max(0, depth - 1)
+    } else if (char === ',' && depth === 0) {
+      values.push(text.slice(start, i))
+      start = i + 1
+    }
+  }
+  values.push(text.slice(start))
+  return values.map((value) => value.trim()).filter(Boolean)
+}

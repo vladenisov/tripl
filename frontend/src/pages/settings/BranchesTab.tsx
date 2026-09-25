@@ -16,7 +16,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { useUsersById } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
-import { planBranchesKey } from '@/lib/queryKeys'
+import { planBranchCountsKey, planBranchDiffKey, planBranchesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import type { PlanBranchSummary } from '@/types'
 import { DIFF_STALE_MS, rowBadgeCounts } from './branchDiffFanout'
@@ -25,11 +25,7 @@ import { BranchList } from './branches/BranchList'
 import { CreateBranchDialog, MergePolicyDialog } from './branches/BranchDialogs'
 import type { DiffLoad } from './branches/branchDiffModel'
 import { BranchDetail } from './branches/FeatureBranchDetail'
-import {
-  invalidateBranchCounts,
-  planBranchCountsKey,
-  planBranchDiffKey,
-} from './branches/branchQueryKeys'
+import { invalidateBranchCounts } from './branches/branchQueryKeys'
 
 /**
  * Plan branches: the list, the selected branch's review, and the merge policy.

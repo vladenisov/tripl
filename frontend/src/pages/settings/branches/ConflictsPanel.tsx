@@ -8,7 +8,7 @@ import { useCanWriteProject } from '@/lib/permissions'
 import { getErrorMessage } from '@/lib/utils'
 import type { PlanBranchConflictField, PlanBranchSummary, ResolutionChoice } from '@/types'
 import { DiffValue } from '../DiffValue'
-import { planBranchConflictsKey } from './branchQueryKeys'
+import { planBranchConflictsKey } from '@/lib/queryKeys'
 
 /**
  * The backend's `ours` is main as it is now and `theirs` is this branch
