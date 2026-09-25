@@ -1,19 +1,34 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { AuthContext } from '@/components/auth-context'
 import { authAs } from '@/test/auth'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { expectNoAxeViolations } from '@/test/axe'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataSource, EventListItem, MetricDefinitionDetailResponse } from '@/types'
-import { MetricForm } from './MetricForm'
+import MetricEditPage, { MetricForm } from './MetricForm'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
   metricsCatalogApi: {
     create: vi.fn().mockResolvedValue({ id: 'created' }),
     update: vi.fn().mockResolvedValue({ id: 'updated' }),
+    get: vi.fn(),
     preview: vi.fn(),
     previewFactOperand: vi.fn(),
   },
+}))
+
+// The event pickers search the server; `list` answers from EVENT_CATALOG the
+// way the endpoint does (ILIKE on the name, `limit` rows, the true `total`).
+vi.mock('@/api/events', () => ({
+  eventsApi: { list: vi.fn(), get: vi.fn() },
+}))
+vi.mock('@/api/eventTypes', () => ({
+  eventTypesApi: { list: vi.fn() },
+}))
+vi.mock('@/api/dataSources', () => ({
+  dataSourcesApi: { list: vi.fn() },
 }))
 
 vi.mock('@/api/factTablesApi', () => ({
@@ -64,6 +79,16 @@ vi.mock('@/hooks/useDataSourceSchema', () => ({
 
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { factTablesApi } from '@/api/factTablesApi'
+import { eventsApi } from '@/api/events'
+import { eventTypesApi } from '@/api/eventTypes'
+import { dataSourcesApi } from '@/api/dataSources'
+
+// Radix drives the dropdown through pointer-capture APIs jsdom omits.
+beforeAll(() => {
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.setPointerCapture = vi.fn()
+  Element.prototype.releasePointerCapture = vi.fn()
+})
 
 const DATA_SOURCES = [
   { id: 'ds-1', name: 'Warehouse' },
@@ -88,6 +113,14 @@ const EVENTS = [
   { id: 'ev-1', name: 'checkout:start' },
   { id: 'ev-2', name: 'checkout:done' },
 ] as unknown as EventListItem[]
+
+// A catalog larger than any one page, so "beyond the first 200" is reachable.
+let EVENT_CATALOG: EventListItem[] = EVENTS
+
+const EVENT_TYPES = [
+  { id: 'event-type-1', name: 'signup', display_name: 'Signup' },
+  { id: 'event-type-2', name: 'purchase', display_name: 'Purchase' },
+]
 
 const FACT_TABLES = {
   total: 2,
@@ -156,12 +189,24 @@ function renderForm(
       slug: 'demo',
       metric,
       dataSources,
-      events: EVENTS,
       onClose,
     }),
     { wrapper },
   )
   return { onClose }
+}
+
+/** Wait until a picker offers `value`, then pick it. */
+async function pickOption(selectId: string, value: string) {
+  await waitFor(() =>
+    expect(document.querySelector(`#${selectId} option[value="${value}"]`)).not.toBeNull(),
+  )
+  fireEvent.change(document.getElementById(selectId)!, { target: { value } })
+}
+
+async function openAddFilterMenu() {
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Add filter' }), { key: 'Enter' })
+  return screen.findByRole('menu')
 }
 
 function submit() {
@@ -184,6 +229,26 @@ beforeEach(() => {
   )
   vi.mocked(factTablesApi.get).mockResolvedValue(
     FACT_TABLE_DETAIL as unknown as Awaited<ReturnType<typeof factTablesApi.get>>,
+  )
+  EVENT_CATALOG = EVENTS
+  vi.mocked(eventsApi.list).mockReset()
+  vi.mocked(eventsApi.list).mockImplementation(async (_slug, params) => {
+    const needle = (params?.search ?? '').toLowerCase()
+    const matches = EVENT_CATALOG.filter(event => event.name.toLowerCase().includes(needle))
+    return {
+      items: matches.slice(0, params?.limit ?? 200),
+      total: matches.length,
+    } as unknown as Awaited<ReturnType<typeof eventsApi.list>>
+  })
+  vi.mocked(eventsApi.get).mockReset()
+  vi.mocked(eventsApi.get).mockImplementation(async (_slug, id) => {
+    const event = EVENT_CATALOG.find(candidate => candidate.id === id)
+    if (!event) throw new Error('Event not found')
+    return event as unknown as Awaited<ReturnType<typeof eventsApi.get>>
+  })
+  vi.mocked(eventTypesApi.list).mockReset()
+  vi.mocked(eventTypesApi.list).mockResolvedValue(
+    EVENT_TYPES as unknown as Awaited<ReturnType<typeof eventTypesApi.list>>,
   )
 })
 
@@ -437,9 +502,8 @@ describe('MetricForm validation', () => {
   it('updates an existing SQL metric into a single fact metric definition', async () => {
     renderForm(EDIT_METRIC)
 
-    // Switching kind while editing is destructive, so it goes through a confirm.
+    // Switching kind applies at once; the history-loss confirm comes at save.
     fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Change kind' }))
     await waitFor(() =>
       expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
     )
@@ -451,6 +515,7 @@ describe('MetricForm validation', () => {
     fireEvent.change(document.getElementById('metric-fact-measure')!, { target: { value: 'amount' } })
 
     submit()
+    fireEvent.click(await screen.findByRole('button', { name: 'Save and delete history' }))
 
     await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
     expect(metricsCatalogApi.update).toHaveBeenCalledWith(
@@ -497,7 +562,7 @@ describe('MetricForm validation', () => {
       target: { value: 'checkout_ratio' },
     })
     fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'ratio' } })
-    fireEvent.change(document.getElementById('metric-numerator')!, { target: { value: 'ev-2' } })
+    await pickOption('metric-numerator', 'ev-2')
 
     submit()
 
@@ -507,7 +572,7 @@ describe('MetricForm validation', () => {
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
 
     // Provide the denominator and resubmit.
-    fireEvent.change(document.getElementById('metric-denominator')!, { target: { value: 'ev-1' } })
+    await pickOption('metric-denominator', 'ev-1')
     submit()
 
     await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
@@ -587,18 +652,13 @@ describe('MetricForm validation', () => {
 
     // Add a named filter (the "Named filter" option appears once the fact
     // table's named filters have loaded).
-    fireEvent.click(screen.getByRole('button', { name: 'Add filter' }))
-    await waitFor(() =>
-      expect(screen.getByRole('menuitem', { name: 'Named filter' })).toBeInTheDocument(),
-    )
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Named filter' }))
+    fireEvent.click(within(await openAddFilterMenu()).getByRole('menuitem', { name: 'Named filter' }))
     fireEvent.change(screen.getByLabelText('Filter 1 named filter'), {
       target: { value: 'completed' },
     })
 
     // Add a free-text SQL filter.
-    fireEvent.click(screen.getByRole('button', { name: 'Add filter' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'SQL filter' }))
+    fireEvent.click(within(await openAddFilterMenu()).getByRole('menuitem', { name: 'SQL filter' }))
     fireEvent.change(screen.getByLabelText('Filter 2 SQL'), { target: { value: 'amount > 0' } })
 
     submit()
@@ -630,8 +690,7 @@ describe('MetricForm validation', () => {
       expect(screen.getByRole('button', { name: /Check filters/i })).toBeEnabled(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add filter' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Condition' }))
+    fireEvent.click(within(await openAddFilterMenu()).getByRole('menuitem', { name: 'Condition' }))
     fireEvent.change(screen.getByLabelText('Filter 1 condition column'), {
       target: { value: 'amount' },
     })
@@ -858,29 +917,25 @@ describe('MetricForm validation', () => {
     expect(screen.queryByText('relation "evnts" does not exist')).toBeNull()
   })
 
-  it('confirms a destructive kind switch on edit and cancel keeps the saved kind', async () => {
+  it('switches kind on edit without a confirm; the history warning moves to save', async () => {
     renderForm(EDIT_METRIC)
 
     fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
 
-    const dialog = await screen.findByRole('alertdialog')
-    expect(
-      within(dialog).getByText("Changing the kind clears this metric's collected values. Continue?"),
-    ).toBeInTheDocument()
-
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
-
-    // The kind is unchanged: SQL config stays, no fact table select appears.
-    expect(document.getElementById('metric-sql-data-source')).not.toBeNull()
-    expect(document.getElementById('metric-fact-table')).toBeNull()
-    expect(screen.getByRole('radio', { name: /SQL/ })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByRole('radio', { name: /Fact/ })).toHaveAttribute('aria-checked', 'true')
+    // The consequence is on screen before Save, not only in the confirm.
+    expect(screen.getByText(/Saving deletes its collected values/)).toBeInTheDocument()
   })
 
   it('suggests schema columns for the time column and fills on pick', async () => {
     renderForm()
 
     fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    // Suggestions come from the tables the query names (MET-17).
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1' },
+    })
     const timeInput = document.getElementById('metric-sql-time') as HTMLInputElement
     fireEvent.change(timeInput, { target: { value: 'buck' } })
 
@@ -1235,7 +1290,6 @@ describe('MetricForm for a viewer', () => {
           slug: 'demo',
           metric: EDIT_METRIC,
           dataSources: DATA_SOURCES,
-          events: EVENTS,
           onClose: vi.fn(),
         }),
       ),
@@ -1252,5 +1306,479 @@ describe('MetricForm for a viewer', () => {
 
     expect(screen.getByLabelText('Metric SQL')).not.toHaveAttribute('readonly')
     expect(useDataSourceSchemaMock).toHaveBeenCalledWith('ds-1')
+  })
+})
+
+const EVENT_METRIC = {
+  ...EDIT_METRIC,
+  kind: 'event_composition',
+  name: 'late_signups',
+  display_name: 'Late signups',
+  data_source_id: null,
+  interval: null,
+  replay_chunk_interval: null,
+  aggregation: null,
+  composition: 'single',
+  config: {},
+} as unknown as MetricDefinitionDetailResponse
+
+describe('MetricForm history-loss confirm (MET-1)', () => {
+  it('asks before saving any change of meaning and names the history loss', async () => {
+    renderForm(EDIT_METRIC)
+
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT bucket, count(*) AS value FROM events WHERE ok GROUP BY 1' },
+    })
+    submit()
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent(/deletes its collected values, breakdowns and anomalies/)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(metricsCatalogApi.update).not.toHaveBeenCalled()
+
+    submit()
+    fireEvent.click(await screen.findByRole('button', { name: 'Save and delete history' }))
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+  })
+
+  it('asks for an interval change too, not only a kind change', async () => {
+    renderForm(EDIT_METRIC)
+    fireEvent.change(document.getElementById('metric-sql-interval')!, { target: { value: '1d' } })
+    submit()
+    expect(await screen.findByRole('alertdialog')).toBeInTheDocument()
+  })
+
+  it('saves presentation-only edits without asking', async () => {
+    renderForm(EDIT_METRIC)
+    fireEvent.change(document.getElementById('metric-unit')!, { target: { value: 'ms' } })
+    expect(screen.queryByText(/Saving deletes its collected values/)).toBeNull()
+    submit()
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  const factMetric = (config: Record<string, unknown>) =>
+    ({
+      ...EDIT_METRIC,
+      kind: 'fact',
+      data_source_id: null,
+      fact_table_id: 'ft-1',
+      aggregation: 'count',
+      composition: 'single',
+      replay_chunk_interval: null,
+      config,
+    }) as unknown as MetricDefinitionDetailResponse
+
+  it('sends an untouched fact definition back exactly as stored, without asking', async () => {
+    const config = {
+      filter_sql: '(amount > 0) and (user_id is not null)',
+      conditions: [
+        { column: 'user_id', operator: 'in', value: 'u-1' },
+        { column: 'amount', operator: 'gt', value: '3' },
+      ],
+    }
+    renderForm(factMetric(config))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save metric' })).toBeEnabled())
+    expect(screen.queryByText(/Saving deletes its collected values/)).toBeNull()
+
+    fireEvent.change(document.getElementById('metric-unit')!, { target: { value: 'ms' } })
+    submit()
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    // Rewriting either (`AND`, `['u-1']`, `3`) would have deleted the history.
+    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+      filter_sql: config.filter_sql,
+      conditions: config.conditions,
+    })
+  })
+
+  it('warns from the start when the stored definition cannot be sent back unchanged', async () => {
+    renderForm(factMetric({ conditions: [{ column: 'amount', operator: 'between', value: [1, 2] }] }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save metric' })).toBeEnabled())
+    expect(screen.getByText(/Saving deletes its collected values/)).toBeInTheDocument()
+    submit()
+    expect(await screen.findByRole('alertdialog')).toBeInTheDocument()
+    expect(metricsCatalogApi.update).not.toHaveBeenCalled()
+  })
+})
+
+describe('MetricForm event picker (MET-2, MET-14)', () => {
+  const bigCatalog = Array.from({ length: 250 }, (_, i) => ({
+    id: `ev-${i}`,
+    name: `event_${String(i).padStart(3, '0')}`,
+  })) as unknown as EventListItem[]
+
+  it('shows an event beyond the first page and searches the server for more', async () => {
+    EVENT_CATALOG = bigCatalog
+    renderForm({ ...EVENT_METRIC, numerator_event_id: 'ev-240' } as MetricDefinitionDetailResponse)
+
+    // The stored event is resolved by id and selected, not painted as unset.
+    const select = document.getElementById('metric-numerator') as HTMLSelectElement
+    await waitFor(() =>
+      expect(select.selectedOptions[0]?.textContent).toBe('event_240'),
+    )
+    expect(eventsApi.get).toHaveBeenCalledWith('demo', 'ev-240')
+    expect(screen.getByText(/150 more events not listed/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Search events'), { target: { value: 'event_24' } })
+    await waitFor(() =>
+      expect(eventsApi.list).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ search: 'event_24', limit: 100 }),
+      ),
+    )
+    await pickOption('metric-numerator', 'ev-245')
+    submit()
+    fireEvent.click(await screen.findByRole('button', { name: 'Save and delete history' }))
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+      numerator_event_id: 'ev-245',
+      numerator_event_type_id: null,
+    })
+  })
+
+  it('shows an event-type reference and lets it be changed to an event', async () => {
+    renderForm({ ...EVENT_METRIC, numerator_event_type_id: 'event-type-1' } as MetricDefinitionDetailResponse)
+
+    const select = document.getElementById('metric-numerator') as HTMLSelectElement
+    await waitFor(() => expect(select.selectedOptions[0]?.textContent).toBe('type · Signup'))
+
+    await pickOption('metric-numerator', 'ev-1')
+    await pickOption('metric-numerator', '')
+    submit()
+    // Clearing the pick is now possible, so validation catches it.
+    expect((await screen.findAllByText('An event is required.')).length).toBeGreaterThan(0)
+  })
+})
+
+describe('MetricForm filter validation (MET-3)', () => {
+  it('blocks save on an incomplete filter instead of dropping it', async () => {
+    renderForm()
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Orders' },
+    })
+    await pickOption('metric-fact-table', 'ft-1')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create metric' })).toBeEnabled())
+
+    fireEvent.click(within(await openAddFilterMenu()).getByRole('menuitem', { name: 'Condition' }))
+    fireEvent.change(screen.getByLabelText('Filter 1 condition column'), {
+      target: { value: 'user_id' },
+    })
+    submit()
+
+    const valueError = 'Filter 1: Enter a value for this condition.'
+    expect((await screen.findAllByText(valueError)).length).toBe(2)
+    expect(metricsCatalogApi.create).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Filter 1 condition column')).toHaveAttribute('aria-invalid', 'true')
+
+    // Fixing it clears the message without another submit (MET-18).
+    fireEvent.change(screen.getByLabelText('Filter 1 condition value'), { target: { value: 'u1' } })
+    expect(screen.queryByText(valueError)).toBeNull()
+  })
+
+  it('keeps Check filters disabled until the operand is complete (MET-33)', async () => {
+    renderForm()
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    await pickOption('metric-fact-table', 'ft-1')
+    fireEvent.change(document.getElementById('metric-fact-aggregation')!, { target: { value: 'sum' } })
+
+    const check = await screen.findByRole('button', { name: /Check filters/i })
+    await waitFor(() => expect(check).toHaveAccessibleDescription(/measure column is required/))
+    expect(check).toBeDisabled()
+    await pickOption('metric-fact-measure', 'amount')
+    expect(check).toBeEnabled()
+  })
+})
+
+describe('MetricForm SQL preview (MET-4, MET-44)', () => {
+  it('never paints a result for SQL that was edited while it ran', async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof metricsCatalogApi.preview>>) => void
+    vi.mocked(metricsCatalogApi.preview).mockReturnValue(
+      new Promise(r => {
+        resolve = r
+      }),
+    )
+    renderForm()
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), { target: { value: 'SELECT 1 FROM events' } })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    fireEvent.change(screen.getByLabelText('Metric SQL'), { target: { value: 'SELECT 2 FROM events' } })
+    await act(async () => {
+      resolve({ columns: ['bucket', 'value'], points: [], point_count: 7, truncated: false, error: null })
+    })
+    expect(screen.queryByText(/7 buckets/)).toBeNull()
+  })
+
+  it('clears the preview when the interval changes', async () => {
+    vi.mocked(metricsCatalogApi.preview).mockResolvedValue({
+      columns: ['bucket', 'value'],
+      points: [],
+      point_count: 0,
+      truncated: false,
+      error: null,
+    })
+    renderForm()
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), { target: { value: 'SELECT 1 FROM events' } })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    // An empty result says what it most likely means.
+    expect(await screen.findByText(/returned no rows in the preview window/)).toBeInTheDocument()
+    fireEvent.change(document.getElementById('metric-sql-interval')!, { target: { value: '1d' } })
+    expect(screen.queryByText(/returned no rows/)).toBeNull()
+  })
+
+  it('offers the columns the preview returned as breakdowns (MET-17)', async () => {
+    vi.mocked(metricsCatalogApi.preview).mockResolvedValue({
+      columns: ['bucket', 'value', 'region'],
+      points: [{ bucket: '2026-07-01T00:00:00Z', value: 5 }],
+      point_count: 1,
+      truncated: false,
+      error: null,
+    })
+    renderForm()
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), { target: { value: 'SELECT 1 FROM events' } })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+    // Before a preview: only the named table's columns.
+    expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    expect(await screen.findByText(/Only one bucket came back/)).toBeInTheDocument()
+    expect(screen.getByText('min 5 · max 5 · last 5')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Break down by region' })).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'Break down by country' })).toBeNull()
+
+    // Editing the SQL invalidates the preview and the columns it returned.
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT 2 FROM events' },
+    })
+    expect(screen.queryByRole('checkbox', { name: 'Break down by region' })).toBeNull()
+    expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeInTheDocument()
+  })
+})
+
+describe('MetricForm replay chunk (MET-10)', () => {
+  it('drops a stored replay chunk finer than a new interval, and says so', async () => {
+    renderForm({ ...EDIT_METRIC, replay_chunk_interval: '1d' } as MetricDefinitionDetailResponse)
+    expect(screen.getByText(/Backfills replay in daily chunks/)).toBeInTheDocument()
+
+    fireEvent.change(document.getElementById('metric-sql-interval')!, { target: { value: '1w' } })
+    expect(screen.getByText(/will be cleared on save/)).toBeInTheDocument()
+
+    submit()
+    fireEvent.click(await screen.findByRole('button', { name: 'Save and delete history' }))
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+      interval: '1w',
+      replay_chunk_interval: null,
+    })
+  })
+})
+
+describe('MetricForm replay chunk restored', () => {
+  it('brings the stored chunk back when the interval returns below it', async () => {
+    renderForm({ ...EDIT_METRIC, replay_chunk_interval: '1d' } as MetricDefinitionDetailResponse)
+    const interval = document.getElementById('metric-sql-interval')!
+
+    fireEvent.change(interval, { target: { value: '1w' } })
+    expect(screen.getByText(/will be cleared on save/)).toBeInTheDocument()
+    fireEvent.change(interval, { target: { value: '1h' } })
+    expect(screen.queryByText(/will be cleared on save/)).toBeNull()
+    expect(screen.getByText(/Backfills replay in daily chunks/)).toBeInTheDocument()
+
+    // Nothing of meaning changed, so nothing asks and the chunk is re-sent.
+    submit()
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+      interval: '1h',
+      replay_chunk_interval: '1d',
+    })
+  })
+})
+
+describe('MetricForm validation accessibility (MET-15, MET-18)', () => {
+  it('links each invalid field to its message and focuses fields from the summary', async () => {
+    renderForm()
+    submit()
+
+    const display = screen.getByLabelText('Display name', { exact: false })
+    await waitFor(() => expect(display).toHaveAttribute('aria-invalid', 'true'))
+    expect(display).toHaveAccessibleDescription('Display name is required.')
+    // Focus lands on the first invalid field.
+    expect(display).toHaveFocus()
+
+    const summary = screen.getByRole('alert')
+    fireEvent.click(within(summary).getByRole('button', { name: 'The metric SQL query is required.' }))
+    // The SQL editor's id sits on a wrapper; focus goes to its editable surface.
+    expect(screen.getByLabelText('Metric SQL')).toHaveFocus()
+  })
+
+  it('has no axe violations with errors on screen, event pickers included', async () => {
+    renderForm()
+    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+    fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'ratio' } })
+    submit()
+    await screen.findAllByText('A denominator event is required for a ratio metric.')
+    await waitFor(() =>
+      expect(document.querySelector('#metric-numerator option[value="ev-1"]')).not.toBeNull(),
+    )
+    await expectNoAxeViolations(document.body)
+  })
+
+  it('drops an error once its field is fixed or no longer rendered', async () => {
+    renderForm()
+    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+    fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'ratio' } })
+    submit()
+    expect((await screen.findAllByText('A denominator event is required for a ratio metric.')).length)
+      .toBeGreaterThan(0)
+
+    fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'single' } })
+    expect(screen.queryByText('A denominator event is required for a ratio metric.')).toBeNull()
+  })
+})
+
+describe('MetricForm kind switch (MET-19)', () => {
+  it('does not carry dimension columns across kinds', async () => {
+    renderForm({
+      ...EDIT_METRIC,
+      breakdown_columns: ['platform'],
+      platform_column: 'platform',
+    } as unknown as MetricDefinitionDetailResponse)
+
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    await pickOption('metric-fact-table', 'ft-1')
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: 'Break down by amount' })).toBeInTheDocument(),
+    )
+    expect(screen.queryByRole('checkbox', { name: 'Break down by platform' })).toBeNull()
+    expect(document.getElementById('metric-platform')).toHaveValue('')
+
+    // Back to the saved kind restores what was saved for it.
+    fireEvent.click(screen.getByRole('radio', { name: /SQL/ }))
+    expect(screen.getByRole('checkbox', { name: 'Break down by platform' })).toBeChecked()
+  })
+
+  it('gives a kind back the dimensions it had earlier in the session', async () => {
+    renderForm(EDIT_METRIC)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Break down by country' }))
+
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    await pickOption('metric-fact-table', 'ft-1')
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Break down by amount' }))
+
+    fireEvent.click(screen.getByRole('radio', { name: /SQL/ }))
+    expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeChecked()
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    expect(await screen.findByRole('checkbox', { name: 'Break down by amount' })).toBeChecked()
+  })
+})
+
+describe('MetricForm internal name (MET-34)', () => {
+  it('derives a Latin identifier from a Cyrillic display name', () => {
+    renderForm()
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Конверсия оплаты' },
+    })
+    expect(screen.getByLabelText('Internal name', { exact: false })).toHaveValue('konversiya_oplaty')
+  })
+})
+
+describe('MetricForm after a save (MET-27, MET-29)', () => {
+  it('refreshes the drilldown caches of a redefined metric and reports the save', async () => {
+    const onSaved = vi.fn()
+    render(
+      createElement(MetricForm, {
+        slug: 'demo',
+        metric: EDIT_METRIC,
+        dataSources: DATA_SOURCES,
+        onClose: vi.fn(),
+        onSaved,
+      }),
+      { wrapper },
+    )
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.change(document.getElementById('metric-sql-value')!, { target: { value: 'total' } })
+    submit()
+    fireEvent.click(await screen.findByRole('button', { name: 'Save and delete history' }))
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith('updated', false))
+    const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey)
+    expect(keys).toContainEqual(['monitoringMetrics', 'demo', 'metric', 'metric-1'])
+    expect(keys).toContainEqual(['eventMetricBreakdowns', 'demo', 'metric', 'metric-1'])
+    expect(keys).toContainEqual(['appVersionSeries', 'demo', 'metric', 'metric-1'])
+  })
+})
+
+describe('MetricEditPage (MET-28, MET-29)', () => {
+  function BackButton() {
+    const navigate = useNavigate()
+    return createElement('button', { type: 'button', onClick: () => navigate(-1) }, 'Go back')
+  }
+
+  function renderPage(path: string, history: string[] = []) {
+    render(
+      createElement(
+        MemoryRouter,
+        { initialEntries: [...history, path], initialIndex: history.length },
+        createElement(
+          Routes,
+          null,
+          createElement(Route, { path: '/p/:slug/metrics', element: createElement('p', null, 'catalog') }),
+          createElement(Route, { path: '/p/:slug/metrics/new', element: createElement(MetricEditPage) }),
+          createElement(Route, {
+            path: '/p/:slug/monitoring/metric/:id',
+            element: createElement('div', null, createElement('p', null, 'drilldown'), createElement(BackButton)),
+          }),
+        ),
+      ),
+      { wrapper },
+    )
+  }
+
+  it('opens the editor when data sources fail, and shows the failure in the SQL card', async () => {
+    vi.mocked(dataSourcesApi.list).mockRejectedValue(new Error('warehouse list down'))
+    renderPage('/p/demo/metrics/new')
+
+    expect(await screen.findByText('Could not load data sources')).toBeInTheDocument()
+    // A fact or event metric can still be written.
+    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+    expect(screen.queryByText('Could not load data sources')).toBeNull()
+  })
+
+  it('lands on the new metric’s drilldown after create', async () => {
+    vi.mocked(dataSourcesApi.list).mockResolvedValue(DATA_SOURCES)
+    renderPage('/p/demo/metrics/new')
+
+    fireEvent.click(await screen.findByRole('radio', { name: /Event composition/ }))
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Checkouts' },
+    })
+    await pickOption('metric-numerator', 'ev-1')
+    submit()
+
+    expect(await screen.findByText('drilldown')).toBeInTheDocument()
+  })
+
+  it('replaces the create form in history, so Back skips the empty form', async () => {
+    vi.mocked(dataSourcesApi.list).mockResolvedValue(DATA_SOURCES)
+    renderPage('/p/demo/metrics/new', ['/p/demo/metrics'])
+
+    fireEvent.click(await screen.findByRole('radio', { name: /Event composition/ }))
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Checkouts' },
+    })
+    await pickOption('metric-numerator', 'ev-1')
+    submit()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Go back' }))
+    expect(await screen.findByText('catalog')).toBeInTheDocument()
   })
 })

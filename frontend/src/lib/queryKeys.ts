@@ -85,3 +85,30 @@ export const projectEventTypesKey = (slug: string | undefined) => ['eventTypes',
 /** Event types for one project on one branch — `eventTypesApi.list(slug, branchId)`. */
 export const eventTypesKey = (slug: string | undefined, branchId?: string | null) =>
   [...projectEventTypesKey(slug), branchId] as const
+
+/** Every metrics-catalog list cache for a project (filters extend the key). */
+export const metricsCatalogKey = (slug: string | undefined) => ['metrics-catalog', slug] as const
+
+/** One catalog metric's definition — or, without `metricId`, all of them. */
+export const metricDefinitionKey = (slug: string | undefined, metricId?: string) =>
+  metricId === undefined
+    ? (['metricDefinition', slug] as const)
+    : (['metricDefinition', slug, metricId] as const)
+
+/** The generated batch SQL of every metric in a project. */
+export const metricGeneratedSqlKey = (slug: string | undefined) =>
+  ['metric-generated-sql', slug] as const
+
+/**
+ * Prefixes of every drilldown cache one catalog metric fills: its series, its
+ * breakdowns and its app-version series (MonitoringDetailPage keys them all
+ * `[family, slug, 'metric', metricId, …]`). A save that redefines the metric
+ * makes the backend delete what those hold, so they must be refetched rather
+ * than served stale for the minute of `staleTime` (MET-27).
+ */
+export const metricDrilldownKeys = (slug: string | undefined, metricId: string) =>
+  [
+    ['monitoringMetrics', slug, 'metric', metricId],
+    ['eventMetricBreakdowns', slug, 'metric', metricId],
+    ['appVersionSeries', slug, 'metric', metricId],
+  ] as const

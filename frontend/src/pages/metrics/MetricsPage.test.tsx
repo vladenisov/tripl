@@ -523,6 +523,51 @@ describe('MetricsPage', () => {
       expect(await screen.findByTestId('edit-route')).toHaveTextContent('m-copy')
     })
 
+    it('duplicates a legacy fact metric with its named filter and a narrowed config (MET-43)', async () => {
+      mockList({
+        items: [makeItem({ id: 'm-1', name: 'orders', display_name: 'Orders' })],
+        total: 1,
+      })
+      vi.mocked(metricsCatalogApi.get).mockResolvedValue(
+        makeDefinition({
+          id: 'm-1',
+          name: 'orders',
+          display_name: 'Orders',
+          kind: 'fact',
+          composition: 'single',
+          aggregation: 'count',
+          fact_table_id: 'ft-1',
+          data_source_id: null,
+          config: {
+            row_filter: 'completed',
+            row_filters: ['paid', 42],
+            conditions: [{ column: 'amount', operator: 'gt', value: 3 }],
+          },
+        }),
+      )
+      vi.mocked(metricsCatalogApi.create).mockResolvedValue(
+        makeDefinition({ id: 'm-copy', name: 'orders_copy', status: 'draft' }),
+      )
+
+      renderMetrics()
+
+      await openRowMenu('Orders')
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate as draft' }))
+
+      await waitFor(() =>
+        expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+          'demo',
+          expect.objectContaining({
+            kind: 'fact',
+            fact_table_id: 'ft-1',
+            aggregation: 'count',
+            row_filters: ['paid', 'completed'],
+            conditions: [{ column: 'amount', operator: 'gt', value: 3 }],
+          }),
+        ),
+      )
+    })
+
     it('archives an active metric from the row menu', async () => {
       mockList({
         items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion', status: 'active' })],

@@ -45,7 +45,8 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
 import { useEventsDndSensors } from '@/pages/events/useEventsDndSensors'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
-import { formatMetricValue } from '@/lib/metricFormat'
+import { METRIC_INTERVAL_LABEL, formatMetricValue } from '@/lib/metricFormat'
+import { factOperandConfigToPayload, readFactOperandConfig } from '@/lib/factOperandConfig'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
 import { getErrorMessage } from '@/lib/utils'
 import {
@@ -55,7 +56,6 @@ import {
   METRIC_STATUSES,
   type EventCompositionMetricCreate,
   type FactMetricCreate,
-  type MetricAggregation,
   type MetricCreate,
   type MetricDefinitionListItem,
   type MetricDefinitionListResponse,
@@ -92,17 +92,6 @@ const KIND_FILTER_OPTIONS: { value: '' | MetricKind; label: string }[] = [
 
 const FILTER_SELECT_CLASS =
   'h-8 rounded-md border bg-[var(--bg)] px-2 text-[12px] text-[var(--fg)] outline-none'
-
-// Human-readable collection cadence, used as the Latest-cell tooltip context
-// when a metric has no known bucket timestamp for its latest value
-// (tripl-nxk2.11). Mirrors the backend ScanInterval enum.
-const INTERVAL_LABEL: Record<MetricScanInterval, string> = {
-  '15m': 'every 15 min',
-  '1h': 'hourly',
-  '6h': 'every 6 h',
-  '1d': 'daily',
-  '1w': 'weekly',
-}
 
 // Interval → milliseconds, for the staleness threshold (tripl-nxk2.10).
 const INTERVAL_MS: Record<MetricScanInterval, number> = {
@@ -187,11 +176,6 @@ function StatFilter({
   )
 }
 
-// The single fact operand shape (numerator / denominator) sent to the backend —
-// derived from the generated create schema so it stays in lock-step.
-type FactOperandPayload = NonNullable<FactMetricCreate['numerator']>
-type FactConditionPayload = NonNullable<FactOperandPayload['conditions']>[number]
-
 // A metric's internal name is a lowercase [a-z0-9_] identifier. Derive a unique
 // copy name: `<name>_copy`, then `_2` / `_3`… on collision against the loaded
 // catalog. The source name is already a valid identifier, so the suffix keeps it
@@ -202,40 +186,6 @@ function makeCopyName(baseName: string, existing: ReadonlySet<string>): string {
   let suffix = 2
   while (existing.has(`${root}_${suffix}`)) suffix += 1
   return `${root}_${suffix}`
-}
-
-// Narrow one fact operand out of a stored fact-metric config sub-object (a ratio
-// numerator/denominator). Untrusted JSON, so every field is read defensively.
-function readFactOperand(raw: unknown): FactOperandPayload {
-  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
-  const strOrNull = (key: string): string | null =>
-    typeof obj[key] === 'string' ? (obj[key] as string) : null
-  return {
-    fact_table_id: typeof obj['fact_table_id'] === 'string' ? (obj['fact_table_id'] as string) : '',
-    aggregation: (obj['aggregation'] as MetricAggregation | undefined) ?? 'count',
-    measure_column: strOrNull('measure_column'),
-    distinct_column: strOrNull('distinct_column'),
-    row_filters: Array.isArray(obj['row_filters']) ? (obj['row_filters'] as string[]) : [],
-    filter_sql: strOrNull('filter_sql'),
-    conditions: readFactConditions(obj['conditions']),
-  }
-}
-
-function readFactConditions(raw: unknown): FactConditionPayload[] {
-  if (!Array.isArray(raw)) return []
-  return raw
-    .filter(
-      (condition): condition is Record<string, unknown> =>
-        Boolean(condition) && typeof condition === 'object',
-    )
-    .filter(
-      condition => typeof condition.column === 'string' && typeof condition.operator === 'string',
-    )
-    .map(condition => ({
-      column: condition.column as string,
-      operator: condition.operator as FactConditionPayload['operator'],
-      ...(condition.value == null ? {} : { value: condition.value as FactConditionPayload['value'] }),
-    }))
 }
 
 /**
@@ -294,8 +244,8 @@ function buildDuplicatePayload(
         kind: 'fact',
         composition: 'ratio',
         interval: def.interval ?? '1h',
-        numerator: readFactOperand(config['numerator']),
-        denominator: readFactOperand(config['denominator']),
+        numerator: factOperandConfigToPayload(readFactOperandConfig(config['numerator'])),
+        denominator: factOperandConfigToPayload(readFactOperandConfig(config['denominator'])),
         replay_chunk_interval: def.replay_chunk_interval,
       }
       return payload
@@ -305,13 +255,16 @@ function buildDuplicatePayload(
       kind: 'fact',
       composition: 'single',
       interval: def.interval ?? '1h',
+      // One narrowing reader for every stored operand (MET-43): it validates
+      // the aggregation, filters `row_filters` to strings and folds a legacy
+      // single `row_filter` in, which this copy used to lose.
+      ...factOperandConfigToPayload(
+        readFactOperandConfig(config, {
+          factTableId: def.fact_table_id,
+          aggregation: def.aggregation,
+        }),
+      ),
       fact_table_id: def.fact_table_id,
-      aggregation: def.aggregation,
-      measure_column: strOrNull('measure_column'),
-      distinct_column: strOrNull('distinct_column'),
-      row_filters: Array.isArray(config['row_filters']) ? (config['row_filters'] as string[]) : [],
-      filter_sql: strOrNull('filter_sql'),
-      conditions: readFactConditions(config['conditions']),
       replay_chunk_interval: def.replay_chunk_interval,
     }
     return payload
@@ -826,7 +779,7 @@ function MetricRow({
   const latestTitle = bucketIso
     ? `Latest point: ${formatDateTime(bucketIso)}`
     : metric.interval
-      ? `Collected ${INTERVAL_LABEL[metric.interval]}`
+      ? `Collected ${METRIC_INTERVAL_LABEL[metric.interval].toLowerCase()}`
       : undefined
 
   return (

@@ -194,6 +194,20 @@ describe('FactTableForm', () => {
     )
   })
 
+  it('refuses a save with a half-filled row filter instead of dropping it (MET-3)', async () => {
+    renderForm()
+    fillRequired()
+    fireEvent.click(screen.getByRole('button', { name: /Add row filter/ }))
+    fireEvent.change(screen.getByLabelText('Row filter 1 name'), { target: { value: 'ios_only' } })
+
+    submit()
+
+    expect(
+      await screen.findByText(/Row filter 1 needs both a name and a SQL condition/),
+    ).toBeInTheDocument()
+    expect(factTablesApi.create).not.toHaveBeenCalled()
+  })
+
   it('refuses a save whose row filters repeat a name', async () => {
     renderForm()
     fillRequired()

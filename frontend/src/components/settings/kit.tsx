@@ -336,6 +336,8 @@ export function TextInput({
   id,
   'aria-label': ariaLabel,
   'aria-required': ariaRequired,
+  'aria-invalid': ariaInvalid,
+  'aria-describedby': ariaDescribedBy,
 }: {
   value: string
   onChange?: (value: string) => void
@@ -348,6 +350,9 @@ export function TextInput({
   id?: string
   'aria-label'?: string
   'aria-required'?: boolean
+  /** Set by a form row that shows a validation message for this control. */
+  'aria-invalid'?: boolean
+  'aria-describedby'?: string
 }) {
   const controlId = useFieldControlId(id)
   const input = (
@@ -359,6 +364,8 @@ export function TextInput({
       disabled={disabled}
       aria-label={ariaLabel}
       aria-required={ariaRequired}
+      aria-invalid={ariaInvalid || undefined}
+      aria-describedby={ariaDescribedBy}
       onChange={(e) => onChange?.(e.target.value)}
       className={mono ? 'mono' : undefined}
       style={{
@@ -484,6 +491,8 @@ export function Select({
   id,
   'aria-required': ariaRequired,
   'aria-label': ariaLabel,
+  'aria-invalid': ariaInvalid,
+  'aria-describedby': ariaDescribedBy,
 }: {
   value: string
   onChange?: (value: string) => void
@@ -492,6 +501,9 @@ export function Select({
   id?: string
   'aria-required'?: boolean
   'aria-label'?: string
+  /** Set by a form row that shows a validation message for this control. */
+  'aria-invalid'?: boolean
+  'aria-describedby'?: string
 }) {
   const controlId = useFieldControlId(id)
   return (
@@ -502,6 +514,8 @@ export function Select({
         disabled={disabled}
         aria-required={ariaRequired}
         aria-label={ariaLabel}
+        aria-invalid={ariaInvalid || undefined}
+        aria-describedby={ariaDescribedBy}
         onChange={(e) => onChange?.(e.target.value)}
         className="w-full appearance-none"
         style={{
