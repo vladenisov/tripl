@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ScanJob } from '@/types'
-import { SCAN_STATUS_LABEL } from './scanLayoutConstants'
+import { SCAN_STATUS_LABEL, formatCount } from './scanLayoutConstants'
 import {
   LOADING_SCAN_RUN_INFO,
   consecutiveFailedRuns,
@@ -9,6 +9,10 @@ import {
   jobDurationSeconds,
   jobMetricPoints,
   jobRowsScanned,
+  parseOptionalPositiveInt,
+  parseOptionalShare,
+  positiveIntError,
+  shareError,
   summarizeScanChanges,
 } from './scanUtils'
 
@@ -192,5 +196,47 @@ describe('eligibleChunkIntervals', () => {
   it('returns the interval and coarser sizes', () => {
     expect(eligibleChunkIntervals('1h')).toEqual(['1h', '6h', '1d', '1w'])
     expect(eligibleChunkIntervals('')).toEqual([])
+  })
+})
+
+describe('formatCount (DATA-38)', () => {
+  it('moves up a unit when rounding reaches 1000 of the smaller one', () => {
+    expect(formatCount(999_949)).toBe('999.9K')
+    expect(formatCount(999_950)).toBe('1M')
+    expect(formatCount(999_999)).toBe('1M')
+    expect(formatCount(999_995_000)).toBe('1B')
+  })
+
+  it('keeps the ordinary cases', () => {
+    expect(formatCount(null)).toBe('—')
+    expect(formatCount(999)).toBe('999')
+    expect(formatCount(1_000)).toBe('1K')
+    expect(formatCount(100_000)).toBe('100K')
+    expect(formatCount(1_800_000)).toBe('1.8M')
+    expect(formatCount(2_500_000_000)).toBe('2.5B')
+  })
+})
+
+describe('numeric limit parsing (DATA-25)', () => {
+  it('never turns 0, a negative or a fraction into a limit the backend refuses', () => {
+    expect(parseOptionalPositiveInt('0')).toBeNull()
+    expect(parseOptionalPositiveInt('-3')).toBeNull()
+    expect(parseOptionalPositiveInt('2.5')).toBeNull()
+    expect(parseOptionalPositiveInt(' 24 ')).toBe(24)
+    expect(parseOptionalPositiveInt('')).toBeNull()
+  })
+
+  it('explains the refusal instead', () => {
+    expect(positiveIntError('0')).toMatch(/whole number of 1 or more/)
+    expect(positiveIntError('')).toBeNull()
+    expect(positiveIntError('', { required: true })).toMatch(/whole number of 1 or more/)
+    expect(positiveIntError('12')).toBeNull()
+  })
+
+  it('refuses a share outside (0, 1) rather than dropping it', () => {
+    expect(parseOptionalShare('0.05')).toBe(0.05)
+    expect(shareError('0.05')).toBeNull()
+    expect(shareError('5')).toMatch(/between 0 and 1/)
+    expect(shareError('')).toBeNull()
   })
 })

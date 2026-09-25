@@ -474,6 +474,75 @@ describe('ScanDetail', () => {
     expect(await screen.findByText('No platform column configured')).toBeInTheDocument()
   })
 
+  it('says the platform presence failed to load instead of claiming no column (DATA-21)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return new Response(JSON.stringify({ detail: 'boom' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText("Couldn't load platform presence")).toBeInTheDocument()
+    expect(screen.queryByText('No platform column configured')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+  })
+
+  it('shows when a queued run was queued, and asks before stopping it (DATA-23, DATA-24)', async () => {
+    const queuedAt = new Date(Date.now() - 5_000).toISOString()
+    const cancel = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/jobs/job-q/cancel') && init?.method === 'POST') {
+        cancel()
+        return mockJsonResponse({ id: 'job-q', status: 'cancelled' })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([{
+          id: 'job-q',
+          scan_config_id: 'scan-1',
+          status: 'pending',
+          started_at: null,
+          completed_at: null,
+          result_summary: null,
+          error_message: null,
+          created_at: queuedAt,
+          updated_at: queuedAt,
+        }])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText(/^queued /)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop run' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(cancel).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop run' }))
+    await waitFor(() => expect(cancel).toHaveBeenCalledTimes(1))
+  })
+
   it('collapses a wall of consecutive failed runs behind an expander (tripl-7l83.4)', async () => {
     const failedJob = (id: string, startedAt: string) => ({
       id,

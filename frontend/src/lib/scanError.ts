@@ -24,23 +24,44 @@ const SCAN_FAILED_INTERNAL = 'Scan failed: an internal error occurred while savi
 const SCAN_FAILED_CONNECT = 'Scan failed: could not connect to the data source.'
 
 /**
- * Ordered rules — first match wins. Lowercase patterns are matched
- * case-insensitively as substrings. Timeout is checked before connection
- * because a `HTTPSConnectionPool(host=..., port=...): Read timed out` string
- * also contains "Connection"/`host=`/`port=` and must read as a timeout, not a
- * generic connect failure.
+ * Ordered rules — first match wins, tested against the lowercased text. Timeout
+ * is checked before connection because a `HTTPSConnectionPool(host=..., port=...):
+ * Read timed out` string also contains "Connection"/`host=`/`port=` and must
+ * read as a timeout, not a generic connect failure.
+ *
+ * Word-like patterns are anchored to token boundaries, the same way
+ * RAW_INTERNAL_MARKERS below are and for the same reason: as bare substrings,
+ * any message naming a column such as `session_timeout` or `connection_id` read
+ * as "the data source did not respond in time" or "could not connect" — a
+ * confidently wrong diagnosis rather than the generic one (DATA-20). The
+ * driver's own spellings (`ReadTimeout`, `ConnectionError`, `ConnectionRefused`)
+ * are listed whole, since a boundary check would otherwise reject them.
  */
-const SCAN_ERROR_RULES: ReadonlyArray<{ patterns: readonly string[]; message: string }> = [
+const BOUNDARY_BEFORE = '(?<![a-z0-9_])'
+const BOUNDARY_AFTER = '(?![a-z0-9_])'
+const token = (pattern: string) => new RegExp(`${BOUNDARY_BEFORE}(?:${pattern})${BOUNDARY_AFTER}`)
+
+const SCAN_ERROR_RULES: ReadonlyArray<{ patterns: readonly RegExp[]; message: string }> = [
   {
-    patterns: ['httpsconnectionpool', 'read timed out', 'timeout'],
+    patterns: [
+      token('httpsconnectionpool'),
+      token('(?:read|connect)?timeout(?:error|exception)?'),
+      token('timed out'),
+    ],
     message: SCAN_FAILED_TIMEOUT,
   },
   {
-    patterns: ['no_autoflush', 'autoflush', 'sqlalchemy'],
+    patterns: [token('(?:no_)?autoflush'), token('sqlalchemy')],
     message: SCAN_FAILED_INTERNAL,
   },
   {
-    patterns: ['connection', 'refused', 'getaddrinfo', 'host=', 'port='],
+    patterns: [
+      token('connection(?:error|refused(?:error)?|reset(?:error)?)?'),
+      token('refused'),
+      token('getaddrinfo'),
+      /host=/,
+      /port=/,
+    ],
     message: SCAN_FAILED_CONNECT,
   },
 ]
@@ -105,7 +126,7 @@ export function friendlyScanError(raw: string | null | undefined): FriendlyScanE
   }
 
   for (const rule of SCAN_ERROR_RULES) {
-    if (rule.patterns.some((pattern) => haystack.includes(pattern))) {
+    if (rule.patterns.some((pattern) => pattern.test(haystack))) {
       return { message: rule.message, technical: raw }
     }
   }

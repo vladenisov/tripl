@@ -9,6 +9,7 @@ import {
   type ScanFormState,
   canSubmitScanForm,
   hasEventTarget,
+  scanFieldErrors,
   scanFormBlocker,
   toBackendPayload,
   toDryRunRequest,
@@ -37,7 +38,7 @@ function formState(overrides: Partial<ScanFormState> = {}): ScanFormState {
     metricBreakdownColumns: [],
     metricBreakdownValuesLimit: '',
     distributionDriftFields: [],
-    cardinalityThreshold: 100,
+    cardinalityThreshold: '100',
     interval: '1h',
     chunkInterval: '1d',
     scanLookbackHours: '24',
@@ -122,7 +123,7 @@ describe('toDryRunRequest (tripl-3y7z.6)', () => {
     const request = toDryRunRequest(formState({
       eventTypeColumn: 'event_name',
       eventNameFormat: '{action}:{category}',
-      cardinalityThreshold: 25,
+      cardinalityThreshold: '25',
       scanLookbackHours: '48',
     }))
 
@@ -300,5 +301,163 @@ describe('hasEventTarget — the gate on asking the warehouse anything', () => {
     expect(hasEventTarget(formState({ eventTypeId: '', eventTypeColumn: '' }))).toBe(false)
     expect(hasEventTarget(formState({ eventTypeId: 'et-1', eventTypeColumn: '' }))).toBe(true)
     expect(hasEventTarget(formState({ eventTypeId: '', eventTypeColumn: 'event_name' }))).toBe(true)
+  })
+})
+
+describe('useScanForm — a query edit keeps the saved selections (DATA-1)', () => {
+  const saved = {
+    id: 'sc-1',
+    data_source_id: 'ds-1',
+    name: 'Main scan',
+    base_query: 'SELECT * FROM analytics.events',
+    event_type_column: 'event_name',
+    time_column: 'event_ts',
+    interval: '1h',
+    json_value_paths: ['props.plan', 'context.locale'],
+    distribution_drift_fields: ['country'],
+    metric_breakdown_columns: [],
+    event_group_rules: [],
+    cardinality_threshold: 100,
+  } as unknown as ScanConfig
+
+  // One space typed into a saved scan's query, or its Format button, used to
+  // clear every JSON value path and drift field behind a preview gate the user
+  // could not see past — and the next Save sent the empty lists.
+  it('edit query on a saved config keeps json_value_paths and drift fields', () => {
+    const { result } = renderHook(() => useScanForm('demo', saved), { wrapper })
+
+    act(() => result.current.setBaseQuery('SELECT *\nFROM analytics.events'))
+
+    const payload = result.current.toBackendPayload()
+    expect(payload.base_query).toBe('SELECT *\nFROM analytics.events')
+    expect(payload.json_value_paths).toEqual(['props.plan', 'context.locale'])
+    expect(payload.distribution_drift_fields).toEqual(['country'])
+  })
+
+  it('prunes only the selections the next preview no longer has a column for', async () => {
+    vi.spyOn(scansApi, 'dryRun').mockResolvedValue({ events: [] } as unknown as ScanDryRunResponse)
+    vi.spyOn(scansApi, 'preview').mockResolvedValue({
+      columns: [
+        { name: 'event_name', type_name: 'String', is_nullable: false },
+        { name: 'event_ts', type_name: 'DateTime', is_nullable: false },
+        { name: 'props', type_name: 'JSON', is_nullable: true },
+      ],
+      rows: [],
+      json_columns: [],
+    })
+    const { result } = renderHook(() => useScanForm('demo', saved), { wrapper })
+
+    act(() => result.current.setBaseQuery('SELECT event_name, event_ts, props FROM analytics.events'))
+    act(() => result.current.loadPreview())
+
+    await waitFor(() => expect(result.current.preview).not.toBeNull())
+    expect(result.current.state.jsonValuePaths).toEqual(['props.plan'])
+    expect(result.current.state.distributionDriftFields).toEqual([])
+  })
+})
+
+describe('useScanForm — answers belong to the draft that asked (DATA-2)', () => {
+  const oldColumns: ScanConfigPreview = {
+    columns: [{ name: 'legacy_name', type_name: 'String', is_nullable: false }],
+    rows: [],
+    json_columns: [],
+  }
+
+  it('drops a preview that answers after the query was edited, and stops waiting for it', async () => {
+    let resolveOld: (preview: ScanConfigPreview) => void = () => {}
+    let oldSignal: AbortSignal | undefined
+    vi.spyOn(scansApi, 'preview').mockImplementation((_slug, _request, signal) => {
+      oldSignal = signal
+      return new Promise(resolve => {
+        resolveOld = resolve
+      })
+    })
+
+    const { result } = renderHook(() => useScanForm('demo', null), { wrapper })
+    act(() => result.current.setDataSourceId('ds-1'))
+    act(() => result.current.setBaseQuery('SELECT legacy_name FROM old_events'))
+    act(() => result.current.loadPreview())
+    await waitFor(() => expect(oldSignal).toBeDefined())
+
+    // The user moves on: a new query, and picks its naming column by hand.
+    act(() => result.current.setBaseQuery('SELECT event_name FROM analytics.events'))
+    act(() => result.current.set('eventTypeColumn', 'event_name'))
+    expect(oldSignal?.aborted).toBe(true)
+
+    // The old job answers anyway (its POST was already out).
+    await act(async () => {
+      resolveOld(oldColumns)
+    })
+
+    expect(result.current.preview).toBeNull()
+    // The old columns lack `event_name`; pruning against them would have
+    // cleared the column the user just chose for the new query.
+    expect(result.current.state.eventTypeColumn).toBe('event_name')
+  })
+
+  it('merges discovered JSON keys only into the preview they were asked about', async () => {
+    const loaded: ScanConfigPreview = {
+      columns: [{ name: 'props', type_name: 'JSON', is_nullable: true }],
+      rows: [],
+      json_columns: [],
+    }
+    let resolveDiscovery: (preview: ScanConfigPreview) => void = () => {}
+    vi.spyOn(scansApi, 'preview').mockImplementation((_slug, request) =>
+      request.include_json_paths
+        ? new Promise(resolve => {
+          resolveDiscovery = resolve
+        })
+        : Promise.resolve(loaded),
+    )
+
+    const { result } = renderHook(() => useScanForm('demo', null), { wrapper })
+    act(() => result.current.setDataSourceId('ds-1'))
+    act(() => result.current.setBaseQuery('SELECT props FROM a'))
+    act(() => result.current.loadPreview())
+    await waitFor(() => expect(result.current.preview).not.toBeNull())
+
+    act(() => result.current.discoverJsonPaths())
+    act(() => result.current.setBaseQuery('SELECT props FROM b'))
+    act(() => result.current.loadPreview())
+    await waitFor(() => expect(result.current.preview).not.toBeNull())
+
+    await act(async () => {
+      resolveDiscovery({
+        columns: [],
+        rows: [],
+        json_columns: [{ column: 'props', paths: [{ full_path: 'props.a', path: 'a', sample_values: [] }] }],
+      })
+    })
+
+    expect(result.current.preview?.json_columns).toEqual([])
+  })
+})
+
+describe('scanFieldErrors — numeric limits the backend would refuse (DATA-25)', () => {
+  it('flags zero, negatives and fractions instead of truncating them', () => {
+    const errors = scanFieldErrors(formState({ scanRowLimit: '0', scanLookbackHours: '-3', metricsRowLimit: '2.5' }))
+    expect(Object.keys(errors).sort()).toEqual(['metricsRowLimit', 'scanLookbackHours', 'scanRowLimit'])
+    expect(toBackendPayload(formState({ scanRowLimit: '0' })).scan_row_limit).toBeNull()
+  })
+
+  it('requires a cardinality threshold rather than sending a cleared field as 0', () => {
+    expect(scanFieldErrors(formState({ cardinalityThreshold: '' })).cardinalityThreshold).toBeTruthy()
+  })
+
+  it('refuses an out-of-range traffic share instead of saving the default in its place', () => {
+    const state = formState({ appVersionColumn: 'app_version', appVersionActiveShareMin: '5' })
+    expect(scanFieldErrors(state).appVersionActiveShareMin).toMatch(/between 0 and 1/)
+    expect(scanFormBlocker(state)).toBe('Fix Traffic share that counts as released.')
+  })
+
+  it('does not refuse a save over metrics limits that are not on screen outside monitoring', () => {
+    const state = formState({ mode: 'catalog', metricsRowLimit: '0', metricBreakdownValuesLimit: '0' })
+    expect(scanFieldErrors(state)).toEqual({})
+    expect(scanFieldErrors({ ...state, mode: 'monitoring' })).toHaveProperty('metricsRowLimit')
+  })
+
+  it('leaves blank optional limits alone — blank is the backend default', () => {
+    expect(scanFieldErrors(formState({ scanRowLimit: '', metricsRowLimit: '', scanLookbackHours: '' }))).toEqual({})
+    expect(scanFormBlocker(formState())).toBeNull()
   })
 })

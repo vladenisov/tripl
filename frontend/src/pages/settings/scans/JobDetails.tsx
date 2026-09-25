@@ -6,6 +6,7 @@ import { formatDateTime } from '@/lib/datetime'
 import { friendlyScanError } from '@/lib/scanError'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import { ReplayChunkProgress } from './ReplayChunkProgress'
+import { ScanErrorTechnicalDetails } from './ScanErrorTechnicalDetails'
 import type { ScanMode } from './scanMode'
 import { buildRunReport, type RunReportLine, type RunReportTarget } from './runReport'
 
@@ -131,13 +132,15 @@ export function JobDetails({
     : null
 
   const report = buildRunReport(job, mode, openSignals)
+  const error = job.error_message ? friendlyScanError(job.error_message) : null
 
   return (
     <div className="space-y-3 bg-muted/30 p-4">
       <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Run details</h4>
-      {job.error_message && (
+      {error && (
         <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive">
-          {friendlyScanError(job.error_message).message}
+          {error.message}
+          <ScanErrorTechnicalDetails technical={error.technical} />
         </div>
       )}
       {summary && (

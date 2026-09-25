@@ -149,52 +149,63 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
       {unsaved.dialog}
       <BackLink onClick={goBack} />
 
-      <div className="flex items-start gap-3">
-        <SrcIcon dbType={dataSource?.db_type ?? null} size={36} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2.5">
-            <h1 className="m-0 text-[21px] font-semibold tracking-tight">{sc.name}</h1>
-            <span className="inline-flex items-center gap-1.5">
-              <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
-              <span className="text-xs" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
-                {SCAN_STATUS_LABEL[runInfo.status]}
+      {/* Stacks below `sm`: one row of icon, title block, Run now and Edit left
+          the title a ~70px column at 375px, one word per line (DATA-11). */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <SrcIcon dbType={dataSource?.db_type ?? null} size={36} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <h1 className="m-0 text-[21px] font-semibold tracking-tight">{sc.name}</h1>
+              <span className="inline-flex items-center gap-1.5">
+                <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
+                <span className="text-xs" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
+                  {SCAN_STATUS_LABEL[runInfo.status]}
+                </span>
               </span>
-            </span>
-          </div>
-          <p className="mt-1 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            {/* "Reads from", not "Ingests from": the causal note directly below
-                says what a run DOES ("adds events to your tracking plan"), and
-                two verbs for one act, one line apart, is the vocabulary drift
-                this epic opened with. "Reads" is what concepts.md already uses
-                for the warehouse side. */}
-            Reads from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
-          </p>
-          {/* One line under the header saying what this scan produces and what
-              reads it. Mounted here rather than inside ScanDetail so it sits
-              above the tab strip and holds for both tabs (tripl-3y7z.2). */}
-          <div className="mt-1">
-            <ScanCausalNote variant="config" config={sc} />
+            </div>
+            <p className="mt-1 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              {/* "Reads from", not "Ingests from": the causal note directly below
+                  says what a run DOES ("adds events to your tracking plan"), and
+                  two verbs for one act, one line apart, is the vocabulary drift
+                  this epic opened with. "Reads" is what concepts.md already uses
+                  for the warehouse side. */}
+              Reads from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
+            </p>
+            {/* One line under the header saying what this scan produces and what
+                reads it. Mounted here rather than inside ScanDetail so it sits
+                above the tab strip and holds for both tabs (tripl-3y7z.2). */}
+            <div className="mt-1">
+              <ScanCausalNote variant="config" config={sc} />
+            </div>
           </div>
         </div>
         {/* Run is an editor's action, editing the configuration an owner's
             (DATA-6); the Configuration tab itself stays open to read. */}
-        {canRun && (
-          <ScenarioCoachMark step="live-loop/run-scan">
-            <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
-              <Play className="size-3" />
-              {runMut.isPending ? 'Starting…' : 'Run now'}
-            </Button>
-          </ScenarioCoachMark>
-        )}
-        {isOwner && (
-          <Button
-            variant={tab === 'configuration' ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => setTab('configuration')}
-          >
-            <Sliders className="size-3.5" />
-            Edit
-          </Button>
+        {(canRun || isOwner) && (
+          <div className="flex shrink-0 items-center gap-2">
+            {canRun && (
+              <ScenarioCoachMark step="live-loop/run-scan">
+                <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
+                  <Play className="size-3" />
+                  {runMut.isPending ? 'Starting…' : 'Run now'}
+                </Button>
+              </ScenarioCoachMark>
+            )}
+            {isOwner && (
+              <Button
+                variant={tab === 'configuration' ? 'default' : 'outline'}
+                size="sm"
+                // A phone has the Configuration tab a few pixels below; a second
+                // way there only costs the title its width.
+                className="hidden sm:inline-flex"
+                onClick={() => setTab('configuration')}
+              >
+                <Sliders className="size-3.5" />
+                Edit
+              </Button>
+            )}
+          </div>
         )}
       </div>
 

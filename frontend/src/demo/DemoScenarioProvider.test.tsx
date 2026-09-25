@@ -132,16 +132,20 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
   it('synchronizes the completed watched job into the same-tab scan list cache', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     client.setQueryData(['scanJobs', SLUG, 'sc-1'], [scanJob('running')])
+    // The Scans list's capped history, cached under the same prefix.
+    client.setQueryData(['scanJobs', SLUG, 'sc-1', { limit: 10 }], [scanJob('running')])
     vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
     renderProvider(demoProject(), `/p/${SLUG}/scans`, client)
 
     fireEvent.click(screen.getByText('run'))
     await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
 
-    expect(client.getQueryData<ScanJob[]>(['scanJobs', SLUG, 'sc-1'])?.[0]).toMatchObject({
-      id: 'job-1',
-      status: 'completed',
-    })
+    for (const key of [['scanJobs', SLUG, 'sc-1'], ['scanJobs', SLUG, 'sc-1', { limit: 10 }]]) {
+      expect(client.getQueryData<ScanJob[]>(key)?.[0]).toMatchObject({
+        id: 'job-1',
+        status: 'completed',
+      })
+    }
   })
 
   it('seeds and invalidates an initially absent scan list cache on completion', async () => {
@@ -158,7 +162,6 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
     ])
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['scanJobs', SLUG, 'sc-1'],
-      exact: true,
     })
   })
 

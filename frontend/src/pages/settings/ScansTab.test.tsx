@@ -398,6 +398,17 @@ describe('ScansTab', () => {
     expect(screen.getAllByRole('button', { name: /Run again/i })).toHaveLength(1)
   })
 
+  it('marks the streak as a floor when every run in the loaded page failed', async () => {
+    setupFetchWithJobs(
+      Array.from({ length: 10 }, (_, i) =>
+        failedJob(`job-f${i}`, `2026-01-${String(20 - i).padStart(2, '0')}T00:00:00Z`),
+      ),
+    )
+    renderTab()
+
+    expect(await screen.findByText(/failed last 10\+ runs/)).toBeInTheDocument()
+  })
+
   it('re-runs a failed scan from the run row via the manual trigger endpoint', async () => {
     const runCalls: { method: string; url: string }[] = []
     setupFetchWithJobs([failedJob('job-f1', '2026-01-01T00:00:00Z')], runCalls)
@@ -720,5 +731,78 @@ describe('ScansTab — coached demo scenario', () => {
     await waitFor(() => expect(screen.getByText('Recent runs')).toBeInTheDocument())
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
     expect(window.localStorage.getItem(`tripl-demo-scenario:${SLUG}`)).toBeNull()
+  })
+})
+
+describe('ScansTab — data layer and feedback (batch 4)', () => {
+  it('asks each scan for the head of its history, not 50 full jobs (DATA-17)', async () => {
+    setupFetch()
+    renderTab()
+
+    await screen.findByText('Main events scan')
+    await waitFor(() =>
+      expect(vi.mocked(globalThis.fetch).mock.calls.map(([input]) => String(input))).toContainEqual(
+        expect.stringContaining('/scans/scan-1/jobs?limit=10'),
+      ),
+    )
+  })
+
+  it('keeps counting a failing streak while a retry is queued (DATA-18)', async () => {
+    setupFetchWithJobs([
+      {
+        ...failedJob('job-p', '2026-01-05T00:00:00Z'),
+        status: 'pending',
+        started_at: null,
+        completed_at: null,
+        error_message: null,
+      },
+      failedJob('job-f3', '2026-01-03T00:00:00Z'),
+      failedJob('job-f2', '2026-01-02T00:00:00Z'),
+      failedJob('job-f1', '2026-01-01T00:00:00Z'),
+    ])
+    renderTab()
+
+    expect(await screen.findByText(/failed last 3 runs/)).toBeInTheDocument()
+  })
+
+  it('says a Run now failed, and for which scan (DATA-5)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/scans/scan-1/run')) {
+        return new Response(JSON.stringify({ detail: 'Not allowed for this project' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run Main events scan now' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not start Main events scan: Not allowed for this project',
+    )
+  })
+
+  it('does not claim "No data sources" before the list has loaded (DATA-16)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      // The data-source list never answers: a cold load.
+      if (url.endsWith('/api/v1/data-sources')) return new Promise<Response>(() => {})
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    await screen.findByText('Main events scan')
+    expect(screen.queryByText('No data sources')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /New scan/ })).not.toBeDisabled()
   })
 })

@@ -1,4 +1,4 @@
-import { api } from './client'
+import { ApiError, api } from './client'
 import type {
   EventGroupRule,
   PlatformPresenceResponse,
@@ -13,8 +13,46 @@ import type {
 
 const PREVIEW_POLL_INTERVAL_MS = 1500
 const PREVIEW_POLL_TIMEOUT_MS = 5 * 60 * 1000
+/**
+ * Failed polls in a row a job survives before the wait gives up. A job is a
+ * warehouse query that keeps running on the worker whatever this loop does, so
+ * one 502 or network blip mid-wait used to throw away a result that was about to
+ * arrive, and the only way back was a new (billed) warehouse job (DATA-3).
+ */
+const POLL_MAX_CONSECUTIVE_FAILURES = 3
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+function abortError(): DOMException {
+  return new DOMException('The wait for this job was cancelled.', 'AbortError')
+}
+
+/** Resolves after `ms`, or rejects as soon as `signal` aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortError())
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * Whether a failed poll is worth asking again: the gateway or the network, not
+ * an answer. A 4xx (the job is gone, the session lost access) will say the same
+ * thing next time, so it ends the wait straight away.
+ */
+function isTransientPollError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return true
+  return error.status >= 500 || error.status === 408 || error.status === 429
+}
 
 /** Shape shared by the preview and dry-run poll loops (202 + poll). */
 interface PollableJob<T> {
@@ -30,19 +68,31 @@ interface PollableJob<T> {
  * Preview and dry-run are both warehouse round trips the request path refuses to
  * hold open, and both answer with the same envelope. One loop, so a timeout or a
  * cancelled job cannot mean two different things on two screens.
+ *
+ * Only a terminal job status or the deadline ends the wait; a transient poll
+ * failure is retried with backoff. `signal` stops the wait (not the job) when
+ * the draft that asked has moved on or the form unmounted.
  */
 async function pollJob<T>(
   job: PollableJob<T>,
   fetchJob: (jobId: string) => Promise<PollableJob<T>>,
   timedOutMessage: string,
   failedMessage: string,
+  signal?: AbortSignal,
 ): Promise<T> {
   const deadline = Date.now() + PREVIEW_POLL_TIMEOUT_MS
   let current = job
+  let failures = 0
   while (current.status === 'pending' || current.status === 'running') {
     if (Date.now() > deadline) throw new Error(timedOutMessage)
-    await sleep(PREVIEW_POLL_INTERVAL_MS)
-    current = await fetchJob(job.id)
+    await sleep(PREVIEW_POLL_INTERVAL_MS * 2 ** failures, signal)
+    try {
+      current = await fetchJob(job.id)
+      failures = 0
+    } catch (error) {
+      failures += 1
+      if (!isTransientPollError(error) || failures >= POLL_MAX_CONSECUTIVE_FAILURES) throw error
+    }
   }
   if (current.status !== 'completed' || !current.result_summary) {
     throw new Error(current.error_message || failedMessage)
@@ -112,13 +162,14 @@ export const scansApi = {
     time_column?: string | null
     scan_lookback_hours?: number | null
     include_json_paths?: boolean
-  }): Promise<ScanConfigPreview> => {
+  }, signal?: AbortSignal): Promise<ScanConfigPreview> => {
     const job = await scansApi.startPreview(slug, data)
     return pollJob(
       job,
       jobId => scansApi.getPreviewJob(slug, jobId),
       'Preview timed out',
       'Preview failed',
+      signal,
     )
   },
 
@@ -132,7 +183,11 @@ export const scansApi = {
   getDryRunJob: (slug: string, jobId: string) =>
     api.get<ScanDryRunJob>(`/projects/${slug}/scans/dry-run-jobs/${jobId}`),
 
-  dryRun: async (slug: string, data: ScanDryRunRequest): Promise<ScanDryRunResponse> => {
+  dryRun: async (
+    slug: string,
+    data: ScanDryRunRequest,
+    signal?: AbortSignal,
+  ): Promise<ScanDryRunResponse> => {
     const job = await scansApi.startDryRun(slug, data)
     // Both strings reach the user, under ScanPreviewPanel's "Could not work out
     // what this scan would create". "Dry run" is the pipeline's name for this,
@@ -146,6 +201,7 @@ export const scansApi = {
       jobId => scansApi.getDryRunJob(slug, jobId),
       'Timed out working out what this scan would create.',
       'The check stopped without saying why.',
+      signal,
     )
   },
 
@@ -187,8 +243,12 @@ export const scansApi = {
     time_to: string
   }) => api.post<ScanJob>(`/projects/${slug}/scans/${scanId}/metrics/replay`, data),
 
-  listJobs: (slug: string, scanId: string) =>
-    api.get<ScanJob[]>(`/projects/${slug}/scans/${scanId}/jobs`),
+  // Newest first. `limit` defaults to the backend's 50; the list page only needs
+  // the head of each scan's history and passes a smaller one (DATA-17).
+  listJobs: (slug: string, scanId: string, options: { limit?: number } = {}) =>
+    api.get<ScanJob[]>(
+      `/projects/${slug}/scans/${scanId}/jobs${options.limit ? `?limit=${options.limit}` : ''}`,
+    ),
 
   getJob: (slug: string, scanId: string, jobId: string) =>
     api.get<ScanJob>(`/projects/${slug}/scans/${scanId}/jobs/${jobId}`),

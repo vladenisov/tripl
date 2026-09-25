@@ -37,7 +37,7 @@ const eventType = {
   field_definitions: [{ id: 'field-1', name: 'country' }],
 } as unknown as EventType
 
-function renderButton(unmappedColumns: string[]) {
+function renderButton(unmappedColumns: string[], onCreated?: () => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
@@ -47,6 +47,7 @@ function renderButton(unmappedColumns: string[]) {
         preview={preview}
         unmappedColumns={unmappedColumns}
         branchId={null}
+        onCreated={onCreated}
       />
     </QueryClientProvider>,
   )
@@ -88,5 +89,53 @@ describe('CreateMissingFieldsButton — one source of truth for "which column ha
     const { container } = renderButton([])
 
     expect(container).toBeEmptyDOMElement()
+  })
+
+  // The list is the dry run's answer from BEFORE the fields existed, so the
+  // button used to keep offering "Create 1 field" — a second click made a
+  // duplicate or hit a conflict, and nothing said the first one worked (DATA-27).
+  it('says what it created, stops offering it, and asks for a fresh answer', async () => {
+    const onCreated = vi.fn()
+    renderButton(['props'], onCreated)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create 1 field' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Created 1 field on "Purchase".')
+    expect(screen.queryByRole('button', { name: /Create/ })).not.toBeInTheDocument()
+    expect(onCreated).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps every created batch off the offer, not only the latest one', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const ui = (unmapped: string[]) => (
+      <QueryClientProvider client={client}>
+        <CreateMissingFieldsButton
+          slug="demo"
+          eventType={eventType}
+          preview={preview}
+          unmappedColumns={unmapped}
+          branchId={null}
+        />
+      </QueryClientProvider>
+    )
+    const { rerender } = render(ui(['props']))
+    fireEvent.click(screen.getByRole('button', { name: 'Create 1 field' }))
+    await screen.findByText(/Created 1 field/)
+
+    // The re-check has not landed, and the list now also names a new column.
+    rerender(ui(['props', 'country']))
+    fireEvent.click(screen.getByRole('button', { name: 'Create 1 field' }))
+    await screen.findByText(/Created 2 fields/)
+    expect(screen.queryByRole('button', { name: /^Create/ })).toBeNull()
+  })
+
+  it('says so when the fields could not be created', async () => {
+    bulkCreate.mockRejectedValueOnce(new Error('Field props already exists'))
+    renderButton(['props'])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create 1 field' }))
+
+    expect(await screen.findByText('Could not create the fields')).toBeInTheDocument()
+    expect(screen.getByText('Field props already exists')).toBeInTheDocument()
   })
 })
