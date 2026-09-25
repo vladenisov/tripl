@@ -5,6 +5,7 @@ import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
 import { planBranchesApi } from '@/api/planBranches'
+import { planBranchesKey } from '@/lib/queryKeys'
 import { useBranchContext } from '@/hooks/useBranch'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import type { PlanBranchSummary } from '@/types'
@@ -152,7 +153,7 @@ describe('BranchProvider', () => {
 
     listReturns([MAIN, { ...FEATURE, status: 'closed' }])
     await act(async () => {
-      await client.invalidateQueries({ queryKey: ['planBranches', 'demo'] })
+      await client.invalidateQueries({ queryKey: planBranchesKey('demo') })
     })
     await waitFor(() => expect(branchShown()).toBe('main'))
     await waitFor(() => expect(searchShown()).toBe('?q=x'))
@@ -189,7 +190,7 @@ describe('BranchProvider', () => {
     const created = { ...FEATURE, id: 'new-1', name: 'fresh' }
     localStorage.setItem('tripl-branch:demo', created.id)
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    client.setQueryData(['planBranches', 'demo'], { items: [MAIN], total: 1 }, { updatedAt: 0 })
+    client.setQueryData(planBranchesKey('demo'), { items: [MAIN], total: 1 }, { updatedAt: 0 })
     let answer: (value: { items: PlanBranchSummary[]; total: number }) => void = () => {}
     vi.mocked(planBranchesApi.list).mockReturnValue(new Promise((resolve) => { answer = resolve }))
     renderProvider('/p/demo/events', { client })
@@ -269,7 +270,7 @@ describe('BranchProvider', () => {
     // The merge invalidates the list; the next answer reports the branch merged.
     listReturns([MAIN, { ...FEATURE, status: 'merged' }])
     await act(async () => {
-      await client.invalidateQueries({ queryKey: ['planBranches', 'demo'] })
+      await client.invalidateQueries({ queryKey: planBranchesKey('demo') })
     })
     await waitFor(() => expect(branchShown()).toBe('main'))
   })
