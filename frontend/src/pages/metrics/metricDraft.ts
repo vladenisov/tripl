@@ -61,9 +61,9 @@ export interface MetricDraft {
   interval: MetricScanInterval
   /**
    * Set through the API or the demo, never through this form, and re-sent as
-   * stored. Dropped when the interval becomes coarser than it — the backend
-   * refuses a chunk finer than the interval, and the user could not see the
-   * field the 422 named (MET-10).
+   * stored. Null while the interval is coarser than it, and back once the
+   * interval is not — the backend refuses a chunk finer than the interval, and
+   * the user could not see the field the 422 named (MET-10).
    */
   replayChunkInterval: MetricScanInterval | null
   // SQL

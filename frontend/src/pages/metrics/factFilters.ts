@@ -41,6 +41,14 @@ export type FactFilter =
       operator: FactConditionOperator
       value: string
       values: string[]
+      /**
+       * The condition exactly as stored, on a row loaded from a saved metric.
+       * While the row still shows what loading made of it, the save re-sends
+       * this instead of re-serialising the text: a scalar `in` value, or a
+       * quoted `'3'` on a number column, would otherwise come back changed, and
+       * the backend deletes a metric's history on any change of definition.
+       */
+      stored?: FactConditionPayload
     }
 
 export type FactConditionFilter = Extract<FactFilter, { kind: 'condition' }>
@@ -139,6 +147,10 @@ export function stripRedundantOuterParens(sql: string): string {
  * `(x OR y) AND z` stays one row — splitting it would be harmless (every row is
  * ANDed anyway) but would rewrite what they typed. Two SQL filters used to come
  * back from a save as one merged row (MET-31).
+ *
+ * This is the lenient scan (any case, any whitespace around AND); the editor
+ * loads through {@link sqlFiltersFromStored}, which splits only what joining
+ * the parts again reproduces byte for byte.
  */
 export function splitAndedFragments(sql: string): string[] {
   const trimmed = sql.trim()
@@ -173,17 +185,45 @@ export function splitAndedFragments(sql: string): string[] {
   return parts.map(part => stripRedundantOuterParens(part))
 }
 
+/** How {@link filtersToPayload} joins two or more SQL fragments into one string. */
+function joinSqlFragments(fragments: readonly string[]): string {
+  return fragments.map(sql => `(${sql})`).join(' AND ')
+}
+
+/**
+ * The SQL rows a stored `filter_sql` loads as. It is split into one row per
+ * fragment only when it is exactly what {@link filtersToPayload} makes of those
+ * rows; anything else — a lowercase `and`, a line break before `AND`, a
+ * redundant outer paren pair — stays ONE row, verbatim. Rewriting it on load
+ * would send a different `filter_sql` on the next save although the user never
+ * touched the filter, and the backend deletes a metric's collected history on
+ * any definition change (MET-1).
+ */
+export function sqlFiltersFromStored(filterSql: string | null): string[] {
+  const stored = (filterSql ?? '').trim()
+  if (!stored) return []
+  const parts = splitAndedFragments(stored)
+  if (parts.length > 1 && parts.every(Boolean) && joinSqlFragments(parts) === stored) {
+    return parts
+  }
+  return [stored]
+}
+
 /**
  * Map the UI's mixed filter list to the backend operand contract: named
  * filters become `row_filters` (deduped, order-preserved); free-text SQL
- * fragments are normalised ({@link stripRedundantOuterParens}) and combined
- * into a single `filter_sql` string. A single fragment is stored verbatim;
- * multiple fragments are each parenthesised and ANDed (the parens keep an OR
- * fragment's precedence intact inside the joined string). Adding NO wrap to a
- * single fragment is safe because the collector parenthesises every stored
- * fragment itself before ANDing it with `row_filters` / `conditions`
- * (`_resolve_combined_filter` in metric_collect.py) — and it keeps the
- * load→save round trip idempotent (tripl-wumc).
+ * fragments are combined into a single `filter_sql` string. A single fragment
+ * is stored as typed (trimmed); multiple fragments are each normalised
+ * ({@link stripRedundantOuterParens}), parenthesised and ANDed (the parens keep
+ * an OR fragment's precedence intact inside the joined string). Adding NO wrap
+ * to a single fragment is safe because the collector parenthesises every
+ * stored fragment itself before ANDing it with `row_filters` / `conditions`
+ * (`_resolve_combined_filter` in metric_collect.py) — and, with
+ * {@link sqlFiltersFromStored}, it keeps the load→save round trip a fixed
+ * point (tripl-wumc).
+ *
+ * A condition row still exactly as it was loaded re-sends its stored form
+ * (see `stored` on {@link FactFilter}).
  *
  * Incomplete rows are skipped here, but only because {@link filterRowErrors}
  * refuses to let a form save while one exists (MET-3): a row dropped at this
@@ -206,11 +246,15 @@ export function filtersToPayload(
   }
   const sqlFragments = filters
     .filter((filter): filter is Extract<FactFilter, { kind: 'sql' }> => filter.kind === 'sql')
-    .map(filter => stripRedundantOuterParens(filter.sql))
-    .filter(Boolean)
+    .map(filter => filter.sql.trim())
+    .filter(sql => stripRedundantOuterParens(sql))
   const conditions: FactConditionPayload[] = []
   for (const filter of filters) {
     if (filter.kind !== 'condition') continue
+    if (filter.stored && isUnchangedCondition(filter, filter.stored)) {
+      conditions.push(storedConditionPayload(filter.stored))
+      continue
+    }
     const column = filter.column.trim()
     if (!column) continue
     if (VALUELESS_CONDITION_OPERATORS.has(filter.operator)) {
@@ -239,7 +283,7 @@ export function filtersToPayload(
         ? null
         : sqlFragments.length === 1
           ? sqlFragments[0]
-          : sqlFragments.map(sql => `(${sql})`).join(' AND '),
+          : joinSqlFragments(sqlFragments.map(stripRedundantOuterParens)),
     conditions,
   }
 }
@@ -294,6 +338,45 @@ function conditionValueText(value: FactConditionConfig['value']): string {
   return String(value)
 }
 
+/** The editable fields a stored condition loads as. */
+function conditionRowFields(
+  condition: FactConditionConfig,
+): Pick<FactConditionFilter, 'column' | 'operator' | 'value' | 'values'> {
+  const { column, operator, value } = condition
+  if (Array.isArray(value)) return { column, operator, value: '', values: value.map(String) }
+  if (isListConditionOperator(operator)) {
+    return {
+      column,
+      operator,
+      value: '',
+      values: value === undefined || value === null ? [] : [String(value)],
+    }
+  }
+  return { column, operator, value: conditionValueText(value), values: [] }
+}
+
+function isUnchangedCondition(
+  filter: FactConditionFilter,
+  stored: FactConditionConfig,
+): boolean {
+  const loaded = conditionRowFields(stored)
+  return (
+    filter.column === loaded.column
+    && filter.operator === loaded.operator
+    && filter.value === loaded.value
+    && filter.values.length === loaded.values.length
+    && filter.values.every((value, index) => value === loaded.values[index])
+  )
+}
+
+/** A stored condition as the backend stores it: no `value` on a valueless operator. */
+function storedConditionPayload(condition: FactConditionConfig): FactConditionPayload {
+  const { column, operator, value } = condition
+  return value === undefined || value === null || VALUELESS_CONDITION_OPERATORS.has(operator)
+    ? { column, operator }
+    : { column, operator, value }
+}
+
 /**
  * Rebuild the editable filter list from a stored operand config. Rows come
  * back grouped by type — named, then conditions, then SQL — because the
@@ -304,23 +387,14 @@ export function filtersFromConfig(
 ): FactFilter[] {
   const out: FactFilter[] = config.rowFilters.map(name => makeNamedFilter(name))
   for (const condition of config.conditions) {
-    out.push(
-      makeConditionFilter(
-        condition.column,
-        condition.operator,
-        Array.isArray(condition.value)
-          ? condition.value.map(String)
-          : isListConditionOperator(condition.operator)
-            ? condition.value === undefined || condition.value === null
-              ? []
-              : [String(condition.value)]
-            : conditionValueText(condition.value),
-      ),
-    )
+    out.push({
+      id: crypto.randomUUID(),
+      kind: 'condition',
+      ...conditionRowFields(condition),
+      stored: condition,
+    })
   }
-  // Normalise on load as well as on save: a definition polluted by the old
-  // wrap-on-every-save bug renders (and re-saves) without the stacked parens.
-  for (const sql of splitAndedFragments(stripRedundantOuterParens(config.filterSql ?? ''))) {
+  for (const sql of sqlFiltersFromStored(config.filterSql)) {
     out.push(makeSqlFilter(sql))
   }
   return out

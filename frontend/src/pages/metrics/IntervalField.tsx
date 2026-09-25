@@ -9,7 +9,7 @@ interface IntervalFieldProps {
   onChange: (next: MetricScanInterval) => void
   /** The stored replay chunk the save re-sends, if any. */
   replayChunkInterval: MetricScanInterval | null
-  /** The chunk the last interval change dropped, to say so. */
+  /** The stored chunk the current interval suppresses (cleared on save), to say so. */
   clearedReplayChunk: MetricScanInterval | null
 }
 

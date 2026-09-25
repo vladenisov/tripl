@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import type { MetricDefinitionDetailResponse } from '@/types'
 import { makeConditionFilter, makeNamedFilter } from './factFilters'
 import {
   columnsOfReferencedTables,
@@ -12,7 +11,6 @@ import {
   buildCreatePayload,
   buildDefinitionPayload,
   buildUpdatePayload,
-  definitionSignature,
 } from './metricPayload'
 
 const base = (patch: Partial<MetricDraft>): MetricDraft => ({
@@ -60,44 +58,6 @@ describe('buildCreatePayload (MET-42)', () => {
     })
     expect(buildDefinitionPayload(draft, { numerator: [{ name: 'amount', type: 'number' }] }))
       .toMatchObject({ conditions: [{ column: 'amount', operator: 'gt', value: 3 }] })
-  })
-})
-
-describe('definitionSignature (MET-1)', () => {
-  const metric = {
-    id: 'm-1',
-    kind: 'sql',
-    name: 'orders',
-    display_name: 'Orders',
-    description: '',
-    status: 'active',
-    unit: null,
-    color: '#6366f1',
-    anomaly_detection_enabled: true,
-    breakdown_columns: [],
-    app_version_column: null,
-    platform_column: null,
-    data_source_id: 'ds-1',
-    interval: '1h',
-    replay_chunk_interval: null,
-    aggregation: null,
-    composition: null,
-    config: { metric_sql: 'SELECT 1', time_column: 'bucket' },
-  } as unknown as MetricDefinitionDetailResponse
-
-  it('ignores presentation edits and catches every change of meaning', () => {
-    const saved = draftFromMetric(metric)
-    const signature = definitionSignature(saved)
-    expect(definitionSignature({ ...saved, displayName: 'Renamed', unit: 'ms' })).toBe(signature)
-    for (const edit of [
-      { metricSql: 'SELECT 2' },
-      { interval: '1d' as const },
-      { dataSourceId: 'ds-2' },
-      { sqlValueColumn: 'total' },
-      { kind: 'fact' as const },
-    ]) {
-      expect(definitionSignature({ ...saved, ...edit })).not.toBe(signature)
-    }
   })
 })
 

@@ -143,17 +143,3 @@ export function buildUpdatePayload(
     definition: buildDefinitionPayload(draft, columns),
   }
 }
-
-/**
- * A comparable fingerprint of what the metric MEANS. Built without fact-table
- * columns on purpose: those load asynchronously and change how a condition's
- * value is typed, so a fingerprint taken at mount would otherwise differ from
- * one taken after the columns land although nothing was edited.
- *
- * The backend deletes a metric's collected values, breakdowns and anomalies on
- * ANY definition change that means something different (MetricDefinitionUpdate),
- * so the form compares this at submit and asks first (MET-1).
- */
-export function definitionSignature(draft: MetricDraft): string {
-  return JSON.stringify(buildDefinitionPayload(draft))
-}

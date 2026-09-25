@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { AuthContext } from '@/components/auth-context'
 import { authAs } from '@/test/auth'
 import { expectNoAxeViolations } from '@/test/axe'
@@ -1357,6 +1357,50 @@ describe('MetricForm history-loss confirm (MET-1)', () => {
     await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
     expect(screen.queryByRole('alertdialog')).toBeNull()
   })
+
+  const factMetric = (config: Record<string, unknown>) =>
+    ({
+      ...EDIT_METRIC,
+      kind: 'fact',
+      data_source_id: null,
+      fact_table_id: 'ft-1',
+      aggregation: 'count',
+      composition: 'single',
+      replay_chunk_interval: null,
+      config,
+    }) as unknown as MetricDefinitionDetailResponse
+
+  it('sends an untouched fact definition back exactly as stored, without asking', async () => {
+    const config = {
+      filter_sql: '(amount > 0) and (user_id is not null)',
+      conditions: [
+        { column: 'user_id', operator: 'in', value: 'u-1' },
+        { column: 'amount', operator: 'gt', value: '3' },
+      ],
+    }
+    renderForm(factMetric(config))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save metric' })).toBeEnabled())
+    expect(screen.queryByText(/Saving deletes its collected values/)).toBeNull()
+
+    fireEvent.change(document.getElementById('metric-unit')!, { target: { value: 'ms' } })
+    submit()
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    // Rewriting either (`AND`, `['u-1']`, `3`) would have deleted the history.
+    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+      filter_sql: config.filter_sql,
+      conditions: config.conditions,
+    })
+  })
+
+  it('warns from the start when the stored definition cannot be sent back unchanged', async () => {
+    renderForm(factMetric({ conditions: [{ column: 'amount', operator: 'between', value: [1, 2] }] }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save metric' })).toBeEnabled())
+    expect(screen.getByText(/Saving deletes its collected values/)).toBeInTheDocument()
+    submit()
+    expect(await screen.findByRole('alertdialog')).toBeInTheDocument()
+    expect(metricsCatalogApi.update).not.toHaveBeenCalled()
+  })
 })
 
 describe('MetricForm event picker (MET-2, MET-14)', () => {
@@ -1509,6 +1553,13 @@ describe('MetricForm SQL preview (MET-4, MET-44)', () => {
     expect(screen.getByText('min 5 · max 5 · last 5')).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: 'Break down by region' })).toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: 'Break down by country' })).toBeNull()
+
+    // Editing the SQL invalidates the preview and the columns it returned.
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT 2 FROM events' },
+    })
+    expect(screen.queryByRole('checkbox', { name: 'Break down by region' })).toBeNull()
+    expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeInTheDocument()
   })
 })
 
@@ -1526,6 +1577,28 @@ describe('MetricForm replay chunk (MET-10)', () => {
     expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
       interval: '1w',
       replay_chunk_interval: null,
+    })
+  })
+})
+
+describe('MetricForm replay chunk restored', () => {
+  it('brings the stored chunk back when the interval returns below it', async () => {
+    renderForm({ ...EDIT_METRIC, replay_chunk_interval: '1d' } as MetricDefinitionDetailResponse)
+    const interval = document.getElementById('metric-sql-interval')!
+
+    fireEvent.change(interval, { target: { value: '1w' } })
+    expect(screen.getByText(/will be cleared on save/)).toBeInTheDocument()
+    fireEvent.change(interval, { target: { value: '1h' } })
+    expect(screen.queryByText(/will be cleared on save/)).toBeNull()
+    expect(screen.getByText(/Backfills replay in daily chunks/)).toBeInTheDocument()
+
+    // Nothing of meaning changed, so nothing asks and the chunk is re-sent.
+    submit()
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+      interval: '1h',
+      replay_chunk_interval: '1d',
     })
   })
 })
@@ -1592,6 +1665,20 @@ describe('MetricForm kind switch (MET-19)', () => {
     fireEvent.click(screen.getByRole('radio', { name: /SQL/ }))
     expect(screen.getByRole('checkbox', { name: 'Break down by platform' })).toBeChecked()
   })
+
+  it('gives a kind back the dimensions it had earlier in the session', async () => {
+    renderForm(EDIT_METRIC)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Break down by country' }))
+
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    await pickOption('metric-fact-table', 'ft-1')
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Break down by amount' }))
+
+    fireEvent.click(screen.getByRole('radio', { name: /SQL/ }))
+    expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeChecked()
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    expect(await screen.findByRole('checkbox', { name: 'Break down by amount' })).toBeChecked()
+  })
 })
 
 describe('MetricForm internal name (MET-34)', () => {
@@ -1631,18 +1718,24 @@ describe('MetricForm after a save (MET-27, MET-29)', () => {
 })
 
 describe('MetricEditPage (MET-28, MET-29)', () => {
-  function renderPage(path: string) {
+  function BackButton() {
+    const navigate = useNavigate()
+    return createElement('button', { type: 'button', onClick: () => navigate(-1) }, 'Go back')
+  }
+
+  function renderPage(path: string, history: string[] = []) {
     render(
       createElement(
         MemoryRouter,
-        { initialEntries: [path] },
+        { initialEntries: [...history, path], initialIndex: history.length },
         createElement(
           Routes,
           null,
+          createElement(Route, { path: '/p/:slug/metrics', element: createElement('p', null, 'catalog') }),
           createElement(Route, { path: '/p/:slug/metrics/new', element: createElement(MetricEditPage) }),
           createElement(Route, {
             path: '/p/:slug/monitoring/metric/:id',
-            element: createElement('p', null, 'drilldown'),
+            element: createElement('div', null, createElement('p', null, 'drilldown'), createElement(BackButton)),
           }),
         ),
       ),
@@ -1672,5 +1765,20 @@ describe('MetricEditPage (MET-28, MET-29)', () => {
     submit()
 
     expect(await screen.findByText('drilldown')).toBeInTheDocument()
+  })
+
+  it('replaces the create form in history, so Back skips the empty form', async () => {
+    vi.mocked(dataSourcesApi.list).mockResolvedValue(DATA_SOURCES)
+    renderPage('/p/demo/metrics/new', ['/p/demo/metrics'])
+
+    fireEvent.click(await screen.findByRole('radio', { name: /Event composition/ }))
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Checkouts' },
+    })
+    await pickOption('metric-numerator', 'ev-1')
+    submit()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Go back' }))
+    expect(await screen.findByText('catalog')).toBeInTheDocument()
   })
 })

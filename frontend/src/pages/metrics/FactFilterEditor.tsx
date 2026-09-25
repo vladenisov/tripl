@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { factColumnValueKind } from '@/lib/factColumnValueKind'
 import {
+  FACT_CONDITION_OPERATORS,
   conditionOperatorsFor,
   isListConditionOperator,
 } from '@/lib/factOperandConfig'
@@ -292,9 +293,16 @@ function ConditionRow({
   onColumn,
   onChange,
 }: ConditionRowProps) {
-  const operatorOptions: SelectOption[] = conditionOperatorsFor(columnKind).map(meta => ({
+  // The row's own operator is always listed, even when the column's type does
+  // not suit it (a stored `contains` on a number column): a select whose value
+  // is not among its options paints the first option instead, so the row would
+  // claim `=` while the metric filters with something else.
+  const fitting = new Set(conditionOperatorsFor(columnKind).map(meta => meta.value))
+  const operatorOptions: SelectOption[] = FACT_CONDITION_OPERATORS.filter(
+    meta => fitting.has(meta.value) || meta.value === filter.operator,
+  ).map(meta => ({
     value: meta.value,
-    label: meta.label,
+    label: fitting.has(meta.value) ? meta.label : `${meta.label} (not typical for this column)`,
   }))
   const takesValue = !VALUELESS_CONDITION_OPERATORS.has(filter.operator)
   return (

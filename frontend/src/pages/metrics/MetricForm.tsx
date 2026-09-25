@@ -53,10 +53,13 @@ import {
   type FactComposition,
   type MetricDraft,
 } from './metricDraft'
+
+type KindDimensions = Pick<MetricDraft, 'breakdownColumns' | 'appVersionColumn' | 'platformColumn'>
+import { definitionDiffersFromStored } from './definitionChange'
 import {
   buildCreatePayload,
+  buildDefinitionPayload,
   buildUpdatePayload,
-  definitionSignature,
   type OperandColumns,
 } from './metricPayload'
 import {
@@ -162,8 +165,6 @@ export function MetricForm({
   const [sqlTemplateId, setSqlTemplateId] = useState<SqlTemplateId | null>(null)
   // Columns the last clean SQL preview returned — what the query projects.
   const [previewColumns, setPreviewColumns] = useState<string[] | null>(null)
-  // The replay chunk the last interval change dropped, to say so beside it.
-  const [clearedReplayChunk, setClearedReplayChunk] = useState<MetricScanInterval | null>(null)
   // Errors are shown only once a submit was attempted, then re-derived from the
   // draft on every render: fixing a field clears its message, and a field that
   // stops rendering takes its message with it (MET-18).
@@ -202,10 +203,12 @@ export function MetricForm({
     [submitAttempted, draft, isNew],
   )
 
-  // The saved definition's fingerprint, taken once. A difference at submit
-  // means the backend will delete the metric's history (MET-1).
-  const [savedSignature] = useState(() => (metric ? definitionSignature(draft) : null))
-  const definitionChanged = savedSignature !== null && definitionSignature(draft) !== savedSignature
+  // The definition this form would send, against the one stored: the backend
+  // deletes the metric's history when they differ (MET-1). Compared with the
+  // real payload rather than a draft hydrated from the same metric, so a stored
+  // shape the form cannot reproduce warns instead of wiping silently.
+  const definitionChanged =
+    metric !== null && definitionDiffersFromStored(metric, buildDefinitionPayload(draft, operandColumns))
 
   // Every input the author can change, as one comparable string; the first
   // render's value is the baseline (MET-5).
@@ -262,34 +265,51 @@ export function MetricForm({
     }))
   }
 
-  // A stored replay chunk finer than the new interval would 422 on save, on a
-  // field this form does not show: drop it, and say so (MET-10).
-  const onIntervalChange = (next: MetricScanInterval) => {
-    const chunk = draft.replayChunkInterval
-    if (chunk && isIntervalFinerThan(chunk, next)) {
-      setClearedReplayChunk(chunk)
-      patch({ interval: next, replayChunkInterval: null })
-      return
-    }
-    patch({ interval: next })
-  }
-
   // The stored replay chunk belongs to the saved kind's collection; another
-  // kind starts without one, and a chunk finer than the interval never returns.
+  // kind has none.
+  const storedReplayChunk = (kind: MetricKind): MetricScanInterval | null =>
+    metric?.kind === kind ? metric.replay_chunk_interval ?? null : null
+  // What the save re-sends for `kind` at `interval`: the stored chunk, unless
+  // it is finer than the interval — a 422 on a field this form does not show
+  // (MET-10). Derived afresh on every change, so moving the interval past the
+  // chunk and back restores it rather than losing it for good.
   const savedReplayChunk = (kind: MetricKind, interval: MetricScanInterval) => {
-    const chunk = metric?.kind === kind ? metric.replay_chunk_interval ?? null : null
+    const chunk = storedReplayChunk(kind)
     return chunk && isIntervalFinerThan(chunk, interval) ? null : chunk
   }
+  // The stored chunk this save would clear, said beside the interval only
+  // while the interval actually suppresses it.
+  const storedChunk = storedReplayChunk(draft.kind)
+  const clearedReplayChunk = storedChunk && draft.replayChunkInterval === null ? storedChunk : null
+
+  const onIntervalChange = (next: MetricScanInterval) => {
+    patch({ interval: next, replayChunkInterval: savedReplayChunk(draft.kind, next) })
+  }
+
+  // Dimension columns each kind had in this session, set aside on a kind switch.
+  const [kindDimensions, setKindDimensions] = useState<
+    Partial<Record<MetricKind, KindDimensions>>
+  >({})
 
   // Switching kind swaps which config fields render. Dimension columns belong
   // to one kind's source (a data-source schema, or a fact table), so they are
-  // reset to what was saved for the new kind rather than carried across (MET-19).
+  // not carried across (MET-19): the new kind gets back what it had earlier in
+  // this session, else what was saved for it.
   const applyKind = (next: MetricKind) => {
     setSubmitAttempted(false)
+    setKindDimensions(current => ({
+      ...current,
+      [draft.kind]: {
+        breakdownColumns: draft.breakdownColumns,
+        appVersionColumn: draft.appVersionColumn,
+        platformColumn: draft.platformColumn,
+      },
+    }))
+    const dimensions = kindDimensions[next] ?? savedDimensions(metric, next)
     setDraft(current => ({
       ...current,
       kind: next,
-      ...savedDimensions(metric, next),
+      ...dimensions,
       replayChunkInterval: savedReplayChunk(next, current.interval),
     }))
   }
@@ -637,7 +657,9 @@ export default function MetricEditPage() {
     else navigate(`/p/${slug}/metrics`)
   }
   const onSaved = (savedId: string, created: boolean) => {
-    if (created) navigate(getMetricMonitoringPath(slug!, savedId))
+    // Replace the create route: Back from the new metric must not reopen an
+    // empty "New metric" form.
+    if (created) navigate(getMetricMonitoringPath(slug!, savedId), { replace: true })
     else goBack()
   }
 

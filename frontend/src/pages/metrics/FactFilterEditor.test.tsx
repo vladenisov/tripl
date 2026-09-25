@@ -11,6 +11,7 @@ import {
   makeNamedFilter,
   makeSqlFilter,
   splitAndedFragments,
+  stripRedundantOuterParens,
   type FactFilter,
 } from './factFilters'
 import type { FactOperandConfig } from '@/lib/factOperandConfig'
@@ -295,10 +296,24 @@ describe('filter_sql round-trip idempotency (tripl-wumc)', () => {
     expect(roundTrip(first!)).toBe(first)
   })
 
-  it('self-heals stored expressions already polluted with redundant parens', () => {
-    const filters = filtersFromConfig(config([], "((((platform = 'ios'))))"))
-    expect(filters).toMatchObject([{ kind: 'sql', sql: "platform = 'ios'" }])
-    expect(filtersToPayload(filters).filter_sql).toBe("platform = 'ios'")
+  // Stripping them on load used to be a "self-heal", but any change to the
+  // stored filter_sql deletes the metric's history on save (MET-1): an
+  // untouched load→save now sends it back exactly.
+  it('keeps stored redundant parens verbatim instead of rewriting them', () => {
+    const polluted = "((((platform = 'ios'))))"
+    expect(filtersFromConfig(config([], polluted))).toMatchObject([{ kind: 'sql', sql: polluted }])
+    expect(roundTrip(polluted)).toBe(polluted)
+  })
+
+  it('splits a stored string only when it is exactly the join the form writes', () => {
+    expect(filtersFromConfig(config([], '(a = 1) AND (b = 2)'))).toMatchObject([
+      { kind: 'sql', sql: 'a = 1' },
+      { kind: 'sql', sql: 'b = 2' },
+    ])
+    for (const stored of ['(a = 1) and (b = 2)', '(a = 1)\nAND (b = 2)', '((a = 1)) AND (b = 2)']) {
+      expect(filtersFromConfig(config([], stored))).toMatchObject([{ kind: 'sql', sql: stored }])
+      expect(roundTrip(stored)).toBe(stored)
+    }
   })
 
   it('never strips parens that affect AND/OR evaluation order', () => {
@@ -310,8 +325,11 @@ describe('filter_sql round-trip idempotency (tripl-wumc)', () => {
   })
 
   it('ignores parentheses inside quoted literals when unwrapping', () => {
-    const filters = filtersFromConfig(config([], "(name = '(nested)')"))
-    expect(filters).toMatchObject([{ kind: 'sql', sql: "name = '(nested)'" }])
+    expect(stripRedundantOuterParens("(name = '(nested)')")).toBe("name = '(nested)'")
+    // Two rows are each unwrapped before they are joined, so none gains a layer.
+    expect(
+      filtersToPayload([makeSqlFilter("(name = '(nested)')"), makeSqlFilter('x = 1')]).filter_sql,
+    ).toBe("(name = '(nested)') AND (x = 1)")
     // A stray closing paren inside a literal must not fool the scanner.
     const literal = "note = ')'"
     expect(roundTrip(literal)).toBe(literal)
@@ -408,6 +426,15 @@ describe('FactFilterEditor conditions (MET-32)', () => {
     fireEvent.change(column, { target: { value: 'is_trial' } })
     expect(operatorLabels()).toContain('is true')
     expect(operatorLabels()).not.toContain('>')
+  })
+
+  it('still shows a stored operator the column type does not suit', () => {
+    render(<StatefulEditor filters={[makeConditionFilter('amount', 'contains', '3')]} />)
+    const operator = screen.getByLabelText('Filter 1 condition operator')
+    expect(operator).toHaveValue('contains')
+    expect(operator).toHaveDisplayValue('contains (not typical for this column)')
+    // Only the row's own operator is added; other text operators stay out.
+    expect(operatorLabels()).not.toContain('like')
   })
 
   it('falls back to "=" when the new column rules the operator out', () => {

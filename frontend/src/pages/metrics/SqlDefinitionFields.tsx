@@ -108,8 +108,11 @@ interface SqlDefinitionFieldsProps {
   schemaTables?: TableSchema[]
   /** Column names offered by the time/value inputs. */
   columnSuggestions: string[]
-  /** Columns the last clean preview returned, for the breakdown picker. */
-  onPreviewColumns: (columns: string[]) => void
+  /**
+   * Columns the last clean preview returned, for the breakdown picker; `null`
+   * once an edit invalidates that preview.
+   */
+  onPreviewColumns: (columns: string[] | null) => void
 }
 
 /**
@@ -175,9 +178,12 @@ export function SqlDefinitionFields({
 
   // The preview only describes the inputs it ran against; editing any of them
   // — the interval included, which the request carries — invalidates it.
+  // The columns it returned go with it: the breakdown picker must not keep
+  // offering what an edited query no longer projects.
   const resetPreview = () => {
     setPreview(null)
     previewMut.reset()
+    onPreviewColumns(null)
   }
 
   const dataSourceOptions: SelectOption[] = [

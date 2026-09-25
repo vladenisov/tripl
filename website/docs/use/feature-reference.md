@@ -925,15 +925,20 @@ filter with no name picked, a condition with no column or value, or an empty SQL
 fragment is flagged in place rather than dropped. `in` / `not in` conditions take
 one value per chip, so a value may itself contain a comma, and the operators on
 offer follow the column's type. Saved filters reload grouped by type — named
-filters, then conditions, then SQL fragments.
+filters, then conditions, then SQL fragments. Saved SQL the form did not join
+itself (a lowercase `and`, a line break, extra parentheses) reloads as one row,
+exactly as stored, and an untouched condition is saved back exactly as stored.
 
 **Changing what a metric measures deletes its history.** Any edit to the
 definition — the SQL, the data source, the interval, the fact table,
 aggregation, columns or filters, the events, the composition or the kind —
 deletes the metric's collected values, breakdowns and anomalies when saved, and
-collection starts over. The edit form says so as soon as the definition differs
-from the saved one and asks before saving; edits to the name, description, unit,
-color, status or dimension columns keep the history.
+collection starts over. The edit form compares what it would save with what is
+stored, says so as soon as they differ and asks before saving. That includes a
+metric saved in a shape the form cannot send back unchanged — for example a
+condition operator it does not know — where the warning shows before anything
+was edited. Edits to the name, description, unit, color, status or dimension
+columns keep the history.
 
 Shared fields are name, display name, description, color, unit, owner/review,
 status, breakdown columns/limit, optional version/platform columns, and the
