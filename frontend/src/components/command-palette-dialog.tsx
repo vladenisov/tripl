@@ -1,10 +1,12 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query'
 import { Command } from 'cmdk'
 import {
@@ -19,6 +21,7 @@ import {
   LayoutDashboard,
   Link2,
   List,
+  ListChecks,
   Loader2,
   LogOut,
   Search,
@@ -35,7 +38,8 @@ import { searchApi } from '@/api/search'
 import { useAuth } from '@/components/auth-context'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { eventNameLabel } from '@/lib/eventName'
-import { buildNavGroups } from '@/lib/navigation'
+import { buildNavGroups, projectHomePath, switchProjectPath } from '@/lib/navigation'
+import { isOnboardingDismissed, setOnboardingDismissed } from '@/lib/onboardingDismissal'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
@@ -240,6 +244,7 @@ function isSearchRefinement(held: string, next: string): boolean {
 export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const { open, setOpen } = useCommandPalette()
   const navigate = useNavigate()
+  const location = useLocation()
   const auth = useAuth()
   const { slug: routeSlug } = useParams()
   const branchId = useActiveBranchId()
@@ -248,18 +253,24 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
   const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS)
   const [aiQuestion, setAiQuestion] = useState<string | null>(null)
   const [aiResult, setAiResult] = useState<AiAskResponse | null>(null)
+  const aiBackRef = useRef<HTMLButtonElement | null>(null)
 
-  const handleOpenChange = useCallback(
-    (next: boolean) => {
-      if (!next) {
-        setQuery('')
-        setAiQuestion(null)
-        setAiResult(null)
-      }
-      setOpen(next)
-    },
-    [setOpen],
-  )
+  // Every close starts the next open fresh. Radix reports only Esc and outside
+  // clicks through `onOpenChange`; running a command, following an AI source or
+  // pressing Ctrl+K again closes through the context directly, and the palette
+  // itself stays mounted — so the next Ctrl+K reopened on the previous AI
+  // answer, with no search input (SHELL-26). Adjusted during render, like the
+  // held search rows below, so no frame shows the old state.
+  const [wasOpen, setWasOpen] = useState(open)
+  if (wasOpen !== open) {
+    setWasOpen(open)
+    if (!open) {
+      setQuery('')
+      setAiQuestion(null)
+      setAiResult(null)
+    }
+  }
+
 
   const projectsQuery = useQuery({ ...projectsQueryOptions(), enabled: open })
   const projects = projectsQuery.data ?? []
@@ -273,7 +284,10 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
   })
   const eventTypes = eventTypesQuery.data ?? []
 
-  const searchSlug = activeProject?.slug ?? projects[0]?.slug ?? null
+  // Only the project in the address. Outside one (/workspace, a 404) this used
+  // to fall back to projects[0], so knowledge results and AI answers came from
+  // whichever project sorted first, under a heading that named none (SHELL-27).
+  const searchSlug = activeProject?.slug ?? null
   const searchEnabled = open && !!searchSlug && debouncedQuery.length >= 2
   // Two answers per query, cheapest first (tripl-kjhi.15). On production the
   // full search took 0.5–1.8 s and every millisecond past the lexical SQL was
@@ -372,6 +386,13 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
     askMutation.reset()
   }, [askMutation])
 
+  // The search input unmounts in AI mode, which left focus on the dialog body
+  // (SHELL-28). Hand it to the way back; leaving AI mode remounts the input,
+  // which focuses itself.
+  useEffect(() => {
+    if (aiQuestion) aiBackRef.current?.focus()
+  }, [aiQuestion])
+
   const runCommand = useCallback(
     (action: () => void) => {
       setQuery('')
@@ -458,6 +479,22 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
           'Detection settings',
           SlidersHorizontal,
         ),
+        // The way back to a dismissed getting-started checklist (WS-35).
+        ...(isOnboardingDismissed(activeProject.slug, activeProject.id)
+          ? [
+              {
+                value: paletteValue.nav('onboarding'),
+                label: 'Show getting started',
+                hint: 'Bring back the setup checklist',
+                icon: ListChecks,
+                onSelect: () =>
+                  runCommand(() => {
+                    setOnboardingDismissed(activeProject.slug, activeProject.id, false)
+                    navigate(projectHomePath(activeProject.slug))
+                  }),
+              },
+            ]
+          : []),
       ]
     : []
 
@@ -470,7 +507,8 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
     hint: project.slug,
     icon: Folder,
     active: project.slug === routeSlug,
-    onSelect: () => goTo(`/p/${project.slug}/events`),
+    // The same landing rule as the sidebar's switcher (SHELL-44).
+    onSelect: () => goTo(switchProjectPath(location.pathname, routeSlug, project.slug)),
   }))
 
   // Same arrangement, and the same reason: the raw `name` an engineer would type
@@ -540,9 +578,12 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
     menuGroups.length === 0 &&
     accountGroups.length === 0 &&
     !showAskAiAction
+  // Outside a project there is no catalog to search; say so instead of
+  // quietly searching one the reader did not pick.
+  const showOpenProjectHint = !searchSlug && query.trim().length >= 2
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         showCloseButton={false}
         className="overflow-hidden p-0 sm:max-w-[640px] gap-0"
@@ -551,6 +592,13 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
         onCloseAutoFocus={(event) => {
           event.preventDefault()
           onRestoreFocus()
+        }}
+        // In AI mode Esc means "back to search", as the key hint beside the
+        // back button says; it used to close the whole palette (SHELL-28).
+        onEscapeKeyDown={(event) => {
+          if (!aiQuestion) return
+          event.preventDefault()
+          handleBackFromAi()
         }}
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
@@ -574,12 +622,14 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
                 <Sparkles className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
                 <span className="flex-1 truncate text-[13px]" style={{ color: 'var(--fg)' }}>{aiQuestion}</span>
                 <button
+                  ref={aiBackRef}
                   type="button"
                   onClick={handleBackFromAi}
-                  className="shrink-0 text-[11px] px-1.5 py-0.5 rounded"
+                  aria-keyshortcuts="Escape"
+                  className="shrink-0 rounded px-1.5 py-0.5 text-[11px] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
                   style={{ color: 'var(--fg-subtle)' }}
                 >
-                  ← back
+                  ← Back to search
                 </button>
                 <Kbd>esc</Kbd>
               </>
@@ -600,7 +650,7 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
           </div>
 
           {aiQuestion ? (
-            <div className="flex-1 overflow-y-auto py-2 px-3.5">
+            <div className="flex-1 overflow-y-auto py-2 px-3.5" aria-live="polite">
               {askMutation.isPending && (
                 <div className="flex items-center gap-2 py-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
                   <Loader2 className="h-3 w-3 animate-spin" />
@@ -657,6 +707,11 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
             {showNoMatches && (
               <div className="px-3.5 py-8 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
                 No matches.
+              </div>
+            )}
+            {showOpenProjectHint && (
+              <div className="px-3.5 py-2 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                Open a project to search its catalog and ask AI.
               </div>
             )}
 

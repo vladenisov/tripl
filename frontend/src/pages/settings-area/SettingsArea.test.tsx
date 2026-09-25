@@ -61,7 +61,7 @@ function project(slug: string, name: string): Project {
 // bind to when nothing had been chosen (tripl-jfm3.32).
 const projects = [project('windy-android', 'Windy Android'), project('windy-ios', 'Windy iOS')]
 
-function renderArea(section: string) {
+function renderArea(section: string, search = '') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
@@ -70,7 +70,7 @@ function renderArea(section: string) {
             which has no context under a plain MemoryRouter. */}
         <RouterProvider
           router={createMemoryRouter([{ path: '*', element: <SettingsArea section={section} /> }], {
-            initialEntries: [`/settings/${section}`],
+            initialEntries: [`/settings/${section}${search}`],
           })}
         />
       </AuthContext.Provider>
@@ -138,6 +138,26 @@ describe('SettingsArea project binding', () => {
     // The rail names the bound project, and it is the one the user last opened.
     expect(screen.getByText('Windy iOS')).toBeInTheDocument()
     expect(screen.queryByText('Windy Android')).not.toBeInTheDocument()
+  })
+
+  it('binds the project named in the address over another tab\'s last visit (SHELL-20)', async () => {
+    vi.spyOn(projectsApi, 'list').mockResolvedValue(projects)
+    // Another tab has since visited windy-ios; this one came from windy-android.
+    window.localStorage.setItem(LAST_SLUG_STORAGE_KEY, 'windy-ios')
+
+    renderArea('project/plan-rules', '?project=windy-android')
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+        'href',
+        '/p/windy-android/events',
+      )
+    })
+    // Moving between project sections keeps the binding in the address.
+    expect(screen.getByRole('link', { name: 'General' })).toHaveAttribute(
+      'href',
+      '/settings/project/general?project=windy-android',
+    )
   })
 
   it('ignores a stale last-visited slug that is no longer a project', async () => {

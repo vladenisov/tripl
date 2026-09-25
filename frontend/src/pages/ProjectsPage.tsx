@@ -222,8 +222,10 @@ export default function MainPage() {
           the header no longer doubles as a stat strip (UX-10). */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 space-y-2">
+          {/* One name for this page wherever it is named — the sidebar, the
+              top bar, the tab and the palette all say "All projects" (LIVE-34). */}
           <h1 className="m-0 text-[20px] font-semibold tracking-[-0.01em]">
-            Analytics workspace
+            All projects
           </h1>
           <p className="max-w-2xl text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             See which tracking plans are filling out, which projects still need review, and how much

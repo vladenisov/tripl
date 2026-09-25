@@ -50,7 +50,8 @@ describe('EntityBranchBanner (tripl-kjhi.7)', () => {
     const link = await screen.findByRole('link', { name: 'Switch to WND-4770' })
     expect(link).toHaveAttribute('href', '/p/demo/monitoring/event/e1?branch=wnd-4770')
     fireEvent.click(link)
-    expect(setBranchId).toHaveBeenCalledWith('wnd-4770')
+    // The link carries the branch; the entry being left keeps its own address.
+    expect(setBranchId).toHaveBeenCalledWith('wnd-4770', { updateUrl: false })
     expect(screen.getByTestId('entity-branch-banner').textContent).toContain('you are viewing main')
   })
 
@@ -69,6 +70,6 @@ describe('EntityBranchBanner (tripl-kjhi.7)', () => {
     const link = await screen.findByRole('link', { name: 'Switch to main' })
     expect(link).toHaveAttribute('href', '/p/demo/monitoring/event/e1')
     fireEvent.click(link)
-    expect(setBranchId).toHaveBeenCalledWith(null)
+    expect(setBranchId).toHaveBeenCalledWith(null, { updateUrl: false })
   })
 })

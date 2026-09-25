@@ -29,7 +29,7 @@ import { CommentThread } from '@/components/comment-thread'
 import { ImplementationTicketRow } from '@/components/implementation-ticket-row'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
-import { useBranchLinkProps } from '@/hooks/useBranch'
+import { useBranchContext, useBranchLinkProps } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -805,6 +805,12 @@ function FeatureBranchDetail({
   const canWrite = useCanWriteProject()
   const usersById = useUsersById()
   const branchLink = useBranchLinkProps()
+  const branchCtx = useBranchContext()
+  // A branch that is merged, closed or gone can no longer be worked in, so the
+  // shell must not keep sending every request to it (SHELL-18).
+  const leaveEndedBranch = () => {
+    if (branchCtx.branchId === branch.id) branchCtx.setBranchId(null)
+  }
   // The ticket a branch is named after, linked through the meta field that
   // links event values to the tracker (tripl-kjhi.14). Main's fields: the
   // template is project-wide and a branch copy carries the same one.
@@ -858,13 +864,17 @@ function FeatureBranchDetail({
     onSuccess: (_data, action) => {
       // An approval counts as review feedback, exactly like a posted comment.
       if (action === 'approve') notifyStepCompleted('branches/comment')
+      if (action === 'merge' || action === 'close') leaveEndedBranch()
       invalidate()
     },
   })
 
   const deleteMut = useMutation({
     mutationFn: () => planBranchesApi.delete(slug, branch.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: planBranchesKey(slug) }),
+    onSuccess: () => {
+      leaveEndedBranch()
+      return qc.invalidateQueries({ queryKey: planBranchesKey(slug) })
+    },
   })
 
   // Undo one diff entry — the whole entity, or one field of it — back to the
@@ -1417,9 +1427,10 @@ interface ChangeRowProps {
    * own `entity_id` is the base-side one, so editing it would edit main. The
    * branch-side id lives on the paired addition the list filters out. */
   renamedEntityId?: string | null
-  /** A merged or closed branch still renders its diff, and `resolve_branch_id`
-   * validates ownership but not status — so a write aimed at one is accepted.
-   * Do not offer the shortcut. */
+  /** A merged or closed branch still renders its diff, but its plan is
+   * read-only: the backend answers a write aimed at one with 409 ("Branch 'X'
+   * is merged, so its plan is read-only"). Do not offer a shortcut that can
+   * only fail. */
   editable: boolean
   /** Omitted for a viewer: reverting writes to the branch. */
   onRevert?: (entry: PlanDiffEntry, field?: string) => void

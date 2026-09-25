@@ -100,7 +100,7 @@ export function DemoBanner({ project }: { project: Project }) {
       //   - the banner is mounted on every surface, so a reset can be triggered
       //     from a metric/event/scan detail page whose URL carries a now-dead
       //     id — leave for the overview rather than render a 404.
-      setBranchId(null)
+      setBranchId(null, { updateUrl: false })
       void navigate(`/p/${project.slug}/overview`)
       // Every cached row describes a deleted entity now — drop them outright
       // rather than merely marking them stale.
@@ -118,7 +118,7 @@ export function DemoBanner({ project }: { project: Project }) {
     mutationFn: () => projectsApi.deleteDemo(project.slug),
     onSuccess: () => {
       // The project is gone; leave no branch selection behind pointing into it.
-      setBranchId(null)
+      setBranchId(null, { updateUrl: false })
       void queryClient.invalidateQueries({ queryKey: ['projects'] })
       void navigate('/workspace')
     },

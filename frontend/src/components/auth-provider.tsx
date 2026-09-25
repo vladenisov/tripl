@@ -1,11 +1,13 @@
 import {
   useEffect,
+  useState,
   type ReactNode,
 } from 'react'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { authApi } from '@/api/auth'
 import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
 import { AuthContext, type AuthContextValue, type AuthStatus } from './auth-context'
+import { SessionExpiredDialog } from './session-expired-dialog'
 import type { AuthUser } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
@@ -26,6 +28,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     retry: false,
     staleTime: 60_000,
   })
+  // The account whose session ran out while the app was open. While set, the
+  // shell stays mounted as that user under a sign-in dialog instead of
+  // redirecting to /auth and throwing away unsaved input (SHELL-15).
+  const [expiredUser, setExpiredUser] = useState<AuthUser | null>(null)
 
   const logoutMutation = useMutation({
     mutationFn: authApi.logout,
@@ -38,6 +44,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handleUnauthorized = () => {
+      const current = queryClient.getQueryData<AuthUser | null>(AUTH_QUERY_KEY)
+      if (current) {
+        setExpiredUser((held) => held ?? current)
+        return
+      }
       queryClient.setQueryData<AuthUser | null>(AUTH_QUERY_KEY, null)
       clearProtectedQueries(queryClient)
       void queryClient.invalidateQueries({ queryKey: AUTH_QUERY_KEY })
@@ -47,8 +58,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized)
   }, [queryClient])
 
+  const handleSignedInAgain = (user: AuthUser) => {
+    queryClient.setQueryData<AuthUser | null>(AUTH_QUERY_KEY, user)
+    setExpiredUser(null)
+    // Whatever failed while the session was gone asks again.
+    void queryClient.invalidateQueries({ predicate: query => query.queryKey[0] !== 'auth' })
+  }
+
+  const handleExpiredSignOut = () => {
+    setExpiredUser(null)
+    queryClient.setQueryData<AuthUser | null>(AUTH_QUERY_KEY, null)
+    clearProtectedQueries(queryClient)
+  }
+
   let status: AuthStatus = 'loading'
-  if (meQuery.isError) {
+  if (expiredUser) {
+    status = 'authenticated'
+  } else if (meQuery.isError) {
     status = meQuery.error instanceof ApiError && meQuery.error.status === 401
       ? 'anonymous'
       : 'error'
@@ -57,7 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const value: AuthContextValue = {
-    user: meQuery.data ?? null,
+    user: expiredUser ?? meQuery.data ?? null,
     status,
     error: status === 'error' ? meQuery.error : null,
     isLoggingOut: logoutMutation.isPending,
@@ -69,5 +95,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
   }
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+      {expiredUser && (
+        <SessionExpiredDialog
+          user={expiredUser}
+          onSignedIn={handleSignedInAgain}
+          onSignOut={handleExpiredSignOut}
+        />
+      )}
+    </AuthContext.Provider>
+  )
 }

@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react"
 
-type Theme = "dark" | "light" | "system"
+export type Theme = "dark" | "light" | "system"
 export type Accent = "teal" | "violet" | "lime" | "amber" | "rose"
 export type Density = "compact" | "cozy" | "comfy"
 export type ChartStyle = "line" | "line-only" | "bar"
@@ -75,17 +75,25 @@ export function ThemeProvider({
 
   useEffect(() => {
     const root = window.document.documentElement
-    root.classList.remove("light", "dark")
+    const apply = (resolved: "dark" | "light") => {
+      root.classList.remove("light", "dark")
+      root.classList.add(resolved)
+    }
 
-    if (theme === "system") {
-      const systemTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
-        : "light"
-      root.classList.add(systemTheme)
+    if (theme !== "system") {
+      apply(theme)
       return
     }
 
-    root.classList.add(theme)
+    // "System" follows the OS for as long as it is chosen, not just at load:
+    // switching the OS to dark at sunset used to leave the app light until a
+    // reload, beside a Toaster that did follow (SHELL-33).
+    const query = window.matchMedia?.("(prefers-color-scheme: dark)")
+    apply(query?.matches ? "dark" : "light")
+    if (!query) return
+    const onChange = (event: MediaQueryListEvent) => apply(event.matches ? "dark" : "light")
+    query.addEventListener("change", onChange)
+    return () => query.removeEventListener("change", onChange)
   }, [theme])
 
   useEffect(() => {

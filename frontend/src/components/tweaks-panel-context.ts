@@ -1,4 +1,4 @@
-import { createContext } from 'react'
+import { createContext, useContext } from 'react'
 
 export type TweaksPanelContextValue = {
   open: boolean
@@ -11,3 +11,7 @@ const NOOP_CONTEXT: TweaksPanelContextValue = {
 }
 
 export const TweaksPanelContext = createContext<TweaksPanelContextValue>(NOOP_CONTEXT)
+
+export function useTweaksPanel(): TweaksPanelContextValue {
+  return useContext(TweaksPanelContext)
+}

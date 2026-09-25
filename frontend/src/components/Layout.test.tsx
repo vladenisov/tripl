@@ -2,13 +2,14 @@ import type { ReactNode } from 'react'
 import { projectsKey } from '@/lib/queryKeys'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { alertingApi } from '@/api/alerting'
 import { metricsApi } from '@/api/metrics'
 import { projectsApi } from '@/api/projects'
 import { ApiError } from '@/api/client'
 import type { Project } from '@/types'
+import NotFoundPage from '@/pages/NotFoundPage'
 import Layout from './Layout'
 import { expectNoAxeViolations } from '@/test/axe'
 
@@ -32,7 +33,11 @@ vi.mock('@/components/activity-panel', () => ({
 }))
 
 vi.mock('@/components/app-sidebar', () => ({
-  AppSidebar: () => <nav aria-label="sidebar" />,
+  AppSidebar: () => (
+    <nav aria-label="sidebar">
+      <Link to="/p/demo/other">Other page</Link>
+    </nav>
+  ),
 }))
 
 vi.mock('@/components/command-palette', () => ({
@@ -249,7 +254,8 @@ describe('Layout breadcrumbs', () => {
     // The placeholder the crumb resolver used to emit when no project was in
     // scope. It read as an untranslated template leaking into production.
     expect(screen.queryByText('project')).toBeNull()
-    expect(screen.getByText('Overview')).toBeInTheDocument()
+    // Named as the sidebar and the page's own heading name it (LIVE-34).
+    expect(screen.getByRole('banner')).toHaveTextContent('All projects')
   })
 
   it('names the Concepts surface instead of claiming to be Overview (tripl-jfm3.35)', async () => {
@@ -420,6 +426,90 @@ describe('Layout demo chrome failure', () => {
     expect(screen.getByText('Events body')).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'sidebar' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull()
+  })
+})
+
+describe('Layout mobile navigation drawer (SHELL-21)', () => {
+  it('keeps the off-canvas sidebar out of the tab order until it is opened', async () => {
+    mockMatchMedia(false)
+    const { container } = renderLayout('/p/demo/events', '/p/:slug/events', 'Events body')
+    await screen.findByText('Events body')
+
+    const drawer = container.querySelector('#app-sidebar')
+    expect(drawer).toHaveAttribute('inert')
+
+    const trigger = screen.getByRole('button', { name: 'Open navigation' })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    trigger.focus()
+    fireEvent.click(trigger)
+
+    expect(drawer).not.toHaveAttribute('inert')
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    // Focus moves into the drawer, and the page behind it goes inert.
+    expect(screen.getByRole('link', { name: 'Other page' })).toHaveFocus()
+    expect(screen.getByRole('main').closest('[inert]')).not.toBeNull()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(drawer).toHaveAttribute('inert')
+    expect(screen.getByRole('main').closest('[inert]')).toBeNull()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('leaves the pinned sidebar alone on wide viewports', async () => {
+    mockMatchMedia(true)
+    const { container } = renderLayout('/p/demo/events', '/p/:slug/events', 'Events body')
+    await screen.findByText('Events body')
+
+    expect(container.querySelector('#app-sidebar')).not.toHaveAttribute('inert')
+  })
+
+  it('closes the activity drawer on Escape and hands focus back', async () => {
+    mockMatchMedia(false)
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body')
+    await screen.findByText('Events body')
+
+    const toggle = screen.getByRole('button', { name: 'Toggle activity panel' })
+    toggle.focus()
+    fireEvent.click(toggle)
+    expect(await screen.findByTestId('activity-panel')).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByTestId('activity-panel')).toBeNull()
+    expect(toggle).toHaveFocus()
+  })
+})
+
+describe('Layout landmarks and route changes', () => {
+  it('puts the top bar in a banner outside <main> (SHELL-47)', async () => {
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body')
+    await screen.findByText('Events body')
+
+    const main = screen.getByRole('main')
+    expect(main).toHaveAttribute('id', 'main-content')
+    expect(main).toHaveTextContent('Events body')
+    expect(main.contains(screen.getByRole('banner'))).toBe(false)
+  })
+
+  it('moves focus to the content after navigating from the sidebar (SHELL-25)', async () => {
+    mockMatchMedia(true)
+    renderLayout('/p/demo/events', '/p/:slug/*', 'Page body')
+    await screen.findByText('Page body')
+
+    const link = screen.getByRole('link', { name: 'Other page' })
+    link.focus()
+    fireEvent.click(link)
+
+    await vi.waitFor(() => expect(screen.getByRole('main')).toHaveFocus())
+  })
+
+  it('hides the activity rail on the not-found page (LIVE-35)', async () => {
+    mockMatchMedia(true)
+    localStorage.setItem('tripl-activity-open', '1')
+    renderLayout('/p/demo/nowhere', '/p/:slug/*', '', { page: <NotFoundPage /> })
+    await screen.findByText('Page not found')
+
+    expect(screen.queryByTestId('activity-panel')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Toggle activity panel' })).toBeNull()
   })
 })
 

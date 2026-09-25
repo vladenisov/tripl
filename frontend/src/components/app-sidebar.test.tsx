@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -227,13 +227,18 @@ describe('AppSidebar', () => {
     }
     expect(screen.getByRole('link', { name: 'Page view' })).toHaveAttribute('href', '/p/demo/events/page_view')
     expect(screen.getByRole('link', { name: 'Track click' })).toHaveAttribute('href', '/p/demo/events/track_click')
-    expect(screen.getByRole('link', { name: 'Event type settings' })).toHaveAttribute(
+    // The whole Event types row is the link now, not just its gear (SHELL-45).
+    expect(screen.getByRole('link', { name: /^Event types/ })).toHaveAttribute(
       'href',
       '/p/demo/settings/event-types',
     )
-    // Footer: workspace + project settings now point at the full-takeover area.
+    // Footer: workspace + project settings now point at the full-takeover area,
+    // and project settings name THIS project in the address (SHELL-20).
     expect(container.querySelector('a[href="/settings"]')).toBeInTheDocument()
-    expect(container.querySelector('a[href="/settings/project/general"]')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Project settings' })).toHaveAttribute(
+      'href',
+      '/settings/project/general?project=demo',
+    )
   })
 
   it('hides the owner-only Audit log from an editor (tripl-jfm3.110)', async () => {
@@ -258,6 +263,41 @@ describe('AppSidebar', () => {
     renderSidebar('/p/demo/events/page_view')
     const eventTypeLink = await screen.findByRole('link', { name: 'Page view' })
     expect(eventTypeLink).toHaveStyle({ background: 'var(--surface-hover)' })
+    expect(eventTypeLink).toHaveAttribute('aria-current', 'page')
+    // Events matches the same /events prefix but is not the page (SHELL-45).
+    expect(screen.getByRole('link', { name: /^Events/ })).not.toHaveAttribute('aria-current')
+  })
+
+  it('announces the current page with aria-current (SHELL-24)', async () => {
+    mockProjectsFetch()
+
+    renderSidebar('/p/demo/events')
+    const events = await screen.findByRole('link', { name: /^Events/ })
+    expect(events).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: /Anomalies/ })).not.toHaveAttribute('aria-current')
+  })
+
+  it('keeps the switchers, project links and account menu when collapsed (SHELL-23)', async () => {
+    mockProjectsFetch()
+    localStorage.setItem('tripl-sidebar-collapsed', '1')
+
+    renderSidebar('/p/demo/events')
+
+    expect(
+      await screen.findByRole('button', { name: 'Switch project (current: Demo)' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Switch branch/ })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Project settings' })).toHaveAttribute(
+      'href',
+      '/settings/project/general?project=demo',
+    )
+    expect(screen.getByRole('link', { name: 'Concepts' })).toHaveAttribute('href', '/p/demo/concepts')
+    expect(screen.getByRole('link', { name: 'Events' })).toHaveAttribute('aria-current', 'page')
+
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Account menu/ }), { key: 'Enter' })
+    expect(await screen.findByRole('menuitem', { name: 'Sign out' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Workspace settings' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Appearance' })).toBeInTheDocument()
   })
 
   it('surfaces project-summary counts, and badges Observe exactly twice', async () => {

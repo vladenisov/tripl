@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Role } from '../types'
+import type { AuthUser, Role } from '../types'
 
 /** A pending invitation as listed on Members. Never carries a redeemable token. */
 export interface Invitation {
@@ -41,6 +41,7 @@ export const invitationsApi = {
 
   // Unauthenticated: the invitee has no account yet, which is the point.
   preview: (token: string) => api.get<InvitationPreview>(`/auth/invitations/${token}`),
+  // Answers with the new account, already signed in (AuthUserResponse).
   accept: (token: string, password: string, name?: string) =>
-    api.post(`/auth/invitations/${token}/accept`, { password, name: name || null }),
+    api.post<AuthUser>(`/auth/invitations/${token}/accept`, { password, name: name || null }),
 }

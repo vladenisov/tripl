@@ -1,11 +1,19 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import { Moon, Sliders, Sparkles, Sun, X } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
+import { Monitor, Moon, Sparkles, Sun, X } from 'lucide-react'
 import {
   useTheme,
   type Accent,
   type ChartStyle,
   type Density,
+  type Theme,
 } from '@/components/theme-provider'
 import {
   TweaksPanelContext,
@@ -21,74 +29,74 @@ const ACCENTS: { id: Accent; label: string; color: string }[] = [
 ]
 
 export function TweaksPanelProvider({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false)
-  const value = useMemo<TweaksPanelContextValue>(
-    () => ({ open, setOpen }),
-    [open],
-  )
+  const [open, setOpenState] = useState(false)
+  // Whoever opened the panel, so closing it hands focus straight back.
+  const openerRef = useRef<HTMLElement | null>(null)
+  const setOpen = useCallback((next: boolean) => {
+    if (next) {
+      const active = document.activeElement
+      openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null
+    }
+    setOpenState(next)
+  }, [])
+  const close = useCallback(() => {
+    setOpenState(false)
+    const opener = openerRef.current
+    if (opener?.isConnected) opener.focus()
+  }, [])
+  const value = useMemo<TweaksPanelContextValue>(() => ({ open, setOpen }), [open, setOpen])
   return (
     <TweaksPanelContext.Provider value={value}>
       {children}
-      <TweaksPanel open={open} onOpenChange={setOpen} />
+      {open && <TweaksPanel onClose={close} />}
     </TweaksPanelContext.Provider>
   )
 }
 
-function TweaksPanel({
-  open,
-  onOpenChange,
-}: {
-  open: boolean
-  onOpenChange: (next: boolean) => void
-}) {
+/**
+ * Appearance settings: theme, accent, density, chart style.
+ *
+ * Opened from the sidebar's account controls. It used to be reached from a disc
+ * fixed over the bottom-right of every page — over table rows, sticky form
+ * actions and pagination on a phone (SHELL-35 / LIVE-33). It behaves like the
+ * popover it is: focus moves in, Escape or a click outside closes it, and focus
+ * returns to the control that opened it.
+ */
+function TweaksPanel({ onClose }: { onClose: () => void }) {
   const { theme, setTheme, accent, setAccent, density, setDensity, chartStyle, setChartStyle } =
     useTheme()
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const titleId = useId()
 
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => onOpenChange(true)}
-        aria-label="Open tweaks panel"
-        // Same affordance the accent swatches below already use: the sliders
-        // glyph is the only thing on screen naming this control, and nothing
-        // sits beside it to say what it opens.
-        title="Tweaks"
-        // Tucked into the activity rail's footer strip — `border-t px-3 py-2.5
-        // text-[11px]` in activity-panel.tsx, 36px tall and the only band at the
-        // bottom right that is chrome rather than scrolling feed. At the old
-        // `bottom-5` + `h-9` the disc reached 56px up, permanently on top of the
-        // rail's last row: "Event implemented: Purchase Completed" rendered as
-        // "…Purchase Comp▮d" on every page, and that row can never be scrolled
-        // out from under a fixed control (tripl-tvqk). 32px at a 4px inset tops
-        // out at 36px, level with the strip's own border; the strip's label
-        // ("last 7 days · N items") is left-aligned, so the corner is free.
-        className="fixed bottom-1 right-3 z-50 flex h-8 w-8 items-center justify-center rounded-full border shadow-md transition-colors hover:bg-[var(--surface-hover)]"
-        style={{
-          background: 'var(--bg-elevated)',
-          borderColor: 'var(--border-strong)',
-          color: 'var(--accent)',
-        }}
-      >
-        <Sliders className="h-4 w-4" aria-hidden="true" />
-      </button>
-    )
-  }
+  useEffect(() => {
+    panelRef.current?.querySelector<HTMLElement>('button')?.focus()
+  }, [])
 
-  const resolvedTheme: 'dark' | 'light' =
-    theme === 'system'
-      ? typeof window !== 'undefined' &&
-        window.matchMedia?.('(prefers-color-scheme: dark)').matches
-        ? 'dark'
-        : 'light'
-      : theme
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onClose()
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && panelRef.current?.contains(event.target)) return
+      onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [onClose])
 
   return (
     <div
-      // The open panel may rest off the edge where the button cannot: it is
-      // user-invoked and dismissible, so covering the rail for as long as it is
-      // open is a choice the reader just made.
-      className="fixed bottom-3 right-3 z-50 w-[280px] overflow-hidden rounded-xl border shadow-lg"
+      ref={panelRef}
+      role="dialog"
+      aria-labelledby={titleId}
+      // Beside the sidebar footer that opens it, above the iOS home indicator.
+      className="fixed bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-3 z-50 w-[min(280px,calc(100vw-24px))] overflow-hidden rounded-xl border shadow-lg"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-strong)',
@@ -98,14 +106,16 @@ function TweaksPanel({
         className="flex items-center gap-2 border-b px-3.5 py-2.5"
         style={{ borderColor: 'var(--border-subtle)' }}
       >
-        <Sparkles className="h-3 w-3" style={{ color: 'var(--accent)' }} />
-        <span className="text-[12.5px] font-semibold">Tweaks</span>
+        <Sparkles className="h-3 w-3" style={{ color: 'var(--accent)' }} aria-hidden="true" />
+        <span id={titleId} className="text-[12.5px] font-semibold">
+          Appearance
+        </span>
         <div className="flex-1" />
         <button
           type="button"
-          onClick={() => onOpenChange(false)}
-          aria-label="Close tweaks panel"
-          className="p-0.5"
+          onClick={onClose}
+          aria-label="Close appearance settings"
+          className="rounded p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
           style={{ color: 'var(--fg-subtle)' }}
         >
           <X className="h-3.5 w-3.5" aria-hidden="true" />
@@ -113,24 +123,30 @@ function TweaksPanel({
       </div>
       <div className="flex flex-col gap-3.5 p-3.5">
         <Group label="Theme">
-          <Seg<'dark' | 'light'>
-            value={resolvedTheme}
+          {/* "System" is a choice of its own: offering only the two resolved
+              values overwrote it for good on the first click (SHELL-33). */}
+          <Seg<Theme>
+            label="Theme"
+            value={theme}
             onChange={(v) => setTheme(v)}
             options={[
-              { v: 'dark', l: 'Dark', icon: <Moon className="h-3 w-3" /> },
-              { v: 'light', l: 'Light', icon: <Sun className="h-3 w-3" /> },
+              { v: 'system', l: 'System', icon: <Monitor className="h-3 w-3" aria-hidden="true" /> },
+              { v: 'dark', l: 'Dark', icon: <Moon className="h-3 w-3" aria-hidden="true" /> },
+              { v: 'light', l: 'Light', icon: <Sun className="h-3 w-3" aria-hidden="true" /> },
             ]}
           />
         </Group>
         <Group label="Accent">
-          <div className="flex gap-1.5">
+          <div role="group" aria-label="Accent" className="flex gap-1.5">
             {ACCENTS.map((a) => (
               <button
                 type="button"
                 key={a.id}
                 onClick={() => setAccent(a.id)}
                 title={a.label}
-                className="h-7 w-7 rounded-md"
+                aria-label={a.label}
+                aria-pressed={accent === a.id}
+                className="h-7 w-7 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
                 style={{
                   background: a.color,
                   border:
@@ -145,6 +161,7 @@ function TweaksPanel({
         </Group>
         <Group label="Density">
           <Seg<Density>
+            label="Density"
             value={density}
             onChange={(v) => setDensity(v)}
             options={[
@@ -156,6 +173,7 @@ function TweaksPanel({
         </Group>
         <Group label="Chart style">
           <Seg<ChartStyle>
+            label="Chart style"
             value={chartStyle}
             onChange={(v) => setChartStyle(v)}
             options={[
@@ -187,16 +205,20 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
 type Opt<T extends string> = { v: T; l: string; icon?: ReactNode }
 
 function Seg<T extends string>({
+  label,
   value,
   onChange,
   options,
 }: {
+  label: string
   value: T
   onChange: (v: T) => void
   options: Opt<T>[]
 }) {
   return (
     <div
+      role="group"
+      aria-label={label}
       className="flex rounded-md border p-0.5"
       style={{
         background: 'var(--bg-sunken)',
@@ -210,9 +232,8 @@ function Seg<T extends string>({
             key={o.v}
             type="button"
             onClick={() => onChange(o.v)}
-            className={cn(
-              'flex flex-1 items-center justify-center gap-1 rounded-[4px] px-2 py-[5px] text-[11.5px] font-medium transition-colors',
-            )}
+            aria-pressed={active}
+            className="flex flex-1 items-center justify-center gap-1 rounded-[4px] px-2 py-[5px] text-[11.5px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             style={{
               background: active ? 'var(--surface)' : 'transparent',
               color: active ? 'var(--fg)' : 'var(--fg-muted)',

@@ -148,7 +148,7 @@ describe('ProjectsPage', () => {
     renderProjectsPage()
 
     expect(await screen.findByText('Alpha')).toBeInTheDocument()
-    expect(screen.getByText('Analytics workspace')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'All projects' })).toBeInTheDocument()
     expect(screen.getByText('Project portfolio')).toBeInTheDocument()
     expect(screen.getByText('Landing coverage and funnel events.')).toBeInTheDocument()
     expect(screen.getByText('66.7% implemented')).toBeInTheDocument()
@@ -1036,7 +1036,7 @@ describe('ProjectsPage', () => {
     expect(await screen.findByText('Keep your product analytics honest')).toBeInTheDocument()
     // The h1 stays, but the duplicate header CTA pair is gone — each CTA now
     // exists exactly once, inside the hero.
-    expect(screen.getByText('Analytics workspace')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'All projects' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /Generate demo project/i })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: /New project/i })).toHaveLength(1)
     // The all-zero stat band is hidden until the first project exists.

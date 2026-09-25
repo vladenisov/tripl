@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -1168,5 +1168,100 @@ describe('CommandPalette keyword-first results (tripl-kjhi.15)', () => {
     releaseSemantic!()
     expect(await screen.findByText('Order Paid')).toBeInTheDocument()
     expect(screen.getByText('Checkout Completed')).toBeInTheDocument()
+  })
+})
+
+describe('CommandPalette AI mode and scope (SHELL-26 / SHELL-27 / SHELL-28)', () => {
+  function mockAiFetch() {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse([demoProject()])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/ai/status')) return mockJsonResponse({ enabled: true })
+      if (url.includes('/api/v1/projects/demo/search?')) {
+        return mockJsonResponse({ items: [], total: 0, semantic_used: false })
+      }
+      if (url.endsWith('/api/v1/projects/demo/ai/ask')) {
+        return mockJsonResponse({
+          answer: 'Checkout fires on purchase.',
+          sources: [{ title: 'Checkout', entity_type: 'event', route_path: '/p/demo/events' }],
+          semantic_used: false,
+        })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  async function askAi() {
+    fireEvent.click(screen.getByTestId('open-palette'))
+    fireEvent.change(await screen.findByPlaceholderText(/Search projects/i), {
+      target: { value: 'what fires on checkout' },
+    })
+    fireEvent.click(await screen.findByText(/Ask AI:/))
+    await screen.findByText('Checkout fires on purchase.')
+  }
+
+  it('opens fresh after an AI source was followed', async () => {
+    mockAiFetch()
+    renderHarness('/p/demo/events')
+    await askAi()
+
+    fireEvent.click(screen.getByRole('button', { name: /Checkout/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+    const input = await screen.findByPlaceholderText(/Search projects/i)
+    expect(input).toHaveValue('')
+    expect(screen.queryByText('Checkout fires on purchase.')).toBeNull()
+  })
+
+  it('treats Esc in AI mode as "back to search" and keeps focus in the dialog', async () => {
+    mockAiFetch()
+    renderHarness('/p/demo/events')
+    await askAi()
+
+    const back = screen.getByRole('button', { name: /Back to search/ })
+    expect(back).toHaveFocus()
+
+    fireEvent.keyDown(back, { key: 'Escape' })
+    expect(await screen.findByPlaceholderText(/Search projects/i)).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('does not search some other project from a workspace route', async () => {
+    const fetchSpy = mockAiFetch()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authValue}>
+          <MemoryRouter initialEntries={['/workspace']}>
+            <Routes>
+              <Route
+                path="/workspace"
+                element={
+                  <CommandPaletteProvider>
+                    <PaletteOpener />
+                  </CommandPaletteProvider>
+                }
+              />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+    fireEvent.change(await screen.findByPlaceholderText(/Search projects/i), {
+      target: { value: 'what fires on checkout' },
+    })
+
+    expect(await screen.findByText('Open a project to search its catalog and ask AI.')).toBeInTheDocument()
+    // Past the search debounce, so a request would have gone out by now.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    })
+    const urls = fetchSpy.mock.calls.map(([input]) => String(input))
+    expect(urls.some((url) => url.includes('/search?') || url.includes('/ai/'))).toBe(false)
+    expect(screen.queryByText(/Ask AI:/)).toBeNull()
   })
 })
