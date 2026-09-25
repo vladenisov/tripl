@@ -29,6 +29,7 @@ import type { AlertDelivery, MonitorDetail } from '@/types'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { usePageTitle } from '@/components/shell-chrome-context'
 
 export default function MonitorDetailPage() {
   const { slug, monitorId } = useParams<{ slug: string; monitorId: string }>()
@@ -73,6 +74,7 @@ export default function MonitorDetailPage() {
   })
 
   const monitor = monitorQuery.data
+  usePageTitle(monitor?.rule_name)
   const muteError = muteMut.error ?? unmuteMut.error
 
   if (monitorQuery.isError) {

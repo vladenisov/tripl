@@ -300,6 +300,7 @@ export function SettingsLayout({
               <div className="flex flex-col gap-px">
                 {group.items.map((item) => {
                   const active = item.path === activePath
+                  const dirty = unsaved?.dirtyPaths?.includes(item.path) ?? false
                   const Icon = item.icon
                   const href =
                     projectSlug && item.path.startsWith('project/')
@@ -313,7 +314,7 @@ export function SettingsLayout({
                       key={item.id}
                       to={href}
                       aria-current={active ? 'page' : undefined}
-                      aria-label={item.label}
+                      aria-label={dirty ? `${item.label}, unsaved changes` : item.label}
                       onClick={guardLeave}
                       className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium no-underline transition-colors"
                       style={{
@@ -336,6 +337,16 @@ export function SettingsLayout({
                         style={{ color: active ? 'var(--accent)' : 'var(--fg-subtle)' }}
                       />
                       <span className="flex-1">{item.label}</span>
+                      {dirty && (
+                        // Named through the link's aria-label; the dot is the
+                        // sighted half of the same signal.
+                        <span
+                          aria-hidden="true"
+                          title="Unsaved changes"
+                          className="h-[7px] w-[7px] shrink-0 rounded-full"
+                          style={{ background: 'var(--warning)' }}
+                        />
+                      )}
                     </Link>
                   )
                 })}

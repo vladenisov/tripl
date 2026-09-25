@@ -1,254 +1,48 @@
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, FolderOpen, GitBranch, ScrollText, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderOpen, GitBranch, Lock, ScrollText, X } from 'lucide-react'
 
 import { auditApi } from '@/api/audit'
+import { ApiError } from '@/api/client'
+import { EmptyState } from '@/components/empty-state'
+import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { formatTimestamp } from '@/lib/datetime'
+import { useIsOwner } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 
-const ACTION_TONE: Record<string, string> = {
-  create: 'bg-success-soft text-success',
-  update: 'bg-warning-soft text-warning',
-  delete: 'bg-danger-soft text-danger',
-}
+// How long the email box waits after the last keystroke before it filters.
+const EMAIL_DEBOUNCE_MS = 400
 
 /**
- * Grouped action vocabulary for the filter — every action the backend records
- * *with a project scope*, and nothing else.
+ * Tone by what the verb DOES, matched on its suffix rather than as an exact word.
  *
- * This list has to be exactly the project-scoped half of the backend's
- * vocabulary, because the query it feeds is always narrowed by `projectSlug`
- * (see `queryParams` below):
- *
- *  - An offered action the backend never scopes to a project returns zero rows
- *    no matter what the project did. `data_source.*` used to sit here under
- *    "Data sources & scans" and could never match: `api/v1/data_sources.py`
- *    records those entries with no `project`/`project_slug`, because a data
- *    source is an instance-level resource. Selecting one read as "nothing ever
- *    happened" rather than "wrong place to look" (tripl-jfm3.79).
- *  - An action the backend *does* record but the list omits is unfilterable —
- *    it shows up in the unfiltered feed but can't be isolated. The list had
- *    drifted a long way behind: branches, metrics, fact tables, inbox and
- *    drift triage, scan cancellation, bulk variable edits and the project-level
- *    resets were all missing.
- *
- * Sourced from every `audit_service.record(...)` call that passes `project=` or
- * `project_slug=`. The `*.<verb>` families spelled out below come from typed
- * literals on the backend: `BranchTransitionAction` (schemas/plan_branch.py),
- * `SchemaDriftAction` (schemas/schema_drift.py) and `AlertInboxAction`
- * (schemas/alerting.py).
- *
- * Deliberately excluded because they are recorded WITHOUT a project and so can
- * never appear here: `data_source.*`, `user.role_update`, `api_key.revoke`.
+ * Only `create`/`update`/`delete` used to be coloured, so `bulk_delete`,
+ * `remove_owner`, `merge` and `close` all rendered neutral: a destructive bulk
+ * action looked exactly like a snapshot (PLAN-49). Suffix rules mean a future
+ * `bulk_<verb>` lands in the right tone without this list learning it. First
+ * match wins.
  */
-const ACTION_GROUPS: { label: string; actions: string[] }[] = [
+const ACTION_TONE_RULES: { pattern: RegExp; tone: string }[] = [
   {
-    // First because the event is the central object of the product — and it was
-    // the one object the log had no rows for at all until tripl-wkwv.10. All six
-    // are recorded with `project_slug`, so all six can be filtered here.
-    // Reordering an event is deliberately not recorded: it permutes display
-    // order only, and drag-to-reorder would file a row per drag.
-    label: 'Events',
-    actions: [
-      'event.create',
-      'event.bulk_create',
-      'event.update',
-      'event.bulk_update',
-      'event.delete',
-      'event.bulk_delete',
-    ],
+    pattern: /(delete|remove|remove_owner|remove_reviewer|revoke|cancel|dismiss|close|revert|reset\w*|retire_unused_variables)$/,
+    tone: 'bg-danger-soft text-danger',
   },
   {
-    label: 'Schema',
-    actions: [
-      'event_type.create',
-      'event_type.update',
-      'event_type.delete',
-      'event_type.add_owner',
-      'event_type.remove_owner',
-      'field.create',
-      'field.update',
-      'field.delete',
-      'meta_field.create',
-      'meta_field.update',
-      'meta_field.delete',
-      'relation.create',
-      'relation.delete',
-      'schema_drift.accept',
-      'schema_drift.snooze',
-      'schema_drift.false_positive',
-      'schema_drift.reopen',
-    ],
+    pattern: /(create|add_owner|add_reviewer|invite|merge|approve|accept|override_set)$/,
+    tone: 'bg-success-soft text-success',
   },
   {
-    label: 'Variables',
-    actions: [
-      'variable.create',
-      'variable.update',
-      'variable.delete',
-      'variable.bulk_update',
-      'variable.bulk_delete',
-      'variable.override_set',
-      'variable.override_delete',
-      'variable.drift_action',
-    ],
-  },
-  {
-    label: 'Versioning',
-    actions: [
-      'plan_revision.create',
-      'plan_branch.create',
-      'plan_branch.delete',
-      'plan_branch.submit',
-      'plan_branch.request_changes',
-      'plan_branch.approve',
-      'plan_branch.reopen',
-      'plan_branch.close',
-      'plan_branch.merge',
-      'plan_branch.revert',
-      'plan_branch.add_reviewer',
-      'plan_branch.remove_reviewer',
-      'plan_branch_settings.update',
-    ],
-  },
-  {
-    label: 'Scans & reconciliation',
-    // Data sources are an instance-level resource: their audit entries carry no
-    // project, so they are filtered on the workspace surface, not here.
-    actions: [
-      'scan_config.create',
-      'scan_config.update',
-      'scan_config.delete',
-      'scan_config.event_groups.apply',
-      'scan_job.cancel',
-      // Dismissing a shadow-event candidate writes observed traffic off for
-      // everyone, and cannot be undone through the API. Accepting one is NOT
-      // listed here on purpose: it creates a catalog event, so it files
-      // `event.create` under Events — filtering "which events did people
-      // create?" has to find it (tripl-wkwv.13).
-      'shadow_event.dismiss',
-    ],
-  },
-  {
-    label: 'Metrics & fact tables',
-    actions: [
-      'metric_definition.create',
-      'metric_definition.update',
-      'metric_definition.delete',
-      'metric_definition.collect',
-      'fact_table.create',
-      'fact_table.update',
-      'fact_table.delete',
-      // The three SQL-executing previews. They create nothing, so unlike an
-      // accepted shadow candidate they get their own actions rather than
-      // filing someone else's — but they DO run an editor's SQL against a
-      // warehouse credential, and they are the only such surfaces that leave
-      // no stored object behind. An owner asking "who ran what against our
-      // warehouse?" has to be able to find them (tripl-0zpq.75).
-      'fact_table.preview',
-      'metric.preview',
-      'metric.fact_preview',
-    ],
-  },
-  {
-    label: 'Alerting',
-    actions: [
-      'alert_destination.create',
-      'alert_destination.update',
-      'alert_destination.delete',
-      // Recorded with a project slug (api/v1/alerting.py) and missing here, so
-      // "who sent a test to prod Slack, and did it work" was in the feed but
-      // not isolatable — the exact gap the doctrine above forbids.
-      'alert_destination.test',
-      'alert_rule.create',
-      'alert_rule.update',
-      'alert_rule.delete',
-      'alert_rule.mute',
-      'alert_rule.unmute',
-      'alert_delivery.retry',
-      'alert_inbox.acknowledge',
-      'alert_inbox.resolve',
-      'alert_inbox.mute',
-      'alert_inbox.reopen',
-      'alert_inbox.false_positive',
-      // Recorded like its five siblings — the router files
-      // `alert_inbox.{action}` for every member of the AlertInboxAction literal
-      // — and missing from this list until tripl-wkwv.17, so leaving a note on an
-      // incident showed up in the feed and could not be isolated.
-      'alert_inbox.note',
-      // Undoing a false-positive ratchet re-sensitises a scope, so it belongs
-      // in the same filter as the click that tightened it.
-      'anomaly_scope_override.delete',
-    ],
-  },
-  {
-    label: 'Project',
-    actions: [
-      // The project's own life, minus its end. `project.delete` is NOT here: it
-      // is written after its subject is gone, so it carries no project id, and
-      // this list is now filtered by the project a slug RESOLVES TO
-      // (tripl-wkwv.18) — the entry could never match. It is offered in the
-      // workspace list instead, which is also the only place it can be read
-      // from: this tab lives at /p/:slug/..., and a deleted project has no page.
-      'project.create',
-      'project.update',
-      // Only a demo can be reset; it re-seeds in place and clears the trail that
-      // came before, which is what this row explains.
-      'project.reset',
-      'project_tracker_config.update',
-      'project.reset_anomalies',
-      'project.reset_drifts',
-      // A bulk plan write — it retires variables — but grouped by its prefix
-      // like every other action here, because that is the string a reader is
-      // scanning for. Also missing until now.
-      'project.retire_unused_variables',
-      // Only recorded with a project when the key is scoped to one; a
-      // workspace-wide key carries no project and never lands here.
-      'api_key.create',
-    ],
-  },
-]
-
-/**
- * The other half of the vocabulary: actions the backend records with NO project,
- * because their subject belongs to the workspace rather than to one project.
- *
- * They are excluded from ACTION_GROUPS above — a project-scoped query can never
- * match them — and until tripl-wkwv.17 they were offered nowhere at all: written
- * faithfully and readable on no screen, which is the worst possible place for
- * "who connected this warehouse" and "who made that person an editor" to live.
- * The workspace view offers this list ON TOP of the project one rather than
- * instead of it, because that view is the unfiltered feed and every action can
- * match there.
- *
- * `api_key.create` is deliberately absent: it is already offered under Project,
- * where it lands whenever the key is scoped to one, and one action must appear
- * in the select exactly once.
- */
-const WORKSPACE_ACTION_GROUPS: { label: string; actions: string[] }[] = [
-  {
-    label: 'Workspace',
-    actions: [
-      'data_source.create',
-      'data_source.update',
-      'data_source.delete',
-      'user.invite',
-      'user.invite_revoke',
-      'user.role_update',
-      'api_key.revoke',
-      // Written after its subject is gone, so it carries no project id and the
-      // project tab — which filters by the project a slug resolves to — cannot
-      // match it. This is the only place a deleted workspace can be accounted
-      // for at all (tripl-wkwv.19).
-      'project.delete',
-    ],
+    pattern: /(update|apply|submit|request_changes|reopen|mute|unmute|snooze|false_positive|acknowledge|resolve|drift_action|role_update)$/,
+    tone: 'bg-warning-soft text-warning',
   },
 ]
 
@@ -264,7 +58,10 @@ const PAGE_SIZE = 50
 
 function actionTone(action: string) {
   const verb = action.split('.').pop() ?? ''
-  return ACTION_TONE[verb] ?? 'bg-muted text-muted-foreground'
+  return (
+    ACTION_TONE_RULES.find((rule) => rule.pattern.test(verb))?.tone
+    ?? 'bg-muted text-muted-foreground'
+  )
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -334,8 +131,25 @@ function AuditPayload({ entryId }: { entryId: string }) {
   )
 }
 
-/** The audit log of one project, as its settings tab renders it. */
+/**
+ * The audit log of one project, as its settings tab renders it.
+ *
+ * `/audit` is owner-only. The sidebar hides the link from everyone else, but the
+ * route still renders for a shared link or a typed URL, and an editor landing
+ * here was told "No audit entries yet" — a false statement on a compliance
+ * surface (PLAN-47). So the page says who can read it instead of asking.
+ */
 export function AuditTab({ slug }: { slug: string }) {
+  const isOwner = useIsOwner()
+  if (!isOwner) {
+    return (
+      <EmptyState
+        icon={Lock}
+        title="Only owners can read the audit log"
+        description="Ask a workspace owner if you need to know who changed something here."
+      />
+    )
+  }
   return <AuditLog slug={slug} />
 }
 
@@ -359,7 +173,26 @@ function AuditLog({ slug }: { slug?: string }) {
   // Additive, not alternative: the workspace feed is unfiltered, so a project
   // action can match there too and hiding it would make the filter narrower than
   // the list it filters.
-  const offeredGroups = workspace ? [...ACTION_GROUPS, ...WORKSPACE_ACTION_GROUPS] : ACTION_GROUPS
+  //
+  // The vocabulary is the backend's (GET /audit/actions), grouped where the
+  // actions are recorded. It used to be a hand-kept list of ~100 strings here
+  // that drifted behind the backend again and again (PLAN-49). `project` holds
+  // the actions recorded with a project, the only ones a project-scoped query
+  // can match; `workspace` the ones recorded with none. Until it answers the
+  // select offers "All actions" alone.
+  const isOwner = useIsOwner()
+  const actionsQuery = useQuery({
+    queryKey: ['auditActions'],
+    queryFn: auditApi.actions,
+    staleTime: Infinity,
+    enabled: isOwner,
+  })
+  const catalog = actionsQuery.data
+  const offeredGroups = catalog
+    ? workspace
+      ? [...catalog.project, ...catalog.workspace]
+      : catalog.project
+    : []
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [action, setAction] = useState('')
   const [emailInput, setEmailInput] = useState('')
@@ -371,6 +204,26 @@ function AuditLog({ slug }: { slug?: string }) {
   // the reader on a blank page of a list that has rows, which reads as "nothing
   // matches". Same reasoning as AlertAuditPanel.tsx.
   const [offset, setOffset] = useState(0)
+
+  // The email box filters as you type, after a pause. It used to wait for Enter
+  // or Apply while the action and dates applied at once, and the count line did
+  // not move until then, which read as "the filter does nothing" (PLAN-49).
+  // Enter and Apply still apply at once. Followed during render, like the page
+  // offset below, so the offset reset lands in the same pass.
+  const debouncedEmail = useDebouncedValue(emailInput.trim(), EMAIL_DEBOUNCE_MS)
+  const [seenDebouncedEmail, setSeenDebouncedEmail] = useState(debouncedEmail)
+  if (seenDebouncedEmail !== debouncedEmail) {
+    setSeenDebouncedEmail(debouncedEmail)
+    if (debouncedEmail !== emailApplied) {
+      setEmailApplied(debouncedEmail)
+      setOffset(0)
+    }
+  }
+
+  // "To" before "From" is a question with no answer, and it used to come back as
+  // "No entries match", indistinguishable from a range nothing happened in.
+  // String comparison is exact for YYYY-MM-DD.
+  const rangeInvalid = !!sinceDate && !!untilDate && sinceDate > untilDate
 
   const queryParams = useMemo(
     () => ({
@@ -389,9 +242,12 @@ function AuditLog({ slug }: { slug?: string }) {
     queryKey: ['audit', queryParams],
     queryFn: () => auditApi.list(queryParams),
     // A project view with no slug has nothing to ask about; the workspace view
-    // has no slug BY DESIGN, so the guard has to distinguish the two.
-    enabled: workspace || !!slug,
+    // has no slug BY DESIGN, so the guard has to distinguish the two. Nor is
+    // there anything to ask while the date range is backwards.
+    enabled: (workspace || !!slug) && !rangeInvalid,
     placeholderData: keepPreviousData,
+    // Rendered in the list card, with a retry.
+    meta: SILENT_ERROR_META,
   })
 
   const items = listQuery.data?.items ?? []
@@ -547,6 +403,9 @@ function AuditLog({ slug }: { slug?: string }) {
                 id="audit-since"
                 type="date"
                 value={sinceDate}
+                max={untilDate || undefined}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? 'audit-range-error' : undefined}
                 onChange={(e) => applySince(e.target.value)}
                 className="h-8 text-xs"
               />
@@ -559,15 +418,25 @@ function AuditLog({ slug }: { slug?: string }) {
                 id="audit-until"
                 type="date"
                 value={untilDate}
+                min={sinceDate || undefined}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? 'audit-range-error' : undefined}
                 onChange={(e) => applyUntil(e.target.value)}
                 className="h-8 text-xs"
               />
             </div>
           </div>
+          {rangeInvalid && (
+            <p id="audit-range-error" role="alert" className="text-xs text-destructive">
+              “To” is before “From”. Pick an end date on or after the start date.
+            </p>
+          )}
           {filtersActive && (
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>
-                {total} {total === 1 ? 'entry' : 'entries'} match the filter.
+                {rangeInvalid
+                  ? 'The date range is backwards.'
+                  : `${total} ${total === 1 ? 'entry' : 'entries'} match the filter.`}
               </span>
               <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={clearFilters}>
                 <X className="mr-1 h-3 w-3" />
@@ -580,7 +449,30 @@ function AuditLog({ slug }: { slug?: string }) {
 
       <Card>
         <CardContent className="p-0">
-          {listQuery.isLoading ? (
+          {rangeInvalid ? (
+            <div className="p-4 text-sm text-muted-foreground">
+              Fix the date range to see entries.
+            </div>
+          ) : listQuery.isError ? (
+            // A 403 or a 500 is not "No audit entries yet" (PLAN-47).
+            <div className="p-3">
+              {listQuery.error instanceof ApiError && listQuery.error.status === 403 ? (
+                <ErrorState
+                  compact
+                  title="Only owners can read the audit log"
+                  error={listQuery.error}
+                />
+              ) : (
+                <ErrorState
+                  compact
+                  title="Couldn't load the audit log"
+                  error={listQuery.error}
+                  onRetry={() => { void listQuery.refetch() }}
+                  retryLabel="Retry"
+                />
+              )}
+            </div>
+          ) : listQuery.isLoading ? (
             // Rows, not a bare "Loading…" line: the header and the whole filter
             // card render immediately, so the only thing pending is this card,
             // and a one-line placeholder made a card that is about to be a list
@@ -607,22 +499,34 @@ function AuditLog({ slug }: { slug?: string }) {
             <ul className="divide-y" aria-busy={isPaging}>
               {items.map((entry) => {
                 const isOpen = expanded.has(entry.id)
+                const payloadId = `audit-payload-${entry.id}`
                 return (
                   <li key={entry.id} className="px-3 py-2 text-xs">
+                    {/* Two lines below `sm`: when and who first, then what. As
+                        one non-wrapping line a phone truncated the target, the
+                        field a reader came for, to nothing (PLAN-48). The
+                        zero-height break and the `order` classes do the
+                        stacking; from `sm` up it is the single line it was. */}
                     <button
                       type="button"
                       onClick={() => toggle(entry.id)}
-                      className="flex w-full items-start gap-2 text-left"
+                      aria-expanded={isOpen}
+                      aria-controls={isOpen ? payloadId : undefined}
+                      className="flex w-full flex-wrap items-start gap-x-2 gap-y-1 text-left sm:flex-nowrap"
                     >
                       {isOpen ? (
-                        <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                       ) : (
-                        <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                       )}
-                      <span className="tnum text-[10px] text-muted-foreground w-36 shrink-0">
+                      <span className="tnum text-[10px] text-muted-foreground shrink-0 sm:w-36">
                         {formatTimestamp(entry.created_at, { seconds: true })}
                       </span>
-                      <Badge className={`${actionTone(entry.action)} text-[10px] shrink-0`}>
+                      <span className="order-1 ml-auto min-w-0 truncate text-muted-foreground text-[11px] sm:order-last">
+                        {entry.user_email}
+                      </span>
+                      <span aria-hidden="true" className="order-2 h-0 basis-full sm:hidden" />
+                      <Badge className={`${actionTone(entry.action)} order-3 text-[10px] shrink-0 sm:order-none`}>
                         {entry.action}
                       </Badge>
                       {/* The chip means "this was NOT written on main". An empty
@@ -632,12 +536,12 @@ function AuditLog({ slug }: { slug?: string }) {
                           alert_rule.create — hence a chip or nothing
                           (tripl-wkwv.6). An explicit ?branch=<main id> binds no
                           branch context (api/deps.py), so the chip can never
-                          read "main". Capped and truncated because the row is
-                          one flex line and a fourth item squeezes the target. */}
+                          read "main". Capped and truncated so it never squeezes
+                          the target. */}
                       {entry.branch_name && (
                         <Badge
                           variant="outline"
-                          className="shrink-0 max-w-[9rem] text-[10px]"
+                          className="order-3 shrink-0 max-w-[9rem] text-[10px] sm:order-none"
                           title={entry.branch_name}
                         >
                           <GitBranch />
@@ -653,7 +557,7 @@ function AuditLog({ slug }: { slug?: string }) {
                       {workspace && entry.project_slug && (
                         <Badge
                           variant="outline"
-                          className="shrink-0 max-w-[9rem] text-[10px]"
+                          className="order-3 shrink-0 max-w-[9rem] text-[10px] sm:order-none"
                           title={entry.project_slug}
                         >
                           <FolderOpen />
@@ -661,16 +565,17 @@ function AuditLog({ slug }: { slug?: string }) {
                         </Badge>
                       )}
                       <span
-                        className="font-mono text-[11px] truncate"
+                        className="order-3 min-w-0 flex-1 font-mono text-[11px] truncate sm:order-none sm:flex-initial"
                         title={entry.target_name ?? undefined}
                       >
                         {displayTarget(entry)}
                       </span>
-                      <span className="ml-auto text-muted-foreground text-[11px] truncate">
-                        {entry.user_email}
-                      </span>
                     </button>
-                    {isOpen && <AuditPayload entryId={entry.id} />}
+                    {isOpen && (
+                      <div id={payloadId}>
+                        <AuditPayload entryId={entry.id} />
+                      </div>
+                    )}
                   </li>
                 )
               })}

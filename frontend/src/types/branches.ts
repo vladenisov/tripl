@@ -257,6 +257,20 @@ export interface AuditEntryDetail extends AuditEntry {
   payload: Record<string, unknown>
 }
 
+// Mirrors AuditActionGroup / AuditActionCatalog (schemas/audit.py), served by
+// GET /audit/actions: the filter's action vocabulary, owned by the backend.
+export interface AuditActionGroup {
+  label: string
+  actions: string[]
+}
+
+export interface AuditActionCatalog {
+  /** Actions recorded with a project: the only ones a project-scoped query matches. */
+  project: AuditActionGroup[]
+  /** Actions recorded with no project: only the unfiltered workspace feed matches them. */
+  workspace: AuditActionGroup[]
+}
+
 export interface AuditListResponse {
   items: AuditEntry[]
   total: number

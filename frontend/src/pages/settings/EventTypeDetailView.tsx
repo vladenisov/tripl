@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState, type ReactNode } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ExternalLink, Settings as SettingsIcon, Trash2 } from 'lucide-react'
 import { eventsApi } from '@/api/events'
@@ -11,9 +11,9 @@ import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { ErrorState } from '@/components/error-state'
 import type { EventType, EventTypeOwner } from '@/types'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
 import { Chip } from '@/components/primitives/chip'
 import { EVENT_STATUSES } from '@/lib/eventStatus'
 import { getErrorMessage } from '@/lib/utils'
@@ -27,6 +27,7 @@ import {
   SCard,
   SField,
   SInput,
+  STextarea,
   SaveFooter,
   SurfPanel,
 } from './EventTypesTab'
@@ -44,10 +45,29 @@ const TABS: { id: DetailTab; label: string }[] = [
   { id: 'settings', label: 'Settings' },
 ]
 
+function isDetailTab(value: string | null): value is DetailTab {
+  return TABS.some((t) => t.id === value)
+}
+
 export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventTypeId: string }) {
   const navigate = useNavigate()
   const branchId = useActiveBranchId()
-  const [tab, showTab] = useState<DetailTab>('summary')
+  // The tab lives in `?tab=`, so a link can point at an event type's settings
+  // and Back from "View events" returns to the tab it left (PLAN-45). Replaced
+  // rather than pushed: switching tabs is not a navigation worth a Back step.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const tab: DetailTab = isDetailTab(tabParam) ? tabParam : 'summary'
+  const showTab = (next: DetailTab) =>
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev)
+        if (next === 'summary') params.delete('tab')
+        else params.set('tab', next)
+        return params
+      },
+      { replace: true },
+    )
   // The Settings tab can hold the field subpage, whose unsaved-changes guard is
   // the page guard while it is mounted; switching tabs unmounts it, so the
   // switch goes through that guard (asks only when the field has a draft).
@@ -56,20 +76,63 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
     requestPageLeave(() => showTab(next))
   }
 
-  const { data: eventTypes = [], isSuccess } = useQuery({
+  const { data, isSuccess, isError, error, refetch } = useQuery({
     queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug, branchId),
+    meta: SILENT_ERROR_META,
   })
+  const eventTypes = data ?? []
 
   const et = eventTypes.find((e) => e.id === eventTypeId)
+  // Branches deep-copy event types under new ids, so the id in the URL belongs
+  // to ONE branch. Switching branch on this page used to end at "Event type not
+  // found." (PLAN-44); the type is followed by name instead, the identity that
+  // survives the copy. Remembered during render, like any value followed from
+  // a prop, so the switch can still read the name the page was showing.
+  const [lastSeenName, setLastSeenName] = useState<string | null>(null)
+  if (et && et.name !== lastSeenName) setLastSeenName(et.name)
+  const sameNameOnThisBranch =
+    !et && isSuccess && lastSeenName !== null
+      ? eventTypes.find((e) => e.name === lastSeenName)
+      : undefined
+  const redirectTo = sameNameOnThisBranch
+    ? `/p/${slug}/settings/event-types/${sameNameOnThisBranch.id}${searchParams.toString() ? `?${searchParams.toString()}` : ''}`
+    : null
+  useEffect(() => {
+    if (redirectTo) navigate(redirectTo, { replace: true })
+  }, [navigate, redirectTo])
+
   const goBack = () => navigate(`/p/${slug}/settings/event-types`)
   const goEvents = () => navigate(`/p/${slug}/events/${et?.name ?? 'all'}`)
 
-  if (isSuccess && !et) {
+  // Only a load that never answered replaces the page. A failed refetch keeps
+  // the cached type on screen with a line saying so: every save on the Settings
+  // tab refetches this list, and unmounting the page on a failed refetch threw
+  // away a field draft without asking (review 204).
+  if (isError && data === undefined) {
     return (
       <div className="space-y-4">
         <BackLink label="Event types" onClick={goBack} />
-        <p className="text-sm text-muted-foreground">Event type not found.</p>
+        <ErrorState
+          compact
+          title="Couldn't load this event type"
+          error={error}
+          onRetry={() => { void refetch() }}
+          retryLabel="Retry"
+        />
+      </div>
+    )
+  }
+
+  if (isSuccess && !et && !sameNameOnThisBranch) {
+    return (
+      <div className="space-y-4">
+        <BackLink label="Event types" onClick={goBack} />
+        <p className="text-sm text-muted-foreground">
+          {branchId === null
+            ? 'This event type does not exist on main.'
+            : 'This event type does not exist on the selected branch.'}
+        </p>
       </div>
     )
   }
@@ -79,15 +142,24 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
   return (
     <div className="flex min-w-0 flex-col">
       <BackLink label="Event types" onClick={goBack} />
+      {isError && (
+        <p role="alert" className="mb-2 text-xs text-destructive">
+          Couldn't refresh this event type: {getErrorMessage(error)}
+        </p>
+      )}
 
-      <div className="mb-3.5 flex items-start gap-3.5">
+      {/* Wraps: as one row the swatch, title, name, chip and two buttons left a
+          phone's title a few characters wide (PLAN-45). Below `sm` the buttons
+          take their own line under the title. */}
+      <div className="mb-3.5 flex flex-wrap items-start gap-x-3.5 gap-y-2.5">
         <span
           className="mt-1.5 size-3.5 shrink-0 rounded"
           style={{ background: et.color || '#6366f1' }}
+          aria-hidden="true"
         />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2.5">
-            <h1 className="m-0 text-[21px] font-semibold tracking-[-0.01em]">{et.display_name}</h1>
+        <div className="min-w-0 flex-1 basis-[calc(100%-2rem)] sm:basis-0">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <h1 className="m-0 min-w-0 break-words text-[21px] font-semibold tracking-[-0.01em]">{et.display_name}</h1>
             <span className="mono text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
               {et.name}
             </span>
@@ -99,14 +171,16 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
             </p>
           )}
         </div>
-        <Button variant="outline" size="sm" onClick={goEvents}>
-          <ExternalLink className="size-3" />
-          View events
-        </Button>
-        <Button variant="secondary" size="sm" onClick={() => setTab('settings')}>
-          <SettingsIcon className="size-3" />
-          Settings
-        </Button>
+        <div className="flex shrink-0 gap-2">
+          <Button variant="outline" size="sm" onClick={goEvents}>
+            <ExternalLink className="size-3" />
+            View events
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => setTab('settings')}>
+            <SettingsIcon className="size-3" />
+            Settings
+          </Button>
+        </div>
       </div>
 
       <div
@@ -302,9 +376,16 @@ function GeneralCard({
   canWrite: boolean
 }) {
   const qc = useQueryClient()
+  const savedColor = eventType.color || '#6366f1'
   const [displayName, setDisplayName] = useState(eventType.display_name)
   const [description, setDescription] = useState(eventType.description)
-  const [color, setColor] = useState(eventType.color || '#6366f1')
+  const [color, setColor] = useState(savedColor)
+  // Save was always enabled and a save left no trace, so there was no telling
+  // a saved card from an edited one (PLAN-45).
+  const dirty =
+    displayName !== eventType.display_name
+    || description !== eventType.description
+    || color !== savedColor
 
   const updateMut = useMutation({
     // Its error is rendered under the card.
@@ -323,19 +404,33 @@ function GeneralCard({
     <form
       onSubmit={(e) => {
         e.preventDefault()
-        updateMut.mutate()
+        if (dirty) updateMut.mutate()
       }}
     >
       <fieldset disabled={!canWrite} className="contents">
-        <SCard title="General" footer={canWrite ? <SaveFooter pending={updateMut.isPending} /> : undefined}>
-          <SField label="Name" hint="Used in queries and ingestion — can't be changed.">
+        <SCard
+          title="General"
+          footer={
+            canWrite ? (
+              <SaveFooter
+                pending={updateMut.isPending}
+                disabled={!dirty}
+                status={updateMut.isSuccess && !dirty ? 'Saved' : undefined}
+              />
+            ) : undefined
+          }
+        >
+          {/* "Type name", not "Name": the field subpage below renders on the same
+              screen with its own Name input, and two controls sharing one
+              accessible name cannot be told apart by a screen reader. */}
+          <SField label="Type name" hint="Used in queries and ingestion — can't be changed.">
             <SInput value={eventType.name} onChange={() => undefined} mono disabled />
           </SField>
           <SField label="Display name">
             <SInput value={displayName} onChange={setDisplayName} />
           </SField>
           <SField label="Description">
-            <Textarea value={description} rows={2} onChange={(e) => setDescription(e.target.value)} />
+            <STextarea value={description} onChange={setDescription} />
           </SField>
           <SField label="Color" last>
             <ColorPicker value={color} onChange={setColor} />
@@ -343,7 +438,7 @@ function GeneralCard({
         </SCard>
       </fieldset>
       {updateMut.isError && (
-        <p className="mb-3 text-sm" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="mb-3 text-sm" style={{ color: 'var(--danger)' }}>
           {getErrorMessage(updateMut.error)}
         </p>
       )}
@@ -376,7 +471,7 @@ function DangerZoneCard({
   // Every status, deliberately. An unqualified events list excludes archived
   // events, so the count would omit exactly the rows the cascade still takes —
   // and under-counting in a delete confirm is worse than not counting at all.
-  const { data: eventPage } = useQuery({
+  const impactQuery = useQuery({
     queryKey: ['eventTypeDeletionImpact', slug, branchId, eventType.id],
     queryFn: () =>
       eventsApi.list(
@@ -384,11 +479,27 @@ function DangerZoneCard({
         { event_type_id: eventType.id, status: EVENT_STATUSES, limit: 1 },
         branchId,
       ),
+    // The failure is said in the card, in the delete's own words.
+    meta: SILENT_ERROR_META,
   })
-  const impact = describeEventTypeDeletionImpact(
-    eventPage?.total ?? 0,
-    eventType.field_definitions.length,
-  )
+  // Delete waits for the count. The text used to read `total ?? 0` while the
+  // count was pending or had failed, so a quick delete — or any delete after a
+  // failed count — was confirmed with "nothing else is affected" over a cascade
+  // taking every event of the type (PLAN-43).
+  const impact = impactQuery.isSuccess
+    ? describeEventTypeDeletionImpact(
+        impactQuery.data.total,
+        eventType.field_definitions.length,
+      )
+    : impactQuery.isError
+      ? 'Could not count the events that use this type. Deleting it deletes every one of '
+        + 'them, including archived ones, and everything pointing at them: metrics composed '
+        + 'from them stop producing values, alert rules filtered on them lose those filters, '
+        + 'and their tuned sensitivity and chart markers are dropped. This cannot be undone.'
+      : 'Counting the events that use this type…'
+  // An unknown count still lets an owner delete, but only after reading the
+  // worst case above; a pending one does not.
+  const canDelete = impactQuery.isSuccess || impactQuery.isError
 
   const handleDelete = async () => {
     const ok = await confirm({
@@ -410,7 +521,12 @@ function DangerZoneCard({
             {impact}
           </div>
         </div>
-        <Button variant="destructive" size="sm" disabled={deleteMut.isPending} onClick={handleDelete}>
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={!canDelete || deleteMut.isPending}
+          onClick={handleDelete}
+        >
           <Trash2 className="size-3" />
           Delete
         </Button>

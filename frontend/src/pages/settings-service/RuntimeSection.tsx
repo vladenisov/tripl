@@ -1,6 +1,6 @@
 import type { ServiceSettings } from '@/types'
 import { Field, SCard, TextInput } from '@/components/settings/kit'
-import { SourceBadge } from './ServiceSettingsPrimitives'
+import { NumberSettingInput, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -36,12 +36,13 @@ export function RuntimeSection({
           label="Scan row limit default"
           labelRight={<SourceBadge source={sourceFor(settings, 'runtime', 'scan_row_limit_default')} />}
         >
-          <TextInput
-            type="number"
-            value={String(form.runtime.scan_row_limit_default)}
-            onChange={value => setField('runtime', 'scan_row_limit_default', Number(value))}
+          <NumberSettingInput
+            section="runtime"
+            field="scan_row_limit_default"
+            value={form.runtime.scan_row_limit_default}
+            saved={settings.runtime.scan_row_limit_default}
+            setField={setField}
             suffix="rows"
-            mono
           />
         </Field>
         <Field
@@ -49,12 +50,13 @@ export function RuntimeSection({
           labelRight={<SourceBadge source={sourceFor(settings, 'runtime', 'metrics_row_limit_default')} />}
           last
         >
-          <TextInput
-            type="number"
-            value={String(form.runtime.metrics_row_limit_default)}
-            onChange={value => setField('runtime', 'metrics_row_limit_default', Number(value))}
+          <NumberSettingInput
+            section="runtime"
+            field="metrics_row_limit_default"
+            value={form.runtime.metrics_row_limit_default}
+            saved={settings.runtime.metrics_row_limit_default}
+            setField={setField}
             suffix="rows"
-            mono
           />
         </Field>
       </SCard>

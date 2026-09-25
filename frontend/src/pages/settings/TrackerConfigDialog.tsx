@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from '@/api/client'
 import { trackerConfigApi } from '@/api/trackerConfig'
 import { useAuth } from '@/components/auth-context'
+import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -15,6 +16,8 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { trackerConfigKey } from './branches/branchQueryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import type { ProjectTrackerConfig, ProjectTrackerConfigUpdate } from '@/types'
 import { isOwner } from '@/lib/permissions'
@@ -31,6 +34,107 @@ function describeTrackerError(error: unknown): string {
   return getErrorMessage(error)
 }
 
+type TrackerField = 'baseUrl' | 'projectKey' | 'authEmail'
+
+interface TrackerFormValues {
+  enabled: boolean
+  baseUrl: string
+  projectKey: string
+  authEmail: string
+}
+
+// The backend's own rules (alerting_validation.py): `_validate_https_url` wants
+// an https URL with a host and no whitespace, `_JIRA_PROJECT_KEY_RE` an
+// uppercase key after it upper-cases the input, and `validate_email_address` an
+// address. Checked here so a typo is named beside its field instead of coming
+// back as one 422 line.
+const JIRA_PROJECT_KEY_RE = /^[A-Z][A-Z0-9_]{1,31}$/
+const REQUIRED_WHEN_ENABLED = 'Required while the tracker is enabled.'
+const CANNOT_CLEAR = 'A saved value cannot be cleared; enter a new one.'
+
+/**
+ * What the form would save wrong, per field (PLAN-21).
+ *
+ * The backend validates every field it is SENT and rejects an empty one ("Jira
+ * base_url is required"), but it does not require any of them to exist: a
+ * tracker can be enabled with no project key and only fail later, in the merge
+ * worker, where nobody sees it. So: a field that is filled must be valid; an
+ * enabled tracker needs all three; a disabled one may stay half-filled, because
+ * blank fields are simply not sent (see `trackerPatch`). What cannot be done is
+ * blanking a field that has a saved value — the PATCH has no way to clear it.
+ */
+function trackerConfigErrors(
+  values: TrackerFormValues,
+  saved: ProjectTrackerConfig,
+): Partial<Record<TrackerField, string>> {
+  const errors: Partial<Record<TrackerField, string>> = {}
+  const blank = (savedValue: string) =>
+    savedValue.trim() !== '' ? CANNOT_CLEAR : values.enabled ? REQUIRED_WHEN_ENABLED : null
+
+  const baseUrl = values.baseUrl.trim()
+  if (baseUrl === '') {
+    const message = blank(saved.base_url)
+    if (message) errors.baseUrl = message
+  } else {
+    let parsed: URL | null
+    try {
+      parsed = /\s/.test(baseUrl) ? null : new URL(baseUrl)
+    } catch {
+      parsed = null
+    }
+    if (!parsed || parsed.protocol !== 'https:' || !parsed.hostname) {
+      errors.baseUrl = 'Enter an https URL, such as https://acme.atlassian.net.'
+    }
+  }
+
+  const projectKey = values.projectKey.trim()
+  if (projectKey === '') {
+    const message = blank(saved.project_key)
+    if (message) errors.projectKey = message
+  } else if (!JIRA_PROJECT_KEY_RE.test(projectKey.toUpperCase())) {
+    errors.projectKey = 'Use 2–32 letters, digits or underscores, starting with a letter (e.g. ENG).'
+  }
+
+  const email = values.authEmail.trim()
+  if (email === '') {
+    const message = blank(saved.auth_email)
+    if (message) errors.authEmail = message
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    errors.authEmail = 'Enter an email address.'
+  }
+  return errors
+}
+
+/**
+ * The PATCH body: only what changed, and never an empty string. The backend
+ * validates every field present and refuses a blank one, so sending the whole
+ * form turned "save the issue type of a parked, half-filled connection" into a
+ * 422 about a base URL nobody touched.
+ */
+function trackerPatch(
+  values: TrackerFormValues & { issueType: string; apiToken: string },
+  saved: ProjectTrackerConfig,
+): ProjectTrackerConfigUpdate {
+  const patch: ProjectTrackerConfigUpdate = {}
+  if (values.enabled !== saved.enabled) patch.enabled = values.enabled
+  const text: Array<['base_url' | 'project_key' | 'auth_email' | 'issue_type', string]> = [
+    ['base_url', values.baseUrl],
+    ['project_key', values.projectKey],
+    ['auth_email', values.authEmail],
+    ['issue_type', values.issueType.trim() || DEFAULT_ISSUE_TYPE],
+  ]
+  for (const [key, raw] of text) {
+    const value = raw.trim()
+    if (value !== '' && value !== saved[key]) {
+      patch[key] = value
+    }
+  }
+  // Only when the user actually typed one — otherwise omitted, so the stored
+  // token is preserved (an empty string would clear it).
+  if (values.apiToken.trim() !== '') patch.api_token = values.apiToken
+  return patch
+}
+
 interface TrackerConfigDialogProps {
   slug: string
   open: boolean
@@ -43,11 +147,15 @@ interface TrackerConfigDialogProps {
  * branches settings tab), same Dialog/primitive styling.
  */
 export function TrackerConfigDialog({ slug, open, onOpenChange }: TrackerConfigDialogProps) {
-  const { data: config } = useQuery({
-    queryKey: ['trackerConfig', slug],
+  const configQuery = useQuery({
+    queryKey: trackerConfigKey(slug),
     queryFn: () => trackerConfigApi.get(slug),
     enabled: open,
+    // Rendered in the dialog with a retry, instead of "Loading tracker…"
+    // forever (PLAN-21).
+    meta: SILENT_ERROR_META,
   })
+  const config = configQuery.data
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -57,6 +165,14 @@ export function TrackerConfigDialog({ slug, open, onOpenChange }: TrackerConfigD
         </DialogHeader>
         {config ? (
           <TrackerConfigForm slug={slug} config={config} onClose={() => onOpenChange(false)} />
+        ) : configQuery.isError ? (
+          <ErrorState
+            compact
+            className="my-4"
+            title="Could not load the tracker connection"
+            error={configQuery.error}
+            onRetry={() => void configQuery.refetch()}
+          />
         ) : (
           <p className="py-4 text-sm text-muted-foreground">Loading tracker…</p>
         )}
@@ -94,24 +210,29 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
   // a blank field means "keep the stored token".
   const [apiToken, setApiToken] = useState('')
 
+  const errors = trackerConfigErrors({ enabled, baseUrl, projectKey, authEmail }, config)
+  const invalid = Object.keys(errors).length > 0
+  // Field errors show once the owner has tried to save, not while typing.
+  const [attempted, setAttempted] = useState(false)
+  const shown = attempted ? errors : {}
+  const fieldProps = (field: TrackerField, errorId: string) =>
+    shown[field]
+      ? { 'aria-invalid': true as const, 'aria-describedby': errorId }
+      : {}
+  const baseUrlErrorId = useId()
+  const projectKeyErrorId = useId()
+  const authEmailErrorId = useId()
+
   const saveMut = useMutation({
-    mutationFn: () => {
-      const patch: ProjectTrackerConfigUpdate = {
-        enabled,
-        base_url: baseUrl.trim(),
-        project_key: projectKey.trim(),
-        auth_email: authEmail.trim(),
-        issue_type: issueType.trim() || DEFAULT_ISSUE_TYPE,
-      }
-      // Only send api_token when the user actually typed one — otherwise omit it
-      // so the stored token is preserved (the backend rejects an empty string).
-      if (apiToken.trim() !== '') {
-        patch.api_token = apiToken
-      }
-      return trackerConfigApi.update(slug, patch)
-    },
+    // Rendered inline below the fields.
+    meta: SILENT_ERROR_META,
+    mutationFn: () =>
+      trackerConfigApi.update(
+        slug,
+        trackerPatch({ enabled, baseUrl, projectKey, authEmail, issueType, apiToken }, config),
+      ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['trackerConfig', slug] })
+      qc.invalidateQueries({ queryKey: trackerConfigKey(slug) })
       // Clear the just-saved token so the field returns to its "leave blank to
       // keep" state and the raw value never lingers in the DOM.
       setApiToken('')
@@ -124,9 +245,11 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
 
   return (
     <form
+      noValidate
       onSubmit={(event) => {
         event.preventDefault()
-        if (canEdit) saveMut.mutate()
+        setAttempted(true)
+        if (canEdit && !invalid) saveMut.mutate()
       }}
     >
       <div className="grid gap-4 py-4">
@@ -159,7 +282,9 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             onChange={(event) => setBaseUrl(event.target.value)}
             placeholder="https://acme.atlassian.net"
             disabled={!canEdit}
+            {...fieldProps('baseUrl', baseUrlErrorId)}
           />
+          <FieldError id={baseUrlErrorId} message={shown.baseUrl} />
         </div>
 
         <div className="grid gap-2">
@@ -170,7 +295,9 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             onChange={(event) => setProjectKey(event.target.value)}
             placeholder="ENG"
             disabled={!canEdit}
+            {...fieldProps('projectKey', projectKeyErrorId)}
           />
+          <FieldError id={projectKeyErrorId} message={shown.projectKey} />
         </div>
 
         <div className="grid gap-2">
@@ -182,7 +309,9 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             onChange={(event) => setAuthEmail(event.target.value)}
             placeholder="you@acme.com"
             disabled={!canEdit}
+            {...fieldProps('authEmail', authEmailErrorId)}
           />
+          <FieldError id={authEmailErrorId} message={shown.authEmail} />
         </div>
 
         <div className="grid gap-2">
@@ -242,5 +371,14 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
         )}
       </DialogFooter>
     </form>
+  )
+}
+
+function FieldError({ id, message }: { id: string; message?: string }) {
+  if (!message) return null
+  return (
+    <p id={id} className="text-xs" style={{ color: 'var(--danger)' }}>
+      {message}
+    </p>
   )
 }

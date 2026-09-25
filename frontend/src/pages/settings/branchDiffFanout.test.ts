@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import type { PlanBranchSummary } from '@/types'
-import { ROW_DIFF_LIMIT, rowDiffBranches } from './branchDiffFanout'
+import type { PlanBranchListItem } from '@/api/planBranches'
+import type { PlanBranchDiffSummary } from '@/types'
+import { rowBadgeCounts } from './branchDiffFanout'
 
-function makeBranch(overrides: Partial<PlanBranchSummary>): PlanBranchSummary {
+function makeBranch(overrides: Partial<PlanBranchListItem>): PlanBranchListItem {
   return {
     id: 'b-1',
     project_id: 'p-1',
-    name: 'main',
-    kind: 'main',
-    status: 'merged',
+    name: 'feature',
+    kind: 'working',
+    status: 'draft',
     description: '',
     base_revision_id: null,
     created_by: null,
@@ -20,47 +21,54 @@ function makeBranch(overrides: Partial<PlanBranchSummary>): PlanBranchSummary {
   }
 }
 
-// b-0 is the most recently updated, b-(count-1) the oldest.
-function branches(count: number): PlanBranchSummary[] {
-  return Array.from({ length: count }, (_, i) =>
-    makeBranch({
-      id: `b-${i}`,
-      name: `feature-${i}`,
-      kind: 'working',
-      updated_at: `2026-01-${String(count - i).padStart(2, '0')}T00:00:00Z`,
-    }),
-  )
+const MAIN = makeBranch({ id: 'main', name: 'main', kind: 'main', status: 'merged' })
+
+// A branch whose only change is one rename: two raw entries, one paired row.
+const RENAME_DIFF: PlanBranchDiffSummary = {
+  behind_base: false,
+  summary: { added: 1, removed: 1, changed: 0 },
+  entries: [],
+  renames: [{ entity_type: 'variable', parent: null, removed_name: 'a', added_name: 'b' }],
 }
 
-// Each row badge costs one /branches/{id}/diff — a server-side plan comparison
-// measured at 2-3.5 s on prod. The fan-out has to stay bounded as the branch
-// count grows (tripl-jfm3.50).
-describe('rowDiffBranches', () => {
-  it('fetches every branch when the list is small enough', () => {
-    const items = branches(4)
+// The badges used to cost one 2-3.5 s diff per branch; the list endpoint now
+// carries the counts (PLAN-3).
+describe('rowBadgeCounts', () => {
+  it('reads each open branch its counts from the list', () => {
+    const items = [
+      MAIN,
+      makeBranch({ id: 'b-1', ahead: 3, behind_base: false }),
+      makeBranch({ id: 'b-2', ahead: 0, behind_base: true }),
+    ]
 
-    expect(rowDiffBranches(items, null)).toEqual(items)
+    const counts = rowBadgeCounts(items, null, undefined)
+
+    expect(counts.get('b-1')).toEqual({ ahead: 3, behind: false })
+    expect(counts.get('b-2')).toEqual({ ahead: 0, behind: true })
+    expect(counts.has('main')).toBe(false)
   })
 
-  it('caps the fan-out once the branch count grows', () => {
-    const items = branches(40)
+  it('shows no badge for a landed branch, or one the list did not count', () => {
+    const items = [
+      makeBranch({ id: 'merged', status: 'merged', ahead: 2, behind_base: false }),
+      makeBranch({ id: 'closed', status: 'closed' }),
+      makeBranch({ id: 'uncounted', ahead: null, behind_base: null }),
+    ]
 
-    const picked = rowDiffBranches(items, null)
-
-    expect(picked.length).toBeLessThan(items.length)
-    expect(picked.length).toBeLessThanOrEqual(ROW_DIFF_LIMIT)
-    // The cap keeps the most recently updated branches — the ones a reviewer is
-    // actually looking at.
-    expect(picked.map((b) => b.id)).toContain('b-0')
-    expect(picked.map((b) => b.id)).not.toContain('b-39')
+    expect(rowBadgeCounts(items, 'merged', RENAME_DIFF).size).toBe(0)
   })
 
-  it('always includes the selected branch, even an old one', () => {
-    const items = branches(40)
+  it('counts the selected branch through its loaded diff, a rename as one', () => {
+    const items = [makeBranch({ id: 'b-1', ahead: 2, behind_base: false })]
 
-    const picked = rowDiffBranches(items, 'b-39')
-
-    expect(picked.map((b) => b.id)).toContain('b-39')
-    expect(picked.length).toBeLessThanOrEqual(ROW_DIFF_LIMIT)
+    expect(rowBadgeCounts(items, 'b-1', RENAME_DIFF).get('b-1')).toEqual({
+      ahead: 1,
+      behind: false,
+    })
+    // Until that diff arrives, the list's count stands in.
+    expect(rowBadgeCounts(items, 'b-1', undefined).get('b-1')).toEqual({
+      ahead: 2,
+      behind: false,
+    })
   })
 })

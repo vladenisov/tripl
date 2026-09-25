@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest'
 
 const EXPECTED_CSP =
   "default-src 'self'; script-src 'self'; " +
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-  "img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; " +
+  "style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data: blob:; font-src 'self' data:; " +
   "connect-src 'self'; frame-src https://www.figma.com https://embed.figma.com; " +
   "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 
@@ -32,8 +32,31 @@ describe('production CSP contract', () => {
       /add_header Content-Security-Policy "([^"]+)" always;/,
     )?.[1]
 
-    expect(indexHtml).toContain('https://fonts.googleapis.com/css2')
     expect(nginxCsp).toBe(EXPECTED_CSP)
+    // Nothing on the page points at a font host the CSP does not name.
+    expect(indexHtml).not.toMatch(/fonts\.(googleapis|gstatic)\.com/)
+  })
+
+  // The fonts ship with the bundle (tripl-fj5g.13): the entry imports every
+  // weight index.html used to fetch from Google Fonts, so the CSP can name no
+  // third-party font or style host.
+  it('self-hosts the UI fonts', () => {
+    const main = readFrontendFile('src/main.tsx')
+    for (const face of [
+      '@fontsource/inter/400.css',
+      '@fontsource/inter/500.css',
+      '@fontsource/inter/600.css',
+      '@fontsource/inter/700.css',
+      '@fontsource/jetbrains-mono/400.css',
+      '@fontsource/jetbrains-mono/500.css',
+    ]) {
+      expect(main).toContain(`import '${face}'`)
+    }
+    // Fontsource declares every face with font-display: swap, as the Google
+    // stylesheet's `display=swap` did.
+    const face = readFrontendFile('node_modules/@fontsource/inter/400.css')
+    expect(face).toContain('font-display: swap')
+    expect(EXPECTED_CSP).not.toMatch(/googleapis|gstatic/)
   })
 
   // Two deploy shapes serve the SPA: the API's own static handler and the

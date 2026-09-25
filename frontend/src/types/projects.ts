@@ -72,6 +72,11 @@ export interface Project {
   // tick. The only honest freshness signal we have (tripl-2su6.17).
   demo_last_tick_at?: string | null
   created_by_user_id?: string | null
+  // Whether the signed-in caller may write inside this project: the backend's
+  // editor gate (role + ProjectMutationScope) answered per request. Optional so
+  // fixtures that predate it keep type-checking; lib/permissions falls back to
+  // the role/demo rule when it is absent.
+  can_mutate?: boolean
 }
 
 export type ActivityItemType = 'anomaly' | 'scan' | 'alert' | 'event'

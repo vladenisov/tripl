@@ -1,9 +1,13 @@
+/// <reference types="node" />
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import type { MetricDefinitionDetailResponse } from '@/types'
+import type { MetricDefinitionConfigUpdate, MetricDefinitionDetailResponse } from '@/types'
 import type { FactTableColumn } from '@/types/factTables'
 import { definitionDiffersFromStored } from './definitionChange'
 import { draftFromMetric, type MetricDraft } from './metricDraft'
-import { buildDefinitionPayload } from './metricPayload'
+import { buildDefinitionPayload, toOperandPayload, withAggregation, withFactTable } from './metricPayload'
 
 const SQL_METRIC = {
   id: 'm-1',
@@ -35,6 +39,7 @@ const COLUMNS: FactTableColumn[] = [
   { name: 'amount', type: 'number' },
   { name: 'country', type: 'string' },
   { name: 'is_trial', type: 'bool' },
+  { name: 'user_id', type: 'string' },
 ]
 
 function factMetric(config: Record<string, unknown>): MetricDefinitionDetailResponse {
@@ -169,5 +174,88 @@ describe('fact definition load→save round trip (MET-1)', () => {
     })
     expect(definition).toMatchObject({ conditions: [{ column: 'amount', operator: 'gt', value: 4 }] })
     expect(changed).toBe(true)
+  })
+})
+
+interface DefinitionChangeCase {
+  name: string
+  stored: Partial<MetricDefinitionDetailResponse>
+  submitted: MetricDefinitionConfigUpdate
+  expect_history_reset: boolean
+  form_round_trip: boolean
+}
+
+// The SAME table backend/src/tripl/tests/test_fj5g_batch_a.py runs through the
+// real service comparison, so the warning and the deletion cannot drift
+// (tripl-fj5g.9). Read from disk: a JSON import would need resolveJsonModule.
+const { cases } = JSON.parse(
+  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'definition-change-cases.json'), 'utf8'),
+) as { cases: DefinitionChangeCase[] }
+
+function storedMetric(stored: Partial<MetricDefinitionDetailResponse>): MetricDefinitionDetailResponse {
+  return { ...SQL_METRIC, ...stored } as MetricDefinitionDetailResponse
+}
+
+describe('definitionDiffersFromStored agrees with the backend (shared case table)', () => {
+  it('reads a non-empty table', () => {
+    expect(cases.length).toBeGreaterThan(0)
+  })
+
+  it.each(cases.map(testCase => [testCase.name, testCase] as const))('%s', (_name, testCase) => {
+    expect(definitionDiffersFromStored(storedMetric(testCase.stored), testCase.submitted)).toBe(
+      testCase.expect_history_reset,
+    )
+  })
+
+  const roundTrips = cases.filter(testCase => testCase.form_round_trip)
+  it.each(roundTrips.map(testCase => [testCase.name, testCase] as const))(
+    'an untouched form save does not warn: %s',
+    (_name, testCase) => {
+      expect(loadAndSave(storedMetric(testCase.stored)).changed).toBe(false)
+    },
+  )
+})
+
+describe('columns the form does not show (tripl-fj5g.9)', () => {
+  it('sends back a count metric’s API-only measure column instead of dropping it', () => {
+    const metric = factMetric({ measure_column: 'amount' })
+    const { definition, changed } = loadAndSave(metric)
+    expect(definition).toMatchObject({ aggregation: 'count', measure_column: 'amount' })
+    expect(changed).toBe(false)
+  })
+
+  it('clears the columns a newly chosen aggregation does not read', () => {
+    const draft = draftFromMetric(factMetric({ measure_column: 'amount' }))
+    const summed = withAggregation(draft.numeratorOp, 'sum')
+    // The stored column is the one a sum reads, so it stays.
+    expect(summed).toMatchObject({ aggregation: 'sum', measureColumn: 'amount' })
+    const distinct = withAggregation({ ...summed, distinctColumn: '' }, 'count_distinct')
+    expect(distinct).toMatchObject({ measureColumn: '', distinctColumn: '' })
+    expect(withAggregation(summed, 'sum')).toBe(summed)
+  })
+})
+
+describe('a hidden column cannot strand a save (tripl-fj5g.9 review)', () => {
+  it('clears the hidden column when the operand moves to another fact table', () => {
+    const draft = draftFromMetric(factMetric({ measure_column: 'amount' }))
+    const moved = withFactTable(draft.numeratorOp, 'ft-2')
+    expect(moved).toMatchObject({ factTableId: 'ft-2', measureColumn: '', distinctColumn: '' })
+    expect(toOperandPayload(moved, COLUMNS)).toMatchObject({ measure_column: null })
+    // Unchanged table: nothing is cleared.
+    expect(withFactTable(draft.numeratorOp, 'ft-1')).toBe(draft.numeratorOp)
+  })
+
+  it('drops a hidden column the loaded fact table no longer has', () => {
+    const draft = draftFromMetric(factMetric({ measure_column: 'gone' }))
+    // The backend would answer 422 for a column the user cannot see or clear.
+    expect(toOperandPayload(draft.numeratorOp, COLUMNS)).toMatchObject({ measure_column: null })
+    // Still loading: nothing says it is gone, so it is kept.
+    expect(toOperandPayload(draft.numeratorOp, [])).toMatchObject({ measure_column: 'gone' })
+  })
+
+  it('keeps a shown column even when the loaded table lacks it, so validation can name it', () => {
+    const draft = draftFromMetric(factMetric({}))
+    const summed = { ...withAggregation(draft.numeratorOp, 'sum'), measureColumn: 'gone' }
+    expect(toOperandPayload(summed, COLUMNS)).toMatchObject({ measure_column: 'gone' })
   })
 })

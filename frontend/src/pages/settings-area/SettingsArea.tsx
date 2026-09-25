@@ -4,6 +4,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { projectsQueryOptions } from '@/lib/queryKeys'
 import { useAuth } from '@/components/auth-context'
+import { ErrorState } from '@/components/error-state'
 import { SCard } from '@/components/settings/kit'
 import { SettingsLayout } from '@/components/settings/SettingsLayout'
 import { SETTINGS_STORAGE_KEY } from '@/components/settings/nav'
@@ -107,6 +108,22 @@ export default function SettingsArea({ section }: { section: string }) {
       projectSlug={slug}
       projects={projects}
     >
+      {/* The projects list is silent app-wide (lib/queryKeys.ts): inside the
+          app shell Layout reports its failure. These routes mount outside
+          Layout, so they report it here — once, and not where the no-project
+          card below already says it. */}
+      {projectsQuery.isError && !(slug === undefined && isProjectScopedSection(section)) && (
+        <ErrorState
+          compact
+          className="mb-4"
+          title="Projects could not be loaded"
+          description="Project names and pickers on this page may be missing."
+          error={projectsQuery.error}
+          onRetry={() => {
+            void projectsQuery.refetch()
+          }}
+        />
+      )}
       <Suspense fallback={<SectionFallback />}>
         {renderSection({
           section,
@@ -115,11 +132,30 @@ export default function SettingsArea({ section }: { section: string }) {
           projects,
           projectsStatus: projectsQuery.status,
           onPickProject: pickProject,
+          projectsError: projectsQuery.error,
+          onRetryProjects: () => {
+            void projectsQuery.refetch()
+          },
         })}
       </Suspense>
     </SettingsLayout>
   )
 }
+
+/** Sections that render against one project and so need a slug bound. */
+function isProjectScopedSection(section: string): boolean {
+  return (
+    !ACCOUNT_SECTIONS.has(section) && !section.startsWith('instance/')
+  )
+}
+
+const ACCOUNT_SECTIONS: ReadonlySet<string> = new Set([
+  'members',
+  'data-sources',
+  'api-keys',
+  'profile',
+  'security',
+])
 
 function renderSection({
   section,
@@ -128,6 +164,8 @@ function renderSection({
   projects,
   projectsStatus,
   onPickProject,
+  projectsError,
+  onRetryProjects,
 }: {
   section: string
   slug: string | undefined
@@ -135,6 +173,8 @@ function renderSection({
   projects: Project[]
   projectsStatus: 'pending' | 'error' | 'success'
   onPickProject: (slug: string) => void
+  projectsError: unknown
+  onRetryProjects: () => void
 }) {
   if (section === 'members') return <MembersSection />
   if (section === 'data-sources') return <DataSourcesSection />
@@ -153,7 +193,13 @@ function renderSection({
   // Everything below is project-scoped. Never guess which project that is.
   if (!slug) {
     return (
-      <NoProjectSelected projects={projects} status={projectsStatus} onPick={onPickProject} />
+      <NoProjectSelected
+        projects={projects}
+        status={projectsStatus}
+        onPick={onPickProject}
+        error={projectsError}
+        onRetry={onRetryProjects}
+      />
     )
   }
   if (section === 'project/plan-rules') return <PlanRulesSection />
@@ -170,10 +216,14 @@ function NoProjectSelected({
   projects,
   status,
   onPick,
+  error,
+  onRetry,
 }: {
   projects: Project[]
   status: 'pending' | 'error' | 'success'
   onPick: (slug: string) => void
+  error: unknown
+  onRetry: () => void
 }) {
   // "There is no project on this workspace yet" is a claim about the server's
   // answer, so it may not be made before the answer arrives. Nothing warms the
@@ -182,16 +232,16 @@ function NoProjectSelected({
   // none for the length of the GET, and offered "Create one in the workspace".
   if (status === 'pending') return <SectionFallback />
 
+  // A retry in place, not "reload the page": a reload throws away whatever
+  // else the user had open for a GET the query can simply repeat.
   if (status === 'error') {
     return (
-      <SCard
+      <ErrorState
         title="No project selected"
         description="The project list could not be loaded, so these settings have nothing to bind to."
-      >
-        <p className="m-0 px-[18px] py-[15px] text-[13px]" style={{ color: 'var(--fg-subtle)' }}>
-          Reload the page to try again.
-        </p>
-      </SCard>
+        error={error}
+        onRetry={onRetry}
+      />
     )
   }
 

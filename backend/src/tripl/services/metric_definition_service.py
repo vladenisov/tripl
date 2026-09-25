@@ -14,7 +14,12 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.core.adapters.measure_validator import SqlDialect, quote_sql_literal
+from tripl.core.adapters.measure_validator import (
+    SqlDialect,
+    dialect_for_db_type,
+    lint_dialect_sql,
+    quote_sql_literal,
+)
 from tripl.core.bucketing import floor_to_bucket, to_utc
 from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import get_interval
@@ -1030,6 +1035,99 @@ async def get_metric_definition_enriched(
     )
 
 
+def _dialect_lint_targets(values: Mapping[str, object]) -> list[tuple[str | None, str, str, str]]:
+    """The dialect-specific SQL a definition carries, keyed by where it runs.
+
+    Each entry is ``(role, source kind, source id, sql)``: a ``sql`` metric's
+    SELECT runs on its data source; a ``fact`` operand's free-text ``filter_sql``
+    runs on its fact table's data source. ``values`` is ``to_definition_values()``
+    output (or the raw persisted columns); keying on the source as well as the
+    text means pointing unchanged SQL at a warehouse of another dialect counts as
+    a change.
+    """
+    normalised = _normalise_definition_value(dict(values))
+    if not isinstance(normalised, dict):
+        return []
+    config = normalised.get("config")
+    config = config if isinstance(config, dict) else {}
+    kind = normalised.get("kind")
+    targets: list[tuple[str | None, str, str, str]] = []
+    if kind == MetricKind.sql.value:
+        metric_sql = config.get("metric_sql")
+        data_source_id = normalised.get("data_source_id")
+        if isinstance(metric_sql, str) and data_source_id is not None:
+            targets.append((None, "data_source", str(data_source_id), metric_sql))
+    elif kind == MetricKind.fact.value:
+        operands: list[tuple[str | None, object]]
+        if normalised.get("composition") == MetricComposition.ratio.value:
+            operands = [(role, config.get(role)) for role in ("numerator", "denominator")]
+        else:
+            operands = [(None, {**config, "fact_table_id": normalised.get("fact_table_id")})]
+        for role, operand in operands:
+            if not isinstance(operand, dict):
+                continue
+            filter_sql = operand.get("filter_sql")
+            fact_table_id = operand.get("fact_table_id")
+            if isinstance(filter_sql, str) and fact_table_id is not None:
+                targets.append((role, "fact_table", str(fact_table_id), filter_sql))
+    return targets
+
+
+async def _lint_target_dialect(
+    session: AsyncSession, source_kind: str, source_id: str
+) -> SqlDialect | None:
+    """The dialect a lint target's SQL runs on, or ``None`` when it cannot be told."""
+    try:
+        data_source_id: uuid.UUID | None = uuid.UUID(source_id)
+    except ValueError:
+        return None
+    if source_kind == "fact_table":
+        fact_table = await session.get(FactTable, data_source_id)
+        data_source_id = fact_table.data_source_id if fact_table is not None else None
+    if data_source_id is None:
+        return None
+    data_source = await session.get(DataSource, data_source_id)
+    if data_source is None:
+        return None
+    try:
+        return dialect_for_db_type(str(data_source.db_type))
+    except ValueError:
+        return None
+
+
+async def _reject_dialect_mismatches(
+    session: AsyncSession,
+    values: Mapping[str, object],
+    *,
+    previous: Mapping[str, object] | None = None,
+) -> None:
+    """Refuse a save whose SQL cannot run on the warehouse it targets (422).
+
+    Runs :func:`lint_dialect_sql` — the check the metric preview reports — on the
+    SQL-bearing fields of a created or updated ``sql`` / ``fact`` definition,
+    with the preview's own message (tripl-0zpq.371). Only NEW SQL is linted:
+    a target that is also in ``previous`` (the stored definition) is skipped, so
+    a rename, a recolour or a form resending the unchanged definition of a metric
+    stored before this check existed still saves.
+
+    Call it AFTER the existence checks: they are what makes the data source and
+    fact table ids safe to resolve here.
+    """
+    already_stored = set(_dialect_lint_targets(previous)) if previous is not None else set()
+    for target in _dialect_lint_targets(values):
+        if target in already_stored:
+            continue
+        role, source_kind, source_id, sql = target
+        dialect = await _lint_target_dialect(session, source_kind, source_id)
+        if dialect is None:
+            continue
+        mismatch = lint_dialect_sql(sql, dialect)
+        if mismatch is not None:
+            raise HTTPException(
+                status_code=422, detail=mismatch if role is None else f"{role}: {mismatch}"
+            )
+
+
 async def _next_metric_order(session: AsyncSession, project_id: uuid.UUID) -> int:
     """One past the project's highest catalog order — the append position.
 
@@ -1067,6 +1165,7 @@ async def create_metric_definition(
         await _verify_fact_metric(session, project_id, data)
     elif isinstance(data, EventCompositionMetricCreate):
         await _verify_composition_refs(session, project_id, data)
+    await _reject_dialect_mismatches(session, data.to_definition_values())
 
     create_values = data.to_create_values()
     if not create_values.get("order"):
@@ -1320,6 +1419,8 @@ async def _apply_definition_update(
         await _verify_composition_refs(session, project_id, definition)
 
     new_values = definition.to_definition_values()
+    stored_values = _stored_definition_values(metric) or _persisted_definition_columns(metric)
+    await _reject_dialect_mismatches(session, new_values, previous=stored_values)
     changed = _definition_values_changed(metric, new_values)
     if changed and collection_running:
         # Before the first write: a rejected change must leave the row alone.

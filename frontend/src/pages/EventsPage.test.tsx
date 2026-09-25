@@ -897,7 +897,7 @@ describe('EventsPage', () => {
 
     // The rest of the filter toolbar (Status/Activity/Sort/Views/Columns/More) is
     // gone too — nothing to act on. (`expectAbsent` searches the whole DOM.)
-    expectAbsent('combobox', 'Status filter')
+    expectAbsent('button', 'Status filter')
     expectAbsent('combobox', 'Activity filter')
     expectAbsent('combobox', 'Sort order')
     expectAbsent('button', 'More actions')

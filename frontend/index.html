@@ -11,14 +11,9 @@
     <link rel="shortcut icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="mask-icon" href="/favicon.svg" color="#1FB2BD" />
 
-    <!-- Preconnect to font origins before the stylesheet request goes out so the
-         TLS handshake overlaps with HTML parse, shaving a round-trip off LCP. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
-    />
+    <!-- Fonts are self-hosted: src/main.tsx imports the @fontsource faces, and
+         Vite bundles them onto this origin, so no third-party font host is
+         contacted and the CSP names none. -->
 
     <!-- Resolve the theme before React boots so the first paint matches the
          saved or system preference instead of flashing the opposite background.

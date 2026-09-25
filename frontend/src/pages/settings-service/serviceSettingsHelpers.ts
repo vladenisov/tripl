@@ -24,13 +24,22 @@ export const SECTION_LABELS: Record<SectionKey, string> = {
 /** The three secrets that are stored encrypted and never read back. */
 export type SecretField = 'ai_api_key' | 'search_embedding_api_key' | 'smtp_password'
 
+/**
+ * A section as the form holds it: every numeric field may also be the raw text
+ * of its input. Converting on each keystroke turned an emptied field into
+ * `Number('') === 0`, so clearing "30" to type "45" showed "0", and a save in
+ * between sent a 0s timeout or port 0. The text is kept as typed and converted
+ * (or refused) by buildUpdate / numberFieldError.
+ */
+type NumericDraft<T> = { [K in keyof T]: T[K] extends number ? number | string : T[K] }
+
 export type EditableSettings = {
-  runtime: RuntimeSettings
-  ai: AiServiceSettings
-  email: EmailSettings
-  security: SecuritySettings
-  storage: StorageSettings
-  observability: ObservabilitySettings
+  runtime: NumericDraft<RuntimeSettings>
+  ai: NumericDraft<AiServiceSettings>
+  email: NumericDraft<EmailSettings>
+  security: NumericDraft<SecuritySettings>
+  storage: NumericDraft<StorageSettings>
+  observability: NumericDraft<ObservabilitySettings>
 }
 
 export type SecretDrafts = {
@@ -111,6 +120,57 @@ export const COMPARE_FIELDS: Record<SectionKey, readonly string[]> = {
     field => field !== 'ai_api_key' && field !== 'search_embedding_api_key',
   ),
   email: RESET_FIELDS.email.filter(field => field !== 'smtp_password'),
+}
+
+type NumberRule = { min: number; max?: number }
+
+/**
+ * The editable numeric fields and the range the backend accepts for each
+ * (backend/src/tripl/schemas/app_settings.py). Out-of-range values used to go
+ * out and come back as a 422 in the save row, or be stored as nonsense.
+ */
+export const NUMBER_FIELDS: Record<SectionKey, Readonly<Record<string, NumberRule>>> = {
+  runtime: { scan_row_limit_default: { min: 1 }, metrics_row_limit_default: { min: 1 } },
+  ai: { ai_timeout_seconds: { min: 1 }, ai_max_output_tokens: { min: 1 } },
+  email: { smtp_port: { min: 1, max: 65535 } },
+  security: {
+    session_ttl_hours: { min: 1 },
+    hsts_max_age_seconds: { min: 0 },
+    rate_limit_login_per_minute: { min: 0 },
+    rate_limit_register_per_hour: { min: 0 },
+  },
+  storage: { photo_max_size_mb: { min: 1 }, gcs_photo_signed_url_ttl_seconds: { min: 1 } },
+  observability: {},
+}
+
+/** Why a numeric field's current text cannot be saved, or null when it can. */
+export function numberFieldError(
+  section: SectionKey,
+  field: string,
+  value: unknown,
+): string | null {
+  const rule = NUMBER_FIELDS[section][field]
+  if (!rule) return null
+  const text = String(value ?? '').trim()
+  const range =
+    rule.max === undefined ? `${rule.min} or more` : `from ${rule.min} to ${rule.max}`
+  if (text === '') return `Enter a whole number, ${range}.`
+  const number = Number(text)
+  if (!Number.isInteger(number) || number < rule.min || (rule.max !== undefined && number > rule.max)) {
+    return `Enter a whole number, ${range}.`
+  }
+  return null
+}
+
+/**
+ * True when `update` would send a numeric field of `section` that cannot be
+ * saved. Only edited fields count: a value delivered by the environment is
+ * whatever the backend accepted, and blocking an unrelated edit on it would
+ * leave Save dead until the owner overrode a field they never touched.
+ */
+export function updateHasInvalidNumber(update: ServiceSettingsUpdate, section: SectionKey): boolean {
+  const values = (update[section] ?? {}) as Record<string, unknown>
+  return Object.keys(values).some(field => numberFieldError(section, field, values[field]) !== null)
 }
 
 export function editableFromSettings(settings: ServiceSettings): EditableSettings {
@@ -242,8 +302,18 @@ export function buildSectionDiff(
   const currentSection = current[section] as unknown as Record<string, string | number | boolean>
   const savedSection = saved[section] as unknown as Record<string, string | number | boolean>
   for (const field of fields) {
-    if (currentSection[field] !== savedSection[field]) {
-      changes[field] = currentSection[field]
+    let value = currentSection[field]
+    // A numeric field typed back to its saved value is not a change, and a
+    // valid one goes out as a number, not as the input's text.
+    if (
+      typeof value === 'string' &&
+      NUMBER_FIELDS[section][field] &&
+      numberFieldError(section, field, value) === null
+    ) {
+      value = Number(value)
+    }
+    if (value !== savedSection[field]) {
+      changes[field] = value
     }
   }
   return changes
@@ -285,6 +355,54 @@ export function buildUpdate(
 
 export function hasUpdate(update: ServiceSettingsUpdate) {
   return Object.values(update).some(section => section && Object.keys(section).length > 0)
+}
+
+/** The part of `update` that belongs to one section. */
+export function pickSection(update: ServiceSettingsUpdate, section: SectionKey): ServiceSettingsUpdate {
+  const part = update[section]
+  return part && Object.keys(part).length > 0 ? ({ [section]: part } as ServiceSettingsUpdate) : {}
+}
+
+/** Sections with unsaved edits, in rail order. */
+export function dirtySections(update: ServiceSettingsUpdate): SectionKey[] {
+  return (Object.keys(SECTION_LABELS) as SectionKey[]).filter(
+    section => Object.keys(update[section] ?? {}).length > 0,
+  )
+}
+
+/**
+ * The consequences of a Security save that can lock people out or break this
+ * app, one sentence each; empty when the save touches none of them. Reset and
+ * Clear were confirm-gated while Save was not, even though Save is how public
+ * signup gets opened or a Secure-only cookie lands on an HTTP deployment.
+ */
+export function lockoutRisks(update: ServiceSettingsUpdate): string[] {
+  const security = (update.security ?? {}) as Record<string, unknown>
+  const risks: string[] = []
+  if (security.registration_mode === 'open') {
+    risks.push(
+      'Self-service registration opens at once: anyone who can reach this instance can create an account.',
+    )
+  }
+  if ('session_cookie_name' in security) {
+    risks.push('Renaming the session cookie signs everyone out after the next restart.')
+  }
+  if (security.session_cookie_secure === true) {
+    risks.push(
+      'A Secure-only session cookie is never sent over plain HTTP: if this instance is served over HTTP, nobody can sign in after the next restart.',
+    )
+  }
+  if ('content_security_policy' in security) {
+    risks.push(
+      'A Content Security Policy that blocks this app’s own scripts or API calls stops the app from loading after the next restart.',
+    )
+  }
+  if ('cors_allow_origins' in security) {
+    risks.push(
+      'Browser clients on origins missing from the CORS list are refused after the next restart.',
+    )
+  }
+  return risks
 }
 
 export function resetPayload(section: SectionKey): ServiceSettingsUpdate {

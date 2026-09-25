@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useMemo } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Plus, RotateCw } from "lucide-react"
@@ -6,7 +6,7 @@ import { eventTypesApi } from "@/api/eventTypes"
 import { scansApi } from "@/api/scans"
 import { useDemoScenarioActions, useScenarioArtifacts } from "@/demo/demoScenarioContext"
 import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
-import type { ScanConfig, ScanJob } from "@/types"
+import type { ScanActivityResponse, ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
@@ -18,7 +18,7 @@ import { runPillStatus } from "./scans/scanRunStatus"
 import { scanModeOf } from "./scans/scanMode"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
-import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
+import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, scanActivityKey, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
@@ -33,7 +33,9 @@ import { ReadOnlyNotice } from '@/components/read-only-notice'
 /**
  * Jobs per scan the list asks for. It shows the head of each history (the last
  * run, and a collapsed failing streak), so 50 full jobs per scan, re-polled for
- * every scan while any one is active, was almost all waste (DATA-17).
+ * every scan while any one is active, was almost all waste (DATA-17). The
+ * figures that need the whole history — the streak's length and the 24h rows —
+ * come from the activity endpoint instead, so this cap no longer bounds them.
  */
 const SCAN_LIST_JOBS_LIMIT = 10
 
@@ -50,11 +52,10 @@ interface RecentRun {
   durationSec: number | null
   status: ScanJob['status']
   errorMessage: string | null
-  // Current failing streak (leading consecutive failed runs for this scan).
-  // Only meaningful on the collapsed streak row; 0 on every other row.
+  // Current failing streak (consecutive failed runs for this scan, counted by
+  // the server over its whole history). Only meaningful on the collapsed
+  // streak row; 0 on every other row, and until the activity has loaded.
   failingStreak: number
-  // The streak runs past the capped history this list loads, so it is a floor.
-  failingStreakAtLeast: boolean
   // What the completed job actually changed (+N events / metrics / signals …).
   changes: ScanChange[]
 }
@@ -68,9 +69,6 @@ export function ScansTab({ slug }: { slug: string }) {
   // job (DATA-6). Each control below is offered only to a role that can use it.
   const isOwner = useIsOwner()
   const canRun = useCanWriteProject()
-  // Captured once at mount so the 24h window stays stable across re-renders
-  // (keeps the rows-scanned KPI pure rather than reading the wall clock in render).
-  const [mountedAtMs] = useState(() => Date.now())
 
   // Scoped to this project (DATA-15), and only a LOADED empty list means "no
   // data sources": during a cold load the empty state and the disabled New
@@ -129,6 +127,31 @@ export function ScansTab({ slug }: { slug: string }) {
     combine: jobsData,
   })
 
+  // The exact figures the capped job pages cannot give: each scan's failing
+  // streak over its whole history, and the rows read in the last 24 hours,
+  // aggregated by the server (tripl-fj5g.11). Keyed under the `['scanJobs',
+  // slug]` prefix so the stream's scan-job invalidation refreshes it too.
+  const activityRefetchInterval = useAdaptiveRefetchIntervalFn<ScanActivityResponse>({
+    activeMs: 10000,
+    isActive: data =>
+      scanJobsHaveActiveWork(
+        data?.items.flatMap(item => (item.latest_job ? [item.latest_job] : [])),
+      ),
+  })
+  const { data: activity } = useQuery({
+    queryKey: scanActivityKey(slug),
+    queryFn: () => scansApi.activity(slug),
+    refetchInterval: activityRefetchInterval,
+    // Refetched on every visit: a run started on a scan's own page invalidates
+    // only that scan's keys, and without a live stream the list would otherwise
+    // come back to a minute-old streak.
+    staleTime: 0,
+  })
+  const failingStreakById = useMemo(
+    () => new Map((activity?.items ?? []).map(item => [item.scan_config_id, item.failing_streak])),
+    [activity],
+  )
+
   const dsMap = useMemo(
     () => new Map(dataSources.map(ds => [ds.id, ds])),
     [dataSources],
@@ -156,6 +179,8 @@ export function ScansTab({ slug }: { slug: string }) {
       // failures read "failed last 5 runs" on the detail page and nothing here
       // (DATA-18). The streak collapses into its newest failure, tagged, after
       // any active run; with no streak the two most recent jobs show as before.
+      // The loaded page decides which rows collapse; the number on the tag is
+      // the server's, which counts past the page (tripl-fj5g.11).
       const streak = consecutiveFailedRuns(jobs)
       const firstSettled = jobs.findIndex(job => job.status !== 'pending' && job.status !== 'running')
       const streakHead = streak > 0 ? jobs[firstSettled] : null
@@ -176,10 +201,10 @@ export function ScansTab({ slug }: { slug: string }) {
           durationSec: jobDurationSeconds(job),
           status: job.status,
           errorMessage: job.error_message,
-          failingStreak: job === streakHead ? streak : 0,
-          // Only a full page can hide older failures; a shorter one is the whole history.
-          failingStreakAtLeast:
-            job === streakHead && firstSettled + streak === jobs.length && jobs.length >= SCAN_LIST_JOBS_LIMIT,
+          // The server counts past the loaded page; the page's own count stands
+          // in while the activity loads, if it failed, or if it is older than
+          // the page (a run finished since), so the tag never vanishes.
+          failingStreak: job === streakHead ? Math.max(failingStreakById.get(sc.id) ?? 0, streak) : 0,
           changes: summarizeScanChanges(job),
         })
       })
@@ -187,34 +212,16 @@ export function ScansTab({ slug }: { slug: string }) {
     return runs
       .sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))
       .slice(0, 6)
-  }, [scanConfigs, jobsByScan])
+  }, [scanConfigs, jobsByScan, failingStreakById])
 
-  // Null until every scan's jobs have arrived: a partial sum reads as a real
-  // figure, and "0" while loading contradicted the completed runs already
-  // listed in the activity rail (tripl-jfm3.28). `formatCount(null)` renders "—".
-  //
-  // Each scan's history is capped, so a scan that ran more often than that in
-  // the window contributes only its newest runs: the figure is then a floor,
-  // and it says so with a "+" instead of passing for the whole day.
-  const rowsScanned24h = useMemo<{ total: number; partial: boolean } | null>(() => {
-    const cutoff = mountedAtMs - 24 * 60 * 60 * 1000
-    let total = 0
-    let partial = false
-    for (let index = 0; index < scanConfigs.length; index += 1) {
-      const jobs = jobsByScan[index]
-      if (!jobs) return null
-      jobs.forEach(job => {
-        const stamp = job.completed_at ?? job.started_at
-        if (stamp && Date.parse(stamp) >= cutoff) total += jobRowsScanned(job) ?? 0
-      })
-      const oldest = jobs[jobs.length - 1]
-      const oldestStamp = oldest ? (oldest.completed_at ?? oldest.started_at ?? oldest.created_at) : null
-      if (jobs.length >= SCAN_LIST_JOBS_LIMIT && oldestStamp && Date.parse(oldestStamp) >= cutoff) {
-        partial = true
-      }
-    }
-    return { total, partial }
-  }, [scanConfigs, jobsByScan, mountedAtMs])
+  // Null until the activity has arrived: "0" while loading contradicted the
+  // completed runs already listed in the activity rail (tripl-jfm3.28).
+  // `formatCount(null)` renders "—". Exact, not a floor: the server sums every
+  // job in the window rather than the capped page this list loads.
+  const rowsScanned24h = useMemo<number | null>(
+    () => (activity ? activity.items.reduce((total, item) => total + item.rows_read_24h, 0) : null),
+    [activity],
+  )
 
   // Both the per-row "Run now" and the failed-row "Run again" reuse the manual
   // scan trigger (POST /scans/{id}/run). On success we refetch that scan's jobs
@@ -229,6 +236,7 @@ export function ScansTab({ slug }: { slug: string }) {
       // the demo's tick creates scan jobs on its own (tripl-2su6.21.5).
       notifyScanRunStarted(job)
       void queryClient.invalidateQueries({ queryKey: ['scanJobs', slug, scanId] })
+      void queryClient.invalidateQueries({ queryKey: scanActivityKey(slug) })
     },
   })
   // The UI tracks one visibly-pending manual run via this shared mutation's
@@ -289,16 +297,8 @@ export function ScansTab({ slug }: { slug: string }) {
         <StatCard label="Monitoring" value={monitoringCount} />
         <StatCard
           label="Warehouse rows read · 24h"
-          value={
-            rowsScanned24h == null
-              ? formatCount(null)
-              : `${formatCount(rowsScanned24h.total)}${rowsScanned24h.partial ? '+' : ''}`
-          }
-          title={
-            rowsScanned24h?.partial
-              ? 'At least this many: rows read across the most recent runs of each scan in the last 24 hours.'
-              : 'Rows read across every catalog and metrics run in the last 24 hours.'
-          }
+          value={formatCount(rowsScanned24h)}
+          title="Rows read across every catalog and metrics run in the last 24 hours."
         />
       </div>
 
@@ -463,8 +463,7 @@ export function ScansTab({ slug }: { slug: string }) {
                             className="whitespace-nowrap rounded border px-1.5 py-0.5 text-[10.5px] font-semibold"
                             style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
                           >
-                            failed last {run.failingStreak}
-                            {run.failingStreakAtLeast ? '+' : ''} runs
+                            failed last {run.failingStreak} runs
                           </span>
                         )}
                         {canRun && (

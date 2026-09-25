@@ -172,6 +172,26 @@ async def require_project_mutation_access(
     )
 
 
+def can_mutate_project(
+    request: Request, user: User, scope: project_service.ProjectMutationScope
+) -> bool:
+    """Whether :func:`get_editor_user` would admit this caller on the project's routes.
+
+    The non-raising form of the same three checks, reused rather than restated,
+    so ``ProjectResponse.can_mutate`` cannot drift from the gate it predicts: a
+    ``read``-scope API key, a viewer, and a caller the project's
+    :class:`~tripl.services.project_service.ProjectMutationScope` refuses are all
+    ``False``. The project-bound key fence (``_enforce_project_scope``) is not
+    repeated: a key that fails it never reaches a project's response at all.
+    """
+    try:
+        require_write_scope(request)
+        require_editor(user)
+    except HTTPException:
+        return False
+    return scope.allows(user)
+
+
 async def get_editor_user(request: Request, session: SessionDep, user: CurrentUserDep) -> User:
     require_write_scope(request)
     require_editor(user)

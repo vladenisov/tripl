@@ -12,6 +12,17 @@ router = APIRouter(
 )
 
 
+# The whole project's owners in one read, for the event-type list (PLAN-42):
+# a sibling router, since ``router``'s prefix names one event type.
+project_router = APIRouter(prefix="/projects/{slug}/event-type-owners", tags=["event-type-owners"])
+
+
+@project_router.get("", response_model=list[EventTypeOwnerResponse])
+async def list_project_owners(session: SessionDep, slug: str) -> list[EventTypeOwnerResponse]:
+    """Owners of every live event type in the project; group by ``event_type_id``."""
+    return await event_type_owner_service.list_project_owners(session, slug)
+
+
 @router.get("", response_model=list[EventTypeOwnerResponse])
 async def list_owners(
     session: SessionDep, slug: str, event_type_id: uuid.UUID

@@ -4,23 +4,22 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { authApi } from '@/api/auth'
 import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
-import { AuthContext, type AuthContextValue, type AuthStatus } from './auth-context'
+import {
+  AUTH_QUERY_KEY,
+  AuthContext,
+  clearProtectedQueries,
+  type AuthContextValue,
+  type AuthStatus,
+} from './auth-context'
 import type { AuthUser } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 // Eager on purpose: the dialog exists to keep an unsaved page alive, and a lazy
 // chunk that failed to load after a deploy would reload that page away.
 import { SessionExpiredDialog } from './session-expired-dialog'
 
-const AUTH_QUERY_KEY = ['auth', 'me'] as const
-
-function clearProtectedQueries(queryClient: QueryClient) {
-  queryClient.removeQueries({
-    predicate: query => query.queryKey[0] !== 'auth',
-  })
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
@@ -94,15 +93,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     && !logoutMutation.isPending
   const heldUser = expiredUser ?? (meExpired ? meQuery.data ?? null : null)
 
+  // A failed REFETCH that is not a 401 — the network dropping for a moment, a
+  // 502 during a deploy — says nothing about the session, and react-query keeps
+  // the last answer as data. Stay on that answer: flipping a signed-in user to
+  // 'error' swapped the whole app for the auth error screen over one blip. Only
+  // a first load with nothing known yet is an error.
+  const meIsUnauthorized = meQuery.error instanceof ApiError && meQuery.error.status === 401
+  const lastAnswer = meQuery.data
+
   let status: AuthStatus = 'loading'
   if (heldUser) {
     status = 'authenticated'
-  } else if (meQuery.isError) {
-    status = meQuery.error instanceof ApiError && meQuery.error.status === 401
-      ? 'anonymous'
-      : 'error'
-  } else if (meQuery.isSuccess) {
-    status = meQuery.data ? 'authenticated' : 'anonymous'
+  } else if (meQuery.isError && meIsUnauthorized) {
+    status = 'anonymous'
+  } else if (meQuery.isError && lastAnswer === undefined) {
+    status = 'error'
+  } else if (meQuery.isError || meQuery.isSuccess) {
+    status = lastAnswer ? 'authenticated' : 'anonymous'
   }
 
   const value: AuthContextValue = {

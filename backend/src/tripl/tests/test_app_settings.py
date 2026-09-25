@@ -397,8 +397,9 @@ async def test_the_embeddings_endpoint_cannot_be_repointed_at_runtime(
     """
     monkeypatch.setattr(settings, "search_embedding_base_url", "https://api.openai.com/v1")
 
-    resp = await client.put(
-        "/api/v1/settings/ai", json={"search_embedding_base_url": "https://evil.example/v1"}
+    # PATCH /settings is the one AI write route (PUT /settings/ai is gone).
+    resp = await client.patch(
+        "/api/v1/settings", json={"ai": {"search_embedding_base_url": "https://evil.example/v1"}}
     )
 
     assert resp.status_code == 200, resp.text

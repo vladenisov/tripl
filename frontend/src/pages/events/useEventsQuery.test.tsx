@@ -164,3 +164,25 @@ describe('useEventsQuery on a type tab (EVT-13)', () => {
     expect(eventsApi.list).not.toHaveBeenCalled()
   })
 })
+
+describe('useEventsQuery status filter (EVT-35)', () => {
+  it('round-trips several statuses through the URL into the list request', async () => {
+    const { result } = renderEventsQuery()
+    await waitFor(() => expect(eventsApi.list).toHaveBeenCalled())
+    // Nothing picked: the default that hides archived.
+    expect(result.current.filterStatuses).toEqual([])
+    expect(result.current.queryStatuses).not.toContain('archived')
+
+    act(() => result.current.setFilterStatuses(['draft', 'archived']))
+
+    expect(result.current.filterStatuses).toEqual(['draft', 'archived'])
+    await waitFor(() =>
+      expect(vi.mocked(eventsApi.list).mock.calls.at(-1)?.[1]?.status).toEqual(['draft', 'archived']),
+    )
+
+    act(() => result.current.setFilterStatuses([]))
+
+    expect(result.current.filterStatuses).toEqual([])
+    expect(result.current.queryStatuses).not.toContain('archived')
+  })
+})

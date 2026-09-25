@@ -1,35 +1,54 @@
-import type { PlanBranchSummary } from '@/types'
+import type { PlanBranchListItem } from '@/api/planBranches'
+import type { PlanBranchDiffSummary } from '@/types'
+import { pairedDiffCounts } from './branches/branchDiffModel'
+import { isLandedBranch } from './branches/branchMeta'
 
 /**
- * Fan-out policy for the Branches tab's ahead/behind badges.
+ * Where the Branches tab's ahead/behind badges come from.
  *
- * A branch diff is a server-side plan comparison (measured at 2-3.5 s on a real
- * project) and the list needs one per feature branch, because the branch list
- * endpoint carries no counts. Two guards keep that from growing with the branch
- * count (tripl-jfm3.50): cache the diffs long enough that re-entering the tab
- * costs no requests, and cap how many rows fan out at once.
+ * They used to cost one `/branches/{id}/diff` per feature branch — a
+ * server-side plan comparison measured at 2-3.5 s on a real project — capped at
+ * eight rows (tripl-jfm3.50). `GET /branches?include_diff_counts=true` returns
+ * `ahead` / `behind_base` for every open branch off one shared main snapshot, so
+ * the list now reads those and fires no diff at all (PLAN-3). Merged and closed
+ * branches come back without counts, and get no badge: a landed branch is not
+ * ahead of anything.
  *
- * Lives outside BranchesTab.tsx so that file stays component-only
+ * Lives outside the component files so they stay component-only
  * (react-refresh) and the policy is unit-testable on its own.
  */
 export const DIFF_STALE_MS = 5 * 60 * 1000
-export const ROW_DIFF_LIMIT = 8
+
+export interface RowCounts {
+  ahead: number
+  behind: boolean
+}
 
 /**
- * The feature branches whose ahead/behind counts the list will fetch: the
- * selected branch (its diff is already loaded for the detail pane, so it is
- * free) plus the most recently updated others, capped at ROW_DIFF_LIMIT.
- * Rows outside the cap render without a badge instead of costing a request.
+ * The badge counts per branch id.
+ *
+ * The backend's `ahead` is already the reviewable total with each rename
+ * counted once (plan_branch_service pairs them before counting), so every row
+ * can show the list's number. The selected branch's diff is on screen anyway, so
+ * its row counts through the same paired view as the strip and the Changes
+ * panel: the numbers a reviewer can compare are computed one way (tripl-amnn).
  */
-export function rowDiffBranches(
-  featureBranches: PlanBranchSummary[],
+export function rowBadgeCounts(
+  items: PlanBranchListItem[],
   selectedId: string | null,
-): PlanBranchSummary[] {
-  if (featureBranches.length <= ROW_DIFF_LIMIT) return featureBranches
-  const selected = featureBranches.filter((b) => b.id === selectedId)
-  const rest = featureBranches
-    .filter((b) => b.id !== selectedId)
-    .slice()
-    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-  return [...selected, ...rest.slice(0, ROW_DIFF_LIMIT - selected.length)]
+  selectedDiff: PlanBranchDiffSummary | undefined,
+): Map<string, RowCounts> {
+  const counts = new Map<string, RowCounts>()
+  for (const branch of items) {
+    if (branch.kind === 'main' || isLandedBranch(branch)) continue
+    if (branch.id === selectedId && selectedDiff) {
+      counts.set(branch.id, {
+        ahead: pairedDiffCounts(selectedDiff).total,
+        behind: selectedDiff.behind_base,
+      })
+    } else if (typeof branch.ahead === 'number') {
+      counts.set(branch.id, { ahead: branch.ahead, behind: branch.behind_base === true })
+    }
+  }
+  return counts
 }

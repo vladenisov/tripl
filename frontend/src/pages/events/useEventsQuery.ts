@@ -32,10 +32,23 @@ export function resolveQueryStatuses(
   filterStatuses: EventStatus[],
 ): EventStatus[] {
   if (filterStatuses.length > 0) return filterStatuses
-  if (activeTab === 'review') return ['in_review']
-  if (activeTab === 'archived') return ['archived']
-  return DEFAULT_ACTIVE_STATUSES
+  return tabDefaultStatuses(activeTab) ?? DEFAULT_ACTIVE_STATUSES
 }
+
+/**
+ * The statuses a tab narrows the list to when no status is picked, or `null`
+ * for a tab that shows the usual everything-but-archived. The status filter
+ * names these, so it does not read "any" over a list of archived events.
+ */
+export function tabDefaultStatuses(activeTab: string): EventStatus[] | null {
+  if (activeTab === 'review') return REVIEW_TAB_STATUSES
+  if (activeTab === 'archived') return ARCHIVED_TAB_STATUSES
+  return null
+}
+
+// Stable references, so a memoised toolbar does not see a new array each render.
+const REVIEW_TAB_STATUSES: EventStatus[] = ['in_review']
+const ARCHIVED_TAB_STATUSES: EventStatus[] = ['archived']
 
 // Review-queue sort order: 'catalog' keeps the manual/creation order; 'volume'
 // asks the server for busiest-first (24h EventMetric volume).

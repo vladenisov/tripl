@@ -1,7 +1,9 @@
 import { Suspense } from 'react'
+import { Navigate } from 'react-router-dom'
 import { lazyWithReload } from '@/lib/lazyWithReload'
 import { SHeader } from '@/components/settings/kit'
 import type { ServiceSettingsSectionKey } from '@/pages/serviceSettingsTabs'
+import { InstanceSettingsSkeleton } from '@/pages/settings-service/ServiceSettingsPrimitives'
 
 const ServiceSettingsSection = lazyWithReload(() => import('@/pages/ServiceSettingsPage'))
 
@@ -49,16 +51,17 @@ const VALID: ServiceSettingsSectionKey[] = [
  * section header.
  */
 export default function InstanceSection({ section }: { section: string }) {
-  const key = (VALID.includes(section as ServiceSettingsSectionKey)
-    ? section
-    : 'runtime') as ServiceSettingsSectionKey
+  // An unknown section used to render Runtime under a URL (and a rail
+  // highlight) that said otherwise. Correct the URL instead.
+  if (!VALID.includes(section as ServiceSettingsSectionKey)) {
+    return <Navigate to="/settings/instance/runtime" replace />
+  }
+  const key = section as ServiceSettingsSectionKey
   const meta = META[key]
   return (
     <div>
       <SHeader title={meta.title} description={meta.description} />
-      <Suspense
-        fallback={<div className="text-sm" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>}
-      >
+      <Suspense fallback={<InstanceSettingsSkeleton />}>
         <ServiceSettingsSection section={key} />
       </Suspense>
     </div>

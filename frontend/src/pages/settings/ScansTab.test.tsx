@@ -56,6 +56,23 @@ function mockJsonResponse(body: unknown) {
   })
 }
 
+type ActivityOverrides = { scan_config_id?: string; failing_streak?: number; rows_read_24h?: number }
+
+/** GET /scans/activity: the server's exact streak and 24h rows per scan (tripl-fj5g.11). */
+function activityResponse(items: ActivityOverrides[] = [{}]) {
+  return {
+    window_from: '2026-01-31T00:00:00Z',
+    window_to: '2026-02-01T00:00:00Z',
+    items: items.map(item => ({
+      scan_config_id: 'scan-1',
+      latest_job: null,
+      failing_streak: 0,
+      rows_read_24h: 0,
+      ...item,
+    })),
+  }
+}
+
 const dataSource = {
   id: 'ds-1',
   name: 'Web Production',
@@ -122,6 +139,7 @@ function setupFetch() {
     }
     if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
     if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+    if (url.endsWith('/api/v1/projects/demo/scans/activity')) return mockJsonResponse(activityResponse())
     if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
     if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
     throw new Error(`Unhandled fetch: ${url}`)
@@ -143,13 +161,20 @@ const failedJob = (id: string, ts: string) => ({
 // Fetch stub whose /jobs feed returns the given jobs and whose manual-trigger
 // (POST /scans/scan-1/run) records each call so a test can assert "Run again"
 // hits the existing endpoint.
-function setupFetchWithJobs(jobs: unknown[], runCalls?: { method: string; url: string }[]) {
+function setupFetchWithJobs(
+  jobs: unknown[],
+  runCalls?: { method: string; url: string }[],
+  activity: ActivityOverrides = {},
+) {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input)
     const method = (init?.method ?? 'GET').toUpperCase()
     if (url.includes('/data-sources/') && url.includes('/schema')) return mockJsonResponse({ tables: [] })
     if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
     if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+    if (url.endsWith('/api/v1/projects/demo/scans/activity')) {
+      return mockJsonResponse(activityResponse([activity]))
+    }
     if (url.includes('/scans/scan-1/run')) {
       runCalls?.push({ method, url })
       return mockJsonResponse({
@@ -321,6 +346,7 @@ describe('ScansTab', () => {
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
       // Never settles: holds the row in its loading state for the assertions.
       if (url.includes('/scans/scan-1/jobs')) return new Promise<Response>(() => {})
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) return new Promise<Response>(() => {})
       if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -354,6 +380,9 @@ describe('ScansTab', () => {
       }
       if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) {
+        return mockJsonResponse(activityResponse([{ failing_streak: 1 }]))
+      }
       if (url.includes('/scans/scan-1/jobs')) {
         return mockJsonResponse([
           {
@@ -385,11 +414,15 @@ describe('ScansTab', () => {
   })
 
   it('collapses a failing streak into one "failed last N runs" row with a single Run again', async () => {
-    setupFetchWithJobs([
-      failedJob('job-f3', '2026-01-03T00:00:00Z'),
-      failedJob('job-f2', '2026-01-02T00:00:00Z'),
-      failedJob('job-f1', '2026-01-01T00:00:00Z'),
-    ])
+    setupFetchWithJobs(
+      [
+        failedJob('job-f3', '2026-01-03T00:00:00Z'),
+        failedJob('job-f2', '2026-01-02T00:00:00Z'),
+        failedJob('job-f1', '2026-01-01T00:00:00Z'),
+      ],
+      undefined,
+      { failing_streak: 3 },
+    )
     renderTab()
 
     // The three identical failures collapse into one Recent-runs row tagged with
@@ -398,15 +431,64 @@ describe('ScansTab', () => {
     expect(screen.getAllByRole('button', { name: /Run again/i })).toHaveLength(1)
   })
 
-  it('marks the streak as a floor when every run in the loaded page failed', async () => {
+  // The loaded page holds 10 jobs; the streak runs past it. It used to read
+  // "failed last 10+ runs" — a floor — and now carries the server's exact count
+  // over the whole history (tripl-fj5g.11).
+  it("tags the streak with the server's exact count when it runs past the loaded page", async () => {
     setupFetchWithJobs(
       Array.from({ length: 10 }, (_, i) =>
         failedJob(`job-f${i}`, `2026-01-${String(20 - i).padStart(2, '0')}T00:00:00Z`),
       ),
+      undefined,
+      { failing_streak: 37 },
     )
     renderTab()
 
-    expect(await screen.findByText(/failed last 10\+ runs/)).toBeInTheDocument()
+    expect(await screen.findByText('failed last 37 runs')).toBeInTheDocument()
+    expect(screen.queryByText(/\+ runs/)).not.toBeInTheDocument()
+  })
+
+  it("shows the server's exact 24h rows across every scan, without a floor", async () => {
+    const scanConfig2 = { ...scanConfig, id: 'scan-2', name: 'Backfill scan' }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig, scanConfig2])
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) {
+        return mockJsonResponse(
+          activityResponse([
+            { scan_config_id: 'scan-1', rows_read_24h: 1200 },
+            { scan_config_id: 'scan-2', rows_read_24h: 300 },
+          ]),
+        )
+      }
+      if (url.includes('/jobs')) return mockJsonResponse([])
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    const label = await screen.findByText('Warehouse rows read · 24h')
+    await waitFor(() => expect(label.parentElement?.textContent).toBe('Warehouse rows read · 24h1.5K'))
+    expect(label.parentElement?.textContent).not.toContain('+')
+  })
+
+  // The tag used to take its number from the activity endpoint alone, so it
+  // vanished while that loaded, if it failed, or when it lagged a run that
+  // finished since. The page's own count stands in (review A).
+  it("keeps the streak tag when the server's count is behind the loaded page", async () => {
+    setupFetchWithJobs(
+      [
+        failedJob('job-f3', '2026-01-03T00:00:00Z'),
+        failedJob('job-f2', '2026-01-02T00:00:00Z'),
+        failedJob('job-f1', '2026-01-01T00:00:00Z'),
+      ],
+      undefined,
+      { failing_streak: 0 },
+    )
+    renderTab()
+
+    expect(await screen.findByText(/failed last 3 runs/)).toBeInTheDocument()
   })
 
   it('re-runs a failed scan from the run row via the manual trigger endpoint', async () => {
@@ -430,6 +512,9 @@ describe('ScansTab', () => {
       if (url.includes('/data-sources/') && url.includes('/schema')) return mockJsonResponse({ tables: [] })
       if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig, scanConfig2])
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) {
+        return mockJsonResponse(activityResponse([{ scan_config_id: 'scan-1' }, { scan_config_id: 'scan-2' }]))
+      }
       // Hold the POST open so the mutation stays pending for the assertion window.
       if (url.includes('/scans/scan-1/run')) return new Promise<Response>(() => {})
       if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([failedJob('job-a1', '2026-01-02T00:00:00Z')])
@@ -481,6 +566,7 @@ describe('ScansTab', () => {
       if (url.endsWith('/api/v1/projects/demo/scans')) {
         return mockJsonResponse([{ ...scanConfig, time_column: null, interval: '1h' }])
       }
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) return mockJsonResponse(activityResponse())
       if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
       if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
@@ -630,6 +716,7 @@ describe('ScansTab — coached demo scenario', () => {
       if (url.includes('/data-sources/') && url.includes('/schema')) return mockJsonResponse({ tables: [] })
       if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) return mockJsonResponse(activityResponse())
       if (url.includes('/scans/scan-1/run')) {
         runCalls.push((init?.method ?? 'GET').toUpperCase())
         return mockJsonResponse(completedJob('job-new', '2026-02-01T00:00:00Z'))
@@ -749,18 +836,24 @@ describe('ScansTab — data layer and feedback (batch 4)', () => {
   })
 
   it('keeps counting a failing streak while a retry is queued (DATA-18)', async () => {
-    setupFetchWithJobs([
-      {
-        ...failedJob('job-p', '2026-01-05T00:00:00Z'),
-        status: 'pending',
-        started_at: null,
-        completed_at: null,
-        error_message: null,
-      },
-      failedJob('job-f3', '2026-01-03T00:00:00Z'),
-      failedJob('job-f2', '2026-01-02T00:00:00Z'),
-      failedJob('job-f1', '2026-01-01T00:00:00Z'),
-    ])
+    // The server's count looks past the queued retry; the list must still
+    // collapse the failures behind it into the tagged row.
+    setupFetchWithJobs(
+      [
+        {
+          ...failedJob('job-p', '2026-01-05T00:00:00Z'),
+          status: 'pending',
+          started_at: null,
+          completed_at: null,
+          error_message: null,
+        },
+        failedJob('job-f3', '2026-01-03T00:00:00Z'),
+        failedJob('job-f2', '2026-01-02T00:00:00Z'),
+        failedJob('job-f1', '2026-01-01T00:00:00Z'),
+      ],
+      undefined,
+      { failing_streak: 3 },
+    )
     renderTab()
 
     expect(await screen.findByText(/failed last 3 runs/)).toBeInTheDocument()
@@ -777,6 +870,7 @@ describe('ScansTab — data layer and feedback (batch 4)', () => {
           headers: { 'Content-Type': 'application/json' },
         })
       }
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) return mockJsonResponse(activityResponse())
       if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
       if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
@@ -796,6 +890,7 @@ describe('ScansTab — data layer and feedback (batch 4)', () => {
       // The data-source list never answers: a cold load.
       if (url.endsWith('/api/v1/data-sources')) return new Promise<Response>(() => {})
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) return mockJsonResponse(activityResponse())
       if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
       if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)

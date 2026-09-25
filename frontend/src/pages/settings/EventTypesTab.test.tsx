@@ -1,11 +1,12 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EventType, FieldDefinition } from '@/types'
 import { BranchContext } from '@/components/branch-context-internal'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import { authAs } from '@/test/auth'
+import { projectEventTypesKey } from '@/lib/queryKeys'
 import { EventTypesTab, FieldsEditor } from './EventTypesTab'
 import { EventTypeDetail } from './EventTypeDetailView'
 
@@ -158,7 +159,7 @@ describe('EventTypesTab list', () => {
       async (input) => {
         const url = String(input)
         if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-        if (url.endsWith('/owners')) return mockJsonResponse([])
+        if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([])
         throw new Error(`Unhandled fetch: ${url}`)
       },
       VIEWER,
@@ -173,13 +174,15 @@ describe('EventTypesTab list', () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-      if (url.endsWith('/api/v1/projects/demo/event-types/type-1/owners'))
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners'))
         return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
     const row = (await screen.findByText('Checkout')).closest('tr') as HTMLElement
-    expect(within(row).getByText('ungated')).toBeInTheDocument()
+    // Only once the owners have answered: an unanswered request is "—", not a
+    // guess of "ungated".
+    expect(await within(row).findByText('ungated')).toBeInTheDocument()
     // the cryptic raw words are gone
     expect(screen.queryByText('open merge')).not.toBeInTheDocument()
   })
@@ -197,7 +200,7 @@ describe('EventTypesTab list', () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-      if (url.endsWith('/api/v1/projects/demo/event-types/type-1/owners'))
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners'))
         return mockJsonResponse([owner])
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -210,7 +213,7 @@ describe('EventTypesTab list', () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-      if (url.endsWith('/api/v1/projects/demo/event-types/type-1/owners'))
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners'))
         return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -459,6 +462,10 @@ describe('EventTypesTab in branch context (tripl-kjhi.11)', () => {
     expect(asked.some((url) => url.includes('/owners'))).toBe(false)
     // Nor does the list pretend to know: the Owner column stays hidden.
     expect(screen.queryByText('Owner')).not.toBeInTheDocument()
+    // …and so does Status, which used to call every type "ungated" here —
+    // wrong for exactly the types whose owners will gate this branch (PLAN-40).
+    expect(screen.queryByRole('columnheader', { name: 'Status' })).not.toBeInTheDocument()
+    expect(screen.queryByText('ungated')).not.toBeInTheDocument()
   })
 
   it('leaves the merge-gate chip off the branch detail instead of claiming "no owners"', async () => {
@@ -478,5 +485,453 @@ describe('EventTypesTab in branch context (tripl-kjhi.11)', () => {
     const asked = fetchImpl.mock.calls.map(([input]) => String(input))
     expect(asked.some((url) => url.includes('/owners'))).toBe(false)
     expect(screen.queryByText(/anyone can merge/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('EventTypesTab list states and rows (PLAN-39 / PLAN-41)', () => {
+  it('shows a skeleton, not "No event types yet", while the list loads', async () => {
+    renderWithRoutes('/p/demo/settings/event-types', () => new Promise<Response>(() => {}))
+
+    expect(await screen.findByLabelText('Loading event types')).toBeInTheDocument()
+    expect(screen.queryByText(/No event types yet/)).not.toBeInTheDocument()
+  })
+
+  it('shows a failed load as an error with a retry, not as an empty list', async () => {
+    renderWithRoutes('/p/demo/settings/event-types', async () =>
+      new Response(JSON.stringify({ detail: 'Database is unavailable' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    expect(await screen.findByText("Couldn't load event types")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText(/No event types yet/)).not.toBeInTheDocument()
+  })
+
+  it('opens a type through a real link, keeping the row a table row', async () => {
+    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const link = await screen.findByRole('link', { name: 'Checkout' })
+    expect(link).toHaveAttribute('href', '/p/demo/settings/event-types/type-1')
+    const table = screen.getByRole('table', { name: 'Event types' })
+    expect(within(table).queryAllByRole('button')).toHaveLength(0)
+    expect(within(table).getAllByRole('row').length).toBeGreaterThan(1)
+  })
+})
+
+describe('FieldsEditor field form (PLAN-36 / PLAN-38)', () => {
+  function openNewField() {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      mockJsonResponse({}),
+    )
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FieldsEditor slug="demo" eventType={CHECKOUT} branchId={null} />
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
+    return { fetchSpy }
+  }
+
+  it('names every input by its label and describes it by its hint', () => {
+    openNewField()
+
+    for (const label of ['Name', 'Display name', 'Type', 'Sensitivity', 'Required', 'Description', 'Bad share', 'Null share', 'Regex', 'Min', 'Max']) {
+      expect(screen.getByLabelText(label)).toBeInTheDocument()
+    }
+    expect(screen.getByLabelText('Bad share')).toHaveAccessibleDescription(
+      /Max fraction of values allowed to fail/,
+    )
+    expect(screen.getByLabelText('Bad share')).toHaveAttribute('inputmode', 'decimal')
+  })
+
+  it('refuses a contract number that does not parse instead of dropping the rule', () => {
+    const { fetchSpy } = openNewField()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
+    fireEvent.change(screen.getByLabelText('Null share'), { target: { value: 'abc' } })
+
+    expect(screen.getByLabelText('Null share')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText('Null share')).toHaveAccessibleDescription(/between 0 and 1/)
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('says Min above Max, and refuses to save it', () => {
+    const { fetchSpy } = openNewField()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
+    fireEvent.change(screen.getByLabelText('Min'), { target: { value: '10' } })
+    fireEvent.change(screen.getByLabelText('Max'), { target: { value: '2' } })
+
+    expect(screen.getByText('Max must be at least Min.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('saves a Python/RE2 pattern JavaScript cannot compile, with a note (review 204)', async () => {
+    const { fetchSpy } = openNewField()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
+    fireEvent.change(screen.getByLabelText('Regex'), { target: { value: '(?i)^checkout_' } })
+
+    expect(screen.getByText(/The server checks it when you save/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Regex')).not.toHaveAttribute('aria-invalid')
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    const [, init] = fetchSpy.mock.calls[0]
+    expect(JSON.parse(String(init?.body))).toMatchObject({ contract_regex: '(?i)^checkout_' })
+  })
+
+  it('lets a field with a saved RE2 pattern be edited and saved (review 204)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => mockJsonResponse({}))
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const typed = eventType({
+      id: 'type-1',
+      name: 'checkout',
+      field_definitions: [
+        field({ id: 'f-1', name: 'step', contract_regex: '(?P<step>[a-z]+)' }),
+      ],
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FieldsEditor slug="demo" eventType={typed} branchId={null} />
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'step' }))
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Funnel step' } })
+    // An unchanged saved pattern gets no note at all.
+    expect(screen.queryByText(/The server checks it/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save field' }))
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+  })
+
+  it('never turns a blank Bad share into the strictest setting', () => {
+    const { fetchSpy } = openNewField()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
+    fireEvent.change(screen.getByLabelText('Bad share'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
+
+    expect(screen.getByLabelText('Bad share')).toHaveAttribute('aria-invalid', 'true')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('reads a decimal comma as a point', async () => {
+    const { fetchSpy } = openNewField()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
+    fireEvent.change(screen.getByLabelText('Null share'), { target: { value: '0,5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    const [, init] = fetchSpy.mock.calls[0]
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      contract_required_max_null_rate: 0.5,
+      contract_max_bad_rate: 0,
+    })
+  })
+})
+
+describe('EventTypeDetail settings (PLAN-42 / PLAN-43 / PLAN-45)', () => {
+  const OWNER = {
+    id: 'o-1',
+    event_type_id: 'type-1',
+    user_id: 'u-1',
+    user_email: 'ada@x.io',
+    user_name: 'Ada',
+    granted_by: null,
+    created_at: '2026-01-01T00:00:00Z',
+  }
+
+  it('opens the tab named in ?tab=', async () => {
+    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/owners')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    expect(await screen.findByRole('tab', { name: 'Settings' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByText('General')).toBeInTheDocument()
+  })
+
+  it('keeps Delete shut until the affected events are counted', async () => {
+    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/owners')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?')) return new Promise<Response>(() => {})
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    expect(await screen.findByText('Danger zone')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled()
+    expect(screen.queryByText(/nothing else is affected/)).not.toBeInTheDocument()
+  })
+
+  it('states the worst case when the count failed, instead of "nothing else is affected"', async () => {
+    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/owners')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?'))
+        return new Response(JSON.stringify({ detail: 'boom' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    expect(await screen.findByText(/Could not count the events that use this type/)).toBeInTheDocument()
+    expect(screen.queryByText(/nothing else is affected/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled()
+  })
+
+  it('confirms an owner removal and shows a refusal', async () => {
+    const calls: string[] = []
+    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input, init) => {
+      const url = String(input)
+      if (init?.method === 'DELETE') {
+        calls.push(url)
+        return new Response(JSON.stringify({ detail: 'Owner role required' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/owners')) return mockJsonResponse([OWNER])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove owner Ada' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Remove owner' })
+    expect(within(confirm).getByText(/anyone will be able to merge/)).toBeInTheDocument()
+    expect(calls).toEqual([])
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }))
+
+    expect(await screen.findByText(/Could not remove the owner: Owner role required/)).toBeInTheDocument()
+    expect(calls).toHaveLength(1)
+  })
+
+  it('disables Save until the general settings change, and says when they saved', async () => {
+    let types = [CHECKOUT]
+    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input, init) => {
+      const url = String(input)
+      if (init?.method === 'PATCH' && url.endsWith('/event-types/type-1')) {
+        const body = JSON.parse(String(init.body))
+        types = [{ ...CHECKOUT, ...body }]
+        return mockJsonResponse(types[0])
+      }
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse(types)
+      if (url.endsWith('/owners')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const save = await screen.findByRole('button', { name: 'Save changes' })
+    expect(save).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Checkout flow' } })
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+
+    expect(await screen.findByText('Saved')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  })
+})
+
+describe('EventTypeDetail across a branch switch (PLAN-44)', () => {
+  const BRANCH_COPY = { ...CHECKOUT, id: 'type-9' }
+
+  function ParamRoute() {
+    const { itemId } = useParams()
+    const location = useLocation()
+    return (
+      <>
+        <p data-testid="path">{location.pathname}</p>
+        <EventTypeDetail slug="demo" eventTypeId={itemId ?? ''} />
+      </>
+    )
+  }
+
+  it('follows the type by name to its id on the new branch', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/api/v1/projects/demo/event-types?branch=branch-1'))
+        return mockJsonResponse([BRANCH_COPY])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/owners')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const tree = (branchId: string | null) => (
+      <QueryClientProvider client={queryClient}>
+        <BranchContext.Provider value={{ branchId, setBranchId: () => {}, slug: 'demo' }}>
+          <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1']}>
+            <Routes>
+              <Route path="/p/:slug/settings/event-types/:itemId" element={<ParamRoute />} />
+            </Routes>
+          </MemoryRouter>
+        </BranchContext.Provider>
+      </QueryClientProvider>
+    )
+    const view = render(tree(null))
+    expect(await screen.findByRole('heading', { name: 'Checkout' })).toBeInTheDocument()
+
+    view.rerender(tree('branch-1'))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('path')).toHaveTextContent('/p/demo/settings/event-types/type-9'),
+    )
+    expect(screen.getByRole('heading', { name: 'Checkout' })).toBeInTheDocument()
+    expect(screen.queryByText(/does not exist/)).not.toBeInTheDocument()
+  })
+})
+
+describe('FieldsEditor reordering (PLAN-37)', () => {
+  it('moves the row at once, announces it, and keeps focus on a working button', async () => {
+    let types = [CHECKOUT]
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/fields/reorder')) {
+        const ids = JSON.parse(String(init?.body)) as string[] | { field_ids: string[] }
+        const order = Array.isArray(ids) ? ids : ids.field_ids
+        types = [
+          {
+            ...CHECKOUT,
+            field_definitions: CHECKOUT.field_definitions.map((f) => ({ ...f, order: order.indexOf(f.id) })),
+          },
+        ]
+        return mockJsonResponse({})
+      }
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse(types)
+      if (url.endsWith('/owners')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1?tab=settings']}>
+          <Routes>
+            <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const up = await screen.findByRole('button', { name: 'Move email up' })
+    up.focus()
+    fireEvent.click(up)
+
+    expect(await screen.findByText('email moved to position 1 of 2')).toBeInTheDocument()
+    // Now first, so Move up is disabled; focus went to the button that works.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Move email down' })).toHaveFocus(),
+    )
+    expect(screen.getByRole('button', { name: 'Move email up' })).toBeDisabled()
+  })
+})
+
+describe('review 204 follow-ups', () => {
+  it('keeps a field draft on screen when a refetch of the list fails', async () => {
+    let failing = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return failing
+          ? new Response(JSON.stringify({ detail: 'Bad gateway' }), {
+              status: 502,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          : mockJsonResponse([CHECKOUT])
+      }
+      if (url.endsWith('/owners')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1?tab=settings']}>
+          <Routes>
+            <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'coupon' } })
+
+    failing = true
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: projectEventTypesKey('demo') })
+    })
+
+    expect(await screen.findByText(/Couldn't refresh this event type: Bad gateway/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Name')).toHaveValue('coupon')
+    expect(screen.queryByText("Couldn't load this event type")).not.toBeInTheDocument()
+  })
+
+  it('renders both tables through the shared table component', async () => {
+    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const table = await screen.findByRole('table', { name: 'Event types' })
+    expect(table).toHaveAttribute('data-slot', 'table')
+  })
+})
+
+describe('EventTypesTab owners in one request (PLAN-42)', () => {
+  it('asks once for the project, and reads a type without rows as ungated', async () => {
+    const SIGNUP = eventType({ id: 'type-2', name: 'signup', display_name: 'Signup', order: 1 })
+    const owner = {
+      id: 'o-1',
+      event_type_id: 'type-1',
+      user_id: 'u-1',
+      user_email: 'ada@x.io',
+      user_name: 'Ada',
+      granted_by: null,
+      created_at: '2026-01-01T00:00:00Z',
+    }
+    const asked: string[] = []
+    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+      const url = String(input)
+      asked.push(url)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT, SIGNUP])
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([owner])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const checkout = (await screen.findByText('Checkout')).closest('tr') as HTMLElement
+    const signup = screen.getByText('Signup').closest('tr') as HTMLElement
+    expect(await within(checkout).findByText('gated')).toBeInTheDocument()
+    expect(within(signup).getByText('ungated')).toBeInTheDocument()
+    expect(asked.filter((url) => url.includes('owners'))).toEqual([
+      expect.stringMatching(/\/event-type-owners$/),
+    ])
   })
 })

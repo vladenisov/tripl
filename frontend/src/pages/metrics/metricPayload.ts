@@ -31,6 +31,21 @@ export interface OperandColumns {
   denominator?: readonly FactTableColumn[]
 }
 
+/**
+ * The operand as the API takes it.
+ *
+ * A column the aggregation does not read is sent as the draft carries it rather
+ * than nulled. The form hides that field, so the draft only carries one the
+ * stored metric already had — the API accepts, say, a `count` with a
+ * `measure_column` — and nulling it made an untouched save change the stored
+ * definition, which deletes the metric's history (tripl-fj5g.9). Changing the
+ * aggregation or the fact table in the form clears the column it hid
+ * (`withAggregation`, `withFactTable`), so a stale choice is not carried along
+ * instead. And a hidden column the loaded fact table no longer has is dropped:
+ * the backend would refuse it with a 422 the user could not clear, since the
+ * form does not show the field. While the columns are still loading
+ * (`conditionColumns` empty) it is kept — nothing says it is gone.
+ */
 export function toOperandPayload(
   operand: FactOperandState,
   conditionColumns: readonly FactTableColumn[] = [],
@@ -38,10 +53,59 @@ export function toOperandPayload(
   return {
     fact_table_id: operand.factTableId,
     aggregation: operand.aggregation,
-    measure_column: needsMeasure(operand.aggregation) ? operand.measureColumn || null : null,
-    distinct_column: needsDistinct(operand.aggregation) ? operand.distinctColumn || null : null,
+    measure_column: columnToSend(
+      operand.measureColumn,
+      needsMeasure(operand.aggregation),
+      conditionColumns,
+    ),
+    distinct_column: columnToSend(
+      operand.distinctColumn,
+      needsDistinct(operand.aggregation),
+      conditionColumns,
+    ),
     ...filtersToPayload(operand.filters, conditionColumns),
   }
+}
+
+/** A column as sent: a visible one verbatim, a hidden one only while it still exists. */
+function columnToSend(
+  column: string,
+  shown: boolean,
+  tableColumns: readonly FactTableColumn[],
+): string | null {
+  if (!column) return null
+  if (shown || tableColumns.length === 0) return column
+  return tableColumns.some(candidate => candidate.name === column) ? column : null
+}
+
+/** The column fields `aggregation` does not read, cleared: the form hides them. */
+function withoutHiddenColumns(operand: FactOperandState): FactOperandState {
+  return {
+    ...operand,
+    measureColumn: needsMeasure(operand.aggregation) ? operand.measureColumn : '',
+    distinctColumn: needsDistinct(operand.aggregation) ? operand.distinctColumn : '',
+  }
+}
+
+/**
+ * `operand` pointed at another fact table: a column the form hides belonged to
+ * the old table, and the user could neither see nor clear it on the new one.
+ */
+export function withFactTable(operand: FactOperandState, factTableId: string): FactOperandState {
+  if (factTableId === operand.factTableId) return operand
+  return withoutHiddenColumns({ ...operand, factTableId })
+}
+
+/**
+ * `operand` with a new aggregation chosen in the form: the column fields the
+ * new aggregation does not read are cleared, since the form stops showing them.
+ */
+export function withAggregation(
+  operand: FactOperandState,
+  aggregation: FactOperandState['aggregation'],
+): FactOperandState {
+  if (aggregation === operand.aggregation) return operand
+  return withoutHiddenColumns({ ...operand, aggregation })
 }
 
 /** The `definition` block: kind + collection config, create and update alike. */

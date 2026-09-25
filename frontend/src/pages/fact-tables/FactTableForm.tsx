@@ -28,6 +28,7 @@ import type {
 } from '@/types'
 import { dataSourcesKey } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
+import { toIdentifier } from '@/lib/identifier'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { uid } from '@/lib/uid'
@@ -116,6 +117,21 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
 
   const [displayName, setDisplayName] = useState(factTable?.display_name ?? '')
   const [name, setName] = useState(factTable?.name ?? '')
+  // Same pre-fill as the metric form (MET-34): the internal name follows the
+  // display name until the user types into it directly.
+  const [nameEdited, setNameEdited] = useState(false)
+  // Stands in for a display name with no Latin letters to derive from; minted
+  // once so it does not churn while the user types.
+  const [fallbackName] = useState(() => `fact_${Date.now().toString(36)}`)
+  const onDisplayNameChange = (value: string) => {
+    setDisplayName(value)
+    // Creation only — the internal name is immutable afterwards.
+    if (isNew && !nameEdited) setName(toIdentifier(value, fallbackName))
+  }
+  const onNameChange = (value: string) => {
+    setNameEdited(true)
+    setName(value)
+  }
   const [description, setDescription] = useState(factTable?.description ?? '')
   const [color, setColor] = useState(factTable?.color ?? DEFAULT_COLOR)
   const [dataSourceId, setDataSourceId] = useState(factTable?.data_source_id ?? '')
@@ -343,7 +359,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               <TextInput
                 id="fact-display-name"
                 value={displayName}
-                onChange={setDisplayName}
+                onChange={onDisplayNameChange}
                 placeholder="Orders"
                 aria-required
               />
@@ -355,7 +371,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               hint={isNew ? 'Stable identifier used by fact metrics.' : "Can't be changed after creation."}
             >
               {isNew ? (
-                <TextInput id="fact-name" value={name} onChange={setName} mono placeholder="orders" aria-required />
+                <TextInput id="fact-name" value={name} onChange={onNameChange} mono placeholder="orders" aria-required />
               ) : (
                 <div className="mono text-[13px]" style={{ color: 'var(--fg)' }}>
                   {name}

@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, GitBranch, History, Plus } from 'lucide-react'
 
 import { planRevisionsApi } from '@/api/planRevisions'
-import { Badge } from '@/components/ui/badge'
+import { Chip } from '@/components/primitives/chip'
+import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -17,56 +18,68 @@ import {
 } from '@/components/ui/dialog'
 import type {
   PlanDiff,
-  PlanDiffEntry,
   PlanRevisionSummary,
 } from '@/types'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDateTime } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
+import { ENTITY_LABEL, KIND_META } from './branches/branchMeta'
+import { PlanFieldChangeList } from './PlanFieldChangeList'
 
-const KIND_TONE: Record<PlanDiffEntry['kind'], { label: string; chip: string }> = {
-  added: { label: 'added', chip: 'bg-success-soft text-success' },
-  removed: { label: 'removed', chip: 'bg-danger-soft text-danger' },
-  changed: { label: 'changed', chip: 'bg-warning-soft text-warning' },
-}
-
-const ENTITY_LABEL: Record<PlanDiffEntry['entity_type'], string> = {
-  event_type: 'Event type',
-  field_definition: 'Field',
-  event: 'Event',
-  variable: 'Variable',
-  meta_field: 'Meta field',
-  relation: 'Relation',
-}
+// One page of revisions. It used to be the ONLY page: the list asked for 50 and
+// ignored `total`, so anything older was unreachable (PLAN-50).
+const PAGE_SIZE = 50
 
 export function HistoryTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const [snapshotOpen, setSnapshotOpen] = useState(false)
   const [summaryText, setSummaryText] = useState('')
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null)
+  const [offset, setOffset] = useState(0)
 
   const listQuery = useQuery({
-    queryKey: ['planRevisions', slug],
-    queryFn: () => planRevisionsApi.list(slug, { limit: 50 }),
+    // Under the ['planRevisions', slug] prefix, so a new snapshot still
+    // refreshes every page.
+    queryKey: ['planRevisions', slug, offset],
+    // One row past the page: the base the page's LAST revision diffs against.
+    // Without it the 50th row found no `idx + 1` and called itself "the oldest
+    // revision" whenever older ones existed (PLAN-50).
+    queryFn: () => planRevisionsApi.list(slug, { offset, limit: PAGE_SIZE + 1 }),
     enabled: !!slug,
+    // Rendered in the list card, with a retry.
+    meta: SILENT_ERROR_META,
   })
-  const revisions = useMemo(() => listQuery.data?.items ?? [], [listQuery.data])
+  const fetched = useMemo(() => listQuery.data?.items ?? [], [listQuery.data])
+  const revisions = useMemo(() => fetched.slice(0, PAGE_SIZE), [fetched])
+  const total = listQuery.data?.total ?? 0
+  const hasNewer = offset > 0
+  const hasOlder = offset + revisions.length < total
 
-  // Default the diff selection to the latest revision once data lands.
+  // Default the diff selection to the latest revision on the page once data lands.
   const effectiveSelected =
     selectedRevisionId ?? revisions[0]?.id ?? null
   const compareTo = useMemo(() => {
     if (!effectiveSelected) return null
-    const idx = revisions.findIndex((r) => r.id === effectiveSelected)
+    const idx = fetched.findIndex((r) => r.id === effectiveSelected)
     if (idx < 0) return null
-    // Compare against the next-older revision (i.e. idx + 1, since
-    // the list is sorted newest-first).
-    return revisions[idx + 1]?.id ?? null
-  }, [effectiveSelected, revisions])
+    // Compare against the next-older revision (i.e. idx + 1, since the list is
+    // sorted newest-first) — for the page's last row that is the extra one.
+    return fetched[idx + 1]?.id ?? null
+  }, [effectiveSelected, fetched])
+
+  const goToOffset = (next: number) => {
+    setOffset(next)
+    // A selection from the page being left would not be on the next one.
+    setSelectedRevisionId(null)
+  }
 
   const diffQuery = useQuery<PlanDiff>({
     queryKey: ['planRevisionDiff', slug, effectiveSelected, compareTo],
     queryFn: () => planRevisionsApi.diff(slug, effectiveSelected!, compareTo!),
     enabled: !!effectiveSelected && !!compareTo,
+    // "Failed to load diff." is rendered in the diff card.
+    meta: SILENT_ERROR_META,
   })
 
   const createMut = useMutation({
@@ -108,8 +121,25 @@ export function HistoryTab({ slug }: { slug: string }) {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <Card>
           <CardContent className="p-0">
-            {listQuery.isLoading ? (
-              <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+            {listQuery.isError && listQuery.data !== undefined && (
+              // A failed refresh keeps the list on screen (review 204).
+              <p role="alert" className="px-3 py-2 text-xs text-destructive">
+                Couldn't refresh plan history: {getErrorMessage(listQuery.error)}
+              </p>
+            )}
+            {listQuery.isPending ? (
+              <div className="p-4 text-sm text-muted-foreground" role="status">Loading…</div>
+            ) : listQuery.isError && listQuery.data === undefined ? (
+              // A failed load is not "No revisions yet" (PLAN-41).
+              <div className="p-3">
+                <ErrorState
+                  compact
+                  title="Couldn't load plan history"
+                  error={listQuery.error}
+                  onRetry={() => { void listQuery.refetch() }}
+                  retryLabel="Retry"
+                />
+              </div>
             ) : revisions.length === 0 ? (
               <div className="p-4 text-sm text-muted-foreground">
                 No revisions yet. Create the first snapshot to capture the current
@@ -126,6 +156,35 @@ export function HistoryTab({ slug }: { slug: string }) {
                   />
                 ))}
               </ul>
+            )}
+            {(hasNewer || hasOlder) && (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
+                <p className="text-xs text-muted-foreground">
+                  {`Showing ${offset + 1}–${offset + revisions.length} of ${countOf(total, 'revision', 'revisions')}.`}
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={!hasNewer || listQuery.isFetching}
+                    onClick={() => goToOffset(Math.max(0, offset - PAGE_SIZE))}
+                  >
+                    Newer
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={!hasOlder || listQuery.isFetching}
+                    onClick={() => goToOffset(offset + PAGE_SIZE)}
+                  >
+                    Older
+                  </Button>
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -279,9 +338,9 @@ function DiffPanel({
   return (
     <>
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <Badge className={KIND_TONE.added.chip}>+{diff.summary.added}</Badge>
-        <Badge className={KIND_TONE.removed.chip}>−{diff.summary.removed}</Badge>
-        <Badge className={KIND_TONE.changed.chip}>~{diff.summary.changed}</Badge>
+        <Chip tone={KIND_META.added.tone} size="xs">+{diff.summary.added}</Chip>
+        <Chip tone={KIND_META.removed.tone} size="xs">−{diff.summary.removed}</Chip>
+        <Chip tone={KIND_META.changed.tone} size="xs">~{diff.summary.changed}</Chip>
         <span className="text-muted-foreground">across {total} entr{total === 1 ? 'y' : 'ies'}</span>
       </div>
       <ul className="space-y-1.5">
@@ -290,19 +349,28 @@ function DiffPanel({
             key={`${entry.entity_type}:${entry.parent ?? ''}:${entry.name}:${idx}`}
             className="rounded-md border bg-muted/20 px-3 py-2 text-xs"
           >
-            <div className="flex items-center gap-2">
-              <Badge className={KIND_TONE[entry.kind].chip}>
-                {KIND_TONE[entry.kind].label}
-              </Badge>
+            <div className="flex flex-wrap items-center gap-2">
+              {/* The branch review's words for the same kinds — history used to
+                  say "changed" where the review says "Modified" (PLAN-51). */}
+              <Chip tone={KIND_META[entry.kind].tone} size="xs">
+                {KIND_META[entry.kind].label}
+              </Chip>
               <span className="text-muted-foreground">
-                {ENTITY_LABEL[entry.entity_type]}
+                {ENTITY_LABEL[entry.entity_type] ?? entry.entity_type}
               </span>
-              <span className="font-mono">
+              <span className="font-mono break-all">
                 {entry.parent ? `${entry.parent} / ` : ''}
                 {entry.name}
               </span>
             </div>
-            {entry.changes.length > 0 && (
+            {/* Before and after, as the branch review shows them. The bare field
+                names are the fallback for an entry that carries no structured
+                changes (a snapshot older than their capture). */}
+            {(entry.field_changes?.length ?? 0) > 0 ? (
+              <div className="mt-1.5">
+                <PlanFieldChangeList changes={entry.field_changes ?? []} />
+              </div>
+            ) : entry.changes.length > 0 && (
               <ul className="mt-1.5 space-y-0.5 pl-1 text-[11px] text-muted-foreground">
                 {entry.changes.map((change) => (
                   <li key={change} className="font-mono">{change}</li>

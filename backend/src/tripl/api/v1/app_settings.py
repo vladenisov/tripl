@@ -10,7 +10,6 @@ from tripl.api.deps import OwnerUserDep, SessionDep
 from tripl.schemas.app_settings import (
     AiSettingsResponse,
     AiSettingsTestRequest,
-    AiSettingsUpdate,
     EmailSettingsTestRequest,
     ServiceSettingsResponse,
     ServiceSettingsUpdate,
@@ -92,30 +91,6 @@ async def get_ai_settings(
     _current_user: OwnerUserDep,
 ) -> AiSettingsResponse:
     return _ai_response(await app_settings_service.get_service_settings(session))
-
-
-@router.put("/ai", response_model=AiSettingsResponse)
-async def put_ai_settings(
-    session: SessionDep,
-    current_user: OwnerUserDep,
-    payload: AiSettingsUpdate,
-) -> AiSettingsResponse:
-    """Upsert AI overrides (partial: only fields present in the request body are
-    applied, via exclude_unset). PUT — not PATCH — because the frontend AI
-    settings form calls this endpoint; semantics are upsert, not replace-all."""
-    changes = payload.model_dump(exclude_unset=True)
-    settings_payload = await app_settings_service.service_settings_payload(
-        session, await app_settings_service.update_ai_overrides(session, changes)
-    )
-    await audit_service.record(
-        session,
-        user=current_user,
-        action="settings.ai_update",
-        target_type="settings",
-        target_id=None,
-        payload={"changed_fields": sorted(changes)},
-    )
-    return _ai_response(settings_payload)
 
 
 @router.post("/ai/test", response_model=SettingsTestResponse)

@@ -1,27 +1,43 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Lock, Plus } from 'lucide-react'
 import { apiKeysApi } from '@/api/apiKeys'
 import { projectsQueryOptions } from '@/lib/queryKeys'
 import { useAuth } from '@/components/auth-context'
+import { ErrorState } from '@/components/error-state'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
+import { INPUT_BASE } from '@/components/settings/input-style'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { formatIsoDate } from '@/lib/datetime'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
-import { SCard, SHeader } from '@/components/settings/kit'
+import { Field, SCard, SHeader, Select, TextInput } from '@/components/settings/kit'
 import { describeKeyCounts, isKeyInactive } from './apiKeyStatus'
 import type { ApiKey, ApiKeyScope, ApiKeyWithToken } from '@/types'
 import { canWrite } from '@/lib/permissions'
+
+const MAX_EXPIRY_DAYS = 3650
+
+/** Inline error for the optional expiry, or null when it is blank or valid. */
+function expiryError(raw: string): string | null {
+  if (raw.trim() === '') return null
+  const days = Number(raw)
+  if (!Number.isInteger(days) || days < 1 || days > MAX_EXPIRY_DAYS) {
+    return `Enter a whole number of days from 1 to ${MAX_EXPIRY_DAYS}, or leave it blank.`
+  }
+  return null
+}
 
 /**
  * Workspace · API keys. Reuses the real apiKeysApi wiring (the same create /
@@ -39,14 +55,27 @@ export default function ApiKeysSection() {
   const [projectSlug, setProjectSlug] = useState('')
   const [expiresInDays, setExpiresInDays] = useState('')
   const [revealed, setRevealed] = useState<ApiKeyWithToken | null>(null)
+  const tokenRef = useRef<HTMLInputElement>(null)
+  const { state: copyState, copy, reset: resetCopy } = useCopyToClipboard(tokenRef)
 
-  const listQuery = useQuery({ queryKey: ['api-keys'], queryFn: () => apiKeysApi.list() })
+  const listQuery = useQuery({
+    queryKey: ['api-keys'],
+    queryFn: () => apiKeysApi.list(),
+    meta: SILENT_ERROR_META,
+  })
   const projectsQuery = useQuery(projectsQueryOptions())
 
   const projectNameById = (projectsQuery.data ?? []).reduce<Record<string, string>>((acc, p) => {
     acc[p.id] = p.name
     return acc
   }, {})
+
+  const resetDraft = () => {
+    setName('')
+    setScope('read')
+    setProjectSlug('')
+    setExpiresInDays('')
+  }
 
   const createMut = useMutation({
     mutationFn: () =>
@@ -56,19 +85,59 @@ export default function ApiKeysSection() {
         expires_in_days: expiresInDays ? Number(expiresInDays) : null,
         project_slug: projectSlug || null,
       }),
+    meta: SILENT_ERROR_META,
     onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ['api-keys'] })
       setShowForm(false)
+      resetCopy()
       setRevealed(created)
-      setName('')
-      setScope('read')
-      setProjectSlug('')
-      setExpiresInDays('')
+      resetDraft()
     },
   })
 
+  // Cancel used to only hide the card, so the next "Create key" reopened it
+  // with the abandoned name, scope and the previous failure still showing.
+  const cancelForm = () => {
+    setShowForm(false)
+    resetDraft()
+    createMut.reset()
+  }
+
+  // Per key, not off the mutation: rows other than the one being revoked stay
+  // live, so a second revoke can start while the first is in flight, and
+  // `revokeMut.variables`/`error` then describe only the latest one. A failure
+  // on the first would vanish — on a credentials surface, a leaked key that
+  // looks revoked.
+  const [pendingRevokes, setPendingRevokes] = useState<ReadonlySet<string>>(() => new Set())
+  const [revokeFailures, setRevokeFailures] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  )
+
   const revokeMut = useMutation({
     mutationFn: (keyId: string) => apiKeysApi.revoke(keyId),
+    // Rendered below the list: a failed revoke on a credentials surface must
+    // not read as a revoke that worked.
+    meta: SILENT_ERROR_META,
+    // Mutation-level callbacks run for every call; the ones passed to
+    // mutate() only for the latest.
+    onMutate: (keyId) => {
+      setPendingRevokes((current) => new Set(current).add(keyId))
+      setRevokeFailures((current) => {
+        const next = new Map(current)
+        next.delete(keyId)
+        return next
+      })
+    },
+    onError: (error, keyId) => {
+      setRevokeFailures((current) => new Map(current).set(keyId, getErrorMessage(error)))
+    },
+    onSettled: (_data, _error, keyId) => {
+      setPendingRevokes((current) => {
+        const next = new Set(current)
+        next.delete(keyId)
+        return next
+      })
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['api-keys'] }),
   })
 
@@ -84,6 +153,7 @@ export default function ApiKeysSection() {
 
   const keys = listQuery.data ?? []
   const canCreateWriteKeys = canWrite(user?.role)
+  const expiryProblem = expiryError(expiresInDays)
 
   // The card used to headline "Active keys · N keys" off the unfiltered list,
   // so revoked and expired tokens were counted as live ones on a credentials
@@ -91,6 +161,15 @@ export default function ApiKeysSection() {
   // and name the inactive remainder explicitly.
   const inactiveCount = keys.filter((k) => isKeyInactive(k)).length
   const activeCount = keys.length - inactiveCount
+
+  const scopeOptions = [
+    { value: 'read', label: 'read — GET endpoints only' },
+    ...(canCreateWriteKeys ? [{ value: 'write', label: 'write — full editor access' }] : []),
+  ]
+  const projectOptions = [
+    { value: '', label: 'All projects — full account reach' },
+    ...(projectsQuery.data ?? []).map((p) => ({ value: p.slug, label: p.name })),
+  ]
 
   return (
     <div>
@@ -112,77 +191,87 @@ export default function ApiKeysSection() {
         }
       />
 
-      {/* Create key — inline page-style form (no modal) */}
+      {/* Create key — inline page-style form (no modal). Kit rows and the kit
+          Select, not bare <select>s: a native select keeps the platform's light
+          widget in dark mode (tripl-h3bb). */}
       {showForm && (
         <SCard title="New API key" description="Generate a long-lived bearer token for non-browser clients.">
           <form
             onSubmit={(e) => {
               e.preventDefault()
+              if (expiryProblem) return
               createMut.mutate()
             }}
-            className="grid gap-4 px-[18px] py-4"
           >
-              <div className="grid gap-2">
-                <Label htmlFor="key-name">Name</Label>
-                <Input
-                  id="key-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. claude-agent"
-                  required
-                  // eslint-disable-next-line jsx-a11y/no-autofocus -- form revealed by explicit "Create key" click; focusing its first input is expected
-                  autoFocus
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="key-scope">Scope</Label>
-                <select
-                  id="key-scope"
-                  value={scope}
-                  onChange={(e) => setScope(e.target.value as ApiKeyScope)}
-                  className="h-9 rounded-md border bg-background px-2 text-sm"
-                >
-                  <option value="read">read — GET endpoints only</option>
-                  {canCreateWriteKeys && <option value="write">write — full editor access</option>}
-                </select>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="key-project">Project (optional)</Label>
-                <select
-                  id="key-project"
-                  value={projectSlug}
-                  onChange={(e) => setProjectSlug(e.target.value)}
-                  className="h-9 rounded-md border bg-background px-2 text-sm"
-                >
-                  <option value="">All projects — full account reach</option>
-                  {(projectsQuery.data ?? []).map((p) => (
-                    <option key={p.id} value={p.slug}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="key-expires">Expires in (days, optional)</Label>
-                <Input
-                  id="key-expires"
-                  type="number"
-                  min={1}
-                  max={3650}
-                  value={expiresInDays}
-                  onChange={(e) => setExpiresInDays(e.target.value)}
-                  placeholder="leave blank for no expiration"
-                />
-              </div>
+            <Field label="Name" htmlFor="key-name">
+              <input
+                id="key-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. claude-agent"
+                required
+                // eslint-disable-next-line jsx-a11y/no-autofocus -- form revealed by explicit "Create key" click; focusing its first input is expected
+                autoFocus
+                style={INPUT_BASE}
+              />
+            </Field>
+            <Field label="Scope" htmlFor="key-scope">
+              <Select
+                id="key-scope"
+                value={scope}
+                onChange={(value) => setScope(value as ApiKeyScope)}
+                options={scopeOptions}
+              />
+            </Field>
+            <Field label="Project (optional)" htmlFor="key-project">
+              <Select
+                id="key-project"
+                value={projectSlug}
+                onChange={setProjectSlug}
+                options={projectOptions}
+              />
+            </Field>
+            <Field
+              label="Expires in (optional)"
+              htmlFor="key-expires"
+              hint={
+                expiryProblem ? (
+                  <span id="key-expires-error" style={{ color: 'var(--danger)' }}>
+                    {expiryProblem}
+                  </span>
+                ) : (
+                  'Leave blank for a key that never expires.'
+                )
+              }
+              last
+            >
+              <TextInput
+                id="key-expires"
+                type="number"
+                value={expiresInDays}
+                onChange={setExpiresInDays}
+                suffix="days"
+                aria-invalid={expiryProblem != null}
+                aria-describedby={expiryProblem ? 'key-expires-error' : undefined}
+              />
+            </Field>
+            <div
+              className="flex flex-wrap items-center justify-end gap-2 px-[18px] py-3"
+              style={{ borderTop: '1px solid var(--border-subtle)' }}
+            >
               {createMut.isError && (
-                <p role="alert" className="text-xs text-destructive">{getErrorMessage(createMut.error)}</p>
+                <p role="alert" className="mr-auto text-xs text-destructive">
+                  {getErrorMessage(createMut.error)}
+                </p>
               )}
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>
+              <Button type="button" variant="outline" onClick={cancelForm}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={createMut.isPending || !name.trim()}>
-                Generate
+              <Button
+                type="submit"
+                disabled={createMut.isPending || !name.trim() || expiryProblem != null}
+              >
+                {createMut.isPending ? 'Generating…' : 'Generate'}
               </Button>
             </div>
           </form>
@@ -203,10 +292,36 @@ export default function ApiKeysSection() {
         </div>
       </div>
 
-      <SCard title="All keys" description={describeKeyCounts(activeCount, inactiveCount)}>
-        {listQuery.isLoading ? (
-          <div className="px-[18px] py-3 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            Loading…
+      <SCard
+        title="All keys"
+        // No count until there is a list to count: "0 active" above a failed
+        // load reads as "you have no credentials".
+        description={listQuery.isSuccess ? describeKeyCounts(activeCount, inactiveCount) : undefined}
+      >
+        {listQuery.isPending ? (
+          <div aria-busy="true" aria-label="Loading API keys" className="space-y-3 px-[18px] py-3">
+            {[0, 1].map((index) => (
+              <div key={index} className="flex items-center gap-3">
+                <Skeleton className="h-[30px] w-[30px] shrink-0 rounded-lg" />
+                <div className="min-w-0 flex-1 space-y-1">
+                  <Skeleton className="h-3 w-32" />
+                  <Skeleton className="h-2.5 w-20" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : listQuery.isError ? (
+          // A failed load used to fall through to "No API keys yet", so live
+          // keys looked nonexistent and invited minting duplicates.
+          <div className="px-[18px] py-3">
+            <ErrorState
+              compact
+              title="Couldn't load API keys"
+              error={listQuery.error}
+              onRetry={() => {
+                void listQuery.refetch()
+              }}
+            />
           </div>
         ) : keys.length === 0 ? (
           <div className="px-[18px] py-3 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
@@ -214,19 +329,26 @@ export default function ApiKeysSection() {
           </div>
         ) : (
           keys.map((k, i) => {
-            const expired = k.expires_at && new Date(k.expires_at) < new Date()
+            // One rule for the row and the heading count: isKeyInactive is
+            // inclusive at the expiry instant, like the backend.
             const revoked = k.revoked_at != null
+            const expired = !revoked && isKeyInactive(k)
+            const revoking = pendingRevokes.has(k.id)
             return (
               <div
                 key={k.id}
-                className="flex items-center gap-3 px-[18px] py-[13px]"
+                // A grid on phones — icon, name and Revoke on the first line,
+                // scope, project and status below — and one flex line from
+                // `sm` up. The fixed-width single line measured ~560px and
+                // overflowed a 375px card.
+                className="grid grid-cols-[30px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 px-[18px] py-[13px] sm:flex"
                 style={{
                   borderBottom: i === keys.length - 1 ? 'none' : '1px solid var(--border-subtle)',
                   opacity: revoked || expired ? 0.6 : 1,
                 }}
               >
                 <div
-                  className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg"
+                  className="col-start-1 row-start-1 flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg"
                   style={{
                     background: 'var(--bg-sunken)',
                     border: '1px solid var(--border-subtle)',
@@ -235,81 +357,142 @@ export default function ApiKeysSection() {
                 >
                   <Lock className="h-3.5 w-3.5" />
                 </div>
-                <div className="min-w-0" style={{ width: 180 }}>
-                  <div className="text-[13px] font-medium">{k.name}</div>
-                  <div className="mono mt-px text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-                    {k.key_prefix}…
+                <div className="col-start-2 row-start-1 min-w-0 sm:w-[180px] sm:shrink-0">
+                  <div className="truncate text-[13px] font-medium" title={k.name}>
+                    {k.name}
+                  </div>
+                  <div className="mono mt-px truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                    {k.key_prefix}… · created {formatIsoDate(k.created_at)}
                   </div>
                 </div>
-                <Chip
-                  tone={k.scope === 'write' ? 'warning' : 'success'}
-                  size="sm"
-                  style={{ width: 72, justifyContent: 'center' }}
-                >
-                  {k.scope}
-                </Chip>
-                <div className="min-w-0 flex-1 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-                  {k.project_id
-                    ? (projectNameById[k.project_id] ?? k.project_id)
-                    : 'All projects'}
+                <div className="col-span-2 col-start-2 row-start-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:contents">
+                  <Chip
+                    tone={k.scope === 'write' ? 'warning' : 'success'}
+                    size="sm"
+                    className="justify-center sm:w-[72px] sm:shrink-0"
+                  >
+                    {k.scope}
+                  </Chip>
+                  <div
+                    className="min-w-0 truncate text-[11.5px] sm:flex-1"
+                    style={{ color: 'var(--fg-subtle)' }}
+                  >
+                    {k.project_id
+                      ? (projectNameById[k.project_id] ?? k.project_id)
+                      : 'All projects'}
+                  </div>
+                  <div
+                    className="text-[11.5px] sm:w-[130px] sm:shrink-0 sm:text-right"
+                    style={{ color: 'var(--fg-faint)' }}
+                  >
+                    <div>
+                      {revoked
+                        ? 'revoked'
+                        : expired
+                          ? 'expired'
+                          : k.last_used_at
+                            ? `used ${formatIsoDate(k.last_used_at)}`
+                            : 'never used'}
+                    </div>
+                    {!revoked && !expired && (
+                      <div>
+                        {k.expires_at ? `expires ${formatIsoDate(k.expires_at)}` : 'no expiry'}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <span
-                  className="text-[11.5px]"
-                  style={{ width: 110, textAlign: 'right', color: 'var(--fg-faint)' }}
-                >
-                  {revoked
-                    ? 'revoked'
-                    : expired
-                      ? 'expired'
-                      : k.last_used_at
-                        ? `used ${formatIsoDate(k.last_used_at)}`
-                        : 'never used'}
-                </span>
                 {!revoked && (
                   <Button
                     variant="ghost"
                     size="sm"
+                    className="col-start-3 row-start-1"
                     onClick={() => {
                       void handleRevoke(k)
                     }}
-                    disabled={revokeMut.isPending}
+                    disabled={revoking}
+                    // The visible label is the same on every row; the name
+                    // says which key a screen-reader user is about to revoke.
+                    aria-label={`${revoking ? 'Revoking…' : 'Revoke'} ${k.name}`}
                   >
-                    Revoke
+                    {revoking ? 'Revoking…' : 'Revoke'}
                   </Button>
                 )}
               </div>
             )
           })
         )}
+        {[...revokeFailures].map(([keyId, message]) => {
+          const failedName = keys.find((k) => k.id === keyId)?.name
+          return (
+            <p key={keyId} role="alert" className="px-[18px] py-3 text-xs text-destructive">
+              {failedName
+                ? `Couldn't revoke "${failedName}" — it is still active. `
+                : "Couldn't revoke the key — it is still active. "}
+              {message}
+            </p>
+          )
+        })}
       </SCard>
 
-      {/* One-time token reveal */}
-      <Dialog open={revealed != null} onOpenChange={(open) => !open && setRevealed(null)}>
-        <DialogContent>
+      {/* One-time token reveal. Only "Done" closes it: Esc or a stray click
+          outside used to discard a token the server never returns again. */}
+      <Dialog open={revealed != null}>
+        <DialogContent
+          showCloseButton={false}
+          onEscapeKeyDown={(event) => event.preventDefault()}
+          onInteractOutside={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Copy your API key now</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 py-4">
-            <p className="text-sm text-muted-foreground">
+            <DialogDescription>
               This token is shown only once. Copy it now and store it somewhere safe.
-            </p>
-            <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-2">
-              <code className="flex-1 break-all font-mono text-xs">{revealed?.token}</code>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <div className="flex items-center gap-2">
+              <input
+                ref={tokenRef}
+                readOnly
+                aria-label="API key"
+                value={revealed?.token ?? ''}
+                onFocus={(e) => e.currentTarget.select()}
+                className="mono h-9 min-w-0 flex-1 rounded-md border px-2 text-xs"
+                style={{ borderColor: 'var(--border)', background: 'var(--bg)', color: 'var(--fg)' }}
+              />
               <Button
-                size="icon"
-                variant="ghost"
-                className="h-7 w-7"
-                aria-label="Copy API key"
+                type="button"
+                variant="outline"
+                size="sm"
                 onClick={() => {
-                  if (revealed) void navigator.clipboard.writeText(revealed.token)
+                  if (revealed) void copy(revealed.token)
                 }}
               >
                 <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+                {copyState === 'copied' ? 'Copied' : 'Copy'}
               </Button>
             </div>
+            <div aria-live="polite" aria-atomic="true">
+              {copyState === 'copied' && (
+                <p className="text-[11.5px]" style={{ color: 'var(--success)' }}>
+                  Copied to the clipboard.
+                </p>
+              )}
+            </div>
+            {copyState === 'failed' && (
+              <p role="alert" className="text-[11.5px]" style={{ color: 'var(--danger)' }}>
+                Couldn’t reach the clipboard. The key above is selected — press Ctrl/⌘+C to copy it.
+              </p>
+            )}
           </div>
           <DialogFooter>
-            <Button onClick={() => setRevealed(null)}>Done</Button>
+            <Button
+              onClick={() => {
+                setRevealed(null)
+                resetCopy()
+              }}
+            >
+              Done
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import { BranchProvider } from '@/components/branch-context'
 import { projectsApi } from '@/api/projects'
+import { ApiError } from '@/api/client'
+import { eventTypesKey, projectKey, projectsKey } from '@/lib/queryKeys'
 import type { Project } from '@/types'
 import { DemoBanner } from './DemoBanner'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
@@ -77,11 +79,12 @@ function renderBanner(options: {
   project?: Project
   auth?: AuthContextValue
   initialPath?: string
+  queryClient?: QueryClient
 } = {}) {
   const project = options.project ?? makeProject()
   const auth = options.auth ?? authValue({ id: 'creator-1', role: 'editor' })
   const initialPath = options.initialPath ?? `/p/${project.slug}/overview`
-  const queryClient = new QueryClient({
+  const queryClient = options.queryClient ?? new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   // Wrapped in a real BranchProvider and a real DemoScenarioProvider, as the
@@ -243,5 +246,114 @@ describe('DemoBanner — the way back into the guided onboarding (tripl-imco)', 
       status: 'active',
       step: 'live-loop/run-scan',
     })
+  })
+})
+
+describe('DemoBanner — reset and delete failures (DEMO-4, DEMO-23)', () => {
+  it('reports a failed reset, lets the user try again, and does not leave the page', async () => {
+    const resetSpy = vi
+      .spyOn(projectsApi, 'resetDemo')
+      .mockRejectedValue(new ApiError('Demo reset failed', 500))
+
+    renderBanner({ initialPath: '/p/demo-1/metrics/metric-99' })
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Demo reset failed')
+    expect(resetSpy).toHaveBeenCalledTimes(1)
+    // The progress dialog is gone and the controls are usable again.
+    expect(screen.queryByRole('dialog', { name: /re-seeding demo workspace/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^reset$/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^delete$/i })).toBeEnabled()
+    // Nothing was replaced, so the page the user was on still exists.
+    expect(screen.getByTestId('path')).toHaveTextContent('/p/demo-1/metrics/metric-99')
+  })
+
+  it('narrates a reset that is still running and locks both actions until it answers', async () => {
+    vi.spyOn(projectsApi, 'resetDemo').mockReturnValue(new Promise<never>(() => {}))
+
+    renderBanner()
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+
+    expect(
+      await screen.findByRole('dialog', { name: /re-seeding demo workspace/i }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /resetting/i, hidden: true })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^delete$/i, hidden: true })).toBeDisabled()
+  })
+
+  it('keeps a running reset locked when the user opens the limits or the tour', async () => {
+    vi.spyOn(projectsApi, 'resetDemo').mockReturnValue(new Promise<never>(() => {}))
+
+    renderBanner()
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+    await screen.findByRole('dialog', { name: /re-seeding demo workspace/i })
+
+    // Neither is gated on the reset, and clearing an error must not detach it.
+    fireEvent.click(screen.getByRole('button', { name: /what’s simulated/i, hidden: true }))
+    fireEvent.click(screen.getByRole('button', { name: /tour & chapters/i, hidden: true }))
+
+    expect(screen.getByRole('button', { name: /resetting/i, hidden: true })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^delete$/i, hidden: true })).toBeDisabled()
+  })
+
+  it('clears the error on the next thing the user does (DEMO-23)', async () => {
+    vi.spyOn(projectsApi, 'resetDemo').mockRejectedValue(new ApiError('Demo reset failed', 500))
+
+    renderBanner()
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Demo reset failed')
+
+    fireEvent.click(screen.getByRole('button', { name: /what’s simulated/i }))
+
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('does not caption a delete with the reset that failed before it', async () => {
+    vi.spyOn(projectsApi, 'resetDemo').mockRejectedValue(new ApiError('Demo reset failed', 500))
+    vi.spyOn(projectsApi, 'deleteDemo').mockRejectedValue(new ApiError('Demo delete refused', 409))
+
+    renderBanner()
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Demo reset failed')
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /delete demo/i }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Demo delete refused'))
+    expect(screen.queryByText('Demo reset failed')).not.toBeInTheDocument()
+  })
+})
+
+describe('DemoBanner — what a reset drops from the cache (DEMO-3)', () => {
+  it('drops the seeded data but keeps the session and the project the shell resolves', async () => {
+    vi.spyOn(projectsApi, 'resetDemo').mockResolvedValue(makeProject())
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([makeProject()])
+    vi.spyOn(projectsApi, 'get').mockResolvedValue(makeProject())
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const user = authValue({ id: 'creator-1', role: 'editor' }).user
+    queryClient.setQueryData(['auth', 'me'], user)
+    queryClient.setQueryData(projectsKey(), [makeProject()])
+    queryClient.setQueryData(projectKey('demo-1'), makeProject())
+    queryClient.setQueryData(eventTypesKey('demo-1', null), [{ id: 'old-seeded-row' }])
+
+    renderBanner({ queryClient })
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+
+    await waitFor(() =>
+      expect(queryClient.getQueryCache().find({ queryKey: eventTypesKey('demo-1', null) })).toBeUndefined(),
+    )
+    // Removing the session put the signed-in user back to 'loading' and
+    // unmounted the whole app behind the route guard.
+    expect(queryClient.getQueryData(['auth', 'me'])).toEqual(user)
+    expect(queryClient.getQueryCache().find({ queryKey: projectsKey() })).toBeDefined()
+    expect(queryClient.getQueryCache().find({ queryKey: projectKey('demo-1') })).toBeDefined()
   })
 })

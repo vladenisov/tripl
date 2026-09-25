@@ -78,6 +78,9 @@ function makeVariable(overrides: Partial<Variable> & { id: string; name: string 
   }
 }
 
+/** The header checkbox names how many matches it selects (PLAN-33). */
+const SELECT_ALL = /^Select all \d+ matching variables$/
+
 /** The list endpoint returns a page envelope; every test seeds it through here. */
 function mockList(items: Variable[], total = items.length) {
   vi.mocked(variablesApi.listPage).mockResolvedValue({ items, total })
@@ -351,11 +354,13 @@ describe('VariablesTab', () => {
     expect(variablesApi.values).toHaveBeenCalledTimes(1)
     expect(within(dialog).getByText('Edit: user_id')).toBeInTheDocument()
     expect(within(dialog).getByText('Observed values')).toBeInTheDocument()
-    expect(within(dialog).getByRole('columnheader', { name: 'Variable' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('columnheader', { name: 'Type' })).toBeInTheDocument()
     expect(within(dialog).getByRole('columnheader', { name: 'Event' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('columnheader', { name: 'Description' })).toBeInTheDocument()
     expect(within(dialog).getByRole('columnheader', { name: 'Possible values' })).toBeInTheDocument()
+    // The three columns that only repeated the form above on every row are gone
+    // (PLAN-30).
+    expect(within(dialog).queryByRole('columnheader', { name: 'Variable' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('columnheader', { name: 'Type' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('columnheader', { name: 'Description' })).not.toBeInTheDocument()
     // The two scan-derived facts the dialog used to fetch and discard
     // (tripl-h2sx.30, tripl-h2sx.22).
     expect(within(dialog).getByRole('columnheader', { name: 'Source' })).toBeInTheDocument()
@@ -519,6 +524,8 @@ describe('VariablesTab', () => {
     ).toBeInTheDocument()
     expect(screen.getByText('x')).toBeInTheDocument()
 
+    act(() => screen.getByLabelText('Search events').focus())
+    await screen.findByRole('option', { name: 'Checkout' })
     fireEvent.change(screen.getByLabelText('Override event'), { target: { value: 'ev-2' } })
     const overrideInput = screen.getByLabelText('Add override value')
     fireEvent.change(overrideInput, { target: { value: 'y' } })
@@ -557,6 +564,7 @@ describe('VariablesTab', () => {
       screen.getByRole('button', { name: 'Delete override for (unnamed event)' }),
     ).toBeInTheDocument()
     // The picker itself, whose only other row is the "Select event…" placeholder.
+    act(() => screen.getByLabelText('Override event').focus())
     expect(
       await screen.findByRole('option', { name: '(unnamed event)' }),
     ).toBeInTheDocument()
@@ -605,6 +613,10 @@ describe('VariablesTab', () => {
     expect(screen.getByText('2')).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Change type' }),
+    )
     await waitFor(() =>
       expect(variablesApi.bulkUpdate).toHaveBeenCalledWith(
         'demo',
@@ -635,10 +647,14 @@ describe('VariablesTab', () => {
     renderVariablesTab()
     await screen.findByText('${var_000}')
 
-    fireEvent.click(screen.getByLabelText('Select all variables'))
+    fireEvent.click(screen.getByLabelText(SELECT_ALL))
     expect(screen.getByText('60')).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Change type' }),
+    )
     await waitFor(() => expect(variablesApi.bulkUpdate).toHaveBeenCalled())
     const [, payload] = vi.mocked(variablesApi.bulkUpdate).mock.calls[0]
     expect(payload.variable_ids).toHaveLength(60)
@@ -891,6 +907,12 @@ describe('VariablesTab', () => {
     renderVariablesTab()
     fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
 
+    // Nothing is fetched for the picker until someone reaches for it: opening a
+    // variable to fix its description used to pull 100 full event rows (PLAN-30).
+    await screen.findByLabelText('Search events')
+    expect(eventsApi.list).not.toHaveBeenCalled()
+    act(() => screen.getByLabelText('Search events').focus())
+
     // A limit this page chose, not one it inherited without knowing.
     await waitFor(() =>
       expect(eventsApi.list).toHaveBeenCalledWith(
@@ -976,7 +998,7 @@ describe('VariablesTab', () => {
     await screen.findByText('${checkout_step}')
 
     fireEvent.change(screen.getByLabelText('Filter variables'), { target: { value: 'checkout' } })
-    fireEvent.click(screen.getByLabelText('Select all variables'))
+    fireEvent.click(screen.getByLabelText(SELECT_ALL))
 
     // Positive control: the bar is up, holding the three checkout rows.
     expect(screen.getByText('3')).toBeInTheDocument()
@@ -998,7 +1020,7 @@ describe('VariablesTab', () => {
     // The guard the usage filter already carried, now shared by both controls
     // rather than copy-pasted onto one of them.
     fireEvent.change(screen.getByLabelText('Filter variables'), { target: { value: '' } })
-    fireEvent.click(await screen.findByLabelText('Select all variables'))
+    fireEvent.click(await screen.findByLabelText(SELECT_ALL))
     expect(screen.getByLabelText('Clear selection')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Unused' }))
@@ -1023,7 +1045,7 @@ describe('VariablesTab', () => {
     vi.mocked(variablesApi.bulkUpdate).mockResolvedValue(undefined)
 
     renderVariablesTab()
-    fireEvent.click(await screen.findByLabelText('Select all variables'))
+    fireEvent.click(await screen.findByLabelText(SELECT_ALL))
     expect(screen.getByText('3')).toBeInTheDocument()
 
     fireEvent.click(
@@ -1044,6 +1066,10 @@ describe('VariablesTab', () => {
     // ONLY that id. Exclude is a one-row action and does not route through
     // changeMatchSet, which would clear the whole batch and jump to page 0.
     fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Change type' }),
+    )
     await waitFor(() =>
       expect(variablesApi.bulkUpdate).toHaveBeenCalledWith(
         'demo',
@@ -1059,7 +1085,7 @@ describe('VariablesTab', () => {
     vi.mocked(variablesApi.bulkDelete).mockResolvedValue(undefined)
 
     renderVariablesTab()
-    fireEvent.click(await screen.findByLabelText('Select all variables'))
+    fireEvent.click(await screen.findByLabelText(SELECT_ALL))
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete variable checkout_total' }))
     fireEvent.click(
@@ -1095,7 +1121,7 @@ describe('VariablesTab', () => {
     selectAllOfThree()
 
     const { switchBranch } = renderInBranch(null)
-    fireEvent.click(await screen.findByLabelText('Select all variables'))
+    fireEvent.click(await screen.findByLabelText(SELECT_ALL))
     expect(screen.getByText('3')).toBeInTheDocument()
     expect(screen.getByLabelText('Clear selection')).toBeInTheDocument()
 
@@ -1130,7 +1156,7 @@ describe('VariablesTab', () => {
     await screen.findByText('${legacy_a}')
 
     fireEvent.click(screen.getByRole('button', { name: 'Unused' }))
-    fireEvent.click(await screen.findByLabelText('Select all variables'))
+    fireEvent.click(await screen.findByLabelText(SELECT_ALL))
     expect(screen.getByText('2')).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'a, b' } })
@@ -1512,7 +1538,7 @@ describe('VariablesTab — a viewer reads without write controls', () => {
     const edit = await screen.findByRole('button', { name: 'Edit variable user_id' })
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
     expect(screen.queryByRole('button', { name: /Add variable/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('checkbox', { name: 'Select all variables' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: SELECT_ALL })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Exclude variable/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete variable user_id' })).not.toBeInTheDocument()
 
@@ -1524,5 +1550,240 @@ describe('VariablesTab — a viewer reads without write controls', () => {
     for (const close of within(dialog).getAllByRole('button', { name: 'Close' })) {
       expect(close).toBeEnabled()
     }
+  })
+})
+
+describe('VariablesTab — review batch 15 (PLAN-23 … PLAN-33)', () => {
+  it('keeps the filters on screen when a usage filter matches nothing, with a way back (PLAN-23)', async () => {
+    vi.mocked(variablesApi.listPage).mockImplementation(async (_slug, _branch, params) =>
+      params?.usage === 'unused'
+        ? { items: [], total: 0 }
+        : { items: [makeVariable({ id: 'var-1', name: 'spot_id' })], total: 1 },
+    )
+    renderVariablesTab()
+    await screen.findByText('${spot_id}')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unused' }))
+
+    expect(await screen.findByText('Nothing to retire')).toBeInTheDocument()
+    // The All / In use / Unused group and the text filter are still there.
+    expect(screen.getByRole('button', { name: 'All' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Filter variables')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all variables' }))
+    expect(await screen.findByText('${spot_id}')).toBeInTheDocument()
+  })
+
+  it('shows a failed load as an error with a retry, not as "No variables"', async () => {
+    vi.mocked(variablesApi.listPage).mockRejectedValue(new Error('boom'))
+    renderVariablesTab()
+
+    expect(await screen.findByText("Couldn't load variables")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText('No variables')).not.toBeInTheDocument()
+  })
+
+  it('refuses a documented value the chosen type cannot hold (PLAN-24)', async () => {
+    mockList([])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /Add variable/ }))
+
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'number' } })
+    const values = screen.getByLabelText('Add possible value')
+    fireEvent.change(values, { target: { value: 'abc' } })
+    fireEvent.keyDown(values, { key: 'Enter' })
+
+    expect(screen.getByText(/A Number variable takes numbers/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove abc' })).not.toBeInTheDocument()
+
+    fireEvent.change(values, { target: { value: '42' } })
+    fireEvent.keyDown(values, { key: 'Enter' })
+    expect(screen.getByRole('button', { name: 'Remove 42' })).toBeInTheDocument()
+  })
+
+  it('names the values a type change would make invalid, and holds Save (PLAN-24)', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant', allowed_values: ['a', 'b'] })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    fireEvent.change(within(dialog).getByLabelText('Type'), { target: { value: 'number' } })
+
+    expect(within(dialog).getByText(/Not valid for Number: a, b/)).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('stages a bulk type change and asks first, naming conflicting values (PLAN-25)', async () => {
+    mockList([
+      makeVariable({ id: 'var-1', name: 'one', allowed_values: ['x'] }),
+      makeVariable({ id: 'var-2', name: 'two' }),
+    ])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByLabelText(SELECT_ALL))
+
+    fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
+    // Choosing is not applying.
+    expect(variablesApi.bulkUpdate).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
+    const confirm = await screen.findByRole('alertdialog')
+    expect(within(confirm).getByText(/Change the type of 2 selected variables to Number\?/)).toBeInTheDocument()
+    expect(within(confirm).getByText(/1 of them has documented values that are not valid Number values/)).toBeInTheDocument()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(variablesApi.bulkUpdate).not.toHaveBeenCalled()
+  })
+
+  it('keeps a failed bulk edit\'s draft and says why (PLAN-26)', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'one' })])
+    vi.mocked(variablesApi.bulkUpdate).mockRejectedValue(new Error('Variable not found'))
+    renderVariablesTab()
+    fireEvent.click(await screen.findByLabelText('Select variable one'))
+
+    fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'a, b' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add values' }))
+
+    expect(await screen.findByText(/The bulk change failed: Variable not found/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Bulk add values')).toHaveValue('a, b')
+  })
+
+  it('says a failed delete failed (PLAN-26)', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'one' })])
+    vi.mocked(variablesApi.del).mockRejectedValue(new Error('Forbidden'))
+    renderVariablesTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete variable one' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }))
+
+    expect(await screen.findByText('Could not delete the variable: Forbidden')).toBeInTheDocument()
+  })
+
+  it('asks before deleting a per-event override (PLAN-28)', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant' })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([
+      { id: 'ovr-1', variable_id: 'var-1', event_id: 'ev-1', event_name: 'Onboarding', values: ['x', 'y'] },
+    ])
+    vi.mocked(variableOverridesApi.del).mockResolvedValue(undefined as never)
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete override for Onboarding' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Delete override' })
+    expect(within(confirm).getByText(/Its 2 values go with it/)).toBeInTheDocument()
+    expect(variableOverridesApi.del).not.toHaveBeenCalled()
+
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+    await waitFor(() =>
+      expect(variableOverridesApi.del).toHaveBeenCalledWith('demo', 'var-1', 'ev-1', null),
+    )
+  })
+
+  it('reads the edited variable from the list, so a cleared one offers nothing more to clear (PLAN-29)', async () => {
+    let listed = [makeVariable({ id: 'var-1', name: 'variant', context_count: 2 })]
+    vi.mocked(variablesApi.listPage).mockImplementation(async () => ({ items: listed, total: 1 }))
+    vi.mocked(variablesApi.clearValues).mockImplementation(async () => {
+      listed = [makeVariable({ id: 'var-1', name: 'variant', context_count: 0 })]
+      return undefined as never
+    })
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear observed values' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear values' }))
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: 'Clear observed values' })).toBeDisabled(),
+    )
+  })
+
+  it('refreshes the events caches after a rename (PLAN-32)', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant' })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variablesApi.update).mockResolvedValue({} as never)
+    const { queryClient } = renderVariablesTab()
+    queryClient.setQueryData(['events', 'demo', null, 'list'], { items: [], total: 0 })
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+
+    fireEvent.change(screen.getByPlaceholderText('variable_name'), { target: { value: 'arm' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(queryClient.getQueryState(['events', 'demo', null, 'list'])?.isInvalidated).toBe(true),
+    )
+  })
+
+  it('shows a partial selection as mixed on the select-all box (PLAN-33)', async () => {
+    mockList([
+      makeVariable({ id: 'var-1', name: 'one' }),
+      makeVariable({ id: 'var-2', name: 'two' }),
+    ])
+    renderVariablesTab()
+
+    fireEvent.click(await screen.findByLabelText('Select variable one'))
+
+    const selectAll = screen.getByLabelText('Select all 2 matching variables') as HTMLInputElement
+    expect(selectAll.indeterminate).toBe(true)
+    expect(selectAll).not.toBeChecked()
+
+    fireEvent.click(screen.getByLabelText('Select variable two'))
+    expect(selectAll.indeterminate).toBe(false)
+    expect(selectAll).toBeChecked()
+  })
+})
+
+describe('VariablesTab — review 204 follow-ups', () => {
+  it('asks before bulk-adding values the selected types cannot hold', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'count', variable_type: 'number' })])
+    vi.mocked(variablesApi.bulkUpdate).mockResolvedValue(undefined)
+    renderVariablesTab()
+    fireEvent.click(await screen.findByLabelText('Select variable count'))
+
+    fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'abc, 2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add values' }))
+
+    const confirm = await screen.findByRole('alertdialog', { name: 'Add values that do not fit' })
+    expect(within(confirm).getByText(/1 selected variable is typed Number/)).toBeInTheDocument()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(variablesApi.bulkUpdate).not.toHaveBeenCalled()
+    // Backing out keeps what was typed.
+    expect(screen.getByLabelText('Bulk add values')).toHaveValue('abc, 2')
+  })
+
+  it('keeps the staged type when the confirm is cancelled', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'one' })])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByLabelText('Select variable one'))
+
+    fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Bulk set type')).toHaveValue('number')
+  })
+
+  it('warns when a type change strands per-event override values', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant' })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([
+      { id: 'ovr-1', variable_id: 'var-1', event_id: 'ev-1', event_name: 'Onboarding', values: ['a', 'b'] },
+    ])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByRole('button', { name: 'Edit override for Onboarding' })
+
+    fireEvent.change(within(dialog).getByLabelText('Type'), { target: { value: 'number' } })
+
+    expect(within(dialog).getByText(/Per-event overrides hold values not valid for Number: a, b/)).toBeInTheDocument()
+    // A warning, not a block: overrides are saved on their own.
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled()
   })
 })

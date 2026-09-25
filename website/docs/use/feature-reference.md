@@ -532,7 +532,14 @@ value outside the accepted set. An action without a resolution note preserves
 the existing note; send an explicit null to clear it, or reopen the drift.
 The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and
-delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
+delete. A bulk type change is chosen first and applied with **Set type**, after a
+confirm that names how many selected variables have documented values the new
+type would reject. Values are checked against the variable's type wherever they
+are entered — documented values, per-event overrides and bulk-added values: a
+Number takes numbers, a Boolean `true` or `false`, a Date `YYYY-MM-DD`, a Datetime
+an ISO date-time and JSON valid JSON (array types check each value as one
+element). Changing a variable's type in its editor lists the documented values
+the new type would reject, and holds Save until they are removed. **Exclude from scans** keeps a restorable tombstone so a deliberately
 removed scan-owned variable is not recreated. Search matches a variable's
 display name and description **and** its scan source path and bindings, so a
 variable whose display name was shortened from a dotted path is still findable
@@ -1615,6 +1622,13 @@ The scan list heads three figures: **Scans**, **Monitoring** (scans that have
 both a time column and a schedule, so the dispatcher actually picks them up), and
 **Warehouse rows read · 24h**. The detail page adds **Rows read · last
 run**, **Events written**, and **Metric points**.
+
+The 24h figure, and the **failed last N runs** tag on a scan's collapsed
+failures under **Recent runs**, are exact: the server counts them over each
+scan's whole history (`GET /projects/{slug}/scans/activity`), so a scan that
+runs every few minutes no longer shows them as floors ending in `+`. A run
+counts toward the 24 hours by when it finished, or when it started if it is
+still running.
 
 **Metric points**, not "metric rows": these are points on a metric time series —
 what anomaly detection and alerts are built on — and *Metrics* is the name of a

@@ -3,6 +3,7 @@ import { metricsApi } from '@/api/metrics'
 import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
@@ -232,45 +233,47 @@ function DistributionDriftPanel({
 
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-3 font-medium">Bucket</th>
-                  <th className="px-4 py-3 font-medium">PSI</th>
-                  <th className="px-4 py-3 font-medium">Band</th>
-                  <th className="px-4 py-3 font-medium">Top contribution</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tableRows.map(row => {
-                  const topMover = row.top_movers[0]
-                  return (
-                    <tr key={row.id} className="border-b last:border-0">
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {formatTimestamp(row.bucket)}
-                      </td>
-                      <td className="px-4 py-3 font-medium">{row.psi.toFixed(3)}</td>
-                      <td className="px-4 py-3">
-                        <Badge variant="outline" className={driftBandClassName(row.band)}>
-                          {row.band}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3">
-                        {topMover ? (
-                          <span className="font-mono text-xs">
-                            {topMover.value}: {formatPercent(topMover.baseline_share)} {'->'} {formatPercent(topMover.current_share)}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+          {/* A phone drops the Band column: the PSI beside it carries the same
+              verdict. Top contribution stays — the movers card above covers
+              only the latest bucket, so for every older bucket this column is
+              the one place that says what moved. */}
+          <Table aria-label="Drift by bucket">
+            <TableHeader className="bg-muted/40">
+              <TableRow className="hover:bg-transparent">
+                <TableHead scope="col" className="px-4">Bucket</TableHead>
+                <TableHead scope="col" className="px-4">PSI</TableHead>
+                <TableHead scope="col" className="hidden px-4 md:table-cell">Band</TableHead>
+                <TableHead scope="col" className="px-4">Top contribution</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {tableRows.map(row => {
+                const topMover = row.top_movers[0]
+                return (
+                  <TableRow key={row.id}>
+                    <TableCell className="px-4 py-3 text-muted-foreground">
+                      {formatTimestamp(row.bucket)}
+                    </TableCell>
+                    <TableCell className="px-4 py-3 font-medium">{row.psi.toFixed(3)}</TableCell>
+                    <TableCell className="hidden px-4 py-3 md:table-cell">
+                      <Badge variant="outline" className={driftBandClassName(row.band)}>
+                        {row.band}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="px-4 py-3">
+                      {topMover ? (
+                        <span className="font-mono text-xs">
+                          {topMover.value}: {formatPercent(topMover.baseline_share)} {'->'} {formatPercent(topMover.current_share)}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
     </div>

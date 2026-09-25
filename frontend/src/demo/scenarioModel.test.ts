@@ -459,6 +459,46 @@ describe('buildChapterSteps and the seeded deep links', () => {
   })
 })
 
+describe('stepCompletedByPath — consecutive steps never share an arrival path (DEMO-14)', () => {
+  // The provider advances on arrival during render, one step per render. Two
+  // consecutive steps completed by the same path would skip the second one the
+  // moment the first landed, before the user ever saw it.
+  const samplePaths = [
+    `/p/${SLUG}/events/all/ev-1/edit`,
+    `/p/${SLUG}/events/all/ev-1`,
+    `/p/${SLUG}/settings/variables`,
+    `/p/${SLUG}/settings/branches`,
+    `/p/${SLUG}/settings/branches/br-1`,
+    `/p/${SLUG}/reconciliation`,
+    `/p/${SLUG}/settings/alerting`,
+    `/p/${SLUG}/coverage`,
+    `/p/${SLUG}/monitoring/event/ev-1`,
+    `/p/${SLUG}/monitoring/metric/m-1`,
+    `/p/${SLUG}/anomalies`,
+    `/p/${SLUG}/overview`,
+    `/p/${SLUG}/scans`,
+    // Every link the chapters themselves hand out.
+    ...CHAPTER_IDS.flatMap((chapterId) =>
+      buildChapterSteps(SLUG, chapterId, initialScenarioState()).map((step) => step.to.split('?')[0]),
+    ),
+  ]
+
+  const pairs = CHAPTER_IDS.flatMap((chapterId) =>
+    CHAPTER_STEP_IDS[chapterId].slice(1).map((next, index) => {
+      const current = CHAPTER_STEP_IDS[chapterId][index]
+      return [current, next] as const
+    }),
+  )
+
+  it.each(pairs)('%s and %s', (current, next) => {
+    const shared = samplePaths.filter(
+      (pathname) =>
+        stepCompletedByPath(SLUG, current, pathname) && stepCompletedByPath(SLUG, next, pathname),
+    )
+    expect(shared).toEqual([])
+  })
+})
+
 describe('stepCompletedByPath — arrival completes deep-link steps', () => {
   it.each([
     ['edit-event/open-editor', `/p/${SLUG}/events/all/ev-1/edit`, true],

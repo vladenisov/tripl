@@ -174,10 +174,14 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     },
   })
 
+  // Delete renders its error on the card it failed for, like scan delete/run
+  // failures do on the Scans page (DATA-5), so the global toast stays quiet.
   const deleteMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (id: string) => dataSourcesApi.del(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: dataSourcesKey() }),
   })
+  const failedDeleteId = deleteMut.isError ? deleteMut.variables : undefined
 
   const handleDelete = async (ds: DataSource) => {
     const ok = await confirm({
@@ -499,6 +503,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
               onTest={() => handleTest(ds.id)}
               onEdit={() => startEdit(ds)}
               onDelete={() => { void handleDelete(ds) }}
+              deleteError={
+                failedDeleteId === ds.id ? getErrorMessage(deleteMut.error) : undefined
+              }
             />
           ))}
         </div>
@@ -514,6 +521,7 @@ function DataSourceCard({
   onTest,
   onEdit,
   onDelete,
+  deleteError,
 }: {
   ds: DataSource
   testing: boolean
@@ -521,6 +529,8 @@ function DataSourceCard({
   onTest: () => void
   onEdit: () => void
   onDelete: () => void
+  /** Why the last delete of this source failed, shown on the card itself. */
+  deleteError?: string
 }) {
   const lastTestAt = ds.last_test_at
   const stale = isHealthCheckStale(ds)
@@ -658,6 +668,16 @@ function DataSourceCard({
             </div>
           )}
         </div>
+      )}
+
+      {deleteError && (
+        <p
+          role="alert"
+          className="border-t px-3.5 py-2 text-[11.5px]"
+          style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)', background: 'var(--danger-soft)' }}
+        >
+          Could not delete {ds.name}: {deleteError}
+        </p>
       )}
 
       {canManage && (

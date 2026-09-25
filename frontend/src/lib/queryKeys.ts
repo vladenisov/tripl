@@ -20,6 +20,7 @@
 
 import { queryOptions } from '@tanstack/react-query'
 import { projectsApi } from '@/api/projects'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 /** Workspace data sources — `GET /data-sources`, one list for the whole app. */
 export const dataSourcesKey = () => ['dataSources'] as const
@@ -140,9 +141,21 @@ export const projectsKey = () => ['projects'] as const
  * cache; each used to redeclare it with slightly different options, so
  * whichever mounted first decided how it behaved. Spread it and override only
  * what a reader genuinely needs (`enabled: false` for a cache-only read).
+ *
+ * Silent for every reader, because its failure has exactly two owners that
+ * render it: Layout's "Backend is unavailable" card for every page inside the
+ * app shell (the workspace dashboard included — it shows no card of its own),
+ * and the settings takeover's card, which mounts outside Layout. Opting out on
+ * one observer was not enough — a query's meta is whichever observer set its
+ * options last — so the card used to come with a toast saying the same thing.
+ * A reader that adds its own error card for this query reports it twice.
  */
 export const projectsQueryOptions = () =>
-  queryOptions({ queryKey: projectsKey(), queryFn: ({ signal }) => projectsApi.list(signal) })
+  queryOptions({
+    queryKey: projectsKey(),
+    queryFn: ({ signal }) => projectsApi.list(signal),
+    meta: SILENT_ERROR_META,
+  })
 
 /**
  * Every events-tab dynamics cache for a project — `metricsApi.getEventsMetrics`.

@@ -76,6 +76,21 @@ import { useCanWriteProject } from '@/lib/permissions'
 // name; Latest still fits its widest realistic value ("1,234,567 sessions").
 const METRIC_GRID =
   'grid grid-cols-[18px_20px_minmax(0,2fr)_minmax(0,1fr)_104px_84px_84px_28px] items-center gap-3 px-4'
+  // Below md each row is a two-line card instead of a 748px-wide strip the
+  // phone scrolls sideways through: handle, checkbox, name and menu on top,
+  // the latest value and status under the name. The trend sparkline and the
+  // relative "updated" time are the columns a phone does without (DS-5).
+  + ' max-md:grid-cols-[18px_20px_minmax(0,1fr)_auto_28px] max-md:gap-y-1'
+/** Where each cell sits in the phone card; no effect from md up. */
+const PHONE_CELL = {
+  grip: 'max-md:col-start-1 max-md:row-start-1',
+  select: 'max-md:col-start-2 max-md:row-start-1',
+  name: 'max-md:col-span-2 max-md:col-start-3 max-md:row-start-1',
+  latest: 'max-md:col-start-3 max-md:row-start-2',
+  status: 'max-md:col-start-4 max-md:row-start-2',
+  menu: 'max-md:col-start-5 max-md:row-start-1',
+  dropped: 'max-md:hidden',
+} as const
 
 const STATUS_TONE: Record<MetricStatus, ChipTone> = {
   draft: 'neutral',
@@ -669,7 +684,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 onDragEnd={handleDragEnd}
               >
                 <div className="overflow-x-auto">
-                  <div role="table" aria-label="Metrics" className="min-w-[748px]">
+                  <div role="table" aria-label="Metrics" className="md:min-w-[748px]">
                     <div role="rowgroup">
                       <div
                         role="row"
@@ -686,13 +701,15 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                             />
                           )}
                         </span>
-                        <span role="columnheader">Metric</span>
-                        <span role="columnheader">Latest</span>
-                        <span role="columnheader">
+                        <span role="columnheader" className="max-md:col-span-2">Metric</span>
+                        {/* The card shows these two under the name, unlabelled;
+                            screen readers still get the header. */}
+                        <span role="columnheader" className="max-md:sr-only">Latest</span>
+                        <span role="columnheader" className={PHONE_CELL.dropped}>
                           {trendPoints > 0 ? `Trend · ${trendPoints} pts` : 'Trend'}
                         </span>
-                        <span role="columnheader">Status</span>
-                        <span role="columnheader" className="text-right">Updated</span>
+                        <span role="columnheader" className="max-md:sr-only">Status</span>
+                        <span role="columnheader" className={`text-right ${PHONE_CELL.dropped}`}>Updated</span>
                         <span role="columnheader" aria-label="Actions" />
                       </div>
                     </div>
@@ -813,7 +830,7 @@ function MetricRow({
           : undefined
       }
     >
-      <span role="cell">
+      <span role="cell" className={PHONE_CELL.grip}>
         {canReorder ? (
           <button
             type="button"
@@ -828,7 +845,7 @@ function MetricRow({
           </button>
         ) : null}
       </span>
-      <span role="cell">
+      <span role="cell" className={PHONE_CELL.select}>
         {canWrite && (
           <Checkbox
             aria-label={`Select ${metric.display_name}`}
@@ -838,7 +855,7 @@ function MetricRow({
           />
         )}
       </span>
-      <span role="cell" className="flex min-w-0 items-center gap-2">
+      <span role="cell" className={`flex min-w-0 items-center gap-2 ${PHONE_CELL.name}`}>
         {signalTone ? (
           <Dot tone={signalTone} pulse size={7} />
         ) : (
@@ -878,12 +895,12 @@ function MetricRow({
       <span
         role="cell"
         title={latestTitle}
-        className="mono truncate text-[12px]"
+        className={`mono truncate text-[12px] ${PHONE_CELL.latest}`}
         style={{ color: signalTone ? `var(--${signalTone})` : 'var(--fg-subtle)' }}
       >
         {formatMetricValue(metric.latest_value, metric.unit)}
       </span>
-      <span role="cell">
+      <span role="cell" className={PHONE_CELL.dropped}>
         {metric.spark.length > 0 ? (
           <Sparkline data={metric.spark} color={metric.color} anomalyIdx={anomalyIdx} width={96} height={22} />
         ) : (
@@ -892,15 +909,19 @@ function MetricRow({
           </span>
         )}
       </span>
-      <span role="cell">
+      <span role="cell" className={PHONE_CELL.status}>
         <Chip tone={STATUS_TONE[metric.status]} size="xs">
           {METRIC_STATUS_LABEL[metric.status]}
         </Chip>
       </span>
-      <span role="cell" className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+      <span
+        role="cell"
+        className={`mono text-right text-[10.5px] ${PHONE_CELL.dropped}`}
+        style={{ color: 'var(--fg-faint)' }}
+      >
         {formatRelativeTime(metric.updated_at)}
       </span>
-      <span role="cell" className="flex justify-end">
+      <span role="cell" className={`flex justify-end ${PHONE_CELL.menu}`}>
         {slug && canWrite ? (
           <MetricRowMenu
             metric={metric}

@@ -1,5 +1,23 @@
 import { createContext, useContext } from 'react'
+import type { QueryClient } from '@tanstack/react-query'
 import type { AuthUser } from '@/types'
+
+/** The session query — `GET /auth/me`. Everything else in the cache is protected data. */
+export const AUTH_QUERY_KEY = ['auth', 'me'] as const
+
+/**
+ * Drop every cached query except the session. Removing `['auth', 'me']` with
+ * the rest would drop the signed-in user to 'loading' and unmount the whole app
+ * behind the route guard until it answered again.
+ */
+export function clearProtectedQueries(
+  queryClient: QueryClient,
+  keep: (queryKey: readonly unknown[]) => boolean = () => false,
+) {
+  queryClient.removeQueries({
+    predicate: (query) => query.queryKey[0] !== 'auth' && !keep(query.queryKey),
+  })
+}
 
 export type AuthStatus = 'loading' | 'authenticated' | 'anonymous' | 'error'
 

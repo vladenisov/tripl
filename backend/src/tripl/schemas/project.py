@@ -265,5 +265,11 @@ class ProjectResponse(BaseModel):
     # tick. This is the only honest freshness signal the UI has (tripl-2su6.17).
     demo_last_tick_at: datetime | None = None
     created_by_user_id: uuid.UUID | None = None
+    # Whether THIS caller may write inside the project: the answer the editor
+    # gate (``api.deps.get_editor_user``) would give on the project's slug-scoped
+    # routes — role, API-key scope and ``ProjectMutationScope`` together. Computed
+    # per request by ``project_service.with_can_mutate``; False until then, and
+    # never stored in the shared project-list cache.
+    can_mutate: bool = False
 
     model_config = {"from_attributes": True}

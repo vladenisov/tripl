@@ -3772,6 +3772,53 @@
         "title": "AppVersionSeriesResponse",
         "type": "object"
       },
+      "AuditActionCatalog": {
+        "description": "Every action the audit log records, grouped for the filter.\n\n``project`` holds the actions recorded WITH a project \u2014 the only ones a\nproject-scoped query can match. ``workspace`` holds those recorded with no\nproject (data sources, users, instance settings, a deleted project), which\nonly the unfiltered workspace feed can match. An action is in exactly one.",
+        "properties": {
+          "project": {
+            "items": {
+              "$ref": "#/components/schemas/AuditActionGroup"
+            },
+            "title": "Project",
+            "type": "array"
+          },
+          "workspace": {
+            "items": {
+              "$ref": "#/components/schemas/AuditActionGroup"
+            },
+            "title": "Workspace",
+            "type": "array"
+          }
+        },
+        "required": [
+          "project",
+          "workspace"
+        ],
+        "title": "AuditActionCatalog",
+        "type": "object"
+      },
+      "AuditActionGroup": {
+        "description": "One labelled group of the audit action filter.",
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "actions"
+        ],
+        "title": "AuditActionGroup",
+        "type": "object"
+      },
       "AuditEntryDetailResponse": {
         "description": "One entry WITH the request payload that produced it.\n\n``payload`` is the half of an audit entry that carries warehouse hosts and\n``base_query`` SQL, which is why the whole router is owner-only \u2014 see the\ngate write-up in api/v1/audit.py. Secrets are already masked at write time\nby ``audit_service._redact``.",
         "properties": {
@@ -14680,6 +14727,11 @@
             "title": "App Version Keep Releases",
             "type": "integer"
           },
+          "can_mutate": {
+            "default": false,
+            "title": "Can Mutate",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -15632,6 +15684,71 @@
           }
         },
         "title": "RuntimeSettingsUpdate",
+        "type": "object"
+      },
+      "ScanActivityItem": {
+        "description": "One scan config's run activity, as the Scans list shows it.",
+        "properties": {
+          "failing_streak": {
+            "title": "Failing Streak",
+            "type": "integer"
+          },
+          "latest_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanJobResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rows_read_24h": {
+            "title": "Rows Read 24H",
+            "type": "integer"
+          },
+          "scan_config_id": {
+            "format": "uuid",
+            "title": "Scan Config Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scan_config_id",
+          "latest_job",
+          "failing_streak",
+          "rows_read_24h"
+        ],
+        "title": "ScanActivityItem",
+        "type": "object"
+      },
+      "ScanActivityResponse": {
+        "description": "Per-scan activity for a project, aggregated in SQL (tripl-fj5g.11).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScanActivityItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "window_from": {
+            "format": "date-time",
+            "title": "Window From",
+            "type": "string"
+          },
+          "window_to": {
+            "format": "date-time",
+            "title": "Window To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window_from",
+          "window_to",
+          "items"
+        ],
+        "title": "ScanActivityResponse",
         "type": "object"
       },
       "ScanConfigCreate": {
@@ -20158,6 +20275,28 @@
         ]
       }
     },
+    "/api/v1/audit/actions": {
+      "get": {
+        "description": "Every action the log records, grouped for the filter; see audit_actions.",
+        "operationId": "list_audit_actions_api_v1_audit_actions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditActionCatalog"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Audit Actions",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
     "/api/v1/audit/{entry_id}": {
       "get": {
         "operationId": "get_audit_entry_api_v1_audit__entry_id__get",
@@ -24630,6 +24769,53 @@
         "summary": "Get Distribution Drifts",
         "tags": [
           "metrics"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/event-type-owners": {
+      "get": {
+        "description": "Owners of every live event type in the project; group by ``event_type_id``.",
+        "operationId": "list_project_owners_api_v1_projects__slug__event_type_owners_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EventTypeOwnerResponse"
+                  },
+                  "title": "Response List Project Owners Api V1 Projects  Slug  Event Type Owners Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Project Owners",
+        "tags": [
+          "event-type-owners"
         ]
       }
     },
@@ -29541,7 +29727,7 @@
     },
     "/api/v1/projects/{slug}/metrics/{metric_id}/generated-sql": {
       "get": {
-        "description": "Return a saved fact metric's primary dependency-batch SQL without running it.",
+        "description": "Return a saved fact metric's primary dependency-batch SQL without running it.\n\nSame gate as ``GET /{metric_id}``: anyone who can read the metric. The SQL is\ncompiled from config that read already returns (MET-41) and nothing executes.",
         "operationId": "get_metric_generated_sql_api_v1_projects__slug__metrics__metric_id__generated_sql_get",
         "parameters": [
           {
@@ -31070,6 +31256,49 @@
           }
         },
         "summary": "Create Scan Config",
+        "tags": [
+          "scans"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/scans/activity": {
+      "get": {
+        "description": "Each scan's latest job, failing streak and rows read in the last 24 hours.\n\nOne request for the whole Scans list, aggregated in SQL, so the streak and\nthe 24h total are exact rather than floors over a capped page of jobs.",
+        "operationId": "get_scan_activity_api_v1_projects__slug__scans_activity_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanActivityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Scan Activity",
         "tags": [
           "scans"
         ]
@@ -33818,46 +34047,6 @@
           }
         },
         "summary": "Get Ai Settings",
-        "tags": [
-          "settings"
-        ]
-      },
-      "put": {
-        "description": "Upsert AI overrides (partial: only fields present in the request body are\napplied, via exclude_unset). PUT \u2014 not PATCH \u2014 because the frontend AI\nsettings form calls this endpoint; semantics are upsert, not replace-all.",
-        "operationId": "put_ai_settings_api_v1_settings_ai_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AiSettingsUpdate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AiSettingsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Put Ai Settings",
         "tags": [
           "settings"
         ]

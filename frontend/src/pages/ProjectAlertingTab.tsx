@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   keepPreviousData,
@@ -35,19 +35,12 @@ import { useCanWriteProject } from '@/lib/permissions'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDestination, AlertInboxListResponse } from '@/types'
 
-import { AlertAuditPanel, type DeliveryFilters } from './alerting/AlertAuditPanel'
+import type { DeliveryFilters } from './alerting/AlertAuditPanel'
 import { invalidateAlertingConfig } from './alerting/alertingCache'
 import { describeDeletionImpact } from './alerting/deletionImpact'
 import { AlertingGuidedSetup } from './alerting/AlertingGuidedSetup'
-import {
-  AlertingInbox,
-  type InboxActionVariables,
-  type InboxStatusFilter,
-} from './alerting/AlertingInbox'
-import {
-  InboxBulkActionBar,
-  type InboxBulkActionRequest,
-} from './alerting/InboxBulkActionBar'
+import type { InboxActionVariables, InboxStatusFilter } from './alerting/AlertingInbox'
+import type { InboxBulkActionRequest } from './alerting/InboxBulkActionBar'
 import {
   INBOX_FILTER_PARAM_KEYS,
   inboxFilterQuery,
@@ -57,8 +50,6 @@ import {
 } from './alerting/inboxFilters'
 import { DeliveryScheduleField } from './alerting/DeliveryScheduleField'
 import { resolveScheduleTimezone } from './alerting/deliverySchedule'
-import { DestinationsSection } from './alerting/DestinationsSection'
-import { MonitorsSection } from './alerting/MonitorsSection'
 import { CHANNEL_META } from './alerting/channelMeta'
 import { PageHead, Panel } from '@/components/settings/kit'
 import {
@@ -69,6 +60,46 @@ import {
 import { getErrorMessage } from '@/lib/utils'
 import { projectEventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { lazyWithReload } from '@/lib/lazyWithReload'
+
+// One chunk per section (tripl-fj5g.15). The page was a single ~118 KB chunk,
+// and a visit only ever shows one of the four: the rule editor and replay
+// behind Monitors, the incident cards behind the Inbox and the delivery rows
+// behind the log load when their tab is opened. The page itself keeps the
+// state they share, so switching tabs loses nothing.
+const MonitorsSection = lazyWithReload(() =>
+  import('./alerting/MonitorsSection').then((m) => ({ default: m.MonitorsSection })),
+)
+const DestinationsSection = lazyWithReload(() =>
+  import('./alerting/DestinationsSection').then((m) => ({ default: m.DestinationsSection })),
+)
+const AlertingInbox = lazyWithReload(() =>
+  import('./alerting/AlertingInbox').then((m) => ({ default: m.AlertingInbox })),
+)
+const InboxBulkActionBar = lazyWithReload(() =>
+  import('./alerting/InboxBulkActionBar').then((m) => ({ default: m.InboxBulkActionBar })),
+)
+const AlertAuditPanel = lazyWithReload(() =>
+  import('./alerting/AlertAuditPanel').then((m) => ({ default: m.AlertAuditPanel })),
+)
+
+/**
+ * Inside the tabpanel, not around it: the selected tab's `aria-controls` must
+ * name a panel that exists while the section's chunk is still on its way.
+ */
+function SectionSuspense({ children }: { children: ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+          Loading…
+        </p>
+      }
+    >
+      {children}
+    </Suspense>
+  )
+}
 
 // The page does four jobs — triage incidents, tune what routes, configure the
 // channels it routes to, audit delivery — and stacking them on one scroll made
@@ -1113,6 +1144,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           id={panelId('monitors')}
           aria-labelledby={tabId('monitors')}
         >
+        <SectionSuspense>
         <MonitorsSection
           slug={slug}
           destinations={destinations}
@@ -1124,6 +1156,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           onAutoOpenRuleConsumed={() => setAutoOpenRuleForDestinationId(null)}
           onGoToDestinations={() => selectSection('destinations')}
         />
+        </SectionSuspense>
         </div>
       )}
 
@@ -1134,6 +1167,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           id={panelId('destinations')}
           aria-labelledby={tabId('destinations')}
         >
+        <SectionSuspense>
         <DestinationsSection
           slug={slug}
           destinations={destinations}
@@ -1142,6 +1176,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           onEditDestination={openEdit}
           onDeleteDestination={handleDeleteDestination}
         />
+        </SectionSuspense>
         </div>
       )}
 
@@ -1152,6 +1187,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           id={panelId('inbox')}
           aria-labelledby={tabId('inbox')}
         >
+        <SectionSuspense>
         <AlertingInbox
           slug={slug}
           inbox={inbox}
@@ -1202,6 +1238,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
             onClear={clearIncidentSelection}
           />
         )}
+        </SectionSuspense>
         </div>
       )}
 
@@ -1212,6 +1249,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           id={panelId('audit')}
           aria-labelledby={tabId('audit')}
         >
+        <SectionSuspense>
         <AlertAuditPanel
           slug={slug}
           deliveries={deliveries}
@@ -1230,6 +1268,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           allRules={allRules}
           scans={scans}
         />
+        </SectionSuspense>
         </div>
       )}
       </>

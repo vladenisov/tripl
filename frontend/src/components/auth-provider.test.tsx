@@ -83,6 +83,25 @@ describe('AuthProvider session status', () => {
   })
 })
 
+describe('AuthProvider /auth/me refetch failures (fj5g.20)', () => {
+  it('keeps a signed-in user signed in when a refetch fails with a non-401', async () => {
+    meMock.mockResolvedValueOnce(makeUser()).mockRejectedValue(new ApiError('Bad gateway', 502))
+    const queryClient = renderProvider()
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('authenticated'))
+
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['auth', 'me'] })
+    })
+
+    await waitFor(() => expect(meMock).toHaveBeenCalledTimes(2))
+    // A network blip says nothing about the session: no error screen, no
+    // sign-in dialog, the same user.
+    expect(screen.getByTestId('status').textContent).toBe('authenticated')
+    expect(screen.getByTestId('email').textContent).toBe('a@b.com')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
 describe('AuthProvider unauthorized event cycle', () => {
   it('keeps the page mounted under a sign-in dialog when the session expires', async () => {
     meMock.mockResolvedValue(makeUser())

@@ -34,11 +34,15 @@ function metaField(over: Partial<MetaFieldDefinition> & { id: string; name: stri
 }
 
 function renderTab(
-  fields: MetaFieldDefinition[] = [],
-  { auth = null, project }: { auth?: AuthContextValue | null; project?: Project } = {},
+  fields: MetaFieldDefinition[] | null = [],
+  {
+    auth = null,
+    project,
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  }: { auth?: AuthContextValue | null; project?: Project; queryClient?: QueryClient } = {},
 ) {
-  vi.mocked(metaFieldsApi.list).mockResolvedValue(fields)
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // `null` leaves the list mock to the test, for a pending or failing load.
+  if (fields) vi.mocked(metaFieldsApi.list).mockResolvedValue(fields)
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
@@ -148,5 +152,51 @@ describe('MetaFieldsTab — read-only visitors', () => {
 
     expect(await screen.findByRole('button', { name: 'Edit Jira link' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Add meta field/ })).toBeInTheDocument()
+  })
+})
+
+describe('MetaFieldsTab — load and delete states (PLAN-41 / PLAN-54)', () => {
+  const FIELD = metaField({ id: 'mf-1', name: 'jira_link', display_name: 'Jira link' })
+
+  it('shows a skeleton, not "No meta fields", while the list loads', async () => {
+    vi.mocked(metaFieldsApi.list).mockReturnValue(new Promise(() => {}))
+    renderTab(null)
+
+    expect(await screen.findByLabelText('Loading meta fields')).toBeInTheDocument()
+    expect(screen.queryByText('No meta fields')).not.toBeInTheDocument()
+  })
+
+  it('shows a failed load as an error with a retry, not as an empty list', async () => {
+    vi.mocked(metaFieldsApi.list).mockRejectedValue(new Error('boom'))
+    renderTab(null)
+
+    expect(await screen.findByText("Couldn't load meta fields")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText('No meta fields')).not.toBeInTheDocument()
+  })
+
+  it('says a failed delete failed', async () => {
+    vi.mocked(metaFieldsApi.del).mockRejectedValue(new Error('Field is referenced'))
+    renderTab([FIELD], { auth: authAs('editor') })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Jira link' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Field is referenced')
+  })
+
+  it("refreshes the branch review's project-wide meta-field cache after an edit", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // What BranchesTab reads the ticket link template from.
+    queryClient.setQueryData(['metaFields', 'demo'], [FIELD])
+    vi.mocked(metaFieldsApi.update).mockResolvedValue(FIELD)
+    renderTab([FIELD], { auth: authAs('editor'), queryClient })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Jira link' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(queryClient.getQueryState(['metaFields', 'demo'])?.isInvalidated).toBe(true),
+    )
   })
 })

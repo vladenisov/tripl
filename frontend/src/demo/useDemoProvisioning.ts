@@ -59,11 +59,25 @@ export const DEMO_PROVISION_TIMEOUT_MS = 90_000
  */
 export const MAX_DEMOS_PER_CREATOR = 3
 
-/** Every terminal shape a create can reach. Resolved, never thrown. */
+/** Every terminal shape a create can reach. Resolved, never thrown. `run`
+ *  names the attempt it belongs to, so an attempt the user has since closed
+ *  cannot report back into the next one. */
 type CreateOutcome =
-  | { kind: 'created'; project: Project }
-  | { kind: 'cancelled' }
-  | { kind: 'failed'; error: unknown }
+  | { kind: 'created'; project: Project; run: number }
+  | { kind: 'cancelled'; run: number }
+  /** Stopped by a cancel this tab did not send (the same user, another tab). */
+  | { kind: 'cancelled-elsewhere'; run: number }
+  | { kind: 'failed'; error: unknown; run: number }
+
+/**
+ * The server's answer to a create that a cancel stopped: a 409 like the demo
+ * limit, told apart by its detail (demo_service.create_demo_project). The
+ * cancel is per creator, so one sent from another tab stops this tab's create
+ * too — and this tab must say "cancelled", not "limit reached".
+ */
+function isCancelledElsewhere(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && /provisioning was cancelled/i.test(error.message)
+}
 
 export interface DemoProvisioningController {
   status: ProvisioningStatus
@@ -108,6 +122,11 @@ export function useDemoProvisioning(options?: {
   // tell a deliberate abandon from a timeout (both surface as ApiError(408)).
   const cancelRequestedRef = useRef(false)
   const mountedRef = useRef(true)
+  // Bumped by start() and reset(). Closing the dialog while a cancel or the
+  // aborted create is still settling (DEMO-6) used to let that late answer
+  // reopen it — "cancelled", or a 408 read as "Demo generation failed" —
+  // after the user had dismissed it.
+  const runRef = useRef(0)
   const onSuccess = options?.onSuccess
 
   const clearTimer = useCallback(() => {
@@ -119,25 +138,38 @@ export function useDemoProvisioning(options?: {
 
   const mutation = useMutation({
     mutationFn: async (): Promise<CreateOutcome> => {
+      const run = runRef.current
       const controller = new AbortController()
       abortRef.current = controller
       clearTimer()
       timeoutRef.current = setTimeout(() => controller.abort(), timeoutMs)
       try {
-        return { kind: 'created', project: await projectsApi.createDemo(controller.signal) }
+        return { kind: 'created', project: await projectsApi.createDemo(controller.signal), run }
       } catch (caught) {
-        if (cancelRequestedRef.current) return { kind: 'cancelled' }
-        return { kind: 'failed', error: caught }
+        if (cancelRequestedRef.current || run !== runRef.current) return { kind: 'cancelled', run }
+        if (isCancelledElsewhere(caught)) return { kind: 'cancelled-elsewhere', run }
+        return { kind: 'failed', error: caught, run }
       }
     },
     // react-query keeps the observer options current each render, so this reads
     // the latest onSuccess / navigate.
     onSuccess: (outcome) => {
+      // Created after the user closed the dialog: the list still has to learn
+      // about it, but nothing may navigate or reopen the dialog.
+      if (outcome.run !== runRef.current) {
+        if (outcome.kind === 'created') void queryClient.invalidateQueries({ queryKey: ['projects'] })
+        return
+      }
       if (outcome.kind === 'failed') {
         setError(outcome.error)
         return
       }
       if (outcome.kind === 'cancelled') return
+      if (outcome.kind === 'cancelled-elsewhere') {
+        setCancelOutcome('stopped')
+        void queryClient.invalidateQueries({ queryKey: ['projects'] })
+        return
+      }
       setProject(outcome.project)
       void queryClient.invalidateQueries({ queryKey: ['projects'] })
       if (onSuccess) {
@@ -146,7 +178,10 @@ export function useDemoProvisioning(options?: {
         void navigate(`/p/${outcome.project.slug}/overview`)
       }
     },
-    onSettled: () => {
+    onSettled: (outcome) => {
+      // A superseded run must not release the guard, timer or abort handle
+      // the current one holds.
+      if (outcome && outcome.run !== runRef.current) return
       inFlightRef.current = false
       clearTimer()
       abortRef.current = null
@@ -182,6 +217,7 @@ export function useDemoProvisioning(options?: {
   const start = useCallback(() => {
     if (inFlightRef.current) return
     inFlightRef.current = true
+    runRef.current += 1
     cancelRequestedRef.current = false
     setCancelling(false)
     setCancelOutcome(null)
@@ -194,6 +230,7 @@ export function useDemoProvisioning(options?: {
 
   const cancel = useCallback(() => {
     if (!inFlightRef.current) return
+    const run = runRef.current
     cancelRequestedRef.current = true
     inFlightRef.current = false
     clearTimer()
@@ -206,14 +243,16 @@ export function useDemoProvisioning(options?: {
       // was stopped when we do not know that it was.
       .catch((): CancelOutcome => 'already-finished')
       .then((outcome: CancelOutcome) => {
-        if (!mountedRef.current) return
+        // Whatever the answer, the list may have changed under it.
+        void queryClient.invalidateQueries({ queryKey: ['projects'] })
+        if (!mountedRef.current || run !== runRef.current) return
         setCancelling(false)
         setCancelOutcome(outcome)
-        void queryClient.invalidateQueries({ queryKey: ['projects'] })
       })
   }, [clearTimer, queryClient])
 
   const reset = useCallback(() => {
+    runRef.current += 1
     inFlightRef.current = false
     cancelRequestedRef.current = false
     setCancelling(false)

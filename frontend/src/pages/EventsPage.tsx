@@ -44,7 +44,7 @@ import {
   resolveMetaValue,
   useEventsFiltering,
 } from './events/useEventsFiltering'
-import { useEventsQuery } from './events/useEventsQuery'
+import { tabDefaultStatuses, useEventsQuery } from './events/useEventsQuery'
 import { useEventsRouteState } from './events/useEventsRouteState'
 import { useEventsSelection } from './events/useEventsSelection'
 import { useEventRowSignals, useEventsSignals } from './events/useEventsSignals'
@@ -657,6 +657,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
               onSearchChange={setSearch}
               isFilterPending={isFilterPending}
               filterStatuses={filterStatuses}
+              tabDefaultStatuses={tabDefaultStatuses(activeTab)}
               onFilterStatusesChange={setFilterStatuses}
               filterSilentDays={filterSilentDays}
               onFilterSilentDaysChange={setFilterSilentDays}

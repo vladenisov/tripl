@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 
 import { useTheme, type Density } from '@/components/theme-provider'
 import type { EventListItem } from '@/types'
 import type { useEventsQuery } from './useEventsQuery'
+import { PHONE_CARD_HEIGHT_ESTIMATE, PHONE_CARD_QUERY } from './eventsPhoneCard'
 
 const VIRTUAL_THRESHOLD = 100
 
@@ -19,6 +20,27 @@ export const ROW_HEIGHT_BY_DENSITY: Record<Density, number> = {
   compact: 28,
   cozy: 36,
   comfy: 44,
+}
+
+/**
+ * Height to assume for a row not rendered yet. Below md every row is a
+ * wrapping card (eventsPhoneCard.ts), roughly two and a half desktop rows
+ * tall, whatever the density.
+ */
+export function estimateRowHeight(density: Density, phoneCards: boolean): number {
+  if (phoneCards) return PHONE_CARD_HEIGHT_ESTIMATE
+  return ROW_HEIGHT_BY_DENSITY[density] ?? ROW_HEIGHT_BY_DENSITY.cozy
+}
+
+function subscribePhoneCards(onChange: () => void): () => void {
+  if (typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(PHONE_CARD_QUERY)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+function readPhoneCards(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(PHONE_CARD_QUERY).matches
 }
 
 /**
@@ -137,7 +159,8 @@ export function useEventsTableVirtualization({
 }) {
   const tableScrollRef = useRef<HTMLDivElement>(null)
   const { density } = useTheme()
-  const rowHeightEstimate = ROW_HEIGHT_BY_DENSITY[density] ?? ROW_HEIGHT_BY_DENSITY.cozy
+  const phoneCards = useSyncExternalStore(subscribePhoneCards, readPhoneCards, () => false)
+  const rowHeightEstimate = estimateRowHeight(density, phoneCards)
   const virtualize = events.length > VIRTUAL_THRESHOLD
   // Size the scroll spacer to the FULL known row count up front so the
   // scrollbar maps linearly to every row from the first paint. The list is
@@ -171,7 +194,8 @@ export function useEventsTableVirtualization({
   const totalVirtualSize = virtualize ? rowVirtualizer.getTotalSize() : 0
   const fetchNextPage = eventsQuery.fetchNextPage
 
-  // The estimate changes with density; re-measure so the spacers follow.
+  // The estimate changes with density and with the phone breakpoint;
+  // re-measure so the spacers follow.
   useEffect(() => {
     rowVirtualizer.measure()
   }, [rowVirtualizer, rowHeightEstimate])

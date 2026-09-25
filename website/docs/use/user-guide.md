@@ -281,6 +281,13 @@ same picker's first entry, which clears the owner across the selection), or
 Saved views, column toggles, and filters (by status, tag, silent days, reviewed
 state, or field value) help you work through a large catalog.
 
+The **Status** filter takes several statuses at once — tick **Draft** and
+**In Review** to see both. Each lands in the page URL as its own `?status=`
+parameter, so the combination survives a reload or a shared link. With nothing
+ticked (**Any status**) the list shows every status except **Archived** — or,
+on the review and archived tabs, the status that tab is for; tick **Archived**
+to see archived events alongside the rest.
+
 The toolbar's **Reviewed** filter takes **Any**, **Reviewed** or **Not
 reviewed** and lives in the page URL — `?reviewed=true` or `?reviewed=false`,
 with **Any** writing no parameter — so "what still needs checking" can be
@@ -470,7 +477,8 @@ shape. That detection is automatic and needs no setup.
   metrics collect on schedule and open the same monitoring drilldown as event
   volume. The drilldown links back to the source fact table, shows when the next
   collection is due, and can reveal the generated primary batch SQL without
-  executing it. Running **Collect now** on a fact metric refreshes the other
+  executing it — to viewers too, since it is built from configuration they can
+  already read. Running **Collect now** on a fact metric refreshes the other
   active metrics on that fact table in the same multi-aggregate batch rather
   than scanning it once per metric.
 
@@ -494,7 +502,9 @@ see, across tabs:
   which slice of the data moved. Other rollups omit the forecast because one
   native bucket is not a forecast for the whole aggregate bucket. You can also
   add **annotations** to mark deploys, releases, or incidents directly on the
-  chart. The time you enter is your local time; annotations draw in a neutral
+  chart. Pick the day from the calendar (arrow keys move by day and week, Page
+  Up/Down by month) and type the time beside it; it is your local time, and
+  starts at now. Annotations draw in a neutral
   colour so they cannot be mistaken for anomalies, and deleting one asks first
   (a project-wide annotation is removed from every chart in the project).
 - **Heatmap** — activity by hour of day and day of week. It needs a scan that collects hourly or finer; on a 6-hour, daily or weekly scan the tab explains that there is no hour-of-day detail instead of drawing a mostly empty grid.

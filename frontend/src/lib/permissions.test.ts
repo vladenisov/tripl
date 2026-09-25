@@ -117,6 +117,25 @@ describe('canWriteProject', () => {
     expect(canWriteProject(viewer, { is_demo: true, created_by_user_id: 'u-viewer' })).toBe(false)
   })
 
+  it("follows the server's can_mutate when the project carries it", () => {
+    // A real project another EDITOR created: the role/demo rule alone would say
+    // yes, but require_project_mutation_access answers 403.
+    const closed = { is_demo: false, created_by_user_id: 'other-editor', can_mutate: false }
+    expect(canWriteProject(editor, closed)).toBe(false)
+    const open = { is_demo: true, created_by_user_id: 'someone-else', can_mutate: true }
+    expect(canWriteProject(editor, open)).toBe(true)
+  })
+
+  it('never lets can_mutate reopen a project to a viewer', () => {
+    expect(
+      canWriteProject(viewer, { is_demo: false, created_by_user_id: null, can_mutate: true }),
+    ).toBe(false)
+  })
+
+  it('falls back to the role/demo rule when can_mutate is absent', () => {
+    expect(canWriteProject(editor, { is_demo: false, created_by_user_id: 'other-editor' })).toBe(true)
+  })
+
   it('degrades to canWrite when the user or project is not known yet', () => {
     expect(canWriteProject(editor, undefined)).toBe(true)
     expect(canWriteProject(undefined, { is_demo: true, created_by_user_id: 'x' })).toBe(true)

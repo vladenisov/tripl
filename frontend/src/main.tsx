@@ -7,6 +7,14 @@ import {
   QueryClient,
   QueryClientProvider,
 } from '@tanstack/react-query'
+// Self-hosted UI fonts (tripl-fj5g.13): the weights the design uses, bundled
+// onto this origin instead of fetched from Google Fonts.
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/inter/700.css'
+import '@fontsource/jetbrains-mono/400.css'
+import '@fontsource/jetbrains-mono/500.css'
 import './index.css'
 import App from './App.tsx'
 import { ErrorBoundary } from './components/error-boundary.tsx'

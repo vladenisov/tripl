@@ -1,6 +1,7 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { serviceSettingsApi } from '@/api/serviceSettings'
 import type { ServiceSettings } from '@/types'
 import { AiSection } from './AiSection'
 import {
@@ -8,6 +9,7 @@ import {
   EMPTY_SECRET_DRAFTS,
   buildUpdate,
   editableFromSettings,
+  numberFieldError,
 } from './serviceSettingsHelpers'
 
 const AI: ServiceSettings['ai'] = {
@@ -93,15 +95,19 @@ function settingsFixture(
   } as ServiceSettings
 }
 
-function renderSection(settings: ServiceSettings) {
+function renderSection(
+  settings: ServiceSettings,
+  form = editableFromSettings(settings),
+  setField = vi.fn(),
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <AiSection
-        form={editableFromSettings(settings)}
+        form={form}
         settings={settings}
         secretDrafts={EMPTY_SECRET_DRAFTS}
-        setField={vi.fn()}
+        setField={setField}
         setSecretDrafts={vi.fn()}
         saving={false}
         onClearSecret={vi.fn()}
@@ -210,5 +216,84 @@ describe('Instance AI — the stored keys', () => {
 
     expect(within(labelRow('AI API key')).getByText('Override')).toBeInTheDocument()
     expect(within(labelRow('Embedding API key')).getByText('Env')).toBeInTheDocument()
+  })
+})
+
+describe('Instance AI — stored key deletion (WS-27)', () => {
+  it('offers no delete for a key that is not stored', () => {
+    renderSection(settingsFixture({ ai_api_key_configured: false }))
+
+    const buttons = screen.getAllByRole('button', { name: 'Delete stored key' })
+    expect(buttons).toHaveLength(2)
+    for (const button of buttons) expect(button).toBeDisabled()
+  })
+
+  it('offers delete once a key is stored', () => {
+    renderSection(settingsFixture({ ai_api_key_configured: true }))
+
+    expect(screen.getAllByRole('button', { name: 'Delete stored key' })[0]).toBeEnabled()
+  })
+})
+
+describe('Instance AI — connection test (WS-26)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('says the test runs against the saved settings', () => {
+    renderSection(settingsFixture())
+
+    expect(screen.getByText(/Tests the SAVED settings/)).toBeInTheDocument()
+  })
+
+  it('reports a failed test request instead of showing nothing', async () => {
+    vi.spyOn(serviceSettingsApi, 'testAi').mockRejectedValue(new Error('Gateway timeout'))
+    renderSection(settingsFixture())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test AI' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Gateway timeout')
+  })
+})
+
+describe('Instance AI — numeric fields (WS-25)', () => {
+  it('passes the emptied text through instead of writing 0', () => {
+    const setField = vi.fn()
+    renderSection(settingsFixture(), undefined, setField)
+
+    fireEvent.change(screen.getByLabelText('Timeout seconds'), { target: { value: '' } })
+
+    expect(setField).toHaveBeenCalledWith('ai', 'ai_timeout_seconds', '')
+  })
+
+  it('names an empty or out-of-range value under the input', () => {
+    const settings = settingsFixture()
+    const base = editableFromSettings(settings)
+    renderSection(settings, { ...base, ai: { ...base.ai, ai_timeout_seconds: '' } })
+
+    const input = screen.getByLabelText('Timeout seconds')
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(input).toHaveAccessibleDescription('Enter a whole number, 1 or more.')
+  })
+
+  it('converts valid text to a number and ignores a value typed back to the saved one', () => {
+    const saved = settingsFixture()
+    const base = editableFromSettings(saved)
+
+    expect(
+      buildUpdate({ ...base, ai: { ...base.ai, ai_timeout_seconds: '45' } }, saved, EMPTY_SECRET_DRAFTS),
+    ).toEqual({ ai: { ai_timeout_seconds: 45 } })
+    expect(
+      buildUpdate({ ...base, ai: { ...base.ai, ai_timeout_seconds: '30' } }, saved, EMPTY_SECRET_DRAFTS),
+    ).toEqual({})
+  })
+
+  it('checks the backend ranges', () => {
+    expect(numberFieldError('ai', 'ai_timeout_seconds', '0')).not.toBeNull()
+    expect(numberFieldError('ai', 'ai_timeout_seconds', '1.5')).not.toBeNull()
+    expect(numberFieldError('ai', 'ai_timeout_seconds', '1')).toBeNull()
+    expect(numberFieldError('email', 'smtp_port', '65536')).not.toBeNull()
+    expect(numberFieldError('security', 'hsts_max_age_seconds', '0')).toBeNull()
+    expect(numberFieldError('ai', 'ai_model', '')).toBeNull()
   })
 })

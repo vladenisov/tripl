@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -98,6 +98,195 @@ describe('ApiKeysSection', () => {
     expect(await screen.findByText('2 active · 3 revoked or expired')).toBeInTheDocument()
     expect(screen.queryByText('Active keys')).not.toBeInTheDocument()
     expect(screen.queryByText('5 keys')).not.toBeInTheDocument()
+  })
+
+  // WS-5: a failed load fell through to "No API keys yet".
+  it('shows an error with retry, not an empty list, when the keys fail to load', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockRejectedValue(new Error('Server exploded'))
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+
+    renderSection()
+
+    expect(await screen.findByText("Couldn't load API keys")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+    expect(screen.queryByText(/No API keys yet/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/0 active/)).not.toBeInTheDocument()
+  })
+
+  // WS-40: active keys show when they expire, using the inclusive rule.
+  it('shows the expiry date of active keys', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([
+      key({ id: 'k1', name: 'expiring', expires_at: '2999-06-15T12:00:00Z' }),
+      key({ id: 'k2', name: 'forever' }),
+    ])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+
+    renderSection()
+
+    expect(await screen.findByText('expires 2999-06-15')).toBeInTheDocument()
+    expect(screen.getByText('no expiry')).toBeInTheDocument()
+  })
+
+  // WS-6: revoke failures were silent and one pending revoke disabled every row.
+  it('scopes the pending revoke to its row and reports a failed revoke', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([
+      key({ id: 'k1', name: 'codex' }),
+      key({ id: 'k2', name: 'claude' }),
+    ])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+    let rejectRevoke: (reason: unknown) => void = () => {}
+    vi.spyOn(apiKeysApi, 'revoke').mockImplementation(
+      () =>
+        new Promise<never>((_, reject) => {
+          rejectRevoke = reject
+        }),
+    )
+
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke codex' }))
+    const confirmDialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Revoke' }))
+
+    const pending = await screen.findByRole('button', { name: 'Revoking… codex' })
+    expect(pending).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Revoke claude' })).toBeEnabled()
+
+    rejectRevoke(new Error('Forbidden'))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Couldn\'t revoke "codex" — it is still active.')
+    expect(alert).toHaveTextContent('Forbidden')
+    expect(screen.getByRole('button', { name: 'Revoke codex' })).toBeEnabled()
+  })
+
+  // Review 208: with only the target row disabled, a second revoke could start
+  // while the first was in flight, and the first one's failure then vanished.
+  it('keeps each concurrent revoke pending and reports the one that failed', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([
+      key({ id: 'k1', name: 'codex' }),
+      key({ id: 'k2', name: 'claude' }),
+    ])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+    const rejects = new Map<string, (reason: unknown) => void>()
+    vi.spyOn(apiKeysApi, 'revoke').mockImplementation(
+      (keyId: string) =>
+        new Promise<never>((_, reject) => {
+          rejects.set(keyId, reject)
+        }),
+    )
+
+    renderSection()
+
+    for (const name of ['codex', 'claude']) {
+      fireEvent.click(await screen.findByRole('button', { name: `Revoke ${name}` }))
+      const confirmDialog = await screen.findByRole('alertdialog')
+      fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Revoke' }))
+      await screen.findByRole('button', { name: `Revoking… ${name}` })
+    }
+    // The first row is still pending after the second revoke started.
+    expect(screen.getByRole('button', { name: 'Revoking… codex' })).toBeDisabled()
+
+    rejects.get('k1')?.(new Error('Forbidden'))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Couldn\'t revoke "codex" — it is still active.',
+    )
+    expect(screen.getByRole('button', { name: 'Revoke codex' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Revoking… claude' })).toBeDisabled()
+  })
+
+  // WS-41: Cancel used to keep the abandoned draft and its error.
+  it('clears the draft and the error when the form is cancelled', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+    vi.spyOn(apiKeysApi, 'create').mockRejectedValue(new Error('Name already taken'))
+
+    renderSection()
+
+    fireEvent.click(screen.getByRole('button', { name: /Create key/i }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'dup' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Name already taken')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: /Create key/i }))
+
+    expect(await screen.findByLabelText('Name')).toHaveValue('')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // WS-39: the scope and project pickers are named kit selects.
+  it('labels the scope and project selects', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+
+    renderSection()
+    fireEvent.click(screen.getByRole('button', { name: /Create key/i }))
+
+    expect(await screen.findByRole('combobox', { name: 'Scope' })).toHaveValue('read')
+    expect(screen.getByRole('combobox', { name: 'Project (optional)' })).toHaveValue('')
+  })
+
+  describe('one-time token reveal', () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+
+    afterEach(() => {
+      if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    })
+
+    async function mintKey() {
+      vi.spyOn(apiKeysApi, 'list').mockResolvedValue([])
+      vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+      vi.spyOn(apiKeysApi, 'create').mockResolvedValue({
+        ...key({ id: 'k9', name: 'agent' }),
+        token: 'trpl_secret_token',
+      })
+      renderSection()
+      fireEvent.click(screen.getByRole('button', { name: /Create key/i }))
+      fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'agent' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+      return screen.findByRole('dialog', { name: 'Copy your API key now' })
+    }
+
+    // WS-3: Esc or an outside click discarded a token that is never shown again.
+    it('stays open on Escape and closes only through Done', async () => {
+      const dialog = await mintKey()
+
+      fireEvent.keyDown(dialog, { key: 'Escape' })
+      expect(screen.getByRole('dialog', { name: 'Copy your API key now' })).toBeInTheDocument()
+      expect(within(dialog).queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    })
+
+    // WS-2: navigator.clipboard is undefined over plain HTTP; the copy threw.
+    it('selects the token and says so when the clipboard is unavailable', async () => {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+      const dialog = await mintKey()
+      const token = within(dialog).getByRole('textbox', { name: 'API key' })
+      expect(token).toHaveValue('trpl_secret_token')
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Copy' }))
+
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        /Couldn’t reach the clipboard/,
+      )
+      expect(token).toHaveFocus()
+    })
+
+    it('confirms a successful copy', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+      const dialog = await mintKey()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Copy' }))
+
+      expect(await within(dialog).findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+      expect(writeText).toHaveBeenCalledWith('trpl_secret_token')
+    })
   })
 })
 

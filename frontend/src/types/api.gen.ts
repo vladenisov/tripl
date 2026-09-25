@@ -55,6 +55,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/audit/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Audit Actions
+         * @description Every action the log records, grouped for the filter; see audit_actions.
+         */
+        get: operations["list_audit_actions_api_v1_audit_actions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit/{entry_id}": {
         parameters: {
             query?: never;
@@ -1319,6 +1339,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/event-type-owners": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Project Owners
+         * @description Owners of every live event type in the project; group by ``event_type_id``.
+         */
+        get: operations["list_project_owners_api_v1_projects__slug__event_type_owners_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/event-types": {
         parameters: {
             query?: never;
@@ -2241,6 +2281,9 @@ export interface paths {
         /**
          * Get Metric Generated Sql
          * @description Return a saved fact metric's primary dependency-batch SQL without running it.
+         *
+         *     Same gate as ``GET /{metric_id}``: anyone who can read the metric. The SQL is
+         *     compiled from config that read already returns (MET-41) and nothing executes.
          */
         get: operations["get_metric_generated_sql_api_v1_projects__slug__metrics__metric_id__generated_sql_get"];
         put?: never;
@@ -2605,6 +2648,29 @@ export interface paths {
         put?: never;
         /** Create Scan Config */
         post: operations["create_scan_config_api_v1_projects__slug__scans_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/scans/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Scan Activity
+         * @description Each scan's latest job, failing streak and rows read in the last 24 hours.
+         *
+         *     One request for the whole Scans list, aggregated in SQL, so the streak and
+         *     the 24h total are exact rather than floors over a capped page of jobs.
+         */
+        get: operations["get_scan_activity_api_v1_projects__slug__scans_activity_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3205,13 +3271,7 @@ export interface paths {
         };
         /** Get Ai Settings */
         get: operations["get_ai_settings_api_v1_settings_ai_get"];
-        /**
-         * Put Ai Settings
-         * @description Upsert AI overrides (partial: only fields present in the request body are
-         *     applied, via exclude_unset). PUT — not PATCH — because the frontend AI
-         *     settings form calls this endpoint; semantics are upsert, not replace-all.
-         */
-        put: operations["put_ai_settings_api_v1_settings_ai_put"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -4690,6 +4750,31 @@ export interface components {
             sigma_threshold: number;
             /** Versions */
             versions: components["schemas"]["AppVersionInfo"][];
+        };
+        /**
+         * AuditActionCatalog
+         * @description Every action the audit log records, grouped for the filter.
+         *
+         *     ``project`` holds the actions recorded WITH a project — the only ones a
+         *     project-scoped query can match. ``workspace`` holds those recorded with no
+         *     project (data sources, users, instance settings, a deleted project), which
+         *     only the unfiltered workspace feed can match. An action is in exactly one.
+         */
+        AuditActionCatalog: {
+            /** Project */
+            project: components["schemas"]["AuditActionGroup"][];
+            /** Workspace */
+            workspace: components["schemas"]["AuditActionGroup"][];
+        };
+        /**
+         * AuditActionGroup
+         * @description One labelled group of the audit action filter.
+         */
+        AuditActionGroup: {
+            /** Actions */
+            actions: string[];
+            /** Label */
+            label: string;
         };
         /**
          * AuditEntryDetailResponse
@@ -8783,6 +8868,11 @@ export interface components {
              */
             app_version_keep_releases: number;
             /**
+             * Can Mutate
+             * @default false
+             */
+            can_mutate: boolean;
+            /**
              * Created At
              * Format: date-time
              */
@@ -9204,6 +9294,40 @@ export interface components {
             metrics_row_limit_default?: number | null;
             /** Scan Row Limit Default */
             scan_row_limit_default?: number | null;
+        };
+        /**
+         * ScanActivityItem
+         * @description One scan config's run activity, as the Scans list shows it.
+         */
+        ScanActivityItem: {
+            /** Failing Streak */
+            failing_streak: number;
+            latest_job: components["schemas"]["ScanJobResponse"] | null;
+            /** Rows Read 24H */
+            rows_read_24h: number;
+            /**
+             * Scan Config Id
+             * Format: uuid
+             */
+            scan_config_id: string;
+        };
+        /**
+         * ScanActivityResponse
+         * @description Per-scan activity for a project, aggregated in SQL (tripl-fj5g.11).
+         */
+        ScanActivityResponse: {
+            /** Items */
+            items: components["schemas"]["ScanActivityItem"][];
+            /**
+             * Window From
+             * Format: date-time
+             */
+            window_from: string;
+            /**
+             * Window To
+             * Format: date-time
+             */
+            window_to: string;
         };
         /** ScanConfigCreate */
         ScanConfigCreate: {
@@ -10870,6 +10994,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_audit_actions_api_v1_audit_actions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditActionCatalog"];
                 };
             };
         };
@@ -13526,6 +13670,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DistributionDriftsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_project_owners_api_v1_projects__slug__event_type_owners_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventTypeOwnerResponse"][];
                 };
             };
             /** @description Validation Error */
@@ -16826,6 +17001,37 @@ export interface operations {
             };
         };
     };
+    get_scan_activity_api_v1_projects__slug__scans_activity_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanActivityResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     dry_run_scan_config_api_v1_projects__slug__scans_dry_run_post: {
         parameters: {
             query?: never;
@@ -18221,39 +18427,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AiSettingsResponse"];
-                };
-            };
-        };
-    };
-    put_ai_settings_api_v1_settings_ai_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AiSettingsUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AiSettingsResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

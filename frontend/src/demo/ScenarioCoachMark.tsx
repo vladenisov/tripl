@@ -22,6 +22,7 @@ import {
   cloneElement,
   isValidElement,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -48,6 +49,11 @@ interface ScenarioCoachMarkProps {
   children: ReactNode
 }
 
+/** Mounted but without a box (display:none on it or an ancestor). */
+function isUnrendered(anchor: HTMLElement | null): boolean {
+  return anchor !== null && typeof anchor.checkVisibility === 'function' && !anchor.checkVisibility()
+}
+
 function mergeRefs(...refs: Array<Ref<HTMLElement> | undefined>): RefCallback<HTMLElement> {
   return (node) => {
     for (const ref of refs) {
@@ -69,7 +75,7 @@ export function ScenarioCoachMark({
   const { muteHints } = useDemoScenarioActions()
   const { report } = useCoachPresence()
 
-  const visible = active && !hintsMuted && when && activeStep.id === step
+  const coaching = active && !hintsMuted && when && activeStep.id === step
 
   // The anchor is state, not a ref: the beacon and the scroll effect must
   // re-run when the element appears, and a ref mutation would not tell them.
@@ -78,6 +84,36 @@ export function ScenarioCoachMark({
     ? (children.props as { ref?: Ref<HTMLElement> }).ref
     : undefined
   const anchorRef = useMemo(() => mergeRefs(childRef, setAnchorEl), [childRef])
+
+  // An anchor that is mounted but not rendered — inside a hidden tab panel or a
+  // collapsed section (display:none) — has no box, and Radix pinned the card to
+  // the page's top-left corner, pointing at nothing (DEMO-10). Such a mark
+  // stands down like any other invisible one, so the strip's "not on screen"
+  // notice speaks instead. `checkVisibility` is absent in older engines (and
+  // jsdom); there the anchor is taken as shown, which is the old behaviour.
+  //
+  // Measured after the commit, never during render: a render reads the DOM the
+  // previous commit left, so the render that reveals a panel still saw it
+  // hidden, and the one that collapses a section still saw it laid out. A
+  // layout effect re-measures after every commit, before paint, so neither
+  // shows; the observer catches a box that appears or vanishes with no render.
+  //
+  // Keyed on `children` rather than run after every commit: a parent that
+  // reveals or collapses the anchor re-renders this mark with a new element,
+  // while this mark's own updates (the measurement included) keep the same
+  // one — so the measurement can never feed itself.
+  const [anchorHidden, setAnchorHidden] = useState(false)
+  useLayoutEffect(() => {
+    const measure = () => setAnchorHidden(isUnrendered(anchorEl))
+    measure()
+  }, [anchorEl, children, coaching])
+  useEffect(() => {
+    if (!coaching || !anchorEl || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => setAnchorHidden(isUnrendered(anchorEl)))
+    observer.observe(anchorEl)
+    return () => observer.disconnect()
+  }, [coaching, anchorEl])
+  const visible = coaching && !anchorHidden
 
   // Tell the strip a mark for this step is actually on screen, so it can say
   // so when one is not. Keyed on the same gate as the card.
@@ -140,7 +176,14 @@ export function ScenarioCoachMark({
   // is what every mark had before.
   const boundary: Element | Element[] = anchorEl?.closest(`#${MAIN_CONTENT_ID}`) ?? []
 
-  if (!visible) return <>{children}</>
+  if (!coaching) return <>{children}</>
+  // Keep the ref on a hidden anchor, so the measurement above can see it come
+  // back.
+  if (!visible) {
+    return isValidElement(children)
+      ? cloneElement(children as ReactElement<Record<string, unknown>>, { ref: anchorRef })
+      : <>{children}</>
+  }
 
   const position = steps.findIndex((candidate) => candidate.id === activeStep.id) + 1
   // The gate guarantees activeStep.id === step, so this is this step's config.

@@ -20,6 +20,12 @@ export type UnsavedWork = {
   keptBy: (settingsPath: string) => boolean
   /** What is at stake, phrased for a confirm dialog. */
   message: string
+  /**
+   * Settings paths (e.g. `instance/security`) whose own edits are unsaved, so
+   * the rail can mark them. Save on Instance is per section, so an edit left
+   * in another section needs a pointer back to it.
+   */
+  dirtyPaths?: readonly string[]
 }
 
 export type UnsavedChangesValue = {

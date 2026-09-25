@@ -264,13 +264,42 @@ describe('MonitoringTab — settling allowance vs open signal window (tripl-l429
     })
     renderTab()
 
+    // Inside the bounds the page knows, so it is the server that refuses it.
     const settling = await screen.findByLabelText('Ingestion settling (minutes)')
-    fireEvent.change(settling, { target: { value: '1440' } })
+    fireEvent.change(settling, { target: { value: '600' } })
     fireEvent.blur(settling)
 
     expect(
       await screen.findByText(/must stay below the open signal window/i),
     ).toBeInTheDocument()
+    // And the refused number does not stay on screen as if it had been kept
+    // (PLAN-55): the saved value comes back.
+    await waitFor(() => expect(settling).toHaveValue(120))
+  })
+
+  it('refuses a value outside the bounds before sending it (PLAN-55)', async () => {
+    const { patches } = mockSettingsFetch({ recent_signal_window_hours: 24 })
+    renderTab()
+
+    const settling = await screen.findByLabelText('Ingestion settling (minutes)')
+    fireEvent.change(settling, { target: { value: '5000' } })
+    fireEvent.blur(settling)
+
+    expect(await screen.findByText('Must be between 0 and 1439.')).toBeInTheDocument()
+    expect(settling).toHaveValue(120)
+    expect(patches).toEqual([])
+  })
+
+  it('says a committed value was saved (PLAN-55)', async () => {
+    const { patches } = mockSettingsFetch()
+    renderTab()
+
+    const sigma = await screen.findByLabelText('Sigma threshold')
+    fireEvent.change(sigma, { target: { value: '4' } })
+    fireEvent.blur(sigma)
+
+    await waitFor(() => expect(patches).toEqual([{ sigma_threshold: 4 }]))
+    expect(await screen.findByText('Saved')).toBeInTheDocument()
   })
 })
 
@@ -322,6 +351,10 @@ describe('MonitoringTab — false-positive scope overrides', () => {
     renderTab()
 
     fireEvent.click(await screen.findByLabelText('Remove override for checkout_started'))
+    // One click used to do it; the confirm names what is lost (PLAN-55).
+    const confirm = await screen.findByRole('alertdialog', { name: 'Remove scope override' })
+    expect(deletes).toEqual([])
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }))
 
     await waitFor(() => expect(deletes).toEqual(['override-1']))
     await waitFor(() =>
@@ -347,5 +380,60 @@ describe('MonitoringTab — a viewer reads the settings without changing them', 
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
     expect(await screen.findByText('checkout_started')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Remove override/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('MonitoringTab — a failed settings load (PLAN-41)', () => {
+  it('shows an error with a retry instead of loading forever', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/anomaly-settings/scope-overrides')) {
+        return jsonResponse({ items: [], total: 0 })
+      }
+      if (url.includes('/anomaly-settings')) {
+        return new Response(JSON.stringify({ detail: 'Database is unavailable' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    expect(await screen.findByText("Couldn't load detection settings")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText('Loading detection settings…')).not.toBeInTheDocument()
+  })
+})
+
+describe('MonitoringTab — a failed refresh after an autosave (review 204)', () => {
+  it('keeps the settings on screen and says the refresh failed', async () => {
+    let getCount = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/anomaly-settings/scope-overrides')) {
+        return jsonResponse({ items: [], total: 0 })
+      }
+      if (url.includes('/anomaly-settings')) {
+        if (init?.method === 'PATCH') return jsonResponse(settingsPayload({ sigma_threshold: 4 }))
+        getCount += 1
+        return getCount === 1
+          ? jsonResponse(settingsPayload())
+          : new Response(JSON.stringify({ detail: 'Bad gateway' }), {
+              status: 502,
+              headers: { 'Content-Type': 'application/json' },
+            })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    const sigma = await screen.findByLabelText('Sigma threshold')
+    fireEvent.change(sigma, { target: { value: '4' } })
+    fireEvent.blur(sigma)
+
+    expect(await screen.findByText(/Couldn't refresh detection settings/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Sigma threshold')).toBeInTheDocument()
+    expect(screen.queryByText("Couldn't load detection settings")).not.toBeInTheDocument()
   })
 })

@@ -41,12 +41,44 @@ interface DemoProvisioningDialogProps {
   onClose: () => void
 }
 
+/**
+ * A create the server refused before seeding anything (DEMO-5): a 403 (demo
+ * provisioning switched off on this server, or a role that may not create), or
+ * a 409 for a creator already at the demo limit. Neither was rolled back —
+ * nothing started — and asking again gets the same answer, so neither may
+ * claim a rollback or offer "Try again". The 403 has more than one cause, so
+ * its copy names none and the server's own reason (in the alert) says which.
+ * The other 409, a create cancelled from another tab, never reaches here:
+ * useDemoProvisioning reports it as cancelled.
+ */
+type Refusal = 'forbidden' | 'limit'
+
+function refusalOf(error: unknown): Refusal | null {
+  if (!(error instanceof ApiError)) return null
+  if (error.status === 403) return 'forbidden'
+  if (error.status === 409) return 'limit'
+  return null
+}
+
 /** Title + description for each state, so no state falls through to in-progress copy. */
 function copyFor(
   status: ProvisioningStatus,
   timedOut: boolean,
   cancelOutcome: CancelOutcome | null,
+  refusal: Refusal | null,
 ): { title: string; description: string } {
+  if (status === 'error' && refusal === 'forbidden') {
+    return {
+      title: 'Demo workspace not available',
+      description: 'The server refused to create one, for the reason below. Nothing was created.',
+    }
+  }
+  if (status === 'error' && refusal === 'limit') {
+    return {
+      title: 'Demo limit reached',
+      description: 'Nothing was created. Reset or delete one of your demos from its banner first.',
+    }
+  }
   if (status === 'error') {
     return {
       title: 'Demo generation failed',
@@ -107,7 +139,8 @@ export function DemoProvisioningDialog({
   // A support reference the user can quote. The backend echoes the request id on
   // the response header, so ApiError carries it for the demo 500 path.
   const requestId = error instanceof ApiError ? error.requestId : undefined
-  const { title, description } = copyFor(status, timedOut, cancelOutcome)
+  const refusal = isError ? refusalOf(error) : null
+  const { title, description } = copyFor(status, timedOut, cancelOutcome, refusal)
 
   // On failure the role="alert" block below is the single live announcer, so the
   // polite status region stays silent — otherwise a screen reader reads the same
@@ -165,12 +198,14 @@ export function DemoProvisioningDialog({
         <DialogFooter>
           {isError ? (
             <>
-              <Button type="button" variant="outline" onClick={onClose}>
+              <Button type="button" variant={refusal ? 'default' : 'outline'} onClick={onClose}>
                 Close
               </Button>
-              <Button type="button" onClick={onRetry}>
-                Try again
-              </Button>
+              {!refusal && (
+                <Button type="button" onClick={onRetry}>
+                  Try again
+                </Button>
+              )}
             </>
           ) : isProvisioning || status === 'cancelling' ? (
             <Button

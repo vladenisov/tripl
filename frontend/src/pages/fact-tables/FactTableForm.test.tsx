@@ -305,6 +305,23 @@ describe('FactTableForm', () => {
     expect(identifiers).toHaveLength(3)
   })
 
+  it('derives the internal name from the display name until the user edits it (MET-34)', () => {
+    renderForm()
+    const displayName = screen.getByLabelText('Display name', { exact: false })
+    const internalName = screen.getByLabelText('Internal name', { exact: false })
+
+    fireEvent.change(displayName, { target: { value: 'Заказы Café' } })
+    expect(internalName).toHaveValue('zakazy_cafe')
+
+    // A name with nothing Latin to derive from still fills the field.
+    fireEvent.change(displayName, { target: { value: '订单' } })
+    expect((internalName as HTMLInputElement).value).toMatch(/^fact_[a-z0-9]+$/)
+
+    fireEvent.change(internalName, { target: { value: 'orders_v2' } })
+    fireEvent.change(displayName, { target: { value: 'Paid orders' } })
+    expect(internalName).toHaveValue('orders_v2')
+  })
+
   it('renders the internal name read-only when editing and omits it from the update', async () => {
     const existing = {
       id: 'ft-9',

@@ -17,7 +17,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ChevronDown, Compass, RotateCcw, Trash2 } from 'lucide-react'
 import { projectsApi } from '@/api/projects'
-import { useAuth } from '@/components/auth-context'
+import { clearProtectedQueries, useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
 import {
@@ -32,6 +32,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { formatRelativeTime } from '@/lib/datetime'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { canManageProject } from '@/lib/permissions'
+import { projectKey, projectsKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import type { Project } from '@/types'
 import { ProductTour } from './ProductTour'
@@ -103,8 +104,15 @@ export function DemoBanner({ project }: { project: Project }) {
       setBranchId(null, { updateUrl: false })
       void navigate(`/p/${project.slug}/overview`)
       // Every cached row describes a deleted entity now — drop them outright
-      // rather than merely marking them stale.
-      queryClient.removeQueries()
+      // rather than merely marking them stale. Except three that describe no
+      // seeded entity (DEMO-3): the session (dropping it put the signed-in user
+      // back to 'loading' and unmounted the app behind the route guard), and
+      // the project list and this project, which the shell resolves the route
+      // from — dropping those swapped the whole shell for "Loading project…".
+      // The project survives a reset; its summary counts are refreshed instead.
+      clearProtectedQueries(queryClient, (key) => key[0] === 'projects' || key[0] === 'project')
+      void queryClient.invalidateQueries({ queryKey: projectsKey() })
+      void queryClient.invalidateQueries({ queryKey: projectKey(project.slug) })
       // The guidance is data too (tripl-imco): a re-seeded demo that came back
       // with every chapter still marked completed and the welcome panel still
       // dismissed was a fresh dataset with no way left into the coaching.
@@ -119,14 +127,27 @@ export function DemoBanner({ project }: { project: Project }) {
     onSuccess: () => {
       // The project is gone; leave no branch selection behind pointing into it.
       setBranchId(null, { updateUrl: false })
-      void queryClient.invalidateQueries({ queryKey: ['projects'] })
+      void queryClient.invalidateQueries({ queryKey: projectsKey() })
       void navigate('/workspace')
     },
   })
 
   const busy = resetMut.isPending || deleteMut.isPending
 
+  // A failed reset or delete says so until the user does something else here
+  // (DEMO-23): the message used to stay pinned under the banner through every
+  // later action, and a reset failure went on captioning a delete that worked.
+  //
+  // Only a SETTLED failure is reset: `reset()` detaches the observer from a
+  // mutation still in flight, which read as idle — Reset and Delete came back
+  // enabled mid-reseed, and a later failure of it was shown nowhere.
+  const clearMutationError = () => {
+    if (resetMut.isError) resetMut.reset()
+    if (deleteMut.isError) deleteMut.reset()
+  }
+
   const handleReset = async () => {
+    clearMutationError()
     const ok = await confirm({
       title: 'Reset demo workspace',
       message:
@@ -139,6 +160,7 @@ export function DemoBanner({ project }: { project: Project }) {
   }
 
   const handleDelete = async () => {
+    clearMutationError()
     const ok = await confirm({
       title: 'Delete demo workspace',
       message: `Permanently delete “${project.name}” and its synthetic warehouse. You'll be returned to the projects list.`,
@@ -180,7 +202,10 @@ export function DemoBanner({ project }: { project: Project }) {
 
         <button
           type="button"
-          onClick={() => setLimitsOpen((open) => !open)}
+          onClick={() => {
+            clearMutationError()
+            setLimitsOpen((open) => !open)
+          }}
           aria-expanded={limitsOpen}
           className="ml-auto flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--fg-muted)' }}
@@ -204,6 +229,7 @@ export function DemoBanner({ project }: { project: Project }) {
           variant="outline"
           size="sm"
           onClick={() => {
+            clearMutationError()
             setWelcomeDismissed(project.slug, false)
             setTourOpen(true)
           }}

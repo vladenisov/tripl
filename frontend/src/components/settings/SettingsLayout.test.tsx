@@ -154,16 +154,45 @@ describe('SettingsLayout unsaved-changes guard', () => {
   const DRAFT_MESSAGE = 'Instance settings you edited here have not been saved.'
 
   /** Stands in for ServiceSettingsPage: a draft only the instance group keeps. */
-  function InstanceDraft({ dirty = true }: { dirty?: boolean }) {
+  function InstanceDraft({
+    dirty = true,
+    dirtyPaths,
+  }: {
+    dirty?: boolean
+    dirtyPaths?: readonly string[]
+  }) {
     const { registerUnsaved } = useUnsavedChanges()
     useEffect(() => {
       registerUnsaved(
-        dirty ? { keptBy: (path) => path.startsWith('instance/'), message: DRAFT_MESSAGE } : null,
+        dirty
+          ? { keptBy: (path) => path.startsWith('instance/'), message: DRAFT_MESSAGE, dirtyPaths }
+          : null,
       )
       return () => registerUnsaved(null)
-    }, [dirty, registerUnsaved])
+    }, [dirty, dirtyPaths, registerUnsaved])
     return <div>draft</div>
   }
+
+  // Save on Instance is per section, so an edit left in another section needs
+  // a pointer back to it on the rail (WS-23).
+  it('marks the rail entries of sections with unsaved changes', async () => {
+    const dirtyPaths = ['instance/security'] as const
+    render(
+      <RouterProvider
+        router={dataRouter(
+          <SettingsLayout activePath="instance/ai" backHref="/p/demo/events">
+            <InstanceDraft dirtyPaths={dirtyPaths} />
+          </SettingsLayout>,
+          ['/settings/instance/ai'],
+        )}
+      />,
+    )
+
+    expect(
+      await screen.findByRole('link', { name: 'Security & access, unsaved changes' }),
+    ).toHaveAttribute('href', '/settings/instance/security')
+    expect(screen.getByRole('link', { name: 'AI' })).toBeInTheDocument()
+  })
 
   function draftShell(dirty: boolean) {
     return (

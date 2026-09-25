@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -26,8 +27,12 @@ from tripl.schemas.scan_config import (
     ScanDryRunRequest,
     ScanMetricsReplayRequest,
 )
-from tripl.schemas.scan_job import ScanJobResponse, ScanPreviewJobResponse
-from tripl.services import audit_service, metrics_service, scan_service
+from tripl.schemas.scan_job import (
+    ScanActivityResponse,
+    ScanJobResponse,
+    ScanPreviewJobResponse,
+)
+from tripl.services import audit_service, metrics_service, scan_activity_service, scan_service
 
 # Handlers return ORM models; FastAPI serializes them through each route's
 # ``response_model=...Response`` (the OpenAPI contract). The return annotations
@@ -59,6 +64,18 @@ _owner_or_owner_key_required = [Depends(get_key_reachable_owner_user)]
 @router.get("", response_model=list[ScanConfigResponse])
 async def list_scan_configs(session: SessionDep, slug: str) -> list[ScanConfig]:
     return await scan_service.list_scan_configs(session, slug)
+
+
+# Declared before ``/{scan_id}``: that template would otherwise claim the literal
+# segment and answer 422 for a UUID that does not parse.
+@router.get("/activity", response_model=ScanActivityResponse)
+async def get_scan_activity(session: SessionDep, slug: str) -> ScanActivityResponse:
+    """Each scan's latest job, failing streak and rows read in the last 24 hours.
+
+    One request for the whole Scans list, aggregated in SQL, so the streak and
+    the 24h total are exact rather than floors over a capped page of jobs.
+    """
+    return await scan_activity_service.get_scan_activity(session, slug, now=datetime.now(UTC))
 
 
 @router.post("", response_model=ScanConfigResponse, status_code=201)

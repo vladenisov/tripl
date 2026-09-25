@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -211,6 +211,32 @@ describe('SettingsArea project binding', () => {
 
     expect(await screen.findByText(/could not be loaded/i)).toBeInTheDocument()
     expect(screen.queryByText(/no project on this workspace yet/i)).toBeNull()
+  })
+
+  it('retries the project list in place instead of asking for a reload (WS-32)', async () => {
+    const list = vi.spyOn(projectsApi, 'list').mockRejectedValue(new Error('boom'))
+
+    renderArea('project/general')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }))
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
+    expect(screen.queryByText(/Reload the page/i)).toBeNull()
+  })
+
+  it('reports a failed project list once on a section that is not project-scoped (fj5g.6)', async () => {
+    // The list is silent app-wide because Layout owns its error card, and these
+    // routes mount outside Layout: without this the failure went unreported.
+    vi.spyOn(projectsApi, 'list').mockRejectedValue(new Error('boom'))
+
+    renderArea('api-keys')
+
+    await screen.findByRole('heading', { name: 'Projects could not be loaded' })
+    const cards = screen
+      .getAllByRole('alert')
+      .filter((node) => within(node).queryByRole('heading', { name: 'Projects could not be loaded' }))
+    expect(cards).toHaveLength(1)
+    expect(within(cards[0]).getByRole('button', { name: 'Try again' })).toBeInTheDocument()
   })
 
   it('still renders workspace sections with no project bound', async () => {

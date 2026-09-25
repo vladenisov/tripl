@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
+import { toast } from 'sonner'
 import type { Event, EventType, MetaFieldDefinition } from '@/types'
 import { buildExamplePayload, buildSpecMarkdown } from '@/lib/eventSpec'
 import { EventSpecCard } from './EventSpecCard'
@@ -123,6 +124,19 @@ describe('EventSpecCard (tripl-kjhi.8)', () => {
     expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual(payload)
   })
 
+  it('reports a failed copy when there is no clipboard (plain HTTP)', async () => {
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    try {
+      renderCard()
+      fireEvent.click(screen.getByRole('button', { name: 'Copy as JSON' }))
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not copy json'))
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
+  })
+
   it('builds a Markdown spec a ticket can carry', () => {
     const rows = [
       {
@@ -157,5 +171,18 @@ describe('EventSpecCard (tripl-kjhi.8)', () => {
       },
     ])
     expect(payload).toEqual({ property: { how: '${property.how}' } })
+  })
+})
+
+describe('EventSpecCard spec fields table (DS-5)', () => {
+  it('is the design-system table, which scrolls sideways with the edge fade', () => {
+    renderCard()
+
+    const table = screen.getByRole('table', { name: 'Spec fields' })
+    expect(table).toHaveAttribute('data-slot', 'table')
+    expect(table.closest('[data-slot="table-container"]')).not.toBeNull()
+    expect(
+      screen.getAllByRole('columnheader').map(header => header.textContent),
+    ).toEqual(['Field', 'Type', 'Value', 'Documented values'])
   })
 })
