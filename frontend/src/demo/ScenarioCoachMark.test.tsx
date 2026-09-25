@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
+import { useEffect, type Ref } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { scansApi } from '@/api/scans'
 import type { MetricDefinitionDetailResponse, Project, ScanJob } from '@/types'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
-import { useDemoScenario } from './demoScenarioContext'
+import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import { ScenarioCoachMark } from './ScenarioCoachMark'
 import { buildChapterSteps, initialScenarioState, writeScenarioState } from './scenarioModel'
-import { liveLoopState } from './scenarioTestState'
+import { chapterState, liveLoopState } from './scenarioTestState'
 import { at } from '@/test/at'
 
 const SLUG = 'acme'
@@ -367,7 +368,7 @@ describe('ScenarioCoachMark — scrolling an off-screen anchor into view', () =>
     )
 
     expect(scrollSpy).toHaveBeenCalledTimes(1)
-    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center', inline: 'nearest' })
 
     // Toggling the mark off and back on must not scroll again: once per step.
     view.rerender(
@@ -412,7 +413,7 @@ describe('ScenarioCoachMark — scrolling an off-screen anchor into view', () =>
     )
 
     expect(scrollSpy).toHaveBeenCalledTimes(1)
-    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'auto', block: 'center' })
+    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'auto', block: 'center', inline: 'nearest' })
   })
 })
 
@@ -510,5 +511,348 @@ describe('ScenarioCoachMark — a row control has no free side (tripl-jfm3.62)',
 
     expect(callout()).not.toBeNull()
     expect(document.querySelector('[data-coach-docked="true"]')).toBeNull()
+  })
+})
+
+const rowMark = (
+  <table>
+    <tbody>
+      <tr>
+        <td>
+          <ScenarioCoachMark step="live-loop/run-scan">
+            <button type="button">Run scan</button>
+          </ScenarioCoachMark>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+)
+
+describe('ScenarioCoachMark — the anchor is never remounted (DEMO-2)', () => {
+  it('mounts a docked anchor once, so focus and local state survive docking', () => {
+    let mounts = 0
+    // React 19 passes `ref` as a plain prop, so the mark's clone reaches the button.
+    function CountingButton({ ref }: { ref?: Ref<HTMLButtonElement> }) {
+      useEffect(() => {
+        mounts += 1
+      }, [])
+      return (
+        <button type="button" ref={ref}>
+          Run scan
+        </button>
+      )
+    }
+
+    renderMark(
+      <table>
+        <tbody>
+          <tr>
+            <td>
+              <ScenarioCoachMark step="live-loop/run-scan">
+                <CountingButton />
+              </ScenarioCoachMark>
+            </td>
+          </tr>
+        </tbody>
+      </table>,
+    )
+
+    expect(document.querySelector('[data-coach-docked="true"]')).not.toBeNull()
+    expect(mounts).toBe(1)
+  })
+
+  it('keeps the coached control mounted and focused when activating it completes the step', () => {
+    writeScenarioState(SLUG, chapterState('branches', 'branches/review-diff'))
+    let mounts = 0
+    function CompletingButton({ ref }: { ref?: Ref<HTMLButtonElement> }) {
+      const { notifyStepCompleted } = useDemoScenarioActions()
+      useEffect(() => {
+        mounts += 1
+      }, [])
+      return (
+        <button type="button" ref={ref} onClick={() => notifyStepCompleted('branches/review-diff')}>
+          Review diff
+        </button>
+      )
+    }
+
+    renderMark(
+      <ScenarioCoachMark step="branches/review-diff">
+        <CompletingButton />
+      </ScenarioCoachMark>,
+    )
+    const button = screen.getByRole('button', { name: 'Review diff' })
+    expect(callout()).not.toBeNull()
+    button.focus()
+
+    fireEvent.click(button)
+
+    // The step moved on, so the mark stopped coaching — without swapping the
+    // tree around the control (the old bare-children return remounted it).
+    expect(callout()).toBeNull()
+    expect(button).not.toHaveAttribute('data-coach-target')
+    expect(screen.getByRole('button', { name: 'Review diff' })).toBe(button)
+    expect(mounts).toBe(1)
+    expect(document.activeElement).toBe(button)
+  })
+
+  it('keeps the coached control mounted and focused when the hints are muted', () => {
+    let mounts = 0
+    function CountingButton({ ref }: { ref?: Ref<HTMLButtonElement> }) {
+      useEffect(() => {
+        mounts += 1
+      }, [])
+      return (
+        <button type="button" ref={ref}>
+          Run scan
+        </button>
+      )
+    }
+
+    renderMark(
+      <table>
+        <tbody>
+          <tr>
+            <td>
+              <ScenarioCoachMark step="live-loop/run-scan">
+                <CountingButton />
+              </ScenarioCoachMark>
+            </td>
+          </tr>
+        </tbody>
+      </table>,
+    )
+    const button = runButton()
+    button.focus()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide hints' }))
+
+    expect(document.querySelector('[data-coach-docked="true"]')).toBeNull()
+    expect(runButton()).toBe(button)
+    expect(mounts).toBe(1)
+    expect(document.activeElement).toBe(button)
+  })
+
+  it('keeps focus on the anchor when it is hidden and shown again', () => {
+    const original = Element.prototype.checkVisibility
+    Element.prototype.checkVisibility = function checkVisibility(this: Element) {
+      return this.closest('[hidden]') === null
+    }
+    const section = (collapsed: boolean) => (
+      <div hidden={collapsed}>
+        <ScenarioCoachMark step="live-loop/run-scan">
+          <button type="button">Run scan</button>
+        </ScenarioCoachMark>
+      </div>
+    )
+    try {
+      const view = renderMark(section(false))
+      const button = runButton()
+      view.rerender(section(true))
+      view.rerender(section(false))
+      // The same node: the tree around it did not change between placements.
+      expect(runButton()).toBe(button)
+    } finally {
+      if (original) Element.prototype.checkVisibility = original
+      else delete (Element.prototype as { checkVisibility?: unknown }).checkVisibility
+    }
+  })
+})
+
+describe('ScenarioCoachMark — the docked card (DEMO-1, DEMO-13 / LIVE-13)', () => {
+  it('is portalled to <body>, never left as a <div> inside <tbody>', () => {
+    renderMark(rowMark)
+
+    const docked = document.querySelector('[data-coach-docked="true"]')
+    expect(docked?.parentElement).toBe(document.body)
+    expect(document.querySelector('tbody div')).toBeNull()
+  })
+
+  it('docks at the top when its anchor is in the lower half of the viewport', () => {
+    stubAnchorRect({ top: window.innerHeight - 60, left: 100, width: 120, height: 30 })
+    renderMark(rowMark)
+
+    const docked = document.querySelector('[data-coach-docked="true"]')
+    expect(docked).toHaveAttribute('data-coach-edge', 'top')
+  })
+
+  it('docks at the bottom when its anchor is in the upper half', () => {
+    stubAnchorRect(IN_VIEWPORT_RECT)
+    renderMark(rowMark)
+
+    const docked = document.querySelector('[data-coach-docked="true"]')
+    expect(docked).toHaveAttribute('data-coach-edge', 'bottom')
+  })
+
+  // LIVE-13: a control at the left of a table got its card at the far right.
+  it('sits on the side of the screen its anchor is on', () => {
+    stubAnchorRect({ top: 100, left: 20, width: 120, height: 30 })
+    const left = renderMark(rowMark)
+    expect(document.querySelector('[data-coach-docked="true"]')).toHaveAttribute(
+      'data-coach-side',
+      'left',
+    )
+    left.unmount()
+
+    stubAnchorRect({ top: 100, left: window.innerWidth - 140, width: 120, height: 30 })
+    renderMark(rowMark)
+    expect(document.querySelector('[data-coach-docked="true"]')).toHaveAttribute(
+      'data-coach-side',
+      'right',
+    )
+  })
+
+  it('collapses to its step line, so it never has to cover a tap target for good', () => {
+    renderMark(rowMark)
+
+    const collapse = screen.getByRole('button', { name: 'Collapse demo hint' })
+    expect(collapse).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(collapse)
+
+    const expand = screen.getByRole('button', { name: 'Expand demo hint' })
+    expect(expand).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText(`Step 1 of ${STEPS.length}`)).toBeInTheDocument()
+    // Still in the tree, so the anchor's description keeps resolving.
+    expect(screen.getByText(RUN_SCAN_INSTRUCTION)).toBeInTheDocument()
+    // Collapsing is not muting: the scenario and the hints carry on.
+    expect(screen.getByTestId('muted').textContent).toBe('false')
+  })
+})
+
+describe('ScenarioCoachMark — tied to its control (DEMO-12)', () => {
+  it('describes the anchor with the step instruction', () => {
+    renderMark(
+      <ScenarioCoachMark step="live-loop/run-scan">
+        <button type="button">Run scan</button>
+      </ScenarioCoachMark>,
+    )
+
+    expect(runButton()).toHaveAccessibleDescription(RUN_SCAN_INSTRUCTION)
+  })
+
+  it('keeps a description the anchor already had', () => {
+    renderMark(
+      <>
+        <p id="own-hint">Runs against the demo warehouse.</p>
+        <ScenarioCoachMark step="live-loop/run-scan">
+          <button type="button" aria-describedby="own-hint">
+            Run scan
+          </button>
+        </ScenarioCoachMark>
+      </>,
+    )
+
+    const describedBy = runButton().getAttribute('aria-describedby') ?? ''
+    expect(describedBy.split(' ')).toContain('own-hint')
+    expect(runButton()).toHaveAccessibleDescription(
+      `Runs against the demo warehouse. ${RUN_SCAN_INSTRUCTION}`,
+    )
+  })
+
+  it('describes the control inside a wrapper anchor that nobody tabs to', () => {
+    // EventsHeader's drift mark wraps the badge's trigger button in a span.
+    renderMark(
+      <ScenarioCoachMark step="live-loop/run-scan">
+        <span className="inline-flex">
+          <button type="button">Run scan</button>
+        </span>
+      </ScenarioCoachMark>,
+    )
+
+    expect(runButton()).toHaveAccessibleDescription(RUN_SCAN_INSTRUCTION)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide hints' }))
+
+    expect(runButton()).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('names the hint as a note', () => {
+    renderMark(
+      <ScenarioCoachMark step="live-loop/run-scan">
+        <button type="button">Run scan</button>
+      </ScenarioCoachMark>,
+    )
+
+    expect(screen.getByRole('note', { name: 'Demo hint' })).toBeInTheDocument()
+  })
+
+  it('drops the description when the mark goes quiet', () => {
+    renderMark(
+      <ScenarioCoachMark step="live-loop/run-scan">
+        <button type="button">Run scan</button>
+      </ScenarioCoachMark>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide hints' }))
+
+    expect(runButton()).not.toHaveAttribute('aria-describedby')
+  })
+})
+
+describe('ScenarioCoachMark — clipped by its scroll container (DEMO-11)', () => {
+  function clippedMark() {
+    return (
+      <div data-testid="scroller" style={{ overflow: 'auto' }}>
+        <ScenarioCoachMark step="live-loop/run-scan">
+          <button type="button">Run scan</button>
+        </ScenarioCoachMark>
+      </div>
+    )
+  }
+
+  /** The anchor sits inside the window but right of its container's visible box. */
+  function stubClippedLayout(anchorRect = { x: 600, y: 100, width: 120, height: 30 }) {
+    const scrollerRect = { x: 0, y: 0, width: 300, height: 400 }
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const init =
+        this instanceof HTMLElement && this.dataset.testid === 'scroller' ? scrollerRect : anchorRect
+      return {
+        ...init,
+        top: init.y,
+        left: init.x,
+        right: init.x + init.width,
+        bottom: init.y + init.height,
+        toJSON: () => ({}),
+      } as DOMRect
+    })
+  }
+
+  it('draws no ring for an anchor scrolled out of its container', () => {
+    stubClippedLayout()
+    renderMark(clippedMark())
+
+    expect(callout()).not.toBeNull()
+    expect(ring()).toBeNull()
+  })
+
+  it('scrolls an anchor that its container clips, even inside the window', () => {
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+    stubClippedLayout()
+
+    renderMark(clippedMark())
+
+    expect(scrollSpy).toHaveBeenCalledTimes(1)
+    // Clipped only sideways: the page does not also jump vertically.
+    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+  })
+
+  it('does not scroll an anchor wider than its container that is already in view', () => {
+    // A table row on a phone, wider than its overflow-x-auto wrapper: it can
+    // never fit, and it was centred vertically on every step regardless.
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+    stubClippedLayout({ x: 0, y: 100, width: 800, height: 30 })
+
+    renderMark(clippedMark())
+
+    expect(scrollSpy).not.toHaveBeenCalled()
+  })
+
+  it('centres an anchor its container clips vertically', () => {
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+    stubClippedLayout({ x: 50, y: 500, width: 120, height: 30 })
+
+    renderMark(clippedMark())
+
+    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center', inline: 'nearest' })
   })
 })

@@ -3803,6 +3803,8 @@ export interface components {
         AlertDeliveryListResponse: {
             /** Items */
             items: components["schemas"]["AlertDeliveryResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
             /** Total */
             total: number;
         };
@@ -4255,6 +4257,8 @@ export interface components {
         AlertInboxListResponse: {
             /** Items */
             items: components["schemas"]["AlertInboxGroupResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
             /** Total */
             total: number;
             /** Window Truncated At */
@@ -5601,15 +5605,25 @@ export interface components {
          * @description Outcome of asking an in-flight demo provision to abandon itself.
          *
          *     ``cancelled`` is only true when a still-seeding shell was found and flagged;
-         *     the provision then deletes itself instead of promoting. When it is false the
-         *     create had already finished (or never started), so the caller must be told
-         *     plainly that the demo will appear rather than pretending it was stopped.
+         *     the provision then deletes itself instead of promoting.
+         *
+         *     When it is false there was nothing to stop, and ``state`` says which of two
+         *     very different things that means (DEMO-28): ``finished`` — a demo of this
+         *     user's became ready moments ago, so it WILL be in their projects list and
+         *     the caller should say so — or ``none`` — no recent demo exists, the create
+         *     never got far enough (or failed on its own), and the caller must not promise
+         *     anything will appear. ``stopped`` always pairs with ``cancelled=true``.
          */
         DemoCancelResponse: {
             /** Cancelled */
             cancelled: boolean;
             /** Slug */
             slug?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "stopped" | "finished" | "none";
         };
         /**
          * DetectionResetPeriod
@@ -8155,6 +8169,8 @@ export interface components {
              * Format: date-time
              */
             bucket: string;
+            /** Detected At */
+            detected_at?: string | null;
             direction: components["schemas"]["AnomalyDirection"];
             /** Event Id */
             event_id?: string | null;
@@ -8180,6 +8196,8 @@ export interface components {
             state: string;
             /** Stddev */
             stddev: number;
+            /** Unit */
+            unit?: string | null;
             /** Z Score */
             z_score: number;
         };
@@ -12307,6 +12325,7 @@ export interface operations {
                 date_to?: string | null;
                 offset?: number;
                 limit?: number;
+                cursor?: string | null;
             };
             header?: never;
             path: {
@@ -12754,6 +12773,7 @@ export interface operations {
                 scope?: string | null;
                 offset?: number;
                 limit?: number;
+                cursor?: string | null;
             };
             header?: never;
             path: {

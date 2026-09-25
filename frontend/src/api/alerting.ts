@@ -272,6 +272,8 @@ export const alertingApi = {
       date_from?: string
       date_to?: string
       offset?: number
+      /** A previous page's `next_cursor` (ALR-27); never sent with an offset. */
+      cursor?: string
       limit?: number
     },
   ) => {
@@ -286,6 +288,9 @@ export const alertingApi = {
     if (params?.date_from) sp.set('date_from', params.date_from)
     if (params?.date_to) sp.set('date_to', params.date_to)
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
+    // Keyset continuation from a previous page's `next_cursor`; the API refuses
+    // it together with a non-zero offset (ALR-27).
+    if (params?.cursor) sp.set('cursor', params.cursor)
     if (params?.limit !== undefined) sp.set('limit', String(params.limit))
     const qs = sp.toString()
     return api.get<AlertDeliveryListResponse>(`/projects/${slug}/alert-deliveries${qs ? `?${qs}` : ''}`)
@@ -354,6 +359,8 @@ export const alertingApi = {
       direction?: 'spike' | 'drop'
       scope?: string
       offset?: number
+      /** A previous page's `next_cursor` (ALR-27); never sent with an offset. */
+      cursor?: string
       limit?: number
     },
   ) => {
@@ -365,6 +372,7 @@ export const alertingApi = {
     if (params?.direction) sp.set('direction', params.direction)
     if (params?.scope) sp.set('scope', params.scope)
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
+    if (params?.cursor) sp.set('cursor', params.cursor)
     if (params?.limit !== undefined) sp.set('limit', String(params.limit))
     const qs = sp.toString()
     return api.get<AlertInboxListResponse>(`/projects/${slug}/alert-inbox${qs ? `?${qs}` : ''}`)

@@ -1,15 +1,23 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight } from 'lucide-react'
-import { Area, ComposedChart, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 
 import { eventMetricsApi } from '@/api/eventMetrics'
+import { ErrorState } from '@/components/error-state'
 import { Card, CardContent } from '@/components/ui/card'
-import { CHART_SURFACE_TAB_INDEX } from '@/components/ui/chart-format'
+import { MetricsChart } from '@/components/ui/chart'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { granularityForInterval } from '@/lib/metricAdapters'
 import { formatSignalSeverity } from '@/lib/monitoring'
 import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
+import { signalDirectionColor, signalDirectionTone } from '@/lib/statusLexicon'
 import { cn } from '@/lib/utils'
-import type { TopMoverItem } from '@/types'
+import type {
+  BreakdownTimelinePoint,
+  ChartAnnotation,
+  EventMetricPoint,
+  TopMoverItem,
+} from '@/types'
 import { breakdownTimelineKey, topMoversKey } from '@/lib/queryKeys'
 
 interface TopMoversPanelProps {
@@ -60,7 +68,9 @@ export function TopMoversPanel({
   timeRange,
 }: TopMoversPanelProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, isPlaceholderData, error, refetch } = useQuery({
+    // Rendered inline below (MON-30).
+    meta: SILENT_ERROR_META,
     queryKey: topMoversKey(slug, scanConfigId, scopeType, scopeRef, bucket, limit),
     queryFn: () =>
       eventMetricsApi.getTopMovers(slug, scanConfigId, {
@@ -82,7 +92,26 @@ export function TopMoversPanel({
     )
   }
 
-  if (isError || !data || data.length === 0) {
+  // A failed request used to return null, so an outage looked exactly like an
+  // anomaly with no breakdown behind it (MON-30). Only when there is nothing
+  // of this query's own on screen, as in the seasonality heatmap: a failed
+  // background refetch behind loaded rows (possibly with a drilldown open)
+  // keeps them and says so inline below.
+  if (isError && (!data || isPlaceholderData)) {
+    return (
+      <ErrorState
+        title="Top movers unavailable"
+        error={error}
+        onRetry={() => {
+          void refetch()
+        }}
+        retryLabel="Retry"
+        compact
+      />
+    )
+  }
+
+  if (!data || data.length === 0) {
     return null
   }
 
@@ -95,6 +124,20 @@ export function TopMoversPanel({
             Breakdown rows ranked by |z|, for this anomaly bucket. Click a row to
             see its timeline.
           </p>
+          {isError && (
+            <p role="status" className="mt-1 text-xs text-muted-foreground">
+              Refresh failed — showing the last loaded rows.{' '}
+              <button
+                type="button"
+                className="underline underline-offset-2 hover:text-foreground"
+                onClick={() => {
+                  void refetch()
+                }}
+              >
+                Retry
+              </button>
+            </p>
+          )}
         </div>
         <ul className="divide-y divide-border text-sm">
           {data.map(item => {
@@ -113,9 +156,8 @@ export function TopMoversPanel({
                     scanConfigId={scanConfigId}
                     scopeType={scopeType}
                     scopeRef={scopeRef}
-                    breakdownColumn={item.breakdown_column}
-                    breakdownValue={item.breakdown_value}
-                    isOther={item.is_other}
+                    bucket={bucket}
+                    item={item}
                     rangeDays={rangeDays}
                     timeRange={timeRange}
                   />
@@ -141,6 +183,7 @@ function TopMoverRow({
   const delta = item.actual_count - item.expected_count
   const pct = percentDelta(item.actual_count, item.expected_count)
   const Icon = item.direction === 'spike' ? ArrowUp : ArrowDown
+  const tone = signalDirectionTone(item.direction)
   const ChevronIcon = isExpanded ? ChevronDown : ChevronRight
 
   return (
@@ -165,12 +208,15 @@ function TopMoverRow({
         </div>
       </div>
       <div className="flex items-center gap-2 whitespace-nowrap text-right text-xs">
+        {/* The shared direction colours: a spike was painted green here, the
+            opposite of every other signal surface (MON-19). */}
         <span
+          data-tone={tone}
           className={cn(
             'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-medium',
-            item.direction === 'spike'
-              ? 'bg-success-soft text-success'
-              : 'bg-danger-soft text-danger',
+            tone === 'danger'
+              ? 'bg-danger-soft text-danger'
+              : 'bg-warning-soft text-warning',
           )}
         >
           <Icon aria-hidden="true" className="h-3 w-3" />
@@ -196,14 +242,40 @@ function TopMoverRow({
   )
 }
 
+/**
+ * The breakdown timeline as chart points, with the bucket this panel is about
+ * flagged: the timeline endpoint carries counts only, and without the flag the
+ * drilldown could not show where the anomaly falls (MON-20). The expected value
+ * rides along on that point so the tooltip can say what was expected; no stddev,
+ * so no band is drawn around a single point.
+ */
+function toChartPoints(
+  points: readonly BreakdownTimelinePoint[],
+  bucket: string,
+  item: TopMoverItem,
+): EventMetricPoint[] {
+  const anomalyTime = Date.parse(bucket)
+  return points.map(point => {
+    const isAnomaly = Date.parse(point.bucket) === anomalyTime
+    return {
+      bucket: point.bucket,
+      count: point.count,
+      expected_count: isAnomaly ? item.expected_count : null,
+      stddev: null,
+      is_anomaly: isAnomaly,
+      anomaly_direction: isAnomaly ? item.direction : null,
+      z_score: isAnomaly ? item.z_score : null,
+    }
+  })
+}
+
 function BreakdownDrilldown({
   slug,
   scanConfigId,
   scopeType,
   scopeRef,
-  breakdownColumn,
-  breakdownValue,
-  isOther,
+  bucket,
+  item,
   rangeDays,
   timeRange,
 }: {
@@ -211,13 +283,17 @@ function BreakdownDrilldown({
   scanConfigId: string
   scopeType: string
   scopeRef: string
-  breakdownColumn: string
-  breakdownValue: string
-  isOther: boolean
+  /** The anomaly bucket the panel was opened for. */
+  bucket: string
+  item: TopMoverItem
   rangeDays?: number
   timeRange?: { from: string; to: string }
 }) {
-  const { data, isLoading } = useQuery({
+  const breakdownColumn = item.breakdown_column
+  const breakdownValue = item.breakdown_value
+  const isOther = item.is_other
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    meta: SILENT_ERROR_META,
     // The range length, not the live bounds: those step every five minutes,
     // and a key that moved with them refetched the timeline each time (MON-3).
     queryKey: breakdownTimelineKey(
@@ -244,6 +320,31 @@ function BreakdownDrilldown({
     placeholderData: keepPreviousData,
   })
 
+  const points = useMemo(
+    () => toChartPoints(data?.data ?? [], bucket, item),
+    [data?.data, bucket, item],
+  )
+  // A marker line at the anomaly bucket, drawn through the chart's annotation
+  // layer so it snaps to the categorical axis like any other marker.
+  const marker = useMemo<ChartAnnotation[]>(
+    () => [
+      {
+        id: `top-mover-anomaly-${bucket}`,
+        project_id: '',
+        scope_type: null,
+        scope_ref: null,
+        bucket,
+        label: 'This anomaly',
+        description: null,
+        color: signalDirectionColor(item.direction),
+        created_by_user_id: null,
+        created_at: bucket,
+      },
+    ],
+    [bucket, item.direction],
+  )
+  const valueLabel = `${breakdownColumn}=${isOther ? '(other)' : breakdownValue}`
+
   if (isLoading) {
     return (
       <div className="px-2 pb-3 pt-1 text-xs text-muted-foreground" data-testid="breakdown-drilldown">
@@ -252,7 +353,23 @@ function BreakdownDrilldown({
     )
   }
 
-  const points = data?.data ?? []
+  // Said inline: a failed request used to read "No timeline data" (MON-20).
+  if (isError && !data) {
+    return (
+      <div className="px-2 pb-3 pt-1" data-testid="breakdown-drilldown">
+        <ErrorState
+          title="Timeline unavailable"
+          error={error}
+          onRetry={() => {
+            void refetch()
+          }}
+          retryLabel="Retry"
+          compact
+        />
+      </div>
+    )
+  }
+
   if (points.length === 0) {
     return (
       <div className="px-2 pb-3 pt-1 text-xs text-muted-foreground" data-testid="breakdown-drilldown">
@@ -261,40 +378,18 @@ function BreakdownDrilldown({
     )
   }
 
+  // The shared chart, not a bare area: it brings axes, a tooltip, UTC ticks,
+  // the anomaly dot and a size-gated container (MON-20).
   return (
     <div className="px-2 pb-3 pt-1" data-testid="breakdown-drilldown">
-      <div
-        role="img"
-        aria-label={`Timeline for ${breakdownColumn}=${isOther ? '(other)' : breakdownValue}`}
-        className="h-[120px] w-full"
-      >
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart
-            data={points}
-            margin={{ top: 4, right: 4, bottom: 0, left: 0 }}
-            tabIndex={CHART_SURFACE_TAB_INDEX}
-          >
-            <XAxis
-              dataKey="bucket"
-              hide
-            />
-            <YAxis
-              hide
-              domain={['auto', 'auto']}
-            />
-            <Area
-              type="monotone"
-              dataKey="count"
-              stroke="var(--chart-2)"
-              fill="var(--chart-2)"
-              fillOpacity={0.15}
-              strokeWidth={1.5}
-              dot={false}
-              isAnimationActive={false}
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
+      <MetricsChart
+        data={points}
+        annotations={marker}
+        height={140}
+        granularity={granularityForInterval(data?.interval) ?? 'hour'}
+        seriesLabel={`events (${valueLabel})`}
+        color="var(--chart-2)"
+      />
     </div>
   )
 }

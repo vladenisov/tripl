@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -60,6 +60,7 @@ describe('IncidentDeliveries', () => {
     vi.mocked(alertingApi.listDeliveries).mockResolvedValue({
       items: [makeDelivery()],
       total: 1,
+      next_cursor: null,
     })
 
     renderCard()
@@ -87,11 +88,88 @@ describe('IncidentDeliveries', () => {
   })
 
   it('reports an empty incident as empty', async () => {
-    vi.mocked(alertingApi.listDeliveries).mockResolvedValue({ items: [], total: 0 })
+    vi.mocked(alertingApi.listDeliveries).mockResolvedValue({ items: [], total: 0, next_cursor: null })
 
     renderCard()
 
     expect(await screen.findByText(/No delivery recorded for this incident/)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+// It fetched 50 and ignored `total`, under a toggle promising every delivery —
+// a long-running incident with 120 silently showed 50 (ALR-32).
+describe('IncidentDeliveries — more than one page', () => {
+  const page = (from: number, count: number) =>
+    Array.from({ length: count }, (_, index) =>
+      makeDelivery({ id: `delivery-${from + index}`, destination_name: `Dest ${from + index}` }),
+    )
+
+  it('says how many it is showing, and loads the rest on request', async () => {
+    vi.mocked(alertingApi.listDeliveries).mockImplementation(async (_slug, params) =>
+      params?.cursor === 'after-49'
+        ? { items: page(50, 2), total: 52, next_cursor: null }
+        : { items: page(0, 50), total: 52, next_cursor: 'after-49' },
+    )
+
+    renderCard()
+
+    expect(await screen.findByText('Showing 50 of 52 deliveries.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Load older deliveries' }))
+
+    expect(await screen.findByText('Dest 51')).toBeInTheDocument()
+    expect(screen.queryByText(/Showing \d+ of/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Load older deliveries' })).toBeNull()
+    await waitFor(() =>
+      expect(alertingApi.listDeliveries).toHaveBeenLastCalledWith(
+        'demo',
+        expect.objectContaining({ correlation_group_id: GROUP_ID, cursor: 'after-49' }),
+      ),
+    )
+  })
+
+  it('shows a delivery that shifted across the page seam once', async () => {
+    // A delivery that sorted down past the seam between the two requests is
+    // served again on the second page, after the first page's last row.
+    vi.mocked(alertingApi.listDeliveries).mockImplementation(async (_slug, params) =>
+      params?.cursor === 'after-49'
+        ? { items: page(49, 3), total: 52, next_cursor: null }
+        : { items: page(0, 50), total: 52, next_cursor: 'after-49' },
+    )
+
+    renderCard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Load older deliveries' }))
+
+    expect(await screen.findByText('Dest 51')).toBeInTheDocument()
+    expect(screen.getAllByText('Dest 49')).toHaveLength(1)
+  })
+
+  it('continues from the server cursor when the page carries one (ALR-27)', async () => {
+    vi.mocked(alertingApi.listDeliveries).mockImplementation(async (_slug, params) =>
+      params?.cursor === 'after-49'
+        ? { items: page(50, 2), total: 52, next_cursor: null }
+        : { items: page(0, 50), total: 52, next_cursor: 'after-49' },
+    )
+
+    renderCard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Load older deliveries' }))
+
+    expect(await screen.findByText('Dest 51')).toBeInTheDocument()
+    expect(alertingApi.listDeliveries).toHaveBeenLastCalledWith(
+      'demo',
+      expect.objectContaining({ correlation_group_id: GROUP_ID, cursor: 'after-49' }),
+    )
+    const lastCall = vi.mocked(alertingApi.listDeliveries).mock.lastCall
+    expect(lastCall?.[1]).not.toHaveProperty('offset')
+    expect(screen.queryByRole('button', { name: 'Load older deliveries' })).toBeNull()
+  })
+
+  it('titles the summary column the way the Delivery log does', async () => {
+    vi.mocked(alertingApi.listDeliveries).mockResolvedValue({ items: [makeDelivery()], total: 1, next_cursor: null })
+
+    renderCard()
+
+    expect(await screen.findByRole('columnheader', { name: 'What fired' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Error / Preview' })).toBeNull()
   })
 })

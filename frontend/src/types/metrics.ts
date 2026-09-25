@@ -73,6 +73,13 @@ export interface MonitoringSignal {
   // co-firing project_total incident. Only the expanded AnomaliesPage fetch
   // sets it; collapsed callers drop children so it is always false there.
   incident_child: boolean
+  // Display unit of a `metric`-scope signal's catalog metric ("%", "ms"…);
+  // null for every other scope and for a unitless metric (MON-34), and on a
+  // locally-synthesised signal.
+  unit: string | null
+  // When the detector wrote the anomaly — distinct from `bucket`, when the
+  // anomalous period STARTED (MON-40). Null on a payload that predates it.
+  detected_at: string | null
 }
 
 export interface TopMoverItem {

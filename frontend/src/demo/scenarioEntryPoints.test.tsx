@@ -29,6 +29,9 @@ import {
 } from './scenarioModel'
 import { chapterState, liveLoopState } from './scenarioTestState'
 import { setWelcomeDismissed } from './welcomeDismissal'
+import { toast } from 'sonner'
+
+vi.mock('sonner', () => ({ toast: vi.fn() }))
 import { at } from '@/test/at'
 
 const SLUG = 'acme'
@@ -170,6 +173,46 @@ describe('DemoWelcomePanel — how much of the Overview it occupies', () => {
       'href',
       '/workspace',
     )
+  })
+})
+
+describe('DemoWelcomePanel — dismissing it (DEMO-25, DEMO-24, LIVE-9)', () => {
+  it('offers Undo and names the way back', () => {
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss demo welcome' }))
+    expect(screen.queryByRole('heading', { name: /Welcome to your demo workspace/ })).toBeNull()
+
+    const [message, options] = vi.mocked(toast).mock.calls.at(-1) ?? []
+    expect(message).toBe('Demo welcome hidden')
+    const { action, description } = options as {
+      action: { label: string; onClick: () => void }
+      description: string
+    }
+    expect(description).toContain('Tour & chapters')
+    expect(action.label).toBe('Undo')
+
+    act(() => action.onClick())
+    expect(screen.getByRole('heading', { name: /Welcome to your demo workspace/ })).toBeInTheDocument()
+  })
+
+  it('follows a dismissal made in another tab (DEMO-16)', () => {
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+
+    act(() => {
+      window.localStorage.setItem(`tripl-demo-welcome-dismissed:${SLUG}`, '1')
+      window.dispatchEvent(
+        new StorageEvent('storage', { key: `tripl-demo-welcome-dismissed:${SLUG}` }),
+      )
+    })
+
+    expect(screen.queryByRole('heading', { name: /Welcome to your demo workspace/ })).toBeNull()
+  })
+
+  it('does not repeat the banner\'s "Local synthetic data" badge', () => {
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+
+    expect(screen.queryByText('Local synthetic data')).toBeNull()
   })
 })
 

@@ -846,6 +846,17 @@
             "title": "Items",
             "type": "array"
           },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
           "total": {
             "title": "Total",
             "type": "integer"
@@ -853,7 +864,8 @@
         },
         "required": [
           "items",
-          "total"
+          "total",
+          "next_cursor"
         ],
         "title": "AlertDeliveryListResponse",
         "type": "object"
@@ -2239,6 +2251,17 @@
             "title": "Items",
             "type": "array"
           },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
           "total": {
             "title": "Total",
             "type": "integer"
@@ -2259,7 +2282,8 @@
         "required": [
           "items",
           "total",
-          "window_truncated_at"
+          "window_truncated_at",
+          "next_cursor"
         ],
         "title": "AlertInboxListResponse",
         "type": "object"
@@ -5705,7 +5729,7 @@
         "type": "object"
       },
       "DemoCancelResponse": {
-        "description": "Outcome of asking an in-flight demo provision to abandon itself.\n\n``cancelled`` is only true when a still-seeding shell was found and flagged;\nthe provision then deletes itself instead of promoting. When it is false the\ncreate had already finished (or never started), so the caller must be told\nplainly that the demo will appear rather than pretending it was stopped.",
+        "description": "Outcome of asking an in-flight demo provision to abandon itself.\n\n``cancelled`` is only true when a still-seeding shell was found and flagged;\nthe provision then deletes itself instead of promoting.\n\nWhen it is false there was nothing to stop, and ``state`` says which of two\nvery different things that means (DEMO-28): ``finished`` \u2014 a demo of this\nuser's became ready moments ago, so it WILL be in their projects list and\nthe caller should say so \u2014 or ``none`` \u2014 no recent demo exists, the create\nnever got far enough (or failed on its own), and the caller must not promise\nanything will appear. ``stopped`` always pairs with ``cancelled=true``.",
         "properties": {
           "cancelled": {
             "title": "Cancelled",
@@ -5721,10 +5745,20 @@
               }
             ],
             "title": "Slug"
+          },
+          "state": {
+            "enum": [
+              "stopped",
+              "finished",
+              "none"
+            ],
+            "title": "State",
+            "type": "string"
           }
         },
         "required": [
-          "cancelled"
+          "cancelled",
+          "state"
         ],
         "title": "DemoCancelResponse",
         "type": "object"
@@ -12624,6 +12658,18 @@
             "title": "Bucket",
             "type": "string"
           },
+          "detected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detected At"
+          },
           "direction": {
             "$ref": "#/components/schemas/AnomalyDirection"
           },
@@ -12708,6 +12754,17 @@
           "stddev": {
             "title": "Stddev",
             "type": "number"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
           },
           "z_score": {
             "title": "Z Score",
@@ -22243,6 +22300,23 @@
               "title": "Limit",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
           }
         ],
         "responses": {
@@ -23162,6 +23236,23 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           }
         ],

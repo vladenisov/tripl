@@ -1,9 +1,10 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ThemeProvider } from '@/components/theme-provider'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { ActivityPanel } from '@/components/activity-panel'
 import OverviewPage from './OverviewPage'
 
 function jsonResponse(body: unknown) {
@@ -565,6 +566,111 @@ describe('OverviewPage', () => {
     expect(screen.getByText('Demo synthetic')).toBeInTheDocument()
     // A source owned by a different project must not leak into this rail.
     expect(screen.queryByText('Other project source')).not.toBeInTheDocument()
+  })
+})
+
+describe('OverviewPage — active signals panel (MON-15, MON-16, MON-34)', () => {
+  it('links to the full Anomalies list, with the count, from the capped panel', async () => {
+    mockFetch({
+      signals: Array.from({ length: 8 }, (_, index) => ({
+        ...makeEventSignal(`event-${index}`),
+        scope_name: `event_${index}`,
+      })),
+    })
+    renderOverview()
+
+    const link = await screen.findByRole('link', { name: 'View all (8)' })
+    expect(link).toHaveAttribute('href', '/p/demo/anomalies')
+  })
+
+  it('renders both signals when two scans flag the same event on the same bucket', async () => {
+    mockFetch({
+      signals: [
+        { ...makeEventSignal('ev-1'), scan_config_id: 'scan-legacy' },
+        { ...makeEventSignal('ev-1'), scan_config_id: 'scan-live' },
+      ],
+    })
+    renderOverview()
+
+    // A duplicate key is a React console.error, which the test setup fails on.
+    expect(await screen.findAllByText('Spike on Event · map:open:spot')).toHaveLength(2)
+  })
+
+  it('formats a metric signal in its unit when the server sends one', async () => {
+    mockFetch({
+      signals: [
+        {
+          ...makeEventSignal('metric-abc'),
+          scope_type: 'metric',
+          scope_ref: 'metric-abc',
+          scope_name: 'Checkout conversion',
+          event_id: null,
+          actual_count: 0.043,
+          expected_count: 0.12,
+          relative_effect: 0.64,
+          direction: 'drop',
+          unit: '%',
+        },
+      ],
+    })
+    renderOverview()
+
+    const row = await screen.findByRole('link', { name: /Drop on Metric · Checkout conversion/ })
+    expect(row).toHaveTextContent('4.3 % vs 12 %')
+  })
+})
+
+describe('OverviewPage — beside the activity rail (LIVE-10)', () => {
+  function renderWithRail({ inline = true }: { inline?: boolean } = {}) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={AUTH_VALUE}>
+          <ThemeProvider>
+            <MemoryRouter initialEntries={['/p/demo/overview']}>
+              <Routes>
+                <Route
+                  path="/p/:slug/overview"
+                  element={
+                    <>
+                      <OverviewPage />
+                      {/* Layout marks the rail it renders in flow as inline. */}
+                      <ActivityPanel open slug="demo" inline={inline} />
+                    </>
+                  }
+                />
+              </Routes>
+            </MemoryRouter>
+          </ThemeProvider>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('drops its own Recent activity panel while the rail shows the same feed inline', async () => {
+    mockFetch()
+    renderWithRail()
+
+    const rail = await screen.findByRole('complementary', { name: 'Activity feed' })
+    expect(within(rail).getByText('Recent activity')).toBeInTheDocument()
+    await screen.findByRole('heading', { name: 'Live activity' })
+    // Once in the rail, and not a second time in the page body.
+    expect(screen.getAllByText('Recent activity')).toHaveLength(1)
+  })
+
+  it('keeps its panel behind the drawer, which covers the page rather than sitting beside it', async () => {
+    mockFetch()
+    renderWithRail({ inline: false })
+
+    await screen.findByRole('heading', { name: 'Live activity' })
+    await waitFor(() => expect(screen.getAllByText('Recent activity')).toHaveLength(2))
+  })
+
+  it('keeps the panel when the rail is closed', async () => {
+    mockFetch()
+    renderOverview()
+
+    expect(await screen.findByText('Recent activity')).toBeInTheDocument()
   })
 })
 

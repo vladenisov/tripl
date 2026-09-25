@@ -7,6 +7,7 @@ import MonitorDetailPage from './MonitorDetailPage'
 import { INDEFINITE_MUTE, MUTE_PRESETS, muteChoiceName } from '@/lib/mutePresets'
 import { formatCooldown } from './alerting/constants'
 import { at } from '@/test/at'
+import { alertDeliveriesAnyKey } from '@/lib/queryKeys'
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -103,8 +104,10 @@ function mockApi(options: MockOptions = {}) {
   })
 }
 
-function renderDetail(auth: AuthContextValue | null = null) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderDetail(
+  auth: AuthContextValue | null = null,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
@@ -448,6 +451,94 @@ describe('MonitorDetailPage', () => {
     ).toBeInTheDocument()
     // …and never the previous monitor's name, or the fixture's.
     expect(screen.queryByRole('button', { name: expectedMutePresetName(RULE, '1h') })).toBeNull()
+  })
+
+  it('says "still firing" beside the last-fired time instead of contradicting it (LIVE-18)', async () => {
+    mockApi()
+    renderDetail()
+
+    await screen.findByRole('heading', { name: 'payment_failed spike' })
+    expect(screen.getByText('still firing')).toBeInTheDocument()
+    expect(screen.queryByText('now')).not.toBeInTheDocument()
+  })
+
+  it('says how many scopes are firing, so the Active scopes tone has something to colour (MON-42)', async () => {
+    mockApi()
+    renderDetail()
+
+    await screen.findByRole('heading', { name: 'payment_failed spike' })
+    expect(screen.getByText('1 firing')).toBeInTheDocument()
+  })
+
+  it('refreshes the Monitors list summary after a mute (MON-31)', async () => {
+    mockApi()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    renderDetail(null, queryClient)
+
+    await screen.findByRole('heading', { name: 'payment_failed spike' })
+    fireEvent.click(screen.getByRole('button', { name: expectedMutePresetName(RULE, '1h') }))
+
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['monitors-summary', 'demo'] }),
+    )
+    // The destination card's rule reads the same muted_until, and the Inbox
+    // and delivery log are refreshed by the same alerting helper.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['alertDestinations', 'demo'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['alertInbox', 'demo'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['alertDeliveries', 'demo'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: alertDeliveriesAnyKey('demo') })
+  })
+
+  it('refreshes the Inbox and delivery probes after a successful retry (MON-31)', async () => {
+    mockApi()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    renderDetail(null, queryClient)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['alertInbox', 'demo'] }),
+    )
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: alertDeliveriesAnyKey('demo') })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['alertDeliveries', 'demo'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['monitors-summary', 'demo'] })
+  })
+
+  it('says a failed retry failed, on the row, instead of silently re-arming the button (MON-31)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (url.includes('/alert-deliveries/del-1/retry')) {
+        return jsonResponse({ detail: 'Slack rejected the webhook' }, 409)
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse(HISTORY)
+      if (url.includes('/monitors/rule-1') && method === 'GET') return jsonResponse(BASE_MONITOR)
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    renderDetail()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/^Retry failed:/)
+    // The button is back, ready for another go.
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
+  })
+
+  it('refreshes the monitor itself after a successful retry, so "Last delivery" is current (MON-31)', async () => {
+    const fetchMock = mockApi()
+    renderDetail()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+
+    await waitFor(() => {
+      const monitorGets = fetchMock.mock.calls.filter(
+        ([url, init]) => String(url).endsWith('/monitors/rule-1') && (init?.method ?? 'GET') === 'GET',
+      )
+      expect(monitorGets.length).toBeGreaterThanOrEqual(2)
+    })
   })
 
   it('renders an error state when the monitor cannot be loaded', async () => {

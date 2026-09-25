@@ -18,6 +18,7 @@ import { EVENT_STATUS_LABELS, EVENT_STATUS_TONE, type EventStatus } from '@/lib/
 import { granularityForInterval } from '@/lib/metricAdapters'
 import { formatSignalSeverity } from '@/lib/monitoring'
 import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
+import { signalDirectionTone, type SignalDirectionTone } from '@/lib/statusLexicon'
 import type { Event as TEvent, EventMetricPoint, EventMetricsResponse, EventType, MonitoringSignal } from '@/types'
 import { computeEventStats, type EventDetailStats } from './eventStats'
 import { SURFACE_STYLE } from './surface'
@@ -44,7 +45,7 @@ export function EventDetailHero({
 }) {
   const stats = computeEventStats(metrics?.data)
   const signal = metrics?.latest_signal ?? null
-  const signalTone: 'danger' | 'warning' = signal?.direction === 'drop' ? 'warning' : 'danger'
+  const signalTone = signalDirectionTone(signal?.direction ?? 'spike')
   return (
     <div className="space-y-[18px]">
       <EventDetailBreadcrumb slug={slug} name={event.name} branchId={event.branch_id ?? null} />
@@ -163,7 +164,7 @@ function EventDetailHeader({
     <div className="flex flex-wrap items-start gap-[13px]">
       <span className="mt-[7px] flex-shrink-0">
         {signal
-          ? <Dot tone={signal.direction === 'drop' ? 'warning' : 'danger'} pulse size={8} />
+          ? <Dot tone={signalDirectionTone(signal.direction)} pulse size={8} />
           : <Dot tone={statusTone} size={8} />}
       </span>
       {/* `basis-60` makes the title column ask for 240px, so on a phone the
@@ -240,7 +241,7 @@ function EventActionOverflow() {
   )
 }
 
-function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: 'danger' | 'warning' }) {
+function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: SignalDirectionTone }) {
   // No baseline is a fact about the signal, not a missing value: dropping the
   // clause left the banner silently shorter on exactly the anomalies that moved
   // the most — an event firing where nothing was expected, a scope resuming

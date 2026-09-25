@@ -249,3 +249,38 @@ describe('InboxBulkActionBar — the note the batch shares (tripl-saq1)', () => 
     )
   })
 })
+
+// The bar is fixed to the viewport and wraps to several rows on a phone, so it
+// covered the last cards' actions and "Load more" with nothing reserving room
+// to scroll them out from under it (ALR-31).
+describe('InboxBulkActionBar — room for the end of the list', () => {
+  it('reserves its own height, plus its offset from the edge, in the flow', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      height: 120,
+      width: 300,
+      top: 0,
+      left: 0,
+      right: 300,
+      bottom: 120,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect)
+    const { container } = renderBar(3)
+
+    const spacer = container.querySelector<HTMLElement>('[data-bulk-bar-spacer]')
+    expect(spacer).not.toBeNull()
+    expect(spacer).toHaveAttribute('aria-hidden', 'true')
+    // 120px of bar, its 18px offset, 12px of air.
+    expect(spacer?.style.height).toBe('150px')
+    vi.restoreAllMocks()
+  })
+
+  it('reserves nothing once the selection is gone', () => {
+    const { container, setCount } = renderBar(3)
+
+    setCount(0)
+
+    expect(container.querySelector('[data-bulk-bar-spacer]')).toBeNull()
+  })
+})

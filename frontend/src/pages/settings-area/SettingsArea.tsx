@@ -8,6 +8,7 @@ import { ErrorState } from '@/components/error-state'
 import { SCard } from '@/components/settings/kit'
 import { SettingsLayout } from '@/components/settings/SettingsLayout'
 import { SETTINGS_STORAGE_KEY } from '@/components/settings/nav'
+import { LEAVE_CONFIRMED } from '@/components/settings/unsaved-changes'
 import type { Project } from '@/types'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
 
@@ -71,6 +72,7 @@ export default function SettingsArea({ section }: { section: string }) {
   const auth = useAuth()
   const isOwner = isOwnerRole(auth.user?.role)
   const [pickedSlug, setPickedSlug] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
   const slug = useSettingsSlug(pickedSlug)
   const projectsQuery = useQuery(projectsQueryOptions())
   const projects = projectsQuery.data ?? []
@@ -86,6 +88,22 @@ export default function SettingsArea({ section }: { section: string }) {
       /* ignore */
     }
     setPickedSlug(picked)
+  }
+
+  // A save that renames the project moves it to a new address. Every source the
+  // slug came from has to follow, or the section goes on requesting the old
+  // one: a picked slug outranked the localStorage key General had already
+  // updated, so the page fell over with "Failed to load project" and any later
+  // Save or Delete targeted a project that no longer existed (WS-8). The
+  // address is rewritten in place; the draft is saved, so the leave guard has
+  // nothing to ask about.
+  const followRename = (renamed: string) => {
+    setPickedSlug(renamed)
+    if (searchParams.get('project') !== null) {
+      const next = new URLSearchParams(searchParams)
+      next.set('project', renamed)
+      setSearchParams(next, { replace: true, state: LEAVE_CONFIRMED })
+    }
   }
 
   // Persist the last visited section so re-entering /settings lands where the
@@ -132,6 +150,7 @@ export default function SettingsArea({ section }: { section: string }) {
           projects,
           projectsStatus: projectsQuery.status,
           onPickProject: pickProject,
+          onSlugChanged: followRename,
           projectsError: projectsQuery.error,
           onRetryProjects: () => {
             void projectsQuery.refetch()
@@ -164,6 +183,7 @@ function renderSection({
   projects,
   projectsStatus,
   onPickProject,
+  onSlugChanged,
   projectsError,
   onRetryProjects,
 }: {
@@ -173,6 +193,7 @@ function renderSection({
   projects: Project[]
   projectsStatus: 'pending' | 'error' | 'success'
   onPickProject: (slug: string) => void
+  onSlugChanged: (slug: string) => void
   projectsError: unknown
   onRetryProjects: () => void
 }) {
@@ -203,7 +224,7 @@ function renderSection({
     )
   }
   if (section === 'project/plan-rules') return <PlanRulesSection />
-  return <ProjectGeneralSection slug={slug} />
+  return <ProjectGeneralSection slug={slug} onSlugChanged={onSlugChanged} />
 }
 
 /**

@@ -45,6 +45,8 @@ function signal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
     z_score: 0,
     direction: 'drop',
     incident_child: false,
+    unit: null,
+    detected_at: null,
     ...overrides,
   }
 }
@@ -146,6 +148,9 @@ describe('deriveRowSignalFromMetrics', () => {
       z_score: -4,
       direction: 'drop',
       bucket: '2026-06-10T01:00:00Z',
+      // Nothing on a series point says either, so nothing is invented.
+      unit: null,
+      detected_at: null,
     })
   })
 

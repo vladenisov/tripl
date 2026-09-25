@@ -6,6 +6,17 @@ import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem, Role } from '@/types'
 import { formatDateTime } from '@/lib/datetime'
 import { AlertDeliveryRow } from './AlertDeliveryRow'
+import type { RetryWatchOptions } from './retryWatch'
+
+// Stubbed so a retry's success can be asserted as the sentence a reader sees.
+const { toastSuccess, toastError } = vi.hoisted(() => ({
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+}))
+vi.mock('sonner', () => ({
+  toast: { success: toastSuccess, error: toastError },
+  Toaster: () => null,
+}))
 
 function mockJsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -116,6 +127,9 @@ function renderRow(
   focusDeliveryId?: string,
   focusItemKey?: string,
   role: Role = 'editor',
+  // Off unless a test is about it: a watch left running would look the
+  // delivery up after its test ended, against the next test's fetch stub.
+  retryWatch: RetryWatchOptions = { attempts: 0 },
 ) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -138,6 +152,7 @@ function renderRow(
                   delivery={delivery}
                   focusDeliveryId={focusDeliveryId}
                   focusItemKey={focusItemKey}
+                  retryWatch={retryWatch}
                 />
               </tbody>
             </table>
@@ -164,6 +179,8 @@ function expandRow(detail: AlertDeliveryDetail) {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  toastSuccess.mockClear()
+  toastError.mockClear()
 })
 
 describe('AlertDeliveryRow retry', () => {
@@ -778,5 +795,218 @@ describe('AlertDeliveryRow per-item anchor', () => {
       screen.getByRole('button', { name: 'Expand delivery details' }),
     ).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('from your alert')).toBeNull()
+  })
+})
+
+// The full error lived only in a `title` on the truncated cell — invisible on
+// touch and to most screen readers — and the expanded row never showed it, so
+// on a phone nobody could read why a delivery failed before pressing Retry
+// (ALR-33).
+describe('AlertDeliveryRow — why it failed, in full', () => {
+  it('puts the whole error message first in the expanded row', async () => {
+    const message = 'Slack returned 404 channel_not_found: the webhook points at an archived channel'
+    expandRow({ ...mockDelivery({ status: 'failed', error_message: message }), items: [] })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Why it failed')
+    expect(alert).toHaveTextContent(message)
+  })
+
+  it('says nothing of the sort on a delivery that did not fail', async () => {
+    expandRow({ ...mockDelivery({ status: 'sent', error_message: null }), items: [] })
+
+    await screen.findByText(/This delivery matched nothing|No per-scope rows/)
+    expect(screen.queryByText('Why it failed')).toBeNull()
+  })
+})
+
+// `{open && detail && …}` rendered nothing while the detail loaded and nothing
+// forever when it failed — the chevron turned over an empty row (ALR-34).
+describe('AlertDeliveryRow — the expanded row while its detail is not there', () => {
+  it('says it is loading', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}))
+    renderRow(mockDelivery({ status: 'sent', error_message: null }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand delivery details' }))
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading delivery details…')
+  })
+
+  it('says the request failed, and offers to try again', async () => {
+    let calls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/alert-deliveries/delivery-1')) {
+        calls += 1
+        if (calls === 1) return mockJsonResponse({ detail: 'boom' }, 500)
+        return mockJsonResponse({
+          ...mockDelivery({ status: 'sent', error_message: null, matched_count: 0 }),
+          items: [],
+        })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderRow(mockDelivery({ status: 'sent', error_message: null }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand delivery details' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Could not load this delivery's details/)
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(
+      await screen.findByText('This delivery matched nothing, so it has no per-scope rows.'),
+    ).toBeInTheDocument()
+  })
+})
+
+// One click re-posted to Slack, Jira or Linear — for the trackers, a new issue —
+// and the only feedback was the badge changing, on a row that could then move
+// off a Status=Failed page entirely (ALR-35).
+describe('AlertDeliveryRow — a retry says what it did', () => {
+  function mockRetry() {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/alert-deliveries/delivery-1/retry') && init?.method === 'POST') {
+        return mockJsonResponse({
+          ...mockDelivery({ status: 'pending', error_message: null, updated_at: '2026-01-02T00:00:00Z' }),
+          items: [],
+        })
+      }
+      throw new Error(`Unhandled fetch: ${init?.method} ${url}`)
+    })
+  }
+
+  it('confirms that a retry was queued, naming the destination', async () => {
+    mockRetry()
+    renderRow(mockDelivery({ status: 'failed', destination_name: 'Ops Slack' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        'Retry queued — Ops Slack will send this alert again.',
+      ),
+    )
+  })
+
+  it('asks first where a retry opens a second ticket', async () => {
+    const fetchSpy = mockRetry()
+    renderRow(mockDelivery({ status: 'failed', channel: 'jira', destination_name: 'Ops Jira' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Jira opens a new issue for it')
+    expect(fetchSpy).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  // The retry endpoint only re-queues, so the outcome is looked up once the
+  // worker has had a go (ALR-35).
+  function mockRetryThen(outcomes: AlertDeliveryDetail[]) {
+    let looks = 0
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (url.endsWith('/alert-deliveries/delivery-1/retry') && method === 'POST') {
+        return mockJsonResponse({
+          ...mockDelivery({ status: 'pending', error_message: null, updated_at: '2026-01-02T00:00:00Z' }),
+          items: [],
+        })
+      }
+      if (url.endsWith('/alert-deliveries/delivery-1') && method === 'GET') {
+        const outcome = outcomes[Math.min(looks, outcomes.length - 1)]
+        looks += 1
+        return mockJsonResponse(outcome)
+      }
+      if (method === 'GET') return mockJsonResponse({ items: [], total: 0 })
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+  }
+
+  it('says "Still failing" with the reason when the retried send fails again', async () => {
+    mockRetryThen([
+      { ...mockDelivery({ status: 'pending', error_message: null }), items: [] },
+      {
+        ...mockDelivery({ status: 'failed', error_message: 'Slack answered 404: channel_not_found' }),
+        items: [],
+      },
+    ])
+    renderRow(
+      mockDelivery({ status: 'failed', destination_name: 'Ops Slack' }),
+      undefined,
+      undefined,
+      'editor',
+      { intervalMs: 5, attempts: 5 },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith('Still failing: Slack answered 404: channel_not_found'),
+    )
+  })
+
+  it('says it was delivered once the retried send goes through', async () => {
+    mockRetryThen([{ ...mockDelivery({ status: 'sent', error_message: null }), items: [] }])
+    renderRow(
+      mockDelivery({ status: 'failed', destination_name: 'Ops Slack' }),
+      undefined,
+      undefined,
+      'editor',
+      { intervalMs: 5, attempts: 5 },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        'Delivered — Ops Slack accepted the retried alert.',
+      ),
+    )
+    expect(toastError).not.toHaveBeenCalled()
+  })
+
+  it('sends the retry once the ticket retry is confirmed', async () => {
+    const fetchSpy = mockRetry()
+    renderRow(mockDelivery({ status: 'failed', channel: 'linear', destination_name: 'Ops Linear' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        '/api/v1/projects/demo/alert-deliveries/delivery-1/retry',
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    )
+  })
+})
+
+// The expanded detail printed `variable_value_drift`, a channel in capitals,
+// and "1 items" (ALR-48).
+describe('AlertDeliveryRow — words, not enums', () => {
+  it('names the channel the way the destination picker does', () => {
+    renderRow(mockDelivery({ channel: 'slack' }))
+
+    expect(screen.getByText('Slack')).toBeInTheDocument()
+  })
+
+  it('calls the demo sink a local sink', () => {
+    renderRow(mockDelivery({ channel: 'demo_sink', is_local: true }))
+
+    expect(screen.getByText('Local sink')).toBeInTheDocument()
+  })
+
+  it('labels the item kind and counts items in the singular', async () => {
+    expandRow({
+      ...mockDelivery({ status: 'sent', error_message: null, payload_snapshot: mockPayload() }),
+      items: [mockItem({ scope_type: 'variable_value_drift' })],
+    })
+
+    expect(await screen.findByText('1 item')).toBeInTheDocument()
+    expect(screen.queryByText('variable_value_drift')).toBeNull()
   })
 })

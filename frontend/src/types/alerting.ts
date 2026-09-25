@@ -279,6 +279,12 @@ export interface AlertDeliveryDetail extends AlertDelivery {
 export interface AlertDeliveryListResponse {
   items: AlertDelivery[]
   total: number
+  /**
+   * Opaque keyset cursor for the page after this one; `null` on the last page
+   * (ALR-27). The server always sends it; a reader falls back to offset
+   * paging when it is null.
+   */
+  next_cursor: string | null
 }
 
 export type AlertInboxStatus =
@@ -443,6 +449,8 @@ export interface AlertInboxListResponse {
    * disagree about a key the server never omits.
    */
   window_truncated_at: string | null
+  /** Opaque keyset cursor for "Load more"; see AlertDeliveryListResponse. */
+  next_cursor: string | null
 }
 
 export type MonitorStatus = 'firing' | 'warning' | 'healthy'

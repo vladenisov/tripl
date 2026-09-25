@@ -70,5 +70,25 @@ export function selectSignificantSignals(
 ): MonitoringSignal[] {
   return (signals ?? [])
     .filter(signal => relativeEffect(signal) >= SIGNIFICANT_MIN_REL_EFFECT)
-    .sort((a, b) => relativeEffect(b) - relativeEffect(a))
+    // The shared comparator, so a tie on relative effect breaks on |z| here
+    // exactly as it does on the Anomalies page.
+    .sort(compareSignalsByMagnitude)
 }
+
+/**
+ * The one ranking of open signals: biggest relative effect first, |z| as the
+ * tie-breaker.
+ *
+ * The Anomalies page sorted by |z| alone while Overview and the bell sorted by
+ * `relativeEffect`, so the top anomaly on Overview was not the top row of the
+ * Anomalies list, and quiet-scope noise — where z is inflated — led the page
+ * (MON-14). A comparator, not a selector, so a caller that has already filtered
+ * sorts its own copy.
+ */
+export function compareSignalsByMagnitude(a: MonitoringSignal, b: MonitoringSignal): number {
+  return (
+    relativeEffect(b) - relativeEffect(a)
+    || Math.abs(b.z_score) - Math.abs(a.z_score)
+  )
+}
+

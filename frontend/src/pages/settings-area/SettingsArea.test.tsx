@@ -249,3 +249,72 @@ describe('SettingsArea project binding', () => {
     expect(screen.queryByRole('heading', { name: 'Pick a project' })).not.toBeInTheDocument()
   })
 })
+
+describe('SettingsArea follows a slug rename (WS-8)', () => {
+  function mockRenamableProjects() {
+    let current = projects
+    vi.spyOn(projectsApi, 'list').mockImplementation(async () => current)
+    vi.spyOn(projectsApi, 'get').mockImplementation(async (slug: string) => {
+      const found = current.find((p) => p.slug === slug)
+      if (!found) throw new Error(`404 ${slug}`)
+      return found
+    })
+    const update = vi
+      .spyOn(projectsApi, 'update')
+      .mockImplementation(async (slug: string, data: { slug?: string }) => {
+        const renamed = { ...project(data.slug ?? slug, 'Windy iOS'), id: 'windy-ios' }
+        current = current.map((p) => (p.slug === slug ? renamed : p))
+        return renamed
+      })
+    return { update }
+  }
+
+  async function rename(to: string) {
+    const slugInput = await screen.findByLabelText('Slug')
+    fireEvent.change(slugInput, { target: { value: to } })
+    fireEvent.click(at(screen.getAllByRole('button', { name: /Save/ }), 0))
+  }
+
+  it('keeps a project picked from the empty state bound after renaming it', async () => {
+    const { update } = mockRenamableProjects()
+
+    renderArea('project/general')
+    fireEvent.click(await screen.findByRole('button', { name: /Windy iOS/ }))
+    await waitFor(() => expect(screen.getByLabelText('Slug')).toHaveValue('windy-ios'))
+
+    await rename('windy-ios-2')
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+        'href',
+        '/p/windy-ios-2/events',
+      )
+    })
+    expect(screen.queryByText('Failed to load project.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Slug')).toHaveValue('windy-ios-2')
+
+    // A second save goes to the new address, not the dead one.
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Windy iOS app' } })
+    fireEvent.click(at(screen.getAllByRole('button', { name: /Save/ }), 0))
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(2))
+    expect(update.mock.calls[1]?.[0]).toBe('windy-ios-2')
+  })
+
+  it('rewrites ?project= in the address after a rename', async () => {
+    mockRenamableProjects()
+
+    renderArea('project/general', '?project=windy-ios')
+    await waitFor(() => expect(screen.getByLabelText('Slug')).toHaveValue('windy-ios'))
+
+    await rename('windy-ios-2')
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: 'Plan rules' })).toHaveAttribute(
+        'href',
+        '/settings/project/plan-rules?project=windy-ios-2',
+      )
+    })
+    expect(screen.queryByText('Failed to load project.')).not.toBeInTheDocument()
+  })
+})

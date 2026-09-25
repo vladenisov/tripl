@@ -1,7 +1,8 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
 import { DemoProvisioningDialog } from './DemoProvisioningDialog'
+import { DEMO_PROVISION_SLOW_MS } from './provisioningPhases'
 import { expectNoAxeViolations } from '@/test/axe'
 
 function renderDialog(props: Partial<React.ComponentProps<typeof DemoProvisioningDialog>> = {}) {
@@ -154,6 +155,57 @@ describe('DemoProvisioningDialog', () => {
 
     expect(screen.getByText(/may still be finishing on the server/i)).toBeInTheDocument()
     expect(screen.queryByText(/rolled back/i)).not.toBeInTheDocument()
+    // One click on "Try again" could create a duplicate that counts towards
+    // the cap; the way on is the projects list behind the dialog.
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^close$/i }).length).toBeGreaterThan(0)
+  })
+})
+
+describe('DemoProvisioningDialog — copy that matches the failure (DEMO-5, DEMO-21, DEMO-28)', () => {
+  it('does not claim a rollback when the server could not be reached', () => {
+    // The client maps a network failure to 503: the server may have accepted
+    // the create and finished it.
+    renderDialog({
+      status: 'error',
+      error: new ApiError('Backend unavailable', 503),
+    })
+
+    expect(screen.getByText(/the demo may still be created/i)).toBeInTheDocument()
+    expect(screen.queryByText(/rolled back/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument()
+  })
+
+  it('keeps the rollback copy for the server\'s own 500', () => {
+    renderDialog({ status: 'error', error: new ApiError('Demo provisioning failed', 500) })
+
+    expect(screen.getByText(/rolled back/i)).toBeInTheDocument()
+  })
+
+  it('does not promise a demo "will appear" when the outcome of a cancel is unknown', () => {
+    renderDialog({ status: 'cancelled', cancelOutcome: 'unknown' })
+
+    // Neutral: the likeliest case is a demo that finished, not one that stopped.
+    expect(screen.getByRole('heading', { name: 'Nothing left to cancel' })).toBeInTheDocument()
+    expect(screen.queryByText(/stopped/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/will appear/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Too late to cancel')).not.toBeInTheDocument()
+  })
+
+  it('says a create is taking longer than usual once it is well past the estimate', () => {
+    vi.useFakeTimers()
+    try {
+      renderDialog()
+      expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument()
+
+      act(() => {
+        vi.advanceTimersByTime(DEMO_PROVISION_SLOW_MS)
+      })
+
+      expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

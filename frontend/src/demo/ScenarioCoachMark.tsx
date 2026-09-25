@@ -5,13 +5,17 @@
  * does it. Product pages wrap their action element and name a step — they learn
  * nothing about scenario state, and a page that is not part of any scenario, or
  * a project that is not a demo, renders exactly what it always rendered: the
- * guard below is a true early return, so no Popover reaches the DOM at all.
+ * Popover root and its asChild anchor add no DOM, the anchor gets no extra
+ * props, and no card, ring or portal is mounted.
  *
  * A coach mark is a hint, never a dialog. It never takes focus from the control
  * it points at, never traps it, and cannot be broken by Escape or a click
  * elsewhere — the scenario is not something the user can accidentally cancel.
  * The one control it offers is "Hide hints", which quiets the marks for the
- * session while leaving the scenario running and the strip coaching.
+ * browser session (per project, in sessionStorage) while leaving the scenario
+ * running and the strip coaching. The strip offers the same toggle, so a
+ * keyboard user does not have to Tab through the whole page to the portalled
+ * card to reach it (DEMO-12).
  *
  * One gate controls everything this file does (tripl-odrj.2): the card, the
  * pulsing ring around the anchor, the one-shot scroll to an off-screen anchor,
@@ -22,6 +26,7 @@ import {
   cloneElement,
   isValidElement,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -31,9 +36,12 @@ import {
   type Ref,
   type RefCallback,
 } from 'react'
+import { createPortal } from 'react-dom'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import { Popover, PopoverAnchor, PopoverArrow, PopoverContent } from '@/components/ui/popover'
 import { CoachBeacon } from './CoachBeacon'
+import { clippedAxes, clippingAncestors, visibleFrame } from './coachGeometry'
 import { useCoachPresence, useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import type { ScenarioStepId } from './scenarioModel'
 
@@ -49,9 +57,66 @@ interface ScenarioCoachMarkProps {
   children: ReactNode
 }
 
+/**
+ * How the card is shown, decided from the MEASURED anchor after each commit:
+ * - `pending`: not measured yet (the anchor has not mounted) — nothing shows;
+ * - `hidden`: mounted without a box — the mark stands down;
+ * - `anchored`: a popover beside the control;
+ * - `docked`: a fixed card clear of a data table (see below).
+ */
+type Placement = 'pending' | 'hidden' | 'anchored' | 'docked'
+
 /** Mounted but without a box (display:none on it or an ancestor). */
-function isUnrendered(anchor: HTMLElement | null): boolean {
-  return anchor !== null && typeof anchor.checkVisibility === 'function' && !anchor.checkVisibility()
+function isUnrendered(anchor: HTMLElement): boolean {
+  return typeof anchor.checkVisibility === 'function' && !anchor.checkVisibility()
+}
+
+function placementOf(anchor: HTMLElement | null): Placement {
+  if (!anchor) return 'pending'
+  if (isUnrendered(anchor)) return 'hidden'
+  // A control inside a data table — or the <tr> itself — has no adjacent
+  // space that is not table: every side the card can open on lands on the
+  // rows it is explaining, and Radix only flips to avoid the VIEWPORT edge,
+  // not the content underneath (tripl-jfm3.62). Such marks dock the card.
+  return anchor.closest('table') ? 'docked' : 'anchored'
+}
+
+/** Which half of the viewport the anchor's centre is in — the docked card takes the other. */
+function anchorHalf(anchor: HTMLElement): 'upper' | 'lower' {
+  const rect = anchor.getBoundingClientRect()
+  return rect.top + rect.height / 2 > window.innerHeight / 2 ? 'lower' : 'upper'
+}
+
+/**
+ * Which side of the viewport the anchor's own control sits on, so the docked
+ * card lines up with it instead of always hugging the right edge (LIVE-13): a
+ * "Run now" at the left of a scans table got its card on the far side of the
+ * screen. For a whole-row anchor that is the row's first focusable control,
+ * which is what the step asks the reader to use.
+ */
+function anchorColumn(anchor: HTMLElement): 'left' | 'right' {
+  const target = describedDescendant(anchor) ?? anchor
+  const rect = target.getBoundingClientRect()
+  return rect.left + rect.width / 2 < window.innerWidth / 2 ? 'left' : 'right'
+}
+
+/** What a keyboard user can land on — the element a description is heard from. */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+/**
+ * The element that must carry the step's description besides the anchor: its
+ * first focusable descendant, when the anchor itself is a wrapper nobody tabs
+ * to (EventsHeader wraps the drift badge's trigger in a span). None when the
+ * anchor is focusable — the clone already describes it.
+ */
+function describedDescendant(anchor: HTMLElement): HTMLElement | null {
+  if (anchor.matches(FOCUSABLE)) return null
+  return anchor.querySelector<HTMLElement>(FOCUSABLE)
+}
+
+function describedByIds(element: Element): string[] {
+  return (element.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
 }
 
 function mergeRefs(...refs: Array<Ref<HTMLElement> | undefined>): RefCallback<HTMLElement> {
@@ -74,6 +139,7 @@ export function ScenarioCoachMark({
   const { active, step: activeStep, steps, hintsMuted } = useDemoScenario()
   const { muteHints } = useDemoScenarioActions()
   const { report } = useCoachPresence()
+  const instructionId = useId()
 
   const coaching = active && !hintsMuted && when && activeStep.id === step
 
@@ -98,22 +164,29 @@ export function ScenarioCoachMark({
   // layout effect re-measures after every commit, before paint, so neither
   // shows; the observer catches a box that appears or vanishes with no render.
   //
+  // Docking is decided by the same measurement (DEMO-2). It used to be read
+  // from the anchor during render — null on the first one — so the card
+  // painted undocked for a frame and the switch swapped the element tree
+  // around the anchor, remounting the very control being coached (and
+  // dropping its focus).
+  //
   // Keyed on `children` rather than run after every commit: a parent that
   // reveals or collapses the anchor re-renders this mark with a new element,
   // while this mark's own updates (the measurement included) keep the same
   // one — so the measurement can never feed itself.
-  const [anchorHidden, setAnchorHidden] = useState(false)
+  const [placement, setPlacement] = useState<Placement>('pending')
   useLayoutEffect(() => {
-    const measure = () => setAnchorHidden(isUnrendered(anchorEl))
+    const measure = () => setPlacement(coaching ? placementOf(anchorEl) : 'pending')
     measure()
   }, [anchorEl, children, coaching])
   useEffect(() => {
     if (!coaching || !anchorEl || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(() => setAnchorHidden(isUnrendered(anchorEl)))
+    const observer = new ResizeObserver(() => setPlacement(placementOf(anchorEl)))
     observer.observe(anchorEl)
     return () => observer.disconnect()
   }, [coaching, anchorEl])
-  const visible = coaching && !anchorHidden
+  const visible = coaching && (placement === 'anchored' || placement === 'docked')
+  const docked = visible && placement === 'docked'
 
   // Tell the strip a mark for this step is actually on screen, so it can say
   // so when one is not. Keyed on the same gate as the card.
@@ -123,9 +196,29 @@ export function ScenarioCoachMark({
     return () => report(step, false)
   }, [visible, step, report])
 
-  // Bring an off-viewport anchor into view once per step: coaching towards a
-  // control below the fold is coaching towards nothing. One-shot, so the user
-  // keeps control of their own scrolling afterwards.
+  // The description reaches the control a screen reader user actually tabs to
+  // (DEMO-12). The clone below describes the anchor; a non-focusable wrapper
+  // anchor passes it on to its first focusable descendant here, after the
+  // commit, and takes it back when the mark goes quiet. Re-run on `children`
+  // so a descendant that re-mounts gets it again.
+  useLayoutEffect(() => {
+    if (!visible || !anchorEl) return
+    const target = describedDescendant(anchorEl)
+    if (!target || describedByIds(target).includes(instructionId)) return
+    target.setAttribute('aria-describedby', [...describedByIds(target), instructionId].join(' '))
+    return () => {
+      const rest = describedByIds(target).filter((id) => id !== instructionId)
+      if (rest.length > 0) target.setAttribute('aria-describedby', rest.join(' '))
+      else target.removeAttribute('aria-describedby')
+    }
+  }, [visible, anchorEl, instructionId, children])
+
+  // Bring an anchor into view once per step when it is not fully visible:
+  // coaching towards a control below the fold is coaching towards nothing.
+  // "Visible" means inside every scroll container around it, not just inside
+  // the window (DEMO-11) — a row action scrolled out of a table wrapper, or
+  // half under the scrolling pane's edge, is not on screen either. One-shot,
+  // so the user keeps control of their own scrolling afterwards.
   const scrolledStepRef = useRef<ScenarioStepId | null>(null)
   useEffect(() => {
     if (!visible || !anchorEl) return
@@ -137,23 +230,19 @@ export function ScenarioCoachMark({
     const rect = anchorEl.getBoundingClientRect()
     // 0x0 means not laid out; nothing sensible to scroll to.
     if (rect.width === 0 && rect.height === 0) return
-    const offViewport =
-      rect.bottom <= 0 ||
-      rect.top >= window.innerHeight ||
-      rect.right <= 0 ||
-      rect.left >= window.innerWidth
-    if (!offViewport) return
+    // Per axis: an anchor clipped only sideways (a row action in a table
+    // wrapper) must not also jump the page to centre a row already in view.
+    const clipped = clippedAxes(visibleFrame(clippingAncestors(anchorEl)), rect)
+    if (!clipped.vertical && !clipped.horizontal) return
     const reduceMotion =
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    anchorEl.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })
+    anchorEl.scrollIntoView({
+      behavior: reduceMotion ? 'auto' : 'smooth',
+      block: clipped.vertical ? 'center' : 'nearest',
+      inline: 'nearest',
+    })
   }, [visible, anchorEl, step])
-
-  // A control inside a data table has no adjacent space that is not table: every
-  // side the card can open on lands on the rows it is explaining, and Radix only
-  // flips to avoid the VIEWPORT edge, not the content underneath (tripl-jfm3.62).
-  // Such marks keep the ring on the control and dock the card clear of the grid.
-  const docked = visible && anchorEl?.closest('table') != null
 
   // Radix flips and shifts only to avoid the VIEWPORT edge, so on the 1512px
   // shell a card anchored near the right of the content column keeps going and
@@ -176,59 +265,57 @@ export function ScenarioCoachMark({
   // is what every mark had before.
   const boundary: Element | Element[] = anchorEl?.closest(`#${MAIN_CONTENT_ID}`) ?? []
 
-  if (!coaching) return <>{children}</>
-  // Keep the ref on a hidden anchor, so the measurement above can see it come
-  // back.
-  if (!visible) {
-    return isValidElement(children)
-      ? cloneElement(children as ReactElement<Record<string, unknown>>, { ref: anchorRef })
-      : <>{children}</>
-  }
+  // A single element child keeps the same tree around it whether or not the
+  // mark is coaching, and in every placement (DEMO-2): only the anchor's props
+  // and the portalled siblings change. Measuring, docking, hiding — and the
+  // step completing, often from a click on the anchor itself, or "Hide hints"
+  // — never remount the control, so a keyboard user keeps focus on it. The
+  // Popover root and the asChild anchor render no DOM of their own.
+  //
+  // A non-element child (text, a fragment) cannot take the asChild anchor; it
+  // needs a wrapper while coaching, and a non-demo page must not get one.
+  if (!coaching && !isValidElement(children)) return <>{children}</>
 
   const position = steps.findIndex((candidate) => candidate.id === activeStep.id) + 1
-  // The gate guarantees activeStep.id === step, so this is this step's config.
+  // Read only while coaching (the card renders only then), when the gate
+  // guarantees activeStep.id === step, so this is this step's config.
   // Deep-link steps carry no placement of their own; a mark placed on one
   // anyway falls back to a neutral bottom/center card.
   const coach = activeStep.coach
   const ringed = (emphasis ?? coach?.emphasis ?? 'ring') === 'ring'
   const card = (
-    <CoachCard position={position} total={steps.length} instruction={activeStep.instruction} onMute={muteHints} />
+    <CoachCard
+      position={position}
+      total={steps.length}
+      instruction={activeStep.instruction}
+      instructionId={instructionId}
+      onMute={muteHints}
+    />
   )
 
-  if (docked) {
-    return (
-      <>
-        {isValidElement(children)
-          ? cloneElement(children as ReactElement<Record<string, unknown>>, {
-              ref: anchorRef,
-              'data-coach-target': step,
-            })
-          : children}
-        {ringed && anchorEl && <CoachBeacon anchor={anchorEl} />}
-        {/* text-left because a position:fixed card still INHERITS text-align
-            from the cell it is declared in, and row actions live in a
-            `text-right` <td> — which rendered the card ragged-left and pushed
-            "Hide hints" under the tweaks FAB. bottom-[68px] clears that FAB
-            (now fixed bottom-1, h-8 → top edge at 36px; tripl-tvqk tucked it
-            down into the activity rail's footer strip) rather than fighting it
-            on z-index, which would also put the coach over modal dialogs
-            (tripl-gr0x). */}
-        <div
-          role="note"
-          data-coach-docked="true"
-          className="fixed bottom-[68px] right-4 z-50 w-64 rounded-lg border p-3 text-left shadow-lg motion-reduce:animate-none"
-          style={{ background: 'var(--bg-elevated)', borderColor: 'var(--accent)' }}
-        >
-          {card}
-        </div>
-      </>
-    )
-  }
+  // The instruction describes the control it points at (DEMO-12), so a screen
+  // reader user who tabs to it hears the step — the card itself sits at the
+  // end of <body>, far from the control in reading order.
+  const ownDescribedBy = isValidElement(children)
+    ? (children.props as { 'aria-describedby'?: string })['aria-describedby']
+    : undefined
+  const anchorProps: Record<string, unknown> = !coaching
+    ? // Not coaching: the child keeps its own ref and attributes untouched.
+      {}
+    : visible
+    ? {
+        ref: anchorRef,
+        'data-coach-target': step,
+        'aria-describedby': [ownDescribedBy, instructionId].filter(Boolean).join(' '),
+      }
+    : // Keep the ref on a hidden anchor, so the measurement above can see it
+      // come back.
+      { ref: anchorRef }
 
   return (
     // Open with no `onOpenChange`: Escape and outside clicks reach Radix and
     // resolve to nothing, so no stray interaction can silence the coaching.
-    <Popover open>
+    <Popover open={visible && !docked}>
       {/* Slot renders nothing for a non-element child, so only merge onto the
           child when there is a single element to merge onto. The clone stamps
           the exact click target with data-coach-target and captures it for the
@@ -236,39 +323,123 @@ export function ScenarioCoachMark({
           with position-sensitive DOM (the <tr> in ScanDetail) stay valid. */}
       {isValidElement(children) ? (
         <PopoverAnchor asChild>
-          {cloneElement(children as ReactElement<Record<string, unknown>>, {
-            ref: anchorRef,
-            'data-coach-target': step,
-          })}
+          {cloneElement(children as ReactElement<Record<string, unknown>>, anchorProps)}
         </PopoverAnchor>
       ) : (
-        <PopoverAnchor>{children}</PopoverAnchor>
+        <PopoverAnchor ref={anchorRef}>{children}</PopoverAnchor>
       )}
-      {ringed && anchorEl && <CoachBeacon anchor={anchorEl} />}
-      <PopoverContent
-        role="note"
-        side={side ?? coach?.side ?? 'bottom'}
-        align={align ?? coach?.align ?? 'center'}
-        sideOffset={8}
-        collisionBoundary={boundary}
-        // Enough that a shifted card reads as sitting beside the rail rather
-        // than welded to its border.
-        collisionPadding={8}
-        // The action stays focused; the hint must not pull the caret out of the
-        // control it is describing, nor scope focus to itself.
-        onOpenAutoFocus={(event) => event.preventDefault()}
-        onCloseAutoFocus={(event) => event.preventDefault()}
-        className="w-64 rounded-lg border p-3 shadow-sm motion-reduce:animate-none"
-        style={{ background: 'var(--bg-elevated)', borderColor: 'var(--accent)' }}
-      >
-        <PopoverArrow
-          width={12}
-          height={6}
-          style={{ fill: 'var(--bg-elevated)', stroke: 'var(--accent)' }}
-        />
-        {card}
-      </PopoverContent>
+      {visible && ringed && anchorEl && <CoachBeacon anchor={anchorEl} />}
+      {docked && anchorEl && <DockedCoachCard anchor={anchorEl}>{card}</DockedCoachCard>}
+      {visible && !docked && (
+        <PopoverContent
+          role="note"
+          aria-label="Demo hint"
+          side={side ?? coach?.side ?? 'bottom'}
+          align={align ?? coach?.align ?? 'center'}
+          sideOffset={8}
+          collisionBoundary={boundary}
+          avoidCollisions
+          // Enough that a shifted card reads as sitting beside the rail rather
+          // than welded to its border.
+          collisionPadding={8}
+          // The action stays focused; the hint must not pull the caret out of the
+          // control it is describing, nor scope focus to itself.
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          onCloseAutoFocus={(event) => event.preventDefault()}
+          className="w-64 max-w-[calc(100vw-16px)] rounded-lg border p-3 shadow-sm motion-reduce:animate-none"
+          style={{ background: 'var(--bg-elevated)', borderColor: 'var(--accent)' }}
+        >
+          <PopoverArrow
+            width={12}
+            height={6}
+            style={{ fill: 'var(--bg-elevated)', stroke: 'var(--accent)' }}
+          />
+          {card}
+        </PopoverContent>
+      )}
     </Popover>
+  )
+}
+
+/**
+ * The card for a table anchor, fixed clear of the grid (tripl-jfm3.62).
+ *
+ * Portalled to <body> (DEMO-1): declared beside a <tr> anchor it used to land
+ * as a <div> directly inside <tbody>. And it must not become the thing it
+ * hides (DEMO-13 / LIVE-13):
+ * - it takes the half of the viewport the anchor is NOT in, so a row action
+ *   near the bottom gets its card at the top instead of under it;
+ * - below `sm` it spans the width with a gutter rather than covering ~70% of
+ *   a phone screen from the right edge;
+ * - it collapses to a one-line tab, so it never has to block taps for good —
+ *   muting every hint was the only way out before.
+ *
+ * bottom-[68px] clears the tweaks FAB (fixed bottom-1, h-8 → top edge at 36px;
+ * tripl-tvqk tucked it into the activity rail's footer strip) rather than
+ * fighting it on z-index, which would also put the coach over modal dialogs
+ * (tripl-gr0x). top-14 clears the 44px top bar.
+ */
+function DockedCoachCard({ anchor, children }: { anchor: HTMLElement; children: ReactNode }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const [half, setHalf] = useState<'upper' | 'lower'>(() => anchorHalf(anchor))
+  const [column, setColumn] = useState<'left' | 'right'>(() => anchorColumn(anchor))
+
+  useEffect(() => {
+    let frame = 0
+    const refresh = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        setHalf(anchorHalf(anchor))
+        setColumn(anchorColumn(anchor))
+      })
+    }
+    window.addEventListener('resize', refresh)
+    // Capture: the anchor may live inside any scroll container, not just the page.
+    window.addEventListener('scroll', refresh, { capture: true, passive: true })
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('resize', refresh)
+      window.removeEventListener('scroll', refresh, { capture: true })
+    }
+  }, [anchor])
+
+  const edge = half === 'lower' ? 'top-14' : 'bottom-[68px]'
+  // From `sm` up the card is 16rem wide and sits on the anchor's side; below
+  // it the card spans the width, so the side does not matter.
+  const side = column === 'left' ? 'sm:left-4 sm:right-auto' : 'sm:left-auto sm:right-4'
+
+  return createPortal(
+    <div
+      role="note"
+      aria-label="Demo hint"
+      data-coach-docked="true"
+      data-coach-edge={half === 'lower' ? 'top' : 'bottom'}
+      data-coach-side={column}
+      data-collapsed={collapsed ? 'true' : undefined}
+      className={`group/coach fixed ${edge} left-3 right-3 z-50 rounded-lg border p-3 text-left shadow-lg motion-reduce:animate-none ${side} sm:w-64`}
+      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--accent)' }}
+    >
+      <button
+        type="button"
+        onClick={() => setCollapsed((value) => !value)}
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? 'Expand demo hint' : 'Collapse demo hint'}
+        className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-[var(--surface-hover)]"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        {/* The chevron points the way the card will move: a bottom card
+            collapses downwards and expands upwards, a top card the reverse. */}
+        {collapsed === (half === 'lower') ? (
+          <ChevronDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronUp className="h-3.5 w-3.5" />
+        )}
+      </button>
+      {/* Collapsed keeps the card in the tree — the anchor's aria-describedby
+          still points at its instruction — and shows only the step line. */}
+      <div className="pr-8">{children}</div>
+    </div>,
+    document.body,
   )
 }
 
@@ -277,26 +448,33 @@ function CoachCard({
   position,
   total,
   instruction,
+  instructionId,
   onMute,
 }: {
   position: number
   total: number
   instruction: string
+  instructionId: string
   onMute: () => void
 }) {
   return (
     <>
       <p
         className="text-[10px] font-semibold uppercase tracking-[0.07em]"
-        style={{ color: 'var(--fg-faint)' }}
+        style={{ color: 'var(--fg-subtle)' }}
       >
         Step {position} of {total}
       </p>
-      <p className="mt-1 text-[12px] leading-[1.5]">{instruction}</p>
+      <p
+        id={instructionId}
+        className="mt-1 text-[12px] leading-[1.5] group-data-[collapsed=true]/coach:sr-only"
+      >
+        {instruction}
+      </p>
       <button
         type="button"
         onClick={onMute}
-        className="mt-2 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+        className="mt-2 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)] group-data-[collapsed=true]/coach:hidden"
         style={{ color: 'var(--fg-muted)' }}
       >
         Hide hints

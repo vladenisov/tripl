@@ -8,11 +8,14 @@ import {
   MONITOR_STATUS_TONE,
   REVIEW_STATUS,
   SCAN_RUN_STATUS,
+  SIGNAL_DIRECTION,
   SIGNAL_LEVEL,
   coverageTone,
   dataSourceHealthLexeme,
   eventStatusLexeme,
   rowSignalLevel,
+  signalDirectionColor,
+  signalDirectionTone,
   toneVar,
 } from './statusLexicon'
 
@@ -117,5 +120,16 @@ describe('toneVar — tone to CSS variable', () => {
     expect(toneVar('warning')).toBe('var(--warning)')
     expect(toneVar('danger')).toBe('var(--danger)')
     expect(toneVar(coverageTone(95))).toBe('var(--success)')
+  })
+})
+
+describe('signal direction (MON-19)', () => {
+  it('paints a spike as danger and a drop as warning, on every surface', () => {
+    expect(signalDirectionTone('spike')).toBe('danger')
+    expect(signalDirectionTone('drop')).toBe('warning')
+    expect(signalDirectionColor('spike')).toBe('var(--danger)')
+    expect(signalDirectionColor('drop')).toBe('var(--warning)')
+    expect(SIGNAL_DIRECTION.spike.tone).toBe(signalDirectionTone('spike'))
+    expect(SIGNAL_DIRECTION.drop.tone).toBe(signalDirectionTone('drop'))
   })
 })

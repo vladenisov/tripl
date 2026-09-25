@@ -94,6 +94,11 @@ Each row shows the member's name (or email), email, join date, and role
 this screen — use another owner account if you need to step down, and remember
 the last-owner guard above.
 
+Granting **Owner** and every demotion (Owner → Editor, anything → Viewer) ask
+for confirmation first and say what changes; a promotion short of Owner
+(Viewer → Editor) applies at once. If a change is refused, the error appears on
+that member's row.
+
 :::warning Registration ships open — close it once your team has accounts
 Self-service registration used to be the only way to add a person, which is why
 it ships **open by default**. You can now **invite people directly** instead
@@ -117,8 +122,13 @@ The recommended way to add someone, and the only one that works without opening
 the instance to the world:
 
 1. **Settings → Members → Invite a member**. Enter their email and pick a role.
+   Picking **Owner** shows what the role grants, and creating an owner invite
+   asks for confirmation — whoever opens that link administers the instance.
 2. **Copy the link it returns.** It is shown once and cannot be retrieved
-   afterwards — send it however you like (the instance may have no SMTP).
+   afterwards — send it however you like (the instance may have no SMTP). The
+   panel names the role and stays until you **Dismiss** it; creating another
+   invite before the link was copied asks first, since the uncopied link would
+   be lost.
 3. They open the link, set a password, and land in the workspace at the role you
    chose.
 
@@ -151,35 +161,28 @@ signed-in user.
 ### Profile
 
 **Settings → Profile** shows your details pulled from the authenticated account:
+**Name**, **Email**, **Role** ("Set by a workspace owner") and the **Timezone**
+your timestamps follow, which is read from the browser. All of them are
+read-only here.
 
-- **Full name**, **Email**, and **Role** — all read-only here. Role is "Set by a
-  workspace owner."
-
-:::warning Profile preferences are not persisted server-side
-Avatar upload, the **Preferences** block (Timezone, Date format, Start of week)
-and the **Notifications** toggles (Incident alerts, Review requests, Weekly
-digest) are presentation-only in this release. They operate on local state and
-are **not** backed by an API endpoint, so they do not save across devices or
-sessions. Treat them as not-yet-wired.
-:::
+What is not built yet — avatar upload, editing your name, date format and start
+of week, and personal notifications — is listed in one **Coming later** card
+with no controls. Alerts and digests are addressed to a project's destinations
+under Alerting, not to a person.
 
 ### Account security
 
-**Settings → Security** presents Password change, Two-factor authentication, and
-Active-session management.
+**Settings → Security** has one working control: **Email me a reset link**. It
+runs the same password-reset flow as the sign-in screen's **Forgot your
+password?** link (`/auth/password-reset/request`) for your signed-in address,
+and says so when the instance has no email configured and so cannot send one.
+Your current password keeps working until you choose a new one from the link.
 
-:::danger Account-security controls are not functional yet
-The password-change form, 2FA toggle, recovery codes, and the "Sign out all" /
-active-sessions list are **presentation-only placeholders** — there are no
-backend endpoints behind them in the current release. The real authentication
-flows are **register**, **login**, **logout**, and the **password reset** pair
-(`/auth/password-reset/request` and `/auth/password-reset/confirm`) reached from
-the sign-in screen's **Forgot your password?** link — that link, not this form,
-is how a password is actually changed today. To invalidate
-a user's sessions today, change their role (which deletes their sessions) or
-have them log out. Sessions also expire automatically after the configured TTL
-(`session_ttl_hours`, default **168 hours / 7 days**).
-:::
+Changing the password in place, two-factor authentication and a list of
+signed-in devices are not built; the page lists them under **Coming later**.
+To invalidate a user's sessions today, change their role (which deletes their
+sessions) or have them log out. Sessions also expire automatically after the
+configured TTL (`session_ttl_hours`, default **168 hours / 7 days**).
 
 ## API keys & governance
 

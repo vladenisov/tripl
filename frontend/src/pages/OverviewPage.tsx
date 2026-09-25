@@ -9,6 +9,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { activityApi } from '@/api/activity'
+import { useActivityRailInline } from '@/components/activity-panel'
 import { ApiError } from '@/api/client'
 import { dataSourcesApi } from '@/api/dataSources'
 import { eventMetricsApi } from '@/api/eventMetrics'
@@ -25,12 +26,18 @@ import { Sparkline } from '@/components/primitives/sparkline'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useTheme } from '@/components/theme-provider'
-import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
-import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/statusLexicon'
+import {
+  coverageTone,
+  dataSourceHealthLexeme,
+  signalDirectionColor,
+  signalDirectionTone,
+  type StatusLexeme,
+} from '@/lib/statusLexicon'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { selectSignificantSignals } from '@/lib/signalMagnitude'
+import { formatSignalValues } from '@/lib/signalMetricFormat'
 import { friendlyScanError } from '@/lib/scanError'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
@@ -48,7 +55,7 @@ import type {
   MonitoringSignal,
 } from '@/types'
 import {
-  activityKey,
+  activityPreviewKey,
   dataSourcesKey,
   overviewKpiSeriesKey,
   overviewTopEventsKey,
@@ -119,10 +126,16 @@ export default function OverviewPage() {
   // event-type incidents (issue tripl-yfsj.1). Shared key with the top bar and
   // the Anomalies page (tripl-jfm3.119).
   const signalsQuery = useExpandedSignals(slug, { enabled: projectQuery.isSuccess })
+  // With the rail open inline beside the page, the page's own "Recent activity"
+  // panel listed the same items a second time, side by side (LIVE-10). The
+  // panel steps aside while the rail is there and comes back when it closes.
+  const railShowsActivity = useActivityRailInline()
   const activityQuery = useQuery({
-    queryKey: activityKey(slug),
+    // Its own key under the rail's: the two asked for different page sizes
+    // under ONE key, so whichever fetched last set the length of both lists.
+    queryKey: activityPreviewKey(slug, ACTIVITY_LIMIT),
     queryFn: () => activityApi.list({ slug, limit: ACTIVITY_LIMIT }),
-    enabled: !!slug && projectQuery.isSuccess,
+    enabled: !!slug && projectQuery.isSuccess && !railShowsActivity,
     staleTime: 30_000,
     refetchInterval,
   })
@@ -357,11 +370,14 @@ export default function OverviewPage() {
           </div>
         )}
         {volumePoints.length > 0 && (
-          <div className="flex items-end gap-4">
+          // The chart takes the rest of the row and scales to it. A fixed 320px
+          // SVG beside the figure ran off the card on a phone, cutting off the
+          // newest buckets, and left half of a wide card empty (MON-33, LIVE-29).
+          <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
             <div
               role="group"
               aria-label={`Latest bucket volume ${volumeCounts[volumeCounts.length - 1]!.toLocaleString()}, ${volumePoints.length} buckets`}
-              className="flex flex-col gap-px"
+              className="flex shrink-0 flex-col gap-px"
             >
               <span className="mono tnum text-2xl font-medium tracking-[-0.01em]">
                 {volumeCounts[volumeCounts.length - 1]!.toLocaleString()}
@@ -370,8 +386,12 @@ export default function OverviewPage() {
                 latest bucket · {volumePoints.length} buckets
               </span>
             </div>
-            <div role="img" aria-label={volumeChartLabel(volumeCounts, volumeScanName)}>
-              <Sparkline data={volumeCounts} variant={chartStyle} width={320} height={48} />
+            <div
+              role="img"
+              aria-label={volumeChartLabel(volumeCounts, volumeScanName)}
+              className="min-w-[8rem] flex-1"
+            >
+              <Sparkline data={volumeCounts} variant={chartStyle} width={320} height={48} responsive />
               <span className="sr-only">
                 Volume by bucket: {volumeCounts.map((c) => c.toLocaleString()).join(', ')}.
               </span>
@@ -449,8 +469,22 @@ export default function OverviewPage() {
         </div>
       </Panel>
 
-      {/* Active signals */}
-      <Panel title="Active signals">
+      {/* Active signals. Capped at SIGNAL_LIMIT rows while the headline can
+          count dozens, so the full list is one click away (MON-15). */}
+      <Panel
+        title="Active signals"
+        right={
+          slug && signals.length > 0 ? (
+            <Link
+              to={`/p/${slug}/anomalies`}
+              className="rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ color: 'var(--accent)' }}
+            >
+              View all ({signals.length.toLocaleString()})
+            </Link>
+          ) : undefined
+        }
+      >
         <div className="p-4">
         {signalsQuery.isError && (
           <ErrorState
@@ -472,7 +506,9 @@ export default function OverviewPage() {
           <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
             {signals.slice(0, SIGNAL_LIMIT).map((signal) => (
               <SignalRow
-                key={`${signal.scope_type}:${signal.scope_ref}`}
+                // Signals are per scan config: two scans watching one event
+                // each open their own, and a scope-only key collided (MON-16).
+                key={`${signal.scan_config_id ?? 'metric'}:${signal.scope_type}:${signal.scope_ref}:${signal.bucket}`}
                 slug={slug}
                 signal={signal}
               />
@@ -482,7 +518,8 @@ export default function OverviewPage() {
         </div>
       </Panel>
 
-      {/* Recent activity */}
+      {/* Recent activity — not while the rail shows the same feed beside it. */}
+      {!railShowsActivity && (
       <Panel title="Recent activity">
         <div className="p-4">
         {activityQuery.isError && (
@@ -510,6 +547,7 @@ export default function OverviewPage() {
         )}
         </div>
       </Panel>
+      )}
 
       {/* Source health */}
       <Panel title="Source health">
@@ -551,16 +589,16 @@ export default function OverviewPage() {
  * "Loading…" in an empty box for 2.2 s after the KPI numbers, the 14d sparkline,
  * Top events, Active signals and Recent activity had all rendered — pending, but
  * reading as broken. The blocks match the loaded layout (figure + caption beside
- * a 320×48 chart) so the card reserves its height (tripl-jfjt).
+ * a 48px chart that fills the row) so the card reserves its height (tripl-jfjt).
  */
 function VolumeSkeleton() {
   return (
-    <div className="flex items-end gap-4">
+    <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
       <div className="flex flex-col gap-1">
         <Skeleton className="h-7 w-24" />
         <Skeleton className="h-3 w-32" />
       </div>
-      <Skeleton className="h-12 w-[320px] max-w-full" />
+      <Skeleton className="h-12 min-w-[8rem] flex-1" />
       {/* Skeleton is aria-hidden, so the pending state still needs to be said. */}
       <span role="status" className="sr-only">
         Loading volume…
@@ -617,16 +655,16 @@ function SignalRow({
       className="flex items-center gap-2 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)]"
       style={{ color: 'inherit' }}
     >
-      <Dot tone={signal.direction === 'drop' ? 'warning' : 'danger'} pulse size={7} />
+      <Dot tone={signalDirectionTone(signal.direction)} pulse size={7} />
       <span className="flex-1 truncate text-[12px] font-medium" title={signalTitle}>
         {signalSummary}
       </span>
       <span className="mono shrink-0 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-        {signal.actual_count.toLocaleString()} vs {formatIncidentCount(signal.expected_count)}
+        {formatSignalValues(signal)}
       </span>
       <span
         className="mono w-[52px] shrink-0 text-right text-[11px]"
-        style={{ color: signal.direction === 'drop' ? 'var(--warning)' : 'var(--danger)' }}
+        style={{ color: signalDirectionColor(signal.direction) }}
       >
         {formatSignalSeverity(signal)}
       </span>
@@ -708,20 +746,30 @@ function SourceRow({ source }: { source: DataSource }) {
   const checkedTitle = source.last_test_at
     ? `Last checked ${formatDateTime(source.last_test_at)}`
     : 'Never checked'
+  // Wraps on a phone. The fixed columns and chips used to take the whole row,
+  // leaving the source name ~40px and slicing "checked 1h" off the edge; now
+  // the name keeps an 8rem basis, the uppercase type (the badge already says
+  // "synthetic") drops below `sm`, and the check time moves to a second line
+  // (MON-33, LIVE-20).
   return (
-    <div className="flex items-center gap-2 py-2">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-2">
       <Dot tone={tone} size={7} />
       <Database className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-      <span className="flex-1 truncate text-[12px] font-medium" title={source.name}>{source.name}</span>
+      <span className="min-w-0 flex-1 basis-32 truncate text-[12px] font-medium" title={source.name}>
+        {source.name}
+      </span>
       {source.is_synthetic && <SyntheticSourceBadge />}
-      <span className="mono shrink-0 text-[10.5px] uppercase" style={{ color: 'var(--fg-faint)' }}>
+      <span
+        className="mono hidden shrink-0 text-[10.5px] uppercase sm:inline"
+        style={{ color: 'var(--fg-faint)' }}
+      >
         {source.db_type}
       </span>
       <span className="w-[64px] shrink-0 text-right text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
         {label}
       </span>
       <span
-        className="w-[104px] shrink-0 truncate text-right text-[11px]"
+        className="ml-auto shrink-0 truncate text-right text-[11px] sm:ml-0 sm:w-[104px]"
         style={{ color: 'var(--fg-faint)' }}
         title={checkedTitle}
       >

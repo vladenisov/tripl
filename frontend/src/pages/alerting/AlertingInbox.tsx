@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { memo, useCallback, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { MAX_INBOX_NOTE_LENGTH } from '@/api/alerting'
@@ -44,6 +44,7 @@ import type {
 
 import { noteBudgetLabel } from './constants'
 import { InboxFilterBar } from './InboxFilterBar'
+import { liveInboxActionError, type InboxActionFailure } from './inboxActionErrors'
 import {
   EMPTY_INBOX_FILTERS,
   INBOX_LOOKBACK_DAYS,
@@ -51,6 +52,7 @@ import {
   type InboxFilterState,
 } from './inboxFilters'
 import { IncidentDeliveries } from './IncidentDeliveries'
+import { useNoteDraft, type NoteDraftStore } from './noteDraftStore'
 
 /** The status filter, where `''` is "All" — the state with no `status=` param. */
 export type InboxStatusFilter = AlertInboxStatus | ''
@@ -152,13 +154,20 @@ interface AlertingInboxProps {
   // query key, so this component may render it but must not hold it.
   filters: InboxFilterState
   onFiltersChange: (next: InboxFilterState) => void
+  // "Show all" as ONE write. Both halves live in the URL, and react-router's
+  // `setSearchParams` builds each call from the params of the last render — so
+  // calling the status setter and then the filter setter in one click let the
+  // second write restore the status the first had just cleared. Optional: when
+  // absent, the two setters are called in turn.
+  onClearAllFilters?: () => void
   onLoadMore: () => void
   hasMore: boolean
   isLoadingMore: boolean
   // Draft notes and expansion both outlive a section switch, so they are owned
-  // by the page, not by this conditionally-rendered component.
-  noteDrafts: Record<string, string>
-  setNoteDrafts: Dispatch<SetStateAction<Record<string, string>>>
+  // by the page, not by this conditionally-rendered component. The drafts are
+  // a store rather than state, so a keystroke re-renders the one card being
+  // typed in instead of the page and every card on it (ALR-29).
+  noteDraftStore: NoteDraftStore
   expandedIncidents: ReadonlySet<string>
   toggleIncident: (correlationGroupId: string) => void
   // …and so is the bulk selection, threaded in exactly the way those two are
@@ -180,14 +189,17 @@ interface AlertingInboxProps {
   // below them, and the bulk bar would count up one incident at a time.
   setIncidentsSelected: (correlationGroupIds: readonly string[], selected: boolean) => void
   onAction: (variables: InboxActionVariables) => void
-  // The ONE row an action is in flight for. A single shared `isActionPending`
+  // The rows an action is in flight for. A single shared `isActionPending`
   // disabled all ~80 buttons on the page, so triage was strictly serial and the
-  // row you touched showed nothing at all (tripl-oxkt.11).
-  pendingGroupId: string | null
-  // …and the one row whose action failed. The error used to render once, below
-  // every card, ~3,000px from the row it was about.
-  errorGroupId: string | null
-  actionError: unknown
+  // row you touched showed nothing at all (tripl-oxkt.11). A SET, not one id:
+  // with one id, acting on B while A was in flight re-enabled A's buttons and
+  // pinned any failure of A on B (ALR-28).
+  pendingGroupIds: ReadonlySet<string>
+  // …and each row's own failure. The error used to render once, below every
+  // card, ~3,000px from the row it was about. Each failure carries the card
+  // state it failed against, and shows only while the live card still matches
+  // it — a colleague's resolve or a bulk action retires it.
+  actionErrors: ReadonlyMap<string, InboxActionFailure>
   // Where a reader with no rules is sent. Rules moved off the destination cards
   // into their own section (tripl-89ps), so this points at Monitors — adding a
   // channel is not what unblocks an empty inbox, adding a rule is.
@@ -212,20 +224,19 @@ export function AlertingInbox({
   onStatusFilterChange,
   filters,
   onFiltersChange,
+  onClearAllFilters,
   onLoadMore,
   hasMore,
   isLoadingMore,
-  noteDrafts,
-  setNoteDrafts,
+  noteDraftStore,
   expandedIncidents,
   toggleIncident,
   selectedIncidents,
   toggleIncidentSelected,
   setIncidentsSelected,
   onAction,
-  pendingGroupId,
-  errorGroupId,
-  actionError,
+  pendingGroupIds,
+  actionErrors,
   onGoToMonitors,
   focusDeliveryId,
   focusItemKey,
@@ -302,7 +313,9 @@ export function AlertingInbox({
    * the operator, so this creates no selection they cannot see — the property
    * `InboxBulkActionBar` refuses "select all N matching" to protect.
    */
-  const selectIncident = (
+  // Stable across renders that do not change the list, so the memoized cards
+  // below are not all re-rendered by one of them changing (ALR-29).
+  const selectIncident = useCallback((
     correlationGroupId: string,
     selected: boolean,
     extendRange: boolean,
@@ -321,7 +334,13 @@ export function AlertingInbox({
     const start = Math.min(anchorIndex, clickedIndex)
     const end = Math.max(anchorIndex, clickedIndex)
     setIncidentsSelected(selectableIds.slice(start, end + 1), selected)
-  }
+  }, [selectableIds, toggleIncidentSelected, setIncidentsSelected])
+
+  // Bumped by "Show all", which clears the filters from OUTSIDE the bar: a
+  // scope typed inside the debounce window lives only in the bar's own draft,
+  // and remounting is the one reset that also drops the pending debounce —
+  // otherwise it fired afterwards and re-applied what was just cleared (ALR-50).
+  const [filterBarGeneration, setFilterBarGeneration] = useState(0)
 
   const windowTruncatedAt = inbox?.window_truncated_at ?? null
   const subtitle = isLoading
@@ -330,25 +349,27 @@ export function AlertingInbox({
       ? 'Could not load'
       : `Showing ${items.length} of ${total} · ${coverageLabel(windowTruncatedAt)}`
 
+  const errorMessageFor = (group: AlertInboxGroup) => {
+    const failure = liveInboxActionError(actionErrors, group)
+    return failure ? getErrorMessage(failure.error) : null
+  }
+
   const renderCard = (group: AlertInboxGroup, isPinned: boolean) => (
     <IncidentCard
       key={group.correlation_group_id}
       slug={slug}
       group={group}
       isPinned={isPinned}
-      siblings={siblingsByGroupId.get(group.correlation_group_id) ?? []}
-      noteDraft={noteDrafts[group.correlation_group_id] ?? ''}
-      setNoteDrafts={setNoteDrafts}
+      siblings={siblingsByGroupId.get(group.correlation_group_id) ?? NO_SIBLINGS}
+      noteDraftStore={noteDraftStore}
       isExpanded={expandedIncidents.has(group.correlation_group_id)}
       toggleIncident={toggleIncident}
       isSelected={selectedIncidents.has(group.correlation_group_id)}
       onSelectChange={selectIncident}
       onAction={onAction}
       canWrite={canWrite}
-      isPending={pendingGroupId === group.correlation_group_id}
-      errorMessage={
-        errorGroupId === group.correlation_group_id ? getErrorMessage(actionError) : null
-      }
+      isPending={pendingGroupIds.has(group.correlation_group_id)}
+      errorMessage={errorMessageFor(group)}
       focusDeliveryId={focusDeliveryId}
       focusItemKey={focusItemKey}
     />
@@ -418,7 +439,11 @@ export function AlertingInbox({
               decide what is below them must not move as the answer changes, and
               a reader who filtered into an empty result needs the control that
               did it on screen, not scrolled past. */}
-          <InboxFilterBar value={filters} onChange={onFiltersChange} />
+          <InboxFilterBar
+            key={filterBarGeneration}
+            value={filters}
+            onChange={onFiltersChange}
+          />
           {/* ABOVE the loading/error/empty/list ternary, not inside its last
               branch. The cap drops rows before grouping and before the status
               filter, so a filter whose matching incidents were the dropped ones
@@ -473,8 +498,13 @@ export function AlertingInbox({
                   <button
                     type="button"
                     onClick={() => {
-                      onStatusFilterChange('')
-                      onFiltersChange(EMPTY_INBOX_FILTERS)
+                      if (onClearAllFilters) {
+                        onClearAllFilters()
+                      } else {
+                        onStatusFilterChange('')
+                        onFiltersChange(EMPTY_INBOX_FILTERS)
+                      }
+                      setFilterBarGeneration(generation => generation + 1)
                     }}
                     className="underline underline-offset-2"
                   >
@@ -510,7 +540,7 @@ export function AlertingInbox({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 text-[11px]"
+                  className="h-9 text-xs sm:h-7 sm:text-[11px]"
                   disabled={isLoadingMore}
                   onClick={onLoadMore}
                 >
@@ -548,7 +578,8 @@ function StatusFilterChips({
           type="button"
           aria-pressed={value === option.key}
           onClick={() => onChange(option.key)}
-          className="rounded border px-2 py-0.5 text-[11px] transition-colors"
+          // 36px tall on a phone, the compact chip from `sm` up (ALR-30).
+          className="min-h-9 rounded border px-2.5 py-1 text-xs transition-colors sm:min-h-0 sm:px-2 sm:py-0.5 sm:text-[11px]"
           style={{
             borderColor: value === option.key ? 'var(--accent)' : 'var(--border)',
             color: value === option.key ? 'var(--fg)' : 'var(--fg-subtle)',
@@ -589,6 +620,9 @@ const NAVIGATION_DESTINATION: Record<
   },
 }
 
+/** One shared empty list, so a card without siblings keeps a stable prop. */
+const NO_SIBLINGS: readonly AlertInboxGroup[] = []
+
 /** Short enough to be spoken as part of a button name, long enough to identify. */
 function scopeSummary(group: AlertInboxGroup): string {
   const names = group.scope_names.join(', ')
@@ -600,9 +634,8 @@ interface IncidentCardProps {
   slug: string
   group: AlertInboxGroup
   isPinned: boolean
-  siblings: AlertInboxGroup[]
-  noteDraft: string
-  setNoteDrafts: Dispatch<SetStateAction<Record<string, string>>>
+  siblings: readonly AlertInboxGroup[]
+  noteDraftStore: NoteDraftStore
   isExpanded: boolean
   toggleIncident: (correlationGroupId: string) => void
   isSelected: boolean
@@ -619,13 +652,17 @@ interface IncidentCardProps {
   focusItemKey?: string
 }
 
-function IncidentCard({
+/**
+ * Memoized, with every prop the section passes kept stable (ALR-29): an update
+ * that concerns one card — its action going pending, its checkbox — re-renders
+ * that card and not the other 49–249.
+ */
+const IncidentCard = memo(function IncidentCard({
   slug,
   group,
   isPinned,
   siblings,
-  noteDraft,
-  setNoteDrafts,
+  noteDraftStore,
   isExpanded,
   toggleIncident,
   isSelected,
@@ -637,6 +674,7 @@ function IncidentCard({
   focusDeliveryId,
   focusItemKey,
 }: IncidentCardProps) {
+  const noteDraft = useNoteDraft(noteDraftStore, group.correlation_group_id)
   const [muteOpen, setMuteOpen] = useState(false)
   // Open when there is already a note to amend or a draft to finish, collapsed
   // when there is not: 20 identical empty inputs were the widest element in
@@ -778,7 +816,21 @@ function IncidentCard({
           </Chip>
           {/* Neutral on purpose: this chip is on every row, so it identifies
               rather than alarms. The arrow carries the direction. */}
-          <Chip size="xs" tone="neutral">
+          {/* Allowed to wrap: a multi-kind incident's reason reads "↑ spike ·
+              volume + event-type volume + metric + project volume", which as
+              one nowrap line ran 359px — past the card and the viewport at
+              375px (LIVE-19). The chip's fixed 18px height gives way to its
+              content for the same reason. */}
+          <Chip
+            size="xs"
+            tone="neutral"
+            className="max-w-full whitespace-normal break-words rounded-md leading-tight"
+            // Padding in `style`, not a `py-*` class: Chip sets an inline
+            // `padding: 0 6px`, which beats any class. And `rounded-md`, not
+            // the pill's `rounded-full`, whose stadium ends clip the first and
+            // last glyphs of a two-line chip.
+            style={{ height: 'auto', minHeight: 18, padding: '2px 6px' }}
+          >
             {incidentDirectionGlyph(group.direction)} {reason}
           </Chip>
           <span className="font-medium">{countOf(group.item_count, 'item', 'items')}</span>
@@ -955,9 +1007,7 @@ function IncidentCard({
                 placeholder={group.note ? 'Replace the note…' : 'Why does this matter?'}
                 maxLength={MAX_INBOX_NOTE_LENGTH}
                 value={noteDraft}
-                onChange={event =>
-                  setNoteDrafts(current => ({ ...current, [id]: event.target.value }))
-                }
+                onChange={event => noteDraftStore.set(id, event.target.value)}
                 // Ctrl/Cmd+Enter, never bare Enter. This is a textarea BECAUSE a
                 // note is prose, so Enter has to go on making paragraphs; the
                 // modifier is the shortcut every comment box already uses, which
@@ -979,7 +1029,7 @@ function IncidentCard({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-7 px-2 text-[10px]"
+                  className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
                   title="Ctrl+Enter (⌘+Enter on a Mac) saves without leaving the box."
                   disabled={isPending || !canSaveNote}
                   onClick={() => runAction('note')}
@@ -999,7 +1049,7 @@ function IncidentCard({
             <button
               type="button"
               onClick={openNote}
-              className="text-[10.5px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              className="inline-flex min-h-9 items-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground sm:min-h-0 sm:text-[10.5px]"
             >
               {group.note ? 'Edit note' : 'Add note'}
             </button>
@@ -1016,7 +1066,7 @@ function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-7 px-2 text-[10px]"
+            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
             aria-label={`Acknowledge ${target}`}
             title="Stops re-delivery until the scope goes quiet, then this reopens by itself. Reversible."
             disabled={isPending || group.status !== 'open'}
@@ -1027,7 +1077,7 @@ function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-7 px-2 text-[10px]"
+            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
             aria-label={`Resolve ${target}`}
             title="Same suppression as Ack, different bucket in the filter. Reopens by itself once the scope goes quiet. Reversible."
             disabled={isPending || group.status === 'resolved'}
@@ -1038,7 +1088,7 @@ function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-7 px-2 text-[10px]"
+            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
             aria-expanded={muteOpen}
             // Two WHOLE names, not one verb fragment glued to the target: the
             // "Mute <target>" half is the vocabulary the Monitors surfaces
@@ -1072,7 +1122,7 @@ function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-7 px-2 text-[10px]"
+            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
             aria-label={isMuted ? unmuteName(target) : `Reopen ${target}`}
             title={
               isMuted
@@ -1086,11 +1136,18 @@ function IncidentCard({
           </Button>
           {/* Separated and confirmed: it is the only control on the page that
               changes DETECTION, permanently, and it sat 4px from Mute. */}
-          <span className="ml-1 border-l pl-2" style={{ borderColor: 'var(--border-subtle)' }}>
+          {/* On a phone it gets a row of its own: with 36px buttons the row
+              wraps anyway, and wrapping False positive in directly after
+              Reopen put a permanent action one mis-tap from a reversible one
+              (ALR-30). From `sm` up it sits inline behind its divider. */}
+          <span
+            className="mt-1 basis-full border-t pt-2 sm:ml-1 sm:mt-0 sm:basis-auto sm:border-l sm:border-t-0 sm:pl-2 sm:pt-0"
+            style={{ borderColor: 'var(--border-subtle)' }}
+          >
             <Button
               size="sm"
               variant="outline"
-              className="h-7 px-2 text-[10px] text-destructive"
+              className="h-9 px-3 text-xs text-destructive sm:h-7 sm:px-2 sm:text-[10px]"
               aria-label={`Mark ${target} as a false positive`}
               title="Closes this incident and permanently makes detection stricter on its scopes only. Asks first, and reports how many scopes it actually changed."
               disabled={isPending || group.status === 'false_positive'}
@@ -1123,7 +1180,7 @@ function IncidentCard({
               key={choice.label}
               size="sm"
               variant="outline"
-              className="h-6 px-2 text-[10px]"
+              className="h-9 px-3 text-xs sm:h-6 sm:px-2 sm:text-[10px]"
               // The open-ended button's visible face and its accessible name
               // differ on purpose, and the reason now lives with the branch
               // that makes them differ — see `muteChoiceName` (tripl-yapg).
@@ -1155,7 +1212,7 @@ function IncidentCard({
         type="button"
         aria-expanded={isExpanded}
         onClick={() => toggleIncident(id)}
-        className="mt-2 text-[10.5px] underline underline-offset-2 text-muted-foreground hover:text-foreground"
+        className="mt-2 inline-flex min-h-9 items-center text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground sm:min-h-0 sm:text-[10.5px]"
       >
         {isExpanded ? 'Hide' : 'Show'} what was sent (
         {countOf(group.delivery_count, 'delivery', 'deliveries')})
@@ -1170,4 +1227,4 @@ function IncidentCard({
       )}
     </div>
   )
-}
+})

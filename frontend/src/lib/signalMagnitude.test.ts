@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { MonitoringSignal } from '@/types'
-import { relativeEffect, selectSignificantSignals } from './signalMagnitude'
+import { compareSignalsByMagnitude, relativeEffect, selectSignificantSignals } from './signalMagnitude'
 
 function signal(over: Partial<MonitoringSignal>): MonitoringSignal {
   return {
@@ -18,6 +18,8 @@ function signal(over: Partial<MonitoringSignal>): MonitoringSignal {
     direction: 'drop',
     scope_name: 'checkout_started',
     incident_child: false,
+    unit: null,
+    detected_at: null,
     ...over,
   }
 }
@@ -64,5 +66,13 @@ describe('relativeEffect', () => {
     const small = signal({ scope_ref: 'a', relative_effect: 0.6 })
     const big = signal({ scope_ref: 'b', relative_effect: 3 })
     expect(selectSignificantSignals([small, big]).map(s => s.scope_ref)).toEqual(['b', 'a'])
+  })
+
+  it('breaks a tie on relative effect by |z|, as the Anomalies page does', () => {
+    const calm = signal({ scope_ref: 'calm', relative_effect: 1, z_score: 2 })
+    const loud = signal({ scope_ref: 'loud', relative_effect: 1, z_score: -9 })
+    const list = [calm, loud]
+    expect(selectSignificantSignals(list).map(s => s.scope_ref)).toEqual(['loud', 'calm'])
+    expect([...list].sort(compareSignalsByMagnitude).map(s => s.scope_ref)).toEqual(['loud', 'calm'])
   })
 })

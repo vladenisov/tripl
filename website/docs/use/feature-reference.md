@@ -767,9 +767,9 @@ it. The list is at
 ### Plan rules
 
 **Where:** Workspace settings › Project › **Plan rules** (in the full-takeover
-Settings area, route `/settings/project/plan-rules`). The naming, governance,
-and PII controls on this screen are currently a clearly labelled preview: they
-use local state and **Save** is disabled because no backend contract exists yet.
+Settings area, route `/settings/project/plan-rules`). Not built yet: the page is
+a single **Coming later** card that lists the planned naming, governance and PII
+rules. It has no controls, because no backend contract exists for any of them.
 The working branch-review controls live under **Plan → Plan branches → Merge
 policy** (`min_approvals`, `block_self_approval`). Scan **Event name format** is
 the working naming rule for scan-targeted event types.
@@ -777,12 +777,16 @@ the working naming rule for scan-targeted event types.
 ### Project general & danger zone
 
 **Where:** Workspace settings › Project › **General**. Edit the project name,
-slug, and description; set the project-wide number of app releases retained as
+slug, description and timezone (picked from the IANA zones the browser knows;
+alert delivery schedules are read in it); set the project-wide number of app releases retained as
 explicit version series; rebuild its search index; or use owner-only destructive
 resets. Version retention applies to event monitoring and standalone catalog
 metrics alike. Renaming the slug refreshes search links for the project's plan
 branches so palette and Ask AI results point at the new route. Deleting a project
 or resetting its demo clears its slug-specific catalog and monitoring caches.
+Deleting — owner-only, from this danger zone or from a project card's menu on
+the workspace page — asks you to type the project's slug before **Delete
+project** arms, and a refused delete is reported inside the dialog.
 Older releases are combined into **Other**. **Reset anomalies**
 removes metric and breakdown anomaly records (and
 their derived active signals) across every scan/catalog metric. **Reset drifts**
@@ -834,8 +838,11 @@ workspace audit log.
 the plan per day on the main branch — not a history of the active-events stat
 beside it) and a plan-coverage stat, a **volume** card charted from a single scan
 and titled with that scan's name, top events over the last 48h summed
-across every scan, active anomaly signals, recent activity, and source
-health. Recent activity reads the **main branch** too, like the KPI series: an
+across every scan, active anomaly signals (the biggest few, with a **View all**
+link to the Anomalies page carrying the full count), recent activity, and source
+health. While the activity rail is open beside the page (wide screens), the
+page's own Recent activity panel is hidden rather than listing the same items
+twice. Recent activity reads the **main branch** too, like the KPI series: an
 open working branch holds its own copy of every event, and those copies are not
 listed as separate entries. A row whose target has since been deleted is shown
 without a link rather than linking to a page that no longer resolves. The volume card and the Events page's "&lt;Tab&gt; Dynamics" chart both
@@ -909,7 +916,13 @@ tabs: **Volume** (series plus the latest signal — bucket / actual / expected /
 band), **By version** with version-adoption (only when the scan defines an
 app-version column), **Heatmap** (7×24 seasonality), **Distribution** (drift
 bands), and **Breakdowns**. The page also surfaces top movers and release
-regressions, plus chart annotations on the Volume tab. For an `event` scope it
+regressions, plus chart annotations on the Volume tab.
+On every volume and breakdown chart an anomaly is a triangle pointing the way
+it moved — up and red for a spike, down and amber for a drop (an outlined bar in
+bar style) — and its tooltip says so with the z-score. The time axis spans the
+whole range you picked, so a series that began partway through starts partway
+along rather than at the left edge, and a count's confidence band stops at zero.
+For an `event` scope it
 additionally renders variable-value drift review and the Photos & specs panel.
 An event that is not yet `live` also gets a **Spec** card ahead of the charts:
 the scan identity with a copy button, the fields with their required and
@@ -1098,11 +1111,20 @@ email, Jira, or Linear under **Observe › Alerting** (see
 ### Anomalies
 
 **Where:** Observe › Anomalies (route `/p/<slug>/anomalies`). A standalone,
-cross-event list of every open monitoring signal, sorted most-severe-first by
-`|z|`. A rollup shows open-signal, spike, and drop counts; each row shows the
-spike/drop direction, scope (project total / event type / event / metric), actual
-vs expected counts, the z-score, and when it fired — linking to the monitoring
-detail for that scope. When a series drops all the way to zero, the severity
+cross-event list of every open monitoring signal, biggest first by
+**relative effect** (`relative_effect`, with `|z|` only breaking ties) — the same
+order the Overview's Active signals panel and the top-bar bell use, so a quiet
+scope with an inflated z-score does not lead the list. A rollup shows open-signal,
+spike, and drop counts; each row shows the spike/drop direction, scope (project
+total / event type / event / metric), actual vs expected values (in the metric's
+unit when the signal carries one), the z-score, and the **bucket** it fired in —
+shown relative, with the bucket's absolute start time and your time zone on
+hover. On a daily or weekly scan that start can be days before the detection
+itself, so the row also says when the detector caught it ("detected 5m ago",
+absolute time on hover). Each row is a link to the monitoring detail for that scope, so it can be
+opened in a new tab. The scan and magnitude filters are radio groups: Tab reaches
+the selected option and the arrow keys move the selection; on a narrow screen
+the options wrap onto more lines. When a series drops all the way to zero, the severity
 column reads **dropped to zero** instead of the clamped z-score, since every such
 signal would otherwise show an identical, low-information value. A scope that
 dropped to zero and has not emitted since stays on this list for as long as it is

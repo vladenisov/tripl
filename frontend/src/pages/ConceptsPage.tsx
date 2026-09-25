@@ -1,13 +1,8 @@
 import { Link, useParams } from 'react-router-dom'
-import {
-  Activity,
-  ArrowRight,
-  PencilRuler,
-  ShieldCheck,
-  type LucideIcon,
-} from 'lucide-react'
+import { ArrowRight, type LucideIcon } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { PageHead, Panel } from '@/components/settings/kit'
+import { PRODUCT_PILLARS, type PillarId } from '@/components/workspace-welcome-pillars'
 
 /**
  * A single domain term: its plain-language definition and, where the concept has
@@ -23,7 +18,7 @@ type Term = {
   surface?: string
 }
 
-type AreaKey = 'plan' | 'observe' | 'govern'
+type AreaKey = PillarId
 
 type Area = {
   key: AreaKey
@@ -39,15 +34,16 @@ type Area = {
  * The three jobs tripl is built around. Plan → Observe → Govern is the spine of
  * the whole product: declare what *should* happen, watch what *actually* does,
  * then keep the two in sync. The glossary and the at-a-glance map below are both
- * driven from this one list so they never drift apart.
+ * driven from this one list, and each area's name, tagline and icon come from
+ * PRODUCT_PILLARS, which the empty-workspace welcome hero reads too — so the
+ * two places that introduce the pillars cannot describe them differently
+ * (WS-46).
  */
 const AREAS: readonly Area[] = [
   {
     key: 'plan',
-    label: 'Plan',
-    tagline: 'what should happen',
+    ...PRODUCT_PILLARS.plan,
     blurb: 'Declare the tracking plan: the events you expect, how they are shaped, and how they relate.',
-    icon: PencilRuler,
     accent: 'var(--accent)',
     terms: [
       {
@@ -98,10 +94,8 @@ const AREAS: readonly Area[] = [
   },
   {
     key: 'observe',
-    label: 'Observe',
-    tagline: 'what actually happens',
+    ...PRODUCT_PILLARS.observe,
     blurb: 'Watch real traffic against the plan: live volume, the scopes it flows through, and anything anomalous.',
-    icon: Activity,
     accent: 'var(--info)',
     terms: [
       {
@@ -144,10 +138,8 @@ const AREAS: readonly Area[] = [
   },
   {
     key: 'govern',
-    label: 'Govern',
-    tagline: 'keep plan & reality in sync',
+    ...PRODUCT_PILLARS.govern,
     blurb: 'Close the gap between plan and traffic: reconcile differences, scan for drift, and keep an audit trail.',
-    icon: ShieldCheck,
     accent: 'var(--success)',
     terms: [
       {
@@ -234,11 +226,20 @@ function TermRow({ term, slug }: { term: Term; slug: string | undefined }) {
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-[13px] font-semibold">{term.term}</h3>
         {href && (
+          // The name STARTS with the visible label: "Open Signals in the app" on
+          // a link that reads "Anomalies" failed WCAG 2.5.3, so a voice user
+          // saying "click Anomalies" never reached it (WS-45). An aria-label
+          // rather than hidden text: a name is built from each element's
+          // trimmed text, so " Events in the app" in a span read "OpenEvents".
           <Link
             to={href}
             className="flex shrink-0 items-center gap-0.5 text-[11px] font-medium no-underline"
             style={{ color: 'var(--accent)' }}
-            aria-label={`Open ${term.term} in the app`}
+            aria-label={
+              term.surface
+                ? `${term.surface}, where ${term.term} appear in the app`
+                : `Open ${term.term} in the app`
+            }
           >
             {term.surface ?? 'Open'}
             <ArrowRight className="h-3 w-3" aria-hidden="true" />

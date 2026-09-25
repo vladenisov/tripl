@@ -1,4 +1,5 @@
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useRef, type KeyboardEvent } from 'react'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
 import { scansApi } from '@/api/scans'
@@ -7,15 +8,17 @@ import { ErrorState } from '@/components/error-state'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
-import { formatIncidentCount } from '@/lib/alertStatus'
-import { formatRelativeTime } from '@/lib/datetime'
+import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import {
   DEFAULT_MAGNITUDE_LEVEL,
   MAGNITUDE_PRESETS,
   type MagnitudeLevel,
+  compareSignalsByMagnitude,
   relativeEffect,
 } from '@/lib/signalMagnitude'
+import { signalDirectionColor, signalDirectionTone } from '@/lib/statusLexicon'
+import { formatSignalValues } from '@/lib/signalMetricFormat'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import {
   signalScopeLabel,
@@ -80,7 +83,24 @@ function UnnamedScope({ signal }: { signal: MonitoringSignal }) {
   )
 }
 
-/** Single-select segmented control. Shared so both filters stay identical. */
+/** Arrow keys → the index they move to in a radio group of `count` options. */
+function radioStep(key: string, index: number, count: number): number | null {
+  if (key === 'ArrowRight' || key === 'ArrowDown') return (index + 1) % count
+  if (key === 'ArrowLeft' || key === 'ArrowUp') return (index - 1 + count) % count
+  if (key === 'Home') return 0
+  if (key === 'End') return count - 1
+  return null
+}
+
+/**
+ * Single-select segmented control. Shared so both filters stay identical.
+ *
+ * A real radio group (MON-12): one Tab stop — the checked option — and the
+ * arrow keys move the selection, as `role="radio"` promises. Every option used
+ * to be its own Tab stop with arrows doing nothing. It also wraps: the scan
+ * facet lists every scan, and as a non-wrapping `inline-flex` its right-hand
+ * options were sliced off by the panel's `overflow-hidden` on a phone.
+ */
 function SegmentedFilter<T extends string>({
   label,
   options,
@@ -92,23 +112,40 @@ function SegmentedFilter<T extends string>({
   value: T
   onChange: (id: T) => void
 }) {
+  const buttons = useRef<Array<HTMLButtonElement | null>>([])
+  // The checked option is the Tab stop; with none checked, the first one is.
+  const checkedIndex = options.findIndex((option) => option.id === value)
+  const tabStop = checkedIndex >= 0 ? checkedIndex : 0
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const next = radioStep(event.key, index, options.length)
+    const option = next === null ? undefined : options[next]
+    if (next === null || !option) return
+    event.preventDefault()
+    onChange(option.id)
+    buttons.current[next]?.focus()
+  }
   return (
     <div
       role="radiogroup"
       aria-label={label}
-      className="inline-flex items-center gap-0.5 rounded-md border p-0.5"
+      className="flex max-w-full flex-wrap items-center gap-0.5 rounded-md border p-0.5"
       style={{ borderColor: 'var(--border)', background: 'var(--bg-sunken)' }}
     >
-      {options.map((option) => {
+      {options.map((option, index) => {
         const active = option.id === value
         return (
           <button
             key={option.id}
+            ref={(element) => {
+              buttons.current[index] = element
+            }}
             type="button"
             role="radio"
             aria-checked={active}
+            tabIndex={index === tabStop ? 0 : -1}
             onClick={() => onChange(option.id)}
-            className="max-w-[14rem] truncate rounded-[5px] px-2.5 py-1 text-[11px] font-medium transition-colors"
+            onKeyDown={(event) => onKeyDown(event, index)}
+            className="min-w-0 max-w-[14rem] truncate rounded-[5px] px-2.5 py-1 text-[11px] font-medium transition-colors"
             style={
               active
                 ? { background: 'var(--accent-soft)', color: 'var(--accent)' }
@@ -260,12 +297,15 @@ export default function AnomaliesPage() {
     scanOptions.push({ id: activeScanId, label: `${facetLabel(activeScanId, scanNames)} 0` })
   }
 
-  // Magnitude first, then scan, then rank most-severe first (largest |z|).
+  // Magnitude first, then scan, then rank biggest first — by relative effect,
+  // as Overview and the bell do, with |z| only breaking ties. Ranking by |z|
+  // alone let quiet-scope noise lead this list while Overview led with a
+  // different anomaly (MON-14).
   const filtered =
     activeScanId === ALL_SCANS
       ? byMagnitude
       : byMagnitude.filter((s) => facetKey(s.scan_config_id) === activeScanId)
-  const sorted = [...filtered].sort((a, b) => Math.abs(b.z_score) - Math.abs(a.z_score))
+  const sorted = [...filtered].sort(compareSignalsByMagnitude)
   const visibleCount = filtered.length
   const hiddenCount = total - visibleCount
   // Split so the subtitle can name the filter responsible for each omission.
@@ -342,16 +382,18 @@ export default function AnomaliesPage() {
             }
           />
           <MiniStatDivider />
+          {/* `valueTone`, not `tone`: these carry no delta, and `tone` paints
+              only the delta — so the emphasis never rendered (MON-42). */}
           <MiniStat
             label="Spikes"
             value={signalsQuery.data ? spikes.toLocaleString() : '—'}
-            tone={spikes > 0 ? 'danger' : 'neutral'}
+            valueTone={spikes > 0 ? signalDirectionTone('spike') : 'neutral'}
           />
           <MiniStatDivider />
           <MiniStat
             label="Drops"
             value={signalsQuery.data ? drops.toLocaleString() : '—'}
-            tone={drops > 0 ? 'warning' : 'neutral'}
+            valueTone={drops > 0 ? signalDirectionTone('drop') : 'neutral'}
           />
         </div>
       )}
@@ -384,7 +426,7 @@ export default function AnomaliesPage() {
                 : undefined
             }
             right={
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                 {/* Only worth the header room once there is something to choose
                     between: a single-scan project gains nothing from it. */}
                 {scanOptions.length > 1 && (
@@ -465,13 +507,19 @@ export default function AnomaliesPage() {
                       <span role="columnheader">Anomaly</span>
                       <span role="columnheader">Actual vs expected</span>
                       <span role="columnheader" className="text-right">Severity</span>
-                      <span role="columnheader" className="text-right">When</span>
+                      {/* The bucket's START, which is what the row carries — on
+                          a daily or weekly scan that is days before detection,
+                          so "When" over-promised (MON-40). */}
+                      <span role="columnheader" className="text-right">Bucket</span>
                     </div>
                   </div>
                   <div role="rowgroup">
                     {sorted.map((signal) => (
                       <AnomalyRow
-                        key={`${signal.scope_type}:${signal.scope_ref}:${signal.bucket}`}
+                        // Scan id too: a legacy and a live scan watching the
+                        // same event open one signal each on the same bucket,
+                        // and the three-part key collided (MON-16).
+                        key={signalRowKey(signal)}
                         slug={slug}
                         signal={signal}
                       />
@@ -486,6 +534,26 @@ export default function AnomaliesPage() {
   )
 }
 
+/** Unique per open signal: the backend keys signals on scan config + scope. */
+function signalRowKey(signal: MonitoringSignal): string {
+  return `${signal.scan_config_id ?? 'metric'}:${signal.scope_type}:${signal.scope_ref}:${signal.bucket}`
+}
+
+/** The viewer's own zone, named, since the bucket is shown in it. */
+function localTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    return 'local time'
+  }
+}
+
+/**
+ * One anomaly. A linkable row is a real link (MON-13): the label is an `<a>`
+ * whose `::after` is stretched over the row, so the whole row stays the click
+ * target while Cmd/Ctrl-click, middle-click and "open in new tab" work, and a
+ * screen reader announces a link rather than a table row it cannot act on.
+ */
 function AnomalyRow({
   slug,
   signal,
@@ -493,47 +561,48 @@ function AnomalyRow({
   slug?: string
   signal: MonitoringSignal
 }) {
-  const navigate = useNavigate()
   const label = signalScopeLabel(signal)
   const isDrop = signal.direction === 'drop'
   const DirIcon = isDrop ? ArrowDown : ArrowUp
-  const severityColor = isDrop ? 'var(--warning)' : 'var(--danger)'
+  const severityColor = signalDirectionColor(signal.direction)
   const href = slug && isLinkableScope(signal) ? getMonitoringPath(slug, signal) : undefined
+  const text = (
+    <>
+      {isDrop ? 'Drop' : 'Spike'} on{' '}
+      {label ?? <UnnamedScope signal={signal} />}
+    </>
+  )
+  const textClass = 'truncate text-[12.5px] font-medium'
 
   return (
     <div
       role="row"
-      tabIndex={href ? 0 : undefined}
-      className={`${ANOMALY_GRID} border-b py-2.5 last:border-0 ${
-        href ? 'cursor-pointer transition-colors hover:bg-[var(--surface-hover)]' : 'cursor-default'
+      className={`${ANOMALY_GRID} relative border-b py-2.5 last:border-0 ${
+        href ? 'transition-colors hover:bg-[var(--surface-hover)]' : ''
       }`}
       style={{ borderColor: 'var(--border-subtle)' }}
-      onClick={href ? () => navigate(href) : undefined}
-      onKeyDown={
-        href
-          ? (event) => {
-              if (
-                event.target === event.currentTarget
-                && (event.key === 'Enter' || event.key === ' ')
-              ) {
-                event.preventDefault()
-                navigate(href)
-              }
-            }
-          : undefined
-      }
     >
       <span role="cell" className="flex min-w-0 items-center gap-2">
-        <Dot tone={isDrop ? 'warning' : 'danger'} pulse size={7} />
-        <DirIcon className="h-3.5 w-3.5 shrink-0" style={{ color: severityColor }} />
-        <span className="truncate text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
-          {isDrop ? 'Drop' : 'Spike'} on{' '}
-          {label ?? <UnnamedScope signal={signal} />}
-        </span>
+        <Dot tone={signalDirectionTone(signal.direction)} pulse size={7} />
+        <DirIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" style={{ color: severityColor }} />
+        {href ? (
+          <Link
+            to={href}
+            className={`${textClass} no-underline outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-[var(--accent)]`}
+            style={{ color: 'var(--fg)' }}
+          >
+            {text}
+          </Link>
+        ) : (
+          <span className={textClass} style={{ color: 'var(--fg)' }}>
+            {text}
+          </span>
+        )}
         {signal.incident_child && (
           <span
             // Dropped on phones, where it left the scope name a few letters.
-            className="hidden shrink-0 whitespace-nowrap text-[10.5px] sm:inline"
+            // `relative` lifts it over the row link so its tooltip still shows.
+            className="relative hidden shrink-0 whitespace-nowrap text-[10.5px] sm:inline"
             style={{ color: 'var(--fg-faint)' }}
             title="This scope fired as part of a project-total spike or drop on the same bucket"
           >
@@ -542,13 +611,32 @@ function AnomalyRow({
         )}
       </span>
       <span role="cell" className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-        {signal.actual_count.toLocaleString()} vs {formatIncidentCount(signal.expected_count)}
+        {formatSignalValues(signal)}
       </span>
       <span role="cell" className="mono text-right text-[11px]" style={{ color: severityColor }}>
         {formatSignalSeverity(signal)}
       </span>
       <span role="cell" className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
-        {formatRelativeTime(signal.bucket)}
+        {/* `relative` lifts it over the row link, so the absolute time in its
+            tooltip is reachable (MON-40). */}
+        <time
+          dateTime={signal.bucket}
+          title={`Bucket starting ${formatTimestamp(signal.bucket)} (${localTimeZone()})`}
+          className="relative"
+        >
+          {formatRelativeTime(signal.bucket)}
+        </time>
+        {/* When the detector caught it, which can be long after the bucket
+            began — an hourly bucket is flagged at the scan after it (MON-40). */}
+        {signal.detected_at && (
+          <time
+            dateTime={signal.detected_at}
+            title={`Detected ${formatTimestamp(signal.detected_at)} (${localTimeZone()})`}
+            className="relative block text-[10px]"
+          >
+            detected {formatRelativeTime(signal.detected_at)}
+          </time>
+        )}
       </span>
     </div>
   )

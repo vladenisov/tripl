@@ -247,6 +247,8 @@ export function VersionsTab({
                 seriesLabel={seriesLabel}
                 valueFormatter={valueFormatter}
                 emptyLabel="No version metrics available"
+                from={timeRange.from}
+                to={timeRange.to}
               />
               <VersionLegend
                 series={versionChartSeries}
@@ -312,6 +314,8 @@ export function VersionsTab({
                 height={240}
                 granularity={granularity}
                 emptyLabel="No adoption data available"
+                from={timeRange.from}
+                to={timeRange.to}
               />
               <VersionLegend series={adoptionChartSeries} latestShare={latestAdoptionShare} />
             </>

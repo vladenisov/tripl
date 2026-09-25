@@ -140,6 +140,12 @@ _GUARDED_ELSEWHERE: dict[str, str] = {
         "guard onto the parameter would turn ?q=%00 from its documented "
         "200-with-no-items into a 422 — a behaviour change, not a fix."
     ),
+    "cursor": (
+        "The alert-inbox and alert-deliveries keyset cursor (ALR-27) is not a "
+        "text filter: services/_alerting_cursors.py decodes it and answers 422 "
+        "for anything that does not decode, so a NUL never reaches a query. "
+        "test_frontend_review_r3.py pins ?cursor=%00 to 422."
+    ),
 }
 
 

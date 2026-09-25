@@ -61,13 +61,15 @@ vi.mock('@/components/tweaks-panel', () => ({
 const demoChrome = vi.hoisted(() => ({ fail: false }))
 
 vi.mock('@/demo/DemoBanner', () => ({
-  DemoBanner: () => {
+  // Renders its `scenario` slot, as the real banner does inside its row (LIVE-9).
+  DemoBanner: ({ scenario }: { scenario?: ReactNode }) => {
     if (demoChrome.fail) {
       throw new TypeError('Failed to fetch dynamically imported module: /assets/DemoBanner-abc.js')
     }
     return (
     <div>
       <button type="button">What’s simulated</button>
+      {scenario}
       <button type="button">Delete</button>
     </div>
     )
@@ -151,7 +153,7 @@ function renderLayout(
   vi.mocked(projectsApi.list).mockResolvedValue([makeProject(options.isDemo)])
   vi.mocked(projectsApi.get).mockRejectedValue(new ApiError('Not found', 404))
   vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([])
-  vi.mocked(alertingApi.listDeliveries).mockResolvedValue({ items: [], total: 0 })
+  vi.mocked(alertingApi.listDeliveries).mockResolvedValue({ items: [], total: 0, next_cursor: null })
   options.mocks?.()
 
   const queryClient = new QueryClient({

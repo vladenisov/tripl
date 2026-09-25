@@ -594,6 +594,121 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     expect(inboxUrls.at(-1)).toContain('offset=2')
   })
 
+  it('clears the status AND the other filters on Show all, in one step', async () => {
+    // Two setter calls in one click: react-router builds each from the params of
+    // the last render, so the filter write put back the status the first call
+    // had just removed and the list stayed empty.
+    mockPagedInbox([makeInboxGroup()])
+    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=muted&direction=drop')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Show all' }))
+
+    expect(
+      await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox'),
+    ).toBeInTheDocument()
+  })
+
+  it('shows an incident once when a refetch shifts it across the page seam (ALR-27)', async () => {
+    // Paging is by offset under a 60s refetch. An incident inserted at the head
+    // between page 1 and "Load more" starts page 2 one row early, so its first
+    // row is page 1's last one again — two cards under one React key.
+    const groups = Array.from({ length: 3 }, (_, index) =>
+      makeInboxGroup({
+        correlation_group_id: `grp-${index}`,
+        scope_ref: `scope-${index}`,
+        scope_names: [`event_${index}`],
+      }),
+    )
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (/\/alert-inbox(\?|$)/.test(url)) {
+        const offset = Number(new URL(url, 'http://test').searchParams.get('offset') ?? '0')
+        return jsonResponse({
+          items: offset === 0 ? groups.slice(0, 2) : groups.slice(1, 3),
+          total: 3,
+          window_truncated_at: null,
+        })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderInboxTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more (1 left)' }))
+
+    expect(await screen.findByText('event_2')).toBeInTheDocument()
+    expect(document.querySelectorAll('[id="incident-grp-1"]')).toHaveLength(1)
+    expect(screen.getAllByText('event_1')).toHaveLength(1)
+  })
+
+  it('continues "Load more" from the server cursor, not an offset (ALR-27)', async () => {
+    // An incident on page 1 acknowledged before "Load more" sorts DOWN past the
+    // seam; with an offset page 2 would start one row late and never serve the
+    // next one. The cursor continues after the last row the page holds.
+    const groups = Array.from({ length: 3 }, (_, index) =>
+      makeInboxGroup({
+        correlation_group_id: `grp-${index}`,
+        scope_ref: `scope-${index}`,
+        scope_names: [`event_${index}`],
+      }),
+    )
+    const inboxUrls: URL[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (/\/alert-inbox(\?|$)/.test(url)) {
+        const parsed = new URL(url, 'http://test')
+        inboxUrls.push(parsed)
+        const cursor = parsed.searchParams.get('cursor')
+        return jsonResponse(
+          cursor === 'after-grp-1'
+            ? { items: groups.slice(2), total: 3, window_truncated_at: null, next_cursor: null }
+            : {
+                items: groups.slice(0, 2),
+                total: 3,
+                window_truncated_at: null,
+                next_cursor: 'after-grp-1',
+              },
+        )
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderInboxTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more (1 left)' }))
+
+    expect(await screen.findByText('event_2')).toBeInTheDocument()
+    const loadMore = inboxUrls.find((url) => url.searchParams.has('cursor'))
+    expect(loadMore?.searchParams.get('cursor')).toBe('after-grp-1')
+    expect(loadMore?.searchParams.has('offset')).toBe(false)
+    // The server said this was the last page.
+    expect(screen.queryByRole('button', { name: /Load more/ })).not.toBeInTheDocument()
+  })
+
   it('pins a deep-linked incident the list does not contain (tripl-oxkt.13)', async () => {
     // The alert a reader is holding names an incident that aged past the newest
     // page hours ago. `?incident=` used to only pre-expand a card it never
@@ -677,6 +792,36 @@ describe('ProjectAlertingTab — an inbox action reports on its own row (tripl-o
     // so triage was strictly serial and the row you touched showed nothing.
     await waitFor(() => expect(acks[0]).toBeDisabled())
     expect(acks[1]).toBeEnabled()
+  })
+
+  it('keeps the first card busy when a second card acts before it settles (ALR-28)', async () => {
+    mockInboxWithHeldAction([
+      makeInboxGroup(),
+      makeInboxGroup({
+        correlation_group_id: 'grp-2',
+        scope_ref: 'scope-2',
+        scope_names: ['checkout_started'],
+      }),
+    ])
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+          <ProjectAlertingTab slug="demo" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const acks = await screen.findAllByRole('button', { name: /^Acknowledge / })
+    fireEvent.click(at(acks, 0))
+    await waitFor(() => expect(acks[0]).toBeDisabled())
+
+    // Card B acts while A is still in flight. With one shared mutation, A's
+    // pending state was read off the LATEST variables — B's — so A's buttons
+    // came back to life and a second Ack could go out behind the first.
+    fireEvent.click(screen.getByRole('button', { name: /^Resolve checkout_started/ }))
+    await waitFor(() => expect(acks[1]).toBeDisabled())
+    expect(acks[0]).toBeDisabled()
   })
 
   it('sends the note the card is holding, and can send one on its own', async () => {
@@ -1568,8 +1713,10 @@ describe('ProjectAlertingTab — per-scan focus via ?scan= (tripl-3y7z.2)', () =
   }
 
   it('seeds the delivery scan filter, so the audit log opens already narrowed', async () => {
-    const deliveryUrls = mockWithDeliveryUrls([{ id: 'scan-1', name: 'Snowplow Events (iOS)' }])
-    renderWithFocus('scan-1')
+    // A real scan id: a malformed `?scan=` is dropped before any request.
+    const scanId = '5c0a1d2e-0000-4000-8000-000000000001'
+    const deliveryUrls = mockWithDeliveryUrls([{ id: scanId, name: 'Snowplow Events (iOS)' }])
+    renderWithFocus(scanId)
 
     // Every request for the audit LIST carries the scan — not just eventually,
     // but from the first one, so no unfiltered page is ever shown.
@@ -1583,7 +1730,7 @@ describe('ProjectAlertingTab — per-scan focus via ?scan= (tripl-3y7z.2)', () =
     const listUrls = deliveryUrls.filter(url => !url.includes('limit=1'))
     expect(listUrls.length).toBeGreaterThan(0)
     for (const url of listUrls) {
-      expect(url).toContain('scan_config_id=scan-1')
+      expect(url).toContain(`scan_config_id=${scanId}`)
     }
   })
 
@@ -1612,6 +1759,165 @@ describe('ProjectAlertingTab — per-scan focus via ?scan= (tripl-3y7z.2)', () =
       expect(deliveryUrls.length).toBeGreaterThan(0)
       expect(deliveryUrls.at(-1)).not.toContain('scan_config_id')
     })
+  })
+  it('does not claim a filter is active when the unknown ?scan= was dropped (ALR-39)', async () => {
+    const deliveryUrls = mockWithDeliveryUrls([{ id: 'scan-1', name: 'Snowplow Events (iOS)' }])
+    renderWithFocus('scan-that-was-deleted')
+
+    await screen.findByRole('tab', { name: 'Delivery log' })
+    await waitFor(() => expect(deliveryUrls.at(-1)).not.toContain('scan_config_id'))
+    // Nothing is filtering, so "0 deliveries match the filter" and a Clear
+    // button over it would describe a filter the request is not applying.
+    expect(screen.queryByText(/match(es)? the filter/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Clear filters/ })).toBeNull()
+    expect(screen.getByText('No deliveries yet.')).toBeInTheDocument()
+  })
+})
+
+// The Inbox moved its filters to the URL so a filtered view survives Back and
+// can be shared; the Delivery log kept status, channel, destination, rule,
+// dates and the page in component state, so opening a scope link from a
+// delivery and pressing Back lost all of them (ALR-36).
+describe('ProjectAlertingTab — the delivery log remembers where it was (ALR-36)', () => {
+  function mockDeliveryLog() {
+    const deliveryUrls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/alert-deliveries')) {
+        deliveryUrls.push(url)
+        return jsonResponse({ items: [makeDelivery()], total: 120 })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (/\/alert-inbox(\?|$)/.test(url)) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return deliveryUrls
+  }
+
+  function LocationProbe() {
+    const location = useLocation()
+    return <div>delivery-location:{location.search}</div>
+  }
+
+  function renderLog(entry: string) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[entry]}>
+          <LocationProbe />
+          <ProjectAlertingTab slug="demo" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('reads the filters and the page back out of the URL', async () => {
+    const deliveryUrls = mockDeliveryLog()
+    renderLog(
+      '/p/demo/settings/alerting?section=audit&delivery_status=failed&delivery_channel=slack&delivery_offset=50',
+    )
+
+    await waitFor(() => {
+      const listUrls = deliveryUrls.filter(url => !url.includes('limit=1&') && !url.endsWith('limit=1'))
+      expect(listUrls.length).toBeGreaterThan(0)
+      expect(listUrls.at(-1)).toContain('status=failed')
+      expect(listUrls.at(-1)).toContain('channel=slack')
+      expect(listUrls.at(-1)).toContain('offset=50')
+    })
+    expect(await screen.findByText('Showing 51–51 of 120 deliveries.')).toBeInTheDocument()
+  })
+
+  it('drops a status the log does not know rather than sending it', async () => {
+    const deliveryUrls = mockDeliveryLog()
+    renderLog('/p/demo/settings/alerting?section=audit&delivery_status=bogus')
+
+    await waitFor(() => expect(deliveryUrls.some(url => url.includes('limit=50'))).toBe(true))
+    for (const url of deliveryUrls) expect(url).not.toContain('status=')
+  })
+
+  it('drops malformed ids rather than sending a request the API would 422', async () => {
+    const deliveryUrls = mockDeliveryLog()
+    renderLog(
+      '/p/demo/settings/alerting?section=audit&delivery_destination=bogus&delivery_rule=0b1c2d3e-4f5a',
+    )
+
+    await waitFor(() => expect(deliveryUrls.some(url => url.includes('limit=50'))).toBe(true))
+    for (const url of deliveryUrls) {
+      expect(url).not.toContain('destination_id=')
+      expect(url).not.toContain('rule_id=')
+    }
+  })
+
+  it('still sends a well-formed destination id from the URL', async () => {
+    const deliveryUrls = mockDeliveryLog()
+    const id = '3f2a9c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b'
+    renderLog(`/p/demo/settings/alerting?section=audit&delivery_destination=${id}`)
+
+    await waitFor(() => {
+      expect(deliveryUrls.some(url => url.includes(`destination_id=${id}`))).toBe(true)
+    })
+  })
+
+  it('writes a filter change to the URL and restarts at the first page', async () => {
+    mockDeliveryLog()
+    renderLog('/p/demo/settings/alerting?section=audit&delivery_offset=50')
+
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Status' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Failed' }))
+
+    const probe = await screen.findByText(/delivery-location:.*delivery_status=failed/)
+    expect(probe.textContent).toContain('section=audit')
+    expect(probe.textContent).not.toContain('delivery_offset')
+  })
+
+  it('keeps the reader on the log when the ?scan= that opened it is cleared', async () => {
+    // Arriving by `?scan=` alone lands on the log by DEFAULT — there is no
+    // `section=`. Clearing that scan used to leave nothing that said "log",
+    // and the page fell back to the Inbox.
+    const deliveryUrls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/alert-deliveries')) {
+        deliveryUrls.push(url)
+        return jsonResponse({ items: [makeDelivery()], total: 1 })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-destinations')) {
+        return jsonResponse([makeDestination({ rules: [makeRule()] })])
+      }
+      if (/\/alert-inbox(\?|$)/.test(url)) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/scans')) return jsonResponse([{ id: '5c0a1d2e-0000-4000-8000-000000000001', name: 'Snowplow Events (iOS)' }])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?scan=5c0a1d2e-0000-4000-8000-000000000001']}>
+          <LocationProbe />
+          <ProjectAlertingTab slug="demo" focusScanId="5c0a1d2e-0000-4000-8000-000000000001" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: /Clear filters/ }))
+
+    expect(await screen.findByText(/delivery-location:\?section=audit$/)).toBeInTheDocument()
   })
 })
 
@@ -2460,3 +2766,39 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
   })
 })
 
+
+// `hasRules` is read off the destinations list, which defaults to `[]` — so a
+// failed list used to leave a project full of incidents reading "No rules yet,
+// so nothing can raise an incident" forever, with the list hidden (ALR-10).
+describe('ProjectAlertingTab — the Inbox when destinations will not load (ALR-10)', () => {
+  it('lists the incidents anyway and says what failed', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/alert-destinations')) {
+        return new Response(JSON.stringify({ detail: 'Database unavailable' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: false })
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (/\/alert-inbox(\?|$)/.test(url)) {
+        return jsonResponse({ items: [makeInboxGroup()], total: 1, window_truncated_at: null })
+      }
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab('inbox')
+
+    expect(await screen.findByText('payment_failed')).toBeInTheDocument()
+    expect(
+      await screen.findByText(/Could not load alert destinations and rules/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/No rules yet, so nothing can raise an incident/)).toBeNull()
+  })
+})

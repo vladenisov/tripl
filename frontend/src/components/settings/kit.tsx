@@ -1,5 +1,6 @@
 import {
   type ReactNode,
+  type Ref,
   type TextareaHTMLAttributes,
   useId,
 } from 'react'
@@ -334,6 +335,11 @@ export function TextInput({
   type = 'text',
   disabled,
   id,
+  ref,
+  required,
+  readOnly,
+  list,
+  autoComplete,
   'aria-label': ariaLabel,
   'aria-required': ariaRequired,
   'aria-invalid': ariaInvalid,
@@ -345,9 +351,16 @@ export function TextInput({
   mono?: boolean
   prefix?: string
   suffix?: string
-  type?: 'text' | 'password' | 'number'
+  type?: 'text' | 'password' | 'number' | 'email'
   disabled?: boolean
   id?: string
+  /** React 19 passes `ref` as a prop; forwarded to the <input>. */
+  ref?: Ref<HTMLInputElement>
+  required?: boolean
+  readOnly?: boolean
+  /** Id of a <datalist> offering suggestions. */
+  list?: string
+  autoComplete?: string
   'aria-label'?: string
   'aria-required'?: boolean
   /** Set by a form row that shows a validation message for this control. */
@@ -358,10 +371,15 @@ export function TextInput({
   const input = (
     <input
       id={controlId}
+      ref={ref}
       type={type}
       value={value}
       placeholder={placeholder}
       disabled={disabled}
+      required={required}
+      readOnly={readOnly}
+      list={list}
+      autoComplete={autoComplete}
       aria-label={ariaLabel}
       aria-required={ariaRequired}
       aria-invalid={ariaInvalid || undefined}

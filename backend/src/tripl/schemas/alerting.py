@@ -995,6 +995,12 @@ class AlertDeliveryDetailResponse(AlertDeliveryResponse):
 class AlertDeliveryListResponse(BaseModel):
     items: list[AlertDeliveryResponse]
     total: int
+    # Opaque keyset cursor for the page after this one, `None` on the last
+    # page. Passing it back as `?cursor=` continues strictly after the last row
+    # served, so a list that changes between requests cannot skip a row the
+    # way an offset can (ALR-27). Always sent, no default, for the reason
+    # `window_truncated_at` below gives.
+    next_cursor: str | None
 
 
 class AlertInboxRuleRef(BaseModel):
@@ -1148,6 +1154,9 @@ class AlertInboxListResponse(BaseModel):
     # the hand-written type calls it required, and the two disagree about a
     # field the server never omits.
     window_truncated_at: datetime | None
+    # Opaque keyset cursor for "Load more", `None` on the last page; see
+    # AlertDeliveryListResponse.next_cursor (ALR-27).
+    next_cursor: str | None
 
 
 class AlertInboxActionRequest(BaseModel):

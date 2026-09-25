@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 
 import { MAX_BULK_INBOX_ACTION_GROUPS, MAX_INBOX_NOTE_LENGTH } from '@/api/alerting'
@@ -157,6 +157,26 @@ export function InboxBulkActionBar({
     node.focus()
   }
 
+  // The bar is fixed to the viewport, so it floats OVER the end of the list —
+  // and on a phone, with the note and the mute presets open, it wraps to three
+  // or four rows and covered the last cards' actions and "Load more", with no
+  // way to scroll them out from under it (ALR-31). The spacer below reserves
+  // exactly its height at the end of the section, measured rather than guessed
+  // because its height is whatever its wrapping makes it.
+  const [barHeight, setBarHeight] = useState(0)
+  const barObserver = useRef<ResizeObserver | null>(null)
+  const measureBar = useCallback((node: HTMLDivElement | null) => {
+    barObserver.current?.disconnect()
+    barObserver.current = null
+    if (!node) return
+    const update = () => setBarHeight(Math.ceil(node.getBoundingClientRect().height))
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    barObserver.current = observer
+  }, [])
+
   if (selectedCount === 0) {
     // The bar hides itself here but stays MOUNTED, so an expanded duration row
     // survives the selection being cleared and comes back already open on the
@@ -199,7 +219,13 @@ export function InboxBulkActionBar({
   }
 
   return (
+    <>
+    {/* In flow, where the bar is mounted — after the list — so the page can
+        scroll the list's end clear of the bar: its height, its 18px offset
+        from the viewport edge, and a little air. */}
+    <div aria-hidden="true" data-bulk-bar-spacer="" style={{ height: barHeight + 18 + 12 }} />
     <div
+      ref={measureBar}
       className="fixed bottom-[18px] left-1/2 z-30 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col gap-1.5 rounded-[10px] border py-1.5 pl-3.5 pr-2"
       style={{
         background: 'var(--bg-elevated)',
@@ -258,7 +284,7 @@ export function InboxBulkActionBar({
             <Button
               size="sm"
               variant="outline"
-              className="h-7 px-2 text-[10px]"
+              className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[10px]"
               aria-label={`Save this note on ${target}`}
               title="Copies this note onto every selected incident, and moves no status. Ctrl+Enter (⌘+Enter on a Mac) does the same."
               disabled={actionsDisabled || trimmedNote.length === 0}
@@ -306,7 +332,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-7 px-2 text-[11px]"
+        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
         aria-expanded={noteOpen}
         aria-label={`Add a note to ${target}`}
         title="One sentence, copied onto every selected incident. Saved on its own, or carried by whichever action you press next."
@@ -329,7 +355,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-7 px-2 text-[11px]"
+        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
         aria-label={`Acknowledge ${target}`}
         title="Stops re-delivery on each one until its scope goes quiet, then each reopens by itself. Reversible."
         disabled={actionsDisabled}
@@ -340,7 +366,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-7 px-2 text-[11px]"
+        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
         aria-label={`Resolve ${target}`}
         title="Same suppression as Acknowledge, different bucket in the filter. Each reopens by itself once its scope goes quiet. Reversible."
         disabled={actionsDisabled}
@@ -351,7 +377,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-7 px-2 text-[11px]"
+        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
         aria-expanded={muteOpen}
         // The shared "Mute <target>" sentence, given a count instead of a scope.
         // The incident card's other branch ("Change mute on …") has no meaning
@@ -367,7 +393,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-7 px-2 text-[11px]"
+        className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
         // One word for one slot, and it is the surface's own word, not mute
         // vocabulary: `reopen` lifts acknowledge, resolve and false-positive as
         // well as a mute. The card can say "Unmute" because it knows the one
@@ -397,7 +423,7 @@ export function InboxBulkActionBar({
               key={choice.label}
               size="sm"
               variant="outline"
-              className="h-6 px-2 text-[10px]"
+              className="h-9 px-3 text-xs sm:h-6 sm:px-2 sm:text-[10px]"
               // Visible face and accessible name differ on the open-ended
               // button by design — "Mute 4 selected incidents for Until I
               // unmute" is not English. See `muteChoiceName` for the reasoning
@@ -415,12 +441,13 @@ export function InboxBulkActionBar({
       <button
         type="button"
         onClick={onClear}
-        className="flex h-6 w-6 items-center justify-center rounded text-[var(--fg-subtle)] hover:text-[var(--fg)]"
+        className="flex size-9 items-center justify-center rounded sm:size-6 text-[var(--fg-subtle)] hover:text-[var(--fg)]"
         aria-label="Clear selection"
       >
         <X className="h-3.5 w-3.5" />
       </button>
       </div>
     </div>
+    </>
   )
 }

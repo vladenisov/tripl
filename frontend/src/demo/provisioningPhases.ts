@@ -30,18 +30,38 @@ export function nextPhaseIndex(current: number): number {
 }
 
 /**
- * How often the progress UI advances to the next expected phase, in ms.
- *
- * Measured end-to-end provisioning is ~9-11 s, so the old 1.2 s tick ran the
- * pointer to the last phase in 5 s and parked it there for the rest of the
- * wait. Spacing the five phases across the measured duration keeps the estimate
- * roughly in step with the server (tripl-jfm3.16).
+ * The ONE measured duration of a demo create or reset (DEMO-21): end to end it
+ * is ~9-11 s locally, so 10 s. Every other number the UI states or times
+ * against derives from this one, so the copy, the phase tick and the API
+ * comment can no longer disagree with each other (they said 10-15, 9-11 and
+ * 5-8 s).
  */
-export const PHASE_TICK_MS = 2000
+export const DEMO_PROVISION_EXPECTED_MS = 10_000
+
+/**
+ * How often the progress UI advances to the next expected phase, in ms: the
+ * five phases spread across the expected duration, so the pointer reaches
+ * "Finalizing" about when the server does (tripl-jfm3.16).
+ */
+export const PHASE_TICK_MS = DEMO_PROVISION_EXPECTED_MS / PROVISIONING_PHASES.length
+
+/**
+ * Past this the wait is no longer normal, and the phase list says so instead
+ * of leaving the pointer parked on "Finalizing" with no signal (DEMO-21).
+ */
+export const DEMO_PROVISION_SLOW_MS = DEMO_PROVISION_EXPECTED_MS * 2
+
+/**
+ * Seeding is heavy but bounded — it is a fixed recipe, not user-sized data — so
+ * a create or reset still running after this long is a stall, not slow
+ * progress. Without a bound, a dead connection leaves the dialog spinning
+ * forever and a page reload is the only way out (tripl-2su6.15, DEMO-4).
+ */
+export const DEMO_PROVISION_TIMEOUT_MS = 90_000
 
 /**
  * One wait-time claim, shared by every surface that offers demo generation, so
  * the empty-workspace hero and the progress dialog cannot disagree with each
- * other or with measurement (measured 9-11 s locally; tripl-jfm3.16).
+ * other or with measurement.
  */
-export const DEMO_PROVISION_ESTIMATE = 'about 10-15 seconds'
+export const DEMO_PROVISION_ESTIMATE = `about ${Math.round(DEMO_PROVISION_EXPECTED_MS / 1000)} seconds`

@@ -23,6 +23,7 @@ vi.mock('recharts', async () => {
 import { metricAxisFormatter } from '@/lib/metricFormat'
 import type { EventMetricPoint, EventMetricsResponse } from '@/types'
 import {
+  AnomalyMark,
   buildChartData,
   CustomTooltip,
   MetricsChart,
@@ -486,7 +487,14 @@ describe('MetricsChart served sigma threshold', () => {
     }
 
     const rows = renderCharted(
-      <MetricsChart granularity="day" data={served.data} sigmaThreshold={served.sigma_threshold} />,
+      // Unclamped, so the wiring is visible: at 6σ the lower edge is -2, which
+      // a count chart floors at zero (MON-21, asserted below).
+      <MetricsChart
+        granularity="day"
+        data={served.data}
+        sigmaThreshold={served.sigma_threshold}
+        nonNegative={false}
+      />,
     )
 
     // expected ± 6σ, the multiplier the detector flagged this bucket with — NOT
@@ -501,6 +509,162 @@ describe('MetricsChart served sigma threshold', () => {
     )
 
     expect(at(rows, 0).band).toEqual([10 - 4 * 2, 10 + 4 * 2])
+  })
+
+  // MON-21: `expected - k·σ` below zero dragged a count chart's axis negative.
+  it('floors a count series band at zero, but not a formatted (signed) metric', () => {
+    const counted = renderCharted(<MetricsChart granularity="day" data={[flagged]} sigmaThreshold={6} />)
+    expect(at(counted, 0).band).toEqual([0, 22])
+
+    const signed = renderCharted(
+      <MetricsChart
+        granularity="day"
+        data={[flagged]}
+        sigmaThreshold={6}
+        valueFormatter={(value) => value.toFixed(2)}
+      />,
+    )
+    expect(at(signed, 0).band).toEqual([-2, 22])
+  })
+
+  // MON-22: the axis spans the requested window, not only the buckets with data.
+  it('pads the rows out to the requested window with empty buckets', () => {
+    const rows = renderCharted(
+      <MetricsChart
+        granularity="day"
+        data={[flagged]}
+        from="2026-01-01T10:00:00Z"
+        to="2026-01-04T00:00:00Z"
+      />,
+    ) as unknown as Array<{ bucket: string; count: number | null }>
+
+    expect(rows.map((row) => row.bucket)).toEqual([
+      '2026-01-01T10:00:00.000Z',
+      '2026-01-02T10:00:00Z',
+      '2026-01-03T10:00:00.000Z',
+    ])
+    expect(at(rows, 0).count).toBeNull()
+    expect(at(rows, 2).count).toBeNull()
+  })
+})
+
+describe('buildChartData forecast floor (MON-21)', () => {
+  it('clamps the forecast band at zero when asked', () => {
+    const last: EventMetricPoint = {
+      bucket: '2026-01-02T10:00:00Z',
+      count: 1,
+      expected_count: 2,
+      stddev: 1,
+      is_anomaly: false,
+      anomaly_direction: null,
+      z_score: null,
+    }
+    const built = buildChartData(
+      [last],
+      [{ bucket: '2026-01-03T10:00:00Z', expected_count: 1, stddev: 1 }],
+      4,
+      true,
+    )
+    expect(at(built, 0).band).toEqual([0, 6])
+    expect(at(built, 0).forecast_band).toEqual([0, 5])
+    expect(at(built, 1).forecast_band).toEqual([0, 5])
+  })
+})
+
+describe('anomaly marks and tooltip lines (MON-17)', () => {
+  it('says which way an anomaly moved and how far, in the tooltip', () => {
+    render(
+      <CustomTooltip
+        active
+        payload={[
+          {
+            value: 0,
+            payload: {
+              bucket: '2026-01-02T10:00:00Z',
+              count: 0,
+              expected_count: 10,
+              stddev: 2,
+              is_anomaly: true,
+              anomaly_direction: 'drop',
+              z_score: -5,
+            },
+          },
+        ]}
+        label="2026-01-02T10:00:00Z"
+        granularity="day"
+        seriesLabel="events"
+      />,
+    )
+
+    expect(screen.getByText('Anomaly: drop (z=-5.0)')).toBeInTheDocument()
+  })
+
+  it('names the series an anomaly belongs to in the multi-series tooltip', () => {
+    render(
+      <MultiSeriesTooltip
+        active
+        payload={[
+          {
+            value: 40,
+            dataKey: 'series_0',
+            color: '#111111',
+            name: 'ios',
+            payload: {
+              bucket: '2026-01-02T10:00:00Z',
+              series_0: 40,
+              series_0__anomaly: true,
+              series_0__direction: 'spike',
+              series_0__z: 6.25,
+            },
+          },
+        ]}
+        label="2026-01-02T10:00:00Z"
+        granularity="day"
+        seriesLabel="events"
+      />,
+    )
+
+    expect(screen.getByText('ios anomaly: spike (z=6.3)')).toBeInTheDocument()
+  })
+
+  it('says a padded bucket has no data instead of reading it as zero', () => {
+    render(
+      <CustomTooltip
+        active
+        payload={[
+          {
+            value: 0,
+            payload: { bucket: '2026-01-01T10:00:00Z', count: null, expected_count: null, stddev: null },
+          },
+        ]}
+        label="2026-01-01T10:00:00Z"
+        granularity="day"
+        seriesLabel="events"
+      />,
+    )
+
+    expect(screen.getByText('No data for this bucket')).toBeInTheDocument()
+    expect(screen.queryByText(/0 events/)).toBeNull()
+  })
+
+  it('draws a spike as an up triangle and a drop as a down one', () => {
+    const { container } = render(
+      <svg>
+        <AnomalyMark cx={10} cy={10} direction="spike" mini={false} />
+        <AnomalyMark cx={30} cy={10} direction="drop" mini={false} />
+      </svg>,
+    )
+
+    const marks = container.querySelectorAll('polygon[data-testid="anomaly-dot"]')
+    expect(Array.from(marks).map((mark) => mark.getAttribute('data-direction'))).toEqual([
+      'spike',
+      'drop',
+    ])
+    expect(at(marks, 0).getAttribute('fill')).toBe('var(--danger)')
+    expect(at(marks, 1).getAttribute('fill')).toBe('var(--warning)')
+    // Tip above the centre for a spike, below it for a drop.
+    expect(at(marks, 0).getAttribute('points')).toMatch(/^10,5 /)
+    expect(at(marks, 1).getAttribute('points')).toMatch(/^30,15 /)
   })
 })
 

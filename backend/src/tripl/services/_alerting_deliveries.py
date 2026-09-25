@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
@@ -44,6 +44,12 @@ from tripl.schemas.alerting import (
     AlertInboxGroupResponse,
     AlertInboxListResponse,
     AlertInboxRuleRef,
+)
+from tripl.services._alerting_cursors import (
+    decode_delivery_cursor,
+    decode_inbox_cursor,
+    encode_delivery_cursor,
+    encode_inbox_cursor,
 )
 from tripl.services._celery_dispatch import dispatch
 from tripl.services.project_lookup import get_project_by_slug as _get_project
@@ -174,8 +180,11 @@ async def list_deliveries(
     date_to: datetime | None = None,
     limit: int = 50,
     offset: int = 0,
+    cursor: str | None = None,
 ) -> AlertDeliveryListResponse:
     project = await _get_project(session, slug)
+    # Decoded before any query so a bad cursor is a 422 and costs nothing.
+    after = decode_delivery_cursor(cursor) if cursor is not None else None
 
     filters = [AlertDelivery.project_id == project.id]
     if status is not None:
@@ -223,13 +232,25 @@ async def list_deliveries(
     total = (
         await session.execute(select(func.count(AlertDelivery.id)).where(*filters))
     ).scalar_one()
+    # Keyset continuation (ALR-27): strictly after the last row the reader holds
+    # in (created_at DESC, id DESC) order. Applied to the page query only —
+    # `total` stays the whole filtered set, which is what "of N" means.
+    page_filters = list(filters)
+    if after is not None:
+        after_created, after_id = after
+        page_filters.append(
+            or_(
+                AlertDelivery.created_at < after_created,
+                and_(AlertDelivery.created_at == after_created, AlertDelivery.id < after_id),
+            )
+        )
     rows = (
         await session.execute(
             select(AlertDelivery, AlertDestination.name, AlertRule.name, ScanConfig.name)
             .join(AlertDestination, AlertDestination.id == AlertDelivery.destination_id)
             .join(AlertRule, AlertRule.id == AlertDelivery.rule_id)
             .join(ScanConfig, ScanConfig.id == AlertDelivery.scan_config_id)
-            .where(*filters)
+            .where(*page_filters)
             # `id` is the tie-break, and it is load-bearing rather than tidy:
             # `created_at` is NOT unique. `_delivery_chunks` mints several
             # deliveries inside one transaction on the immediate path, and a
@@ -240,9 +261,14 @@ async def list_deliveries(
             # already carried by every row.
             .order_by(AlertDelivery.created_at.desc(), AlertDelivery.id.desc())
             .offset(offset)
-            .limit(limit)
+            # One row past the page answers "is there more?" without a second
+            # count under the keyset filter.
+            .limit(limit + 1)
         )
     ).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    last_delivery = rows[-1][0] if rows else None
 
     return AlertDeliveryListResponse(
         items=[
@@ -255,6 +281,11 @@ async def list_deliveries(
             for delivery, destination_name, rule_name, scan_name in rows
         ],
         total=total,
+        next_cursor=(
+            encode_delivery_cursor(last_delivery.created_at, last_delivery.id)
+            if has_more and last_delivery is not None
+            else None
+        ),
     )
 
 
@@ -967,8 +998,10 @@ async def list_alert_inbox(
     filters: InboxFilters | None = None,
     limit: int = 50,
     offset: int = 0,
+    cursor: str | None = None,
 ) -> AlertInboxListResponse:
     project = await _get_project(session, slug)
+    after = decode_inbox_cursor(cursor) if cursor is not None else None
     now = datetime.now(UTC)
     source = await _load_inbox_source_rows(
         session, project_id=project.id, cutoff=_inbox_cutoff(now)
@@ -1046,9 +1079,25 @@ async def list_alert_inbox(
         ]
     responses.sort(key=_inbox_sort_key, reverse=True)
     total = len(responses)
+    # Keyset continuation (ALR-27). The list is sorted DESCENDING on the key, so
+    # "after the cursor" is every group whose key is strictly smaller. A group
+    # that sorted down past the seam since the previous page is therefore still
+    # served; one that sorted UP is already above the reader and reaches them on
+    # the next refetch of page 1.
+    remaining = (
+        [group for group in responses if _inbox_sort_key(group) < after]
+        if after is not None
+        else responses[offset:]
+    )
+    page = remaining[:limit]
     return AlertInboxListResponse(
-        items=responses[offset : offset + limit],
+        items=page,
         total=total,
+        next_cursor=(
+            encode_inbox_cursor(_inbox_sort_key(page[-1]))
+            if page and len(remaining) > limit
+            else None
+        ),
         # Reported off the SOURCE load, not off `responses`: the status filter
         # and paging both shrink the list for reasons the reader asked for, and
         # only this one is a bound they did not.

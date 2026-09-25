@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -43,6 +43,8 @@ function makeSignal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
     // name the scope (deleted entity), never "still loading".
     scope_name: null,
     incident_child: false,
+    unit: null,
+    detected_at: null,
     ...overrides,
   }
 }
@@ -99,12 +101,12 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
     renderAnomalies()
 
     // Label reads "Metric · <display name>" straight off the signal.
-    const cell = await screen.findByText('Spike on Metric · Checkout conversion')
-    const row = cell.closest('[role="row"]') as HTMLElement
-    expect(row).not.toBeNull()
-    // Linkable rows are keyboard-focusable and navigate on click.
-    expect(row).toHaveAttribute('tabindex', '0')
-    fireEvent.click(row)
+    // A linkable row is a real link (MON-13), so it opens in a new tab, and a
+    // screen reader announces something it can follow.
+    const link = await screen.findByRole('link', { name: 'Spike on Metric · Checkout conversion' })
+    expect(link).toHaveAttribute('href', '/p/demo/monitoring/metric/metric-abc')
+    expect(link.closest('[role="row"]')).not.toHaveAttribute('tabindex')
+    fireEvent.click(link)
     expect(await screen.findByText('metric-detail:metric-abc')).toBeInTheDocument()
   })
 
@@ -123,8 +125,8 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
     expect(row).not.toBeNull()
     expect(row).not.toHaveTextContent('9136d575')
     // Still a real, navigable row — the missing name costs the label, not the link.
-    expect(row).toHaveAttribute('tabindex', '0')
-    fireEvent.click(row)
+    const link = within(row).getByRole('link')
+    fireEvent.click(link)
     expect(
       await screen.findByText('metric-detail:9136d575-0000-4000-8000-000000000001'),
     ).toBeInTheDocument()
@@ -651,5 +653,121 @@ describe('AnomaliesPage — scan facet', () => {
     // ...and clearing it removes the parameter rather than leaving `scan=all`.
     fireEvent.click(screen.getByRole('radio', { name: 'All scans 7' }))
     expect(await screen.findByText('anomalies-location:/p/demo/anomalies')).toBeInTheDocument()
+  })
+})
+
+describe('AnomaliesPage — ranking and keys (MON-14, MON-16)', () => {
+  it('ranks by relative effect like Overview and the bell, not by |z|', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      // Quiet scope: a huge z on a tiny absolute move (relative effect 0.6).
+      makeSignal({ scope_ref: 'quiet', scope_name: 'Quiet', actual_count: 8, expected_count: 5, z_score: 40, relative_effect: 0.6 }),
+      // Busy scope: a modest z on a large move (relative effect 2).
+      makeSignal({ scope_ref: 'busy', scope_name: 'Busy', actual_count: 3000, expected_count: 1000, z_score: 6, relative_effect: 2 }),
+    ])
+
+    renderAnomalies()
+
+    await screen.findByRole('link', { name: 'Spike on Metric · Busy' })
+    const links = screen.getAllByRole('link', { name: /^Spike on Metric/ })
+    expect(links.map((link) => link.textContent)).toEqual([
+      'Spike on Metric · Busy',
+      'Spike on Metric · Quiet',
+    ])
+  })
+
+  it('renders both open signals when two scans flag the same scope on the same bucket', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scan_config_id: 'scan-legacy', scope_type: 'event', scope_ref: 'ev-1', scope_name: 'Login' }),
+      makeSignal({ scan_config_id: 'scan-live', scope_type: 'event', scope_ref: 'ev-1', scope_name: 'Login' }),
+    ])
+
+    renderAnomalies()
+
+    await screen.findAllByText('Spike on Event · Login')
+    // Both rows render; React's duplicate-key warning is a console.error, which
+    // the test setup turns into a failure.
+    expect(screen.getAllByText('Spike on Event · Login')).toHaveLength(2)
+  })
+})
+
+describe('AnomaliesPage — bucket column (MON-40)', () => {
+  it('labels the column as the bucket and gives each row its absolute start time', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_name: 'Checkout conversion', bucket: '2026-07-01T00:00:00Z' }),
+    ])
+
+    renderAnomalies()
+
+    await screen.findByRole('link', { name: 'Spike on Metric · Checkout conversion' })
+    expect(screen.getByRole('columnheader', { name: 'Bucket' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'When' })).not.toBeInTheDocument()
+    const time = document.querySelector('time[datetime="2026-07-01T00:00:00Z"]')
+    expect(time).not.toBeNull()
+    expect(time?.getAttribute('title')).toMatch(/^Bucket starting .+\(.+\)$/)
+    // No detection time on the payload, so nothing claims one.
+    expect(screen.queryByText(/^detected /)).not.toBeInTheDocument()
+  })
+
+  it('says when the detector caught it, beside when the bucket began', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({
+        scope_name: 'Checkout conversion',
+        bucket: '2026-07-01T00:00:00Z',
+        detected_at: '2026-07-01T01:05:00Z',
+      }),
+    ])
+
+    renderAnomalies()
+
+    await screen.findByRole('link', { name: 'Spike on Metric · Checkout conversion' })
+    const detected = document.querySelector('time[datetime="2026-07-01T01:05:00Z"]')
+    expect(detected).toHaveTextContent(/^detected /)
+    expect(detected?.getAttribute('title')).toMatch(/^Detected .+\(.+\)$/)
+  })
+})
+
+describe('AnomaliesPage — rollup tones (MON-42)', () => {
+  it('colours the Spikes and Drops figures, which have no delta to carry a tone', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_ref: 'a', scope_name: 'A' }),
+      makeSignal({ scope_ref: 'b', scope_name: 'B', direction: 'drop', actual_count: 20, expected_count: 80 }),
+    ])
+
+    renderAnomalies()
+
+    await screen.findByRole('link', { name: 'Spike on Metric · A' })
+    const spikes = screen.getByText('Spikes').closest('dl') as HTMLElement
+    const drops = screen.getByText('Drops').closest('dl') as HTMLElement
+    expect(within(spikes).getByText('1')).toHaveAttribute('data-tone', 'danger')
+    expect(within(drops).getByText('1')).toHaveAttribute('data-tone', 'warning')
+  })
+})
+
+describe('AnomaliesPage — filter keyboard and wrapping (MON-12)', () => {
+  it('is one Tab stop that the arrow keys move through, as a radio group should be', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([makeSignal({ scope_name: 'A' })])
+
+    renderAnomalies()
+
+    const group = await screen.findByRole('radiogroup', { name: 'Filter by anomaly magnitude' })
+    const [all, significant, major] = within(group).getAllByRole('radio')
+    // Only the checked option is in the Tab order.
+    expect(significant).toHaveAttribute('tabindex', '0')
+    expect(all).toHaveAttribute('tabindex', '-1')
+    expect(major).toHaveAttribute('tabindex', '-1')
+
+    significant!.focus()
+    fireEvent.keyDown(significant!, { key: 'ArrowRight' })
+    expect(major).toHaveAttribute('aria-checked', 'true')
+    expect(major).toHaveFocus()
+    expect(await screen.findByText(/anomalies-location:.*level=major/)).toBeInTheDocument()
+
+    // Wraps from the last option back to the first.
+    fireEvent.keyDown(major!, { key: 'ArrowRight' })
+    expect(all).toHaveAttribute('aria-checked', 'true')
+    expect(all).toHaveFocus()
+
+    fireEvent.keyDown(all!, { key: 'End' })
+    expect(major).toHaveAttribute('aria-checked', 'true')
   })
 })

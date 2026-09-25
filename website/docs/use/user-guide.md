@@ -347,8 +347,8 @@ Owners can make review stricter under **Plan → Plan branches → Merge policy*
 require several distinct approvals and block authors from approving their own
 branch. Approvals are tied to the reviewed plan hash, so any later content edit
 makes them stale and requires review again. The separate **Settings → Project →
-Plan rules** page is currently a non-persistent preview and does not enforce
-these rules.
+Plan rules** page only describes guardrails that are not built yet; it has no
+controls and enforces nothing.
 
 Optionally configure the **Implementation tracker** from Plan branches. After a
 merge, tripl creates one Jira implementation ticket for added/changed events and

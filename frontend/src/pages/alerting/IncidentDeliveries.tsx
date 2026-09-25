@@ -1,11 +1,17 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMemo } from 'react'
+import { useInfiniteQuery } from '@tanstack/react-query'
 
 import { alertingApi } from '@/api/alerting'
-import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Button } from '@/components/ui/button'
+import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 
-import { AlertDeliveryRow } from './AlertDeliveryRow'
+import { AlertDeliveryRow, DeliveryTable } from './AlertDeliveryRow'
+import { listPageRequest, nextListPageParam, type ListPageParam } from './listPaging'
 import { incidentDeliveriesKey } from '@/lib/queryKeys'
+
+/** One page of an incident's deliveries — the endpoint's own default. */
+const INCIDENT_DELIVERY_PAGE_SIZE = 50
 
 /**
  * The deliveries of ONE incident, shown inside its card.
@@ -17,6 +23,9 @@ import { incidentDeliveriesKey } from '@/lib/queryKeys'
  *
  * Fetched only while expanded: a project with a long incident list would
  * otherwise fire one request per card on mount.
+ *
+ * Paged. It used to ask for 50 and ignore `total`, so a long-running incident
+ * with 120 deliveries showed 50 under a toggle promising all 120 (ALR-32).
  */
 export function IncidentDeliveries({
   slug,
@@ -29,14 +38,32 @@ export function IncidentDeliveries({
   focusDeliveryId?: string
   focusItemKey?: string
 }) {
-  const { data, isLoading, isError, error } = useQuery({
+  const query = useInfiniteQuery({
     queryKey: incidentDeliveriesKey(slug, correlationGroupId),
-    queryFn: () =>
+    queryFn: ({ pageParam }) =>
       alertingApi.listDeliveries(slug, {
         correlation_group_id: correlationGroupId,
-        limit: 50,
+        limit: INCIDENT_DELIVERY_PAGE_SIZE,
+        ...listPageRequest(pageParam),
       }),
+    initialPageParam: 0 as ListPageParam,
+    getNextPageParam: nextListPageParam,
   })
+  const { data, isLoading, isError, error } = query
+  // De-duplicated by id. Pages continue by cursor, so a new delivery can no
+  // longer shift a row into two pages; this stays for a fallback offset page
+  // and because the same row twice is a React key collision.
+  const items = useMemo(() => {
+    const seen = new Set<string>()
+    return (data?.pages ?? []).flatMap(page =>
+      page.items.filter(item => {
+        if (seen.has(item.id)) return false
+        seen.add(item.id)
+        return true
+      }),
+    )
+  }, [data])
+  const total = data?.pages[0]?.total ?? 0
 
   if (isLoading) {
     return <p className="mt-2 text-[10.5px] text-muted-foreground">Loading deliveries…</p>
@@ -53,7 +80,6 @@ export function IncidentDeliveries({
     )
   }
 
-  const items = data?.items ?? []
   if (items.length === 0) {
     return (
       <p className="mt-2 text-[10.5px] text-muted-foreground">
@@ -63,33 +89,39 @@ export function IncidentDeliveries({
   }
 
   return (
-    <div className="mt-2 overflow-x-auto rounded border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Time</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Destination</TableHead>
-            <TableHead>Rule</TableHead>
-            <TableHead>Scan</TableHead>
-            <TableHead>Count</TableHead>
-            <TableHead>Channel</TableHead>
-            <TableHead>Error / Preview</TableHead>
-            <TableHead className="w-8"></TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {items.map(delivery => (
-            <AlertDeliveryRow
-              key={delivery.id}
-              slug={slug}
-              delivery={delivery}
-              focusDeliveryId={focusDeliveryId}
-              focusItemKey={focusItemKey}
-            />
-          ))}
-        </TableBody>
-      </Table>
+    <div className="mt-2 space-y-2">
+    <div className="overflow-x-auto rounded border">
+      <DeliveryTable>
+        {items.map(delivery => (
+          <AlertDeliveryRow
+            key={delivery.id}
+            slug={slug}
+            delivery={delivery}
+            focusDeliveryId={focusDeliveryId}
+            focusItemKey={focusItemKey}
+          />
+        ))}
+      </DeliveryTable>
+    </div>
+    {total > items.length && (
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-[10.5px] text-muted-foreground">
+          Showing {items.length} of {countOf(total, 'delivery', 'deliveries')}.
+        </p>
+        {query.hasNextPage && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
+            disabled={query.isFetchingNextPage}
+            onClick={() => void query.fetchNextPage()}
+          >
+            {query.isFetchingNextPage ? 'Loading…' : 'Load older deliveries'}
+          </Button>
+        )}
+      </div>
+    )}
     </div>
   )
 }

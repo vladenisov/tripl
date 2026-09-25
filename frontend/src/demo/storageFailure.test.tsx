@@ -18,9 +18,10 @@ describe('demo state when storage throws', () => {
       </MemoryRouter>,
     )
 
-    expect(screen.getByText(/^Step 1 of/)).toBeInTheDocument()
+    // The visible step line; the live region announces "Step n of N: title" too.
+    expect(screen.getByText(/^Step 1 of \d+ · /)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }))
-    expect(screen.getByText(/^Step 2 of/)).toBeInTheDocument()
+    expect(screen.getByText(/^Step 2 of \d+ · /)).toBeInTheDocument()
   })
 
   it('reads the initial scenario and drops a write without throwing', () => {

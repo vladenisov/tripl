@@ -332,6 +332,25 @@ describe('scenarioReducer — chapter lifecycle', () => {
     })
   })
 
+  it('marks the scenario engaged once the user starts or restarts a chapter (LIVE-9)', () => {
+    expect(initialScenarioState().engaged).toBeUndefined()
+    const started = scenarioReducer(initialScenarioState(), {
+      type: 'startChapter',
+      chapter: 'live-loop',
+    })
+    expect(started.engaged).toBe(true)
+    // Still on the first step — the step alone cannot tell the two apart.
+    expect(started.chapters['live-loop']?.step).toBe('live-loop/run-scan')
+    expect(
+      scenarioReducer(initialScenarioState(), { type: 'restartChapter', chapter: 'live-loop' }).engaged,
+    ).toBe(true)
+    // Kept through later events, and through a reload.
+    const dismissed = scenarioReducer(started, { type: 'dismissChapter', chapter: 'live-loop' })
+    expect(dismissed.engaged).toBe(true)
+    writeScenarioState(SLUG, dismissed)
+    expect(readScenarioState(SLUG).engaged).toBe(true)
+  })
+
   it('dismissChapter on a completed chapter clears the pointer but keeps it completed', () => {
     let state = scenarioReducer(initialScenarioState(), {
       type: 'startChapter',

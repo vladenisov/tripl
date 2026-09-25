@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { scansApi } from '@/api/scans'
 import type { MetricDefinitionDetailResponse, Project, ScanJob } from '@/types'
@@ -13,11 +13,14 @@ import {
   CHAPTER_STEP_IDS,
   CHAPTER_TITLES,
   SCENARIO_HINT_COPY,
+  initialScenarioState,
   readScenarioState,
+  scenarioReducer,
   writeScenarioState,
   type ScenarioState,
 } from './scenarioModel'
 import { chapterState, liveLoopState } from './scenarioTestState'
+import { setWelcomeDismissed } from './welcomeDismissal'
 import { at } from '@/test/at'
 
 const SLUG = 'acme'
@@ -111,6 +114,18 @@ describe('DemoScenarioStrip — the active chapter', () => {
     ).toBeInTheDocument()
     expect(screen.getByText('Step 1 of 4')).toBeInTheDocument()
     expect(cta(/Open Scans/)).toHaveAttribute('href', `/p/${SLUG}/scans`)
+  })
+
+  it('marks itself for the banner row it sits in, and keeps its controls named (LIVE-9)', () => {
+    renderStrip(liveLoopState('live-loop/run-scan'))
+
+    // The banner gives up its own labels only while this slot is filled.
+    expect(screen.getByRole('region', { name: 'Demo scenario' })).toHaveAttribute('data-demo-scenario')
+    // Icon-only where the row is shared, but a name is a name at every width.
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toHaveAttribute('title', 'Dismiss')
+    expect(
+      screen.getByText('Run a scan to pull fresh volume from the demo warehouse.'),
+    ).toHaveAttribute('title', 'Run a scan to pull fresh volume from the demo warehouse.')
   })
 
   it('sizes the progress to the chapter, not to a global step count', () => {
@@ -370,5 +385,94 @@ describe('DemoScenarioStrip — projects with no scenario', () => {
     )
 
     expect(strip()).toBeNull()
+  })
+})
+
+describe('DemoScenarioStrip — hints and the welcome panel (DEMO-12, LIVE-9)', () => {
+  /** The strip under a real `/p/:slug/*` route, as it is in the app shell. */
+  function renderRoutedStrip(state: ScenarioState, route: string, withMark = false) {
+    writeScenarioState(SLUG, state)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[route]}>
+          <DemoScenarioProvider project={demoProject()} pollIntervalMs={POLL_MS}>
+            <Routes>
+              <Route
+                path="/p/:slug/*"
+                element={
+                  <>
+                    <DemoScenarioStrip />
+                    {withMark && (
+                      <ScenarioCoachMark step="live-loop/run-scan">
+                        <button type="button">Run scan</button>
+                      </ScenarioCoachMark>
+                    )}
+                  </>
+                }
+              />
+            </Routes>
+          </DemoScenarioProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('offers "Hide hints" in the strip, in the normal tab order', () => {
+    renderRoutedStrip(liveLoopState('live-loop/run-scan'), `/p/${SLUG}/scans`, true)
+    expect(screen.getByRole('button', { name: 'Hide hints' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide hints on the page' }))
+
+    // The card's own copy is gone with the mark, and the strip offers the way back.
+    expect(screen.queryByRole('button', { name: 'Hide hints' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Show hints' })).toBeInTheDocument()
+    expect(strip()).not.toBeNull()
+  })
+
+  it('offers no "Hide hints" for a step with no on-surface mark', () => {
+    renderRoutedStrip(chapterState('variables', 'variables/open-variables'), `/p/${SLUG}/scans`)
+
+    expect(screen.queryByRole('button', { name: 'Hide hints on the page' })).toBeNull()
+  })
+
+  it('gives way to the welcome panel on a first visit to the Overview', () => {
+    renderRoutedStrip(liveLoopState('live-loop/run-scan'), `/p/${SLUG}/overview`)
+
+    expect(strip()).toBeNull()
+  })
+
+  it('stays on the Overview once the welcome panel is put away', () => {
+    act(() => {
+      setWelcomeDismissed(SLUG, true)
+    })
+    renderRoutedStrip(liveLoopState('live-loop/run-scan'), `/p/${SLUG}/overview`)
+
+    expect(strip()).not.toBeNull()
+  })
+
+  it('stays on the Overview for a live loop the user started or restarted themselves', () => {
+    // Same step as a pristine scenario, but chosen: the strip is what coaches it.
+    renderRoutedStrip(
+      scenarioReducer(initialScenarioState(), { type: 'restartChapter', chapter: 'live-loop' }),
+      `/p/${SLUG}/overview`,
+    )
+
+    expect(strip()).not.toBeNull()
+  })
+
+  it('stays on the Overview once the user has moved past the first step', () => {
+    renderRoutedStrip(
+      liveLoopState('live-loop/collect-metric'),
+      `/p/${SLUG}/overview`,
+    )
+
+    expect(strip()).not.toBeNull()
+  })
+
+  it('stays everywhere else on a first visit', () => {
+    renderRoutedStrip(liveLoopState('live-loop/run-scan'), `/p/${SLUG}/events`)
+
+    expect(strip()).not.toBeNull()
   })
 })

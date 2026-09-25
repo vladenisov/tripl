@@ -1,21 +1,82 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Loader2, RotateCcw, Sparkles } from "lucide-react"
+import { toast } from "sonner"
 import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { getScopeMonitoringPath } from "@/lib/monitoring"
 import { useCanWriteProject } from "@/lib/permissions"
 import { getErrorMessage } from "@/lib/utils"
 import { formatDateTime } from "@/lib/datetime"
-import { formatIncidentCount } from "@/lib/alertStatus"
+import { formatIncidentCount, scopeKindLabel } from "@/lib/alertStatus"
+import { SILENT_ERROR_META } from "@/lib/errorFeedback"
+import { countOf } from "@/lib/plural"
+import { useConfirm } from "@/hooks/useConfirm"
 import { formatPercentDelta } from "@/lib/percentDelta"
 import { Badge } from "@/components/ui/badge"
 import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { invalidateAlertingConfig } from "./alertingCache"
+import { CHANNEL_META } from "./channelMeta"
 import { alertDeliveryKey } from "@/lib/queryKeys"
+import { watchRetriedDelivery, type RetryWatchOptions } from "./retryWatch"
+
+/**
+ * The delivery table: its fixed columns, their widths, and the rows.
+ *
+ * One component for both places a delivery list renders — the Delivery log and
+ * the "what was sent" table inside an incident card. The card's copy used to
+ * hand-roll its own header, still titled "Error / Preview" long after the log
+ * renamed that column "What fired", and without the `table-fixed` widths this
+ * row's truncating cells rely on (ALR-32).
+ *
+ * `table-fixed` plus explicit widths: without it the multi-kilobyte summary
+ * cell's max-width never bound, every short column collapsed to min-content and
+ * a single timestamp wrapped over four lines, inflating rows to ~100px
+ * (tripl-oxkt.18). The min-width is what the nine columns actually need; the
+ * Table's own container scrolls, so the page body never does.
+ */
+export function DeliveryTable({ children }: { children: ReactNode }) {
+  return (
+    <Table className="min-w-[960px] table-fixed">
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-[96px]">Time</TableHead>
+          <TableHead className="w-[92px]">Status</TableHead>
+          <TableHead className="w-[104px]">Destination</TableHead>
+          <TableHead className="w-[88px]">Rule</TableHead>
+          <TableHead className="w-[112px]">Scan</TableHead>
+          <TableHead className="w-[52px]">Count</TableHead>
+          <TableHead className="w-[76px]">Channel</TableHead>
+          {/* Not "Error / Preview": the preview was the first 87 characters
+              of a message whose first four lines are a fixed template
+              header repeating the five cells to its left. */}
+          <TableHead>What fired</TableHead>
+          <TableHead className="w-[104px]"></TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>{children}</TableBody>
+    </Table>
+  )
+}
+
+/**
+ * A channel as a person names it — "Slack", not "SLACK" (ALR-48). `demo_sink`
+ * is the demo workspace's local recorder and has no entry in the catalogue of
+ * channels a user can add, so it gets its own words.
+ */
+function channelLabel(channel: string): string {
+  if (channel === "demo_sink") return "Local sink"
+  return CHANNEL_META.find(meta => meta.channel === channel)?.label ?? channel
+}
+
+/**
+ * Channels where a retry does more than repeat a message: each send opens a
+ * new issue in somebody's tracker, so a retry is a second ticket (ALR-35).
+ */
+const TICKET_CHANNELS: ReadonlySet<string> = new Set(["jira", "linear"])
 
 /**
  * Does this stored path point back at the alerting page itself?
@@ -199,11 +260,14 @@ export function AlertDeliveryRow({
   delivery,
   focusDeliveryId,
   focusItemKey,
+  retryWatch,
 }: {
   slug: string
   delivery: AlertDelivery
   focusDeliveryId?: string
   focusItemKey?: string
+  /** Pacing of the post-retry outcome watch; a prop so tests can shorten it. */
+  retryWatch?: RetryWatchOptions
 }) {
   const isFocused = focusDeliveryId === delivery.id
   // Read here rather than threaded from the panel: this row also renders inside
@@ -217,14 +281,25 @@ export function AlertDeliveryRow({
   const focusRef = useRef<HTMLTableRowElement>(null)
   const focusItemRef = useRef<HTMLTableRowElement>(null)
   const qc = useQueryClient()
-  const { data: detail } = useQuery({
+  const {
+    data: detail,
+    isError: detailFailed,
+    error: detailError,
+    refetch: refetchDetail,
+  } = useQuery({
     queryKey: alertDeliveryKey(slug, delivery.id),
     queryFn: () => alertingApi.getDelivery(slug, delivery.id),
     enabled: open,
+    // Its failure renders inside the expanded row (ALR-34), so the global toast
+    // would only say it twice.
+    meta: SILENT_ERROR_META,
   })
+  const { confirm, dialog } = useConfirm()
   // Re-queue a failed delivery. On success the backend flips it back to
   // 'pending' and hands the fresh row straight back.
   const retryMut = useMutation({
+    // Rendered inline under the row, so not toasted as well.
+    meta: SILENT_ERROR_META,
     mutationFn: () => alertingApi.retryDelivery(slug, delivery.id),
     onSuccess: (updated: AlertDeliveryDetail) => {
       // Write the returned row into the DETAIL cache as well as invalidating the
@@ -242,8 +317,30 @@ export function AlertDeliveryRow({
       // survives it: `['alertDelivery', slug, id]` is a different key from
       // `['alertDeliveries', slug]`, not a child of it.
       invalidateAlertingConfig(qc, slug)
+      // Said out loud, because the badge flipping to `pending` was the only
+      // feedback — and the refetch above can move the row off a Status=Failed
+      // page entirely, so the reader may never see even that (ALR-35).
+      // "Queued", not "re-sent": the server re-queues and the worker sends.
+      toast.success(`Retry queued — ${delivery.destination_name} will send this alert again.`)
+      // …and, once the worker has tried it, whether it went through (ALR-35).
+      watchRetriedDelivery(qc, slug, delivery.id, delivery.destination_name, retryWatch)
     },
   })
+  const handleRetry = async () => {
+    // A retry to Jira or Linear is a second ticket, not a repeated message, so
+    // it asks first. Slack, Telegram, email and webhooks repeat a message the
+    // recipient never got, and one click is the right cost for that.
+    if (TICKET_CHANNELS.has(delivery.channel)) {
+      const ok = await confirm({
+        title: "Retry this delivery",
+        message: `Retrying sends this alert through "${delivery.destination_name}" again, and ${channelLabel(delivery.channel)} opens a new issue for it.`,
+        confirmLabel: "Retry",
+        variant: "primary",
+      })
+      if (!ok) return
+    }
+    if (!retryMut.isPending) retryMut.mutate()
+  }
   // The retry response is newer than the list page this row was rendered from,
   // so it wins until the list catches up — which closes the window in which the
   // button still reads `Retry` on a delivery that is already queued. Comparing
@@ -253,6 +350,11 @@ export function AlertDeliveryRow({
     ? retryMut.data.status
     : delivery.status
   const isFailed = status === 'failed'
+  // The same freshness rule for the error: after a retry the old message is
+  // no longer why this delivery is in the state it is in.
+  const errorMessage = retryMut.data && retryMut.data.updated_at > delivery.updated_at
+    ? retryMut.data.error_message
+    : delivery.error_message
   // What actually fired, from the frozen payload. The cell used to show the
   // first 87 characters of `rendered_message`, whose first four lines are a
   // fixed template header repeating the five cells to its left — the widest
@@ -295,6 +397,7 @@ export function AlertDeliveryRow({
 
   return (
     <>
+      {dialog}
       <TableRow ref={focusRef} className={isFocused ? 'bg-primary/5' : undefined}>
         {/* The columns are sized by the table this row sits in (`table-fixed`
             in AlertAuditPanel), so every cell that can hold a long value
@@ -326,11 +429,18 @@ export function AlertDeliveryRow({
           <span className="block truncate" title={delivery.scan_name}>{delivery.scan_name}</span>
         </TableCell>
         <TableCell className="text-xs">{delivery.matched_count}</TableCell>
-        <TableCell className="text-xs uppercase">{delivery.channel}</TableCell>
+        <TableCell className="text-xs">
+          <span className="block truncate" title={channelLabel(delivery.channel)}>
+            {channelLabel(delivery.channel)}
+          </span>
+        </TableCell>
         <TableCell className="text-xs text-muted-foreground">
-          {delivery.error_message ? (
-            <span className="block truncate text-destructive" title={delivery.error_message}>
-              {delivery.error_message}
+          {/* Truncated here; the whole message is the first thing in the
+              expanded row, where touch and screen-reader users can reach it
+              too — a `title` alone reaches neither (ALR-33). */}
+          {errorMessage ? (
+            <span className="block truncate text-destructive" title={errorMessage}>
+              {errorMessage}
             </span>
           ) : firedSummary ? (
             <div className="min-w-0">
@@ -352,10 +462,15 @@ export function AlertDeliveryRow({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-7 gap-1 px-2 text-xs"
+                className="h-9 gap-1 px-2 text-xs sm:h-7"
                 disabled={retryMut.isPending}
                 aria-label="Retry delivery"
-                onClick={() => retryMut.mutate()}
+                title={
+                  TICKET_CHANNELS.has(delivery.channel)
+                    ? `Sends this alert again, and ${channelLabel(delivery.channel)} opens a new issue for it. Asks first.`
+                    : "Sends this alert again."
+                }
+                onClick={() => { void handleRetry() }}
               >
                 {retryMut.isPending ? (
                   <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
@@ -368,7 +483,7 @@ export function AlertDeliveryRow({
             <Button
               variant="ghost"
               size="icon"
-              className="h-7 w-7"
+              className="size-9 sm:size-7"
               aria-label={open ? 'Collapse delivery details' : 'Expand delivery details'}
               aria-expanded={open}
               onClick={() => setOpen(current => !current)}
@@ -387,19 +502,53 @@ export function AlertDeliveryRow({
           </TableCell>
         </TableRow>
       )}
-      {open && detail && (
+      {open && (
         <TableRow>
           <TableCell colSpan={9} className="bg-muted/20">
             <div className="space-y-3 p-3">
+              {/* The full failure, first: it is why the reader opened a failed
+                  row, and the cell above can only show its first line
+                  (ALR-33). From the list row rather than the detail, so it is
+                  on screen before the detail request answers. */}
+              {errorMessage && (
+                <div role="alert" className="rounded-lg border border-destructive/40 p-3 text-xs text-destructive">
+                  <div className="mb-1 font-medium">Why it failed</div>
+                  <p className="whitespace-pre-wrap break-words">{errorMessage}</p>
+                </div>
+              )}
+              {/* A chevron that rotates over nothing read as "there is nothing
+                  to see" while the request was in flight, and forever when it
+                  failed (ALR-34). */}
+              {!detail && !detailFailed && (
+                <p role="status" className="text-xs text-muted-foreground">
+                  Loading delivery details…
+                </p>
+              )}
+              {!detail && detailFailed && (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+                  <p role="alert" className="whitespace-normal">Could not load this delivery&apos;s details: {getErrorMessage(detailError)}</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 px-3 text-xs sm:h-7 sm:px-2"
+                    onClick={() => void refetchDetail()}
+                  >
+                    Try again
+                  </Button>
+                </div>
+              )}
+              {detail && (
+              <>
               <div className="flex flex-wrap gap-2">
                 {payloadItems && (
                   <Badge variant="outline" className="text-[10px]">
-                    {payloadItems.length} items
+                    {countOf(payloadItems.length, 'item', 'items')}
                   </Badge>
                 )}
                 {correlationLabels.size > 0 && (
                   <Badge variant="outline" className="border-warning/50 bg-warning-soft text-warning text-[10px]">
-                    {correlationLabels.size} correlated group{correlationLabels.size > 1 ? 's' : ''}
+                    {countOf(correlationLabels.size, 'correlated group', 'correlated groups')}
                   </Badge>
                 )}
                 {detail.sent_at && (
@@ -480,7 +629,7 @@ export function AlertDeliveryRow({
                                   </Badge>
                                 )}
                               </div>
-                              <div className="text-muted-foreground">{item.scope_type}</div>
+                              <div className="text-muted-foreground">{scopeKindLabel(item.scope_type)}</div>
                             </TableCell>
                             <TableCell className="text-xs">{item.direction}</TableCell>
                             {/* All three are declared `float` on
@@ -568,6 +717,8 @@ export function AlertDeliveryRow({
                     {renderedMessage}
                   </pre>
                 </details>
+              )}
+              </>
               )}
             </div>
           </TableCell>

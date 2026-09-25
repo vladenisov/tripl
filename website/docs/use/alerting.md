@@ -905,6 +905,13 @@ never retried automatically either: fix the cause and press **Retry** in the
 UI, which also resets the attempt budget, so a delivery you retry by hand
 starts with a fresh set of attempts.
 
+**Retry** on a Jira or Linear delivery asks for confirmation first, because the
+new attempt opens a new issue. A retry that was accepted says so ("Retry
+queued"); the delivery then goes back to **pending** until the worker sends it.
+The page keeps an eye on it for about two minutes and reports the outcome:
+"Delivered — … accepted the retried alert.", or "Still failing: …" with the
+destination's error.
+
 If a digest worker is interrupted, the reaper requeues stranded Slack and email
 members through the digest sender, grouped by their original flush. Other
 channels retain their normal per-delivery sender.
@@ -1346,9 +1353,24 @@ status, channel, destination, rule and scan — the view for "did anything fail 
 go out", rather than for acting on one incident. Deliveries too old to belong to
 an incident (written before incidents existed) appear only there.
 
+Like the Inbox's, the Delivery log's filters and its page are kept in the URL
+(`delivery_status`, `delivery_channel`, `delivery_destination`, `delivery_rule`,
+`delivery_from`, `delivery_to` and `delivery_offset`, beside `scan`), so a
+filtered log survives **Back** and can be shared as a link. Expanding a failed
+delivery shows its full error message first.
+
 ### What an incident row carries
 
 `GET /api/v1/projects/{slug}/alert-inbox` returns these rows as typed objects.
+
+It pages two ways. `offset` and `limit` work as before; the response also
+carries `next_cursor` — an opaque string, `null` on the last page — and passing
+it back as `?cursor=` continues strictly after the last row served. Prefer the
+cursor for "load more": an incident acknowledged on page 1 between two requests
+sorts down past the page boundary, and with an offset the row after it is
+skipped, never served. `GET /alert-deliveries` pages the same way. `cursor` and
+a non-zero `offset` together are a 422, as is a cursor that does not decode.
+
 The fields worth knowing before you read one:
 
 | Field | Means |

@@ -17,9 +17,9 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowRight, ChevronDown, Compass, Sparkles, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import type { Project } from '@/types'
-import { DemoDataBadge } from './capabilityBadges'
 import { ChapterPicker } from './ChapterPicker'
 import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import { ProductTour } from './ProductTour'
@@ -39,6 +39,20 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
 
   const blocks = buildMetricBuildingBlocks(project.slug)
 
+  /**
+   * One unconfirmed click puts the panel away, and it sits right beside
+   * "Show me around" — easy to hit by accident on a touch screen (DEMO-25).
+   * So the dismissal offers Undo and names the way back for later.
+   */
+  function dismiss(): void {
+    setWelcomeDismissed(project.slug, true)
+    toast('Demo welcome hidden', {
+      id: `demo-welcome-dismissed:${project.slug}`,
+      description: 'Bring it back any time from "Tour & chapters" in the demo banner.',
+      action: { label: 'Undo', onClick: () => setWelcomeDismissed(project.slug, false) },
+    })
+  }
+
   /** Start (or resume) a chapter and drop the user on its first surface. */
   function openChapter(chapter: ChapterListEntry): void {
     startChapter(chapter.id)
@@ -46,27 +60,32 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
   }
 
   return (
+    // --fg-subtle, never --fg-faint, for text on this --accent-soft fill: faint
+    // measures about 4.05:1 on it, below AA for the 10px labels (DEMO-24).
     <section
       aria-labelledby="demo-welcome-heading"
-      className="relative overflow-hidden rounded-xl border p-5"
+      className="relative overflow-hidden rounded-xl border p-4 sm:p-5"
       style={{ background: 'var(--accent-soft)', borderColor: 'var(--accent)' }}
     >
+      {/* A 36px target (DEMO-25), in the corner rather than level with the
+          heading's own control. */}
       <button
         type="button"
-        onClick={() => setWelcomeDismissed(project.slug, true)}
+        onClick={dismiss}
         aria-label="Dismiss demo welcome"
-        className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-[var(--surface-hover)]"
+        className="absolute right-1.5 top-1.5 flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
         style={{ color: 'var(--fg-subtle)' }}
       >
-        <X className="h-3.5 w-3.5" />
+        <X className="h-4 w-4" />
       </button>
 
-      <div className="flex flex-wrap items-center gap-2 pr-8">
+      <div className="flex flex-wrap items-center gap-2 pr-10">
         <Sparkles className="h-4 w-4" style={{ color: 'var(--accent)' }} />
         <h2 id="demo-welcome-heading" className="text-[15px] font-semibold">
           Welcome to your demo workspace
         </h2>
-        <DemoDataBadge />
+        {/* No "Local synthetic data" badge here: the demo banner right above
+            already carries it on every surface (LIVE-9). */}
         <button
           type="button"
           onClick={() => setExpanded((open) => !open)}
@@ -115,7 +134,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
 
           {available && (
             <div className="mt-4 max-w-xl">
-              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-faint)' }}>
+              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-subtle)' }}>
                 Coached chapters
               </p>
               <ChapterPicker chapters={chapters} onPick={openChapter} compact />
@@ -123,7 +142,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
           )}
 
           <div className="mt-4">
-            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-faint)' }}>
+            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-subtle)' }}>
               Metric building blocks
             </p>
             <div className="flex flex-wrap gap-1.5">

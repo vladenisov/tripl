@@ -355,6 +355,9 @@ export const aiStatusKey = (slug: string | null | undefined) => [...aiStatusRoot
 /** The activity rail: one project's feed, or the workspace feed without one. */
 export const activityKey = (slug: string | undefined) =>
   ['activity', slug ?? 'workspace'] as const
+/** A shorter page of the same feed (Overview); under the rail's key, so it refreshes with it. */
+export const activityPreviewKey = (slug: string | undefined, limit: number) =>
+  [...activityKey(slug), 'preview', limit] as const
 
 /** Command palette search; the root is what a reindex invalidates. */
 export const commandPaletteSearchRootKey = () => ['commandPaletteSearch'] as const
@@ -726,8 +729,11 @@ export const projectAnomalySettingsKey = (slug: string | undefined) =>
 
 /** The Overview page. Keyed kind-first, so the root covers every project's. */
 export const overviewRootKey = () => ['overview'] as const
+/** Every window of one project's Overview volume chart (MON-39). */
+export const overviewVolumeRootKey = (slug: string | undefined) =>
+  [...overviewRootKey(), 'volume', slug] as const
 export const overviewVolumeKey = (slug: string | undefined, windowDays: number) =>
-  [...overviewRootKey(), 'volume', slug, windowDays] as const
+  [...overviewVolumeRootKey(slug), windowDays] as const
 export const overviewTopEventsKey = (slug: string | undefined) =>
   [...overviewRootKey(), 'top-events', slug] as const
 export const overviewKpiSeriesKey = (slug: string | undefined) =>

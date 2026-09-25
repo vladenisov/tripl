@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 import ConceptsPage from './ConceptsPage'
+import { PRODUCT_PILLARS } from '@/components/workspace-welcome-pillars'
 
 function renderConcepts() {
   return render(
@@ -112,5 +113,27 @@ describe('ConceptsPage', () => {
       'href',
       '/p/demo/settings/alerting?section=monitors',
     )
+  })
+
+  it('starts every link name with the text the link shows (WS-45)', () => {
+    renderConcepts()
+
+    // A term that only surfaces somewhere is labelled with that place. Its
+    // name used to be "Open Signals in the app" on a link reading "Anomalies",
+    // so "click Anomalies" never reached it.
+    const signals = screen.getByRole('link', { name: 'Anomalies, where Signals appear in the app' })
+    expect(signals).toHaveAttribute('href', '/p/demo/anomalies')
+    for (const link of screen.getAllByRole('link')) {
+      const visible = link.firstChild?.textContent ?? ''
+      expect(link).toHaveAccessibleName(expect.stringMatching(new RegExp(`^${visible}`)))
+    }
+  })
+
+  it('names the three areas the way the welcome screen does (WS-46)', () => {
+    renderConcepts()
+
+    for (const pillar of Object.values(PRODUCT_PILLARS)) {
+      expect(screen.getAllByText(pillar.tagline).length).toBeGreaterThan(0)
+    }
   })
 })

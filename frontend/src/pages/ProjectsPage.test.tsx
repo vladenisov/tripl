@@ -162,8 +162,10 @@ describe('ProjectsPage', () => {
     // direction is in that sentence and NOT also on a chip beside it.
     expect(screen.getByText('Spike on Page View')).toBeInTheDocument()
     expect(screen.queryByText('spike')).not.toBeInTheDocument()
-    // H1: the dashboard recent-signal count never speaks of "active".
-    expect(screen.getByText('2 recent')).toBeInTheDocument()
+    // H1: the dashboard signal count never speaks of "active". It is the open
+    // signal count, so it says "open" like the rest of the card (WS-43).
+    expect(screen.getByText('2 open')).toBeInTheDocument()
+    expect(screen.queryByText('2 recent')).not.toBeInTheDocument()
     expect(screen.queryByText('2 active')).not.toBeInTheDocument()
     expect(screen.getByText('Open Signal')).toBeInTheDocument()
     expect(screen.getByText('Open Project')).toBeInTheDocument()
