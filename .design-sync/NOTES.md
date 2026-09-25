@@ -95,3 +95,5 @@ Deps staged in `.ds-sync/node_modules` (esbuild, ts-morph, @types/react, @tailwi
 - The two tsconfig gotchas are converter-lib behavior; if the bundled lib is updated, re-verify the alias plugin still needs the comment-free tsconfig.
 - App composites are tied to live app code (contexts/api); their previews may break when that code changes.
 - Node engine mismatch against the pinned version — harmless so far; watch on re-clone.
+
+- 2026-09-25: Sheet, ScrollArea and ThemeToggle were deleted from the app in a7b11905 (#229); removed from the entry barrel, componentSrcMap, dtsPropsFor, overrides and previews (tripl-05cr). 53 components. The design project still holds their cards until the next close-out reconciliation deletes them.
