@@ -40,7 +40,7 @@ if (hasDom) {
 // vitest's own declaration exactly (TS2428): vitest 5 declares
 // `Assertion<R extends void | Promise<void> = void, T = unknown>`.
 declare module 'vitest' {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   interface Assertion<R extends void | Promise<void> = void, T = unknown> extends AxeMatchers, TestingLibraryMatchers<any, R> {}
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   interface AsymmetricMatchersContaining extends AxeMatchers, TestingLibraryMatchers<any, any> {}

@@ -174,7 +174,7 @@ function CalendarGrid({
                 const isSelected = !!selected && sameDay(day, selected)
                 const isFocused = sameDay(day, focused)
                 return (
-                  <td key={dayIndex} role="gridcell" aria-selected={isSelected} className="p-0 text-center">
+                  <td key={dayIndex} aria-selected={isSelected} className="p-0 text-center">
                     <button
                       ref={isFocused ? focusRef : undefined}
                       type="button"

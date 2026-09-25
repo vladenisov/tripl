@@ -1,3 +1,4 @@
+import { Profiler } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
@@ -35,17 +36,25 @@ describe('noteDraftStore', () => {
   it('re-renders only the card whose draft changed', () => {
     const store = createNoteDraftStore()
     const renders: Record<string, number> = { a: 0, b: 0 }
+    // Counted by a Profiler around each card rather than from inside the card,
+    // so the component under test stays a pure render.
+    const countRender = (id: string) => {
+      renders[id] = (renders[id] ?? 0) + 1
+    }
 
     function Card({ id, source }: { id: string; source: NoteDraftStore }) {
       const draft = useNoteDraft(source, id)
-      renders[id] = (renders[id] ?? 0) + 1
       return <p data-testid={id}>{draft}</p>
     }
 
     render(
       <>
-        <Card id="a" source={store} />
-        <Card id="b" source={store} />
+        <Profiler id="a" onRender={countRender}>
+          <Card id="a" source={store} />
+        </Profiler>
+        <Profiler id="b" onRender={countRender}>
+          <Card id="b" source={store} />
+        </Profiler>
       </>,
     )
     const before = { ...renders }

@@ -320,8 +320,8 @@ describe('MonitorDetailPage', () => {
 
     await waitFor(() => {
       const muteCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/mute'))
-      expect(muteCall).toBeTruthy()
-      const body = JSON.parse(String((muteCall?.[1] as RequestInit).body)) as { muted_until: string }
+      if (!muteCall) throw new Error('no /mute request was sent')
+      const body = JSON.parse(String((muteCall[1] as RequestInit).body)) as { muted_until: string }
       expect(body.muted_until).toBe(new Date(clickedAt + HOUR_MS).toISOString())
     })
 
