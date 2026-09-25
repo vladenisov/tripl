@@ -52,10 +52,13 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   // and Radix's own restore target is <body> — the next Tab then restarts the
   // sidebar from stop 1 (tripl-jfm3.68).
   const openerRef = useRef<HTMLElement | null>(null)
+  // Set when a command closes the palette by navigating; read by the restore.
+  const navigatedRef = useRef(false)
 
   const setOpen = useCallback((next: boolean) => {
     if (next) {
       setOpenAttempt((n) => n + 1)
+      navigatedRef.current = false
       const active = document.activeElement
       openerRef.current =
         active instanceof HTMLElement && active !== document.body ? active : null
@@ -63,16 +66,30 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     setOpenState(next)
   }, [])
 
-  /** Move focus out of the dismissed dialog: opener → top-bar trigger → main content. */
+  const markNavigated = useCallback(() => {
+    navigatedRef.current = true
+  }, [])
+
+  /**
+   * Move focus out of the dismissed dialog: opener → top-bar trigger → main
+   * content. After the palette navigated, straight to the content: that is
+   * where Layout puts focus on a navigation (SHELL-25), and restoring the
+   * opener would undo it and leave the reader in the sidebar again.
+   */
   const restoreFocus = useCallback(() => {
+    const navigated = navigatedRef.current
+    navigatedRef.current = false
+    const main = document.querySelector<HTMLElement>(`#${MAIN_CONTENT_ID}`)
     const candidates = [
+      ...(navigated ? [main] : []),
       openerRef.current,
       document.querySelector<HTMLElement>(`[${COMMAND_PALETTE_TRIGGER_ATTR}]`),
-      document.querySelector<HTMLElement>(`#${MAIN_CONTENT_ID}`),
+      main,
     ]
     for (const candidate of candidates) {
       if (candidate?.isConnected) {
-        candidate.focus()
+        // The content region is tall; landing on it must not scroll the page.
+        candidate.focus(candidate === main ? { preventScroll: true } : undefined)
         return
       }
     }
@@ -124,7 +141,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
         // immediately re-render the failing dialog.
         <ErrorBoundary resetKey={openAttempt} fallback={() => <PaletteUnavailable onClose={closePalette} />}>
           <Suspense fallback={null}>
-            <CommandPalette onRestoreFocus={restoreFocus} />
+            <CommandPalette onRestoreFocus={restoreFocus} onNavigate={markNavigated} />
           </Suspense>
         </ErrorBoundary>
       )}

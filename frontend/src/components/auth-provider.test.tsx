@@ -27,11 +27,14 @@ function makeUser(): AuthUser {
 }
 
 function Probe() {
-  const { status, user } = useAuth()
+  const { status, user, logout } = useAuth()
   return (
     <div>
       <span data-testid="status">{status}</span>
       <span data-testid="email">{user?.email ?? 'none'}</span>
+      <button type="button" onClick={() => void logout()}>
+        Log out
+      </button>
     </div>
   )
 }
@@ -147,5 +150,46 @@ describe('AuthProvider unauthorized event cycle', () => {
     unmount()
     expect(removeSpy).toHaveBeenCalledWith(AUTH_UNAUTHORIZED_EVENT, expect.any(Function))
     removeSpy.mockRestore()
+  })
+
+  it('treats a 401 on the /auth/me refetch of a known user as an expiry, not a sign-out', async () => {
+    // /auth paths never raise the unauthorized event (a reconnect after sleep
+    // refetches /auth/me first), so the query's own 401 must hold the page.
+    meMock.mockResolvedValueOnce(makeUser()).mockRejectedValue(new ApiError('Unauthorized', 401))
+    loginMock.mockResolvedValue(makeUser())
+    const queryClient = renderProvider()
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('authenticated'))
+
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['auth', 'me'] })
+    })
+
+    const dialog = await screen.findByRole('dialog', { name: 'Your session has expired' })
+    expect(screen.getByTestId('status').textContent).toBe('authenticated')
+    expect(screen.getByTestId('email').textContent).toBe('a@b.com')
+
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
+    expect(screen.getByTestId('status').textContent).toBe('authenticated')
+  })
+
+  it('ignores a 401 that races a sign-out, leaving no dialog behind', async () => {
+    meMock.mockResolvedValueOnce(makeUser()).mockRejectedValue(new ApiError('Unauthorized', 401))
+    let finishLogout: () => void = () => {}
+    logoutMock.mockReturnValue(new Promise<void>((resolve) => { finishLogout = resolve }))
+    renderProvider()
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('authenticated'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }))
+    await waitFor(() => expect(logoutMock).toHaveBeenCalled())
+    // A request still in flight answers 401 once the cookie is gone.
+    act(() => {
+      window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT))
+    })
+    await act(async () => finishLogout())
+
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('anonymous'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

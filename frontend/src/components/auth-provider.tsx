@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -32,10 +33,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // shell stays mounted as that user under a sign-in dialog instead of
   // redirecting to /auth and throwing away unsaved input (SHELL-15).
   const [expiredUser, setExpiredUser] = useState<AuthUser | null>(null)
+  // Requests still in flight when the user signs out answer 401 once the
+  // cookie is gone; that is the sign-out working, not a session running out.
+  const loggingOutRef = useRef(false)
 
   const logoutMutation = useMutation({
     mutationFn: authApi.logout,
+    onMutate: () => {
+      loggingOutRef.current = true
+    },
     onSettled: async () => {
+      loggingOutRef.current = false
+      setExpiredUser(null)
       queryClient.setQueryData<AuthUser | null>(AUTH_QUERY_KEY, null)
       clearProtectedQueries(queryClient)
       await queryClient.invalidateQueries({ queryKey: AUTH_QUERY_KEY })
@@ -44,6 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handleUnauthorized = () => {
+      if (loggingOutRef.current) return
       const current = queryClient.getQueryData<AuthUser | null>(AUTH_QUERY_KEY)
       if (current) {
         setExpiredUser((held) => held ?? current)
@@ -71,8 +81,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearProtectedQueries(queryClient)
   }
 
+  // /auth paths never raise the unauthorized event, so a 401 on the /auth/me
+  // refetch (reconnect after a laptop sleep) arrives here instead. With a user
+  // already known it is the same expiry as a 401 anywhere else: react-query
+  // keeps that user as the query's data, and the dialog signs them back in
+  // rather than the routes redirecting to /auth and dropping the page.
+  const meExpired = meQuery.isError
+    && meQuery.error instanceof ApiError
+    && meQuery.error.status === 401
+    && !logoutMutation.isPending
+  const heldUser = expiredUser ?? (meExpired ? meQuery.data ?? null : null)
+
   let status: AuthStatus = 'loading'
-  if (expiredUser) {
+  if (heldUser) {
     status = 'authenticated'
   } else if (meQuery.isError) {
     status = meQuery.error instanceof ApiError && meQuery.error.status === 401
@@ -83,7 +104,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const value: AuthContextValue = {
-    user: expiredUser ?? meQuery.data ?? null,
+    user: heldUser ?? meQuery.data ?? null,
     status,
     error: status === 'error' ? meQuery.error : null,
     isLoggingOut: logoutMutation.isPending,
@@ -98,9 +119,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={value}>
       {children}
-      {expiredUser && (
+      {heldUser && (
         <SessionExpiredDialog
-          user={expiredUser}
+          user={heldUser}
           onSignedIn={handleSignedInAgain}
           onSignOut={handleExpiredSignOut}
         />

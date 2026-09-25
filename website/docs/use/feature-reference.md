@@ -590,9 +590,13 @@ creating a branch reports it by id and asks you to delete it.
 branches. `main` is the live plan; feature branches let you stage changes before
 merging. Working surfaces are scoped to the active branch via a `?branch=`
 context. Switching branch writes `?branch=` into the address (or removes it for
-`main`), so a reload, a copied link and Back all keep the branch you picked. When
-the active branch is merged, closed or deleted, the app switches back to `main`
-and says so. Merging an owned event type re-checks ownership (see
+`main`), so a reload and a copied link keep the branch you picked. Going Back
+into an earlier page that named a different branch switches to that branch; if
+the page you are on has unsaved changes, you are asked first. When the branch
+you are working in is merged, closed or deleted, the app switches back to `main`
+and says so. A link that opens a merged or closed branch on purpose (a merged
+branch's diff, **Switch to** on an event from that branch) shows it read-only
+instead. Merging an owned event type re-checks ownership (see
 [Event types](#event-types)).
 
 The list is split into **Active** and **Merged** tabs, each showing its count, so

@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -35,6 +36,7 @@ import {
 import { aiApi } from '@/api/ai'
 import { eventTypesApi } from '@/api/eventTypes'
 import { searchApi } from '@/api/search'
+import { ActiveProjectContext } from '@/components/active-project-context'
 import { useAuth } from '@/components/auth-context'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { eventNameLabel } from '@/lib/eventName'
@@ -241,7 +243,14 @@ function isSearchRefinement(held: string, next: string): boolean {
   return held.startsWith(next) || next.startsWith(held)
 }
 
-export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
+export default function CommandPalette({
+  onRestoreFocus,
+  onNavigate,
+}: {
+  onRestoreFocus: () => void
+  /** Called when a command closes the palette by navigating. */
+  onNavigate: () => void
+}) {
   const { open, setOpen } = useCommandPalette()
   const navigate = useNavigate()
   const location = useLocation()
@@ -274,7 +283,13 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
 
   const projectsQuery = useQuery({ ...projectsQueryOptions(), enabled: open })
   const projects = projectsQuery.data ?? []
-  const activeProject = projects.find(p => p.slug === routeSlug) ?? null
+  // The project the shell resolved for this address first: the list may not
+  // have landed yet, or may not show a project a deep link opened.
+  const shellProject = useContext(ActiveProjectContext)
+  const activeProject =
+    (shellProject && shellProject.slug === routeSlug ? shellProject : null)
+    ?? projects.find(p => p.slug === routeSlug)
+    ?? null
 
   const eventTypesQuery = useQuery({
     queryKey: eventTypesKey(activeProject?.slug, branchId),
@@ -402,9 +417,15 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
     [setOpen],
   )
 
+  // Tells the provider the close is a navigation, so the focus restore below
+  // lands on the new page's content rather than the opener (SHELL-25).
   const goTo = useCallback(
-    (path: string) => runCommand(() => navigate(path)),
-    [navigate, runCommand],
+    (path: string) =>
+      runCommand(() => {
+        onNavigate()
+        navigate(path)
+      }),
+    [navigate, onNavigate, runCommand],
   )
 
   // Knowledge results and AI sources arrive with a bare `route_path`, but the
@@ -487,11 +508,10 @@ export default function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () 
                 label: 'Show getting started',
                 hint: 'Bring back the setup checklist',
                 icon: ListChecks,
-                onSelect: () =>
-                  runCommand(() => {
-                    setOnboardingDismissed(activeProject.slug, activeProject.id, false)
-                    navigate(projectHomePath(activeProject.slug))
-                  }),
+                onSelect: () => {
+                  setOnboardingDismissed(activeProject.slug, activeProject.id, false)
+                  goTo(projectHomePath(activeProject.slug))
+                },
               },
             ]
           : []),
