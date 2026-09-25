@@ -87,7 +87,7 @@ export function AppVersionFields({
             disabled={!appVersionColumn}
             placeholder={appVersionColumn ? 'e.g. -(beta|rc)' : 'Select version column'}
           />
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             Regex marking beta builds, e.g. -(beta|rc). Matching versions stay out of release comparisons.
           </p>
         </div>
@@ -107,11 +107,11 @@ export function AppVersionFields({
             aria-describedby={activeShareMinError ? 'app-version-active-share-error' : undefined}
           />
           {activeShareMinError && (
-            <p id="app-version-active-share-error" className="text-xs" style={{ color: 'var(--danger)' }}>
+            <p id="app-version-active-share-error" className="text-body-sm" style={{ color: 'var(--danger)' }}>
               {activeShareMinError}
             </p>
           )}
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             A version counts as released once it carries this share of traffic. Default 0.05 (5%).
           </p>
         </div>

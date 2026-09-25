@@ -8,9 +8,10 @@ import { FormRow } from './form-row'
 
 // jsdom applies no Tailwind, so these pin the STRUCTURE the stacking layout
 // hangs on — every labelled form row goes through the one shared primitive,
-// whose classes stack below `sm` — rather than the class strings themselves.
+// whose classes stack below 560px of row width — rather than the class strings
+// themselves.
 describe('FormRow', () => {
-  it('renders a caption column and a control column, with the caption width from sm up', () => {
+  it('renders a caption column and a control column, with the caption width once side by side', () => {
     const { container } = render(
       <FormRow labelWidth={200} caption={<label htmlFor="x">Name</label>}>
         <input id="x" />
@@ -23,6 +24,22 @@ describe('FormRow', () => {
     expect(row.querySelector('[data-slot="form-row-control"]')).toContainElement(
       screen.getByLabelText('Name'),
     )
+  })
+
+  it('stacks on its own width, not the viewport (ST-1)', () => {
+    const { container } = render(
+      <FormRow caption={<span>Name</span>} className="px-4" role="group" aria-label="Name row">
+        <input aria-label="Name" />
+      </FormRow>,
+    )
+    const row = container.querySelector('[data-slot="form-row"]') as HTMLElement
+    // The row is the query container and keeps the caller's ARIA; the caller's
+    // layout classes land on the flex row inside it.
+    expect(row).toHaveClass('@container')
+    expect(row).toHaveAttribute('role', 'group')
+    const flex = row.firstElementChild as HTMLElement
+    expect(flex).toHaveClass('px-4', 'flex-col', '@min-[560px]:flex-row')
+    expect(flex.className).not.toMatch(/(^|\s)sm:/)
   })
 })
 

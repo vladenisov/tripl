@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState } from 'react'
 import { MemoryRouter } from 'react-router-dom'
@@ -116,6 +116,30 @@ describe('RuleEditorDialog — numbers can be cleared and are checked (ALR-16)',
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
     expect(onSubmit.mock.calls[0]![0]).toMatchObject({ cooldown_minutes: '30' })
+  })
+})
+
+describe('RuleEditorDialog — inline validation instead of browser bubbles (AL-28)', () => {
+  it('names an empty rule name under its field and does not submit', async () => {
+    const onSubmit = vi.fn()
+    renderDialog({ onSubmit, initial: defaultRuleForm() })
+
+    const name = screen.getByLabelText('Name')
+    expect(name).not.toHaveAttribute('required')
+    expect(name.closest('form')).toHaveAttribute('novalidate')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(name).toHaveAttribute('aria-invalid', 'true')
+    expect(name).toHaveAccessibleDescription('Required')
+    // The refused submit moves focus to the first highlighted field.
+    await waitFor(() => expect(name).toHaveFocus())
+  })
+
+  it('titles the dialog in sentence case', () => {
+    renderDialog({ onSubmit: vi.fn() })
+    expect(screen.getByRole('dialog', { name: 'New alert rule' })).toBeInTheDocument()
   })
 })
 

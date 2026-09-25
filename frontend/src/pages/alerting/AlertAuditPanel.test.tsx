@@ -311,7 +311,7 @@ describe('AlertAuditPanel filters', () => {
   it('says how much the active filter left', () => {
     renderPanel({ deliveries: page(2, 5), initialFilters: { ...NO_FILTERS, status: 'failed' } })
 
-    expect(screen.getByText('5 deliveries match the filter.')).toBeInTheDocument()
+    expect(screen.getByText('5 deliveries match the filter')).toBeInTheDocument()
   })
 })
 
@@ -342,7 +342,7 @@ describe('AlertAuditPanel viewer gating (tripl-oxkt.9)', () => {
   it('leaves the log itself readable — filters and paging are not writes', () => {
     renderPanel({ deliveries: failedPage }, 'viewer')
 
-    expect(screen.getByLabelText('Status')).toBeEnabled()
+    expect(screen.getByRole('combobox', { name: /^Status filter/ })).toBeEnabled()
     expect(screen.getByLabelText('From')).toBeEnabled()
     expect(screen.getByText('Ops')).toBeInTheDocument()
   })

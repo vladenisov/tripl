@@ -375,7 +375,7 @@ export function DemoBanner({
         // element's trimmed text, so a span's " workspace tools" came out as
         // "Demoworkspace tools". It starts with the visible word.
         aria-label="Demo workspace tools"
-        className="inline-flex min-h-8 items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] font-medium lg:hidden"
+        className="inline-flex min-h-8 items-center gap-1.5 rounded-full border px-3 py-1 text-body-sm font-medium lg:hidden"
         style={{ background: 'var(--warning-soft)', borderColor: 'var(--warning)' }}
       >
         <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
@@ -401,7 +401,7 @@ export function DemoBanner({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-1.5 lg:min-h-11 lg:flex-nowrap">
           <div className="flex shrink-0 items-center gap-x-3">
             <DemoDataBadge />
-            <span className={cn('shrink-0 text-[12px] font-medium', LABEL_WHEN_ROOMY)}>Demo workspace</span>
+            <span className={cn('shrink-0 text-body-sm font-medium', LABEL_WHEN_ROOMY)}>Demo workspace</span>
             {/* Details, not controls: the first thing to go when the row is
                 shared, and still on the phone panel, which has room. */}
             {project.demo_recipe_version && (
@@ -430,7 +430,7 @@ export function DemoBanner({
               }}
               aria-expanded={limitsOpen}
               title="What’s simulated"
-              className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+              className="flex items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
               style={{ color: 'var(--fg-muted)' }}
             >
               <Info className="h-3.5 w-3.5" aria-hidden="true" />
@@ -475,14 +475,15 @@ export function DemoBanner({
                   <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
                   <BannerLabel>{reseedRunning ? 'Resetting…' : 'Reset'}</BannerLabel>
                 </Button>
+                {/* Bare red, the hierarchy's destructive-in-a-row look; the
+                    solid red is kept for the confirm it opens (DS-20). */}
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="danger"
                   size="sm"
                   title="Delete"
                   onClick={() => void handleDelete()}
                   disabled={busy}
-                  className="text-destructive hover:text-destructive"
                 >
                   <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                   <BannerLabel>{deleteMut.isPending ? 'Deleting…' : 'Delete'}</BannerLabel>

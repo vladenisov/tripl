@@ -1,4 +1,4 @@
-import { Badge } from '@/components/ui/badge'
+import { Chip } from '@/components/primitives/chip'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -38,13 +38,13 @@ export function MetricBreakdownPicker({
     <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-medium">Metric breakdowns</div>
-          <p className="text-xs text-muted-foreground">
+          <div className="text-body font-medium">Metric breakdowns</div>
+          <p className="text-body-sm text-muted-foreground">
             Each selected scalar column is collected as a separate database-level grouping.
           </p>
         </div>
         <div className="grid w-40 gap-1">
-          <Label htmlFor="breakdown-value-limit" className="text-xs">Value limit</Label>
+          <Label htmlFor="breakdown-value-limit" className="text-body-sm">Value limit</Label>
           <Input
             id="breakdown-value-limit"
             type="number"
@@ -57,14 +57,14 @@ export function MetricBreakdownPicker({
             aria-describedby={valuesLimitError ? 'breakdown-value-limit-error' : undefined}
           />
           {valuesLimitError && (
-            <p id="breakdown-value-limit-error" className="text-xs" style={{ color: 'var(--danger)' }}>
+            <p id="breakdown-value-limit-error" className="text-body-sm" style={{ color: 'var(--danger)' }}>
               {valuesLimitError}
             </p>
           )}
         </div>
       </div>
       {selectedColumns.length > 0 && !valuesLimit && (
-        <div className="rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-xs text-warning">
+        <div className="rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-body-sm text-warning">
           Unlimited breakdowns can be expensive for high-cardinality columns. Set a limit to keep top values and aggregate the rest into Other.
         </div>
       )}
@@ -74,7 +74,7 @@ export function MetricBreakdownPicker({
           return (
             <label
               key={column.name}
-              className="flex items-center gap-2 rounded-md border bg-background p-2 text-sm"
+              className="flex items-center gap-2 rounded-md border bg-background p-2 text-body"
             >
               <Checkbox
                 checked={selectedColumns.includes(column.name)}
@@ -84,14 +84,14 @@ export function MetricBreakdownPicker({
                   if (!disabled) onToggleColumn(column.name)
                 }}
               />
-              <span className="min-w-0 flex-1 truncate font-mono text-xs">{column.name}</span>
-              {disabled && <Badge variant="outline" className="text-[10px]">reserved</Badge>}
+              <span className="min-w-0 flex-1 truncate font-mono text-body-sm">{column.name}</span>
+              {disabled && <Chip variant="outline" size="xs">reserved</Chip>}
             </label>
           )
         })}
       </div>
       {availableColumns.length === 0 && (
-        <p className="text-xs text-muted-foreground">No scalar columns found in preview.</p>
+        <p className="text-body-sm text-muted-foreground">No scalar columns found in preview.</p>
       )}
     </div>
   )

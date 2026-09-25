@@ -7,7 +7,11 @@ import type { Variable, VariableType } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
-import { Input } from "@/components/ui/input"
+import { FilterBar, FilterSearch } from "@/components/ui/filter-bar"
+import { SegmentedControl } from "@/components/ui/segmented-control"
+import { CodeToken } from "@/components/primitives/code-token"
+import { PageContainer } from "@/components/primitives/page-container"
+import { PageHeader } from "@/components/primitives/page-header"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
@@ -495,9 +499,23 @@ export function VariablesTab({
   return (
     // Room under the table while the floating bulk bar is up, so it never sits
     // over the pagination or the last rows (PLAN-27).
-    <div className={cn('space-y-4', selectionActive && 'pb-40 sm:pb-20')}>
+    <PageContainer className={cn('space-y-4', selectionActive && 'pb-40 sm:pb-20')}>
       {dialog}
-      <p className="text-xs text-muted-foreground">Define template placeholders. Use <code className="bg-muted px-1 rounded">{'${var_name}'}</code> in event field values.</p>
+      {/* The shared page header (DS-1): the page had no title of its own,
+          only the Panel's 12.5px one. "New variable" matches the dialog it
+          opens (DS-29). */}
+      <PageHeader
+        eyebrow="Plan"
+        title="Variables"
+        description={<>Template placeholders: use <CodeToken>{'${var_name}'}</CodeToken> in event field values.</>}
+        actions={
+          canWrite && (
+            <Button size="sm" onClick={() => setShowForm(true)}>
+              <Plus className="size-3.5" />New variable
+            </Button>
+          )
+        }
+      />
       {!canWrite && <ReadOnlyNotice />}
 
       {showForm && (
@@ -522,17 +540,10 @@ export function VariablesTab({
       )}
 
       <Panel
-        title="Variables"
+        title="All variables"
         subtitle={variablesPending
           ? 'Loading…'
           : `${activeVariables.length} variable${activeVariables.length === 1 ? '' : 's'}`}
-        right={
-          canWrite && (
-            <Button size="sm" onClick={() => setShowForm(true)}>
-              <Plus className="mr-2 h-4 w-4" />Add variable
-            </Button>
-          )
-        }
       >
         {variablesPending ? (
           // A pending list is NOT an empty list — rendering the empty state here
@@ -560,44 +571,38 @@ export function VariablesTab({
                 beside a non-empty table, so "Unused" on a project with nothing
                 to retire replaced the whole panel — All included — with an
                 empty state, and a reload was the only way back (PLAN-23). */}
-            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  aria-label="Filter variables"
-                  className="h-8 max-w-64"
-                  placeholder="Filter by name, path or description…"
-                  value={filterText}
-                  onChange={e => changeMatchSet(() => setFilterText(e.target.value))}
-                />
-                <div className="flex items-center gap-1" role="group" aria-label="Filter by usage">
-                  {USAGE_FILTERS.map(option => (
-                    <Button
-                      key={option.value}
-                      type="button"
-                      size="sm"
-                      variant={usageFilter === option.value ? 'secondary' : 'ghost'}
-                      className="h-7 px-2 text-xs"
-                      aria-pressed={usageFilter === option.value}
-                      onClick={() => changeMatchSet(() => setUsageFilter(option.value))}
-                    >
-                      {option.label}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-              {activeVariables.length > 0 && (
-                <span className="text-xs text-muted-foreground">
-                  {matchingVariables.length === 0
+            {/* The shared filter bar (DS-15): "Search variables…" and the
+                result count on the right. The usage scope is the one
+                segmented control (DS-16) instead of a row of text buttons. */}
+            <FilterBar
+              className="px-4 py-2"
+              count={
+                activeVariables.length > 0
+                  ? `${matchingVariables.length === 0
                     ? 'No matches'
-                    : `Showing ${pageStart + 1}–${pageStart + pageVariables.length} of ${matchingVariables.length}`}
-                  {truncatedCount > 0 && ` (${truncatedCount} more not loaded)`}
-                </span>
-              )}
-            </div>
+                    : `Showing ${pageStart + 1}–${pageStart + pageVariables.length} of ${matchingVariables.length}`}${
+                    truncatedCount > 0 ? ` (${truncatedCount} more not loaded)` : ''}`
+                  : undefined
+              }
+            >
+              <FilterSearch
+                things="variables"
+                aria-label="Filter variables"
+                value={filterText}
+                onValueChange={value => changeMatchSet(() => setFilterText(value))}
+              />
+              <SegmentedControl
+                aria-label="Filter by usage"
+                size="sm"
+                value={usageFilter}
+                options={USAGE_FILTERS}
+                onChange={value => changeMatchSet(() => setUsageFilter(value))}
+              />
+            </FilterBar>
             {variablesQuery.isError && (
               // Rows are still on screen from the last answer, so the failed
               // refresh is said beside them rather than replacing them.
-              <p role="alert" className="px-4 pb-2 text-xs text-destructive">
+              <p role="alert" className="px-4 pb-2 text-body-sm text-destructive">
                 Couldn't refresh variables: {getErrorMessage(variablesQuery.error)}
               </p>
             )}
@@ -656,7 +661,7 @@ export function VariablesTab({
                     ))}
                     {pageVariables.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} className="py-6 text-center text-xs text-muted-foreground">
+                        <TableCell colSpan={7} className="py-6 text-center text-body-sm text-muted-foreground">
                           No variables match “{filterText}”.
                         </TableCell>
                       </TableRow>
@@ -666,16 +671,16 @@ export function VariablesTab({
                 {pageCount > 1 && (
                   <div className="flex items-center justify-end gap-2 px-4 py-2">
                     <Button
-                      type="button" variant="outline" size="sm" className="h-7 px-2 text-xs"
+                      type="button" variant="outline" size="sm"
                       aria-label="Previous page"
                       disabled={currentPage === 0}
                       onClick={() => goToPage(currentPage - 1)}
                     >
                       Previous
                     </Button>
-                    <span className="text-xs text-muted-foreground">Page {currentPage + 1} of {pageCount}</span>
+                    <span className="text-body-sm text-muted-foreground">Page {currentPage + 1} of {pageCount}</span>
                     <Button
-                      type="button" variant="outline" size="sm" className="h-7 px-2 text-xs"
+                      type="button" variant="outline" size="sm"
                       aria-label="Next page"
                       disabled={currentPage >= pageCount - 1}
                       onClick={() => goToPage(currentPage + 1)}
@@ -724,7 +729,7 @@ export function VariablesTab({
               </div>
             )}
             {rowActionError && (
-              <p role="alert" className="px-4 pb-3 text-sm text-destructive">{rowActionError}</p>
+              <p role="alert" className="px-4 pb-3 text-body text-destructive">{rowActionError}</p>
             )}
           </>
         )}
@@ -747,16 +752,15 @@ export function VariablesTab({
                 className={`flex items-center justify-between gap-2 px-4 py-2${v.id === focusId ? ' bg-primary/5 outline outline-1 outline-primary/40' : ''}`}
               >
                 <div className="min-w-0">
-                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{`\${${v.name}}`}</code>
+                  <CodeToken>{`\${${v.name}}`}</CodeToken>
                   {(v.bindings ?? []).length > 0 && (
-                    <span className="ml-2 truncate font-mono text-[10px] text-muted-foreground">{(v.bindings ?? []).join(' · ')}</span>
+                    <span className="ml-2 truncate font-mono text-micro text-muted-foreground">{(v.bindings ?? []).join(' · ')}</span>
                   )}
                 </div>
                 {canWrite && <div className="flex shrink-0 gap-1">
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 px-2 text-xs"
                     aria-label={`Restore variable ${v.name}`}
                     disabled={excludeMut.isPending}
                     onClick={() => {
@@ -790,6 +794,6 @@ export function VariablesTab({
         onDelete={handleBulkDelete}
         onClear={selection.clear}
       />}
-    </div>
+    </PageContainer>
   )
 }

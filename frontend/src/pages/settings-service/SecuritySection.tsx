@@ -110,7 +110,7 @@ export function SecuritySection({
           <TextInput
             value={form.security.cors_allow_origins}
             onChange={value => setField('security', 'cors_allow_origins', value)}
-            placeholder="https://app.example.com,https://admin.example.com"
+            placeholder="e.g. https://app.example.com,https://admin.example.com"
             mono
           />
         </Field>

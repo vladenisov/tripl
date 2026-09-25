@@ -1,17 +1,23 @@
 import { useId, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { List, Pencil, Plus, Trash2 } from "lucide-react"
+import { List, Pencil, Plus, Trash2, X } from "lucide-react"
 import { metaFieldsApi } from "@/api/metaFields"
 import { useActiveBranchId } from "@/hooks/useBranch"
 import type { MetaFieldDefinition, Sensitivity } from "@/types"
 import { SENSITIVITY_OPTIONS } from "@/types"
 import { SensitivityChip } from "@/components/primitives/sensitivity-chip"
 import { useConfirm } from "@/hooks/useConfirm"
-import { Badge } from "@/components/ui/badge"
+import { Chip } from "@/components/primitives/chip"
+import { PageContainer } from "@/components/primitives/page-container"
+import { PageHeader } from "@/components/primitives/page-header"
+import { FieldError } from "@/components/forms/FieldError"
+import { examplePlaceholder } from "@/components/forms/placeholders"
+import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from "@/components/forms/validation"
+import { SELECT_CLASS } from "@/components/data-sources/connection-settings"
 import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -54,6 +60,19 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const [editLinkTemplate, setEditLinkTemplate] = useState('')
   const [editSensitivity, setEditSensitivity] = useState<Sensitivity>('none')
   const { confirm, dialog } = useConfirm()
+  // Inline validation shown once Create / Save was pressed (AU-4): the forms
+  // are noValidate, so an empty required field is flagged under itself
+  // instead of by the browser's bubble on the first one only.
+  const [createSubmitted, setCreateSubmitted] = useState(false)
+  const [editSubmitted, setEditSubmitted] = useState(false)
+  const createErrors = createSubmitted
+    ? {
+        name: name.trim() ? null : REQUIRED_MESSAGE,
+        displayName: displayName.trim() ? null : REQUIRED_MESSAGE,
+        linkTemplate: displayAsLink && !linkTemplate.trim() ? REQUIRED_MESSAGE : null,
+      }
+    : { name: null, displayName: null, linkTemplate: null }
+  const editLinkError = editSubmitted && editDisplayAsLink && !editLinkTemplate.trim() ? REQUIRED_MESSAGE : null
 
   // IDs for create dialog form controls
   const createNameId = useId()
@@ -109,6 +128,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
     }, branchId),
     onSuccess: () => {
       invalidateMetaFields()
+      setCreateSubmitted(false)
       setShowForm(false); setName(''); setDisplayName(''); setFieldType('string')
       setIsRequired(false); setAllowMultiple(false); setEnumOptions([]); setEnumInput(''); setDefaultValue('')
       setDisplayAsLink(false); setLinkTemplate(''); setSensitivity('none')
@@ -149,6 +169,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   }
 
   const startEdit = (mf: MetaFieldDefinition) => {
+    setEditSubmitted(false)
     setEditingMf(mf)
     setEditDisplayName(mf.display_name)
     setEditFieldType(mf.field_type)
@@ -175,30 +196,66 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   }
 
   return (
-    <div className="space-y-4">
+    <PageContainer className="space-y-4">
       {dialog}
+      {/* The shared page header (DS-1): the page had no title of its own, only
+          the Panel's. "New meta field" names the create action the way the
+          dialog does (DS-29). */}
+      <PageHeader
+        eyebrow="Plan"
+        title="Schema & fields"
+        description="Meta fields add structured metadata to every event: a ticket link, an owner, a release."
+        actions={
+          canWrite && (
+            <Button size="sm" onClick={() => setShowForm(true)}>
+              <Plus className="size-3.5" />New meta field
+            </Button>
+          )
+        }
+      />
       {!canWrite && <ReadOnlyNotice />}
 
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
         <DialogContent>
-          <form onSubmit={e => { e.preventDefault(); createMut.mutate() }}>
-            <DialogHeader><DialogTitle>New Meta Field</DialogTitle></DialogHeader>
-            <div className="grid gap-4 py-4">
+          <form
+            noValidate
+            className="flex min-h-0 flex-col gap-4"
+            onSubmit={e => {
+              e.preventDefault()
+              setCreateSubmitted(true)
+              if (!name.trim() || !displayName.trim() || (displayAsLink && !linkTemplate.trim())) {
+                const form = e.currentTarget
+                requestAnimationFrame(() => focusFirstInvalid(form))
+                return
+              }
+              createMut.mutate()
+            }}
+          >
+            <DialogHeader><DialogTitle>New meta field</DialogTitle></DialogHeader>
+            <DialogBody className="grid gap-4">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="grid gap-2"><Label htmlFor={createNameId}>Name (e.g. jira_link)</Label><Input id={createNameId} value={name} onChange={e => setName(e.target.value)} required /></div>
-                <div className="grid gap-2"><Label htmlFor={createDisplayNameId}>Display Name</Label><Input id={createDisplayNameId} value={displayName} onChange={e => setDisplayName(e.target.value)} required /></div>
+                <div className="grid gap-2">
+                  <Label htmlFor={createNameId}>Name</Label>
+                  <Input id={createNameId} className="mono" value={name} onChange={e => setName(e.target.value)} aria-required placeholder={examplePlaceholder('jira_link')} {...invalidAria(createNameId, createErrors.name)} />
+                  <FieldError inputId={createNameId} message={createErrors.name} />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor={createDisplayNameId}>Display name</Label>
+                  <Input id={createDisplayNameId} value={displayName} onChange={e => setDisplayName(e.target.value)} aria-required placeholder={examplePlaceholder('Jira link')} {...invalidAria(createDisplayNameId, createErrors.displayName)} />
+                  <FieldError inputId={createDisplayNameId} message={createErrors.displayName} />
+                </div>
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="grid gap-2">
                   <Label htmlFor={createTypeId}>Type</Label>
-                  <select id={createTypeId} value={fieldType} onChange={e => setFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <select id={createTypeId} value={fieldType} onChange={e => setFieldType(e.target.value)} className={SELECT_CLASS}>
                     {metaFieldTypes.map(t => <option key={t}>{t}</option>)}
                   </select>
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor={createSensitivityId}>Sensitivity</Label>
-                  <select id={createSensitivityId} value={sensitivity} onChange={e => setSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <select id={createSensitivityId} value={sensitivity} onChange={e => setSensitivity(e.target.value as Sensitivity)} className={SELECT_CLASS}>
                     {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
@@ -217,7 +274,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
               </div>
               {fieldType === 'enum' && (
                 <div className="grid gap-2">
-                  <Label htmlFor={createEnumOptionsId}>Enum Options</Label>
+                  <Label htmlFor={createEnumOptionsId}>Enum options</Label>
                   <div className="flex gap-2">
                     <Input id={createEnumOptionsId} value={enumInput} onChange={e => setEnumInput(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addMetaEnumOption(enumInput, 'create') } }}
@@ -227,7 +284,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   {enumOptions.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {enumOptions.map(opt => (
-                        <Badge key={opt} variant="secondary" className="gap-1">{opt}<button type="button" aria-label={`Remove option ${opt}`} onClick={() => setEnumOptions(enumOptions.filter(o => o !== opt))} className="hover:text-destructive"><span aria-hidden="true">×</span></button></Badge>
+                        <EnumOptionChip key={opt} option={opt} onRemove={() => setEnumOptions(enumOptions.filter(o => o !== opt))} />
                       ))}
                     </div>
                   )}
@@ -240,23 +297,25 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                 </div>
                 {displayAsLink && (
                   <div className="mt-3 grid gap-2">
-                    <Label htmlFor={createLinkTemplateId}>Link Template</Label>
+                    <Label htmlFor={createLinkTemplateId}>Link template</Label>
                     <Input
                       id={createLinkTemplateId}
                       value={linkTemplate}
                       onChange={e => setLinkTemplate(e.target.value)}
-                      placeholder={`https://tracker.example.com/issues/${META_FIELD_LINK_PLACEHOLDER}`}
-                      required={displayAsLink}
+                      placeholder={examplePlaceholder(`https://tracker.example.com/issues/${META_FIELD_LINK_PLACEHOLDER}`)}
+                      aria-required={displayAsLink}
+                      {...invalidAria(createLinkTemplateId, createErrors.linkTemplate)}
                     />
-                    <p className="text-xs text-muted-foreground">
+                    <FieldError inputId={createLinkTemplateId} message={createErrors.linkTemplate} />
+                    <p className="text-body-sm text-muted-foreground">
                       Use <span className="font-mono">{META_FIELD_LINK_PLACEHOLDER}</span>. Stored values stay short, for example <span className="font-mono">TASK-123</span>.
                     </p>
                   </div>
                 )}
               </div>
-              <div className="grid gap-2"><Label htmlFor={createDefaultValueId}>Default Value (optional)</Label><Input id={createDefaultValueId} value={defaultValue} onChange={e => setDefaultValue(e.target.value)} placeholder="Optional default" /></div>
-              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
-            </div>
+              <div className="grid gap-2"><Label htmlFor={createDefaultValueId} optional>Default value</Label><Input id={createDefaultValueId} value={defaultValue} onChange={e => setDefaultValue(e.target.value)} /></div>
+              {createMut.isError && <p className="text-body text-destructive">{getErrorMessage(createMut.error)}</p>}
+            </DialogBody>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
               <Button type="submit" disabled={createMut.isPending}>Create</Button>
@@ -268,23 +327,36 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       {/* Edit dialog */}
       <Dialog open={!!editingMf} onOpenChange={v => { if (!v) setEditingMf(null) }}>
         <DialogContent>
-          <form onSubmit={e => { e.preventDefault(); if (editingMf) updateMut.mutate(editingMf.id) }}>
+          <form
+            noValidate
+            className="flex min-h-0 flex-col gap-4"
+            onSubmit={e => {
+              e.preventDefault()
+              setEditSubmitted(true)
+              if (editDisplayAsLink && !editLinkTemplate.trim()) {
+                const form = e.currentTarget
+                requestAnimationFrame(() => focusFirstInvalid(form))
+                return
+              }
+              if (editingMf) updateMut.mutate(editingMf.id)
+            }}
+          >
             <DialogHeader><DialogTitle>Edit: {editingMf?.name}</DialogTitle></DialogHeader>
-            <div className="grid gap-4 py-4">
+            <DialogBody className="grid gap-4">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="grid gap-2"><Label htmlFor={editDisplayNameId}>Display Name</Label><Input id={editDisplayNameId} value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)} /></div>
+                <div className="grid gap-2"><Label htmlFor={editDisplayNameId}>Display name</Label><Input id={editDisplayNameId} value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)} /></div>
                 <div className="grid gap-2">
                   <Label htmlFor={editTypeId}>Type</Label>
-                  <select id={editTypeId} value={editFieldType} onChange={e => setEditFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <select id={editTypeId} value={editFieldType} onChange={e => setEditFieldType(e.target.value)} className={SELECT_CLASS}>
                     {metaFieldTypes.map(t => <option key={t}>{t}</option>)}
                   </select>
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <div className="grid gap-2"><Label htmlFor={editDefaultValueId}>Default Value</Label><Input id={editDefaultValueId} value={editDefaultValue} onChange={e => setEditDefaultValue(e.target.value)} placeholder="Optional" /></div>
+                <div className="grid gap-2"><Label htmlFor={editDefaultValueId} optional>Default value</Label><Input id={editDefaultValueId} value={editDefaultValue} onChange={e => setEditDefaultValue(e.target.value)} placeholder="Optional" /></div>
                 <div className="grid gap-2">
                   <Label htmlFor={editSensitivityId}>Sensitivity</Label>
-                  <select id={editSensitivityId} value={editSensitivity} onChange={e => setEditSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <select id={editSensitivityId} value={editSensitivity} onChange={e => setEditSensitivity(e.target.value as Sensitivity)} className={SELECT_CLASS}>
                     {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
@@ -302,14 +374,14 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                 </div>
               </div>
               {editingMf?.allow_multiple && !(canEditAllowMultiple && editAllowMultiple) && (
-                <p className="text-xs text-warning">
+                <p className="text-body-sm text-warning">
                   Values already stored stay on their events. The next edit of one of those events
                   keeps the first value only.
                 </p>
               )}
               {editFieldType === 'enum' && (
                 <div className="grid gap-2">
-                  <Label htmlFor={editEnumOptionsId}>Enum Options</Label>
+                  <Label htmlFor={editEnumOptionsId}>Enum options</Label>
                   <div className="flex gap-2">
                     <Input id={editEnumOptionsId} value={editEnumInput} onChange={e => setEditEnumInput(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addMetaEnumOption(editEnumInput, 'edit') } }}
@@ -319,7 +391,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   {editEnumOptions.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {editEnumOptions.map(opt => (
-                        <Badge key={opt} variant="secondary" className="gap-1">{opt}<button type="button" aria-label={`Remove option ${opt}`} onClick={() => setEditEnumOptions(editEnumOptions.filter(o => o !== opt))} className="hover:text-destructive"><span aria-hidden="true">×</span></button></Badge>
+                        <EnumOptionChip key={opt} option={opt} onRemove={() => setEditEnumOptions(editEnumOptions.filter(o => o !== opt))} />
                       ))}
                     </div>
                   )}
@@ -332,22 +404,24 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                 </div>
                 {editDisplayAsLink && (
                   <div className="mt-3 grid gap-2">
-                    <Label htmlFor={editLinkTemplateId}>Link Template</Label>
+                    <Label htmlFor={editLinkTemplateId}>Link template</Label>
                     <Input
                       id={editLinkTemplateId}
                       value={editLinkTemplate}
                       onChange={e => setEditLinkTemplate(e.target.value)}
-                      placeholder={`https://tracker.example.com/issues/${META_FIELD_LINK_PLACEHOLDER}`}
-                      required={editDisplayAsLink}
+                      placeholder={examplePlaceholder(`https://tracker.example.com/issues/${META_FIELD_LINK_PLACEHOLDER}`)}
+                      aria-required={editDisplayAsLink}
+                      {...invalidAria(editLinkTemplateId, editLinkError)}
                     />
-                    <p className="text-xs text-muted-foreground">
+                    <FieldError inputId={editLinkTemplateId} message={editLinkError} />
+                    <p className="text-body-sm text-muted-foreground">
                       Use <span className="font-mono">{META_FIELD_LINK_PLACEHOLDER}</span> to inject the stored value into the final URL.
                     </p>
                   </div>
                 )}
               </div>
-              {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
-            </div>
+              {updateMut.isError && <p className="text-body text-destructive">{getErrorMessage(updateMut.error)}</p>}
+            </DialogBody>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setEditingMf(null)}>Cancel</Button>
               <Button type="submit" disabled={updateMut.isPending}>Save</Button>
@@ -357,22 +431,15 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       </Dialog>
 
       <Panel
-        title="Schema & fields"
+        title="Meta fields"
         subtitle={metaFieldsQuery.isPending
           ? 'Loading…'
           : `${metaFields.length} field${metaFields.length === 1 ? '' : 's'}`}
-        right={
-          canWrite && (
-            <Button size="sm" onClick={() => setShowForm(true)}>
-              <Plus className="mr-2 h-4 w-4" />Add meta field
-            </Button>
-          )
-        }
       >
         {metaFieldsQuery.isError && metaFieldsQuery.data !== undefined && (
           // A failed REFRESH keeps the rows on screen: replacing them with an
           // error would unmount whatever is being edited (review 204).
-          <p role="alert" className="px-4 py-2 text-xs text-destructive">
+          <p role="alert" className="px-4 py-2 text-body-sm text-destructive">
             Couldn't refresh meta fields: {getErrorMessage(metaFieldsQuery.error)}
           </p>
         )}
@@ -411,27 +478,27 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
             <TableBody>
               {metaFields.map((mf: MetaFieldDefinition) => (
                 <TableRow key={mf.id}>
-                  <TableCell className="font-mono text-xs">{mf.name}</TableCell>
-                  <TableCell className="text-xs">
+                  <TableCell className="font-mono text-body-sm">{mf.name}</TableCell>
+                  <TableCell className="text-body-sm">
                     <div className="space-y-1">
                       <div className="text-muted-foreground">{mf.display_name}</div>
                       {mf.link_template && (
-                        <div className="font-mono text-[11px] text-muted-foreground/80">
+                        <div className="font-mono text-caption text-muted-foreground/80">
                           Link: {mf.link_template}
                         </div>
                       )}
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline" className="text-[10px]">{mf.field_type}</Badge>
-                    {mf.field_type === 'enum' && mf.enum_options && <span className="text-muted-foreground text-[10px] ml-1">({mf.enum_options.length})</span>}
-                    {mf.allow_multiple && <span className="text-muted-foreground text-[10px] ml-1" title="Holds several values on one event">multi</span>}
+                    <Chip variant="outline" size="xs">{mf.field_type}</Chip>
+                    {mf.field_type === 'enum' && mf.enum_options && <span className="text-muted-foreground text-micro ml-1">({mf.enum_options.length})</span>}
+                    {mf.allow_multiple && <span className="text-muted-foreground text-micro ml-1" title="Holds several values on one event">multi</span>}
                   </TableCell>
                   <TableCell>
                     <SensitivityChip value={mf.sensitivity} />
                   </TableCell>
-                  <TableCell>{mf.is_required ? <span className="text-success font-medium text-xs">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{mf.default_value ?? '—'}</TableCell>
+                  <TableCell>{mf.is_required ? <span className="text-success font-medium text-body-sm">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
+                  <TableCell className="text-body-sm text-muted-foreground">{mf.default_value ?? '—'}</TableCell>
                   <TableCell>
                     {canWrite && (
                       <div className="flex gap-1 justify-end">
@@ -445,7 +512,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
             </TableBody>
           </Table>
           {deleteMut.isError && (
-            <p role="alert" className="px-4 py-2 text-sm text-destructive">
+            <p role="alert" className="px-4 py-2 text-body text-destructive">
               Could not delete the meta field: {getErrorMessage(deleteMut.error)}
             </p>
           )}
@@ -456,7 +523,27 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
           </div>
         )}
       </Panel>
-    </div>
+    </PageContainer>
+  )
+}
+
+/**
+ * An enum option with its remove button: the lucide X, not a bare "×" glyph,
+ * in a hit area that grows on phones (AU-39).
+ */
+function EnumOptionChip({ option, onRemove }: { option: string; onRemove: () => void }) {
+  return (
+    <Chip variant="outline" size="md" className="mono gap-1 pr-0.5 font-normal max-sm:h-8">
+      {option}
+      <button
+        type="button"
+        aria-label={`Remove option ${option}`}
+        onClick={onRemove}
+        className="grid size-5 place-items-center rounded-full text-fg-muted hover:bg-surface-hover hover:text-danger max-sm:size-7"
+      >
+        <X className="size-3" aria-hidden="true" />
+      </button>
+    </Chip>
   )
 }
 

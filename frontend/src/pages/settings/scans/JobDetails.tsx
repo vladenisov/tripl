@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Card } from '@/components/ui/card'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import type { ScanJob } from '@/types'
 import { formatDateTime } from '@/lib/datetime'
 import { friendlyScanError } from '@/lib/scanError'
@@ -48,7 +48,8 @@ function CounterValue({
   scanConfigId: string
   color: string
 }) {
-  const body = <span className="text-lg font-bold" style={{ color }}>{value}</span>
+  // Sized by the MiniStat it sits in; only the tone is its own.
+  const body = <span style={{ color }}>{value}</span>
   if (value <= 0) return body
   const link = TARGET_LINK[target]
   return (
@@ -136,9 +137,9 @@ export function JobDetails({
 
   return (
     <div className="space-y-3 bg-muted/30 p-4">
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Run details</h4>
+      <h4 className="text-body-sm font-semibold uppercase tracking-wide text-muted-foreground">Run details</h4>
       {error && (
-        <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive">
+        <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-body-sm text-destructive">
           {error.message}
           <ScanErrorTechnicalDetails technical={error.technical} />
         </div>
@@ -146,7 +147,7 @@ export function JobDetails({
       {summary && (
         <>
           {(summary.time_from || summary.time_to) && (
-            <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
+            <div className="rounded-md border bg-background p-3 text-body-sm text-muted-foreground">
               <span className="font-medium text-foreground">
                 {summary.mode === 'metrics_replay' ? 'Replay period' : 'Collection period'}
               </span>
@@ -158,7 +159,7 @@ export function JobDetails({
           <ReplayChunkProgress summary={summary} />
           {report.length > 0 && (
             <div className="rounded-md border bg-background p-3">
-              <h5 className="mb-1.5 text-xs font-semibold text-foreground">What this run did</h5>
+              <h5 className="mb-1.5 text-body-sm font-semibold text-foreground">What this run did</h5>
               <ul className="m-0 list-none space-y-1 p-0">
                 {report.map(line => (
                   <RunReportSentence key={line.id} line={line} slug={slug} scanConfigId={scanConfigId} />
@@ -171,47 +172,50 @@ export function JobDetails({
               type="button"
               onClick={() => setCountersOpen(open => !open)}
               aria-expanded={countersOpen}
-              className="text-[12px] font-medium text-muted-foreground hover:underline"
+              className="text-body-sm font-medium text-muted-foreground hover:underline"
             >
               {countersOpen ? 'Hide raw counters' : 'Show raw counters'}
             </button>
           </div>
           {countersOpen && (
-            <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-3 xl:grid-cols-5">
-              <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--success)' }}>{summary.events_created ?? 0}</div><div className="text-muted-foreground">Events created</div></Card>
-              <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--info)' }}>{summary.variables_created ?? 0}</div><div className="text-muted-foreground">Variables created</div></Card>
-              <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.events_skipped ?? 0}</div><div className="text-muted-foreground">Events skipped</div></Card>
-              <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--accent)' }}>{summary.columns_analyzed ?? 0}</div><div className="text-muted-foreground">Columns analyzed</div></Card>
+            // The one KPI strip (DS-5) instead of a grid of centred Card tiles
+            // with 18px bold figures.
+            <MiniStatStrip boxed>
+              <MiniStat label="Events created" value={summary.events_created ?? 0} valueTone="success" />
+              <MiniStat label="Variables created" value={summary.variables_created ?? 0} valueTone="info" />
+              <MiniStat label="Events skipped" value={summary.events_skipped ?? 0} />
+              <MiniStat label="Columns analyzed" value={summary.columns_analyzed ?? 0} valueTone="accent" />
               {summary.breakdown_event_metrics != null && (
-                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.breakdown_event_metrics}</div><div className="text-muted-foreground">Event breakdowns</div></Card>
+                <MiniStat label="Event breakdowns" value={summary.breakdown_event_metrics} />
               )}
               {summary.distribution_drifts != null && (
-                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.distribution_drifts}</div><div className="text-muted-foreground">Distribution rows</div></Card>
+                <MiniStat label="Distribution rows" value={summary.distribution_drifts} />
               )}
               {summary.json_paths_sampled != null && (
-                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.json_paths_sampled}</div><div className="text-muted-foreground">Paths sampled</div></Card>
+                <MiniStat label="Paths sampled" value={summary.json_paths_sampled} />
               )}
               {/* Sampled high with zero coming back is the signature of a
                   failing adapter (the sampler swallows its errors so the run
                   still completes) — the pair has to be visible together. */}
               {summary.json_paths_with_samples != null && (
-                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.json_paths_with_samples}</div><div className="text-muted-foreground">Paths with samples</div></Card>
+                <MiniStat label="Paths with samples" value={summary.json_paths_with_samples} />
               )}
               {summary.variable_values_written != null && (
-                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.variable_values_written}</div><div className="text-muted-foreground">Values written</div></Card>
+                <MiniStat label="Values written" value={summary.variable_values_written} />
               )}
               {summary.variable_contexts_unfilled != null && (
-                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.variable_contexts_unfilled}</div><div className="text-muted-foreground">Contexts unfilled</div></Card>
+                <MiniStat label="Contexts unfilled" value={summary.variable_contexts_unfilled} />
               )}
               {/* Reads next to Variables created on purpose: a scheduled run now
                   both mints and retires, and the pair is the only way to tell a
                   catalog that is growing from one holding steady (tripl-bh1q). */}
               {summary.variables_retired != null && (
-                <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.variables_retired}</div><div className="text-muted-foreground">Variables retired</div></Card>
+                <MiniStat label="Variables retired" value={summary.variables_retired} />
               )}
               {summary.signals_added != null && (
-                <Card className="p-3 text-center">
-                  <div>
+                <MiniStat
+                  label="Signals added"
+                  value={
                     <CounterValue
                       value={summary.signals_added}
                       target="anomalies"
@@ -219,13 +223,13 @@ export function JobDetails({
                       scanConfigId={scanConfigId}
                       color="var(--danger)"
                     />
-                  </div>
-                  <div className="text-muted-foreground">Signals added</div>
-                </Card>
+                  }
+                />
               )}
               {summary.alerts_queued != null && (
-                <Card className="p-3 text-center">
-                  <div>
+                <MiniStat
+                  label="Alerts queued"
+                  value={
                     <CounterValue
                       value={summary.alerts_queued}
                       target="alerts"
@@ -233,18 +237,17 @@ export function JobDetails({
                       scanConfigId={scanConfigId}
                       color="var(--warning)"
                     />
-                  </div>
-                  <div className="text-muted-foreground">Alerts queued</div>
-                </Card>
+                  }
+                />
               )}
-            </div>
+            </MiniStatStrip>
           )}
           {summary.details && summary.details.length > 0 && (
             <div>
-              <h5 className="mb-1 text-xs font-semibold text-muted-foreground">Log</h5>
+              <h5 className="mb-1 text-body-sm font-semibold text-muted-foreground">Log</h5>
               <div className="max-h-48 overflow-y-auto rounded-lg border bg-background p-2">
                 {summary.details.map((detail, i) => (
-                  <div key={i} className="mono border-b border-border/50 py-0.5 text-xs text-muted-foreground last:border-0">{detail}</div>
+                  <div key={i} className="mono border-b border-border/50 py-0.5 text-body-sm text-muted-foreground last:border-0">{detail}</div>
                 ))}
               </div>
             </div>

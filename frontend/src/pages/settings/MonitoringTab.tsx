@@ -10,6 +10,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { ReadOnlyNotice } from "@/components/read-only-notice"
+import { PageContainer } from "@/components/primitives/page-container"
+import { PageHeader } from "@/components/primitives/page-header"
 import { useConfirm } from "@/hooks/useConfirm"
 import { SILENT_ERROR_META } from "@/lib/errorFeedback"
 import { useCanWriteProject } from "@/lib/permissions"
@@ -130,9 +132,9 @@ function NumberSetting({
         }}
       />
       {rangeError ? (
-        <p id={hintId} role="alert" className="text-xs text-destructive">{rangeError}</p>
+        <p id={hintId} role="alert" className="text-body-sm text-destructive">{rangeError}</p>
       ) : (
-        <p role="status" className="min-h-4 text-xs text-muted-foreground">
+        <p role="status" className="min-h-4 text-body-sm text-muted-foreground">
           {status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : ''}
         </p>
       )}
@@ -192,10 +194,10 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
   return (
     <Card>
       {dialog}
-      <CardContent className="p-6 space-y-4">
+      <CardContent className="space-y-4">
         <div>
-          <Label className="text-sm font-medium">Scope overrides</Label>
-          <p className="text-xs text-muted-foreground mt-1">
+          <Label className="text-body font-medium">Scope overrides</Label>
+          <p className="text-body-sm text-muted-foreground mt-1">
             Marking an alert a <strong>false positive</strong> makes the detector stricter on that
             scope alone — permanently. These overrides replace the sigma threshold and min expected
             count above for the scopes listed. Removing one puts that scope back on the project
@@ -210,7 +212,7 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
             load that failed, and it carries the retry this card needs: it is the
             only undo the permanent ratchet has. */}
         {isPending ? (
-          <p className="text-sm text-muted-foreground">Loading scope overrides…</p>
+          <p className="text-body text-muted-foreground">Loading scope overrides…</p>
         ) : isError && data === undefined ? (
           <ErrorState
             compact
@@ -222,7 +224,7 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
             retryLabel="Retry"
           />
         ) : overrides.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-body text-muted-foreground">
             No scope has been tightened. Every scope uses the project settings above.
           </p>
         ) : (
@@ -230,11 +232,11 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
             {overrides.map(override => (
               <li
                 key={override.id}
-                className="flex items-center justify-between gap-4 p-3 text-sm"
+                className="flex items-center justify-between gap-4 p-3 text-body"
               >
                 <div className="min-w-0">
                   <p className="font-medium truncate">{override.scope_name || override.scope_ref}</p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-body-sm text-muted-foreground">
                     {SCOPE_TYPE_LABELS[override.scope_type] ?? override.scope_type}
                     {override.scan_config_name ? ` · ${override.scan_config_name}` : ''} · sigma{' '}
                     {override.sigma_threshold} · min expected {override.min_expected_count} ·{' '}
@@ -259,7 +261,7 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
         )}
 
         {removeMut.isError && (
-          <p className="text-sm text-destructive">{getErrorMessage(removeMut.error)}</p>
+          <p className="text-body text-destructive">{getErrorMessage(removeMut.error)}</p>
         )}
       </CardContent>
     </Card>
@@ -311,7 +313,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
   }
 
   if (!settings) {
-    return <div role="status" className="text-sm text-muted-foreground">Loading detection settings…</div>
+    return <div role="status" className="text-body text-muted-foreground">Loading detection settings…</div>
   }
 
   // The settling allowance and the open signal window constrain each other: a
@@ -330,26 +332,24 @@ export function MonitoringTab({ slug }: { slug: string }) {
   )
 
   return (
-    <div className="space-y-4">
+    <PageContainer className="space-y-4">
       {/* "Detection settings" — the same words as the buttons on the Anomalies
           and Monitors pages that lead here. The surface used to call itself
           "Monitoring" while its only card called itself "Anomaly Detection",
           giving one thing three names (tripl-jfm3.39). Detection raises
-          SIGNALS; monitors are the alert rules layered on top. */}
-      <div>
-        <h2 className="text-lg font-semibold">Detection settings</h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          How tripl detects signals — spikes and drops in volume — across every scan in this
-          project. Scans use these settings automatically when they have both a time column and a
-          collection interval.
-        </p>
-      </div>
+          SIGNALS; monitors are the alert rules layered on top. The shared
+          page header gives it a real h1 (DS-1). */}
+      <PageHeader
+        eyebrow="Observe"
+        title="Detection settings"
+        description="How tripl detects signals — spikes and drops in volume — across every scan in this project. Scans use these settings automatically when they have both a time column and a collection interval."
+      />
 
       {!canWrite && <ReadOnlyNotice />}
       {settingsQuery.isError && (
         // A failed refresh after an autosave keeps the settings on screen
         // rather than replacing the whole tab (review 204).
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className="text-body-sm text-destructive">
           Couldn't refresh detection settings: {getErrorMessage(settingsQuery.error)}
         </p>
       )}
@@ -358,17 +358,17 @@ export function MonitoringTab({ slug }: { slug: string }) {
           and Checkbox buttons included; `contents` keeps it out of the layout. */}
       <fieldset disabled={!canWrite} className="contents">
         <Card>
-          <CardContent className="p-6 space-y-5">
+          <CardContent className="space-y-5">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <Label className="text-sm font-medium">Detection</Label>
-                <p className="text-xs text-muted-foreground mt-1">
+                <Label className="text-body font-medium">Detection</Label>
+                <p className="text-body-sm text-muted-foreground mt-1">
                   Scans inherit these settings. Turning detection off stops new signals being
                   raised; monitors and alert routing are configured under Alerting.
                 </p>
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-xs font-medium text-muted-foreground min-w-16 text-right">
+                <span className="text-body-sm font-medium text-muted-foreground min-w-16 text-right">
                   {settings.anomaly_detection_enabled ? 'Enabled' : 'Disabled'}
                 </span>
                 <Switch
@@ -393,34 +393,34 @@ export function MonitoringTab({ slug }: { slug: string }) {
                 preflight does not reset and which would stop the four-column grid
                 inside from ever shrinking. */}
             <fieldset className="min-w-0">
-              <legend className="text-sm font-medium">Score these scopes</legend>
-              <p className="text-xs text-muted-foreground mt-1 mb-3">
+              <legend className="text-body font-medium">Score these scopes</legend>
+              <p className="text-body-sm text-muted-foreground mt-1 mb-3">
                 Detection scores only the scopes checked here. Unchecking one stops new signals
                 being raised for it; signals already raised stay on the Anomalies page.
               </p>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <label className="flex items-center gap-2 text-sm">
+                <label className="flex items-center gap-2 text-body">
                   <Checkbox
                     checked={settings.detect_project_total}
                     onCheckedChange={checked => updateMut.mutate({ detect_project_total: !!checked })}
                   />
                   Project total
                 </label>
-                <label className="flex items-center gap-2 text-sm">
+                <label className="flex items-center gap-2 text-body">
                   <Checkbox
                     checked={settings.detect_event_types}
                     onCheckedChange={checked => updateMut.mutate({ detect_event_types: !!checked })}
                   />
                   Event types
                 </label>
-                <label className="flex items-center gap-2 text-sm">
+                <label className="flex items-center gap-2 text-body">
                   <Checkbox
                     checked={settings.detect_events}
                     onCheckedChange={checked => updateMut.mutate({ detect_events: !!checked })}
                   />
                   Events
                 </label>
-                <label className="flex items-center gap-2 text-sm">
+                <label className="flex items-center gap-2 text-body">
                   <Checkbox
                     checked={settings.detect_metrics}
                     onCheckedChange={checked => updateMut.mutate({ detect_metrics: !!checked })}
@@ -472,7 +472,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   metrics, and a MetricDefinition carries its own interval
                   independent of any scan config — so a daily metric under an
                   hourly scan makes 14 buckets fourteen DAYS. */}
-              <p className="text-xs text-muted-foreground md:col-span-2">
+              <p className="text-body-sm text-muted-foreground md:col-span-2">
                 A bucket is one collection interval of the series being scored. On an hourly
                 scan, {settings.baseline_window_buckets} buckets of baseline is{' '}
                 {settings.baseline_window_buckets} hours; on a daily catalog metric it is{' '}
@@ -494,7 +494,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   value={settings.sigma_threshold}
                   onCommit={v => commit({ sigma_threshold: v })}
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-body-sm text-muted-foreground">
                   How far a bucket has to sit from its baseline before it is flagged, counted in
                   standard deviations of that baseline. Raise it for a quieter detector; lower it
                   to catch smaller moves, at the cost of more signals.
@@ -508,7 +508,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   value={settings.min_expected_count}
                   onCommit={v => commit({ min_expected_count: v })}
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-body-sm text-muted-foreground">
                   A floor on the baseline, not on the bucket: any bucket whose baseline expects
                   fewer than {settings.min_expected_count} is skipped, so a quiet series cannot
                   raise a spike off a handful of events. 0 scores every bucket.
@@ -523,7 +523,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   value={settings.recent_signal_window_hours}
                   onCommit={v => commit({ recent_signal_window_hours: v })}
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-body-sm text-muted-foreground">
                   How long an anomaly keeps counting as an open signal on the Anomalies page
                   and in the sidebar badge. Between {windowFloorHours} and 720 hours (30 days).
                   Alert delivery is unaffected. The floor is the settling allowance beside it
@@ -544,7 +544,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                     needs to set the number is kept — both bounds and why they
                     exist — because these are what stand between them and the
                     backend's 422; what went is the second telling of it. */}
-                <p className="text-xs text-muted-foreground">
+                <p className="text-body-sm text-muted-foreground">
                   How long a warehouse keeps delivering rows for a bucket after that bucket
                   closes. Those buckets are still collected and charted but raise no signal
                   until the allowance passes, so a half-delivered bucket is not read as a
@@ -556,19 +556,19 @@ export function MonitoringTab({ slug }: { slug: string }) {
               </div>
             </div>
 
-            <div className="rounded-lg border bg-muted/30 p-4 text-xs text-muted-foreground">
+            <div className="rounded-lg border bg-muted/30 p-4 text-body-sm text-muted-foreground">
               Markers appear only when the latest bucket for a scope is anomalous.
               After changing these settings, run the next metrics collection to recalculate signals.
             </div>
 
             {updateMut.isError && (
-              <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>
+              <p className="text-body text-destructive">{getErrorMessage(updateMut.error)}</p>
             )}
           </CardContent>
         </Card>
       </fieldset>
 
       <ScopeOverridesCard slug={slug} canWrite={canWrite} />
-    </div>
+    </PageContainer>
   )
 }

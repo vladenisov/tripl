@@ -15,7 +15,12 @@ import { UserAvatar } from '@/components/ui/user-avatar'
 import { SETTINGS_CONTENT_ID } from './landmarks'
 import { sectionPathForUrl, visibleGroupsAll } from './nav'
 import { SettingsCommandPalette } from './settings-palette'
-import { LEAVE_CONFIRMED, UnsavedChangesProvider, type UnsavedWork } from './unsaved-changes'
+import {
+  LEAVE_CONFIRMED,
+  UNSAVED_CONFIRM_COPY,
+  UnsavedChangesProvider,
+  type UnsavedWork,
+} from './unsaved-changes'
 import type { Project } from '@/types'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
 
@@ -198,9 +203,10 @@ export function SettingsLayout({
       const work = draftAtRisk(settingsPath)
       if (!work) return true
       return confirm({
-        title: 'Leave with unsaved changes?',
+        // The one unsaved-changes wording (AU-42): "Keep editing" / "Discard
+        // changes", the same dialog a form's own Cancel asks.
+        ...UNSAVED_CONFIRM_COPY,
         message: work.message,
-        confirmLabel: 'Leave',
         variant: 'danger',
       })
     },
@@ -350,14 +356,14 @@ export function SettingsLayout({
             // focus never triggered (DS-21).
             className="-ml-1 inline-flex items-center gap-[7px] rounded-md px-2 py-1 pr-2 text-body-sm text-fg-muted no-underline transition-colors hover:text-fg focus-visible:text-fg"
           >
-            <ChevronLeft className="h-[15px] w-[15px]" />
+            <ChevronLeft className="size-4" />
             <span>Back to project</span>
           </Link>
           {/* Deliberately not a heading: the rail is chrome, and an <h2> here
               sat above every page's <h1> in DOM order, so the heading outline
               opened with a level-2 skip (tripl-jfm3.69). It names the nav
               landmark instead. */}
-          <div id={RAIL_TITLE_ID} className="mx-1 mt-2.5 text-[17px] font-semibold tracking-[-0.01em]">
+          <div id={RAIL_TITLE_ID} className="mx-1 mt-2.5 text-heading font-semibold tracking-[-0.01em]">
             Settings
           </div>
           <p className="mx-1 mt-1 text-caption leading-snug" style={{ color: 'var(--fg-subtle)' }}>
@@ -375,13 +381,13 @@ export function SettingsLayout({
                     {group.label}
                   </span>
                   <span
-                    className="text-[10px] uppercase tracking-[0.05em]"
+                    className="micro-label"
                     style={{ color: 'var(--fg-faint)' }}
                   >
                     {subFor(group)}
                   </span>
                 </div>
-                <p className="mt-0.5 text-2xs leading-snug" style={{ color: 'var(--fg-faint)' }}>
+                <p className="mt-0.5 text-micro leading-snug" style={{ color: 'var(--fg-faint)' }}>
                   {group.desc}
                 </p>
               </div>
@@ -412,12 +418,14 @@ export function SettingsLayout({
                       // stale fill when the active item changed under the
                       // pointer and never answered keyboard focus (DS-21).
                       className={
-                        'flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-body-sm font-medium no-underline transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover ' +
+                        // 40px rows in the phone drawer, the dense 31px rail
+                        // from md up (ST-12).
+                        'flex items-center gap-2 rounded-md px-[9px] py-2.5 md:py-[7px] text-left text-body-sm font-medium no-underline transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover ' +
                         (active ? 'bg-surface-hover text-fg' : 'text-fg-muted')
                       }
                     >
                       <Icon
-                        className="h-[15px] w-[15px] shrink-0"
+                        className="size-4 shrink-0"
                         style={{ color: active ? 'var(--accent)' : 'var(--fg-subtle)' }}
                       />
                       <span className="flex-1">{item.label}</span>
@@ -446,11 +454,11 @@ export function SettingsLayout({
         >
           <UserAvatar name={auth.user?.name ?? auth.user?.email} />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[12px] font-medium leading-[1.1]">
+            <div className="truncate text-body-sm font-medium leading-[1.1]">
               {auth.user?.name ?? auth.user?.email}
             </div>
             <div
-              className="mt-px truncate text-2xs leading-[1.1]"
+              className="mt-px truncate text-micro leading-[1.1]"
               style={{ color: 'var(--fg-subtle)' }}
             >
               {auth.user?.role ? capitalize(auth.user.role) : 'Signed in'}
@@ -462,9 +470,9 @@ export function SettingsLayout({
             aria-label="Sign out"
             disabled={auth.isLoggingOut}
             onClick={signOut}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-subtle transition-colors hover:text-fg focus-visible:text-fg disabled:opacity-50"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-fg-subtle transition-colors hover:text-fg focus-visible:text-fg disabled:opacity-50 md:h-8 md:w-8"
           >
-            <LogOut className="h-3.5 w-3.5" />
+            <LogOut className="size-4" />
           </button>
         </div>
       </aside>
@@ -501,14 +509,16 @@ export function SettingsLayout({
             aria-expanded={railOpen}
             aria-controls={RAIL_ID}
             onClick={openRail}
-            className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
+            className="flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
             <Menu className="h-4 w-4" />
           </button>
           <span className="text-body font-semibold">Settings</span>
         </div>
-        <div className="mx-auto max-w-[768px] px-4 pb-24 pt-6 sm:px-6 md:px-10 md:pt-10">
+        {/* The narrow content width every form and settings page shares
+            (DS-3), left-aligned against the rail instead of floating centred. */}
+        <div className="max-w-[880px] px-4 pb-24 pt-6 sm:px-6 md:px-10 md:pt-10">
           <UnsavedChangesProvider value={unsavedChanges}>{children}</UnsavedChangesProvider>
         </div>
       </main>

@@ -465,14 +465,16 @@ describe('EventRow single saturated signal indicator', () => {
   // sparkline dot). The row now surfaces ONE act-on-me affordance — the signal
   // chip — so a single incident does not read as many. (tripl-dmch.12)
   //
-  // The chip reads "Live", never "Firing": Firing belongs to monitors (alert
+  // The chip reads "Open", never "Firing": Firing belongs to monitors (alert
   // rules), and 30 rows saying "Firing" contradicted a Monitors page that
-  // correctly said "No monitors yet" (tripl-jfm3.4).
-  it('renders the Live signal chip as the single indicator and drops the SignalLink arrow', () => {
+  // correctly said "No monitors yet" (tripl-jfm3.4). Nor "Live": that is the
+  // green lifecycle status one column over (EV-5 / DS-7).
+  it('renders the Open signal chip as the single indicator and drops the SignalLink arrow', () => {
     renderRow(makeEvent({ monitored: true }), windowSeries(10, 20), makeSignal())
 
     // The one kept, saturated affordance: the labelled Signal-cell chip.
-    expect(screen.getByText('Live')).toBeInTheDocument()
+    expect(screen.getByText('Open')).toBeInTheDocument()
+    expect(screen.queryByText('Live')).not.toBeInTheDocument()
     expect(screen.queryByText('Firing')).not.toBeInTheDocument()
     // The redundant SignalLink arrow (previously aria-labelled from the signal
     // tone title) is removed, so it no longer double-signals the same incident.
@@ -489,7 +491,7 @@ describe('EventRow single saturated signal indicator', () => {
     )
     renderRow(makeEvent({ monitored: true }), withAnomaly)
 
-    expect(screen.queryByText('Live')).not.toBeInTheDocument()
+    expect(screen.queryByText('Open')).not.toBeInTheDocument()
     // Covered but quiet still reads as "Monitored" (a monitor exists), not a signal.
     expect(screen.getByText('Monitored')).toBeInTheDocument()
   })
@@ -567,5 +569,15 @@ describe('EventRow schema drift (EVT-33)', () => {
     renderRow({ ...makeEvent(), drift_count: 4 } as EventListItem, [])
 
     expect(screen.queryByRole('button', { name: /schema drift/, hidden: true })).toBeNull()
+  })
+})
+
+describe('EventRow name typography (DS-17 / EV-10)', () => {
+  it('sets the display name in the UI sans, not mono', () => {
+    renderRow(makeEvent({ name: 'Home Screen View' }), [])
+
+    const link = screen.getByRole('link', { name: 'Home Screen View' })
+    expect(link).not.toHaveClass('mono')
+    expect(link).not.toHaveClass('font-mono')
   })
 })

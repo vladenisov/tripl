@@ -1,17 +1,18 @@
-import { useState, type Dispatch, type SetStateAction } from "react"
+import { useRef, useState, type Dispatch, type SetStateAction } from "react"
 import { History } from "lucide-react"
 
 import { MAX_ALERT_RULE_NAME_LENGTH } from "@/api/alerting"
 import type { AlertDestination, AlertScopeReadiness, EventType, ScanConfig } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useDirtySinceOpen, useUnsavedDialogGuard } from "@/hooks/useUnsavedChangesGuard"
+import { FieldError } from "@/components/forms/FieldError"
+import { REQUIRED_MESSAGE, focusFirstInvalid } from "@/components/forms/validation"
 
-import { FieldError } from "./FieldError"
 import { fieldErrorProps, splitApiFieldErrors } from "./fieldErrors"
 import { FilterEditor } from "./FilterEditor"
 import { InertScopeNotice } from "./InertScopeNotice"
@@ -164,13 +165,27 @@ export function RuleEditorDialog({
   const server = splitApiFieldErrors(isError ? error : null, RULE_FORM_FIELDS, RULE_FIELD_LABELS)
   const numericError = (field: RuleNumericField) =>
     (submitAttempted ? problems.numeric[field] : undefined) ?? server.fields[field]
+  // The name was the one field left to the browser's `required` bubble, which
+  // named only itself and vanished on the next click (AL-28). It is refused
+  // here, inline, like every other field of this form.
+  const nameProblem = ruleForm.name.trim() ? undefined : REQUIRED_MESSAGE
+  const nameError = (submitAttempted ? nameProblem : undefined) ?? server.fields.name
+  const blocked = hasRuleFormProblems(problems) || nameProblem !== undefined
   const hasShownProblems =
     problems.scopes !== null
     || problems.direction !== null
-    || (submitAttempted && hasRuleFormProblems(problems))
+    || (submitAttempted && blocked)
+  const formRef = useRef<HTMLFormElement>(null)
   const submit = () => {
     setSubmitAttempted(true)
-    if (hasRuleFormProblems(problems)) return
+    if (blocked) {
+      // The body scrolls under a fixed header and footer (AL-4), so a refused
+      // submit takes the reader to the first field it highlighted.
+      requestAnimationFrame(() => {
+        if (formRef.current) focusFirstInvalid(formRef.current)
+      })
+      return
+    }
     onSubmit()
   }
 
@@ -210,11 +225,19 @@ export function RuleEditorDialog({
           }
         }}
       >
-        <form onSubmit={event => { event.preventDefault(); submit() }}>
+        {/* `noValidate`: every field is checked by the form itself and named
+            inline (AL-28). Only the body scrolls; the title and the actions
+            stay on screen (AL-4). */}
+        <form
+          ref={formRef}
+          noValidate
+          className="flex min-h-0 flex-col gap-4"
+          onSubmit={event => { event.preventDefault(); submit() }}
+        >
           <DialogHeader>
-            <DialogTitle>{isEditing ? 'Edit Alert Rule' : 'New Alert Rule'}</DialogTitle>
+            <DialogTitle>{isEditing ? 'Edit alert rule' : 'New alert rule'}</DialogTitle>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
+          <DialogBody className="grid gap-4 py-1">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="grid gap-2">
                 <Label htmlFor="rule-name">Name</Label>
@@ -223,10 +246,10 @@ export function RuleEditorDialog({
                   maxLength={MAX_ALERT_RULE_NAME_LENGTH}
                   value={ruleForm.name}
                   onChange={event => setRuleForm(current => ({ ...current, name: event.target.value }))}
-                  required
-                  {...fieldErrorProps('rule-name', server.fields.name)}
+                  aria-required="true"
+                  {...fieldErrorProps('rule-name', nameError)}
                 />
-                <FieldError inputId="rule-name" message={server.fields.name} />
+                <FieldError inputId="rule-name" message={nameError} />
               </div>
               {/* The text in the box, not `Number(text)`: an emptied field
                   read back as "0" and could not be cleared to retype, and a
@@ -268,7 +291,7 @@ export function RuleEditorDialog({
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-body-sm text-muted-foreground">
                 {isEditing
                   ? 'A rule cannot be re-pointed at another destination — that would drop its delivery history. Create a new rule instead.'
                   : 'Where matched signals are delivered.'}
@@ -297,7 +320,7 @@ export function RuleEditorDialog({
                       </Button>
                     )}
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
+                  <p className="mt-1 text-body-sm text-muted-foreground">
                     {onReplayDraft && dirty
                       ? 'Try the edits on this form against past signals before saving them. Nothing is saved.'
                       : 'Replays the rule as it is saved now.'}
@@ -335,7 +358,7 @@ export function RuleEditorDialog({
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-body-sm text-muted-foreground">
                 {ruleForm.scan_config_id
                   ? 'Only signals from this scan reach the destination. Catalog metric anomalies are project-wide, so they are not delivered by a scan-bound rule.'
                   : 'Signals from every scan in the project reach the destination.'}
@@ -346,51 +369,51 @@ export function RuleEditorDialog({
               className="grid gap-2"
               aria-describedby={problems.scopes ? 'rule-scopes-error' : undefined}
             >
-            <legend className="mb-2 text-sm font-medium">Signals</legend>
+            <legend className="mb-2 text-body font-medium">Signals</legend>
             <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={ruleForm.include_project_total}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, include_project_total: !!checked }))}
                 />
                 Project total
               </label>
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={ruleForm.include_event_types}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, include_event_types: !!checked }))}
                 />
                 Event types
               </label>
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={ruleForm.include_events}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, include_events: !!checked }))}
                 />
                 Events
               </label>
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={ruleForm.include_schema_drifts}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, include_schema_drifts: !!checked }))}
                 />
                 Schema drift
               </label>
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={ruleForm.include_distribution_drifts}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, include_distribution_drifts: !!checked }))}
                 />
                 Distribution
               </label>
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={ruleForm.include_release_regressions}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, include_release_regressions: !!checked }))}
                 />
                 Release regressions
               </label>
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={ruleForm.include_variable_value_drifts}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, include_variable_value_drifts: !!checked }))}
@@ -400,7 +423,7 @@ export function RuleEditorDialog({
               {/* Catalog metrics are a scope of their own: detection has always
                   run on them, but without this box no rule could route the
                   resulting signal anywhere (tripl-jfm3.108). */}
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={ruleForm.include_metrics}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, include_metrics: !!checked }))}
@@ -409,7 +432,7 @@ export function RuleEditorDialog({
               </label>
             </div>
             {problems.scopes && (
-              <p id="rule-scopes-error" className="text-xs text-destructive">{problems.scopes}</p>
+              <p id="rule-scopes-error" className="text-body-sm text-destructive">{problems.scopes}</p>
             )}
             </fieldset>
 
@@ -442,16 +465,16 @@ export function RuleEditorDialog({
                 className="md:col-span-2"
                 aria-describedby={problems.direction ? 'rule-direction-error' : undefined}
               >
-                <legend className="mb-2 text-sm font-medium">Notify on</legend>
+                <legend className="mb-2 text-body font-medium">Notify on</legend>
                 <div className="flex flex-wrap gap-x-6 gap-y-2">
-                  <label className="flex items-center gap-2 text-sm">
+                  <label className="flex items-center gap-2 text-body">
                     <Checkbox
                       checked={ruleForm.notify_on_spike}
                       onCheckedChange={checked => setRuleForm(current => ({ ...current, notify_on_spike: !!checked }))}
                     />
                     Spikes (up)
                   </label>
-                  <label className="flex items-center gap-2 text-sm">
+                  <label className="flex items-center gap-2 text-body">
                     <Checkbox
                       checked={ruleForm.notify_on_drop}
                       onCheckedChange={checked => setRuleForm(current => ({ ...current, notify_on_drop: !!checked }))}
@@ -460,10 +483,10 @@ export function RuleEditorDialog({
                   </label>
                 </div>
                 {problems.direction && (
-                  <p id="rule-direction-error" className="mt-2 text-xs text-destructive">{problems.direction}</p>
+                  <p id="rule-direction-error" className="mt-2 text-body-sm text-destructive">{problems.direction}</p>
                 )}
               </fieldset>
-              <label className="flex items-center gap-2 self-end text-sm">
+              <label className="flex items-center gap-2 self-end text-body">
                 <Checkbox
                   checked={ruleForm.enabled}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, enabled: !!checked }))}
@@ -473,14 +496,14 @@ export function RuleEditorDialog({
             </div>
 
             <div className="grid grid-cols-1 gap-2">
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={ruleForm.ai_explanation_enabled}
                   onCheckedChange={checked => setRuleForm(current => ({ ...current, ai_explanation_enabled: !!checked }))}
                 />
                 AI explanation
               </label>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-body-sm text-muted-foreground">
                 LLM summary appended to alert messages (requires AI enabled on server)
               </p>
             </div>
@@ -520,9 +543,9 @@ export function RuleEditorDialog({
               onMessageFormatChange={message_format =>
                 setRuleForm(current => withMessageFormat(current, message_format))
               }
-              title="Message Template"
+              title="Message template"
               variableOptions={TEMPLATE_VARIABLE_OPTIONS}
-              helperText="Type ${var} to get variable suggestions. Use ${items_text} to render the full matched alert list generated from Item Template."
+              helperText="Type ${var} to get variable suggestions. Use ${items_text} to render the full matched alert list generated from the item template."
               placeholder={getDefaultMessageTemplate(ruleForm.message_format)}
               value={ruleForm.message_template}
               onChange={message_template => setRuleForm(current => ({ ...current, message_template }))}
@@ -533,7 +556,7 @@ export function RuleEditorDialog({
               destinationType={destinationType}
               messageFormat={ruleForm.message_format}
               onMessageFormatChange={() => {}}
-              title="Items Template"
+              title="Item template"
               variableOptions={ITEM_TEMPLATE_VARIABLE_OPTIONS}
               helperText="This template is rendered for each matched alert item and then joined into ${items_text}. Use ${details_line}, ${monitoring_line}, and ${drift_line} for optional context lines."
               showFormatSelector={false}
@@ -556,11 +579,11 @@ export function RuleEditorDialog({
                 regions, so a refused submit would otherwise change nothing a
                 screen reader says. */}
             {(server.message || (submitAttempted && hasShownProblems) || Object.keys(server.fields).length > 0) && (
-              <p role="alert" className="text-sm text-destructive">
+              <p role="alert" className="text-body text-destructive">
                 {server.message ?? 'Check the highlighted fields.'}
               </p>
             )}
-          </div>
+          </DialogBody>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={requestClose}>Cancel</Button>
             {/* A rule with no destination cannot be created: the API addresses

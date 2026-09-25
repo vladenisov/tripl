@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from "react"
 
 export type Theme = "dark" | "light" | "system"
-export type Accent = "teal" | "violet" | "lime" | "amber" | "rose"
+export type Accent = "teal" | "violet" | "lime" | "indigo" | "magenta"
 export type Density = "compact" | "cozy" | "comfy"
 export type ChartStyle = "line" | "line-only" | "bar"
 
@@ -41,7 +41,16 @@ const initialState: ThemeProviderState = {
 
 const ThemeProviderContext = createContext<ThemeProviderState>(initialState)
 
-const ACCENTS: Accent[] = ["teal", "violet", "lime", "amber", "rose"]
+const ACCENTS: Accent[] = ["teal", "violet", "lime", "indigo", "magenta"]
+/**
+ * Accents that were retired because they read as a status (DS-8): amber was
+ * the warning colour and rose sat beside danger. A stored choice moves to its
+ * replacement instead of silently falling back to teal.
+ */
+const RETIRED_ACCENTS = new Map<string, Accent>([
+  ["amber", "indigo"],
+  ["rose", "magenta"],
+])
 const DENSITIES: Density[] = ["compact", "cozy", "comfy"]
 const CHART_STYLES: ChartStyle[] = ["line", "line-only", "bar"]
 
@@ -72,6 +81,20 @@ function readLocal<T extends string>(key: string, valid: readonly T[], fallback:
   return fallback
 }
 
+function readAccent(key: string, fallback: Accent): Accent {
+  try {
+    const stored = localStorage.getItem(key)
+    const replacement = stored ? RETIRED_ACCENTS.get(stored) : undefined
+    if (replacement) {
+      localStorage.setItem(key, replacement)
+      return replacement
+    }
+  } catch {
+    /* ignore */
+  }
+  return readLocal<Accent>(key, ACCENTS, fallback)
+}
+
 export function ThemeProvider({
   children,
   defaultTheme = "dark",
@@ -84,7 +107,7 @@ export function ThemeProvider({
     readLocal<Theme>(storageKey, ["dark", "light", "system"], defaultTheme),
   )
   const [accent, setAccentState] = useState<Accent>(() =>
-    readLocal<Accent>(`${storageKey}-accent`, ACCENTS, defaultAccent),
+    readAccent(`${storageKey}-accent`, defaultAccent),
   )
   const [density, setDensityState] = useState<Density>(() =>
     readLocal<Density>(`${storageKey}-density`, DENSITIES, defaultDensity),

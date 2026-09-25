@@ -258,7 +258,7 @@ export function OnboardingChecklist({
           onClick={() => setExpanded(true)}
           aria-expanded={expanded}
           aria-controls={stepsId}
-          className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex shrink-0 items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--accent)' }}
         >
           Show steps
@@ -268,7 +268,7 @@ export function OnboardingChecklist({
           type="button"
           onClick={handleDismiss}
           aria-label="Dismiss getting-started checklist"
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--fg-subtle)' }}
         >
           <X className="h-3.5 w-3.5" />
@@ -297,7 +297,7 @@ export function OnboardingChecklist({
               onClick={() => setExpanded(false)}
               aria-expanded={expanded}
               aria-controls={stepsId}
-              className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+              className="flex items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
               style={{ color: 'var(--accent)' }}
             >
               Hide steps
@@ -308,7 +308,7 @@ export function OnboardingChecklist({
             type="button"
             onClick={handleDismiss}
             aria-label="Dismiss getting-started checklist"
-            className="flex h-6 w-6 items-center justify-center rounded transition-colors hover:bg-[var(--surface-hover)]"
+            className="flex h-6 w-6 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-subtle)' }}
           >
             <X className="h-3.5 w-3.5" />
@@ -364,7 +364,7 @@ function StepRow({ step, state }: { step: OnboardingStep; state: StepState }) {
             {step.title}
           </div>
           <div
-            className="line-clamp-2 text-[11px] sm:truncate"
+            className="line-clamp-2 text-caption sm:truncate"
             title={hint}
             style={{ color: 'var(--fg-faint)' }}
           >

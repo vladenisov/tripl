@@ -868,8 +868,8 @@ describe('DataSourcesPage', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Prod CH' } })
 
     fireEvent.keyDown(dialog, { key: 'Escape' })
-    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
 
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(screen.getByRole('dialog', { name: 'New data source' })).toBeInTheDocument()
@@ -1175,7 +1175,7 @@ describe('DataSourcesPage', () => {
     expect(await screen.findByText('Host is unreachable')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'New data source' })).not.toBeInTheDocument(),
     )
@@ -1300,8 +1300,8 @@ describe('DataSourcesPage', () => {
       fireEvent.change(screen.getByPlaceholderText('Default'), { target: { value: '120' } })
 
       await act(() => router.navigate(-1))
-      const confirm = await screen.findByRole('alertdialog', { name: 'Leave with unsaved changes?' })
-      fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+      const confirm = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
 
       await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
       expect(router.state.location.pathname).toBe('/settings/data-sources/ds-1')
@@ -1314,7 +1314,7 @@ describe('DataSourcesPage', () => {
       fireEvent.change(screen.getByPlaceholderText('Default'), { target: { value: '120' } })
 
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
 
       await waitFor(() => expect(router.state.location.pathname).toBe('/settings/data-sources'))
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()

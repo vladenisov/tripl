@@ -1,6 +1,7 @@
 import {
   Suspense,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -23,7 +24,7 @@ import { TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
 import { LazyDemoScenarioProvider } from '@/demo/LazyDemoScenarioProvider'
 import { NotFoundState } from '@/components/not-found-state'
-import { ShellChromeContext } from '@/components/shell-chrome-context'
+import { DocumentEntityTitleContext, ShellChromeContext } from '@/components/shell-chrome-context'
 import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
 import { resolveNavLocation } from '@/lib/navigation'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -119,6 +120,9 @@ function firstFocusable(root: HTMLElement | null): HTMLElement | null {
 
 type Crumbs = { crumbs: string[]; title: string }
 
+/** A detail route's own crumb before its entity has loaded (JR-33). */
+const DETAIL_PENDING_TITLE = ''
+
 // Workspace-level surfaces: the portfolio dashboard reachable at three paths.
 // None of them is inside a project, so none gets a project root crumb — `/`
 // already rendered a bare "Overview" and `/workspace` is the identical page.
@@ -147,18 +151,21 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
     projectName ? [projectName, ...rest] : rest
 
   // Detail surfaces carry their nav area so the breadcrumb reads
-  // "project › Area › Page › Detail". An event's catalog detail is served under
+  // "project › Area › Page › <entity>"; the page names the entity through
+  // usePageTitle, and until it has, the crumb stays blank rather than flash
+  // a generic "Detail" (JR-33); Layout then shows the area's page as the
+  // title. An event's catalog detail is served under
   // /monitoring/event/<id> (the canonical event route), but it belongs to
   // Plan › Events — only project-total/event-type signal detail falls through
   // to the generic branch. Check the event scope first.
   if (pathname.includes('/monitoring/event/') || pathname.includes('/events/detail/')) {
-    return { crumbs: withProject('Plan', 'Events'), title: 'Detail' }
+    return { crumbs: withProject('Plan', 'Events'), title: DETAIL_PENDING_TITLE }
   }
   // Catalog-metric drilldowns belong to the Metrics surface, so their
   // breadcrumb reads "… › Observe › Metrics" (matching the metrics list nav).
   // Check before the generic /monitoring/ branch.
   if (pathname.includes('/monitoring/metric/')) {
-    return { crumbs: withProject('Observe', 'Metrics'), title: 'Detail' }
+    return { crumbs: withProject('Observe', 'Metrics'), title: DETAIL_PENDING_TITLE }
   }
   // What is left — event-type and project-total volume drilldowns — is reached
   // from a signal, so it reads "Observe › Anomalies". It used to say "Monitors",
@@ -166,7 +173,7 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   // these charts have nothing to do with. That nav item is gone (tripl-89ps)
   // and the drilldowns follow the surface they are opened from.
   if (pathname.includes('/monitoring/')) {
-    return { crumbs: withProject('Observe', 'Anomalies'), title: 'Detail' }
+    return { crumbs: withProject('Observe', 'Anomalies'), title: DETAIL_PENDING_TITLE }
   }
 
   // Map the route to its grouped-nav area (Plan / Observe / Govern / Connect)
@@ -201,7 +208,7 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
 function ShellFallback({ children }: { children: ReactNode }) {
   return (
     <div
-      className="flex h-screen flex-col items-center justify-center overflow-y-auto px-6 text-sm supports-[height:100dvh]:h-dvh"
+      className="flex h-screen flex-col items-center justify-center overflow-y-auto px-6 text-body supports-[height:100dvh]:h-dvh"
       style={{ background: 'var(--bg)', color: 'var(--fg-muted)' }}
     >
       {children}
@@ -218,9 +225,17 @@ export default function Layout() {
   const [railSuppressed, setRailSuppressed] = useState(false)
   // A detail page names its entity here (usePageTitle); null keeps the route's.
   const [pageTitle, setPageTitle] = useState<string | null>(null)
+  // The same name reaches the browser-tab title (JR-33).
+  const setDocumentEntityTitle = useContext(DocumentEntityTitleContext)
   const shellChrome = useMemo(
-    () => ({ suppressActivityRail: setRailSuppressed, setPageTitle }),
-    [],
+    () => ({
+      suppressActivityRail: setRailSuppressed,
+      setPageTitle: (next: string | null) => {
+        setPageTitle(next)
+        setDocumentEntityTitle(next)
+      },
+    }),
+    [setDocumentEntityTitle],
   )
 
   // Below the inline width the rail would squeeze the content column, so it
@@ -380,6 +395,13 @@ export default function Layout() {
     () => resolveCrumbs(location.pathname, slug, project?.name ?? slug),
     [location.pathname, project?.name, slug],
   )
+  // A detail route whose entity has not named itself (still loading, or it
+  // failed to load) promotes its last crumb to the title: "Plan › Events"
+  // rather than "Plan › Events ›" with nothing after the chevron, and a page
+  // name on phones, where the crumbs are hidden.
+  const entityTitle = pageTitle ?? title
+  const headerCrumbs = entityTitle ? crumbs : crumbs.slice(0, -1)
+  const headerTitle = entityTitle || (crumbs[crumbs.length - 1] ?? '')
 
   // Hold the shell until the slug is resolved. Everything below fans out
   // project-scoped requests the moment it mounts, so rendering optimistically is
@@ -470,8 +492,8 @@ export default function Layout() {
 
           <div className="flex min-w-0 flex-1 flex-col" inert={drawerActive}>
             <TopBar
-              title={pageTitle ?? title}
-              crumbs={crumbs}
+              title={headerTitle}
+              crumbs={headerCrumbs}
               projectSlug={slug}
               activityOpen={activityVisible}
               onToggleActivity={railSuppressed ? undefined : toggleActivity}

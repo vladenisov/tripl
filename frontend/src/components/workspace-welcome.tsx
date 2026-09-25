@@ -29,15 +29,15 @@ export function WorkspaceWelcome({
         <Chip tone="accent" size="sm">
           Tracking plan operations
         </Chip>
-        <h2 className="m-0 text-[26px] font-semibold leading-tight tracking-[-0.02em]">
+        <h2 className="m-0 text-display font-semibold leading-tight tracking-[-0.02em]">
           Keep your product analytics honest
         </h2>
-        <p className="m-0 text-[13.5px] leading-relaxed" style={{ color: 'var(--fg-muted)' }}>
+        <p className="m-0 text-body leading-relaxed" style={{ color: 'var(--fg-muted)' }}>
           tripl is the single place where your team writes down what you <em>intend</em> to track,
           checks it against what your apps are <em>actually</em> sending, and gets a heads-up the
           moment the numbers start to look wrong.
         </p>
-        <p className="m-0 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           No new SDK to ship and nothing to re-instrument — tripl connects to the data warehouse
           you already have (ClickHouse, BigQuery, or PostgreSQL) and only ever reads from it.
         </p>
@@ -46,7 +46,8 @@ export function WorkspaceWelcome({
       {canCreateProject ? (
         <div className="mx-auto flex max-w-2xl flex-col justify-center gap-x-8 gap-y-4 sm:flex-row sm:items-start">
           <div className="flex flex-col gap-1.5 sm:items-center sm:text-center">
-            <Button onClick={onGenerateDemo} disabled={isProvisioningDemo}>
+            {/* Empty-state CTAs take the large control size (DS-14). */}
+            <Button size="lg" onClick={onGenerateDemo} disabled={isProvisioningDemo}>
               <Sparkles className="h-3.5 w-3.5" />
               {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
             </Button>
@@ -56,7 +57,7 @@ export function WorkspaceWelcome({
             </p>
           </div>
           <div className="flex flex-col gap-1.5 sm:items-center sm:text-center">
-            <Button variant="outline" onClick={onCreateProject}>
+            <Button size="lg" variant="outline" onClick={onCreateProject}>
               <Plus className="h-3.5 w-3.5" />
               New project
             </Button>
@@ -77,12 +78,8 @@ export function WorkspaceWelcome({
 
       <div className="grid gap-3 lg:grid-cols-3">
         {WELCOME_PILLARS.map((pillar) => (
-          <Card
-            key={pillar.id}
-            className="gap-0 p-0"
-            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
-          >
-            <CardContent className="space-y-2 px-4 py-4">
+          <Card key={pillar.id}>
+            <CardContent className="space-y-2">
               <div className="flex items-center gap-2.5">
                 <div
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
@@ -91,14 +88,14 @@ export function WorkspaceWelcome({
                   <pillar.icon className="h-4 w-4" />
                 </div>
                 <p
-                  className="m-0 text-[10px] font-semibold uppercase tracking-[0.07em]"
+                  className="m-0 micro-label"
                   style={{ color: 'var(--fg-subtle)' }}
                 >
                   {pillar.eyebrow}
                 </p>
               </div>
-              <h3 className="m-0 text-[13.5px] font-semibold tracking-tight">{pillar.title}</h3>
-              <p className="m-0 text-[12px] leading-[1.5]" style={{ color: 'var(--fg-muted)' }}>
+              <h3 className="m-0 text-body font-semibold tracking-tight">{pillar.title}</h3>
+              <p className="m-0 text-body-sm leading-[1.5]" style={{ color: 'var(--fg-muted)' }}>
                 {pillar.description}
               </p>
             </CardContent>
@@ -107,9 +104,9 @@ export function WorkspaceWelcome({
       </div>
 
       <div
-        className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-lg border px-4 py-3 text-center text-[12px]"
+        className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-card border px-4 py-3 text-center text-body-sm"
         style={{
-          background: 'var(--bg-elevated)',
+          background: 'var(--surface)',
           borderColor: 'var(--border)',
           color: 'var(--fg-muted)',
         }}

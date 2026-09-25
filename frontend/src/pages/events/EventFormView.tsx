@@ -1,4 +1,14 @@
 import { PageHeader } from '@/components/primitives/page-header'
+import { PageContainer } from '@/components/primitives/page-container'
+import { Button } from '@/components/ui/button'
+import { FieldError } from '@/components/forms/FieldError'
+import { SaveBar } from '@/components/forms/SaveBar'
+import {
+  REQUIRED_MESSAGE,
+  focusFirstInvalid,
+  invalidAria,
+  missingSummary,
+} from '@/components/forms/validation'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -599,32 +609,91 @@ export function EventForm({
     })
   }
 
-  const saveAndAddAnother = () => {
-    if (cannotSave || !formRef.current?.reportValidity()) return
-    save(false)
+  // Required rows, validated by the form rather than by browser bubbles
+  // (AU-4): the form is `noValidate`, a refused Save marks every empty row with
+  // "Required", names them beside the button and focuses the first. Shown only
+  // once Save has been pressed, never while an empty form is being filled in.
+  const [submitted, setSubmitted] = useState(false)
+  const requiredErrors: Record<string, string> = {}
+  const missingLabels: string[] = []
+  if (!etId) {
+    missingLabels.push('Event type')
+    if (eventTypes.length > 0) requiredErrors['form-event-type'] = REQUIRED_MESSAGE
+  }
+  if (!generatedName && name.trim() === '') {
+    missingLabels.push('Name')
+    requiredErrors['form-name'] = REQUIRED_MESSAGE
+  }
+  // A required value the scan rule does not name the event from (those are
+  // "Fill field values for" above, which already blocks Save). The server
+  // refuses the event without it.
+  for (const field of sortedFields) {
+    if (!field.is_required || namingColumns.has(field.name)) continue
+    if ((fieldValues[field.id] ?? '') !== '') continue
+    missingLabels.push(field.display_name)
+    requiredErrors[`field-${field.id}`] = REQUIRED_MESSAGE
+  }
+  const shownErrors: Record<string, string> = submitted ? requiredErrors : {}
+
+  const attemptSave = (closeAfterSave: boolean) => {
+    if (missingLabels.length > 0) {
+      setSubmitted(true)
+      // After the render that marks the rows invalid.
+      requestAnimationFrame(() => {
+        if (formRef.current) focusFirstInvalid(formRef.current)
+      })
+      return
+    }
+    if (cannotSave) return
+    save(closeAfterSave)
   }
 
   const typeLabel = selectedEt?.display_name ?? etId
   const blockingFieldLabels = [...invalidJsonFieldLabels, ...invalidNumberFieldLabels]
+  // One line beside Save, in red because every reason here blocks it (AU-5).
+  // A JSON or number field can sit far above the fold, so the reason a
+  // disabled Save is disabled belongs next to the button, not only beside the
+  // field (AU-6).
+  const blockingSummary =
+    blockingFieldLabels.length > 0 ? (
+      <>
+        {invalidJsonFieldLabels.length > 0 && <>Fix the JSON in: {invalidJsonFieldLabels.join(', ')}</>}
+        {invalidJsonFieldLabels.length > 0 && invalidNumberFieldLabels.length > 0 && '. '}
+        {invalidNumberFieldLabels.length > 0 && (
+          <>Enter a number or a variable in: {invalidNumberFieldLabels.join(', ')}</>
+        )}
+      </>
+    ) : submitted ? (
+      missingSummary(missingLabels)
+    ) : null
 
   return (
-    <div className="h-full overflow-y-auto">
+    // The narrow page container (DS-3): the shell already pads the page, so
+    // the form starts at the same left edge as the list it came from instead
+    // of its own centred, re-padded 880px column.
+    <PageContainer width="narrow" className="space-y-0 pb-0">
       {unsaved.dialog}
       {confirmDialog}
       <form
         ref={formRef}
-        onSubmit={e => { e.preventDefault(); if (cannotSave) return; save(true) }}
-        className="mx-auto max-w-[880px] px-4 sm:px-6 pb-12 pt-4"
+        noValidate
+        onSubmit={e => { e.preventDefault(); attemptSave(true) }}
       >
-        <button
-          type="button"
-          onClick={onClose}
-          className="mb-[14px] inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
-          style={{ color: 'var(--fg-muted)' }}
-        >
-          <ChevronLeft size={13} aria-hidden="true" /> {isNew ? 'Events' : event!.name}
-        </button>
-        <PageHeader className="mb-[18px]" title={isNew ? 'New event' : canWrite ? 'Edit event' : 'Event'} />
+        <PageHeader
+          className="mb-[18px]"
+          eyebrow="Plan · Event"
+          title={isNew ? 'New event' : canWrite ? 'Edit event' : 'Event'}
+          back={
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              <ChevronLeft className="size-3.5" aria-hidden="true" /> {isNew ? 'Events' : event!.name}
+            </button>
+          }
+        />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         {/* `disabled` on a fieldset reaches every native control inside it, so
@@ -648,7 +717,7 @@ export function EventForm({
                 // field card stayed hidden, Create stayed blocked, and nothing said
                 // a type has to exist first. This is the first thing a new project
                 // does (tripl-u2h9.3).
-                <p className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+                <p className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
                   This project has no event types yet, and an event belongs to one.{' '}
                   <Link
                     to={`/p/${slug}/settings/event-types`}
@@ -660,16 +729,20 @@ export function EventForm({
                   first, then come back here.
                 </p>
               ) : (
-                <SelectControl
-                  id="form-event-type"
-                  value={etId}
-                  onChange={value => void changeEventType(value)}
-                  disabled={!isNew}
-                  required
-                >
-                  <option value="">Select type…</option>
-                  {eventTypes.map(et => <option key={et.id} value={et.id}>{et.display_name}</option>)}
-                </SelectControl>
+                <>
+                  <SelectControl
+                    id="form-event-type"
+                    value={etId}
+                    onChange={value => void changeEventType(value)}
+                    disabled={!isNew}
+                    ariaRequired
+                    {...invalidAria('form-event-type', shownErrors['form-event-type'])}
+                  >
+                    <option value="">Select type…</option>
+                    {eventTypes.map(et => <option key={et.id} value={et.id}>{et.display_name}</option>)}
+                  </SelectControl>
+                  <FieldError inputId="form-event-type" message={shownErrors['form-event-type']} />
+                </>
               )}
             </EvField>
 
@@ -690,7 +763,8 @@ export function EventForm({
               notes={
                 <>
                   {generatedName && generatedName.missing.length > 0 && (
-                    <p className="mt-1 text-xs text-warning">
+                    // Red, not amber: it blocks Save (AU-5).
+                    <p className="mt-1 text-body-sm text-(--danger)">
                       Fill field values for: {missingFieldLabels.join(', ')}
                     </p>
                   )}
@@ -698,12 +772,12 @@ export function EventForm({
                     // The typed name is kept in state (switching to a type with no
                     // rule brings it back), so say plainly that it is not being used
                     // rather than letting it vanish and reappear (tripl-u2h9.7).
-                    <p className="mt-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                    <p className="mt-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                       This event type names its events from the scan rule, so “{name.trim()}” is not used.
                     </p>
                   )}
                   {identityTaken && (
-                    <p className="mt-1 text-xs text-warning" role="alert">
+                    <p className="mt-1 text-body-sm text-(--danger)" role="alert">
                       An event already answers to this name and would take every scan update:{' '}
                       <Link
                         to={`/p/${slug}/monitoring/event/${identityTaken.id}`}
@@ -725,15 +799,17 @@ export function EventForm({
                   already declared here (tripl-u2h9.5). */}
               <EvInput
                 id="form-name"
-                className="mono read-only:opacity-70"
+                className="read-only:opacity-70"
                 value={generatedName ? generatedName.name : name}
                 onChange={e => setName(e.target.value)}
                 // No example to offer once the rule writes this box (tripl-u2h9.9).
                 placeholder={generatedName ? undefined : 'e.g. checkout:completed'}
-                required
+                aria-required
                 readOnly={!!generatedName}
                 aria-readonly={generatedName ? 'true' : undefined}
+                {...invalidAria('form-name', shownErrors['form-name'])}
               />
+              <FieldError inputId="form-name" message={shownErrors['form-name']} />
             </EvField>
 
             {/* The name is the scan identity and, under a rule, not the author's
@@ -759,7 +835,7 @@ export function EventForm({
               htmlFor="form-description"
               notes={
                 aiDescribeMut.isError ? (
-                  <p className="mt-1 text-[11px]" style={{ color: 'var(--danger)' }}>
+                  <p className="mt-1 text-caption" style={{ color: 'var(--danger)' }}>
                     {aiDescribeMut.error instanceof Error ? aiDescribeMut.error.message : 'AI unavailable'}
                   </p>
                 ) : undefined
@@ -869,6 +945,7 @@ export function EventForm({
             onToggleBreakdown={toggleBreakdown}
             coachStep={editFieldCoachStep}
             coachActive={editFieldCoachActive}
+            errors={shownErrors}
           />
 
           <MetaFieldsCard
@@ -887,66 +964,56 @@ export function EventForm({
           </div>
         )}
 
-        {justCreated !== null && (
-          <p className="mb-[14px] text-[12px]" role="status" style={{ color: 'var(--fg-muted)' }}>
-            Created <span className="mono">{justCreated}</span>. The values below are still the
-            ones it was made from — change what differs and save the next one.
-          </p>
-        )}
-
-        {/* A JSON or number field can sit far above the fold, so the reason a
-            disabled Save is disabled belongs next to the button, not only beside
-            the field. */}
-        {blockingFieldLabels.length > 0 && (
-          <p className="mt-2 text-right text-xs text-warning" role="alert">
-            {invalidJsonFieldLabels.length > 0 && <>Fix the JSON in: {invalidJsonFieldLabels.join(', ')}</>}
-            {invalidJsonFieldLabels.length > 0 && invalidNumberFieldLabels.length > 0 && '. '}
-            {invalidNumberFieldLabels.length > 0 && (
-              <>Enter a number or a variable in: {invalidNumberFieldLabels.join(', ')}</>
-            )}
-          </p>
-        )}
-
-        <div className="mt-1 flex justify-end gap-[10px]">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
-          >
+        {/* The sticky action row (AU-6): Save stays on screen however long the
+            form, with the one line that says why it is blocked, or what the
+            last "Save and add another" created. */}
+        <SaveBar
+          status={
+            blockingSummary ??
+            (justCreated !== null ? (
+              <>
+                Created {justCreated}. The values below are still the ones it was made
+                from — change what differs and save the next one.
+              </>
+            ) : null)
+          }
+          statusTone={blockingSummary ? 'danger' : 'muted'}
+          onStatusClick={
+            blockingSummary
+              ? () => {
+                  if (formRef.current) focusFirstInvalid(formRef.current)
+                }
+              : undefined
+          }
+        >
+          <Button type="button" variant="ghost" onClick={onClose}>
             {canWrite ? 'Cancel' : 'Close'}
-          </button>
+          </Button>
           {canWrite && isNew && (
-            <button
+            <Button
               type="button"
-              onClick={saveAndAddAnother}
+              variant="outline"
+              onClick={() => attemptSave(false)}
               disabled={cannotSave}
-              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
-              style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
             >
               {saveMut.isPending
-                ? <Loader2 className="animate-spin" size={12} aria-hidden="true" />
-                : <Plus size={12} aria-hidden="true" />}
+                ? <Loader2 className="animate-spin" aria-hidden="true" />
+                : <Plus aria-hidden="true" />}
               Save and add another
-            </button>
+            </Button>
           )}
           {canWrite && (
             <ScenarioCoachMark step="edit-event/save" when={!isNew}>
-              <button
-                type="submit"
-                disabled={cannotSave}
-                className="inline-flex h-8 items-center gap-[6px] rounded-control px-3 text-[12px] font-medium disabled:opacity-60"
-                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-              >
+              <Button type="submit" disabled={cannotSave}>
                 {saveMut.isPending
-                  ? <Loader2 className="animate-spin" size={12} aria-hidden="true" />
-                  : isNew ? <Plus size={12} aria-hidden="true" /> : <Save size={12} aria-hidden="true" />}
+                  ? <Loader2 className="animate-spin" aria-hidden="true" />
+                  : isNew ? <Plus aria-hidden="true" /> : <Save aria-hidden="true" />}
                 {isNew ? 'Create event' : 'Save event'}
-              </button>
+              </Button>
             </ScenarioCoachMark>
           )}
-        </div>
+        </SaveBar>
       </form>
-    </div>
+    </PageContainer>
   )
 }

@@ -10,7 +10,11 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
+import { FieldError } from '@/components/forms/FieldError'
+import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from '@/components/forms/validation'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -46,7 +50,9 @@ import { BindingVersusTokenNote } from './VariablesBindingNote'
 import {
   INVALID_BINDING_MESSAGE,
   isValidBinding,
+  isValidVariableName,
   TYPE_LABELS,
+  VARIABLE_NAME_RULE_MESSAGE,
   VARIABLE_TYPE_OPTIONS,
 } from './variablesShared'
 import { invalidValuesFor, valueRuleFor } from './variableValueValidation'
@@ -331,22 +337,55 @@ export function VariablesEditDialog({
 
   const overrideError = errorOf(overrideUpsertMut, overrideDeleteMut)
 
+  // Inline, after Save was pressed, instead of `required` / `pattern` bubbles
+  // (AU-4). Legacy dotted names stay valid while unchanged; a NEW name must be
+  // dot-free (bind data paths via bindings instead).
+  const [submitted, setSubmitted] = useState(false)
+  const nameError = !editVarName.trim()
+    ? REQUIRED_MESSAGE
+    : editVarName === variable.name || isValidVariableName(editVarName)
+      ? null
+      : VARIABLE_NAME_RULE_MESSAGE
+  const shownNameError = submitted ? nameError : null
+
   return (
     <>
       {dialog}
       <Dialog open onOpenChange={open => { if (!open) onClose() }}>
         <DialogContent className="max-w-4xl">
-          <form onSubmit={e => { e.preventDefault(); if (canWrite && !typeChangeBlocked) updateMut.mutate() }}>
+          {/* Only the body scrolls: the title and Save stay in view (AL-4). */}
+          <form
+            noValidate
+            className="flex min-h-0 flex-col gap-4"
+            onSubmit={e => {
+              e.preventDefault()
+              if (!canWrite) return
+              setSubmitted(true)
+              if (nameError) {
+                const form = e.currentTarget
+                requestAnimationFrame(() => focusFirstInvalid(form))
+                return
+              }
+              if (!typeChangeBlocked) updateMut.mutate()
+            }}
+          >
             <DialogHeader><DialogTitle>{canWrite ? 'Edit' : 'Variable'}: {variable.name}</DialogTitle></DialogHeader>
             {/* A viewer opens the same dialog to read the drift, overrides and
                 observed values; `disabled` on the fieldset reaches every
                 control inside it, and `contents` keeps it out of the layout. */}
             <fieldset disabled={!canWrite} className="contents">
-            <div className="grid gap-4 py-4">
+            <DialogBody className="grid gap-4">
               <div className="grid gap-2">
                 <Label htmlFor={nameId}>Name</Label>
-                {/* Legacy dotted names stay valid while unchanged; a NEW name must be dot-free (bind data paths via bindings instead). */}
-                <Input id={nameId} value={editVarName} onChange={e => setEditVarName(e.target.value)} required pattern={editVarName === variable.name ? undefined : "^[a-z][a-z0-9_]*$"} placeholder="variable_name" />
+                <Input
+                  id={nameId}
+                  value={editVarName}
+                  onChange={e => setEditVarName(e.target.value)}
+                  aria-required
+                  className="mono"
+                  {...invalidAria(nameId, shownNameError)}
+                />
+                <FieldError inputId={nameId} message={shownNameError} />
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="grid gap-2">
@@ -374,7 +413,7 @@ export function VariablesEditDialog({
                   {...valueRule}
                 />
                 {invalidValues.length > 0 && (
-                  <p role="alert" className="text-xs text-warning">
+                  <p role="alert" className="text-body-sm text-warning">
                     Not valid for {TYPE_LABELS[editVarType]}: {invalidValues.join(', ')}.
                     {typeChangeBlocked
                       ? ' Remove them or keep the previous type before saving.'
@@ -384,7 +423,7 @@ export function VariablesEditDialog({
                 {invalidOverrideValues.length > 0 && (
                   // Overrides are saved on their own, so this warns rather than
                   // holding Save; it names what a type change leaves stranded.
-                  <p role="alert" className="text-xs text-warning">
+                  <p role="alert" className="text-body-sm text-warning">
                     Per-event overrides hold values not valid for {TYPE_LABELS[editVarType]}:{' '}
                     {invalidOverrideValues.join(', ')}. Edit those overrides, or drift will never match them.
                   </p>
@@ -394,10 +433,10 @@ export function VariablesEditDialog({
                 <Label htmlFor={bindingsId}>Data bindings</Label>
                 <ChipListInput inputId={bindingsId} values={editBindings} onChange={setEditBindings} placeholder={`e.g. ${example.binding}`} ariaLabel="Add data binding" validate={isValidBinding} invalidMessage={INVALID_BINDING_MESSAGE} />
                 {observedSourceColumns.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-1 text-caption text-muted-foreground">
                     <span>Observed at:</span>
                     {observedSourceColumns.map((column) => (
-                      <code key={column} className="rounded bg-muted px-1 font-mono">{column}</code>
+                      <code key={column} className="rounded-sm bg-muted px-1 font-mono">{column}</code>
                     ))}
                   </div>
                 )}
@@ -405,21 +444,21 @@ export function VariablesEditDialog({
                     creation and misleading here: emptying a binding a scan filled
                     in makes the row read as hand-owned to `_human_claim`, and it
                     is then exempt from the retirement sweep for good. */}
-                <p className="text-[11px] text-muted-foreground">Needed only where the warehouse column or JSON path is spelled differently from the name; otherwise scans match on the name. A binding a scan filled in is how it keeps finding this variable — removing it marks the variable as yours, and retirement stops considering it.</p>
+                <p className="text-caption text-muted-foreground">Needed only where the warehouse column or JSON path is spelled differently from the name; otherwise scans match on the name. A binding a scan filled in is how it keeps finding this variable — removing it marks the variable as yours, and retirement stops considering it.</p>
                 <BindingVersusTokenNote example={example} />
               </div>
               {driftItems.length > 0 && (
                 <div className={activeDrifts.length > 0 ? 'rounded-md border border-warning/40 bg-warning-soft p-3' : 'rounded-md border bg-muted/30 p-3'}>
-                  <div className={`mb-1 text-xs font-semibold uppercase tracking-wide ${activeDrifts.length > 0 ? 'text-warning' : 'text-muted-foreground'}`}>
+                  <div className={`mb-1 text-body-sm font-semibold uppercase tracking-wide ${activeDrifts.length > 0 ? 'text-warning' : 'text-muted-foreground'}`}>
                     Value drift — observed values outside the documented list
                   </div>
                   {visibleDrifts.length > 0 && (
                     <ul className="space-y-1.5">
                       {visibleDrifts.map(({ drift, state }, driftIndex) => (
-                        <li key={drift.id} className="rounded border bg-background px-2 py-1.5">
+                        <li key={drift.id} className="rounded-sm border bg-background px-2 py-1.5">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="min-w-0">
-                              <div className="text-xs font-medium">
+                              <div className="text-body-sm font-medium">
                                 {eventNameLabel(drift.event_name)}
                                 {/* Keyed on the review state, not on the raw
                                     status: a snooze whose time has passed is
@@ -429,12 +468,12 @@ export function VariablesEditDialog({
                                     the expiry, so a deferral says when it comes
                                     back (tripl-lh61). */}
                                 {state !== 'active' && (
-                                  <span className="ml-1.5 rounded border px-1 py-0.5 text-[10px] text-muted-foreground">{driftStatusNote(drift, driftNow)}</span>
+                                  <Chip variant="outline" size="xs" className="ml-1.5">{driftStatusNote(drift, driftNow)}</Chip>
                                 )}
                               </div>
                               <div className="mt-0.5 flex flex-wrap gap-1">
                                 {drift.observed_values.map(value => (
-                                  <span key={value} className="rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
+                                  <CodeToken key={value} className="border-warning/40" title={value}>{value}</CodeToken>
                                 ))}
                               </div>
                             </div>
@@ -456,21 +495,21 @@ export function VariablesEditDialog({
                               <div className="flex shrink-0 flex-wrap gap-1">
                                 {state === 'active' ? (
                                   <>
-                                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
+                                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-caption" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
                                       Accept
                                     </Button>
-                                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
+                                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-caption" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
                                       Accept for event
                                     </Button>
-                                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => snoozeDrift(drift.id)}>
+                                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-caption" disabled={driftActionMut.isPending} onClick={() => snoozeDrift(drift.id)}>
                                       Snooze 7d
                                     </Button>
-                                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
+                                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-caption text-muted-foreground" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
                                       False positive
                                     </Button>
                                   </>
                                 ) : (
-                                  <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'reopen' })}>
+                                  <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-caption" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'reopen' })}>
                                     {DRIFT_REVIVE_LABEL[state]}
                                   </Button>
                                 )}
@@ -482,32 +521,32 @@ export function VariablesEditDialog({
                     </ul>
                   )}
                   {quietDrifts.length > 0 && (
-                    <Button type="button" size="sm" variant="ghost" className="mt-1.5 h-6 px-2 text-[11px] text-muted-foreground" onClick={() => setShowQuietDrifts(value => !value)}>
+                    <Button type="button" size="sm" variant="ghost" className="mt-1.5 h-6 px-2 text-caption text-muted-foreground" onClick={() => setShowQuietDrifts(value => !value)}>
                       {showQuietDrifts ? 'Hide' : 'Show'} {quietDrifts.length}{' '}
                       {collapsedDriftLabel({ snoozed: snoozedDrifts.length, resolved: resolvedDrifts.length })}
                     </Button>
                   )}
                   {driftActionMut.isError && (
-                    <p role="alert" className="mt-2 text-sm text-destructive">{getErrorMessage(driftActionMut.error)}</p>
+                    <p role="alert" className="mt-2 text-body text-destructive">{getErrorMessage(driftActionMut.error)}</p>
                   )}
                 </div>
               )}
               <div className="rounded-md border bg-muted/30 p-3">
-                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <div className="mb-1 text-body-sm font-semibold uppercase tracking-wide text-muted-foreground">
                   Per-event value overrides
                 </div>
-                <p className="mb-2 text-[11px] text-muted-foreground">
+                <p className="mb-2 text-caption text-muted-foreground">
                   An override replaces the documented list above for that specific event.
                 </p>
                 {overrides.length > 0 && (
                   <ul className="mb-2 space-y-1">
                     {overrides.map(override => (
-                      <li key={override.id} className="flex items-start justify-between gap-2 rounded border bg-background px-2 py-1.5">
+                      <li key={override.id} className="flex items-start justify-between gap-2 rounded-sm border bg-background px-2 py-1.5">
                         <div className="min-w-0">
-                          <div className="text-xs font-medium">{eventNameLabel(override.event_name)}</div>
+                          <div className="text-body-sm font-medium">{eventNameLabel(override.event_name)}</div>
                           <div className="mt-0.5 flex flex-wrap gap-1">
                             {override.values.map(value => (
-                              <span key={value} className="rounded border px-1.5 py-0.5 font-mono text-[10px]">{value}</span>
+                              <CodeToken key={value} title={value}>{value}</CodeToken>
                             ))}
                           </div>
                         </div>
@@ -555,7 +594,7 @@ export function VariablesEditDialog({
                   <div className="grid gap-1" onFocus={() => setPickerActive(true)}>
                     <Input
                       aria-label="Search events"
-                      className="h-8 text-sm"
+                      className="h-8 text-body"
                       placeholder="Search events…"
                       value={overrideEventSearch}
                       onChange={e => setOverrideEventSearch(e.target.value)}
@@ -591,7 +630,7 @@ export function VariablesEditDialog({
                       // Say what is missing rather than presenting a truncated
                       // roster as the whole catalog (tripl-46am) — the same note
                       // the variables table prints for its own truncation.
-                      <p className="text-[11px] text-muted-foreground">
+                      <p className="text-caption text-muted-foreground">
                         {hiddenEventCount} more not listed — search to narrow.
                       </p>
                     )}
@@ -601,7 +640,7 @@ export function VariablesEditDialog({
                     {/* The chip input checks only NEW chips, so values loaded by
                         Edit on an override are checked here (review 204). */}
                     {invalidEditedOverrideValues.length > 0 && (
-                      <p className="text-[11px] text-warning">
+                      <p className="text-caption text-warning">
                         Not valid for {TYPE_LABELS[editVarType]}: {invalidEditedOverrideValues.join(', ')}.
                       </p>
                     )}
@@ -611,12 +650,12 @@ export function VariablesEditDialog({
                   </Button>
                 </div>
                 {overrideError !== undefined && (
-                  <p role="alert" className="mt-2 text-sm text-destructive">{getErrorMessage(overrideError)}</p>
+                  <p role="alert" className="mt-2 text-body text-destructive">{getErrorMessage(overrideError)}</p>
                 )}
               </div>
               <div className="rounded-md border bg-muted/30 p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <div className="text-body-sm font-semibold uppercase tracking-wide text-muted-foreground">
                     Observed values
                   </div>
                   {/* Sits with the thing it clears. Deleting the variable was
@@ -633,7 +672,7 @@ export function VariablesEditDialog({
                   </Button>
                 </div>
                 {clearValuesMut.isError && (
-                  <p role="alert" className="mb-2 text-sm text-destructive">
+                  <p role="alert" className="mb-2 text-body text-destructive">
                     Could not clear the observed values: {getErrorMessage(clearValuesMut.error)}
                   </p>
                 )}
@@ -641,7 +680,7 @@ export function VariablesEditDialog({
                     Description used to repeat the form above on every row and
                     pushed Event, Source and Values into a sideways scroll
                     (PLAN-30). */}
-                <div className="max-h-72 overflow-auto rounded border bg-background">
+                <div className="max-h-72 overflow-auto rounded-sm border bg-background">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -654,7 +693,7 @@ export function VariablesEditDialog({
                     <TableBody>
                       {contexts.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={4} className="text-xs text-muted-foreground">
+                          <TableCell colSpan={4} className="text-body-sm text-muted-foreground">
                             No values observed yet.
                           </TableCell>
                         </TableRow>
@@ -664,29 +703,29 @@ export function VariablesEditDialog({
                               so the blank-named catalog row reaches this cell as
                               '' and the Event column painted nothing
                               (tripl-wkwv.5). */}
-                          <TableCell className="text-xs">{eventNameLabel(context.event_name)}</TableCell>
-                          <TableCell className="font-mono text-xs">
+                          <TableCell className="text-body-sm">{eventNameLabel(context.event_name)}</TableCell>
+                          <TableCell className="font-mono text-body-sm">
                             {context.source_column
                               ? <span title={context.source_column}>{context.source_column}</span>
                               : <span className="text-muted-foreground">—</span>}
                           </TableCell>
-                          <TableCell className="text-xs">
+                          <TableCell className="text-body-sm">
                             {context.values.length > 0 ? (
                               <div className="flex flex-wrap gap-1">
                                 {context.values.map((value) => (
-                                  <span key={value} className="max-w-40 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>
+                                  <CodeToken key={value} className="max-w-40" title={value}>
                                     {value}
-                                  </span>
+                                  </CodeToken>
                                 ))}
                                 {context.value_kind === 'high' && (
-                                  <span className="text-[10px] text-muted-foreground">(examples)</span>
+                                  <span className="text-micro text-muted-foreground">(examples)</span>
                                 )}
                               </div>
                             ) : (
                               <span className="text-muted-foreground">—</span>
                             )}
                           </TableCell>
-                          <TableCell className="text-xs text-muted-foreground">
+                          <TableCell className="text-body-sm text-muted-foreground">
                             {(context.updated_at && formatDateTime(context.updated_at)) || '—'}
                           </TableCell>
                         </TableRow>
@@ -695,8 +734,8 @@ export function VariablesEditDialog({
                   </Table>
                 </div>
               </div>
-              {updateMut.isError && <p role="alert" className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
-            </div>
+              {updateMut.isError && <p role="alert" className="text-body text-destructive">{getErrorMessage(updateMut.error)}</p>}
+            </DialogBody>
             </fieldset>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={onClose}>{canWrite ? 'Cancel' : 'Close'}</Button>

@@ -32,6 +32,8 @@ import {
 } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
 import { Dot } from '@/components/primitives/dot'
+import { Chip } from '@/components/primitives/chip'
+import { CountBadge } from '@/components/primitives/count-badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDelivery, MonitoringSignal } from '@/types'
@@ -65,9 +67,11 @@ export function TopBar({
 }: TopBarProps) {
   const palette = useCommandPalette()
   return (
-    // The page's banner landmark, outside <main> (SHELL-47).
+    // The page's banner landmark, outside <main> (SHELL-47). 48px on phones so
+    // its controls can be 36-40px touch targets; 44px from sm up
+    // (SH-16 / ST-12 / AU-39 / AL-41).
     <header
-      className="flex h-11 flex-shrink-0 items-center gap-3 border-b px-3 sm:px-4"
+      className="flex h-12 flex-shrink-0 sm:h-11 items-center gap-3 border-b px-3 sm:px-4"
       style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
     >
       {onOpenMobileNav && (
@@ -77,7 +81,7 @@ export function TopBar({
           aria-expanded={mobileNavOpen}
           aria-controls={mobileNavId}
           onClick={onOpenMobileNav}
-          className="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] lg:hidden"
+          className="-ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-md sm:h-8 sm:w-8 transition-colors hover:bg-[var(--surface-active)] lg:hidden"
           style={{ color: 'var(--fg-muted)' }}
         >
           <Menu className="h-4 w-4" aria-hidden="true" />
@@ -105,10 +109,10 @@ export function TopBar({
           onClick={() => palette.setOpen(true)}
           onPointerEnter={preloadCommandPalette}
           onFocus={preloadCommandPalette}
-          className="flex h-7 items-center gap-1.5 rounded-md px-2 transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-md px-2 transition-colors hover:bg-[var(--surface-active)] sm:h-8 sm:min-w-8"
           style={{ color: 'var(--fg-muted)' }}
         >
-          <Search className="h-[13px] w-[13px]" aria-hidden="true" />
+          <Search className="h-4 w-4" aria-hidden="true" />
           <span className="hidden sm:inline-flex">
             <Kbd>{commandPaletteShortcutLabel()}</Kbd>
           </span>
@@ -121,14 +125,14 @@ export function TopBar({
               onClick={onToggleActivity}
               aria-label="Toggle activity panel"
               aria-pressed={activityOpen}
-              className="flex h-7 items-center gap-1.5 rounded-md px-2 text-body-sm font-medium transition-colors"
+              className="flex h-9 items-center gap-1.5 rounded-md px-2 text-body-sm font-medium transition-colors sm:h-8"
               style={{
                 background: activityOpen ? 'var(--surface)' : 'transparent',
                 color: activityOpen ? 'var(--fg)' : 'var(--fg-muted)',
                 border: activityOpen ? '1px solid var(--border)' : '1px solid transparent',
               }}
             >
-              <Activity className="h-[13px] w-[13px]" />
+              <Activity className="h-4 w-4" aria-hidden="true" />
               Now
             </button>
           </>
@@ -167,7 +171,7 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
   const previewSignals = signals.slice(0, SIGNAL_PREVIEW_LIMIT)
   const deliveries = deliveriesQuery.data?.items ?? []
   // "Active" semantics belong to currently-firing signals only. Deliveries are
-  // history (see Recent Alert Deliveries below) and must never be folded in.
+  // history (see Recent alert deliveries below) and must never be folded in.
   const activeSignalCount = signals.length
   const failedDeliveryCount = deliveries.filter(delivery => delivery.status === 'failed').length
   // First load only. `isFetching` swapped the bell for a spinner on every
@@ -184,34 +188,33 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
         <button
           type="button"
           aria-label={activeSignalCount > 0 ? `Notifications — ${activeSignalCount} active` : 'Notifications'}
-          className="relative flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
+          className="relative flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-active)] sm:h-8 sm:w-8"
           style={{ color: activeSignalCount > 0 ? 'var(--fg)' : 'var(--fg-muted)' }}
         >
           {isLoading && projectSlug ? (
             <Loader2
-              className="h-[13px] w-[13px] animate-spin"
+              className="h-4 w-4 animate-spin"
               aria-hidden="true"
               data-testid="notifications-loading"
             />
           ) : (
-            <Bell className="h-[13px] w-[13px]" aria-hidden="true" />
+            <Bell className="h-4 w-4" aria-hidden="true" />
           )}
           {isRefreshing && projectSlug && activeSignalCount === 0 && (
             <span
               aria-hidden="true"
               data-testid="notifications-refreshing"
-              className="absolute right-1 top-1 h-1 w-1 rounded-full"
+              className="absolute right-1.5 top-1.5 h-1 w-1 rounded-full"
               style={{ background: 'var(--fg-subtle)' }}
             />
           )}
           {activeSignalCount > 0 && (
-            <span
-              aria-hidden="true"
-              className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none"
-              style={{ background: 'var(--danger)', color: 'var(--destructive-foreground)' }}
-            >
-              {activeSignalCount > 9 ? '9+' : activeSignalCount}
-            </span>
+            <CountBadge
+              count={activeSignalCount}
+              max={9}
+              urgent
+              className="absolute -right-0.5 -top-0.5"
+            />
           )}
         </button>
       </PopoverTrigger>
@@ -228,7 +231,7 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
           <span className="text-body-sm font-semibold">Notifications</span>
           <div className="flex-1" />
           {projectSlug && activeSignalCount > 0 && (
-            <span className="mono text-2xs" style={{ color: 'var(--fg-faint)' }}>
+            <span className="tnum text-micro" style={{ color: 'var(--fg-faint)' }}>
               {activeSignalCount} active
             </span>
           )}
@@ -240,7 +243,7 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
           <EmptyNotifications message="Notifications could not be loaded from the backend." />
         ) : (
           <div className="max-h-[420px] overflow-y-auto py-2">
-            <NotificationSection title="Active Signals" count={signals.length}>
+            <NotificationSection title="Active signals" count={signals.length}>
               {signals.length === 0 ? (
                 <EmptySectionText>No active monitoring signals.</EmptySectionText>
               ) : (
@@ -255,17 +258,18 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
             </NotificationSection>
 
             <NotificationSection
-              title="Recent Alert Deliveries"
+              title="Recent alert deliveries"
               count={deliveries.length}
               accent={
                 failedDeliveryCount > 0 ? (
-                  <span
-                    className="mono inline-flex items-center gap-1 rounded-full px-1.5 py-px text-[9.5px] font-semibold"
-                    style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+                  <Chip
+                    tone="danger"
+                    size="xs"
+                    className="tnum"
+                    icon={<XCircle aria-hidden="true" />}
                   >
-                    <XCircle className="h-2.5 w-2.5" aria-hidden="true" />
                     {failedDeliveryCount} failed
-                  </span>
+                  </Chip>
                 ) : null
               }
             >
@@ -314,12 +318,12 @@ function NotificationSection({
     <section className="px-2 py-1.5">
       <div className="flex items-center gap-2 px-1.5 pb-1">
         <span
-          className="text-[10px] font-semibold uppercase tracking-[0.08em]"
+          className="micro-label"
           style={{ color: 'var(--fg-faint)' }}
         >
           {title}
         </span>
-        <span className="mono text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="tnum text-micro" style={{ color: 'var(--fg-faint)' }}>
           {count}
         </span>
         {accent && (
@@ -352,17 +356,17 @@ function SignalNotification({
   return (
     <Link
       to={getMonitoringPath(slug, signal)}
-      className="flex gap-2 rounded-md px-1.5 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)]"
+      className="flex gap-2 rounded-md px-1.5 py-2 no-underline transition-colors hover:bg-[var(--surface-active)]"
       style={{ color: 'inherit' }}
     >
       <div className="mt-0.5">
         <Dot tone={tone} pulse size={7} />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[12px] font-medium" title={title}>
+        <div className="truncate text-body-sm font-medium" title={title}>
           {verb} on {scopeLabel ?? unnamedScopeLabel(signal)}
         </div>
-        <div className="mono mt-0.5 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="tnum mt-0.5 text-micro" style={{ color: 'var(--fg-subtle)' }}>
           {signal.actual_count.toLocaleString()} actual vs{' '}
           {formatIncidentCount(signal.expected_count)} expected · {formatSignalSeverity(signal)}
         </div>
@@ -402,7 +406,7 @@ function DeliveryNotification({
       : 'var(--warning)'
   const isFailed = delivery.status === 'failed'
   return (
-    <div className="rounded-md transition-colors hover:bg-[var(--surface-hover)]">
+    <div className="rounded-md transition-colors hover:bg-[var(--surface-active)]">
       <div className="flex items-center gap-1 pr-1">
         <Link
           to={`/p/${slug}/settings/alerting`}
@@ -411,10 +415,10 @@ function DeliveryNotification({
         >
           <StatusIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: statusColor }} />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[12px] font-medium">
+            <div className="truncate text-body-sm font-medium">
               {delivery.rule_name}
             </div>
-            <div className="mt-0.5 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="mt-0.5 text-micro" style={{ color: 'var(--fg-subtle)' }}>
               {delivery.status} · {delivery.channel} · {delivery.matched_count} matched
             </div>
           </div>
@@ -425,7 +429,7 @@ function DeliveryNotification({
             onClick={() => retryMut.mutate()}
             disabled={retryMut.isPending}
             aria-label={`Retry delivery for ${delivery.rule_name}`}
-            className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-2xs font-medium transition-colors hover:bg-[var(--surface-active)] disabled:opacity-60"
+            className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-micro font-medium transition-colors hover:bg-[var(--surface-active)] disabled:opacity-60"
             style={{ color: 'var(--fg-muted)' }}
           >
             {retryMut.isPending ? (
@@ -438,7 +442,7 @@ function DeliveryNotification({
         )}
       </div>
       {isFailed && retryMut.isError && (
-        <p role="alert" className="px-1.5 pb-1.5 text-2xs" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="px-1.5 pb-1.5 text-micro" style={{ color: 'var(--danger)' }}>
           {getErrorMessage(retryMut.error)}
         </p>
       )}

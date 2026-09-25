@@ -14,7 +14,6 @@ import type {
   MonitoringSignal,
   Variable,
 } from '@/types'
-import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -77,7 +76,7 @@ function renderTemplateValue(value: string, variables?: Variable[]): ReactNode {
 // bare "—" from reading as broken and lets it be told apart from a real 0.
 function NoData({ title, className }: { title: string; className?: string }): ReactNode {
   return (
-    <span className={className ?? 'text-[11px]'} style={{ color: 'var(--fg-faint)' }} title={title}>
+    <span className={className ?? 'text-caption'} style={{ color: 'var(--fg-faint)' }} title={title}>
       —
     </span>
   )
@@ -237,7 +236,7 @@ export const EventRow = memo(function EventRow({
           // an invisible handle cannot be found at all (EVT-21).
           <button
             type="button"
-            className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 active:cursor-grabbing"
+            className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 active:cursor-grabbing"
             aria-label={`Drag to reorder ${nameLabel}`}
             {...attributes}
             {...listeners}
@@ -286,7 +285,11 @@ export const EventRow = memo(function EventRow({
               <Link
                 to={detailLink.to}
                 onClick={detailLink.onClick}
-                className="mono min-w-0 truncate text-left text-body-sm hover:underline underline-offset-4"
+                // Sans, not mono: "Home Screen View" is a display name, not
+                // code. Mono made the pinned column ~25% wider and set one
+                // entity in a different face from every other page (DS-17 /
+                // EV-10). The cell's font-medium carries the weight.
+                className="min-w-0 truncate text-left text-body-sm hover:underline underline-offset-4"
                 // Native title only when there's no description to show in the
                 // richer tooltip — avoids a double (native + Radix) popover.
                 title={ev.description ? undefined : nameLabel}
@@ -307,7 +310,7 @@ export const EventRow = memo(function EventRow({
               so an untitled row gains no blank gap either. */}
           {ev.title && (
             <span
-              className="min-w-0 truncate text-[11px]"
+              className="min-w-0 truncate text-caption"
               style={{ color: 'var(--fg-subtle)' }}
               title={ev.title}
             >
@@ -319,13 +322,13 @@ export const EventRow = memo(function EventRow({
               cannot say how many leaves the operator guessing whether the row
               matched for one reason or several (tripl-h2sx.26). */}
           {(ev.open_question_count ?? 0) > 0 && (
-            <span
-              className="shrink-0 rounded px-1 text-[10px] font-medium"
-              style={{ background: 'var(--surface-hover)', color: 'var(--fg-muted)' }}
+            <Chip
+              size="xs"
+              className="tnum"
               title={`${ev.open_question_count} unanswered question${ev.open_question_count === 1 ? '' : 's'} in the discussion`}
             >
               ?{ev.open_question_count}
-            </span>
+            </Chip>
           )}
           {canWrite && (
             <ScenarioCoachMark step="edit-event/open-editor" when={coachEdit}>
@@ -384,7 +387,7 @@ export const EventRow = memo(function EventRow({
           ) : (
             <span
               aria-hidden="true"
-              className="text-[11px]"
+              className="text-caption"
               style={{ color: 'var(--fg-faint)' }}
               title="Not reviewed"
             >
@@ -395,6 +398,9 @@ export const EventRow = memo(function EventRow({
       )}
       {!hideMonitor && (
         <TableCell>
+          {/* "Open"/"Recent", never "Live": Live is the lifecycle status in
+              green one column over, and one word must map to one tone
+              (EV-5 / DS-7). The label comes from SIGNAL_LEVEL. */}
           {rowSignal ? (
             <Chip tone={signalLevel?.tone ?? 'danger'} size="xs">
               {signalLevel?.label ?? SIGNAL_LEVEL.firing.label}
@@ -414,7 +420,7 @@ export const EventRow = memo(function EventRow({
         </TableCell>
       )}
       {!hideDelta && (
-        <TableCell className={`tnum text-right text-[11px] ${PHONE_DROPPED_CELL}`}>
+        <TableCell className={`tnum text-right text-caption ${PHONE_DROPPED_CELL}`}>
           {(() => {
             const delta = computeWindowDelta(windowData)
             // One sentence for every outcome, naming what was compared and how
@@ -453,7 +459,7 @@ export const EventRow = memo(function EventRow({
         <div className="flex items-center justify-end align-middle">
           <EventWindowMetricsCell
             eventName={nameLabel}
-            color={eventType?.color ?? 'var(--accent)'}
+            color={eventType?.color}
             totalCount={windowTotal}
             data={windowData}
             anomalyIdx={sparklineAnomalyIdx}
@@ -473,7 +479,7 @@ export const EventRow = memo(function EventRow({
       )}
       {!hideLastSeen && (
         <TableCell
-          className={`text-[11px] tnum ${PHONE_DROPPED_CELL}`}
+          className={`text-caption tnum ${PHONE_DROPPED_CELL}`}
           style={{ color: ev.last_seen_at ? 'var(--fg-subtle)' : 'var(--fg-faint)' }}
           title={ev.last_seen_at ?? 'Never observed in collected metrics'}
         >
@@ -481,7 +487,7 @@ export const EventRow = memo(function EventRow({
         </TableCell>
       )}
       {!hideOwner && (
-        <TableCell className={`text-[11px] ${PHONE_DROPPED_CELL}`}>
+        <TableCell className={`text-caption ${PHONE_DROPPED_CELL}`}>
           {(() => {
             const u = ev.owner_id ? usersById.get(ev.owner_id) : undefined
             return u ? (
@@ -505,7 +511,7 @@ export const EventRow = memo(function EventRow({
         return (
           <TableCell
             key={f.id}
-            className={`text-xs ${isExpanded ? '' : 'max-w-40'} ${PHONE_DROPPED_CELL}`}
+            className={`text-body-sm ${isExpanded ? '' : 'max-w-40'} ${PHONE_DROPPED_CELL}`}
           >
             {isExpanded ? (
               <div className="flex items-start gap-1.5">
@@ -516,7 +522,7 @@ export const EventRow = memo(function EventRow({
                   aria-expanded={true}
                   aria-label={`Collapse ${f.display_name}`}
                 >
-                  <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-[11px]">{renderTemplateValue((() => {
+                  <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-caption">{renderTemplateValue((() => {
                     try { return JSON.stringify(JSON.parse(val), null, 2) } catch { return val }
                   })(), variables)}</pre>
                 </button>
@@ -538,7 +544,7 @@ export const EventRow = memo(function EventRow({
             ) : (
               <span className="flex min-w-0 items-center gap-1.5">
                 {val === '' ? (
-                  <NoData title="No data" className="min-w-0 text-[11px]" />
+                  <NoData title="No data" className="min-w-0 text-caption" />
                 ) : (
                   <span
                     className="min-w-0"
@@ -562,14 +568,14 @@ export const EventRow = memo(function EventRow({
         return (
           <TableCell
             key={mf.id}
-            className={`text-muted-foreground max-w-40 truncate text-xs ${PHONE_DROPPED_CELL}`}
+            className={`text-muted-foreground max-w-40 truncate text-body-sm ${PHONE_DROPPED_CELL}`}
           >
             {values.length === 0 ? (
               <NoData title="No data" />
             ) : mf.field_type === 'boolean' ? (
-              <Badge variant={first === 'true' ? 'success' : 'secondary'} className="text-[10px]">
+              <Chip tone={first === 'true' ? 'success' : 'neutral'} size="xs">
                 {first === 'true' ? 'Yes' : 'No'}
-              </Badge>
+              </Chip>
             ) : (
               <span
                 className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5"

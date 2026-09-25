@@ -44,7 +44,9 @@ const TEXT_SURFACES = [
   '--surface-hover',
 ] as const
 
-const BODY_TEXT_TOKENS = ['--fg', '--fg-muted', '--fg-subtle', '--fg-faint'] as const
+// The three text steps (DS-12). The four old names are `var()` aliases of
+// these and are checked as such below, so measuring the steps covers them.
+const BODY_TEXT_TOKENS = ['--fg', '--fg-secondary', '--fg-tertiary'] as const
 
 // Every tone that carries status *text*. `--<tone>` is the ink, `--<tone>-soft`
 // the fill it sits on. `--accent` is held to the same bar further down, where
@@ -55,7 +57,7 @@ const STATUS_TONES = ['success', 'warning', 'danger', 'info'] as const
 // to clear the floor on its own — `:root` / `.dark` carry the default (teal),
 // and each `.accent-*` class overrides it. Miss one and a user who picked lime
 // gets a theme nobody measured.
-const ACCENT_VARIANTS = ['teal', 'violet', 'lime', 'amber', 'rose'] as const
+const ACCENT_VARIANTS = ['teal', 'violet', 'lime', 'indigo', 'magenta'] as const
 const ACCENT_BLOCKS = [
   { name: 'default', light: ':root', dark: '.dark' },
   ...ACCENT_VARIANTS.map((variant) => ({
@@ -208,7 +210,16 @@ describe.each(THEMES)('$name theme text tokens', ({ body }) => {
     }
   })
 
-  it('keeps the prominence order --fg > --fg-muted > --fg-subtle > --fg-faint', () => {
+  // `--surface-active` is the selected / pressed row. It is not in
+  // TEXT_SURFACES because the tones and accents are never measured there, but
+  // captions and timestamps do sit on a selected row (DS-A).
+  it.each(BODY_TEXT_TOKENS)('%s clears WCAG AA on a selected row', (token) => {
+    const ratio = contrastRatio(oklchToken(body, token), oklchToken(body, '--surface-active'))
+    expect(ratio, `${token} on --surface-active measured ${ratio.toFixed(2)}:1`)
+      .toBeGreaterThanOrEqual(AA_BODY)
+  })
+
+  it('keeps the prominence order --fg > --fg-secondary > --fg-tertiary', () => {
     const surface = oklchToken(body, '--surface')
     const ratios = BODY_TEXT_TOKENS.map((token) => contrastRatio(oklchToken(body, token), surface))
     for (let i = 1; i < ratios.length; i += 1) {
@@ -360,31 +371,122 @@ describe.each(ACCENT_BLOCKS)('accent: $name', ({ light, dark }) => {
 /**
  * Secondary text on a tinted panel (DEMO-24): the demo welcome panel and the
  * provisioning dialog set captions on `--accent-soft` and `--warning-soft`,
- * and the tint is what eats the ratio. `--fg-muted` and `--fg-subtle` must
- * clear AA there; `--fg-faint` is measured too and must NOT, in at least one
- * theme — that is why the demo copy is banned from using it on a fill, and
- * the day a token change makes it pass, this says the ban can go.
+ * and the tint is what eats the ratio. Both secondary steps must clear AA
+ * there. `--fg-faint` used to fail on a tint and was banned from them; it is
+ * `--fg-tertiary` now (DS-12), which is held to the tint too, so the ban is
+ * gone and this keeps it gone.
  */
 describe('secondary text on tinted fills', () => {
   const TINTS = ['--accent-soft', '--warning-soft'] as const
   const measure = (body: string, token: string, tint: string) =>
     contrastRatio(oklchToken(body, token), composite(oklchDecl(body, tint), oklchToken(body, '--bg')))
 
-  it.each(THEMES)('$name: --fg-muted and --fg-subtle clear AA on each tint', ({ name, body }) => {
+  it.each(THEMES)('$name: --fg-secondary and --fg-tertiary clear AA on each tint', ({ name, body }) => {
     for (const tint of TINTS) {
-      for (const token of ['--fg-muted', '--fg-subtle'] as const) {
+      for (const token of ['--fg-secondary', '--fg-tertiary'] as const) {
         const ratio = measure(body, token, tint)
         expect(ratio, `${name} ${token} on ${tint} over --bg measured ${ratio.toFixed(2)}:1`)
           .toBeGreaterThanOrEqual(AA_BODY)
       }
     }
   })
+})
 
-  it('--fg-faint falls below AA on a tint somewhere, so it stays off tinted fills', () => {
-    const failing = THEMES.flatMap(({ name, body }) =>
-      TINTS.filter((tint) => measure(body, '--fg-faint', tint) < AA_BODY).map((tint) => `${name} ${tint}`),
-    )
-    expect(failing.length, 'every tinted pairing passes: the --fg-faint ban can be lifted').toBeGreaterThan(0)
+/**
+ * The old four-step names are aliases of the three steps (DS-12). They are
+ * declared once, in :root, and resolve on <html> where the theme class sits,
+ * so the dark block must not redeclare them with a literal of its own: that
+ * would reopen a fourth, unmeasured grey.
+ */
+describe('text token aliases', () => {
+  it.each([
+    ['--fg-muted', '--fg-secondary'],
+    ['--fg-subtle', '--fg-tertiary'],
+    ['--fg-faint', '--fg-tertiary'],
+  ] as const)('%s aliases %s and is not redeclared in .dark', (alias, step) => {
+    expect(block(':root')).toMatch(new RegExp(`${alias}:\\s*var\\(${step}\\)`))
+    expect(block('.dark')).not.toMatch(new RegExp(`${alias}:`))
+  })
+})
+
+/**
+ * Dark elevation (DS-10): a floating layer is lighter than the card under it,
+ * and a card lighter than the page.
+ */
+describe('dark elevation ladder', () => {
+  it('orders --bg < --surface < --bg-elevated < --surface-hover < --surface-active', () => {
+    const body = block('.dark')
+    const ladder = ['--bg', '--surface', '--bg-elevated', '--surface-hover', '--surface-active']
+    const lightness = ladder.map((token) => oklchDecl(body, token).lightness)
+    for (let i = 1; i < ladder.length; i += 1) {
+      expect(lightness[i]!, `${ladder[i]} must be lighter than ${ladder[i - 1]}`)
+        .toBeGreaterThan(lightness[i - 1]!)
+    }
+  })
+})
+
+/**
+ * No accent may pass for a status (DS-8). With amber the brand colour WAS
+ * --warning, and rose sat 7° from --danger, so every primary button, focus
+ * ring and selected pill read as a warning or a destructive action. Every
+ * accent hue stays 35° or more from every status hue, in both themes.
+ */
+describe('accent hues stay out of the status bands', () => {
+  const MIN_HUE_GAP = 35
+  const hueGap = (a: number, b: number) => Math.min(Math.abs(a - b), 360 - Math.abs(a - b))
+
+  it.each(ACCENT_BLOCKS)('$name', ({ light, dark }) => {
+    for (const [selector, surfaces] of [[light, ':root'], [dark, '.dark']] as const) {
+      const accentHue = oklchDecl(block(selector), '--accent').hueDeg
+      for (const tone of STATUS_TONES) {
+        const toneHue = oklchDecl(block(surfaces), `--${tone}`).hueDeg
+        const gap = hueGap(accentHue, toneHue)
+        expect(gap, `${selector} --accent sits ${gap}° from --${tone}`).toBeGreaterThanOrEqual(
+          MIN_HUE_GAP,
+        )
+      }
+    }
+  })
+})
+
+/**
+ * The solid accent fill (SH-40). Light aliases it to --accent, which the
+ * accent cases above already measure under --accent-fg; dark gives every
+ * variant a deeper fill under white, measured here.
+ */
+describe('solid accent fill', () => {
+  it('aliases the fill to the accent in light', () => {
+    expect(block(':root')).toMatch(/--accent-solid:\s*var\(--accent\)/)
+    expect(block(':root')).toMatch(/--accent-solid-fg:\s*var\(--accent-fg\)/)
+  })
+
+  it.each(ACCENT_BLOCKS)('$name: dark label clears WCAG AA on the fill', ({ dark }) => {
+    const body = block(dark)
+    const fill = oklchDecl(body, '--accent-solid')
+    expect(isInSrgbGamut(fill), `${dark} --accent-solid is outside sRGB`).toBe(true)
+    const label = oklchToken(block('.dark'), '--accent-solid-fg')
+    const ratio = contrastRatio(label, oklchToken(body, '--accent-solid'))
+    expect(ratio, `${dark} --accent-solid-fg on --accent-solid measured ${ratio.toFixed(2)}:1`)
+      .toBeGreaterThanOrEqual(AA_BODY)
+  })
+})
+
+/**
+ * Switch tracks (ui/switch, kit Toggle): checked is --accent, unchecked is
+ * --input. In dark, --accent-solid sits at --input's lightness (~1.04:1), so a
+ * checked track filled with it looked unchecked. The bright accent keeps the
+ * two tracks apart. 3:1 between the tracks is out of reach while --input is
+ * pinned to 3:1 against the surfaces, so the floor here is 2:1; the thumb's
+ * position carries the state too.
+ */
+describe('switch tracks', () => {
+  const TRACK_FLOOR = 2
+  it.each(ACCENT_BLOCKS)('$name: dark checked track stands apart from the unchecked one', ({ dark }) => {
+    const checked = oklchToken(block(dark), '--accent')
+    const unchecked = oklchToken(block('.dark'), '--input')
+    const ratio = contrastRatio(checked, unchecked)
+    expect(ratio, `${dark} --accent against --input measured ${ratio.toFixed(2)}:1`)
+      .toBeGreaterThanOrEqual(TRACK_FLOOR)
   })
 })
 

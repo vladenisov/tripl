@@ -35,6 +35,12 @@ import {
   useFieldControlId,
 } from '@/components/settings/field-control-id'
 import { Chip } from '@/components/primitives/chip'
+import { PageContainer } from '@/components/primitives/page-container'
+import { PageHeader } from '@/components/primitives/page-header'
+import { FieldError } from '@/components/forms/FieldError'
+import { SaveBar } from '@/components/forms/SaveBar'
+import { REQUIRED_MESSAGE, attentionSummary, focusFirstInvalid } from '@/components/forms/validation'
+import { INPUT_INVALID_CLASS, INPUT_TEXT_CLASS } from '@/components/settings/input-style'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { countOf } from '@/lib/plural'
 import { cn, getErrorMessage } from '@/lib/utils'
@@ -139,22 +145,22 @@ export function EventTypesTab({ slug }: { slug: string }) {
   const showStatus = onMain
 
   return (
-    <div className="flex flex-col gap-[18px]">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold">Event types</h2>
-          <p className="mt-1 max-w-[560px] text-sm text-muted-foreground">
-            Categories that group your events and define their shared schema, ownership and
-            naming. Settings here apply to every event of that type.
-          </p>
-        </div>
-        {canWrite && (
-          <Button size="sm" onClick={() => setCreating(true)}>
-            <Plus className="size-3.5" />
-            New type
-          </Button>
-        )}
-      </div>
+    <PageContainer>
+      {/* The shared page header (DS-1): a real h1 under the Plan eyebrow, in
+          place of an 18px h2 with a 14px description. */}
+      <PageHeader
+        eyebrow="Plan"
+        title="Event types"
+        description="Categories that group your events and define their shared schema, ownership and naming. Settings here apply to every event of that type."
+        actions={
+          canWrite && (
+            <Button size="sm" onClick={() => setCreating(true)}>
+              <Plus className="size-3.5" />
+              New type
+            </Button>
+          )
+        }
+      />
       {!canWrite && <ReadOnlyNotice />}
 
       <Panel
@@ -164,7 +170,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
         {typesQuery.isError && typesQuery.data !== undefined && (
           // A failed REFRESH keeps the rows on screen: replacing them with an
           // error would unmount whatever is being edited (review 204).
-          <p role="alert" className="px-4 py-2 text-xs text-destructive">
+          <p role="alert" className="px-4 py-2 text-body-sm text-destructive">
             Couldn't refresh event types: {getErrorMessage(typesQuery.error)}
           </p>
         )}
@@ -213,7 +219,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                   <Td>
                     <div className="flex items-center gap-2.5">
                       <span
-                        className="size-[9px] shrink-0 rounded-[3px]"
+                        className="size-[9px] shrink-0 rounded-sm"
                         style={{ background: et.color || DEFAULT_ENTITY_COLOR }}
                         aria-hidden="true"
                       />
@@ -228,17 +234,18 @@ export function EventTypesTab({ slug }: { slug: string }) {
                         >
                           {et.display_name}
                         </Link>
-                        <div className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                        <div className="mono text-caption" style={{ color: 'var(--fg-subtle)' }}>
                           {et.name}_*
                         </div>
                       </div>
                     </div>
                   </Td>
+                  {/* Counts are figures: sans + tabular digits (DS-17). */}
                   <Td>
-                    <span className="mono tnum">{et.field_definitions.length}</span>
+                    <span className="tnum">{et.field_definitions.length}</span>
                   </Td>
                   <Td align="right" wideOnly>
-                    <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>
+                    <span className="tnum" style={{ color: 'var(--fg-muted)' }}>
                       {requiredFieldCount(et)}
                     </span>
                   </Td>
@@ -262,7 +269,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                           return <span style={{ color: 'var(--fg-faint)' }}>—</span>
                         }
                         return (
-                          <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                          <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                             {firstOwner.user_name || firstOwner.user_email}
                             {owners.length > 1 ? ` +${owners.length - 1}` : ''}
                           </span>
@@ -314,7 +321,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
           </Table>
         )}
       </Panel>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -332,6 +339,9 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
   const [color, setColor] = useState(DEFAULT_ENTITY_COLOR)
+  // Shown after a Create with no name: the submit used to do nothing at all.
+  const [nameError, setNameError] = useState<string | null>(null)
+  const nameId = useId()
 
   const createMut = useMutation({
     // Its error is rendered under the form.
@@ -349,26 +359,50 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
   })
 
   return (
-    <div className="max-w-[880px]">
-      <BackLink label="Event types" onClick={onDone} />
-      <h2 className="mb-[18px] text-lg font-semibold">New event type</h2>
+    <PageContainer width="narrow" className="space-y-[18px]">
+      <PageHeader
+        back={<BackLink label="Event types" onClick={onDone} />}
+        eyebrow="Plan · Event type"
+        title="New event type"
+      />
+      {/* noValidate + an inline "Required" (AU-4): one validation pattern. */}
       <form
+        noValidate
         onSubmit={(e) => {
           e.preventDefault()
-          if (name.trim()) createMut.mutate()
+          if (!name.trim()) {
+            setNameError(REQUIRED_MESSAGE)
+            const form = e.currentTarget
+            requestAnimationFrame(() => focusFirstInvalid(form))
+            return
+          }
+          createMut.mutate()
         }}
       >
-        <SCard
+        <Panel
+          className="mb-3"
           title="General"
           footer={
             <SaveFooter onCancel={onDone} pending={createMut.isPending} submitLabel="Create type" />
           }
         >
           <SField label="Name" hint="Used in queries and ingestion — can't be changed later.">
-            <SInput value={name} onChange={setName} mono placeholder="e.g. checkout" />
+            <SInput
+              id={nameId}
+              value={name}
+              onChange={(v) => {
+                setName(v)
+                if (v.trim()) setNameError(null)
+              }}
+              mono
+              placeholder="e.g. checkout"
+              invalid={!!nameError}
+              describedBy={nameError ? `${nameId}-error` : undefined}
+            />
+            <FieldError inputId={nameId} message={nameError} />
           </SField>
           <SField label="Display name">
-            <SInput value={displayName} onChange={setDisplayName} placeholder="Checkout" />
+            <SInput value={displayName} onChange={setDisplayName} placeholder="e.g. Checkout" />
           </SField>
           <SField label="Description">
             <STextarea value={description} onChange={setDescription} />
@@ -376,14 +410,14 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
           <SField label="Color" last>
             <ColorPicker value={color} onChange={setColor} />
           </SField>
-        </SCard>
+        </Panel>
         {createMut.isError && (
-          <p className="mt-2 text-sm" style={{ color: 'var(--danger)' }}>
+          <p className="mt-2 text-body" style={{ color: 'var(--danger)' }}>
             {getErrorMessage(createMut.error)}
           </p>
         )}
       </form>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -623,9 +657,10 @@ export function FieldsEditor({
   }
 
   return (
-    <SCard
+    <Panel
+      className="mb-3"
       title="Fields"
-      description={`${sortedFields.length} field definitions applied to every ${eventType.display_name.toLowerCase()} event.`}
+      subtitle={`${sortedFields.length} field definitions applied to every ${eventType.display_name.toLowerCase()} event.`}
       right={
         canWrite && (
           <Button variant="outline" size="sm" onClick={() => setEditing('new')}>
@@ -650,12 +685,12 @@ export function FieldsEditor({
           test_name_format_conflict_vocabulary, since scan-docs-agreement.test.ts
           reads frontend sources and cannot see a string built in Python. */}
       {deleteMut.isError && (
-        <div role="alert" className="px-[18px] py-2 text-body-sm text-destructive">
+        <div role="alert" className="px-4 py-2 text-body-sm text-destructive">
           {getErrorMessage(deleteMut.error)}
         </div>
       )}
       {reorderMut.isError && (
-        <div role="alert" className="px-[18px] py-2 text-body-sm text-destructive">
+        <div role="alert" className="px-4 py-2 text-body-sm text-destructive">
           Could not reorder fields: {getErrorMessage(reorderMut.error)}
         </div>
       )}
@@ -663,7 +698,7 @@ export function FieldsEditor({
         {moveAnnouncement}
       </p>
       {sortedFields.length === 0 ? (
-        <p className="px-[18px] py-3.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="px-4 py-3.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           No fields defined yet.
         </p>
       ) : (
@@ -702,7 +737,7 @@ export function FieldsEditor({
           </TableBody>
         </Table>
       )}
-    </SCard>
+    </Panel>
   )
 }
 
@@ -765,16 +800,16 @@ function FieldRow({
           <button
             type="button"
             onClick={onEdit}
-            className="mono text-left text-[12px] hover:underline"
+            className="mono text-left text-body-sm hover:underline"
           >
             {field.name}
           </button>
         ) : (
-          <span className="mono text-[12px]">{field.name}</span>
+          <span className="mono text-body-sm">{field.name}</span>
         )}
       </Td>
       <Td wideOnly>
-        <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+        <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
           {field.display_name}
         </span>
       </Td>
@@ -783,7 +818,7 @@ function FieldRow({
           {field.field_type}
         </Chip>
         {field.field_type === 'enum' && field.enum_options && (
-          <span className="ml-1 text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+          <span className="ml-1 text-micro" style={{ color: 'var(--fg-faint)' }}>
             ({field.enum_options.length})
           </span>
         )}
@@ -869,13 +904,25 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
   const errorIdBase = useId()
   const errorId = (key: keyof ContractErrors) => `${errorIdBase}-${key}`
 
+  const formRef = useRef<HTMLFormElement>(null)
   const submit = () => {
     setSubmitAttempted(true)
     const nameProblem = !isEdit && !draft.name.trim()
     if (nameProblem) setNameMissing(true)
-    if (nameProblem || Object.keys(contractErrors).length > 0) return
+    if (nameProblem || Object.keys(contractErrors).length > 0) {
+      // After the render that marks them (AU-4).
+      requestAnimationFrame(() => {
+        if (formRef.current) focusFirstInvalid(formRef.current)
+      })
+      return
+    }
     onSubmit(draft)
   }
+  // What blocks Save, in red next to it (AU-6 / AU-5); the sticky bar keeps it
+  // on screen from anywhere in the form.
+  const blockingCount = submitAttempted
+    ? Object.keys(contractErrors).length + (nameMissing ? 1 : 0)
+    : 0
 
   const contractInput = (
     key: keyof ContractErrors,
@@ -887,17 +934,14 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
         <SInput
           value={draft[key]}
           onChange={(v) => set(key, v)}
-          mono
+          // Mono only for the pattern: the rates and bounds are numbers (DS-17).
+          mono={!props.decimal}
           placeholder={props.placeholder}
           inputMode={props.decimal ? 'decimal' : undefined}
           invalid={!!error}
           describedBy={error ? errorId(key) : undefined}
         />
-        {error && (
-          <p id={errorId(key)} className="mt-1 text-[12px]" style={{ color: 'var(--danger)' }}>
-            {error}
-          </p>
-        )}
+        <FieldError id={errorId(key)} message={error} />
       </>
     )
   }
@@ -905,6 +949,7 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
   return (
     // A real form, so Enter in any input saves, as it does everywhere else.
     <form
+      ref={formRef}
       className="max-w-[880px]"
       noValidate
       onSubmit={(e) => {
@@ -914,11 +959,13 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
     >
       {unsaved.dialog}
       <BackLink label="Fields" onClick={cancel} />
-      <h2 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">
+      {/* A section of the event type page, under its h1: a heading-size h2,
+          not a second 19px page title (DS-1). */}
+      <h2 className="mb-[18px] text-heading font-semibold">
         {isEdit ? `Edit field · ${field.name}` : 'New field'}
       </h2>
 
-      <SCard title="Field">
+      <Panel className="mb-3" title="Field" headingLevel={3}>
         {!isEdit && (
           <SField label="Name" hint="Matches the query column the scan populates.">
             <SInput
@@ -932,11 +979,11 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
               invalid={nameMissing}
               describedBy={nameMissing ? 'field-name-error' : undefined}
             />
-            {nameMissing && (
-              <p id="field-name-error" role="alert" className="mt-1 text-[12px]" style={{ color: 'var(--danger)' }}>
-                A new field needs a name.
-              </p>
-            )}
+            <FieldError
+              id="field-name-error"
+              message={nameMissing ? 'A new field needs a name.' : null}
+              announce
+            />
           </SField>
         )}
         <SField label="Display name">
@@ -967,7 +1014,7 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
               checked={draft.is_required}
               onCheckedChange={(c) => set('is_required', c)}
             />
-            <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+            <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
               Must be present on every event
             </span>
           </div>
@@ -1029,9 +1076,14 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
             </div>
           </SField>
         )}
-      </SCard>
+      </Panel>
 
-      <SCard title="Data contract" description="Quality rules tripl checks on every scan of this field.">
+      <Panel
+        className="mb-3"
+        title="Data contract"
+        subtitle="Quality rules tripl checks on every scan of this field."
+        headingLevel={3}
+      >
         <SField label="Bad share" hint="Max fraction of values allowed to fail the contract (0–1).">
           {contractInput('contract_max_bad_rate', { decimal: true })}
         </SField>
@@ -1039,9 +1091,9 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
           {contractInput('contract_required_max_null_rate', { decimal: true, placeholder: '—' })}
         </SField>
         <SField label="Regex" hint="Values must match this pattern.">
-          {contractInput('contract_regex', { placeholder: '^[a-z0-9_]+$' })}
+          {contractInput('contract_regex', { placeholder: 'e.g. ^[a-z0-9_]+$' })}
           {draft.contract_regex !== initialDraft.contract_regex && regexNotice(draft.contract_regex) && (
-            <p className="mt-1 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="mt-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
               {regexNotice(draft.contract_regex)}
             </p>
           )}
@@ -1052,22 +1104,30 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
         <SField label="Max" last>
           {contractInput('contract_max_value', { decimal: true, placeholder: '—' })}
         </SField>
-      </SCard>
+      </Panel>
 
-      {error && (
-        <p className="mt-2 text-sm" style={{ color: 'var(--danger)' }}>
-          {error}
-        </p>
-      )}
-      <div className="mt-1 flex justify-end gap-2.5">
-        <Button type="button" variant="ghost" size="sm" onClick={cancel}>
+      {/* Sticky, so Save and what blocks it stay in reach from the top of
+          the form (AU-6). */}
+      <SaveBar
+        status={attentionSummary(blockingCount)}
+        statusTone="danger"
+        onStatusClick={
+          blockingCount > 0
+            ? () => {
+                if (formRef.current) focusFirstInvalid(formRef.current)
+              }
+            : undefined
+        }
+        error={error}
+      >
+        <Button type="button" variant="outline" size="sm" onClick={cancel}>
           Cancel
         </Button>
         <Button type="submit" size="sm" disabled={pending}>
-          {isEdit ? <Save className="size-3" /> : <Plus className="size-3" />}
+          {isEdit ? <Save className="size-3.5" /> : <Plus className="size-3.5" />}
           {isEdit ? 'Save field' : 'Add field'}
         </Button>
-      </div>
+      </SaveBar>
     </form>
   )
 }
@@ -1133,9 +1193,10 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
   const ownerError = addMut.isError ? addMut.error : removeMut.isError ? removeMut.error : null
 
   return (
-    <SCard
+    <Panel
+      className="mb-3"
       title="Owners"
-      description="Owners gate branch merges that touch this event type."
+      subtitle="Owners gate branch merges that touch this event type."
       right={
         <Chip tone="accent" size="xs">
           gates merge
@@ -1143,7 +1204,7 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
       }
     >
       {dialog}
-      <div className="flex flex-col gap-3 px-[18px] py-3.5">
+      <div className="flex flex-col gap-3 px-4 py-3.5">
         {owners.length === 0 ? (
           <p className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             No owners — anyone can merge a branch touching this type.
@@ -1157,8 +1218,8 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
                 style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
               >
                 <UserAvatar name={owner.user_name || owner.user_email} size={18} />
-                <span className="text-[12px] font-medium">{owner.user_name || owner.user_email}</span>
-                <span className="mono text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+                <span className="text-body-sm font-medium">{owner.user_name || owner.user_email}</span>
+                <span className="mono text-micro" style={{ color: 'var(--fg-subtle)' }}>
                   {owner.user_email}
                 </span>
                 {canWrite && (
@@ -1214,61 +1275,19 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
           </p>
         )}
       </div>
-    </SCard>
+    </Panel>
   )
 }
 
 // ─────────────────── Shared page-style UI primitives ───────────────────
 // Composed from design tokens; exported for EventTypeDetailView to reuse so the
 // settings surface stays visually consistent without a separate shared module.
+// Section cards are the kit `Panel` (DS-4): the local `SCard` copy is gone.
 
-
-export function SCard({
-  title,
-  description,
-  right,
-  footer,
-  tone,
-  children,
-}: {
-  title: string
-  description?: string
-  right?: ReactNode
-  footer?: ReactNode
-  tone?: 'danger'
-  children: ReactNode
-}) {
-  const headBg = tone === 'danger' ? 'var(--danger-soft)' : 'transparent'
-  const titleColor = tone === 'danger' ? 'var(--danger)' : 'var(--fg)'
-  return (
-    <section
-      className="mb-3 overflow-hidden rounded-xl border"
-      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
-    >
-      <header
-        className="flex items-center gap-2.5 border-b px-4 py-3"
-        style={{ borderColor: 'var(--border-subtle)', background: headBg }}
-      >
-        <div className="min-w-0 flex-1">
-          <div className="text-body-sm font-semibold" style={{ color: titleColor }}>
-            {title}
-          </div>
-          {description && (
-            <div className="mt-0.5 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
-              {description}
-            </div>
-          )}
-        </div>
-        {right}
-      </header>
-      {/* Scrolls sideways so a wide table is never clipped by the rounded card
-          (see .tripl-panel-body in index.css). */}
-      <div data-slot="panel-body" className="tripl-scroll-x tripl-panel-body">{children}</div>
-      {footer}
-    </section>
-  )
-}
-
+/**
+ * The Cancel / submit pair of a short event-type form, for a `Panel`'s
+ * `footer` slot (which draws the sunken bar around it).
+ */
 export function SaveFooter({
   onCancel,
   pending,
@@ -1285,22 +1304,19 @@ export function SaveFooter({
   submitLabel?: string
 }) {
   return (
-    <div
-      className="flex items-center justify-end gap-2.5 border-t px-4 py-3"
-      style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
-    >
-      <span role="status" className="mr-auto text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+    <>
+      <span role="status" className="mr-auto text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
         {status}
       </span>
       {onCancel && (
-        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+        <Button type="button" variant="outline" size="sm" onClick={onCancel}>
           Cancel
         </Button>
       )}
       <Button type="submit" size="sm" disabled={pending || disabled}>
         {submitLabel}
       </Button>
-    </div>
+    </>
   )
 }
 
@@ -1430,7 +1446,8 @@ export function SSelect({
       aria-label={ariaLabel}
       aria-describedby={hintId}
       onChange={(e) => onChange(e.target.value)}
-      className="flex h-9 w-full max-w-[420px] rounded-md border px-3 py-1 text-sm"
+      // The control spec (DS-14): 32px, rounded-control, 16px on phones.
+      className={cn('flex h-8 w-full max-w-[420px] rounded-control border px-2.5 py-1', INPUT_TEXT_CLASS, INPUT_INVALID_CLASS)}
       // The page's own surface rather than `bg-transparent`, so the native
       // popup cannot paint light text on a light list in dark mode.
       style={{ borderColor: 'var(--border)', background: 'var(--bg)', color: 'var(--fg)' }}
@@ -1475,7 +1492,7 @@ function Th({
     <TableHead
       scope="col"
       className={cn(
-        'h-8 px-3.5 text-2xs font-semibold tracking-[0.04em]',
+        'h-8 px-3.5 micro-label',
         align === 'right' && 'text-right',
         wideOnly && 'hidden md:table-cell',
       )}

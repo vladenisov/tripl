@@ -16,7 +16,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
-import { INPUT_BASE } from '@/components/settings/input-style'
+import { INPUT_BASE, INPUT_CLASS } from '@/components/settings/input-style'
+import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from '@/components/forms/validation'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { formatIsoDate } from '@/lib/datetime'
@@ -51,6 +52,9 @@ export default function ApiKeysSection() {
 
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
+  // "Required" under the name after an empty Create, not the browser's
+  // bubble (AU-4).
+  const [nameError, setNameError] = useState<string | null>(null)
   const [scope, setScope] = useState<ApiKeyScope>('read')
   const [projectSlug, setProjectSlug] = useState('')
   const [expiresInDays, setExpiresInDays] = useState('')
@@ -197,22 +201,38 @@ export default function ApiKeysSection() {
       {showForm && (
         <SCard title="New API key" description="Generate a long-lived bearer token for non-browser clients.">
           <form
+            noValidate
             onSubmit={(e) => {
               e.preventDefault()
-              if (expiryProblem) return
+              const missing = name.trim() ? null : REQUIRED_MESSAGE
+              setNameError(missing)
+              if (missing || expiryProblem) {
+                const form = e.currentTarget
+                requestAnimationFrame(() => focusFirstInvalid(form))
+                return
+              }
               createMut.mutate()
             }}
           >
-            <Field label="Name" htmlFor="key-name">
+            <Field label="Name" htmlFor="key-name" required error={nameError}>
               <input
                 id="key-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value)
+                  if (e.target.value.trim()) setNameError(null)
+                }}
                 placeholder="e.g. claude-agent"
-                required
+                // A raw <input> does not read the Field's slot, so it carries
+                // the row's state itself: announced as required, and marked
+                // invalid so the message is read with it and
+                // focusFirstInvalid can land on it (AU-4).
+                aria-required
+                {...invalidAria('key-name', nameError)}
                 // eslint-disable-next-line jsx-a11y/no-autofocus -- form revealed by explicit "Create key" click; focusing its first input is expected
                 autoFocus
                 style={INPUT_BASE}
+                className={INPUT_CLASS}
               />
             </Field>
             <Field label="Scope" htmlFor="key-scope">
@@ -256,11 +276,11 @@ export default function ApiKeysSection() {
               />
             </Field>
             <div
-              className="flex flex-wrap items-center justify-end gap-2 px-[18px] py-3"
+              className="flex flex-wrap items-center justify-end gap-2 px-4 py-3"
               style={{ borderTop: '1px solid var(--border-subtle)' }}
             >
               {createMut.isError && (
-                <p role="alert" className="mr-auto text-xs text-destructive">
+                <p role="alert" className="mr-auto text-body-sm text-destructive">
                   {getErrorMessage(createMut.error)}
                 </p>
               )}
@@ -269,7 +289,9 @@ export default function ApiKeysSection() {
               </Button>
               <Button
                 type="submit"
-                disabled={createMut.isPending || !name.trim() || expiryProblem != null}
+                // An empty name is said inline on press (AU-4), not by a
+                // silently disabled button.
+                disabled={createMut.isPending || expiryProblem != null}
               >
                 {createMut.isPending ? 'Generating…' : 'Generate'}
               </Button>
@@ -285,7 +307,7 @@ export default function ApiKeysSection() {
           border: '1px solid color-mix(in oklab, var(--warning) 35%, var(--border))',
         }}
       >
-        <Lock className="mt-px h-[15px] w-[15px] shrink-0" style={{ color: 'var(--warning)' }} />
+        <Lock className="mt-px size-4 shrink-0" style={{ color: 'var(--warning)' }} />
         <div className="text-body-sm leading-[1.5]" style={{ color: 'var(--fg-muted)' }}>
           Keys are shown in full only once at creation. Treat them like passwords — revoke
           immediately if exposed.
@@ -299,7 +321,7 @@ export default function ApiKeysSection() {
         description={listQuery.isSuccess ? describeKeyCounts(activeCount, inactiveCount) : undefined}
       >
         {listQuery.isPending ? (
-          <div aria-busy="true" aria-label="Loading API keys" className="space-y-3 px-[18px] py-3">
+          <div aria-busy="true" aria-label="Loading API keys" className="space-y-3 px-4 py-3">
             {[0, 1].map((index) => (
               <div key={index} className="flex items-center gap-3">
                 <Skeleton className="h-[30px] w-[30px] shrink-0 rounded-lg" />
@@ -313,7 +335,7 @@ export default function ApiKeysSection() {
         ) : listQuery.isError ? (
           // A failed load used to fall through to "No API keys yet", so live
           // keys looked nonexistent and invited minting duplicates.
-          <div className="px-[18px] py-3">
+          <div className="px-4 py-3">
             <ErrorState
               compact
               title="Couldn't load API keys"
@@ -324,7 +346,7 @@ export default function ApiKeysSection() {
             />
           </div>
         ) : keys.length === 0 ? (
-          <div className="px-[18px] py-3 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="px-4 py-3 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             No API keys yet. Create one to give an agent access.
           </div>
         ) : (
@@ -335,88 +357,92 @@ export default function ApiKeysSection() {
             const expired = !revoked && isKeyInactive(k)
             const revoking = pendingRevokes.has(k.id)
             return (
-              <div
-                key={k.id}
-                // A grid on phones — icon, name and Revoke on the first line,
-                // scope, project and status below — and one flex line from
-                // `sm` up. The fixed-width single line measured ~560px and
-                // overflowed a 375px card.
-                className="grid grid-cols-[30px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 px-[18px] py-[13px] sm:flex"
-                style={{
-                  borderBottom: i === keys.length - 1 ? 'none' : '1px solid var(--border-subtle)',
-                  opacity: revoked || expired ? 0.6 : 1,
-                }}
-              >
+              // The row reads its own width, not the viewport's (ST-1): from
+              // `md` the settings rail is pinned and the column is ~424px at
+              // 768px, so a viewport breakpoint put the ~560px line in too
+              // narrow a card. Same 560px container step as FormRow.
+              <div key={k.id} className="@container">
                 <div
-                  className="col-start-1 row-start-1 flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg"
+                  // A grid when narrow — icon, name and Revoke on the first line,
+                  // scope, project and status below — and one flex line from a
+                  // 560px row up. The fixed-width single line measures ~560px.
+                  className="grid grid-cols-[30px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 px-4 py-[13px] @min-[560px]:flex"
                   style={{
-                    background: 'var(--bg-sunken)',
-                    border: '1px solid var(--border-subtle)',
-                    color: 'var(--fg-muted)',
+                    borderBottom: i === keys.length - 1 ? 'none' : '1px solid var(--border-subtle)',
+                    opacity: revoked || expired ? 0.6 : 1,
                   }}
                 >
-                  <Lock className="h-3.5 w-3.5" />
-                </div>
-                <div className="col-start-2 row-start-1 min-w-0 sm:w-[180px] sm:shrink-0">
-                  <div className="truncate text-body font-medium" title={k.name}>
-                    {k.name}
-                  </div>
-                  <div className="mono mt-px truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
-                    {k.key_prefix}… · created {formatIsoDate(k.created_at)}
-                  </div>
-                </div>
-                <div className="col-span-2 col-start-2 row-start-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:contents">
-                  <Chip
-                    tone={k.scope === 'write' ? 'warning' : 'success'}
-                    size="sm"
-                    className="justify-center sm:w-[72px] sm:shrink-0"
-                  >
-                    {k.scope}
-                  </Chip>
                   <div
-                    className="min-w-0 truncate text-caption sm:flex-1"
-                    style={{ color: 'var(--fg-subtle)' }}
-                  >
-                    {k.project_id
-                      ? (projectNameById[k.project_id] ?? k.project_id)
-                      : 'All projects'}
-                  </div>
-                  <div
-                    className="text-caption sm:w-[130px] sm:shrink-0 sm:text-right"
-                    style={{ color: 'var(--fg-faint)' }}
-                  >
-                    <div>
-                      {revoked
-                        ? 'revoked'
-                        : expired
-                          ? 'expired'
-                          : k.last_used_at
-                            ? `used ${formatIsoDate(k.last_used_at)}`
-                            : 'never used'}
-                    </div>
-                    {!revoked && !expired && (
-                      <div>
-                        {k.expires_at ? `expires ${formatIsoDate(k.expires_at)}` : 'no expiry'}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                {!revoked && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="col-start-3 row-start-1"
-                    onClick={() => {
-                      void handleRevoke(k)
+                    className="col-start-1 row-start-1 flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg"
+                    style={{
+                      background: 'var(--bg-sunken)',
+                      border: '1px solid var(--border-subtle)',
+                      color: 'var(--fg-muted)',
                     }}
-                    disabled={revoking}
-                    // The visible label is the same on every row; the name
-                    // says which key a screen-reader user is about to revoke.
-                    aria-label={`${revoking ? 'Revoking…' : 'Revoke'} ${k.name}`}
                   >
-                    {revoking ? 'Revoking…' : 'Revoke'}
-                  </Button>
-                )}
+                    <Lock className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="col-start-2 row-start-1 min-w-0 @min-[560px]:w-[180px] @min-[560px]:shrink-0">
+                    <div className="truncate text-body font-medium" title={k.name}>
+                      {k.name}
+                    </div>
+                    <div className="mono mt-px truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                      {k.key_prefix}… · created {formatIsoDate(k.created_at)}
+                    </div>
+                  </div>
+                  <div className="col-span-2 col-start-2 row-start-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 @min-[560px]:contents">
+                    <Chip
+                      tone={k.scope === 'write' ? 'warning' : 'success'}
+                      size="sm"
+                      className="justify-center @min-[560px]:w-[72px] @min-[560px]:shrink-0"
+                    >
+                      {k.scope}
+                    </Chip>
+                    <div
+                      className="min-w-0 truncate text-caption @min-[560px]:flex-1"
+                      style={{ color: 'var(--fg-subtle)' }}
+                    >
+                      {k.project_id
+                        ? (projectNameById[k.project_id] ?? k.project_id)
+                        : 'All projects'}
+                    </div>
+                    <div
+                      className="text-caption @min-[560px]:w-[130px] @min-[560px]:shrink-0 @min-[560px]:text-right"
+                      style={{ color: 'var(--fg-faint)' }}
+                    >
+                      <div>
+                        {revoked
+                          ? 'revoked'
+                          : expired
+                            ? 'expired'
+                            : k.last_used_at
+                              ? `used ${formatIsoDate(k.last_used_at)}`
+                              : 'never used'}
+                      </div>
+                      {!revoked && !expired && (
+                        <div>
+                          {k.expires_at ? `expires ${formatIsoDate(k.expires_at)}` : 'no expiry'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {!revoked && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="col-start-3 row-start-1"
+                      onClick={() => {
+                        void handleRevoke(k)
+                      }}
+                      disabled={revoking}
+                      // The visible label is the same on every row; the name
+                      // says which key a screen-reader user is about to revoke.
+                      aria-label={`${revoking ? 'Revoking…' : 'Revoke'} ${k.name}`}
+                    >
+                      {revoking ? 'Revoking…' : 'Revoke'}
+                    </Button>
+                  )}
+                </div>
               </div>
             )
           })
@@ -424,7 +450,7 @@ export default function ApiKeysSection() {
         {[...revokeFailures].map(([keyId, message]) => {
           const failedName = keys.find((k) => k.id === keyId)?.name
           return (
-            <p key={keyId} role="alert" className="px-[18px] py-3 text-xs text-destructive">
+            <p key={keyId} role="alert" className="px-4 py-3 text-body-sm text-destructive">
               {failedName
                 ? `Couldn't revoke "${failedName}" — it is still active. `
                 : "Couldn't revoke the key — it is still active. "}
@@ -456,7 +482,7 @@ export default function ApiKeysSection() {
                 aria-label="API key"
                 value={revealed?.token ?? ''}
                 onFocus={(e) => e.currentTarget.select()}
-                className="mono h-9 min-w-0 flex-1 rounded-md border px-2 text-xs"
+                className="mono h-9 min-w-0 flex-1 rounded-md border px-2 text-body-sm"
                 style={{ borderColor: 'var(--border)', background: 'var(--bg)', color: 'var(--fg)' }}
               />
               <Button

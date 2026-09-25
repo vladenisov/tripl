@@ -1,4 +1,6 @@
+import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
+import { LoadingState } from '@/components/primitives/loading-state'
 import { useState } from 'react'
 import { Panel } from '@/components/settings/kit'
 import { Link, useParams } from 'react-router-dom'
@@ -23,6 +25,8 @@ import { ErrorState } from '@/components/error-state'
 import { EventName } from '@/components/event-name'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { DEAD_EVENT_DAYS } from '@/lib/coverage'
@@ -57,6 +61,11 @@ const COVERAGE_DAYS = 14 as const
 // the window, so the page never leaves the look-back implicit.
 const DEAD_DAYS = DEAD_EVENT_DAYS
 const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed']
+const SHADOW_TAB_LABEL: Record<ShadowEventStatus, string> = {
+  new: 'New',
+  accepted: 'Accepted',
+  dismissed: 'Dismissed',
+}
 // The inbox reads one page at a time, and "Show more" asks for the next one by
 // offset (DATA-39), so every row of a large inbox is reachable.
 const SHADOW_PAGE_SIZE = 100
@@ -410,6 +419,7 @@ export default function ReconciliationPage() {
   const allDeadSelected =
     shownDeadIds.length > 0 && shownDeadIds.every((id) => selectedDead.has(id))
   const hasDeadSelection = selectedDeadIds.length > 0
+  const someDeadSelected = shownDeadIds.some((id) => selectedDead.has(id))
   const hiddenDeadCount = deadItems.length - shownDeadItems.length
 
   const toggleDeadSelection = (id: string) =>
@@ -440,7 +450,7 @@ export default function ReconciliationPage() {
   }
 
   return (
-    <div className="min-w-0 space-y-[18px] pb-12">
+    <PageContainer>
       {dialog}
       <PageHeader
         eyebrow="Govern"
@@ -478,21 +488,21 @@ export default function ReconciliationPage() {
           </div>
         )}
         {coverageQuery.isLoading && (
-          <div className="p-4 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-            Loading…
-          </div>
+          <LoadingState className="p-4 text-body-sm" />
         )}
         {coverage && (
           <div className="flex items-center gap-6 p-4">
             <div className="flex min-w-[120px] flex-col gap-0.5">
+              {/* The hero figure: the display step of the type scale (DS-13),
+                  sans with tabular digits rather than mono (DS-17). */}
               <span
-                className="mono tnum text-[38px] font-semibold leading-none tracking-[-0.02em]"
+                className="tnum text-display font-semibold leading-none"
                 style={{ color: 'var(--accent)' }}
               >
                 {formatMatchPct(coverage.summary)}
               </span>
               <span
-                className="inline-flex items-center gap-1 text-[11px]"
+                className="inline-flex items-center gap-1 text-caption"
                 style={{ color: 'var(--fg-subtle)' }}
                 title={DATA_MATCH_HELP}
               >
@@ -520,36 +530,35 @@ export default function ReconciliationPage() {
           subtitle="Seen in data, missing from plan"
           tone={shadowHasItems ? 'warning' : undefined}
           right={
-            <div className="flex gap-0.5">
-              {SHADOW_TABS.map((tab) => (
-                <button
-                  key={tab}
-                  type="button"
-                  aria-pressed={shadowStatus === tab}
-                  // Switching tabs mid-run would clear the selection and land
-                  // the run's result notice in the other tab's panel.
-                  disabled={bulkRunning}
-                  onClick={() => selectShadowTab(tab)}
-                  className="rounded-[5px] px-[9px] py-[3px] text-[11px] font-medium capitalize transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                  style={{
-                    background: shadowStatus === tab ? 'var(--surface-active)' : 'transparent',
-                    color: shadowStatus === tab ? 'var(--fg)' : 'var(--fg-subtle)',
-                  }}
-                >
-                  {tab}
-                  {/* The space sits outside the span: inside it, the
-                      accessible name collapsed to "new250". */}
-                  {tab === 'new' && shadow && shadow.new_count > 0 && (
-                    <>
-                      {' '}
-                      <span className="mono tnum" style={{ color: 'var(--fg-subtle)' }}>
-                        {shadow.new_count.toLocaleString()}
-                      </span>
-                    </>
-                  )}
-                </button>
-              ))}
-            </div>
+            // Three views of one inbox: the shared segmented control (DS-16)
+            // rather than a fourth hand-rolled look. Switching mid-run would
+            // clear the selection and land the run's result notice in the
+            // other view's panel, so it is disabled while one runs.
+            <SegmentedControl
+              aria-label="Shadow event status"
+              size="sm"
+              value={shadowStatus}
+              onChange={selectShadowTab}
+              options={SHADOW_TABS.map((tab) => ({
+                value: tab,
+                disabled: bulkRunning,
+                label: (
+                  <>
+                    {SHADOW_TAB_LABEL[tab]}
+                    {/* The space sits outside the span: inside it, the
+                        accessible name collapsed to "New250". */}
+                    {tab === 'new' && shadow && shadow.new_count > 0 && (
+                      <>
+                        {' '}
+                        <span className="tnum" style={{ color: 'var(--fg-subtle)' }}>
+                          {shadow.new_count.toLocaleString()}
+                        </span>
+                      </>
+                    )}
+                  </>
+                ),
+              }))}
+            />
           }
         >
           {shadowQuery.isError && (
@@ -566,24 +575,22 @@ export default function ReconciliationPage() {
             </div>
           )}
           {shadowQuery.isLoading && (
-            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-              Loading…
-            </div>
+            <LoadingState className="px-4 py-7 text-center text-body-sm" />
           )}
           {shadowIsEmpty &&
             (shadowStatus === 'new' ? (
               <div className="flex min-h-[240px] flex-col items-center justify-center gap-1.5 px-4 py-6 text-center">
                 <Inbox className="h-4 w-4" style={{ color: 'var(--fg-faint)' }} aria-hidden />
-                <div className="text-[12px] font-medium" style={{ color: 'var(--fg-muted)' }}>
+                <div className="text-body-sm font-medium" style={{ color: 'var(--fg-muted)' }}>
                   No new events
                 </div>
-                <div className="text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="text-micro" style={{ color: 'var(--fg-subtle)' }}>
                   No unexpected events seen in the last {COVERAGE_DAYS} days.
                 </div>
               </div>
             ) : (
               <div
-                className="flex min-h-[240px] flex-col items-center justify-center px-4 py-6 text-center text-[12px]"
+                className="flex min-h-[240px] flex-col items-center justify-center px-4 py-6 text-center text-body-sm"
                 style={{ color: 'var(--fg-subtle)' }}
               >
                 No {shadowStatus} events.
@@ -592,10 +599,16 @@ export default function ReconciliationPage() {
           {shadowSelectable && newShadowItems.length > 0 && (
             <div className="flex flex-wrap items-center gap-2.5 px-4 py-2">
               <Checkbox
-                checked={allShadowSelected}
-                onCheckedChange={(value) =>
+                // Mixed while only some rows are picked, and a click from there
+                // clears the selection rather than selecting everything (EV-26).
+                checked={
+                  allShadowSelected ? true : selectedShadowItems.length > 0 ? 'indeterminate' : false
+                }
+                onCheckedChange={() =>
                   setSelectedShadow(
-                    value === true ? new Set(newShadowItems.map((item) => item.id)) : new Set(),
+                    selectedShadowItems.length === 0
+                      ? new Set(newShadowItems.map((item) => item.id))
+                      : new Set(),
                   )
                 }
                 disabled={bulkRunning}
@@ -627,14 +640,14 @@ export default function ReconciliationPage() {
                   : 'Dismiss selected'}
               </Button>
               {selectedShadowItems.length > acceptableShadowItems.length && !bulkRunning && (
-                <span className="text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+                <span className="text-micro" style={{ color: 'var(--fg-subtle)' }}>
                   Rows without an event type are accepted one at a time.
                 </span>
               )}
             </div>
           )}
           {(bulkProgress || bulkNotice) && (
-            <div role="status" className="px-4 pb-2 text-[11px]" style={{ color: 'var(--fg-muted)' }}>
+            <div role="status" className="px-4 pb-2 text-caption" style={{ color: 'var(--fg-muted)' }}>
               {bulkProgress
                 ? `${bulkProgress.action === 'accept' ? 'Accepting' : 'Dismissing'} ${bulkProgress.done} of ${bulkProgress.total}…`
                 : bulkNotice}
@@ -687,7 +700,7 @@ export default function ReconciliationPage() {
               and then at 500 with no way past them (DATA-39). */}
           {shadow && shadow.total > shadow.items.length && (
             <div
-              className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-[11px]"
+              className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-caption"
               style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-subtle)' }}
             >
               <span>
@@ -744,30 +757,32 @@ export default function ReconciliationPage() {
             <div className="flex items-center gap-2.5 px-4 py-2">
               {canArchive && (
                 <Checkbox
-                  checked={allDeadSelected}
-                  onCheckedChange={(value) => toggleSelectAllDead(value === true)}
+                  // Mixed while only some rows are picked; a click from there
+                  // clears the selection (EV-26).
+                  checked={allDeadSelected ? true : someDeadSelected ? 'indeterminate' : false}
+                  onCheckedChange={() => toggleSelectAllDead(!someDeadSelected)}
                   aria-label="Select all dead events"
                 />
               )}
-              <span className="text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+              <span className="text-micro" style={{ color: 'var(--fg-subtle)' }}>
                 Planned events not seen in your data recently — often expected.
               </span>
             </div>
           )}
           {canWrite && onFeatureBranch && deadItems.length > 0 && (
-            <div className="px-4 pb-2 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="px-4 pb-2 text-micro" style={{ color: 'var(--fg-subtle)' }}>
               Dead events are checked on the main branch, and archiving them changes main. Switch
               to main to archive them.
             </div>
           )}
           {archiveNotice && (
-            <div role="status" className="px-4 pb-2 text-[11px]" style={{ color: 'var(--fg-muted)' }}>
+            <div role="status" className="px-4 pb-2 text-caption" style={{ color: 'var(--fg-muted)' }}>
               {archiveNotice}
             </div>
           )}
           {deadError && (
             <div
-              className="px-4 pb-2 text-[11px]"
+              className="px-4 pb-2 text-caption"
               role="alert"
               style={{ color: 'var(--danger)' }}
             >
@@ -788,12 +803,10 @@ export default function ReconciliationPage() {
             </div>
           )}
           {deadQuery.isLoading && (
-            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-              Loading…
-            </div>
+            <LoadingState className="px-4 py-7 text-center text-body-sm" />
           )}
           {dead && dead.items.length === 0 && !deadQuery.isError && (
-            <div className="flex min-h-[240px] flex-col items-center justify-center px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="flex min-h-[240px] flex-col items-center justify-center px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
               No dead events in the last {dead.days} days.
             </div>
           )}
@@ -808,7 +821,7 @@ export default function ReconciliationPage() {
           ))}
           {hiddenDeadCount > 0 && (
             <div
-              className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-[11px]"
+              className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-caption"
               style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-subtle)' }}
             >
               <span>
@@ -826,7 +839,7 @@ export default function ReconciliationPage() {
           )}
         </Panel>
       </div>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -867,7 +880,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
   const [head] = items
   if (!head) {
     return (
-      <div className="flex-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="flex-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
         No data-match history yet.
       </div>
     )
@@ -914,7 +927,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
                 <div
                   key={bucket.bucket}
                   title={`${bucket.bucket}: no data`}
-                  className="h-full flex-1 rounded-[2px] border border-dashed"
+                  className="h-full flex-1 rounded-sm border border-dashed"
                   style={{ borderColor: 'var(--border)' }}
                 />
               )
@@ -924,7 +937,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
               <div
                 key={bucket.bucket}
                 title={`${bucket.bucket}: ${bucketLabelPct(bucket)}%`}
-                className="flex-1 rounded-[2px]"
+                className="flex-1 rounded-sm"
                 style={{
                   height: `${Math.max(pct, 2)}%`,
                   background: coverageColor(pct),
@@ -953,7 +966,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
         </tbody>
       </table>
       <div
-        className="mono mt-1.5 flex justify-between text-[10px]"
+        className="tnum mt-1.5 flex justify-between text-micro"
         style={{ color: 'var(--fg-faint)' }}
       >
         <span>−{days}d</span>
@@ -1000,8 +1013,9 @@ function ShadowRow({
   onToggleSelect?: () => void
 }) {
   return (
+    // Row height follows the Density setting (DS-9).
     <div
-      className="flex flex-col gap-2 border-t px-4 py-2.5"
+      className="flex min-h-(--row-h) flex-col justify-center gap-2 border-t px-4 py-2"
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       <div className="flex items-center gap-2.5">
@@ -1018,20 +1032,20 @@ function ShadowRow({
             <EventName name={item.event_name} />
           </span>
           <div
-            className="mt-0.5 flex flex-wrap items-center gap-2 text-2xs"
+            className="mt-0.5 flex flex-wrap items-center gap-2 text-micro"
             style={{ color: 'var(--fg-subtle)' }}
           >
             <span>{item.scan_config_name}</span>
             <span>·</span>
-            <span className="mono">{item.observed_count.toLocaleString()} seen</span>
+            <span className="tnum">{item.observed_count.toLocaleString()} seen</span>
             <span>·</span>
             <span>{formatRelativeTime(item.last_seen_at)}</span>
           </div>
         </div>
         {item.event_type_name ? (
-          <Chip size="xs">{item.event_type_name}</Chip>
+          <Chip variant="outline" size="xs">{item.event_type_name}</Chip>
         ) : (
-          <span className="shrink-0 text-2xs" style={{ color: 'var(--fg-faint)' }}>
+          <span className="shrink-0 text-micro" style={{ color: 'var(--fg-faint)' }}>
             no type
           </span>
         )}
@@ -1056,43 +1070,36 @@ function ShadowRow({
         <div className="flex flex-wrap items-center gap-2">
           <label
             htmlFor={`event-type-select-${item.id}`}
-            className="text-[11px]"
+            className="text-caption"
             style={{ color: 'var(--fg-subtle)' }}
           >
             Choose event type:
           </label>
-          <select
-            id={`event-type-select-${item.id}`}
-            className="rounded border px-1.5 py-0.5 text-[11px]"
-            style={{
-              background: 'var(--surface)',
-              borderColor: 'var(--border)',
-              color: 'var(--fg)',
-            }}
-            value={selectedEventTypeId}
-            onChange={(e) => onSelectEventType(e.target.value)}
-          >
-            <option value="">Select…</option>
-            {eventTypes.map((et) => (
-              <option key={et.id} value={et.id}>
-                {et.display_name}
-              </option>
-            ))}
-          </select>
+          <Select value={selectedEventTypeId} onValueChange={onSelectEventType}>
+            <SelectTrigger
+              id={`event-type-select-${item.id}`}
+              // The height of the size="sm" buttons beside it.
+              className="h-(--control-h) w-auto min-w-40"
+            >
+              <SelectValue placeholder="Select…" />
+            </SelectTrigger>
+            <SelectContent>
+              {eventTypes.map((et) => (
+                <SelectItem key={et.id} value={et.id}>
+                  {et.display_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button size="sm" variant="default" disabled={confirmDisabled} onClick={onConfirm}>
             Confirm
           </Button>
-          <button
-            type="button"
-            className="text-[11px]"
-            style={{ color: 'var(--fg-subtle)' }}
-            onClick={onCancel}
-          >
+          <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
             Cancel
-          </button>
+          </Button>
         </div>
       )}
-      {error && <span role="alert" className="text-[11px] text-destructive">{error}</span>}
+      {error && <span role="alert" className="text-caption text-destructive">{error}</span>}
     </div>
   )
 }
@@ -1112,7 +1119,7 @@ function DeadRow({
   const isNever = !item.last_seen_at
   return (
     <div
-      className="flex items-center gap-2.5 border-t px-4 py-2.5"
+      className="flex min-h-(--row-h) items-center gap-2.5 border-t px-4 py-2"
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       {onToggle && (
@@ -1125,15 +1132,15 @@ function DeadRow({
       <Dot tone="neutral" size={6} />
       <Link
         to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}
-        className="mono min-w-0 flex-1 truncate text-[12px] hover:underline"
+        className="min-w-0 flex-1 truncate text-body-sm hover:underline"
         style={{ color: 'var(--fg-muted)' }}
         title={eventNameLabel(item.name)}
       >
         <EventName name={item.name} />
       </Link>
-      {item.event_type_name && <Chip size="xs">{item.event_type_name}</Chip>}
+      {item.event_type_name && <Chip variant="outline" size="xs">{item.event_type_name}</Chip>}
       <span
-        className="mono shrink-0 text-2xs"
+        className="tnum shrink-0 text-micro"
         style={{ color: isNever ? 'var(--warning)' : 'var(--fg-faint)' }}
       >
         {formatRelativeTime(item.last_seen_at)}

@@ -26,10 +26,10 @@ export function SuggestionRow({ suggestion }: { suggestion: VariableSuggestion }
           </span>
         )}
         {bindings.length > 0 && (
-          <span className={`w-full truncate font-mono text-[10px] ${detailClassName}`}>{bindings.join(' · ')}</span>
+          <span className={`w-full truncate font-mono text-micro ${detailClassName}`}>{bindings.join(' · ')}</span>
         )}
         {values.length > 0 && (
-          <span className={`w-full truncate font-mono text-[10px] ${detailClassName}`}>{values.slice(0, 3).join(' · ')}</span>
+          <span className={`w-full truncate font-mono text-micro ${detailClassName}`}>{values.slice(0, 3).join(' · ')}</span>
         )}
       </span>
     </>
@@ -78,7 +78,7 @@ export function SuggestionListbox({
           tabIndex={-1}
           aria-selected={i === highlightIdx}
           onMouseDown={e => { e.preventDefault(); onPick(v.name) }}
-          className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-surface-hover text-foreground' : 'text-popover-foreground hover:bg-surface-hover'}`}
+          className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-body-sm ${i === highlightIdx ? 'bg-surface-hover text-foreground' : 'text-popover-foreground hover:bg-surface-hover'}`}
         >
           <SuggestionRow suggestion={v} />
         </button>

@@ -21,6 +21,12 @@ interface Props {
   /** Plain text, or rich content (emphasis, a list) for the body (DS-29). */
   message: ReactNode
   confirmLabel?: string
+  /**
+   * The safe answer's label. Defaults to "Cancel"; a leave-without-saving
+   * confirm names it "Keep editing", so the form's own Cancel does not meet a
+   * second Cancel that means the opposite (AU-42).
+   */
+  cancelLabel?: string
   variant?: 'danger' | 'primary'
   onConfirm: () => void
   onCancel: () => void
@@ -48,6 +54,7 @@ export default function ConfirmDialog({
   title,
   message,
   confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
   variant = 'danger',
   onConfirm,
   onCancel,
@@ -79,6 +86,7 @@ export default function ConfirmDialog({
               title={title}
               message={message}
               confirmLabel={confirmLabel}
+              cancelLabel={cancelLabel}
               variant={variant}
               requireText={requireText}
               pending={pending}
@@ -109,7 +117,7 @@ export default function ConfirmDialog({
           <ConfirmDialogMessage message={message} />
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction
             onClick={() => {
               confirming.current = true

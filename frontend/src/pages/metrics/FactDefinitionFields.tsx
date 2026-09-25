@@ -289,7 +289,7 @@ export function FactDefinitionFields({
           half-width card leaves its controls ~125px wide (tripl-vv2f). */}
       {facts.noFactTables ? (
         <SCard title="Aggregation">
-          <div className="px-[18px] py-[15px] text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="px-4 py-[15px] text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             No fact tables yet. Define one in Fact tables before creating a fact metric.
           </div>
         </SCard>

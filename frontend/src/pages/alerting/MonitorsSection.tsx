@@ -355,7 +355,7 @@ export function MonitorsSection({
           rather than a tooltip on each of the switches and bins that are simply
           absent below. */}
       {!canWrite && (
-        <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+        <p className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
           {VIEWER_READ_ONLY_NOTICE}
         </p>
       )}
@@ -363,10 +363,7 @@ export function MonitorsSection({
       {/* Hidden entirely when nothing is configured, so an all-zero
           FIRING/WARNING/HEALTHY row never sits above the empty state. */}
       {rules.length > 0 && (
-        <MiniStatStrip
-          className="rounded-lg border px-4 py-3"
-          style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
-        >
+        <MiniStatStrip boxed>
           <MiniStat
             label="Firing"
             value={summary ? formatNumber(summary.firing_count) : '—'}
@@ -442,7 +439,7 @@ export function MonitorsSection({
               <div role="rowgroup">
                 <div
                   role="row"
-                  className={`${ruleGridClass(canWrite)} border-b py-2 text-2xs font-semibold uppercase tracking-[0.05em]`}
+                  className={`${ruleGridClass(canWrite)} border-b py-2 micro-label`}
                   style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                 >
                   <span role="columnheader">Rule</span>
@@ -600,7 +597,7 @@ function RuleRow({
     <>
     <div
       role="row"
-      className={`${ruleGridClass(canWrite)} border-b py-2.5 last:border-0`}
+      className={`${ruleGridClass(canWrite)} min-h-(--row-h) border-b py-2.5 last:border-0`}
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       {/* Nothing in this table ellipsizes any more. Every text cell carried
@@ -622,7 +619,7 @@ function RuleRow({
             // aria-controls pointing at nothing is a broken reference (ALR-46).
             aria-controls={expanded ? settingsId : undefined}
             aria-label={`${expanded ? 'Hide' : 'Show'} settings for ${rule.name}`}
-            className="shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--surface-hover)]"
+            className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-faint)' }}
           >
             {expanded
@@ -684,7 +681,7 @@ function RuleRow({
         {/* Delivery health. `Never delivered` is a different fact from `last
             sent 3h ago`, and it followed the rule off the destination card
             rather than being dropped in the move (tripl-oxkt.17). */}
-        <span className="break-words pl-6 text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="break-words pl-6 text-micro" style={{ color: 'var(--fg-faint)' }}>
           {rule.total_deliveries === 0 ? (
             'Never delivered'
           ) : (
@@ -699,7 +696,7 @@ function RuleRow({
           )}
         </span>
       </span>
-      <span role="cell" className="mono break-words text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span role="cell" className="tnum break-words text-caption" style={{ color: 'var(--fg-subtle)' }}>
         {condition}
       </span>
       <span role="cell" className="flex min-w-0 flex-col gap-0.5">
@@ -710,7 +707,7 @@ function RuleRow({
           <Chip tone="neutral" size="xs" className="self-start">{state.destination_type}</Chip>
         )}
         <span
-          className="break-words text-[10px]"
+          className="break-words text-micro"
           style={{ color: 'var(--fg-faint)' }}
           title={`Routes to the "${rule.destination_name}" destination`}
         >
@@ -721,10 +718,10 @@ function RuleRow({
         {state ? (
           <Chip tone={tone} size="xs">{STATUS_LABEL[state.status]}</Chip>
         ) : (
-          <span className="text-2xs" style={{ color: 'var(--fg-faint)' }}>—</span>
+          <span className="text-micro" style={{ color: 'var(--fg-faint)' }}>—</span>
         )}
       </span>
-      <span role="cell" className="mono text-2xs" style={{ color: 'var(--fg-faint)' }}>
+      <span role="cell" className="tnum text-micro" style={{ color: 'var(--fg-faint)' }}>
         {state?.last_anomaly_at ? formatRelativeTime(state.last_anomaly_at) : '—'}
       </span>
       <span role="cell" className="flex shrink-0 items-center justify-end gap-1.5">
@@ -867,8 +864,8 @@ function scanSettingLabel(
 function RuleSetting({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="break-words text-xs text-foreground">{value}</dd>
+      <dt className="micro-label text-muted-foreground">{label}</dt>
+      <dd className="break-words text-body-sm text-foreground">{value}</dd>
     </div>
   )
 }
@@ -937,14 +934,14 @@ function MuteControl({
         <BellOff aria-hidden="true" className="h-4 w-4" />
       </IconButton>
       {open && (
-        <span className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="flex items-center gap-1 text-micro" style={{ color: 'var(--fg-faint)' }}>
           <span>for</span>
           {MUTE_PRESETS.map(preset => (
             <Button
               key={preset.label}
               size="sm"
               variant="outline"
-              className="h-6 px-2 text-[10px]"
+              className="h-6 px-2 text-micro"
               // MUTE_PRESETS' `ms` is `number`, so this call is statically
               // confined to the "for <duration>" branch of `muteChoiceName`.
               // The open-ended phrasing exists inside that builder but is

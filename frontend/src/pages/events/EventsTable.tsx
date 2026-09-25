@@ -313,7 +313,7 @@ export function EventsTable({
         >
           {nameClusters.length > 0 && (
             <div
-              className="border-b text-[11px]"
+              className="border-b text-caption"
               style={{
                 borderColor: 'var(--border)',
                 background: 'var(--bg-sunken)',
@@ -333,7 +333,7 @@ export function EventsTable({
                 )}
                 <Layers className="size-3.5" aria-hidden />
                 <span>
-                  <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>
+                  <span className="tnum" style={{ color: 'var(--fg-muted)' }}>
                     {nameClusters.length.toLocaleString()}
                   </span>{' '}
                   similar-name {nameClusters.length === 1 ? 'cluster' : 'clusters'} detected
@@ -344,15 +344,17 @@ export function EventsTable({
                 <ul className="pb-1.5">
                   {nameClusters.slice(0, MAX_VISIBLE_CLUSTERS).map((group) => (
                     <li key={group.prefix} className="flex items-center gap-2 px-5 py-1">
+                      {/* Sans like the names in the rows below it: a name
+                          prefix is display text, not code (DS-17). */}
                       <span
-                        className="mono truncate"
+                        className="truncate"
                         style={{ color: 'var(--fg-muted)' }}
                         title={group.prefix}
                       >
                         {group.prefix}
                         <span style={{ color: 'var(--fg-faint)' }}>…</span>
                       </span>
-                      <span className="mono tnum whitespace-nowrap">
+                      <span className="tnum whitespace-nowrap">
                         · {group.count.toLocaleString()} events
                       </span>
                       <div className="flex-1" />
@@ -398,7 +400,12 @@ export function EventsTable({
                     {canWrite && (
                       <Checkbox
                         checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
-                        onCheckedChange={(checked) => toggleAllVisibleSelected(checked === true)}
+                        // From the mixed state a click CLEARS the selection:
+                        // the minus reads "some selected", and Radix would
+                        // otherwise turn it into "select all" (EV-26).
+                        onCheckedChange={() =>
+                          toggleAllVisibleSelected(!allVisibleSelected && !someVisibleSelected)
+                        }
                         aria-label="Select all visible events"
                       />
                     )}
@@ -418,7 +425,7 @@ export function EventsTable({
                   {!activeEt && <TableHead>Type</TableHead>}
                   {!hideStatus && <TableHead>Status</TableHead>}
                   {!hideReviewed && (
-                    <TableHead className="w-20 text-center text-[11px]">Reviewed</TableHead>
+                    <TableHead className="w-20 text-center text-caption">Reviewed</TableHead>
                   )}
                   {/* "Signal", not "Monitor": these cells report the anomaly
                       tripl detected on the row, which needs no monitor to
@@ -435,7 +442,7 @@ export function EventsTable({
                   )}
                   {!hideDelta && (
                     <TableHead
-                      className="w-20 text-right text-[11px]"
+                      className="w-20 text-right text-caption"
                       title={DELTA_HEAD_HELP}
                     >
                       Δ · 24h
@@ -464,9 +471,9 @@ export function EventsTable({
                     />
                   )}
                   {!hideLastSeen && (
-                    <TableHead className="w-24 text-[11px]">Last seen</TableHead>
+                    <TableHead className="w-24 text-caption">Last seen</TableHead>
                   )}
-                  {!hideOwner && <TableHead className="w-28 text-[11px]">Owner</TableHead>}
+                  {!hideOwner && <TableHead className="w-28 text-caption">Owner</TableHead>}
                   {visibleFieldColumns.map((f) => {
                     const enumOpts = fieldEnumOptions[f.id]
                     const filterType: ColumnFilterType | null =
@@ -576,7 +583,7 @@ export function EventsTable({
                         // (EVT-4).
                         <div
                           role="status"
-                          className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground"
+                          className="flex items-center justify-center gap-2 py-16 text-body text-muted-foreground"
                         >
                           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                           {isLoading
@@ -606,7 +613,7 @@ export function EventsTable({
           </div>
           {events.length > 0 && (
             <div
-              className="flex h-[30px] items-center gap-3.5 border-t px-5 text-[11px]"
+              className="flex h-[30px] items-center gap-3.5 border-t px-5 text-caption"
               style={{
                 borderColor: 'var(--border)',
                 background: 'var(--bg-sunken)',
@@ -616,7 +623,7 @@ export function EventsTable({
               <span aria-live="polite" aria-atomic="true" className="sr-only">
                 {footerLabel}
               </span>
-              <span aria-hidden="true" className="mono tnum">
+              <span aria-hidden="true" className="tnum">
                 {footerLabel}
               </span>
               {isScanningForMatches && (

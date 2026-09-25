@@ -338,8 +338,12 @@ export function getSignalTone(signal: MonitoringSignal) {
     return {
       compact: 'text-destructive',
       regular: 'bg-destructive text-destructive-foreground',
-      button: 'destructive' as const,
+      // Outline, not solid red: solid red means "this destroys something",
+      // and "View signal" only navigates. The icon carries the danger tone
+      // (DS-20).
+      button: 'outline' as const,
       buttonClassName: '',
+      iconClassName: 'text-danger',
       title: 'Open latest scan anomaly',
     }
   }
@@ -353,6 +357,7 @@ export function getSignalTone(signal: MonitoringSignal) {
     regular: 'bg-warning-soft text-warning ring-1 ring-warning/40',
     button: 'outline' as const,
     buttonClassName: 'border-warning/50 bg-warning-soft text-warning hover:bg-warning/20',
+    iconClassName: '',
     title: 'Open recent anomaly',
   }
 }

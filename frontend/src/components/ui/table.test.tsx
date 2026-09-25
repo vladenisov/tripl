@@ -41,3 +41,19 @@ describe('Table container', () => {
     expect(wrapper!.classList.contains('overflow-x-auto')).toBe(false)
   })
 })
+
+describe('Table density (DS-9)', () => {
+  it('sizes rows and cell gutters from the density tokens', () => {
+    const { container } = render(
+      <Table>
+        <TableBody>
+          <TableRow>
+            <TableCell>cell</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    )
+    expect(container.querySelector('[data-slot="table-row"]')).toHaveClass('h-(--row-h)')
+    expect(container.querySelector('[data-slot="table-cell"]')).toHaveClass('px-(--cell-px)')
+  })
+})

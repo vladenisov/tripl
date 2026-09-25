@@ -1,4 +1,5 @@
 import { memo, useId, type CSSProperties } from "react"
+import { SERIES_COLORS } from "@/components/ui/chart-format"
 
 export type SparklineVariant = "line" | "line-only" | "bar"
 
@@ -32,7 +33,10 @@ function sparklineRange(min: number, max: number): number {
 
 function SparklineInner({
   data,
-  color = "var(--accent)",
+  // The fixed single-series hue, not the user's accent (DS-27): a volume line
+  // read lime on Overview under one accent and teal under another, while the
+  // same series drew blue in the charts.
+  color = SERIES_COLORS[0],
   width = 80,
   height = 22,
   variant = "line",

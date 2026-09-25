@@ -485,7 +485,7 @@ describe('ReconciliationPage', () => {
     renderPage()
 
     await screen.findByText('variant_color_selected')
-    fireEvent.click(screen.getByRole('button', { name: 'accepted' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Accepted' }))
 
     expect(await screen.findByText('No accepted events.')).toBeInTheDocument()
   })
@@ -549,6 +549,21 @@ describe('ReconciliationPage', () => {
     expect(archiveBtn).toBeEnabled()
     expect(screen.getByRole('checkbox', { name: 'Select legacy_banner_shown' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'Select promo_code_invalid' })).toBeChecked()
+  })
+
+  it('shows a mixed select-all while only some dead rows are picked, and clears from there (EV-26)', async () => {
+    mockFetch()
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select legacy_banner_shown' }))
+    const selectAll = screen.getByRole('checkbox', { name: 'Select all dead events' })
+    expect(selectAll).toHaveAttribute('aria-checked', 'mixed')
+
+    // A click from "some" clears the selection instead of selecting every row.
+    fireEvent.click(selectAll)
+    expect(screen.getByRole('checkbox', { name: 'Select legacy_banner_shown' })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Select promo_code_invalid' })).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Archive selected' })).toBeDisabled()
   })
 
   it('archives selected dead events and refetches the recon list', async () => {
@@ -810,7 +825,7 @@ describe('ReconciliationPage', () => {
     renderPage()
 
     expect(await screen.findByText('Showing 1 of 250')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'new 250' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'New 250' })).toHaveAttribute('aria-pressed', 'true')
 
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }))
 
@@ -947,8 +962,8 @@ describe('ReconciliationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss 2 selected' }))
 
     expect(await screen.findByText('Dismissing 0 of 2…')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'accepted' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'dismissed' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Accepted' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Dismissed' })).toBeDisabled()
     const rowCheckbox = screen.getByRole('checkbox', { name: 'Select variant_color_selected' })
     expect(rowCheckbox).toBeDisabled()
 
@@ -956,6 +971,6 @@ describe('ReconciliationPage', () => {
       release()
     })
     expect(await screen.findByText('2 events dismissed.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'accepted' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Accepted' })).toBeEnabled()
   })
 })

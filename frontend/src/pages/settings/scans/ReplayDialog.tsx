@@ -6,6 +6,8 @@ import type { IntervalCode, ScanConfig } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { FieldError } from '@/components/forms/FieldError'
+import { REQUIRED_MESSAGE, invalidAria } from '@/components/forms/validation'
 import { getBucketStart, type MetricsGranularity } from '@/lib/metrics'
 import { getErrorMessage } from '@/lib/utils'
 import { scanJobsKey, scansKey } from '@/lib/queryKeys'
@@ -101,6 +103,11 @@ export function ReplayDialog({
   const [seed] = useState(() => defaultReplayWindow(scanConfig.interval))
   const [from, setFrom] = useState(seed.from)
   const [to, setTo] = useState(seed.to)
+  // Inline "Required" after a submit with a cleared end, not a browser
+  // bubble (AU-4).
+  const [submitted, setSubmitted] = useState(false)
+  const fromError = submitted && !from ? REQUIRED_MESSAGE : null
+  const toError = submitted && !to ? REQUIRED_MESSAGE : null
 
   const replayMut = useMutation({
     mutationFn: () => {
@@ -126,26 +133,34 @@ export function ReplayDialog({
   if (!open) return null
   return (
     <section
-      className="overflow-hidden rounded-xl border"
+      className="overflow-hidden rounded-card border"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
     >
       <form
+        noValidate
         className="space-y-4 p-4"
-        onSubmit={e => { e.preventDefault(); replayMut.mutate() }}
+        onSubmit={e => {
+          e.preventDefault()
+          setSubmitted(true)
+          if (!from || !to) return
+          replayMut.mutate()
+        }}
       >
         <div className="text-body-sm font-semibold">Replay metrics period</div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label htmlFor="replay-from">From</Label>
-              <Input id="replay-from" type="datetime-local" value={from} onChange={e => setFrom(e.target.value)} required />
+              <Input id="replay-from" type="datetime-local" value={from} onChange={e => setFrom(e.target.value)} aria-required {...invalidAria('replay-from', fromError)} />
+              <FieldError inputId="replay-from" message={fromError} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="replay-to">To</Label>
-              <Input id="replay-to" type="datetime-local" value={to} onChange={e => setTo(e.target.value)} required />
+              <Input id="replay-to" type="datetime-local" value={to} onChange={e => setTo(e.target.value)} aria-required {...invalidAria('replay-to', toError)} />
+              <FieldError inputId="replay-to" message={toError} />
             </div>
           </div>
           {replayMut.isError && (
-            <p role="alert" className="text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(replayMut.error)}</p>
+            <p role="alert" className="text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(replayMut.error)}</p>
           )}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

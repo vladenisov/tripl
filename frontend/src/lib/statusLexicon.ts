@@ -90,7 +90,9 @@ export const SCAN_RUN_STATUS: Record<RunPillStatus, StatusLexeme> = {
 
 // ---------------------------------------------------------------------------
 // Signal state — an open anomaly on an event row. A signal from the latest scan
-// is Live (danger); an older still-open one is Recent (warning).
+// is Open (danger); an older still-open one is Recent (warning). "Live" is
+// reserved for the event lifecycle status (green, EV-5/DS-7), so a red "Live"
+// one column over from a green one no longer means two different things.
 //
 // These deliberately do NOT reuse the MONITOR_STATUS words. Signals are raised
 // by detection and exist whether or not a monitor does, so labelling one
@@ -99,7 +101,7 @@ export const SCAN_RUN_STATUS: Record<RunPillStatus, StatusLexeme> = {
 // stay reserved for monitors (alert rules).
 // ---------------------------------------------------------------------------
 export const SIGNAL_LEVEL = {
-  firing: { label: 'Live', tone: 'danger' },
+  firing: { label: 'Open', tone: 'danger' },
   warning: { label: 'Recent', tone: 'warning' },
 } as const satisfies Record<'firing' | 'warning', { label: string; tone: 'danger' | 'warning' }>
 

@@ -7,6 +7,8 @@ export interface ConfirmOptions {
   message: ReactNode
   variant?: 'danger' | 'primary'
   confirmLabel?: string
+  /** The safe answer's label; defaults to "Cancel" (AU-42). */
+  cancelLabel?: string
   /** Confirm arms only once exactly this text is typed (WS-10). */
   requireText?: string
   /**
@@ -73,6 +75,7 @@ export function useConfirm() {
       message={state.message}
       variant={state.variant}
       confirmLabel={state.confirmLabel}
+      cancelLabel={state.cancelLabel}
       requireText={state.requireText}
       stayOpen={state.action !== undefined}
       pending={state.pending}

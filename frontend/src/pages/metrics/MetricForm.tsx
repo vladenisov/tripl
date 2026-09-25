@@ -8,6 +8,11 @@ import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { PageHeader } from '@/components/primitives/page-header'
+import { PageContainer } from '@/components/primitives/page-container'
+import { SaveBar } from '@/components/forms/SaveBar'
+import { examplePlaceholder } from '@/components/forms/placeholders'
+import { attentionSummary } from '@/components/forms/validation'
+import { Button } from '@/components/ui/button'
 import { LoadingState } from '@/components/primitives/loading-state'
 import {
   RadioCards,
@@ -398,12 +403,16 @@ export function MetricForm({
 
   return (
     <div className="h-full overflow-y-auto">
+      {/* The shell pads the page; the form adds none of its own (DS-3). */}
+      <PageContainer width="narrow">
+      {/* `noValidate`: every rule is checked by `validateDraft` and named inline
+          and in the list above Save, never by a browser bubble (AU-4). */}
       <form
+        noValidate
         onSubmit={e => {
           e.preventDefault()
           void onSubmit()
         }}
-        className="mx-auto max-w-[1100px] px-4 pb-12 pt-4 sm:px-6"
       >
         <PageHeader
           className="mb-[18px]"
@@ -414,9 +423,10 @@ export function MetricForm({
               className="inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
               style={{ color: 'var(--fg-muted)' }}
             >
-              <ChevronLeft size={13} /> Back
+              <ChevronLeft size={14} /> Back
             </button>
           }
+          eyebrow="Observe · Metric"
           title={isNew ? 'New metric' : canWrite ? 'Edit metric' : 'Metric'}
         />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
@@ -445,7 +455,7 @@ export function MetricForm({
                 id="metric-display-name"
                 value={draft.displayName}
                 onChange={onDisplayNameChange}
-                placeholder="Checkout conversion"
+                placeholder={examplePlaceholder('Checkout conversion')}
                 aria-required
                 {...errorAria(fieldErrors, 'metric-display-name')}
               />
@@ -469,7 +479,7 @@ export function MetricForm({
                     patch({ name: value })
                   }}
                   mono
-                  placeholder="checkout_conversion"
+                  placeholder={examplePlaceholder('checkout_conversion')}
                   aria-required
                   {...errorAria(fieldErrors, 'metric-name')}
                 />
@@ -489,7 +499,7 @@ export function MetricForm({
               />
             </Field>
             <Field label="Unit" htmlFor="metric-unit" hint="Optional display unit (e.g. %, ms). With %, stored fractions render ×100 (0.08 → 8 %).">
-              <TextInput id="metric-unit" value={draft.unit} onChange={value => patch({ unit: value })} placeholder="%" />
+              <TextInput id="metric-unit" value={draft.unit} onChange={value => patch({ unit: value })} placeholder={examplePlaceholder('%', 'ms', '$')} />
             </Field>
             <Field label="Color" htmlFor="metric-color">
               <input
@@ -497,7 +507,7 @@ export function MetricForm({
                 type="color"
                 value={draft.color}
                 onChange={e => patch({ color: e.target.value })}
-                className="h-8 w-12 cursor-pointer rounded border bg-transparent"
+                className="h-8 w-12 cursor-pointer rounded-sm border bg-transparent"
                 style={{ borderColor: 'var(--border)' }}
               />
             </Field>
@@ -606,34 +616,31 @@ export function MetricForm({
           </div>
         )}
 
-        <div className="mt-1 flex justify-end gap-[10px]">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
-          >
+        {/* Sticky, so Save and the reason it is blocked stay on screen on a
+            2,500-3,600px form (MT-4). The status jumps to the first field. */}
+        <SaveBar
+          status={attentionSummary(errorEntries.length)}
+          statusTone="danger"
+          onStatusClick={errorEntries[0] ? () => focusField(errorEntries[0]![0]) : undefined}
+        >
+          <Button type="button" variant="outline" onClick={onClose}>
             {canWrite ? 'Cancel' : 'Close'}
-          </button>
+          </Button>
           {canWrite && (
-            <button
-              type="submit"
-              disabled={saveMut.isPending || facts.loading || facts.error != null}
-              className="inline-flex h-8 items-center gap-[6px] rounded-control px-3 text-[12px] font-medium disabled:opacity-60"
-              style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-            >
+            <Button type="submit" disabled={saveMut.isPending || facts.loading || facts.error != null}>
               {saveMut.isPending ? (
-                <Loader2 className="animate-spin" size={12} />
+                <Loader2 className="animate-spin" aria-hidden="true" />
               ) : isNew ? (
-                <Plus size={12} />
+                <Plus aria-hidden="true" />
               ) : (
-                <Save size={12} />
+                <Save aria-hidden="true" />
               )}
               {isNew ? 'Create metric' : 'Save metric'}
-            </button>
+            </Button>
           )}
-        </div>
+        </SaveBar>
       </form>
+      </PageContainer>
       {confirmDialog}
       {unsaved.dialog}
     </div>
@@ -685,13 +692,13 @@ export default function MetricEditPage() {
 
   if (metricQuery.error) {
     return (
-      <div className="mx-auto max-w-[880px] p-6">
+      <PageContainer width="narrow">
         <ErrorState
           title="Failed to load metric editor"
           error={metricQuery.error}
           onRetry={() => void metricQuery.refetch()}
         />
-      </div>
+      </PageContainer>
     )
   }
 
@@ -700,7 +707,7 @@ export default function MetricEditPage() {
   const isLoading = dataSourcesQuery.isLoading || (!isNew && metricQuery.isLoading)
   if (isLoading || !slug) {
     return (
-      <LoadingState className="flex min-h-[240px] items-center justify-center text-[12px]" />
+      <LoadingState className="flex min-h-[240px] items-center justify-center text-body-sm" />
     )
   }
 

@@ -73,7 +73,7 @@ function PlanValueChangeRow({ item }: { item: PlanValueChange }) {
   return (
     <div className="flex flex-wrap items-baseline gap-1.5 text-caption">
       <span
-        className="mono w-3 shrink-0 text-center font-bold"
+        className="mono w-3 shrink-0 text-center font-medium"
         style={{ color: `var(--${meta.tone})` }}
         aria-hidden="true"
       >

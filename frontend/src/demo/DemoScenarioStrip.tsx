@@ -136,7 +136,7 @@ function ActiveStrip({
         aria-live="polite"
         className="flex min-w-0 grow basis-full flex-wrap items-center gap-x-2 gap-y-1 lg:basis-0 lg:flex-nowrap"
       >
-        <span className="flex shrink-0 items-center gap-1.5 text-[12px] font-medium whitespace-nowrap">
+        <span className="flex shrink-0 items-center gap-1.5 text-body-sm font-medium whitespace-nowrap">
           <Dot tone="accent" pulse={isWatching} />
           {step.title}
         </span>
@@ -249,7 +249,7 @@ function CompletedStrip({
       <Dot tone="success" />
       <p
         aria-live="polite"
-        className="min-w-0 grow basis-full text-[12px] font-medium lg:basis-0 lg:truncate"
+        className="min-w-0 grow basis-full text-body-sm font-medium lg:basis-0 lg:truncate"
       >
         Chapter complete: {CHAPTER_TITLES[chapter]}.{' '}
         <span className="font-normal" style={{ color: 'var(--fg-muted)' }}>

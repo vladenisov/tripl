@@ -52,6 +52,11 @@ function wrapper({ children }: { children: ReactNode }) {
   )
 }
 
+/** The blocking-reason line of the sticky action bar. */
+function saveBarStatus() {
+  return document.querySelector('[data-slot="save-bar"] [role="status"]')
+}
+
 async function chooseType(id = 'et-se') {
   // Wait for the OPTION, not just the select: a controlled <select> ignores a
   // value it has no option for, so firing the change before the types resolve
@@ -295,12 +300,21 @@ describe('EventBulkForm duplicate check (EVT-37)', () => {
     expect(await screen.findByText('checking…')).toBeInTheDocument()
     expect(screen.queryByText('will be created')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create 1 event' })).toBeDisabled()
+    expect(saveBarStatus()).toHaveTextContent('Checking the names…')
     await waitFor(() => expect(eventsApi.byNames).toHaveBeenCalled())
     expect(screen.getByRole('button', { name: 'Create 1 event' })).toBeDisabled()
 
     answer({ items: [] })
     expect(await screen.findByText('will be created')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create 1 event' })).not.toBeDisabled()
+  })
+
+  it('says on the action bar why Create is held (AU-6)', async () => {
+    render(createElement(EventBulkForm), { wrapper })
+    await waitFor(() => expect(saveBarStatus()).toHaveTextContent('Pick an event type'))
+    await chooseType()
+    await waitFor(() => expect(saveBarStatus()).toHaveTextContent('Paste at least one event name'))
+    expect(screen.getByRole('button', { name: 'Create 0 events' })).toBeDisabled()
   })
 
   it('reads a failed lookup as unchecked, not as a free name', async () => {

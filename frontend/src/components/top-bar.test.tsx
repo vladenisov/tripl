@@ -78,6 +78,23 @@ describe('TopBar mobile nav', () => {
     // The bar is the page's banner landmark (SHELL-47).
     expect(screen.getByRole('banner')).toContainElement(trigger)
   })
+
+  it('sizes its controls as touch targets on phones (SH-16 / AL-41)', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <TopBar title="Events" onOpenMobileNav={() => {}} onToggleActivity={() => {}} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    // jsdom resolves no Tailwind, so the sizes are read off the classes:
+    // 40px hamburger and 36px icon buttons below sm, 32px from sm up.
+    expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveClass('h-10', 'w-10', 'sm:h-8')
+    expect(screen.getByRole('button', { name: 'Notifications' })).toHaveClass('h-9', 'w-9', 'sm:h-8')
+    expect(screen.getByRole('button', { name: 'Command palette' })).toHaveClass('h-9', 'sm:h-8')
+    expect(screen.getByRole('button', { name: 'Toggle activity panel' })).toHaveClass('h-9', 'sm:h-8')
+  })
 })
 
 type DeliveryOverrides = {
@@ -187,8 +204,8 @@ describe('TopBar notifications', () => {
     await waitFor(() => {
       expect(screen.getByText('Spike on Event type · Page View')).toBeInTheDocument()
     })
-    expect(screen.getByText('Active Signals')).toBeInTheDocument()
-    expect(screen.getByText('Recent Alert Deliveries')).toBeInTheDocument()
+    expect(screen.getByText('Active signals')).toBeInTheDocument()
+    expect(screen.getByText('Recent alert deliveries')).toBeInTheDocument()
     expect(screen.getByText('Spike alerts')).toBeInTheDocument()
   })
 

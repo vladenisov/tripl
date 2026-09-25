@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Pencil, Send } from "lucide-react"
 import type { AlertDestination } from "@/types"
 import { alertingApi } from "@/api/alerting"
-import { Badge } from "@/components/ui/badge"
+import { Chip } from "@/components/primitives/chip"
 import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -90,7 +90,7 @@ export function DestinationCard({
 
   return (
     <Card>
-      <CardContent className="p-5 space-y-4">
+      <CardContent className="space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           {/* `min-w-0` + `flex-wrap` on the badge row: at 390px the row used to
               clip its own tail, and the tail is the chat id — the only value
@@ -99,21 +99,21 @@ export function DestinationCard({
           <div className="min-w-0 flex-1 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold">{destination.name}</span>
-              <Badge variant="outline" className="uppercase text-[10px]">
-                {destination.type}
-              </Badge>
-              <Badge variant={destination.enabled ? 'default' : 'secondary'} className="text-[10px]">
+              {/* Kind tag, then lifecycle status: the badge taxonomy (DS-6).
+                  `enabled` used to be a solid brand block and `disabled` a grey
+                  one, so the state read as two unrelated shapes. */}
+              <Chip variant="outline">{destination.type}</Chip>
+              <Chip tone={destination.enabled ? 'success' : 'neutral'}>
                 {destination.enabled ? 'enabled' : 'disabled'}
-              </Badge>
+              </Chip>
               {destination.is_local && (
-                <Badge variant="outline" className="text-[10px]">
+                <Chip variant="outline">
                   local · nothing is sent
-                </Badge>
+                </Chip>
               )}
               {destination.delivery_schedule_cron && (
-                <Badge
+                <Chip
                   variant="outline"
-                  className="text-[10px]"
                   title={
                     destination.next_digest_at
                       ? `Next digest ${formatInProjectZone(destination.next_digest_at, destination.project_timezone)}`
@@ -122,31 +122,31 @@ export function DestinationCard({
                 >
                   {describeCron(destination.delivery_schedule_cron)}
                   {destination.project_timezone ? ` · ${destination.project_timezone}` : ''}
-                </Badge>
+                </Chip>
               )}
               {destination.delivery_schedule_cron && (
-                <Badge variant="outline" className="text-[10px]">
+                <Chip variant="outline">
                   {destination.held_count
                     ? `${destination.held_count} held`
                     : 'nothing held'}
-                </Badge>
+                </Chip>
               )}
               {destination.type === 'slack' && destination.webhook_set && (
-                <Badge variant="outline" className="text-[10px]">webhook set</Badge>
+                <Chip variant="outline">webhook set</Chip>
               )}
               {destination.type === 'telegram' && destination.bot_token_set && (
-                <Badge variant="outline" className="text-[10px]">bot token set</Badge>
+                <Chip variant="outline">bot token set</Chip>
               )}
               {destination.type === 'telegram' && destination.chat_id && (
-                <Badge variant="outline" className="max-w-full break-all text-[10px]">
+                <Chip variant="outline" className="h-auto min-h-5 max-w-full whitespace-normal break-all py-0.5">
                   chat {destination.chat_id}
-                </Badge>
+                </Chip>
               )}
               {destination.type === 'webhook' && destination.target_url_set && (
-                <Badge variant="outline" className="text-[10px]">url set</Badge>
+                <Chip variant="outline">url set</Chip>
               )}
               {destination.type === 'webhook' && destination.webhook_header_name && (
-                <Badge variant="outline" className="text-[10px]">header {destination.webhook_header_name}</Badge>
+                <Chip variant="outline">header {destination.webhook_header_name}</Chip>
               )}
             </div>
             {/* Traffic, not just configuration. A destination that has carried
@@ -155,7 +155,7 @@ export function DestinationCard({
                 rule count stays after the rules themselves moved to Monitors:
                 "enabled, wired up, and nothing routes here" is a state worth
                 reading off the channel. */}
-            <p className="text-xs text-muted-foreground">
+            <p className="text-body-sm text-muted-foreground">
               {countOf(destination.rules.length, 'rule', 'rules')}
               {' · '}
               {countOf(destination.delivery_count, 'delivery', 'deliveries')}
@@ -214,10 +214,10 @@ export function DestinationCard({
             role={testFailed ? 'alert' : 'status'}
             className={
               testResult?.ok
-                ? 'text-xs text-success'
+                ? 'text-body-sm text-success'
                 : testDestinationMut.isPending
-                  ? 'text-xs text-muted-foreground'
-                  : 'text-xs text-destructive'
+                  ? 'text-body-sm text-muted-foreground'
+                  : 'text-body-sm text-destructive'
             }
           >
             {testDestinationMut.isPending && 'Sending a test message…'}
@@ -240,7 +240,7 @@ export function DestinationCard({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-6 shrink-0 px-2 text-xs"
+              className="h-6 shrink-0 px-2 text-body-sm"
               onClick={() => setTestedVersion(null)}
               aria-label={`Dismiss the test result for ${destination.name}`}
             >

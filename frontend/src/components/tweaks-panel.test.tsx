@@ -101,7 +101,34 @@ describe('TweaksPanel', () => {
     expect(screen.getByRole('button', { name: 'Teal' })).toHaveAttribute('aria-pressed', 'false')
 
     const density = screen.getByRole('group', { name: 'Density' })
+    // The shared SegmentedControl (DS-16), not a hand-rolled copy.
+    expect(density).toHaveAttribute('data-slot', 'segmented-control')
     expect(density.querySelector('[aria-pressed="true"]')).toHaveTextContent('Compact')
+  })
+
+  it('previews each accent through its own class and names the choice (DS-19 / SH-24)', async () => {
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
+
+    const accents = await screen.findByRole('group', { name: 'Accent' })
+    const swatches = Array.from(accents.querySelectorAll('button'))
+    expect(swatches.map((swatch) => swatch.getAttribute('aria-label'))).toEqual([
+      'Teal',
+      'Violet',
+      'Lime',
+      'Indigo',
+      'Magenta',
+    ])
+    for (const swatch of swatches) {
+      const label = swatch.getAttribute('aria-label')!.toLowerCase()
+      expect(swatch).toHaveClass(`accent-${label}`)
+    }
+    expect(screen.getByText('Teal')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Indigo' }))
+    expect(document.documentElement).toHaveClass('accent-indigo')
+    expect(screen.getByText('Indigo')).toBeInTheDocument()
+    expect(screen.queryByText('Teal')).toBeNull()
   })
 
   it('offers System, and a System theme follows the OS as it changes (SHELL-33)', async () => {

@@ -59,7 +59,7 @@ function useSettingsSlug(pickedSlug: string | null): string | undefined {
 }
 
 function SectionFallback() {
-  return <div className="text-sm" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>
+  return <div className="text-body" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>
 }
 
 /**
@@ -272,7 +272,7 @@ function NoProjectSelected({
         title="No project selected"
         description="Project settings change one specific project's tracking plan, and there is no project on this workspace yet."
       >
-        <p className="m-0 px-[18px] py-[15px] text-body" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="m-0 px-4 py-[15px] text-body" style={{ color: 'var(--fg-subtle)' }}>
           <Link to="/workspace" className="underline">
             Create one in the workspace
           </Link>{' '}
@@ -292,7 +292,7 @@ function NoProjectSelected({
           key={project.slug}
           type="button"
           onClick={() => onPick(project.slug)}
-          className="flex w-full items-baseline gap-3 px-[18px] py-[13px] text-left transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex w-full items-baseline gap-3 px-4 py-[13px] text-left transition-colors hover:bg-[var(--surface-hover)]"
           style={{
             borderBottom:
               index === projects.length - 1 ? 'none' : '1px solid var(--border-subtle)',
@@ -311,7 +311,7 @@ function NoProjectSelected({
 function OwnerOnly() {
   return (
     <div
-      className="rounded-xl p-6 text-sm"
+      className="rounded-xl p-6 text-body"
       style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--fg-subtle)' }}
     >
       Owner role is required to view or change instance-level settings.

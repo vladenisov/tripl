@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react'
-import { ChevronDown, Download, ListPlus, MoreHorizontal, Plus, Search, X } from 'lucide-react'
+import { ChevronDown, Download, ListPlus, MoreHorizontal, Plus } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition } from '@/types'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { cn } from '@/lib/utils'
+import { FilterBar, FilterSearch, FilterSelect } from '@/components/ui/filter-bar'
 import {
   Select,
   SelectContent,
@@ -24,37 +24,20 @@ import { SavedViewsMenu } from './SavedViewsMenu'
 import type { EventsSavedView } from './savedViews'
 import type { EventsSortOrder } from './useEventsQuery'
 
-const FILTER_TRIGGER_CLASS =
-  'h-8 w-auto gap-1.5 border-dashed bg-transparent text-caption text-[var(--fg-muted)]'
+/**
+ * The Sort and Status triggers in the FilterSelect chip geometry (DS-15):
+ * 28px, caption text, "{Label}: {value}". Status is a multi-select menu and
+ * Sort is not a filter, so neither can be a FilterSelect itself.
+ */
+const CHIP_TRIGGER_CLASS = 'h-7 w-auto gap-1.5 text-caption font-normal'
+const CHIP_UNSET_CLASS = 'border-dashed bg-transparent text-fg-muted'
+const CHIP_SET_CLASS = 'border-accent bg-accent-soft text-fg'
 
 /** The silent-days values the Activity filter offers as presets. */
 const SILENT_DAY_PRESETS = [1, 7, 30]
 
-/** True when the key press lands in something that takes text. */
-function isTypingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  if (target.isContentEditable) return true
-  const tag = target.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
-}
-
-/**
- * Focuses `input` when "/" is pressed outside a text field — the shortcut the
- * search box's "/" hint has always advertised and nothing implemented (EVT-34).
- */
-function useSlashToFocus(input: React.RefObject<HTMLInputElement | null>) {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return
-      if (event.defaultPrevented || isTypingTarget(event.target)) return
-      if (!input.current) return
-      event.preventDefault()
-      input.current.focus()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [input])
-}
+/** "no filter" for the single-value FilterSelects below. */
+const ANY = '__all__'
 
 export function EventsToolbar({
   search,
@@ -146,8 +129,6 @@ export function EventsToolbar({
    *  to the events route, away from the host. */
   showSavedViews?: boolean
 }) {
-  const searchRef = useRef<HTMLInputElement>(null)
-  useSlashToFocus(searchRef)
   // A silent-days value from a shared link that no preset names used to leave
   // the single-value select showing "Any", so it gets an item of its own that
   // says what is actually applied (EVT-35).
@@ -155,137 +136,101 @@ export function EventsToolbar({
     filterSilentDays !== undefined && !SILENT_DAY_PRESETS.includes(filterSilentDays)
       ? filterSilentDays
       : undefined
+  const silentDayOptions = [
+    ...SILENT_DAY_PRESETS,
+    ...(customSilentDays !== undefined ? [customSilentDays] : []),
+  ].map(days => ({ value: String(days), label: `Silent > ${days}d` }))
   return (
     // Two groups, not one wrapping row of dividers: find/refine on the left,
     // wrapping as it must; the actions on the right, which never wrap. One flat
     // row left a divider after the search box with nothing beside it and "New
-    // Event" or "More" stranded alone on a line on tablets and phones (LIVE-25).
+    // event" or "More" stranded alone on a line on tablets and phones (LIVE-25).
     <div className="mb-3 flex flex-wrap items-center gap-2">
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      {/* The shared filter bar (DS-15): search, then "{Label}: {value}" chips
+          that apply instantly, then "Clear filters" while anything is set. */}
+      <FilterBar className="min-w-0 flex-1" active={hasActiveFilters} onClear={onClearFilters}>
         {/* Primary — find: full-text filter */}
-        <div className="relative min-w-[200px] max-w-[320px] flex-1">
-          <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-          <Input
-            ref={searchRef}
-            aria-label="Filter events by name, tag, or field"
-            placeholder="Filter by name, tag, field…"
+        <div className="relative flex min-w-[180px] max-w-[320px] flex-1">
+          <FilterSearch
+            things="events"
             value={search}
-            onChange={event => onSearchChange(event.target.value)}
-            className="h-8 w-full pl-8 pr-7 text-xs"
+            onValueChange={onSearchChange}
+            className="max-w-none"
+            aria-busy={isFilterPending || undefined}
           />
-          {isFilterPending ? (
+          {isFilterPending && (
             <span
               aria-hidden="true"
               className="pulse-dot pointer-events-none absolute right-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full"
               style={{ background: 'var(--accent)' }}
               title="Updating results"
             />
-          ) : (
-            <span
-              className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2"
-              title="Press / to search"
-            >
-              /
-            </span>
           )}
         </div>
 
-        {/* Secondary — refine: status / activity filters.
-            The group wraps internally: as a `shrink-0` row it needed ~460px inside
-            a 366px phone column, pushing the primary CTA off-screen
-            (tripl-jfm3.42). */}
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <StatusFilter
-            value={filterStatuses}
-            tabDefault={tabDefaultStatuses}
-            onChange={onFilterStatusesChange}
-          />
-          <Select
-            value={filterSilentDays === undefined ? '__all__' : String(filterSilentDays)}
-            onValueChange={value => onFilterSilentDaysChange(value === '__all__' ? undefined : Number(value))}
-          >
-            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Activity filter">
-              <span style={{ color: 'var(--fg-subtle)' }}>Activity</span>
-              <SelectValue placeholder="any" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">Any activity</SelectItem>
-              {SILENT_DAY_PRESETS.map(days => (
-                <SelectItem key={days} value={String(days)}>Silent &gt; {days}d</SelectItem>
-              ))}
-              {customSilentDays !== undefined && (
-                <SelectItem value={String(customSilentDays)}>Silent &gt; {customSilentDays}d</SelectItem>
-              )}
-            </SelectContent>
-          </Select>
-          {/* Reviewed is a separate axis from status (an event can be reviewed
-              and still in_review), and until now it had no readable surface at
-              all: no filter, no counter, and a column hidden by default. Without
-              this control "Mark reviewed" wrote a flag the operator could never
-              see or isolate (tripl-invv). */}
-          <Select
-            value={filterReviewed === undefined ? '__all__' : String(filterReviewed)}
-            onValueChange={value =>
-              onFilterReviewedChange(value === '__all__' ? undefined : value === 'true')
-            }
-          >
-            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Reviewed filter">
-              <span style={{ color: 'var(--fg-subtle)' }}>Reviewed</span>
-              <SelectValue placeholder="any" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">Any</SelectItem>
-              <SelectItem value="true">Reviewed</SelectItem>
-              <SelectItem value="false">Not reviewed</SelectItem>
-            </SelectContent>
-          </Select>
-          {/* The discussion (tripl-h2sx.25) gave events a place to raise a
-              question; until threads could be resolved there was no way to ask
-              which events are still waiting on one (tripl-h2sx.26). Server-side,
-              like every filter here, so it sees the whole catalog and not one
-              loaded page — and twin-aware, so it answers on a branch too. */}
-          <Select
-            value={filterOpenQuestions === undefined ? '__all__' : String(filterOpenQuestions)}
-            onValueChange={value =>
-              onFilterOpenQuestionsChange(value === '__all__' ? undefined : value === 'true')
-            }
-          >
-            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Open questions filter">
-              <span style={{ color: 'var(--fg-subtle)' }}>Questions</span>
-              <SelectValue placeholder="any" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">Any</SelectItem>
-              <SelectItem value="true">Open questions</SelectItem>
-              <SelectItem value="false">Nothing open</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={sortOrder}
-            onValueChange={value => onSortOrderChange(value as EventsSortOrder)}
-          >
-            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Sort order">
-              <span style={{ color: 'var(--fg-subtle)' }}>Sort</span>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="catalog">Catalog order</SelectItem>
-              <SelectItem value="volume">Busiest first</SelectItem>
-            </SelectContent>
-          </Select>
-          {hasActiveFilters && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onClearFilters}
-              className="h-8 shrink-0 text-xs text-muted-foreground"
-            >
-              <X className="mr-1 h-3 w-3" />
-              Clear
-            </Button>
-          )}
-        </div>
-      </div>
+        {/* Secondary — refine: status / activity filters. They wrap with the
+            bar: as a `shrink-0` row they needed ~460px inside a 366px phone
+            column, pushing the primary CTA off-screen (tripl-jfm3.42). */}
+        <StatusFilter
+          value={filterStatuses}
+          tabDefault={tabDefaultStatuses}
+          onChange={onFilterStatusesChange}
+        />
+        <FilterSelect
+          label="Activity"
+          value={filterSilentDays === undefined ? ANY : String(filterSilentDays)}
+          onValueChange={value => onFilterSilentDaysChange(value === ANY ? undefined : Number(value))}
+          options={silentDayOptions}
+          anyValue={ANY}
+        />
+        {/* Reviewed is a separate axis from status (an event can be reviewed
+            and still in_review), and until now it had no readable surface at
+            all: no filter, no counter, and a column hidden by default. Without
+            this control "Mark reviewed" wrote a flag the operator could never
+            see or isolate (tripl-invv). */}
+        <FilterSelect
+          label="Reviewed"
+          value={filterReviewed === undefined ? ANY : String(filterReviewed)}
+          onValueChange={value => onFilterReviewedChange(value === ANY ? undefined : value === 'true')}
+          options={[
+            { value: 'true', label: 'Yes' },
+            { value: 'false', label: 'No' },
+          ]}
+          anyValue={ANY}
+        />
+        {/* The discussion (tripl-h2sx.25) gave events a place to raise a
+            question; until threads could be resolved there was no way to ask
+            which events are still waiting on one (tripl-h2sx.26). Server-side,
+            like every filter here, so it sees the whole catalog and not one
+            loaded page — and twin-aware, so it answers on a branch too. */}
+        <FilterSelect
+          label="Questions"
+          value={filterOpenQuestions === undefined ? ANY : String(filterOpenQuestions)}
+          onValueChange={value =>
+            onFilterOpenQuestionsChange(value === ANY ? undefined : value === 'true')
+          }
+          options={[
+            { value: 'true', label: 'Open' },
+            { value: 'false', label: 'None open' },
+          ]}
+          anyValue={ANY}
+        />
+        {/* Sort orders the rows, it filters nothing: same chip geometry, but
+            never the "set" tint, and not counted by "Clear filters". */}
+        <Select
+          value={sortOrder}
+          onValueChange={value => onSortOrderChange(value as EventsSortOrder)}
+        >
+          <SelectTrigger className={cn(CHIP_TRIGGER_CLASS, 'bg-transparent text-fg-muted')} aria-label="Sort order">
+            <span className="font-medium">Sort:</span>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="catalog">Catalog order</SelectItem>
+            <SelectItem value="volume">Busiest first</SelectItem>
+          </SelectContent>
+        </Select>
+      </FilterBar>
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
         {/* Secondary — shape the table: saved views + columns */}
@@ -319,8 +264,8 @@ export function EventsToolbar({
             unavailable teaches users not to open menus (tripl-evbw). */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="h-8 text-xs" aria-label="More actions">
-              <MoreHorizontal className="h-3.5 w-3.5" />
+            <Button variant="outline" size="sm" aria-label="More actions">
+              <MoreHorizontal />
               <span className="max-sm:sr-only">More</span>
             </Button>
           </DropdownMenuTrigger>
@@ -353,9 +298,9 @@ export function EventsToolbar({
 
         {onNewEvent && (
           // Primary — create
-          <Button onClick={onNewEvent} size="sm" className="h-8 text-xs">
-            <Plus className="h-3.5 w-3.5" />
-            New Event
+          <Button onClick={onNewEvent} size="sm">
+            <Plus />
+            New event
           </Button>
         )}
       </div>
@@ -398,11 +343,16 @@ function StatusFilter({
           variant="outline"
           size="sm"
           aria-label="Status filter"
-          className={`${FILTER_TRIGGER_CLASS} max-w-[260px] font-normal`}
+          data-active={value.length > 0 || undefined}
+          className={cn(
+            CHIP_TRIGGER_CLASS,
+            'max-w-[260px]',
+            value.length > 0 ? CHIP_SET_CLASS : CHIP_UNSET_CLASS,
+          )}
         >
-          <span style={{ color: 'var(--fg-subtle)' }}>Status</span>
+          <span className="font-medium">Status:</span>
           <span className="truncate">{summary}</span>
-          <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 opacity-50" />
+          <ChevronDown aria-hidden="true" className="size-3.5 opacity-50" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-[200px]">

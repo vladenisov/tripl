@@ -17,12 +17,16 @@ export function JsonEditor({
   value,
   onChange,
   required,
+  invalid = false,
   variables = [],
 }: {
   id?: string
   value: string
   onChange: (v: string) => void
+  /** Announced (`aria-required`); the form validates it, not the browser. */
   required?: boolean
+  /** Flagged by the form (e.g. an empty required row) on top of the JSON check. */
+  invalid?: boolean
   variables?: VariableSuggestion[]
 }) {
   const uid = useId()
@@ -203,13 +207,13 @@ export function JsonEditor({
           value={raw}
           onChange={e => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          className={`font-mono text-xs ${error ? 'border-destructive' : ''}`}
+          className={`font-mono text-body-sm ${error ? 'border-destructive' : ''}`}
           rows={4}
           placeholder='{ "key": "value" }'
-          required={required}
+          aria-required={required || undefined}
           spellCheck={false}
           role="combobox"
-          aria-invalid={error ? 'true' : 'false'}
+          aria-invalid={error || invalid ? 'true' : 'false'}
           aria-expanded={menuOpen}
           aria-haspopup="listbox"
           aria-autocomplete="list"
@@ -230,14 +234,14 @@ export function JsonEditor({
       {/* Format sits under the field, not over it: an overlay button covered the
           first line of every payload wider than the box. */}
       <div className="flex items-start justify-between gap-2">
-        <p id={errorId} className="min-w-0 text-xs text-destructive">{error}</p>
+        <p id={errorId} className="min-w-0 text-body-sm text-destructive">{error}</p>
         <Button type="button" variant="ghost" size="xs" onClick={handleFormat} className="shrink-0">
           Format
         </Button>
       </div>
       {repair && (
         <div className="flex items-start justify-between gap-2" aria-live="polite">
-          <p className="min-w-0 text-xs text-muted-foreground">
+          <p className="min-w-0 text-body-sm text-muted-foreground">
             Format {repair.fixes.join(', ')}.
           </p>
           <Button type="button" variant="ghost" size="xs" onClick={handleUndoRepair} className="shrink-0">

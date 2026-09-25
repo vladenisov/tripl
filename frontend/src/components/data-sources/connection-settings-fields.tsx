@@ -17,6 +17,12 @@ import {
   type PemErrors,
   type PemField,
 } from './connection-settings'
+import { examplePlaceholder } from '@/components/forms/placeholders'
+
+// Instructions, not a PEM header that reads as content already pasted in
+// (DA-37).
+const PEM_CERT_PLACEHOLDER = 'Paste the PEM block, from -----BEGIN CERTIFICATE-----'
+const PEM_KEY_PLACEHOLDER = 'Paste the PEM block, from -----BEGIN PRIVATE KEY-----'
 
 interface ConnectionSettingsFieldsProps {
   idPrefix: string
@@ -65,7 +71,7 @@ export function ConnectionSettingsFields({
               id={`${idPrefix}-location`}
               value={value.location}
               onChange={(e) => onChange({ location: e.target.value })}
-              placeholder="EU, US, us-east1…"
+              placeholder={examplePlaceholder('EU', 'US', 'us-east1')}
             />
             <p className={HELP_CLASS}>
               The region or multi-region the datasets live in. Leave empty to let BigQuery infer it —
@@ -95,7 +101,7 @@ export function ConnectionSettingsFields({
             id={`${idPrefix}-dataset-allowlist`}
             value={value.datasetAllowlist}
             onChange={(e) => onChange({ datasetAllowlist: e.target.value })}
-            placeholder="analytics, marts, events_raw"
+            placeholder={examplePlaceholder('analytics, marts, events_raw')}
           />
           <p className={HELP_CLASS}>
             Comma-separated datasets the schema browser may list. Empty means the default dataset
@@ -136,7 +142,7 @@ export function ConnectionSettingsFields({
               id={`${idPrefix}-search-path`}
               value={value.searchPath}
               onChange={(e) => onChange({ searchPath: e.target.value })}
-              placeholder="public"
+              placeholder={examplePlaceholder('public')}
             />
             <p className={HELP_CLASS}>
               Comma-separated schemas to resolve unqualified table names against. Leave empty for
@@ -151,7 +157,7 @@ export function ConnectionSettingsFields({
             value={value.sslrootcert}
             onChange={(e) => onChange({ sslrootcert: e.target.value })}
             rows={3}
-            placeholder="-----BEGIN CERTIFICATE-----"
+            placeholder={PEM_CERT_PLACEHOLDER}
             className={TEXTAREA_CLASS}
             {...pemProps('sslrootcert')}
           />
@@ -167,7 +173,7 @@ export function ConnectionSettingsFields({
             value={value.sslcert}
             onChange={(e) => onChange({ sslcert: e.target.value })}
             rows={3}
-            placeholder="-----BEGIN CERTIFICATE-----"
+            placeholder={PEM_CERT_PLACEHOLDER}
             className={TEXTAREA_CLASS}
             {...pemProps('sslcert')}
           />
@@ -182,7 +188,7 @@ export function ConnectionSettingsFields({
             onChange={(e) => onChange({ sslkey: e.target.value })}
             rows={3}
             placeholder={
-              sslkeySet ? 'A key is stored. Leave empty to keep it.' : '-----BEGIN PRIVATE KEY-----'
+              sslkeySet ? 'A key is stored. Leave empty to keep it.' : PEM_KEY_PLACEHOLDER
             }
             className={TEXTAREA_CLASS}
             disabled={value.clearSslkey}
@@ -193,7 +199,7 @@ export function ConnectionSettingsFields({
             PEM content, stored encrypted and never shown again — like the password.
           </p>
           {sslkeySet && (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <label className="flex items-center gap-2 text-body-sm text-muted-foreground">
               <input
                 type="checkbox"
                 checked={value.clearSslkey}

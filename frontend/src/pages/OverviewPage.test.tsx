@@ -131,6 +131,16 @@ afterEach(() => {
 })
 
 describe('OverviewPage', () => {
+  it('names the nav group in the eyebrow, never the project (DS-2 / MO-40)', async () => {
+    mockFetch()
+    const { container } = renderOverview()
+
+    await screen.findByRole('heading', { name: 'Live activity' })
+    const eyebrow = container.querySelector('[data-slot="page-eyebrow"]')
+    expect(eyebrow).toHaveTextContent('Observe')
+    expect(eyebrow).not.toHaveTextContent('Demo')
+  })
+
   it('renders the KPI strip with active events and plan coverage', async () => {
     mockFetch()
     renderOverview()

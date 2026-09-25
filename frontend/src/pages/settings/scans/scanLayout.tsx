@@ -43,7 +43,7 @@ export function KV({
       className="flex items-start gap-3.5 border-t px-4 py-2.5 first:border-t-0"
       style={{ borderColor: 'var(--border-subtle)' }}
     >
-      <span className="w-[150px] shrink-0 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="w-[150px] shrink-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
         {label}
       </span>
       <span
@@ -60,94 +60,6 @@ export function KV({
 export function NoneTag() {
   return <span style={{ color: 'var(--fg-faint)' }}>none</span>
 }
-
-// ─── KPI / stat card ───
-export function StatCard({
-  label,
-  value,
-  title,
-}: {
-  label: string
-  value: ReactNode
-  /**
-   * Hover text disambiguating what the number counts. Several scan cards share
-   * a label ("Rows read") across counters with different populations, and the
-   * label alone cannot carry that.
-   */
-  title?: string
-}) {
-  return (
-    <div
-      className="rounded-card border px-3.5 py-3"
-      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
-      title={title}
-    >
-      <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-        {label}
-      </div>
-      <div className="mono tnum mt-1 text-[18px] font-medium" style={{ color: 'var(--fg)' }}>
-        {value}
-      </div>
-    </div>
-  )
-}
-
-// ─── Page-style settings card (matches the mockup's SCard) ───
-export function SCard({
-  title,
-  description,
-  tone,
-  children,
-  footer,
-}: {
-  title: string
-  description?: string
-  tone?: 'danger'
-  children?: ReactNode
-  footer?: ReactNode
-}) {
-  const danger = tone === 'danger'
-  const borderColor = danger
-    ? 'color-mix(in oklab, var(--danger) 40%, var(--border))'
-    : 'var(--border)'
-  return (
-    <section
-      className="mb-5 overflow-hidden rounded-xl border"
-      style={{ borderColor, background: 'var(--surface)' }}
-    >
-      {(title || description) && (
-        <header
-          className="flex items-start gap-3 border-b px-[18px] py-4"
-          style={{ borderColor: 'var(--border-subtle)' }}
-        >
-          <div className="min-w-0 flex-1">
-            <h3
-              className="m-0 text-sm font-semibold"
-              style={{ color: danger ? 'var(--danger)' : 'var(--fg)' }}
-            >
-              {title}
-            </h3>
-            {description && (
-              <p className="mt-1 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
-                {description}
-              </p>
-            )}
-          </div>
-        </header>
-      )}
-      {children}
-      {footer && (
-        <footer
-          className="flex items-center gap-2.5 border-t px-[18px] py-3"
-          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
-        >
-          {footer}
-        </footer>
-      )}
-    </section>
-  )
-}
-
 
 // Back link used on detail / create surfaces.
 export function BackLink({ onClick, label = 'Scans' }: { onClick: () => void; label?: string }) {

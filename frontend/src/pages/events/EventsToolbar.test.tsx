@@ -54,7 +54,31 @@ describe('EventsToolbar sort control', () => {
     renderToolbar()
 
     expect(screen.getByRole('combobox', { name: 'Sort order' })).toBeInTheDocument()
-    expect(screen.getByText('Sort')).toBeInTheDocument()
+    expect(screen.getByText('Sort:')).toBeInTheDocument()
+  })
+})
+
+describe('EventsToolbar filter bar (DS-15)', () => {
+  it('reads each filter as "{Label}: {value}" and offers "Clear filters" only when one is set', () => {
+    renderToolbar()
+
+    expect(screen.getByRole('combobox', { name: /^Activity filter/ })).toHaveTextContent('Activity:any')
+    expect(screen.getByRole('button', { name: 'Status filter' })).toHaveTextContent('Status:any')
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull()
+  })
+
+  it('clears every filter from the bar', () => {
+    const onClearFilters = vi.fn()
+    renderToolbar({ hasActiveFilters: true, onClearFilters })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(onClearFilters).toHaveBeenCalledTimes(1)
+  })
+
+  it('names the create action in sentence case (DS-29)', () => {
+    renderToolbar()
+
+    expect(screen.getByRole('button', { name: 'New event' })).toBeInTheDocument()
   })
 })
 
@@ -62,7 +86,7 @@ describe('EventsToolbar reviewed filter (tripl-invv)', () => {
   it('offers a reviewed filter so the flag "Mark reviewed" writes can be isolated', () => {
     renderToolbar()
 
-    expect(screen.getByRole('combobox', { name: 'Reviewed filter' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: /^Reviewed filter/ })).toBeInTheDocument()
   })
 })
 
@@ -88,10 +112,10 @@ describe('EventsToolbar More menu (tripl-evbw)', () => {
     const onFilterOpenQuestionsChange = vi.fn()
     renderToolbar({ onFilterOpenQuestionsChange })
 
-    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Open questions filter' }), {
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^Questions filter/ }), {
       key: 'Enter',
     })
-    fireEvent.click(await screen.findByRole('option', { name: 'Open questions' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Open' }))
 
     expect(onFilterOpenQuestionsChange).toHaveBeenCalledWith(true)
   })
@@ -114,7 +138,7 @@ describe('EventsToolbar More menu (tripl-evbw)', () => {
 describe('EventsToolbar search shortcut (EVT-34)', () => {
   it('focuses the search box on "/" pressed outside a text field', () => {
     renderToolbar()
-    const search = screen.getByRole('textbox', { name: 'Filter events by name, tag, or field' })
+    const search = screen.getByRole('searchbox', { name: 'Search events' })
 
     fireEvent.keyDown(document.body, { key: '/' })
 
@@ -146,7 +170,7 @@ describe('EventsToolbar filters that came from a link (EVT-35)', () => {
   it('shows a silent-days value no preset names', () => {
     renderToolbar({ filterSilentDays: 3 })
 
-    expect(screen.getByRole('combobox', { name: 'Activity filter' })).toHaveTextContent(/Silent > 3d/)
+    expect(screen.getByRole('combobox', { name: /^Activity filter/ })).toHaveTextContent(/Silent > 3d/)
   })
 })
 

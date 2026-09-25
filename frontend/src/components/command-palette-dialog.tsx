@@ -651,7 +651,7 @@ export default function CommandPalette({
                   type="button"
                   onClick={handleBackFromAi}
                   aria-keyshortcuts="Escape"
-                  className="shrink-0 rounded px-1.5 py-0.5 text-[11px] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                  className="shrink-0 rounded-sm px-1.5 py-0.5 text-caption hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
                   style={{ color: 'var(--fg-subtle)' }}
                 >
                   ← Back to search
@@ -677,13 +677,13 @@ export default function CommandPalette({
           {aiQuestion ? (
             <div className="flex-1 overflow-y-auto py-2 px-3.5" aria-live="polite">
               {askMutation.isPending && (
-                <div className="flex items-center gap-2 py-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="flex items-center gap-2 py-2 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Asking AI…
                 </div>
               )}
               {askMutation.isError && (
-                <p className="py-2 text-[12px]" style={{ color: 'var(--destructive)' }}>
+                <p className="py-2 text-body-sm" style={{ color: 'var(--destructive)' }}>
                   Error: {askMutation.error instanceof Error ? askMutation.error.message : 'Something went wrong'}
                 </p>
               )}
@@ -694,7 +694,7 @@ export default function CommandPalette({
                   </p>
                   {aiResult.sources.length > 0 && (
                     <div className="space-y-1">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: 'var(--fg-faint)' }}>
+                      <p className="micro-label" style={{ color: 'var(--fg-faint)' }}>
                         Sources
                       </p>
                       {aiResult.sources.map((source, index) => (
@@ -702,14 +702,14 @@ export default function CommandPalette({
                           key={index}
                           type="button"
                           onClick={() => goToResult(source.route_path)}
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] hover:bg-[var(--surface-hover)]"
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-body-sm hover:bg-[var(--surface-hover)]"
                           style={{ color: 'var(--fg)' }}
                         >
-                          <span className="shrink-0 text-[10px] tabular-nums" style={{ color: 'var(--fg-faint)' }}>
+                          <span className="shrink-0 text-micro tabular-nums" style={{ color: 'var(--fg-faint)' }}>
                             [{index + 1}]
                           </span>
                           <span className="flex-1 truncate">{source.title}</span>
-                          <span className="shrink-0 text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+                          <span className="shrink-0 text-micro" style={{ color: 'var(--fg-faint)' }}>
                             {source.entity_type}
                           </span>
                         </button>
@@ -730,7 +730,7 @@ export default function CommandPalette({
                 stacked underneath the knowledge section's own empty line.
                 `showNoMatches` answers the question once, above. */}
             {showNoMatches && (
-              <div className="px-3.5 py-8 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              <div className="px-3.5 py-8 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                 No matches.
               </div>
             )}
@@ -885,7 +885,7 @@ function Group({ heading, children }: { heading: string; children: ReactNode }) 
   return (
     <Command.Group
       heading={heading}
-      className="px-1.5 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pt-1.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.08em] [&_[cmdk-group-heading]]:text-[var(--fg-faint)]"
+      className="px-1.5 py-1 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pt-1.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:micro-label [&_[cmdk-group-heading]]:text-[var(--fg-faint)]"
     >
       {children}
     </Command.Group>
@@ -922,7 +922,7 @@ function ConfidenceBadge({ confidence }: { confidence: number }) {
   const { label, color } = confidenceTier(confidence)
   return (
     <span
-      className="mono shrink-0 rounded-sm px-1 text-[9.5px] font-semibold tabular-nums"
+      className="tnum shrink-0 rounded-sm px-1 text-micro font-semibold"
       style={{ color, backgroundColor: 'color-mix(in srgb, currentColor 12%, transparent)' }}
       title={`Search confidence: ${label}`}
     >
@@ -962,7 +962,7 @@ function Item({
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="truncate">{label}</span>
         {description && (
-          <span className="truncate text-2xs" style={{ color: 'var(--fg-faint)' }}>
+          <span className="truncate text-micro" style={{ color: 'var(--fg-faint)' }}>
             {description}
           </span>
         )}
@@ -984,12 +984,12 @@ function Item({
       )}
       {showConfidence && <ConfidenceBadge confidence={confidence} />}
       {active && (
-        <span className="shrink-0 text-[10px] uppercase tracking-[0.08em]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="shrink-0 micro-label" style={{ color: 'var(--fg-faint)' }}>
           current
         </span>
       )}
       {hint && (
-        <span className="mono shrink-0 truncate text-2xs" style={{ color: 'var(--fg-faint)' }}>
+        <span className="mono shrink-0 truncate text-micro" style={{ color: 'var(--fg-faint)' }}>
           {hint}
         </span>
       )}

@@ -81,6 +81,24 @@ describe('ApiKeysSection', () => {
     expect(screen.getByLabelText('Name')).toHaveFocus()
   })
 
+  // AU-4: an empty name is flagged inline on Generate, not by a browser bubble.
+  it('says an empty key name is required, inline', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+    const create = vi.spyOn(apiKeysApi, 'create')
+
+    renderSection()
+    fireEvent.click(screen.getByRole('button', { name: /Create key/i }))
+    await screen.findByText('New API key')
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+
+    const name = screen.getByLabelText(/^Name/)
+    expect(name).not.toHaveAttribute('required')
+    expect(name).toHaveAttribute('aria-invalid', 'true')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Required')
+    expect(create).not.toHaveBeenCalled()
+  })
+
   // The card used to headline "Active keys · 10 keys" from the unfiltered list,
   // so revoked and expired tokens were counted as live ones (tripl-jfm3.33).
   it('counts only usable keys in the card heading and names the dead ones', async () => {
@@ -125,6 +143,21 @@ describe('ApiKeysSection', () => {
 
     expect(await screen.findByText('expires 2999-06-15')).toBeInTheDocument()
     expect(screen.getByText('no expiry')).toBeInTheDocument()
+  })
+
+  // ST-1: the single line keys off the row's width, not the viewport's, so the
+  // narrow settings column at 768px keeps the stacked layout.
+  it('switches a key row to one line by container width, not viewport', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([key({ id: 'k1', name: 'codex' })])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+
+    renderSection()
+
+    const revoke = await screen.findByRole('button', { name: 'Revoke codex' })
+    const row = revoke.parentElement as HTMLElement
+    expect(row).toHaveClass('grid', '@min-[560px]:flex')
+    expect(row.className).not.toMatch(/(^|\s)sm:/)
+    expect(row.parentElement).toHaveClass('@container')
   })
 
   // WS-6: revoke failures were silent and one pending revoke disabled every row.

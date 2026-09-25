@@ -4,8 +4,11 @@ import { useQuery } from '@tanstack/react-query'
 import { PackageX, TrendingDown } from 'lucide-react'
 
 import { eventMetricsApi } from '@/api/eventMetrics'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent } from '@/components/ui/card'
+import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
+import { CountBadge } from '@/components/primitives/count-badge'
+import { LoadingState } from '@/components/primitives/loading-state'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ErrorState } from '@/components/error-state'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getScopeNavigationTarget } from '@/lib/monitoring'
@@ -78,14 +81,14 @@ function RegressionRow({ slug, item }: { slug: string; item: ReleaseRegressionIt
       <div className="flex min-w-0 flex-1 items-start gap-2">
         <Icon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium">
+          <p className="truncate text-body font-medium">
             {target ? (
               <Link to={target.path} className="underline-offset-2 hover:underline">
                 {item.scope_name}
               </Link>
             ) : item.scope_name}
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             {isMissing ? 'Disappeared in' : 'Dropped in'}{' '}
             <span className="font-mono">{item.version}</span>
             {' (was '}
@@ -94,11 +97,12 @@ function RegressionRow({ slug, item }: { slug: string; item: ReleaseRegressionIt
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2 whitespace-nowrap text-right text-xs">
-        <Badge variant={isMissing ? 'destructive' : 'outline'}>
-          {isMissing ? 'missing' : `-${dropPct}%`}
-        </Badge>
-        <span className="font-mono text-muted-foreground">
+      <div className="flex items-center gap-2 whitespace-nowrap text-right text-body-sm">
+        {isMissing
+          ? <Chip tone="danger" size="xs">missing</Chip>
+          : <Chip variant="outline" size="xs">{`-${dropPct}%`}</Chip>}
+        {/* Counts, so sans with tabular digits (DS-17). */}
+        <span className="tnum text-muted-foreground">
           {formatCount(item.observed_count)} / {formatCount(item.expected_count)}
         </span>
       </div>
@@ -138,35 +142,38 @@ export function ReleaseRegressionPanel({
   const judged = comparability.length > 0
 
   return (
+    // The shared section-card geometry (DS-4 / MO-10): a header bar with the
+    // 12.5px h2, then the list.
     <Card>
-      <CardContent className="p-6">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold">
-              Release regressions <span className="font-normal text-muted-foreground">· whole scan</span>
-            </h2>
-            {query.data?.latest_version && (
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-muted-foreground">latest active release</span>
-                <Badge variant="outline" className="font-mono">
-                  {query.data.latest_version}
-                </Badge>
-              </div>
-            )}
-          </div>
-          {items.length > 0 && (
-            <Badge
-              variant="destructive"
-              aria-label={`${items.length} ${items.length === 1 ? 'regression' : 'regressions'}`}
-            >
-              {items.length}
-            </Badge>
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <CardTitle as="h2">
+            Release regressions <span className="font-normal text-muted-foreground">· whole scan</span>
+          </CardTitle>
+          {query.data?.latest_version && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-caption text-muted-foreground">latest active release</span>
+              {/* A version is an identifier: a code token, not a pill (DS-6). */}
+              <CodeToken>{query.data.latest_version}</CodeToken>
+            </div>
           )}
         </div>
+        {items.length > 0 && (
+          // The count badge is decorative; the number is spoken beside it.
+          <span className="inline-flex items-center">
+            <CountBadge count={items.length} urgent />
+            <span className="sr-only">
+              {`${items.length} ${items.length === 1 ? 'regression' : 'regressions'}`}
+            </span>
+          </span>
+        )}
+      </CardHeader>
+      <CardContent>
         {query.isLoading ? (
-          <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
-            Loading regressions…
-          </div>
+          <LoadingState
+            label="Loading regressions…"
+            className="flex h-24 items-center justify-center text-body-sm"
+          />
         ) : query.isError ? (
           // A failed request used to fall through to "No release comparison has
           // run for this scan yet" — an outage reading as a quiet release, the
@@ -184,11 +191,11 @@ export function ReleaseRegressionPanel({
           <>
             {withheld.length > 0 && (
               <div className="mb-4 rounded-md border border-dashed p-3">
-                <p className="text-sm font-medium">Cannot be judged yet</p>
+                <p className="text-body font-medium">Cannot be judged yet</p>
                 {/* Every distinct reason, not only the first scope's: two
                     partitions can be withheld for different reasons. */}
                 {withheldReasons.map(reason => (
-                  <p key={reason} className="mt-1 text-xs text-muted-foreground">
+                  <p key={reason} className="mt-1 text-body-sm text-muted-foreground">
                     {reason}
                   </p>
                 ))}
@@ -201,11 +208,11 @@ export function ReleaseRegressionPanel({
                 ))}
               </div>
             ) : withheld.length > 0 ? null : judged ? (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-body text-muted-foreground">
                 No events regressed in the latest release.
               </p>
             ) : (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-body text-muted-foreground">
                 No release comparison has run for this scan yet.
               </p>
             )}

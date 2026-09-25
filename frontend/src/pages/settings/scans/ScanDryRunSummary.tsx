@@ -151,7 +151,7 @@ function NameFormatErrors({ errors }: { errors: string[] }) {
       style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)' }}
     >
       {errors.map(message => (
-        <p key={message} className="m-0 text-xs font-medium" style={{ color: 'var(--danger)' }}>
+        <p key={message} className="m-0 text-body-sm font-medium" style={{ color: 'var(--danger)' }}>
           Event name format error: {message}
         </p>
       ))}
@@ -175,7 +175,7 @@ function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
           // creates both.
           <li
             key={`${event.event_type}.${event.source_name}`}
-            className="flex items-baseline gap-2 text-xs"
+            className="flex items-baseline gap-2 text-body-sm"
           >
             <span className="min-w-0 flex-1 truncate font-medium" style={{ color: 'var(--fg)' }}>
               {event.name}
@@ -186,20 +186,20 @@ function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
                 is ordinary — and two identical rows differing only in a row
                 count read as double-counting rather than as two real events. */}
             {showEventType && (
-              <span style={{ color: 'var(--fg-faint)' }} className="shrink-0 text-[11px]">
+              <span style={{ color: 'var(--fg-faint)' }} className="shrink-0 text-caption">
                 {event.event_type || NO_EVENT_TYPE_LABEL}
               </span>
             )}
             {event.grouped_by_rule && (
-              <span style={{ color: 'var(--fg-faint)' }} className="shrink-0 text-[11px]">
+              <span style={{ color: 'var(--fg-faint)' }} className="shrink-0 text-caption">
                 merged by {event.grouped_by_rule}
               </span>
             )}
-            <span className="shrink-0 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="shrink-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
               {event.status === 'new' ? 'new' : 'already in your plan'}
             </span>
             <span
-              className="shrink-0 text-[11px] tabular-nums"
+              className="shrink-0 text-caption tabular-nums"
               style={{ color: 'var(--fg-subtle)' }}
               title="Sampled warehouse rows behind this name."
             >
@@ -224,14 +224,14 @@ function FieldList({ fields }: { fields: ScanDryRunResponse['fields'] }) {
     <>
       <ul className="m-0 mt-1.5 list-none space-y-1 p-0">
         {shown.map(field => (
-          <li key={`${field.event_type}.${field.name}`} className="flex items-baseline gap-2 text-xs">
+          <li key={`${field.event_type}.${field.name}`} className="flex items-baseline gap-2 text-body-sm">
             <span className="min-w-0 flex-1 truncate font-medium" style={{ color: 'var(--fg)' }}>
               {field.name}
             </span>
-            <span className="shrink-0 font-mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="shrink-0 font-mono text-caption" style={{ color: 'var(--fg-subtle)' }}>
               {field.type}
             </span>
-            <span className="shrink-0 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="shrink-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
               {field.status === 'new' ? 'new' : 'already in your plan'}
             </span>
           </li>
@@ -308,7 +308,7 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
             <div className="flex flex-wrap items-baseline gap-x-2 text-body">
               <span className="font-medium" style={{ color: 'var(--fg)' }}>{eventsHeadline}</span>
               {events.length > 0 && (
-                <span className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                   · {newEvents} new · {existingEvents} already in your plan
                 </span>
               )}

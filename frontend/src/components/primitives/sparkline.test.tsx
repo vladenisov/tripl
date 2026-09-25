@@ -53,3 +53,21 @@ describe('Sparkline scaling', () => {
     expect(small).toBeCloseTo(10)
   })
 })
+
+// DS-27: a single series is drawn in the fixed series hue, not the accent, so
+// "volume over time" is one colour on every page and under every accent.
+describe('Sparkline colour', () => {
+  it('defaults to the first series colour rather than the accent', () => {
+    const { container } = render(<Sparkline data={[1, 3, 2]} />)
+    const paths = container.querySelectorAll('path')
+    const stroke = paths[paths.length - 1]?.getAttribute('stroke') ?? ''
+    expect(stroke).toContain('--series-1')
+    expect(stroke).not.toContain('--accent')
+  })
+
+  it('still takes an explicit colour for a series that means something else', () => {
+    const { container } = render(<Sparkline data={[1, 3, 2]} color="var(--danger)" />)
+    const paths = container.querySelectorAll('path')
+    expect(paths[paths.length - 1]?.getAttribute('stroke')).toBe('var(--danger)')
+  })
+})

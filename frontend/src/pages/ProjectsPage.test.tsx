@@ -167,8 +167,8 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('2 open')).toBeInTheDocument()
     expect(screen.queryByText('2 recent')).not.toBeInTheDocument()
     expect(screen.queryByText('2 active')).not.toBeInTheDocument()
-    expect(screen.getByText('Open Signal')).toBeInTheDocument()
-    expect(screen.getByText('Open Project')).toBeInTheDocument()
+    expect(screen.getByText('Open signal')).toBeInTheDocument()
+    expect(screen.getByText('Open project')).toBeInTheDocument()
 
     // UX-10: create-actions live in the header action area, not the stat strip.
     expect(screen.getByRole('button', { name: /New project/i })).toBeInTheDocument()
@@ -366,17 +366,13 @@ describe('ProjectsPage', () => {
 
     expect(await screen.findByText('Beta')).toBeInTheDocument()
     // Live monitoring signals are the needs-attention lead → saturated danger.
-    expect(screen.getByText('1 open signal')).toHaveStyle({ background: 'var(--danger-soft)' })
+    // (Chip is class-based since DS-6, so the tone is read off data-tone.)
+    const chipOf = (text: string) => screen.getByText(text).closest('[data-slot="chip"]')
+    expect(chipOf('1 open signal')).toHaveAttribute('data-tone', 'danger')
     // Every other supporting status chip renders calm/muted so it does not compete.
-    expect(screen.getByText('99.1% implemented')).toHaveStyle({
-      background: 'var(--surface-hover)',
-    })
-    expect(screen.getByText('1 scan configured')).toHaveStyle({
-      background: 'var(--surface-hover)',
-    })
-    expect(screen.getByText('1 pending review')).toHaveStyle({
-      background: 'var(--surface-hover)',
-    })
+    expect(chipOf('99.1% implemented')).toHaveAttribute('data-tone', 'neutral')
+    expect(chipOf('1 scan configured')).toHaveAttribute('data-tone', 'neutral')
+    expect(chipOf('1 pending review')).toHaveAttribute('data-tone', 'neutral')
   })
 
   it('surfaces the latest scan result with rows scanned (UX-18)', async () => {

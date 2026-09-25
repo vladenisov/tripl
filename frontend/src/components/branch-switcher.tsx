@@ -58,10 +58,10 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
             type="button"
             title={`Branch: ${activeLabel}`}
             aria-label={`Switch branch (current: ${activeLabel})`}
-            className="relative flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            className="relative flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-sidebar-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             style={{ color: 'var(--fg-muted)' }}
           >
-            <GitBranch className="h-[15px] w-[15px]" aria-hidden="true" />
+            <GitBranch className="size-4" aria-hidden="true" />
             {!onMain && (
               <span
                 aria-hidden="true"
@@ -74,7 +74,7 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
         <button
           type="button"
           title="Switch branch"
-          className="flex h-7 w-full items-center gap-1.5 rounded-md border px-2 text-caption transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex h-7 w-full items-center gap-1.5 rounded-md border px-2 text-caption transition-colors hover:bg-sidebar-hover"
           style={{ background: 'transparent', borderColor: 'var(--border-subtle)' }}
         >
           <GitBranch className="h-3 w-3 shrink-0" style={{ color: 'var(--accent)' }} />
@@ -92,12 +92,12 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
       </PopoverTrigger>
       <PopoverContent align="start" side={compact ? 'right' : 'bottom'} className="w-[260px] p-1.5">
         <div
-          className="px-2 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.06em]"
+          className="px-2 pb-1.5 pt-1 micro-label"
           style={{ color: 'var(--fg-faint)' }}
         >
           Plan branches
           {branchesQuery.isFetching && (
-            <span className="mono ml-1.5 normal-case tracking-normal" style={{ color: 'var(--fg-faint)' }}>
+            <span className="ml-1.5 normal-case tracking-normal" style={{ color: 'var(--fg-faint)' }}>
               loading…
             </span>
           )}
@@ -131,7 +131,7 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
           <button
             type="button"
             onClick={goToBranches}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--surface-hover)]"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
             <Plus className="h-3 w-3 shrink-0" />
@@ -158,7 +158,7 @@ function BranchRow({
     <button
       type="button"
       onClick={onSelect}
-      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--surface-hover)]"
+      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
       style={{ color: active ? 'var(--fg)' : 'var(--fg-muted)' }}
     >
       <Icon

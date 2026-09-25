@@ -6,11 +6,14 @@ import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { FieldError } from '@/components/forms/FieldError'
+import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from '@/components/forms/validation'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -63,7 +66,7 @@ export function MergePolicyDialog({ slug, open, onOpenChange }: MergePolicyDialo
             onRetry={() => void settingsQuery.refetch()}
           />
         ) : (
-          <p className="py-4 text-sm text-muted-foreground">Loading policy…</p>
+          <p className="py-4 text-body text-muted-foreground">Loading policy…</p>
         )}
       </DialogContent>
     </Dialog>
@@ -130,18 +133,18 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
             }
           />
           {minApprovalsInvalid ? (
-            <p id={minApprovalsErrorId} className="text-xs" style={{ color: 'var(--danger)' }}>
+            <p id={minApprovalsErrorId} className="text-body-sm" style={{ color: 'var(--danger)' }}>
               Enter a whole number from 0 to 100.
             </p>
           ) : null}
-          <p id={minApprovalsHintId} className="text-xs text-muted-foreground">
+          <p id={minApprovalsHintId} className="text-body-sm text-muted-foreground">
             Distinct approvals a branch needs before it can merge. 0 disables the quota.
           </p>
         </div>
         <div className="flex items-center justify-between gap-3">
           <div>
             <Label htmlFor={blockSelfId}>Block self-approval</Label>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-body-sm text-muted-foreground">
               Branch authors cannot approve their own branch.
             </p>
           </div>
@@ -153,12 +156,12 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
           />
         </div>
         {saveMut.isError && (
-          <p className="text-sm" style={{ color: 'var(--danger)' }}>
+          <p className="text-body" style={{ color: 'var(--danger)' }}>
             {getErrorMessage(saveMut.error)}
           </p>
         )}
         {!canEdit && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             {ownerOnlyReason('change the merge policy')}
           </p>
         )}
@@ -202,31 +205,51 @@ export function CreateBranchDialog({
 }: CreateBranchDialogProps) {
   const nameId = useId()
   const descriptionId = useId()
+  // "Required" under an empty name once Create was pressed, instead of the
+  // browser's bubble (AU-4).
+  const [submitted, setSubmitted] = useState(false)
+  const nameError = submitted && !name.trim() ? REQUIRED_MESSAGE : null
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) setSubmitted(false)
+        onOpenChange(next)
+      }}
+    >
       <DialogContent className="max-w-lg">
         <form
+          noValidate
+          className="flex min-h-0 flex-col gap-4"
           onSubmit={(event) => {
             event.preventDefault()
+            setSubmitted(true)
+            if (!name.trim()) {
+              const form = event.currentTarget
+              requestAnimationFrame(() => focusFirstInvalid(form))
+              return
+            }
             onSubmit()
           }}
         >
           <DialogHeader>
             <DialogTitle>New branch</DialogTitle>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
+          <DialogBody className="grid gap-4">
             <div className="grid gap-2">
               <Label htmlFor={nameId}>Name</Label>
               <Input
                 id={nameId}
-                required
+                aria-required
                 value={name}
                 onChange={(event) => onName(event.target.value)}
                 placeholder="e.g. feature-checkout-v2"
+                {...invalidAria(nameId, nameError)}
               />
+              <FieldError inputId={nameId} message={nameError} />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor={descriptionId}>Description (optional)</Label>
+              <Label htmlFor={descriptionId} optional>Description</Label>
               <Textarea
                 id={descriptionId}
                 value={description}
@@ -235,8 +258,8 @@ export function CreateBranchDialog({
                 placeholder="What is this branch for?"
               />
             </div>
-            {error && <p className="text-sm" style={{ color: 'var(--danger)' }}>{error}</p>}
-          </div>
+            {error && <p className="text-body" style={{ color: 'var(--danger)' }}>{error}</p>}
+          </DialogBody>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel

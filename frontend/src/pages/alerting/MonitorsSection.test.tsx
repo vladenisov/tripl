@@ -434,7 +434,7 @@ describe('MonitorsSection guided-setup handoff (tripl-oxkt.15)', () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
     renderSection({ autoOpenRuleForDestinationId: 'dest-1' })
 
-    expect(await screen.findByText('New Alert Rule')).toBeInTheDocument()
+    expect(await screen.findByText('New alert rule')).toBeInTheDocument()
   })
 
   it('stays closed on every ordinary visit', async () => {
@@ -442,7 +442,7 @@ describe('MonitorsSection guided-setup handoff (tripl-oxkt.15)', () => {
     renderSection()
 
     await screen.findByRole('link', { name: 'Prod drops' })
-    expect(screen.queryByText('New Alert Rule')).toBeNull()
+    expect(screen.queryByText('New alert rule')).toBeNull()
   })
 
   it('reports the instruction spent, and does not re-open on the next render', async () => {
@@ -452,7 +452,7 @@ describe('MonitorsSection guided-setup handoff (tripl-oxkt.15)', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
 
-    expect(screen.queryByText('New Alert Rule')).toBeNull()
+    expect(screen.queryByText('New alert rule')).toBeNull()
     // The page clears its own state off this callback: the prop is still set
     // here, so a section that never reported back would re-open the dialog on
     // the next mount.
@@ -480,7 +480,7 @@ describe('MonitorsSection rule editor', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Add rule/ }))
 
-    expect(screen.getByText('New Alert Rule')).toBeInTheDocument()
+    expect(screen.getByText('New alert rule')).toBeInTheDocument()
     expect(screen.getByLabelText('Destination')).toBeInTheDocument()
     // Nothing routes anywhere until one is named — the API addresses the rule
     // through its destination, so Create would 404 on a segment nobody saw.
@@ -581,7 +581,7 @@ describe('MonitorsSection inert scope notice', () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(summary)
     renderSection({ rules: [rule] })
     fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Prod drops' }))
-    return screen.findByText('Edit Alert Rule')
+    return screen.findByText('Edit alert rule')
   }
 
   it('names the missing scan setting, and links to the screen that supplies it', async () => {
@@ -628,7 +628,7 @@ describe('MonitorsSection inert scope notice', () => {
 
     await screen.findByText(DISTRIBUTION_SENTENCE)
     expect(screen.getByRole('link', { name: 'Scan settings' })).toHaveAttribute('target', '_blank')
-    expect(screen.getByText('Edit Alert Rule')).toBeInTheDocument()
+    expect(screen.getByText('Edit alert rule')).toBeInTheDocument()
   })
 
   it('leaves the toggle usable, because the precondition can be met later', async () => {
@@ -674,7 +674,7 @@ describe('MonitorsSection inert scope notice', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit rule Prod drops' }))
 
-    expect(await screen.findByText('Edit Alert Rule')).toBeInTheDocument()
+    expect(await screen.findByText('Edit alert rule')).toBeInTheDocument()
     expect(screen.queryByText(DISTRIBUTION_SENTENCE)).toBeNull()
   })
 })
@@ -864,7 +864,7 @@ describe('MonitorsSection rule form — what is saved is what is shown', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Prod drops' }))
 
-    expect(await screen.findByText('Edit Alert Rule')).toBeInTheDocument()
+    expect(await screen.findByText('Edit alert rule')).toBeInTheDocument()
     expect(screen.queryByText('Rule limit reached')).toBeNull()
   })
 

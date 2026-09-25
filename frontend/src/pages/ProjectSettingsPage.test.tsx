@@ -948,7 +948,7 @@ describe('ProjectSettingsPage', () => {
     )
     // The log panel is its own chunk (tripl-fj5g.15), so it can land a tick
     // after the tab strip.
-    expect(await screen.findByLabelText('Status')).toBeInTheDocument()
+    expect(await screen.findByRole('combobox', { name: /^Status filter/ })).toBeInTheDocument()
     expect(screen.queryByText('Set up alerting')).toBeNull()
   })
 
@@ -1144,14 +1144,14 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    fireEvent.click(at((await screen.findAllByRole('button', { name: 'Add meta field' })), 0))
+    fireEvent.click(at((await screen.findAllByRole('button', { name: 'New meta field' })), 0))
 
     const dialog = await screen.findByRole('dialog')
     const inputs = within(dialog).getAllByRole('textbox')
     fireEvent.change(at(inputs, 0), { target: { value: 'jira_key' } })
     fireEvent.change(at(inputs, 1), { target: { value: 'Jira Key' } })
     fireEvent.click(within(dialog).getByLabelText('Display as link'))
-    fireEvent.change(within(dialog).getByPlaceholderText('https://tracker.example.com/issues/${value}'), {
+    fireEvent.change(within(dialog).getByLabelText('Link template'), {
       target: { value: 'https://tracker.example.com/issues/${value}' },
     })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
@@ -1383,11 +1383,11 @@ describe('ProjectSettingsPage', () => {
     // JSON keys are discovered on demand via a separate job, not by the fast preview.
     fireEvent.click(screen.getByRole('button', { name: 'Discover JSON keys' }))
     fireEvent.click(await screen.findByText('extra.key'))
-    fireEvent.click(screen.getByRole('button', { name: 'Add Group Rule' }))
-    fireEvent.change(screen.getByPlaceholderText('button events'), {
+    fireEvent.click(screen.getByRole('button', { name: 'Add group rule' }))
+    fireEvent.change(screen.getByPlaceholderText('e.g. button events'), {
       target: { value: 'product pages' },
     })
-    fireEvent.change(screen.getByPlaceholderText('^button:'), {
+    fireEvent.change(screen.getByPlaceholderText('e.g. ^button:'), {
       target: { value: '^product:' },
     })
 

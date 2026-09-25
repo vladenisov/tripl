@@ -131,4 +131,31 @@ describe('InvitePage', () => {
       role: 'editor',
     })
   })
+  it('marks a missing password under the field instead of a browser bubble (AU-4)', async () => {
+    const accepted = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.includes(`/auth/invitations/${TOKEN}/accept`)) {
+        accepted()
+        return Promise.reject(new Error('should not submit'))
+      }
+      if (url.includes(`/auth/invitations/${TOKEN}`)) {
+        return Promise.resolve(
+          jsonResponse({ email: 'invitee@example.com', role: 'editor', expires_at: '2026-08-01T00:00:00Z' }),
+        )
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderInvitePage()
+
+    const password = await screen.findByLabelText('Password')
+    // Accept stays pressable, so it can say what is missing.
+    fireEvent.click(screen.getByRole('button', { name: /accept invitation/i }))
+
+    expect(password).toHaveAttribute('aria-invalid', 'true')
+    expect(password).toHaveAccessibleDescription(/Required/)
+    await waitFor(() => expect(password).toHaveFocus())
+    expect(accepted).not.toHaveBeenCalled()
+  })
 })

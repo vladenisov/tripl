@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { GitBranch, GitCompare } from 'lucide-react'
 
 import { Panel } from '@/components/settings/kit'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { countOf } from '@/lib/plural'
@@ -42,36 +43,21 @@ export function BranchList({
     <Panel
       title="Branches"
       right={
-        <div
-          className="flex items-center gap-0.5 rounded-md border p-0.5"
-          style={{ borderColor: 'var(--border-subtle)' }}
-        >
-          {(
-            [
-              ['active', 'Active', activeBranches.length],
-              ['merged', 'Merged', landedBranches.length],
-            ] as const
-          ).map(([value, label, count]) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={tab === value}
-              onClick={() => setPickedTab(value)}
-              className="rounded px-2 py-0.5 text-[11px] transition-colors"
-              style={{
-                background: tab === value ? 'var(--surface-hover)' : 'transparent',
-                color: tab === value ? 'var(--fg)' : 'var(--fg-subtle)',
-              }}
-            >
-              {label} {count}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          size="sm"
+          aria-label="Branch status"
+          value={tab}
+          onChange={setPickedTab}
+          options={[
+            { value: 'active', label: `Active ${activeBranches.length}` },
+            { value: 'merged', label: `Merged ${landedBranches.length}` },
+          ]}
+        />
       }
     >
       <div className="py-1">
         {shown.length === 0 && (
-          <p className="px-4 py-3 text-sm text-muted-foreground">
+          <p className="px-4 py-3 text-body text-muted-foreground">
             {tab === 'merged' ? 'No merged branches yet.' : 'No active branches.'}
           </p>
         )}
@@ -108,7 +94,7 @@ export function BranchList({
                 <div className="mono truncate text-body-sm font-medium" style={{ color: 'var(--fg)' }}>
                   {branch.name}
                 </div>
-                <div className="mt-0.5 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="mt-0.5 text-micro" style={{ color: 'var(--fg-subtle)' }}>
                   {branchSubtitle(branch, usersById)}
                 </div>
               </div>
@@ -117,7 +103,7 @@ export function BranchList({
                   distance, so it is a dot and not a number (PLAN-14). */}
               {!isMain && counts && (
                 <span
-                  className="mono flex shrink-0 items-center gap-1 text-2xs"
+                  className="mono flex shrink-0 items-center gap-1 text-micro"
                   style={{ color: 'var(--fg-faint)' }}
                 >
                   <span aria-hidden="true">↑{counts.ahead}</span>

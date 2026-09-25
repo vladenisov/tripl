@@ -7,6 +7,7 @@ import { METRIC_COMPOSITIONS, type EventType, type MetricComposition } from '@/t
 import { EventRefPicker, type EventRef } from './EventRefPicker'
 import { errorAria, type FieldErrors } from '@/lib/fieldErrors'
 import type { MetricDraft } from './metricDraft'
+import { examplePlaceholder } from '@/components/forms/placeholders'
 
 // Human-readable labels for the composition select (raw option values are kept
 // as-is on the wire).
@@ -123,7 +124,7 @@ export function EventCompositionFields({
               value={draft.userIdColumn}
               onChange={value => patch({ userIdColumn: value })}
               mono
-              placeholder="user_id"
+              placeholder={examplePlaceholder('user_id')}
             />
           </div>
         </Field>

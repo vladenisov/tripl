@@ -17,7 +17,9 @@ import { Search } from "lucide-react"
 import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
 import { runPillStatus } from "./scans/scanRunStatus"
 import { scanModeOf } from "./scans/scanMode"
-import { StatCard } from "./scans/scanLayout"
+import { PageHeader } from '@/components/primitives/page-header'
+import { PageContainer } from '@/components/primitives/page-container'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
 import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
@@ -256,31 +258,40 @@ export function ScansTab({ slug }: { slug: string }) {
   ).length
 
   return (
-    <div className="flex flex-col gap-[18px]">
-      <div className="flex items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h2 className="text-lg font-semibold">Scans</h2>
-          {/* The mechanical description said what a scan IS; this one says what
-              it PRODUCES and what consumes it, because a scan's output reaches
-              the user as anomalies and alerts (tripl-3y7z.2). */}
-          <p className="mt-1 max-w-[560px] text-sm" style={{ color: 'var(--fg-subtle)' }}>
-            Scans read your warehouse. Every run adds events and fields to your tracking plan; a
-            monitoring scan also runs on a schedule and records metric points, and those points are
-            what anomaly detection and alerts are built on.
-          </p>
-        </div>
-        {isOwner && (
-          <Button
-            size="sm"
-            disabled={noDataSources}
-            title={noDataSources ? 'Add a data source first' : ''}
-            onClick={() => navigate(`/p/${slug}/scans/new`)}
-          >
-            <Plus className="size-3.5" />
-            New scan
-          </Button>
-        )}
-      </div>
+    <PageContainer>
+      {/* The shared page header (DA-10 / DS-1): a real h1 under the Govern
+          eyebrow, like Reconciliation and Coverage, instead of an h2 text-heading
+          with a 14px paragraph. The description says what a scan PRODUCES and
+          what consumes it, because a scan's output reaches the user as
+          anomalies and alerts (tripl-3y7z.2). */}
+      <PageHeader
+        eyebrow="Govern"
+        title="Scans"
+        description="Scans read your warehouse into your tracking plan; monitoring scans also record the metric points that anomalies and alerts are built on."
+        actions={
+          isOwner && (
+            <Button
+              size="sm"
+              disabled={noDataSources}
+              title={noDataSources ? 'Add a data source first' : ''}
+              onClick={() => navigate(`/p/${slug}/scans/new`)}
+            >
+              <Plus className="size-3.5" />
+              New scan
+            </Button>
+          )
+        }
+        // The one page-KPI strip (DS-5), in place of three bordered tiles.
+        stats={
+          <MiniStatStrip boxed>
+            <MiniStat label="Scans" value={scanConfigs.length} />
+            <MiniStat label="Monitoring" value={monitoringCount} />
+            <div title="Rows read across every catalog and metrics run in the last 24 hours.">
+              <MiniStat label="Warehouse rows read · 24h" value={formatCount(rowsScanned24h)} />
+            </div>
+          </MiniStatStrip>
+        }
+      />
 
       {!isOwner && (
         <ReadOnlyNotice>
@@ -289,19 +300,6 @@ export function ScansTab({ slug }: { slug: string }) {
             : undefined}
         </ReadOnlyNotice>
       )}
-
-      {/* Collapses before the labels do: "Warehouse rows read · 24h" wraps to
-          three lines in a fixed third of a phone viewport. Same convention as
-          ScanDetail's band one click deeper. */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <StatCard label="Scans" value={scanConfigs.length} />
-        <StatCard label="Monitoring" value={monitoringCount} />
-        <StatCard
-          label="Warehouse rows read · 24h"
-          value={formatCount(rowsScanned24h)}
-          title="Rows read across every catalog and metrics run in the last 24 hours."
-        />
-      </div>
 
       {noDataSources && (
         <EmptyState
@@ -332,9 +330,9 @@ export function ScansTab({ slug }: { slug: string }) {
       {/* A project has exactly one scan the moment it finishes the onboarding
           checklist's "Run a scan" step, so "1 scans" was the first thing a new
           user read on the page this epic exists to make comprehensible. */}
-      <Panel title="All scans" headingLevel={3} subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
+      <Panel title="All scans" subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
         {failedRunScanName && (
-          <p role="alert" className="border-b px-4 py-2 text-sm" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
+          <p role="alert" className="border-b px-4 py-2 text-body" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
             Could not start {failedRunScanName}: {getErrorMessage(runScan.error)}
           </p>
         )}
@@ -366,7 +364,7 @@ export function ScansTab({ slug }: { slug: string }) {
                 {['Scan', 'Last run'].map(h => (
                   <th
                     key={h}
-                    className="px-3.5 py-2 text-left text-2xs font-semibold uppercase tracking-wide"
+                    className="px-3.5 py-2 text-left micro-label"
                     style={{ color: 'var(--fg-subtle)' }}
                   >
                     {h}
@@ -428,11 +426,11 @@ export function ScansTab({ slug }: { slug: string }) {
                       375px screen nothing for the rest, and "3h ago" ran into
                       "4.8K rows" (DATA-10). */}
                   <div
-                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-4 py-2.5 first:border-t-0 sm:flex-nowrap"
+                    className="flex min-h-(--row-h) flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-4 py-2.5 first:border-t-0 sm:flex-nowrap"
                     style={{ borderColor: 'var(--border-subtle)' }}
                   >
                     <RunStatusPill status={runPillStatus(run.status)} title={friendly ?? undefined} />
-                    <span className="min-w-0 flex-1 truncate text-xs font-medium sm:w-[150px] sm:flex-none sm:shrink-0">
+                    <span className="min-w-0 flex-1 truncate text-body-sm font-medium sm:w-[150px] sm:flex-none sm:shrink-0">
                       {run.scanName}
                     </span>
                     <div className="order-last flex min-w-0 basis-full flex-col gap-1 sm:order-none sm:basis-auto sm:flex-1">
@@ -440,7 +438,7 @@ export function ScansTab({ slug }: { slug: string }) {
                         {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
                       </span>
                       {friendly && (
-                        <span className="truncate text-[11px]" style={{ color: 'var(--danger)' }}>{friendly}</span>
+                        <span className="truncate text-caption" style={{ color: 'var(--danger)' }}>{friendly}</span>
                       )}
                       {/* What this completed run changed — surfaced inline so a
                           finished scan/collection shows its impact, not just a
@@ -458,12 +456,9 @@ export function ScansTab({ slug }: { slug: string }) {
                     {isFailed ? (
                       <div className="order-last flex shrink-0 flex-wrap items-center gap-2 sm:order-none">
                         {run.failingStreak > 1 && (
-                          <span
-                            className="whitespace-nowrap rounded border px-1.5 py-0.5 text-2xs font-semibold"
-                            style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
-                          >
+                          <Chip tone="danger" size="xs" className="whitespace-nowrap">
                             failed last {run.failingStreak} runs
-                          </span>
+                          </Chip>
                         )}
                         {canRun && (
                           <Button
@@ -479,7 +474,8 @@ export function ScansTab({ slug }: { slug: string }) {
                       </div>
                     ) : (
                       <>
-                        <span className="mono shrink-0 whitespace-nowrap text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                        {/* Figures in sans + tabular digits, not mono (DS-17). */}
+                        <span className="tnum shrink-0 whitespace-nowrap text-caption" style={{ color: 'var(--fg-subtle)' }}>
                           {/* `formatCount` compacts (1.8M), so the noun agrees
                               with the raw count rather than the printed text —
                               a run that read a single row said "1 rows". */}
@@ -487,7 +483,7 @@ export function ScansTab({ slug }: { slug: string }) {
                             ? '—'
                             : `${formatCount(run.rows)} ${pluralize(run.rows, 'row', 'rows')}`}
                         </span>
-                        <span className="mono shrink-0 whitespace-nowrap text-right text-[11px] sm:w-[52px]" style={{ color: 'var(--fg-faint)' }}>
+                        <span className="tnum shrink-0 whitespace-nowrap text-right text-caption sm:w-[52px]" style={{ color: 'var(--fg-faint)' }}>
                           {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
                         </span>
                       </>
@@ -499,6 +495,6 @@ export function ScansTab({ slug }: { slug: string }) {
           </div>
         </Panel>
       )}
-    </div>
+    </PageContainer>
   )
 }

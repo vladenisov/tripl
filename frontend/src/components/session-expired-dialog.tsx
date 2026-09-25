@@ -60,6 +60,9 @@ export function SessionExpiredDialog({
         </DialogHeader>
         <form
           className="space-y-3"
+          // No browser bubble (AU-4): Sign in stays disabled until there is a
+          // password, so there is nothing for native validation to add.
+          noValidate
           onSubmit={(event) => {
             event.preventDefault()
             loginMutation.mutate()
@@ -71,7 +74,7 @@ export function SessionExpiredDialog({
               id="session-expired-password"
               type="password"
               autoComplete="current-password"
-              required
+              aria-required
               // eslint-disable-next-line jsx-a11y/no-autofocus -- the dialog exists to take this one field
               autoFocus
               value={password}
@@ -79,7 +82,7 @@ export function SessionExpiredDialog({
             />
           </div>
           {loginMutation.isError && (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="text-body text-destructive">
               {getErrorMessage(loginMutation.error)}
             </p>
           )}

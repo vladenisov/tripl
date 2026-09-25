@@ -14,8 +14,10 @@ import { MetricBreakdownPicker } from './MetricBreakdownPicker'
 import { ScanCausalNote } from './ScanCausalNote'
 import { ScanPreviewPanel } from './ScanPreviewPanel'
 import { LazySqlEditor } from '@/components/sql-editor-lazy'
-import { Field } from '@/components/settings/kit'
-import { SCard } from './scanLayout'
+import { Field, SCard } from '@/components/settings/kit'
+import { FieldError } from '@/components/forms/FieldError'
+import { sqlPlaceholder } from '@/components/forms/placeholders'
+import { invalidAria } from '@/components/forms/validation'
 import type { ScanFormMode } from './scanMode'
 import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
 import {
@@ -103,17 +105,17 @@ function CollapsibleSection({
   const Chevron = open ? ChevronDown : ChevronRight
   return (
     <section
-      className="mb-5 overflow-hidden rounded-xl border"
+      className="mb-5 overflow-hidden rounded-card border"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
     >
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(current => !current)}
-        className="flex w-full items-start gap-3 px-[18px] py-4 text-left transition-colors hover:bg-[var(--surface-hover)]"
+        className="flex w-full items-start gap-3 px-4 py-4 text-left transition-colors hover:bg-[var(--surface-hover)]"
       >
         <div className="min-w-0 flex-1">
-          <h3 className="m-0 text-sm font-semibold" style={{ color: 'var(--fg)' }}>
+          <h3 className="m-0 text-body-sm font-semibold" style={{ color: 'var(--fg)' }}>
             {title}
           </h3>
           <p className="mt-1 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
@@ -132,26 +134,14 @@ function CollapsibleSection({
 }
 
 /**
- * Why the numeric input above cannot be saved. The input points at it with
- * `aria-describedby`, so it is read with the field rather than only seen.
+ * Why the numeric input above cannot be saved: the shared inline message
+ * (AU-4). The input points at it with `aria-describedby` via `invalidAria`, so
+ * it is read with the field rather than only seen.
  */
-function FieldErrorText({ id, message }: { id: string; message: string | undefined }) {
-  if (!message) return null
-  return (
-    <p id={id} className="mt-1.5 text-xs" style={{ color: 'var(--danger)' }}>
-      {message}
-    </p>
-  )
-}
-
-/** `aria-invalid` + `aria-describedby` for an input whose error {@link FieldErrorText} renders. */
-function invalidProps(errorId: string, message: string | undefined) {
-  return message ? { 'aria-invalid': true, 'aria-describedby': errorId } : {}
-}
 
 function PreviewGate() {
   return (
-    <p className="text-xs" style={{ color: 'var(--fg-faint)' }}>
+    <p className="text-body-sm" style={{ color: 'var(--fg-faint)' }}>
       {PREVIEW_GATE_TEXT}
     </p>
   )
@@ -218,7 +208,7 @@ export function ScanEssentialsSection({
     <SCard title="">
       <fieldset
         data-testid="scan-mode"
-        className="border-b px-[18px] py-4"
+        className="border-b px-4 py-4"
         style={{ borderColor: 'var(--border-subtle)' }}
       >
         <legend className="mb-2 text-body font-medium" style={{ color: 'var(--fg)' }}>
@@ -253,7 +243,7 @@ export function ScanEssentialsSection({
                 </label>
                 <p
                   id={`scan-mode-${option.value}-description`}
-                  className="mt-0.5 text-xs leading-snug"
+                  className="mt-0.5 text-body-sm leading-snug"
                   style={{ color: 'var(--fg-subtle)' }}
                 >
                   {option.description}
@@ -266,7 +256,7 @@ export function ScanEssentialsSection({
 
       {/* Next sibling of the mode radio: the consequence of the selection above,
           restated as the chain it feeds (tripl-3y7z.2). */}
-      <div className="border-b px-[18px] pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="border-b px-4 pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
         <ScanCausalNote variant="form" mode={state.mode} />
       </div>
 
@@ -302,7 +292,7 @@ export function ScanEssentialsSection({
           ariaLabel="SQL base query"
           value={state.baseQuery}
           onChange={setBaseQuery}
-          placeholder="SELECT * FROM analytics.events"
+          placeholder={sqlPlaceholder('The rows to scan, e.g.', 'SELECT * FROM analytics.events')}
           dialect={selectedSource?.db_type}
           tables={schemaData?.tables}
           readOnly={readOnly}
@@ -370,6 +360,10 @@ export function ScanEssentialsSection({
             onChange={e => setEventTypeColumn(e.target.value)}
             className={`${SELECT_CLASS} max-w-[280px]`}
             disabled={!preview}
+            {...invalidAria(
+              'scan-event-type-column',
+              preview && !state.eventTypeColumn && !state.eventTypeId,
+            )}
           >
             {/* Selectable only when an Event type carries the naming instead —
                 otherwise clearing it would leave the scan unable to name a
@@ -389,12 +383,16 @@ export function ScanEssentialsSection({
               disabled and the user is being flagged for not doing something the
               form has not let them do yet. The disabled Create button carries
               the gate in the meantime. */}
-          {preview && !state.eventTypeColumn && !state.eventTypeId && (
-            <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
-              Pick the column your event names are in — without it this scan cannot name a single
-              event, and every run fails.
-            </p>
-          )}
+          {/* Red: it blocks Create (AU-5). */}
+          <FieldError
+            inputId="scan-event-type-column"
+            announce
+            message={
+              preview && !state.eventTypeColumn && !state.eventTypeId
+                ? 'Pick the column your event names are in — without it this scan cannot name a single event, and every run fails.'
+                : null
+            }
+          />
         </Field>
       )}
       {/* The time column is asked for in BOTH modes, because it does two jobs and
@@ -422,6 +420,7 @@ export function ScanEssentialsSection({
           onChange={e => setTimeColumn(e.target.value)}
           className={`${SELECT_CLASS} max-w-[280px]`}
           disabled={!preview}
+          {...invalidAria('scan-time-column', monitoringPairIsNext && !state.timeColumn)}
         >
           {/* Monitoring cannot proceed on the empty option, so it stays a
               disabled placeholder there; Catalog only needs it selectable, or a
@@ -438,7 +437,13 @@ export function ScanEssentialsSection({
           ))}
         </select>
         {monitoringPairIsNext && !state.timeColumn && (
-          <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
+          <p
+            id="scan-time-column-error"
+            role="alert"
+            data-slot="field-error"
+            className="mt-1.5 text-body-sm leading-[1.45]"
+            style={{ color: 'var(--danger)' }}
+          >
             {/* The select above is `disabled={!preview}` and reads "Load preview
                 first", so "Pick a time column" pointed at a control the reader
                 cannot use. An explicit Event type satisfies the blocker without
@@ -459,17 +464,22 @@ export function ScanEssentialsSection({
             value={state.interval}
             onChange={e => setInterval(e.target.value)}
             className={`${SELECT_CLASS} max-w-[280px]`}
+            {...invalidAria('scan-interval', monitoringPairIsNext && !state.interval)}
           >
             <option value="" disabled>Choose a schedule</option>
             {INTERVAL_OPTIONS.map(option => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
-          {monitoringPairIsNext && !state.interval && (
-            <p role="alert" className="mt-1.5 text-xs" style={{ color: 'var(--warning)' }}>
-              Pick a schedule — monitoring needs one to record metric points.
-            </p>
-          )}
+          <FieldError
+            inputId="scan-interval"
+            announce
+            message={
+              monitoringPairIsNext && !state.interval
+                ? 'Pick a schedule — monitoring needs one to record metric points.'
+                : null
+            }
+          />
         </Field>
       )}
 
@@ -486,7 +496,7 @@ export function ScanEssentialsSection({
           lives in a collapsed section, where an edit is deliberate and staling
           the answer is the banner doing its job. */}
       {preview && (
-        <div data-testid="scan-preview-panel" className="space-y-3 px-[18px] py-4">
+        <div data-testid="scan-preview-panel" className="space-y-3 px-4 py-4">
           <ScanPreviewPanel
             preview={preview}
             dryRun={dryRun}
@@ -548,7 +558,7 @@ export function EventNamingSection({ form }: SectionProps) {
           value={state.eventNameFormat}
           onChange={e => set('eventNameFormat', e.target.value)}
           className="font-mono max-w-[280px]"
-          placeholder="{action}"
+          placeholder="e.g. {action}"
         />
       </Field>
       <Field
@@ -564,11 +574,11 @@ export function EventNamingSection({ form }: SectionProps) {
           value={state.cardinalityThreshold}
           onChange={e => set('cardinalityThreshold', e.target.value)}
           className="font-mono max-w-[280px]"
-          {...invalidProps('cardinality-threshold-error', fieldErrors.cardinalityThreshold)}
+          {...invalidAria('cardinality-threshold', fieldErrors.cardinalityThreshold)}
         />
-        <FieldErrorText id="cardinality-threshold-error" message={fieldErrors.cardinalityThreshold} />
+        <FieldError id="cardinality-threshold-error" message={fieldErrors.cardinalityThreshold} />
       </Field>
-      <div className="space-y-4 border-t px-[18px] py-4" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="space-y-4 border-t px-4 py-4" style={{ borderColor: 'var(--border-subtle)' }}>
         <EventGroupRulesEditor
           rules={state.eventGroupRules}
           columns={preview?.columns}
@@ -607,7 +617,7 @@ export function AppVersionSection({ form }: SectionProps) {
       explanation="Attach an app release and platform to every event. Leave this alone if you do not ship versioned apps."
       defaultOpen={defaultOpen}
     >
-      <div className="px-[18px] py-4">
+      <div className="px-4 py-4">
         <AppVersionFields
           activeShareMinError={fieldErrors.appVersionActiveShareMin}
           columns={preview?.columns ?? null}
@@ -645,7 +655,7 @@ export function MetricsDriftSection({ form }: SectionProps) {
       explanation="Extra columns to split metrics by, and columns whose value mix you want watched for drift. Leave this alone to collect one series per event."
       defaultOpen={defaultOpen}
     >
-      <div className="space-y-4 px-[18px] py-4">
+      <div className="space-y-4 px-4 py-4">
         {preview ? (
           <>
             <MetricBreakdownPicker
@@ -744,15 +754,15 @@ export function LimitsSection({ form }: SectionProps) {
             onChange={e => set('scanLookbackHours', e.target.value)}
             className="font-mono max-w-[280px]"
             placeholder="Default"
-            {...invalidProps('scan-lookback-hours-error', fieldErrors.scanLookbackHours)}
+            {...invalidAria('scan-lookback-hours', fieldErrors.scanLookbackHours)}
           />
-          <FieldErrorText id="scan-lookback-hours-error" message={fieldErrors.scanLookbackHours} />
+          <FieldError id="scan-lookback-hours-error" message={fieldErrors.scanLookbackHours} />
         </Field>
       ) : (
         /* id={false}: this branch replaces the input with a sentence, so there is
            nothing here for a `<label htmlFor>` to point at (tripl-6h2b). */
         <Field label="Lookback (hours)" htmlFor={false}>
-          <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             {NO_LOOKBACK_WITHOUT_TIME_COLUMN}
           </p>
         </Field>
@@ -766,9 +776,9 @@ export function LimitsSection({ form }: SectionProps) {
           onChange={e => set('scanRowLimit', e.target.value)}
           className="font-mono max-w-[280px]"
           placeholder="Default"
-          {...invalidProps('scan-row-limit-error', fieldErrors.scanRowLimit)}
+          {...invalidAria('scan-row-limit', fieldErrors.scanRowLimit)}
         />
-        <FieldErrorText id="scan-row-limit-error" message={fieldErrors.scanRowLimit} />
+        <FieldError id="scan-row-limit-error" message={fieldErrors.scanRowLimit} />
       </Field>
       {/* A metrics run is `collect_metrics`, which the scheduler dispatches only
           for a config with both a schedule and a time column, so in Catalog only
@@ -787,9 +797,9 @@ export function LimitsSection({ form }: SectionProps) {
             onChange={e => set('metricsRowLimit', e.target.value)}
             className="font-mono max-w-[280px]"
             placeholder="Default"
-            {...invalidProps('scan-metrics-row-limit-error', fieldErrors.metricsRowLimit)}
+            {...invalidAria('scan-metrics-row-limit', fieldErrors.metricsRowLimit)}
           />
-          <FieldErrorText id="scan-metrics-row-limit-error" message={fieldErrors.metricsRowLimit} />
+          <FieldError id="scan-metrics-row-limit-error" message={fieldErrors.metricsRowLimit} />
         </Field>
       )}
     </CollapsibleSection>

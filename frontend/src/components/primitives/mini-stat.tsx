@@ -1,5 +1,6 @@
 import { Children, type CSSProperties, type ReactNode } from 'react'
 import { Dot, type DotTone } from '@/components/primitives/dot'
+import { cn } from '@/lib/utils'
 
 export type MiniStatTone = 'success' | 'danger' | 'warning' | 'info' | 'accent' | 'neutral'
 
@@ -46,6 +47,12 @@ const TONE_DOT: Record<MiniStatTone, DotTone> = {
   neutral: 'neutral',
 }
 
+/**
+ * The one KPI idiom (DS-5): an uppercase 10.5px caption over a 16px sans
+ * `tnum` figure, with an optional toned delta. Page stats go in a
+ * `MiniStatStrip`; the bordered sentence-case `StatCard` tiles and the
+ * Card-wrapped stat grids it replaces are gone.
+ */
 export function MiniStat({
   label,
   value,
@@ -63,15 +70,18 @@ export function MiniStat({
   return (
     <dl className="m-0 flex flex-col gap-px">
       <dt
-        className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.06em]"
+        className="inline-flex items-center gap-1 micro-label"
         style={{ color: 'var(--fg-faint)' }}
       >
         {label}
         {labelAddon}
       </dt>
       <dd className="m-0 flex items-baseline gap-1.5">
+        {/* Sans with tabular digits, not mono: a KPI figure ("1h ago",
+            "4.4K rows", "92%") is a number, not code (DS-17). */}
         <span
-          className="mono tnum text-[16px] font-medium tracking-[-0.01em]"
+          data-slot="mini-stat-value"
+          className="tnum text-heading font-semibold tracking-[-0.01em]"
           data-tone={tint}
           style={{ color: tint ? TONE_COLOR[tint] : 'var(--fg)' }}
         >
@@ -79,7 +89,7 @@ export function MiniStat({
         </span>
         {delta != null && (
           <span
-            className="inline-flex items-center gap-[3px] text-2xs"
+            className="inline-flex items-center gap-[3px] text-micro"
             style={{ color: TONE_COLOR[tone] }}
           >
             {pulse && <Dot tone={TONE_DOT[tone]} size={5} pulse />}
@@ -94,6 +104,11 @@ export function MiniStat({
 /**
  * A wrapping row of stats with a hairline between neighbours (LIVE-8).
  *
+ * `boxed` gives the one page-KPI container (DS-5): the sunken
+ * `rounded-card border bg-bg-sunken px-4 py-3` box that Overview, Metrics,
+ * Anomalies and Coverage each spelled out by hand. Leave it off for a strip
+ * that already sits inside a panel or a header.
+ *
  * The divider used to be a sibling element between two stats, so when the row
  * wrapped (375px, and 768px beside the sidebar) it stayed at the end of the
  * line with nothing after it ("COVERAGE 58.8% |"). Here every stat but the
@@ -107,16 +122,22 @@ export function MiniStat({
  */
 export function MiniStatStrip({
   children,
+  boxed = false,
   className,
   style,
 }: {
   children: ReactNode
+  boxed?: boolean
   className?: string
   style?: CSSProperties
 }) {
   const items = Children.toArray(children)
   return (
-    <div className={className} style={style}>
+    <div
+      data-slot="mini-stat-strip"
+      className={cn(boxed && 'rounded-card border border-border bg-bg-sunken px-4 py-3', className)}
+      style={style}
+    >
       {/* The clip box sits 4px outside the row, enough for a focus ring on a
           stat at the edge; the dividers sit 12px out, in the 24px gap. It
           clips sideways only: a divider only ever pokes out at the left, and a

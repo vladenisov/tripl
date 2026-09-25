@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { eventsApi } from '@/api/events'
-import { INPUT_BASE, INPUT_DISABLED } from '@/components/settings/input-style'
+import { INPUT_BASE, INPUT_CLASS, INPUT_DISABLED } from '@/components/settings/input-style'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { eventNameLabel } from '@/lib/eventName'
+import { cn } from '@/lib/utils'
 import type { EventType } from '@/types'
 import { eventKey, eventsPickerKey } from '@/lib/queryKeys'
 
@@ -136,6 +137,7 @@ export function EventRefPicker({
         onKeyDown={e => {
           if (e.key === 'Enter') e.preventDefault()
         }}
+        className={INPUT_CLASS}
         style={{ ...INPUT_BASE, ...(disabled ? INPUT_DISABLED : {}) }}
       />
       <select
@@ -146,7 +148,7 @@ export function EventRefPicker({
         aria-invalid={ariaInvalid || undefined}
         aria-describedby={ariaDescribedBy}
         onChange={e => onSelect(e.target.value)}
-        className="w-full appearance-none"
+        className={cn(INPUT_CLASS, 'w-full appearance-none')}
         style={{ ...INPUT_BASE, ...(disabled ? INPUT_DISABLED : {}) }}
       >
         <option value="">Select event…</option>

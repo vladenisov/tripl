@@ -1,4 +1,4 @@
-import { Badge } from '@/components/ui/badge'
+import { Chip } from '@/components/primitives/chip'
 import { Checkbox } from '@/components/ui/checkbox'
 
 interface ColumnCheckboxPickerProps {
@@ -51,7 +51,7 @@ export function ColumnCheckboxPicker({
             return (
               <label
                 key={name}
-                className="flex items-center gap-2 rounded-control border bg-background p-2 text-xs"
+                className="flex items-center gap-2 rounded-control border bg-background p-2 text-body-sm"
                 style={{ borderColor: 'var(--border)' }}
               >
                 <Checkbox
@@ -62,16 +62,16 @@ export function ColumnCheckboxPicker({
                 />
                 <span className="mono min-w-0 flex-1 truncate">{name}</span>
                 {isReserved && (
-                  <Badge variant="outline" className="text-[10px]">
+                  <Chip size="xs" variant="outline">
                     reserved
-                  </Badge>
+                  </Chip>
                 )}
               </label>
             )
           })}
         </div>
       ) : (
-        <p className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
           No columns available yet.
         </p>
       )}

@@ -138,8 +138,8 @@ export function buildCoreUpdatePayload(
 
 /**
  * Why `value` is not a usable service-account key file, or null when it is (or
- * is empty — on edit that means "keep the stored key", and on create the
- * field's own `required` catches it).
+ * is empty — on edit that means "keep the stored key", and on create
+ * `connectionCoreMissing` catches it).
  *
  * A partial paste used to be accepted at create time and only fail later, at
  * connect or test time, in the backend's `json.loads` (DATA-29).
@@ -161,6 +161,36 @@ export function serviceAccountKeyError(value: string): string | null {
     return 'This is not a service-account key: its "type" must be "service_account".'
   }
   return null
+}
+
+/** The core fields a connection cannot be tested or saved without. */
+export type CoreMissing = Partial<Record<'host' | 'port' | 'databaseName' | 'secret', string>>
+
+/**
+ * Which required core fields are empty, each mapped to the inline message
+ * under it (AU-4 / DA-37). The dialogs validate on submit with `noValidate`
+ * instead of the browser's bubble, which flagged the first empty field only,
+ * and Test connection used to send the empty draft and come back with the
+ * backend's "host: String should have at least 1 character".
+ *
+ * BigQuery has no port, and its key is required only on create: on edit an
+ * empty key field keeps the stored one.
+ */
+export function connectionCoreMissing(
+  dbType: DbType,
+  form: ConnectionCoreForm,
+  mode: 'create' | 'edit',
+  message: string,
+): CoreMissing {
+  const missing: CoreMissing = {}
+  if (!form.host.trim()) missing.host = message
+  if (!form.databaseName.trim()) missing.databaseName = message
+  if (dbType === 'bigquery') {
+    if (mode === 'create' && !form.secret.trim()) missing.secret = message
+  } else if (!form.port) {
+    missing.port = message
+  }
+  return missing
 }
 
 /** Inline error for the core secret field, or null. Only BigQuery's is checked. */

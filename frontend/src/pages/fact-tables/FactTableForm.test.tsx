@@ -217,8 +217,8 @@ describe('FactTableForm', () => {
     fillRequired()
 
     fireEvent.click(screen.getByRole('button', { name: /Add row filter/ }))
-    const nameInput = screen.getByPlaceholderText('mobile_only')
-    const sqlInput = screen.getByPlaceholderText("platform = 'ios'")
+    const nameInput = screen.getByLabelText('Row filter 1 name')
+    const sqlInput = screen.getByLabelText('Row filter 1 SQL condition')
     fireEvent.change(nameInput, { target: { value: 'ios_only' } })
     fireEvent.change(sqlInput, { target: { value: "platform = 'ios'" } })
 

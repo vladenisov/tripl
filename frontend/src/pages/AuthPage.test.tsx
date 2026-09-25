@@ -263,4 +263,35 @@ describe('AuthPage', () => {
     ).toBeInTheDocument()
     expect(screen.queryByText(/Sign-ups are closed on this instance/)).not.toBeInTheDocument()
   })
+  it('marks missing fields inline instead of a browser bubble, and sends nothing (AU-4)', async () => {
+    renderAuth()
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    const email = screen.getByLabelText('Email')
+    const password = screen.getByLabelText('Password')
+    expect(email).toHaveAttribute('aria-invalid', 'true')
+    expect(email).toHaveAccessibleDescription('Required')
+    expect(password).toHaveAttribute('aria-invalid', 'true')
+    expect(email.closest('form')).toHaveAttribute('novalidate')
+    // The refused submit never reached the API: only the status probe ran.
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+    // The first invalid control takes focus on the next frame.
+    await waitFor(() => expect(email).toHaveFocus())
+  })
+
+  it('names the password rule under the field on a short register password', async () => {
+    renderAuth()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'new@example.com' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'short' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create your account' }))
+
+    const password = screen.getByLabelText('Password')
+    expect(password).toHaveAttribute('aria-invalid', 'true')
+    expect(await screen.findByText('Use at least 12 characters.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Email')).not.toHaveAttribute('aria-invalid')
+  })
 })

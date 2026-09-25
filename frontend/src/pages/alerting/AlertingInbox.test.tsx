@@ -1086,7 +1086,7 @@ describe('AlertingInbox — narrowing the list past its status', () => {
     // "volume", not "event": the chip on the card below says the former, and a
     // picker with its own vocabulary makes one column read as two things.
     // The design-system Select, like the Delivery log's filter bar (ALR-49).
-    fireEvent.click(screen.getByRole('combobox', { name: 'Kind' }))
+    fireEvent.click(screen.getByRole('combobox', { name: /^Kind filter/ }))
     expect(await screen.findByRole('option', { name: 'release regression' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('option', { name: 'volume' }))
 
@@ -1213,7 +1213,7 @@ describe('AlertingInbox — clearing cannot be undone by a pending scope search 
       filters: { ...EMPTY_INBOX_FILTERS, direction: 'drop' },
     })
 
-    fireEvent.change(screen.getByLabelText('Scope'), { target: { value: 'checkout' } })
+    fireEvent.change(screen.getByLabelText('Search scopes'), { target: { value: 'checkout' } })
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
     await settleDebounce()
 
@@ -1221,7 +1221,7 @@ describe('AlertingInbox — clearing cannot be undone by a pending scope search 
     expect(onFiltersChange).not.toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'checkout' }),
     )
-    expect(screen.getByLabelText('Scope')).toHaveValue('')
+    expect(screen.getByLabelText('Search scopes')).toHaveValue('')
   })
 
   it('drops it on Show all too, which clears from outside the bar', async () => {
@@ -1230,7 +1230,7 @@ describe('AlertingInbox — clearing cannot be undone by a pending scope search 
       filters: { ...EMPTY_INBOX_FILTERS, direction: 'drop' },
     })
 
-    fireEvent.change(screen.getByLabelText('Scope'), { target: { value: 'checkout' } })
+    fireEvent.change(screen.getByLabelText('Search scopes'), { target: { value: 'checkout' } })
     fireEvent.click(screen.getByRole('button', { name: 'Show all' }))
     await settleDebounce()
 
@@ -1238,7 +1238,7 @@ describe('AlertingInbox — clearing cannot be undone by a pending scope search 
     expect(onFiltersChange).not.toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'checkout' }),
     )
-    expect(screen.getByLabelText('Scope')).toHaveValue('')
+    expect(screen.getByLabelText('Search scopes')).toHaveValue('')
   })
 })
 
@@ -1246,7 +1246,7 @@ describe('AlertingInbox — the filter bar speaks the design system (ALR-49)', (
   it('offers direction through the same Select the Delivery log uses', async () => {
     const { onFiltersChange } = renderInbox()
 
-    fireEvent.click(screen.getByRole('combobox', { name: 'Direction' }))
+    fireEvent.click(screen.getByRole('combobox', { name: /^Direction filter/ }))
     fireEvent.click(await screen.findByRole('option', { name: 'spike ↑' }))
 
     expect(onFiltersChange).toHaveBeenCalledWith(
@@ -1254,13 +1254,13 @@ describe('AlertingInbox — the filter bar speaks the design system (ALR-49)', (
     )
   })
 
-  it('maps "Either way" back to no filter rather than to a sentinel', async () => {
+  it('maps "any" back to no filter rather than to a sentinel', async () => {
     const { onFiltersChange } = renderInbox({
       filters: { ...EMPTY_INBOX_FILTERS, direction: 'drop' },
     })
 
-    fireEvent.click(screen.getByRole('combobox', { name: 'Direction' }))
-    fireEvent.click(await screen.findByRole('option', { name: 'Either way' }))
+    fireEvent.click(screen.getByRole('combobox', { name: /^Direction filter/ }))
+    fireEvent.click(await screen.findByRole('option', { name: 'any' }))
 
     expect(onFiltersChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ direction: '' }),

@@ -78,7 +78,7 @@ function ValueCell({ value }: { value: unknown }) {
       </button>
       {open ? (
         <pre
-          className="mono max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 text-[11px]"
+          className="mono max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-sm px-2 py-1 text-caption"
           style={{ color: 'var(--fg)', background: 'color-mix(in oklab, var(--fg) 5%, transparent)' }}
         >
           {JSON.stringify(parsed, null, 2)}
@@ -108,7 +108,7 @@ export function RecordTable({
       <TableHeader>
         <TableRow>
           {columns.map((key) => (
-            <TableHead key={key} className="h-7 px-2 text-[10px]">
+            <TableHead key={key} className="h-7 px-2 text-micro">
               {COLUMN_LABEL[key] ?? key.replace(/_/g, ' ')}
             </TableHead>
           ))}
@@ -208,7 +208,7 @@ export function DiffValue({
   if (typeof value === 'object') {
     return (
       <pre
-        className="mono max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 text-[11px]"
+        className="mono max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-sm px-2 py-1 text-caption"
         style={{ color, background: 'color-mix(in oklab, var(--fg) 5%, transparent)' }}
       >
         {JSON.stringify(value, null, 2)}
@@ -272,7 +272,7 @@ export function DiffPair({ before, after }: { before: unknown; after: unknown })
       ) : (
         <DiffValue value={before} tone="danger" />
       )}
-      <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
+      <span className="text-body-sm" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
         →
       </span>
       <span className="sr-only">after:</span>

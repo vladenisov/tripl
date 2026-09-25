@@ -40,7 +40,7 @@ describe('statusLexicon — colour meaning key', () => {
     expect(SCAN_RUN_STATUS.never.tone).toBe('neutral')
   })
 
-  it('treats a latest-scan signal as Live (danger) and an older signal as Recent (warning)', () => {
+  it('treats a latest-scan signal as Open (danger) and an older signal as Recent (warning)', () => {
     expect(rowSignalLevel('latest_scan')).toBe(SIGNAL_LEVEL.firing)
     expect(rowSignalLevel('recent')).toBe(SIGNAL_LEVEL.warning)
     expect(SIGNAL_LEVEL.firing.tone).toBe('danger')
@@ -48,7 +48,9 @@ describe('statusLexicon — colour meaning key', () => {
     // tripl-jfm3.4: signals get their OWN words. Detection raises a signal with
     // or without a monitor, so borrowing "Firing"/"Warning" from MONITOR_STATUS
     // put a monitor verdict on rows of a project that had no monitors at all.
-    expect(SIGNAL_LEVEL.firing.label).toBe('Live')
+    expect(SIGNAL_LEVEL.firing.label).toBe('Open')
+    // "Live" belongs to the lifecycle status (EV-5/DS-7).
+    expect(SIGNAL_LEVEL.firing.label).not.toBe(eventStatusLexeme('live').label)
     expect(SIGNAL_LEVEL.warning.label).toBe('Recent')
     expect(SIGNAL_LEVEL.firing.label).not.toBe(MONITOR_STATUS.firing.label)
     expect(SIGNAL_LEVEL.warning.label).not.toBe(MONITOR_STATUS.warning.label)

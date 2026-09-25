@@ -79,18 +79,18 @@ export function ScanPreviewPanel({
           sentence: JsonValuePathsPicker expresses the same fact as a button you
           press ("Discover JSON keys"), which is where it is actionable. */}
       {eventTargetMissing && (
-        <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>{NO_EVENT_TARGET_TEXT}</p>
+        <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>{NO_EVENT_TARGET_TEXT}</p>
       )}
       {offerFirstCheck && (
         <div className="flex flex-wrap items-center gap-2">
-          <p className="m-0 flex-1 text-xs text-muted-foreground">{NOT_CHECKED_YET_TEXT}</p>
+          <p className="m-0 flex-1 text-body-sm text-muted-foreground">{NOT_CHECKED_YET_TEXT}</p>
           <Button type="button" variant="outline" size="sm" onClick={onRecheck}>
             Check
           </Button>
         </div>
       )}
       {!eventTargetMissing && dryRunPending && (
-        <p className="text-xs text-muted-foreground">Working out what this scan would create…</p>
+        <p className="text-body-sm text-muted-foreground">Working out what this scan would create…</p>
       )}
       {!eventTargetMissing && !dryRunPending && Boolean(dryRunError) && (
         <div className="space-y-2">
@@ -126,7 +126,7 @@ export function ScanPreviewPanel({
           type="button"
           onClick={() => setRowsOpen(open => !open)}
           aria-expanded={rowsOpen}
-          className="text-[12px] font-medium text-muted-foreground hover:underline"
+          className="text-body-sm font-medium text-muted-foreground hover:underline"
         >
           {rowsOpen ? 'Hide sample rows' : `Show sample rows (${rows.length})`}
         </button>
@@ -145,7 +145,7 @@ export function ScanPreviewPanel({
                 {rows.map((row, index) => (
                   <TableRow key={index}>
                     {preview.columns.map(column => (
-                      <TableCell key={column.name} className="max-w-[220px] truncate text-xs">
+                      <TableCell key={column.name} className="max-w-[220px] truncate text-body-sm">
                         {formatPreviewCell(row[column.name])}
                       </TableCell>
                     ))}

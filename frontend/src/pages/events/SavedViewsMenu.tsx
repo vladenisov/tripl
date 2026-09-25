@@ -25,11 +25,11 @@ export function SavedViewsMenu({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="h-8 text-xs">
-          <Bookmark className="h-3 w-3" />
+        <Button variant="outline" size="sm">
+          <Bookmark />
           <span className="max-sm:sr-only">Views</span>
           {activeViewName && (
-            <span className="max-w-24 truncate text-2xs text-muted-foreground max-sm:hidden">
+            <span className="max-w-24 truncate text-micro text-muted-foreground max-sm:hidden">
               {activeViewName}
             </span>
           )}
@@ -37,7 +37,7 @@ export function SavedViewsMenu({
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-2">
         <div
-          className="px-1 pb-2 text-2xs font-semibold uppercase tracking-[0.06em]"
+          className="px-1 pb-2 micro-label"
           style={{ color: 'var(--fg-subtle)' }}
         >
           Saved views
@@ -51,7 +51,6 @@ export function SavedViewsMenu({
               if (event.key === 'Enter') onSave()
             }}
             placeholder="Current filters as..."
-            className="h-8 text-xs"
           />
           <IconButton
             type="button"
@@ -66,7 +65,7 @@ export function SavedViewsMenu({
         </div>
 
         {views.length === 0 ? (
-          <div className="rounded border border-dashed px-2 py-3 text-center text-[12px] text-muted-foreground">
+          <div className="rounded-sm border border-dashed px-2 py-3 text-center text-body-sm text-muted-foreground">
             No saved views
           </div>
         ) : (
@@ -76,19 +75,19 @@ export function SavedViewsMenu({
               return (
                 <div
                   key={view.name}
-                  className="flex items-center gap-1 rounded px-1 py-1 hover:bg-[var(--surface-hover)]"
+                  className="flex items-center gap-1 rounded-sm px-1 py-1 hover:bg-[var(--surface-hover)]"
                 >
                   <button
                     type="button"
                     aria-pressed={isActive}
                     onClick={() => onApply(view)}
-                    className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left text-[12px]"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-1 text-left text-body-sm"
                   >
                     <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
                       {isActive && <Check className="h-3 w-3" />}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{view.name}</span>
-                    <span className="shrink-0 text-[10px] text-muted-foreground">{view.tab}</span>
+                    <span className="shrink-0 text-micro text-muted-foreground">{view.tab}</span>
                   </button>
                   <IconButton
                     type="button"

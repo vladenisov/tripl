@@ -82,6 +82,30 @@ function renderAnomalies(entry = '/p/demo/anomalies') {
   )
 }
 
+// The filters are FilterSelect chips (DS-15): "Magnitude: Significant",
+// "Scan: All scans 7". A chip names itself "<Label> filter: <value>", so the
+// value is announced with it; these match the label part whatever is set.
+const MAGNITUDE = /^Magnitude filter: /
+const SCAN = /^Scan filter: /
+
+function filterChip(name: RegExp): HTMLElement {
+  return screen.getByRole('combobox', { name })
+}
+
+/** Opens a filter chip and picks one of its options by name. */
+async function chooseFilter(name: RegExp, option: string | RegExp): Promise<void> {
+  fireEvent.click(await screen.findByRole('combobox', { name }))
+  fireEvent.click(await screen.findByRole('option', { name: option }))
+}
+
+/** Opens a filter chip and returns the names of its options, then closes it. */
+async function filterOptions(name: RegExp): Promise<string[]> {
+  fireEvent.click(await screen.findByRole('combobox', { name }))
+  const options = (await screen.findAllByRole('option')).map((option) => option.textContent ?? '')
+  fireEvent.keyDown(await screen.findByRole('listbox'), { key: 'Escape' })
+  return options
+}
+
 beforeEach(() => {
   vi.mocked(eventMetricsApi.getActiveSignals).mockReset()
   vi.mocked(eventsApi.list).mockReset()
@@ -292,8 +316,8 @@ describe('AnomaliesPage — magnitude filter', () => {
     expect(await screen.findByText('Spike on Event type · Big move')).toBeInTheDocument()
     expect(screen.queryByText('Spike on Event type · Tiny wiggle')).not.toBeInTheDocument()
 
-    // Switch the segmented control to "All" — the small one now appears.
-    fireEvent.click(screen.getByRole('radio', { name: 'All' }))
+    // Switch the magnitude filter to "All" — the small one now appears.
+    await chooseFilter(MAGNITUDE, 'All')
     expect(await screen.findByText('Spike on Event type · Tiny wiggle')).toBeInTheDocument()
     // The big one is still there.
     expect(screen.getByText('Spike on Event type · Big move')).toBeInTheDocument()
@@ -307,7 +331,8 @@ describe('AnomaliesPage — magnitude filter', () => {
     renderAnomalies()
 
     await screen.findByText(/Spike on Metric/)
-    expect(screen.getByRole('radiogroup', { name: 'Filter by anomaly magnitude' })).toBeVisible()
+    expect(filterChip(MAGNITUDE)).toBeVisible()
+    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:Significant')
   })
 
   it('shows a lower-the-filter hint (not the empty state) when the level hides everything', async () => {
@@ -358,7 +383,7 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
 
     // Landed already widened: no click, and the sub-threshold row is on screen.
     expect(await screen.findByText('Spike on Event type · Tiny wiggle')).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'All' })).toHaveAttribute('aria-checked', 'true')
+    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:All')
   })
 
   it('writes the level back to the URL, and clears the parameter on the default', async () => {
@@ -366,12 +391,12 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
 
     renderAnomalies()
 
-    fireEvent.click(await screen.findByRole('radio', { name: 'All' }))
+    await chooseFilter(MAGNITUDE, 'All')
     expect(await screen.findByText('anomalies-location:/p/demo/anomalies?level=all'))
       .toBeInTheDocument()
 
     // Back to the default writes no parameter rather than `level=significant`.
-    fireEvent.click(screen.getByRole('radio', { name: 'Significant' }))
+    await chooseFilter(MAGNITUDE, 'Significant')
     expect(await screen.findByText('anomalies-location:/p/demo/anomalies')).toBeInTheDocument()
   })
 
@@ -385,10 +410,7 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
 
     expect(await screen.findByText('Spike on Event type · Signup')).toBeInTheDocument()
     expect(screen.queryByText('Spike on Event type · Tiny wiggle')).not.toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Significant' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    )
+    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:Significant')
   })
 
   it('keeps ?scan= and ?level= independent of each other', async () => {
@@ -399,7 +421,7 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
 
     expect(await screen.findByText('Spike on Event type · Tiny wiggle')).toBeInTheDocument()
     // Flipping the level leaves the scan selection in the URL untouched.
-    fireEvent.click(screen.getByRole('radio', { name: 'Significant' }))
+    await chooseFilter(MAGNITUDE, 'Significant')
     expect(await screen.findByText('anomalies-location:/p/demo/anomalies?scan=scan-1'))
       .toBeInTheDocument()
   })
@@ -445,12 +467,14 @@ describe('AnomaliesPage — scan facet', () => {
 
     // The option label carries the count, so the size difference is legible
     // before clicking: 6 legacy against 1 live.
-    const facet = screen.getByRole('radiogroup', { name: 'Filter by scan' })
-    expect(facet).toHaveTextContent('Old events (iOS) 6')
-    expect(facet).toHaveTextContent('Snowplow Events (iOS) 1')
-    expect(facet).toHaveTextContent('All scans 7')
+    expect(filterChip(SCAN)).toHaveTextContent('Scan:All scans 7')
+    expect(await filterOptions(SCAN)).toEqual([
+      'All scans 7',
+      'Old events (iOS) 6',
+      'Snowplow Events (iOS) 1',
+    ])
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Snowplow Events (iOS) 1' }))
+    await chooseFilter(SCAN, 'Snowplow Events (iOS) 1')
 
     expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
     expect(screen.queryByText('Spike on Event · Legacy tap')).not.toBeInTheDocument()
@@ -472,9 +496,9 @@ describe('AnomaliesPage — scan facet', () => {
     renderAnomalies()
 
     await screen.findByText(/Spike on Event/)
-    expect(screen.queryByRole('radiogroup', { name: 'Filter by scan' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: SCAN })).not.toBeInTheDocument()
     // The magnitude control is untouched by the facet's absence.
-    expect(screen.getByRole('radiogroup', { name: 'Filter by anomaly magnitude' })).toBeVisible()
+    expect(filterChip(MAGNITUDE)).toBeVisible()
   })
 
   it('gives catalog-metric signals their own option instead of crashing on a null scan', async () => {
@@ -495,13 +519,13 @@ describe('AnomaliesPage — scan facet', () => {
 
     renderAnomalies()
 
-    const facet = await screen.findByRole('radiogroup', { name: 'Filter by scan' })
-    expect(facet).toHaveTextContent('Catalog metrics 1')
-    expect(facet).toHaveTextContent('All scans 8')
+    const options = await filterOptions(SCAN)
+    expect(options).toContain('Catalog metrics 1')
+    expect(options).toContain('All scans 8')
 
     // And the option is reachable: selecting it keeps the metric row and drops
     // every scan-bound one, so the signal is not merely un-crashing but findable.
-    fireEvent.click(screen.getByRole('radio', { name: 'Catalog metrics 1' }))
+    await chooseFilter(SCAN, 'Catalog metrics 1')
     expect(await screen.findByText(/Spike on Metric/)).toBeInTheDocument()
     expect(screen.queryByText(/Legacy tap/)).not.toBeInTheDocument()
   })
@@ -513,8 +537,7 @@ describe('AnomaliesPage — scan facet', () => {
 
     renderAnomalies()
 
-    const facet = await screen.findByRole('radiogroup', { name: 'Filter by scan' })
-    expect(facet).toHaveTextContent('Scan scan-leg 6')
+    expect(await filterOptions(SCAN)).toContain('Scan scan-leg 6')
   })
 
   it('offers "show all scans" when the selected scan has nothing at this level', async () => {
@@ -550,12 +573,9 @@ describe('AnomaliesPage — scan facet', () => {
     // legacy scan still has one — so the emptiness is the scan filter's doing.
     // The option survives the level change (its count drops to 0), which is the
     // point: it must not evaporate and silently reset the page to "all scans".
-    fireEvent.click(await screen.findByRole('radio', { name: 'Snowplow Events (iOS) 2' }))
-    fireEvent.click(screen.getByRole('radio', { name: 'Major' }))
-    expect(screen.getByRole('radio', { name: 'Snowplow Events (iOS) 0' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    )
+    await chooseFilter(SCAN, 'Snowplow Events (iOS) 2')
+    await chooseFilter(MAGNITUDE, 'Major')
+    expect(filterChip(SCAN)).toHaveTextContent('Scan:Snowplow Events (iOS) 0')
     expect(
       await screen.findByText('Nothing in Snowplow Events (iOS) at this level'),
     ).toBeInTheDocument()
@@ -577,14 +597,7 @@ describe('AnomaliesPage — scan facet', () => {
     // one out by size is gone.
     expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
     expect(screen.queryByText('Spike on Event · Legacy tap')).not.toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Snowplow Events (iOS) 1' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    )
-    expect(screen.getByRole('radio', { name: 'All scans 7' })).toHaveAttribute(
-      'aria-checked',
-      'false',
-    )
+    expect(filterChip(SCAN)).toHaveTextContent('Scan:Snowplow Events (iOS) 1')
   })
 
   it('degrades an unknown ?scan= to All rather than rendering an empty page', async () => {
@@ -599,12 +612,9 @@ describe('AnomaliesPage — scan facet', () => {
     // The FULL list, both scans — not an empty state, not one scan.
     expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
     expect(screen.getAllByText('Spike on Event · Legacy tap')).toHaveLength(6)
-    expect(screen.getByRole('radio', { name: 'All scans 7' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    )
+    expect(filterChip(SCAN)).toHaveTextContent('Scan:All scans 7')
     // No phantom option is manufactured for the id that does not exist.
-    expect(screen.queryByRole('radio', { name: /does-not-exist/ })).toBeNull()
+    expect((await filterOptions(SCAN)).some((option) => option.includes('does-not-exist'))).toBe(false)
   })
 
   it('keeps a real ?scan= whose signals have all closed, and explains the empty page', async () => {
@@ -625,9 +635,9 @@ describe('AnomaliesPage — scan facet', () => {
     renderAnomalies('/p/demo/anomalies?scan=scan-live')
 
     // The scan the link named is still the selection, carrying an honest 0.
-    expect(
-      await screen.findByRole('radio', { name: 'Snowplow Events (iOS) 0' }),
-    ).toHaveAttribute('aria-checked', 'true')
+    expect(await screen.findByRole('combobox', { name: SCAN })).toHaveTextContent(
+      'Scan:Snowplow Events (iOS) 0',
+    )
 
     // ...and the page says why it is empty rather than filling itself with the
     // other scan's rows.
@@ -647,12 +657,12 @@ describe('AnomaliesPage — scan facet', () => {
 
     renderAnomalies()
 
-    fireEvent.click(await screen.findByRole('radio', { name: 'Snowplow Events (iOS) 1' }))
+    await chooseFilter(SCAN, 'Snowplow Events (iOS) 1')
     expect(await screen.findByText('anomalies-location:/p/demo/anomalies?scan=scan-live'))
       .toBeInTheDocument()
 
     // ...and clearing it removes the parameter rather than leaving `scan=all`.
-    fireEvent.click(screen.getByRole('radio', { name: 'All scans 7' }))
+    await chooseFilter(SCAN, 'All scans 7')
     expect(await screen.findByText('anomalies-location:/p/demo/anomalies')).toBeInTheDocument()
   })
 })
@@ -744,32 +754,21 @@ describe('AnomaliesPage — rollup tones (MON-42)', () => {
   })
 })
 
-describe('AnomaliesPage — filter keyboard and wrapping (MON-12)', () => {
-  it('is one Tab stop that the arrow keys move through, as a radio group should be', async () => {
+describe('AnomaliesPage — filter chips (DS-15)', () => {
+  it('filters with chips that name their current value, not a segmented control', async () => {
     vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([makeSignal({ scope_name: 'A' })])
 
     renderAnomalies()
 
-    const group = await screen.findByRole('radiogroup', { name: 'Filter by anomaly magnitude' })
-    const [all, significant, major] = within(group).getAllByRole('radio')
-    // Only the checked option is in the Tab order.
-    expect(significant).toHaveAttribute('tabindex', '0')
-    expect(all).toHaveAttribute('tabindex', '-1')
-    expect(major).toHaveAttribute('tabindex', '-1')
+    const chip = await screen.findByRole('combobox', { name: MAGNITUDE })
+    expect(chip).toHaveTextContent('Magnitude:Significant')
+    expect(chip).toHaveAccessibleName('Magnitude filter: Significant')
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
 
-    significant!.focus()
-    fireEvent.keyDown(significant!, { key: 'ArrowRight' })
-    expect(major).toHaveAttribute('aria-checked', 'true')
-    expect(major).toHaveFocus()
+    await chooseFilter(MAGNITUDE, 'Major')
     expect(await screen.findByText(/anomalies-location:.*level=major/)).toBeInTheDocument()
-
-    // Wraps from the last option back to the first.
-    fireEvent.keyDown(major!, { key: 'ArrowRight' })
-    expect(all).toHaveAttribute('aria-checked', 'true')
-    expect(all).toHaveFocus()
-
-    fireEvent.keyDown(all!, { key: 'End' })
-    expect(major).toHaveAttribute('aria-checked', 'true')
+    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:Major')
+    expect(filterChip(MAGNITUDE)).toHaveAccessibleName('Magnitude filter: Major')
   })
 })
 

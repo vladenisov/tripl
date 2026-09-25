@@ -34,7 +34,7 @@ function ChartFallback({
     <div
       role="status"
       className={cn(
-        'flex items-center justify-center text-xs text-muted-foreground',
+        'flex items-center justify-center text-body-sm text-muted-foreground',
         className,
       )}
       style={{ height }}

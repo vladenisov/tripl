@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { invitationsApi } from '@/api/invitations'
+import { FieldError } from '@/components/forms/FieldError'
+import { REQUIRED_MESSAGE, focusFirstInvalid } from '@/components/forms/validation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -32,6 +34,8 @@ export default function InvitePage() {
   const queryClient = useQueryClient()
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
+  // Problems are marked once Accept was pressed, not while typing (AU-4).
+  const [submitted, setSubmitted] = useState(false)
 
   const previewQuery = useQuery({
     meta: SILENT_ERROR_META,
@@ -54,6 +58,12 @@ export default function InvitePage() {
   })
 
   const preview = previewQuery.data
+  const passwordProblem = !password
+    ? REQUIRED_MESSAGE
+    : password.length < PASSWORD_MIN_LENGTH
+      ? `Use at least ${PASSWORD_MIN_LENGTH} characters.`
+      : null
+  const passwordError = submitted ? passwordProblem : null
 
   return (
     <div className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6">
@@ -64,17 +74,17 @@ export default function InvitePage() {
         <PageHeader title="Join this tripl workspace" />
 
         {previewQuery.isLoading && (
-          <p className="text-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
             Checking your invitation…
           </p>
         )}
 
         {previewQuery.isError && (
           <div className="space-y-2">
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="text-body text-destructive">
               {getErrorMessage(previewQuery.error)}
             </p>
-            <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
               Ask whoever invited you to send a new link.
             </p>
             <Button type="button" variant="link" size="xs" className="px-0" onClick={() => void navigate('/auth')}>
@@ -85,7 +95,7 @@ export default function InvitePage() {
 
         {preview && (
           <>
-            <p className="text-sm" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
               You were invited as <strong>{preview.email}</strong>, joining as{' '}
               <strong>
                 {ROLE_OPTIONS.find((r) => r.value === preview.role)?.label ?? preview.role}
@@ -95,13 +105,24 @@ export default function InvitePage() {
 
             <form
               className="space-y-3"
+              // Checked here and marked under the field, not by a browser
+              // bubble; Accept stays pressable so it can say what is missing.
+              noValidate
               onSubmit={(e) => {
                 e.preventDefault()
-                if (password) acceptMut.mutate()
+                setSubmitted(true)
+                if (passwordProblem) {
+                  const form = e.currentTarget
+                  requestAnimationFrame(() => focusFirstInvalid(form))
+                  return
+                }
+                acceptMut.mutate()
               }}
             >
               <div className="space-y-1.5">
-                <Label htmlFor="invite-name">Your name (optional)</Label>
+                <Label htmlFor="invite-name" optional>
+                  Your name
+                </Label>
                 <Input
                   id="invite-name"
                   autoComplete="name"
@@ -117,24 +138,28 @@ export default function InvitePage() {
                   id="invite-password"
                   type="password"
                   autoComplete="new-password"
-                  required
+                  aria-required
                   minLength={PASSWORD_MIN_LENGTH}
-                  aria-describedby="invite-password-hint"
+                  aria-invalid={passwordError ? true : undefined}
+                  aria-describedby={
+                    passwordError ? 'invite-password-hint invite-password-error' : 'invite-password-hint'
+                  }
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
-                <p id="invite-password-hint" className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                <p id="invite-password-hint" className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                   {PASSWORD_POLICY_HINT}
                 </p>
+                <FieldError inputId="invite-password" message={passwordError} className="mt-0" />
               </div>
 
               {acceptMut.isError && (
-                <p role="alert" className="text-xs text-destructive">
+                <p role="alert" className="text-body-sm text-destructive">
                   {getErrorMessage(acceptMut.error)}
                 </p>
               )}
 
-              <Button type="submit" className="w-full" disabled={acceptMut.isPending || !password}>
+              <Button type="submit" className="w-full" disabled={acceptMut.isPending}>
                 {acceptMut.isPending ? 'Creating your account…' : 'Accept invitation'}
               </Button>
             </form>

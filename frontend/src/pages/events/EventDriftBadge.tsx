@@ -7,7 +7,8 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { getErrorMessage } from '@/lib/utils'
+import { chipVariants } from '@/components/primitives/chip-variants'
+import { cn, getErrorMessage } from '@/lib/utils'
 import { eventTypeDriftsKey, projectEventsKey, projectEventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
@@ -86,21 +87,24 @@ export function EventDriftBadge({
       }}
     >
       <PopoverTrigger asChild>
+        {/* The drift/warning flag of the badge taxonomy (DS-6): a soft
+            warning pill at the xs size, not a 16px uppercase square tag. It
+            stays a <button>, so it borrows the Chip's classes. */}
         <button
           type="button"
-          className="inline-flex h-4 items-center gap-0.5 rounded-sm bg-warning-soft px-1.5 text-[10px] font-semibold uppercase tracking-wide text-warning hover:bg-warning/25"
+          className={cn(chipVariants({ tone: 'warning', size: 'xs' }), 'hover:bg-warning/25')}
           aria-label={`${count} schema drift${count === 1 ? '' : 's'} on ${typeLabel ? `event type ${typeLabel}` : 'this event type'}`}
           title="Schema drift detected"
         >
-          <AlertTriangle className="h-2.5 w-2.5" />
-          {typeLabel && <span className="max-w-[14ch] truncate normal-case">{typeLabel}</span>}
+          <AlertTriangle aria-hidden />
+          {typeLabel && <span className="max-w-[14ch] truncate">{typeLabel}</span>}
           <span className="tnum">{count}</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 p-2 text-xs">
+      <PopoverContent align="start" className="w-72 p-2 text-body-sm">
         <div className="mb-1 flex items-center justify-between">
           <span className="font-semibold">Schema drift</span>
-          <span className="text-[10px] text-muted-foreground">last 30 days</span>
+          <span className="text-micro text-muted-foreground">last 30 days</span>
         </div>
         {driftsQuery.isLoading && <div className="text-muted-foreground">Loading…</div>}
         {driftsQuery.isError && (
@@ -126,13 +130,13 @@ export function EventDriftBadge({
             {driftsQuery.data.items.map((drift) => (
               <li
                 key={drift.id}
-                className="flex items-center justify-between gap-2 rounded px-1 py-0.5 hover:bg-muted/50"
+                className="flex items-center justify-between gap-2 rounded-sm px-1 py-0.5 hover:bg-muted/50"
               >
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-[11px]" title={drift.field_name}>
+                  <div className="truncate font-mono text-caption" title={drift.field_name}>
                     {drift.field_name}
                   </div>
-                  <div className="text-[10px] text-muted-foreground">
+                  <div className="text-micro text-muted-foreground">
                     {DRIFT_LABEL[drift.drift_type] ?? drift.drift_type}
                     {drift.observed_type && drift.declared_type
                       ? ` · ${drift.declared_type} → ${drift.observed_type}`
@@ -144,7 +148,7 @@ export function EventDriftBadge({
                   </div>
                   {drift.sample_value && (
                     <div
-                      className="truncate font-mono text-[10px]"
+                      className="truncate font-mono text-micro"
                       style={{ color: 'var(--fg-faint)' }}
                       title={drift.sample_value}
                     >
@@ -156,27 +160,24 @@ export function EventDriftBadge({
                       {drift.status === 'open' || drift.status === 'snoozed' ? (
                         <>
                           <Button
-                            size="sm"
+                            size="xs"
                             variant="outline"
-                            className="h-6 px-1.5 text-[10px]"
                             disabled={actionMut.isPending}
                             onClick={() => actionMut.mutate({ driftId: drift.id, action: 'accept' })}
                           >
                             Accept
                           </Button>
                           <Button
-                            size="sm"
+                            size="xs"
                             variant="outline"
-                            className="h-6 px-1.5 text-[10px]"
                             disabled={actionMut.isPending}
                             onClick={() => actionMut.mutate({ driftId: drift.id, action: 'snooze' })}
                           >
                             Snooze
                           </Button>
                           <Button
-                            size="sm"
+                            size="xs"
                             variant="outline"
-                            className="h-6 px-1.5 text-[10px]"
                             disabled={actionMut.isPending}
                             onClick={() => actionMut.mutate({ driftId: drift.id, action: 'false_positive' })}
                           >
@@ -185,9 +186,8 @@ export function EventDriftBadge({
                         </>
                       ) : (
                         <Button
-                          size="sm"
+                          size="xs"
                           variant="outline"
-                          className="h-6 px-1.5 text-[10px]"
                           disabled={actionMut.isPending}
                           onClick={() => actionMut.mutate({ driftId: drift.id, action: 'reopen' })}
                         >
@@ -198,7 +198,7 @@ export function EventDriftBadge({
                   )}
                 </div>
                 <span
-                  className="shrink-0 text-[10px] tnum"
+                  className="shrink-0 text-micro tnum"
                   style={{ color: 'var(--fg-faint)' }}
                 >
                   {formatRelativeTime(drift.detected_at)}

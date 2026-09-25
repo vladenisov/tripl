@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Panel } from '@/components/settings/kit'
+import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { LoadingState } from '@/components/primitives/loading-state'
 import { Chip } from '@/components/primitives/chip'
@@ -77,20 +78,19 @@ export default function CoveragePage() {
   const noGaps = !!deadQuery.data && !deadQuery.isError && deadItems.length === 0
 
   return (
-    <div className="min-w-0 space-y-6 pb-12">
+    <PageContainer>
       <PageHeader
         eyebrow="Govern"
         title="Coverage"
+        description="How much of your active plan is implemented, and which implemented events have gone quiet."
         actions={
           slug ? (
-            <Link
-              to={`/p/${slug}/reconciliation`}
-              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ color: 'var(--fg-muted)' }}
-            >
-              <ArrowRight className="h-3.5 w-3.5" />
-              Reconciliation
-            </Link>
+            <Button asChild variant="outline" size="sm">
+              <Link to={`/p/${slug}/reconciliation`} className="no-underline">
+                <ArrowRight aria-hidden="true" />
+                Reconciliation
+              </Link>
+            </Button>
           ) : undefined
         }
       />
@@ -108,10 +108,7 @@ export default function CoveragePage() {
         />
       ) : (
         <>
-          <MiniStatStrip
-            className="rounded-lg border px-4 py-3"
-            style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
-          >
+          <MiniStatStrip boxed>
             <div title={PLAN_COVERAGE_HELP}>
               <MiniStat
                 label="Plan coverage"
@@ -206,7 +203,7 @@ export default function CoveragePage() {
               />
             </div>
           ) : deadQuery.isLoading ? (
-            <LoadingState className="px-4 py-6 text-[12px]" />
+            <LoadingState className="px-4 py-6 text-body-sm" />
           ) : noGaps ? (
             <div
               className="flex items-center gap-2 px-4 py-6 text-body-sm"
@@ -217,14 +214,14 @@ export default function CoveragePage() {
             </div>
           ) : (
             <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
-              <p className="px-4 py-2 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="px-(--panel-pad) py-2 text-micro" style={{ color: 'var(--fg-subtle)' }}>
                 {GAP_BASIS_HELP}
               </p>
               {deadItems.slice(0, GAP_LIMIT).map((item) => (
                 <GapRow key={item.event_id} item={item} slug={slug} />
               ))}
               {deadItems.length > GAP_LIMIT && (
-                <div className="px-4 py-2 text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+                <div className="px-4 py-2 text-caption" style={{ color: 'var(--fg-faint)' }}>
                   Showing {GAP_LIMIT} of {formatNumber(deadTotal)} — see Reconciliation for the full list.
                 </div>
               )}
@@ -232,7 +229,7 @@ export default function CoveragePage() {
           )}
         </Panel>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -252,8 +249,8 @@ function CoverageBar({
   const total = implemented + notImplemented
   const implementedPct = total > 0 ? (implemented / total) * 100 : 0
   return (
-    <div className="rounded-lg border px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-      <div className="mb-2 flex items-center justify-between text-[11px]" style={{ color: 'var(--fg-muted)' }}>
+    <div className="rounded-card border px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="mb-2 flex items-center justify-between text-caption" style={{ color: 'var(--fg-muted)' }}>
         <span>
           <span className="font-semibold" style={{ color: 'var(--fg)' }}>
             {formatNumber(implemented)}
@@ -288,12 +285,13 @@ function CoverageBar({
 function GapRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
   const label = eventNameLabel(item.name)
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5">
+    // Row height follows the Density setting (DS-9).
+    <div className="flex min-h-(--row-h) items-center gap-3 px-(--panel-pad) py-1">
       <ShieldX className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--warning)' }} aria-hidden="true" />
       {slug ? (
         <Link
           to={getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id })}
-          className="mono min-w-0 flex-1 truncate text-body-sm font-medium hover:underline"
+          className="min-w-0 flex-1 truncate text-body-sm font-medium hover:underline"
           style={{ color: 'var(--fg)' }}
           title={label}
         >
@@ -301,7 +299,7 @@ function GapRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
         </Link>
       ) : (
         <span
-          className="mono min-w-0 flex-1 truncate text-body-sm font-medium"
+          className="min-w-0 flex-1 truncate text-body-sm font-medium"
           style={{ color: 'var(--fg)' }}
           title={label}
         >
@@ -309,11 +307,11 @@ function GapRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
         </span>
       )}
       {item.event_type_name && (
-        <Chip tone="neutral" size="xs">
+        <Chip variant="outline" size="xs">
           {item.event_type_name}
         </Chip>
       )}
-      <span className="mono w-28 shrink-0 text-right text-2xs" style={{ color: 'var(--fg-faint)' }}>
+      <span className="tnum w-28 shrink-0 text-right text-micro" style={{ color: 'var(--fg-faint)' }}>
         {item.last_seen_at ? formatRelativeTime(item.last_seen_at) : 'Never seen'}
       </span>
     </div>

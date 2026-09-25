@@ -1,4 +1,5 @@
 import { useId, useState } from 'react'
+import { FieldError } from '@/components/forms/FieldError'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { ApiError } from '@/api/client'
@@ -174,7 +175,7 @@ export function TrackerConfigDialog({ slug, open, onOpenChange }: TrackerConfigD
             onRetry={() => void configQuery.refetch()}
           />
         ) : (
-          <p className="py-4 text-sm text-muted-foreground">Loading tracker…</p>
+          <p className="py-4 text-body text-muted-foreground">Loading tracker…</p>
         )}
       </DialogContent>
     </Dialog>
@@ -253,7 +254,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
       }}
     >
       <div className="grid gap-4 py-4">
-        <p className="text-xs text-muted-foreground">
+        <p className="text-body-sm text-muted-foreground">
           When enabled, merging a branch opens one Jira ticket for its added/changed events;
           closing the ticket marks those events implemented.
         </p>
@@ -261,7 +262,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
         <div className="flex items-center justify-between gap-3">
           <div>
             <Label htmlFor={enabledId}>Enabled</Label>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-body-sm text-muted-foreground">
               Open implementation tickets when branches merge.
             </p>
           </div>
@@ -280,7 +281,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             type="url"
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
-            placeholder="https://acme.atlassian.net"
+            placeholder="e.g. https://acme.atlassian.net"
             disabled={!canEdit}
             {...fieldProps('baseUrl', baseUrlErrorId)}
           />
@@ -293,7 +294,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             id={projectKeyId}
             value={projectKey}
             onChange={(event) => setProjectKey(event.target.value)}
-            placeholder="ENG"
+            placeholder="e.g. ENG"
             disabled={!canEdit}
             {...fieldProps('projectKey', projectKeyErrorId)}
           />
@@ -307,7 +308,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             type="email"
             value={authEmail}
             onChange={(event) => setAuthEmail(event.target.value)}
-            placeholder="you@acme.com"
+            placeholder="e.g. you@acme.com"
             disabled={!canEdit}
             {...fieldProps('authEmail', authEmailErrorId)}
           />
@@ -325,7 +326,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             placeholder={tokenPlaceholder}
             disabled={!canEdit}
           />
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             {config.api_token_set
               ? 'A token is stored. Leave this blank to keep it, or paste a new one to replace it.'
               : 'Create an API token in your Jira account settings.'}
@@ -344,17 +345,17 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
         </div>
 
         {saveMut.isSuccess && (
-          <p className="text-sm" style={{ color: 'var(--success)' }}>
+          <p className="text-body" style={{ color: 'var(--success)' }}>
             Tracker configuration saved.
           </p>
         )}
         {saveMut.isError && (
-          <p className="text-sm" style={{ color: 'var(--danger)' }}>
+          <p className="text-body" style={{ color: 'var(--danger)' }}>
             {describeTrackerError(saveMut.error)}
           </p>
         )}
         {!canEdit && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             Only project owners can edit the tracker connection.
           </p>
         )}
@@ -371,14 +372,5 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
         )}
       </DialogFooter>
     </form>
-  )
-}
-
-function FieldError({ id, message }: { id: string; message?: string }) {
-  if (!message) return null
-  return (
-    <p id={id} className="text-xs" style={{ color: 'var(--danger)' }}>
-      {message}
-    </p>
   )
 }

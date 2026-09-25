@@ -36,3 +36,20 @@ describe('EmptyState options (DS-16, DS-38)', () => {
     expect(screen.getByRole('button', { name: 'Invite' })).toBeInTheDocument()
   })
 })
+
+describe('EmptyState typography (DS-21)', () => {
+  it('sits on the type scale in both sizes', () => {
+    render(
+      <>
+        <EmptyState icon={Inbox} title="Page empty" description="Page body" />
+        <EmptyState icon={Inbox} title="Panel empty" description="Panel body" size="sm" headingLevel={3} />
+      </>,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Page empty' })).toHaveClass('text-heading')
+    expect(screen.getByText('Page body')).toHaveClass('text-body')
+    expect(screen.getByRole('heading', { name: 'Panel empty' })).toHaveClass('text-body-sm')
+    expect(screen.getByText('Panel body')).toHaveClass('text-caption')
+    expect(screen.getByText('Panel body')).not.toHaveClass('text-[12px]')
+  })
+})

@@ -1,4 +1,4 @@
-import { useState, type ComponentProps } from 'react'
+import { useRef, useState, type ComponentProps } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Eye, EyeOff } from 'lucide-react'
 
@@ -6,11 +6,14 @@ import { alertingApi } from '@/api/alerting'
 import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useDirtySinceOpen, useUnsavedDialogGuard } from '@/hooks/useUnsavedChangesGuard'
+import { FieldError } from '@/components/forms/FieldError'
+import { examplePlaceholder } from '@/components/forms/placeholders'
+import { REQUIRED_MESSAGE, focusFirstInvalid, missingSummary } from '@/components/forms/validation'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { AlertDestination } from '@/types'
 
@@ -26,7 +29,6 @@ import {
   destinationFormToPayload,
   destinationToForm,
 } from './destinationForm'
-import { FieldError } from './FieldError'
 import { fieldErrorProps, splitApiFieldErrors } from './fieldErrors'
 
 /** What the dialog was opened for. */
@@ -80,7 +82,7 @@ function SecretInput({ label, ...props }: ComponentProps<typeof Input> & { label
       <IconButton
         type="button"
         variant="ghost"
-        className="h-9 w-9 shrink-0"
+        className="shrink-0"
         label={`${shown ? 'Hide' : 'Show'} ${label}`}
         aria-pressed={shown}
         onClick={() => setShown(current => !current)}
@@ -167,20 +169,57 @@ export function DestinationDialog({
     ['name', 'delivery_schedule_cron', ...CHANNEL_FIELDS[form.type]],
     DESTINATION_FIELD_LABELS,
   )
-  const errorFor = (field: keyof DestinationFormState) =>
-    (submitAttempted ? problems[field] : undefined) ?? server.fields[field]
-
-  const submit = () => {
-    setSubmitAttempted(true)
-    if (!scheduleValid || Object.keys(problems).length > 0) return
-    if (existing) updateMut.mutate(existing)
-    else createMut.mutate()
-  }
-
   // Secrets are required where nothing is stored yet — except on a demo
   // workspace, whose disabled Slack example has no webhook and must stay
   // renameable (ALR-2).
   const secretRequired = (isSet: boolean | undefined) => !existing || (!isSet && !isDemo)
+  // What the form refuses to send empty, per channel. The fields that are
+  // pre-filled and not secret stay required in edit mode too: an emptied Base
+  // URL used to be sent as "absent", so Save "succeeded" and quietly kept the
+  // old value (ALR-26). Checked here and named inline, not by the browser's
+  // `required` bubble, which flagged the first empty field only (AL-28).
+  const requiredFields: readonly (keyof DestinationFormState)[] = [
+    'name',
+    ...({
+      slack: secretRequired(existing?.webhook_set) ? ['webhook_url' as const] : [],
+      telegram: [
+        ...(secretRequired(existing?.bot_token_set) ? ['bot_token' as const] : []),
+        'chat_id' as const,
+      ],
+      webhook: secretRequired(existing?.target_url_set) ? ['target_url' as const] : [],
+      email: ['email_recipients' as const],
+      jira: [
+        'jira_base_url' as const,
+        'jira_auth_email' as const,
+        ...(secretRequired(existing?.jira_api_token_set) ? ['jira_api_token' as const] : []),
+        'jira_project_key' as const,
+      ],
+      linear: [
+        ...(secretRequired(existing?.linear_api_key_set) ? ['linear_api_key' as const] : []),
+        'linear_team_id' as const,
+      ],
+      demo_sink: [],
+    } satisfies Record<DestinationFormState['type'], (keyof DestinationFormState)[]>)[form.type],
+  ]
+  const missing = requiredFields.filter(field => !String(form[field] ?? '').trim())
+  const errorFor = (field: keyof DestinationFormState) =>
+    (submitAttempted ? problems[field] ?? (missing.includes(field) ? REQUIRED_MESSAGE : undefined) : undefined)
+    ?? server.fields[field]
+
+  const formRef = useRef<HTMLFormElement>(null)
+  const submit = () => {
+    setSubmitAttempted(true)
+    if (!scheduleValid || missing.length > 0 || Object.keys(problems).length > 0) {
+      // Only the body scrolls (AL-4): take the reader to the first field the
+      // refusal highlighted instead of leaving it below the fold.
+      requestAnimationFrame(() => {
+        if (formRef.current) focusFirstInvalid(formRef.current)
+      })
+      return
+    }
+    if (existing) updateMut.mutate(existing)
+    else createMut.mutate()
+  }
   const set = <K extends keyof DestinationFormState>(field: K, value: DestinationFormState[K]) =>
     setForm(current => ({ ...current, [field]: value }))
 
@@ -194,18 +233,19 @@ export function DestinationDialog({
     field: keyof typeof DESTINATION_FIELD_MAX_LENGTH | 'email_recipients',
     id: string,
     label: string,
-    extra: Partial<ComponentProps<typeof Input>> = {},
+    { optional = false, ...extra }: Partial<ComponentProps<typeof Input>> & { optional?: boolean } = {},
   ) => {
     const error = errorFor(field)
     return (
       <div className="grid gap-2">
-        <Label htmlFor={id}>{label}</Label>
+        <Label htmlFor={id} optional={optional}>{label}</Label>
         <Input
           id={id}
           autoComplete="off"
           maxLength={field === 'email_recipients' ? undefined : DESTINATION_FIELD_MAX_LENGTH[field]}
           value={form[field]}
           onChange={event => set(field, event.target.value)}
+          aria-required={requiredFields.includes(field) || undefined}
           {...fieldErrorProps(id, error)}
           {...extra}
         />
@@ -219,19 +259,19 @@ export function DestinationDialog({
     field: 'webhook_url' | 'bot_token' | 'target_url' | 'webhook_header_value' | 'jira_api_token' | 'linear_api_key',
     id: string,
     label: string,
-    { placeholder, required }: { placeholder: string; required: boolean },
+    { placeholder, optional = false }: { placeholder: string; optional?: boolean },
   ) => {
     const error = errorFor(field)
     return (
       <div className="grid gap-2">
-        <Label htmlFor={id}>{label}</Label>
+        <Label htmlFor={id} optional={optional}>{label}</Label>
         <SecretInput
           id={id}
           label={label}
           placeholder={placeholder}
           value={form[field]}
           onChange={event => set(field, event.target.value)}
-          required={required}
+          aria-required={requiredFields.includes(field) || undefined}
           {...fieldErrorProps(id, error)}
         />
         <FieldError inputId={id} message={error} />
@@ -247,22 +287,32 @@ export function DestinationDialog({
   const alertMessage =
     submitAttempted && !scheduleValid
       ? 'Fix the delivery schedule above before saving — the cadence on screen is not valid yet.'
-      : server.message ?? (hasFieldErrors ? 'Check the highlighted fields.' : null)
+      : server.message
+        ?? (submitAttempted ? missingSummary(missing.map(field => DESTINATION_FIELD_LABELS[field] ?? field)) : null)
+        ?? (hasFieldErrors ? 'Check the highlighted fields.' : null)
 
   return (
     <>
       {guard.dialog}
       <Dialog open onOpenChange={open => { if (!open) requestClose() }}>
         <DialogContent className="max-w-lg">
-          <form onSubmit={event => { event.preventDefault(); submit() }}>
+          {/* `noValidate`: required fields are named inline and in the line
+              above the actions, not by a browser bubble (AL-28). Only the body
+              scrolls; the title and the actions stay on screen (AL-4). */}
+          <form
+            ref={formRef}
+            noValidate
+            className="flex min-h-0 flex-col gap-4"
+            onSubmit={event => { event.preventDefault(); submit() }}
+          >
             <DialogHeader>
               <DialogTitle>
-                {existing ? 'Edit Destination' : `New ${channelLabel(form.type)} Destination`}
+                {existing ? 'Edit destination' : `New ${channelLabel(form.type)} destination`}
               </DialogTitle>
             </DialogHeader>
-            <div className="grid gap-4 py-4">
+            <DialogBody className="grid gap-4 py-1">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {textField('name', 'dest-name', 'Name', { required: true })}
+                {textField('name', 'dest-name', 'Name')}
                 <div className="grid gap-2">
                   <Label htmlFor="dest-channel">Channel</Label>
                   <Select
@@ -299,28 +349,25 @@ export function DestinationDialog({
               </div>
 
               {form.type === 'slack' && secretField('webhook_url', 'dest-webhook-url', 'Webhook URL', {
-                placeholder: existing?.webhook_set ? 'Leave empty to keep current webhook' : 'https://hooks.slack.com/...',
-                required: secretRequired(existing?.webhook_set),
+                placeholder: existing?.webhook_set ? 'Leave empty to keep current webhook' : examplePlaceholder('https://hooks.slack.com/...'),
               })}
 
               {form.type === 'telegram' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {secretField('bot_token', 'dest-bot-token', 'Bot Token', {
-                    placeholder: existing?.bot_token_set ? 'Leave empty to keep current token' : '123456:ABC...',
-                    required: secretRequired(existing?.bot_token_set),
+                  {secretField('bot_token', 'dest-bot-token', 'Bot token', {
+                    placeholder: existing?.bot_token_set ? 'Leave empty to keep current token' : examplePlaceholder('123456:ABC...'),
                   })}
-                  {textField('chat_id', 'dest-chat-id', 'Chat ID', { required: true })}
+                  {textField('chat_id', 'dest-chat-id', 'Chat ID')}
                 </div>
               )}
 
               {form.type === 'webhook' && (
                 <div className="grid gap-3">
                   {secretField('target_url', 'dest-target-url', 'Target URL', {
-                    placeholder: existing?.target_url_set ? 'Leave empty to keep current URL' : 'https://example.com/webhook',
-                    required: secretRequired(existing?.target_url_set),
+                    placeholder: existing?.target_url_set ? 'Leave empty to keep current URL' : examplePlaceholder('https://example.com/webhook'),
                   })}
                   {removeWebhookHeader ? (
-                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
                       <span role="status">
                         The secret header {existing?.webhook_header_name ? `"${existing.webhook_header_name}" ` : ''}will be removed on save.
                       </span>
@@ -331,12 +378,13 @@ export function DestinationDialog({
                   ) : (
                     <>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {textField('webhook_header_name', 'dest-header-name', 'Secret Header Name', {
-                          placeholder: 'Authorization (optional)',
+                        {textField('webhook_header_name', 'dest-header-name', 'Secret header name', {
+                          placeholder: examplePlaceholder('Authorization'),
+                          optional: true,
                         })}
-                        {secretField('webhook_header_value', 'dest-header-value', 'Secret Header Value', {
-                          placeholder: existing?.webhook_header_name ? 'Leave empty to keep current value' : 'Bearer … (optional)',
-                          required: false,
+                        {secretField('webhook_header_value', 'dest-header-value', 'Secret header value', {
+                          placeholder: existing?.webhook_header_name ? 'Leave empty to keep current value' : examplePlaceholder('Bearer …'),
+                          optional: true,
                         })}
                       </div>
                       {/* The stored value could not be removed at all: an empty
@@ -351,7 +399,7 @@ export function DestinationDialog({
                       )}
                     </>
                   )}
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-body-sm text-muted-foreground">
                     Alerts POST a JSON payload (project, rule, scan, message, items). The optional secret header is sent with every request — use it for auth (e.g. Authorization).
                   </p>
                 </div>
@@ -360,52 +408,45 @@ export function DestinationDialog({
               {form.type === 'email' && (
                 <div className="grid gap-3">
                   {textField('email_recipients', 'dest-email-recipients', 'Recipients', {
-                    placeholder: 'alice@example.com, bob@example.com',
-                    required: true,
+                    placeholder: examplePlaceholder('alice@example.com', 'bob@example.com'),
                   })}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {textField('email_from_address', 'dest-email-from', 'From Address (optional)', {
-                      placeholder: 'alerts@tripl.example or Tripl Alerts <alerts@tripl.example>',
+                    {textField('email_from_address', 'dest-email-from', 'From address', {
+                      placeholder: `${examplePlaceholder('alerts@tripl.example')} or Tripl Alerts <alerts@tripl.example>`,
+                      optional: true,
                     })}
-                    {textField('email_subject_template', 'dest-email-subject', 'Subject Template (optional)', {
-                      placeholder: `[\${project_name}] \${rule_name}`,
+                    {textField('email_subject_template', 'dest-email-subject', 'Subject template', {
+                      placeholder: examplePlaceholder(`[\${project_name}] \${rule_name}`),
+                      optional: true,
                     })}
                   </div>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-body-sm text-muted-foreground">
                     SMTP settings (host/port/credentials) come from the instance config. Recipients are comma-separated. Subject supports {`\${project_name}`}, {`\${rule_name}`}, {`\${destination_name}`}, {`\${matched_count}`}.
                   </p>
                 </div>
               )}
 
-              {/* `required` in edit mode too, on the fields that are pre-filled
-                  and not secret: an emptied Base URL used to be sent as
-                  "absent", so Save "succeeded" and quietly kept the old value
-                  (ALR-26). */}
               {form.type === 'jira' && (
                 <div className="grid gap-3">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {textField('jira_base_url', 'dest-jira-base-url', 'Base URL', {
-                      placeholder: 'https://acme.atlassian.net',
-                      required: true,
+                      placeholder: examplePlaceholder('https://acme.atlassian.net'),
                     })}
-                    {textField('jira_auth_email', 'dest-jira-auth-email', 'Auth Email', {
-                      placeholder: 'alice@example.com',
-                      required: true,
+                    {textField('jira_auth_email', 'dest-jira-auth-email', 'Auth email', {
+                      placeholder: examplePlaceholder('alice@example.com'),
                     })}
                   </div>
-                  {secretField('jira_api_token', 'dest-jira-api-token', 'API Token', {
+                  {secretField('jira_api_token', 'dest-jira-api-token', 'API token', {
                     placeholder: existing?.jira_api_token_set ? 'Leave empty to keep current token' : 'Atlassian API token',
-                    required: secretRequired(existing?.jira_api_token_set),
                   })}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {textField('jira_project_key', 'dest-jira-project-key', 'Project Key', {
-                      placeholder: 'ENG',
-                      required: true,
+                    {textField('jira_project_key', 'dest-jira-project-key', 'Project key', {
+                      placeholder: examplePlaceholder('ENG'),
                       onChange: event => set('jira_project_key', event.target.value.toUpperCase()),
                     })}
-                    {textField('jira_issue_type', 'dest-jira-issue-type', 'Issue Type', { placeholder: 'Task' })}
+                    {textField('jira_issue_type', 'dest-jira-issue-type', 'Issue type', { placeholder: examplePlaceholder('Task') })}
                   </div>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-body-sm text-muted-foreground">
                     Each delivery opens a new issue in the project via Jira REST API v3 with Basic auth (email + API token). Body is rendered as ADF.
                   </p>
                 </div>
@@ -413,21 +454,23 @@ export function DestinationDialog({
 
               {form.type === 'linear' && (
                 <div className="grid gap-3">
-                  {secretField('linear_api_key', 'dest-linear-api-key', 'API Key', {
-                    placeholder: existing?.linear_api_key_set ? 'Leave empty to keep current key' : 'lin_api_…',
-                    required: secretRequired(existing?.linear_api_key_set),
+                  {secretField('linear_api_key', 'dest-linear-api-key', 'API key', {
+                    placeholder: existing?.linear_api_key_set ? 'Leave empty to keep current key' : examplePlaceholder('lin_api_…'),
                   })}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {textField('linear_team_id', 'dest-linear-team-id', 'Team ID', {
-                      placeholder: 'team-uuid or short id',
-                      required: true,
+                      placeholder: 'Team UUID or short ID',
                     })}
-                    {textField('linear_state_id', 'dest-linear-state-id', 'State ID (optional)', { placeholder: 'state-uuid' })}
+                    {textField('linear_state_id', 'dest-linear-state-id', 'State ID', {
+                      placeholder: 'State UUID',
+                      optional: true,
+                    })}
                   </div>
-                  {textField('linear_label_ids', 'dest-linear-label-ids', 'Label IDs (optional, comma-separated)', {
-                    placeholder: 'label-1, label-2',
+                  {textField('linear_label_ids', 'dest-linear-label-ids', 'Label IDs', {
+                    placeholder: `Comma-separated, ${examplePlaceholder('label-1, label-2')}`,
+                    optional: true,
                   })}
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-body-sm text-muted-foreground">
                     Each delivery opens a new issue in the team via Linear's GraphQL <code>issueCreate</code>. Use API key from Linear settings → API.
                   </p>
                 </div>
@@ -438,7 +481,7 @@ export function DestinationDialog({
                   are the whole form. It used to fall through to the Linear
                   fields, whose required API key blocked every save (ALR-2). */}
               {form.type === 'demo_sink' && (
-                <p className="text-xs text-muted-foreground">
+                <p className="text-body-sm text-muted-foreground">
                   A local sink records deliveries on this instance and sends nothing, so it has no channel settings.
                 </p>
               )}
@@ -452,7 +495,7 @@ export function DestinationDialog({
                 serverError={server.fields.delivery_schedule_cron}
               />
 
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <Checkbox
                   checked={form.enabled}
                   onCheckedChange={checked => set('enabled', !!checked)}
@@ -461,9 +504,9 @@ export function DestinationDialog({
               </label>
 
               {alertMessage && (
-                <p role="alert" className="text-sm text-destructive">{alertMessage}</p>
+                <p role="alert" className="text-body text-destructive">{alertMessage}</p>
               )}
-            </div>
+            </DialogBody>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={requestClose}>Cancel</Button>
               <Button type="submit" disabled={mutation.isPending}>

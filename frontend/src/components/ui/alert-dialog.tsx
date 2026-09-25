@@ -36,8 +36,9 @@ function AlertDialogContent({
         className={cn(
           // Inset 1rem from the screen edge with rounded corners on phones too,
           // and capped at 90vh with its own scroll so a long message never
-          // pushes the buttons off-screen (DS-39).
-          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-(--z-modal) grid w-[calc(100%-2rem)] max-w-lg max-h-[90vh] overflow-y-auto translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200",
+          // pushes the buttons off-screen (DS-39). bg-popover: one step up the
+          // elevation ladder, above the cards under it (DS-10).
+          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-(--z-modal) grid w-[calc(100%-2rem)] max-w-lg max-h-[90vh] overflow-y-auto translate-x-[-50%] translate-y-[-50%] gap-4 rounded-card border p-6 shadow-lg duration-200",
           className
         )}
         {...props}
@@ -73,7 +74,7 @@ function AlertDialogTitle({
   return (
     <AlertDialogPrimitive.Title
       data-slot="alert-dialog-title"
-      className={cn("text-lg font-semibold", className)}
+      className={cn("text-heading font-semibold", className)}
       {...props}
     />
   )
@@ -86,7 +87,7 @@ function AlertDialogDescription({
   return (
     <AlertDialogPrimitive.Description
       data-slot="alert-dialog-description"
-      className={cn("text-muted-foreground text-sm", className)}
+      className={cn("text-muted-foreground text-body", className)}
       {...props}
     />
   )

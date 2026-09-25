@@ -14,7 +14,7 @@ import { SILENT_ERROR_META } from "@/lib/errorFeedback"
 import { countOf } from "@/lib/plural"
 import { useConfirm } from "@/hooks/useConfirm"
 import { formatPercentDelta } from "@/lib/percentDelta"
-import { Badge } from "@/components/ui/badge"
+import { Chip } from "@/components/primitives/chip"
 import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
@@ -404,7 +404,7 @@ export function AlertDeliveryRow({
             in AlertAuditPanel), so every cell that can hold a long value
             truncates inside its own width and keeps the full string on `title`.
             Without that the fixed widths would simply be overrun. */}
-        <TableCell className="text-xs">
+        <TableCell className="text-body-sm">
           {compactTime ? (
             <div className="whitespace-nowrap" title={formatDateTime(delivery.created_at)}>
               <div>{compactTime.date}</div>
@@ -414,28 +414,30 @@ export function AlertDeliveryRow({
         </TableCell>
         <TableCell>
           <div className="flex flex-wrap items-center gap-1.5">
-            <Badge variant={status === 'failed' ? 'danger' : status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{status}</Badge>
+            {/* Status pill (DS-6): "sent" was a solid brand block, the one
+                loud shape in a column of quiet ones, for the normal outcome. */}
+            <Chip tone={status === 'failed' ? 'danger' : status === 'sent' ? 'success' : 'neutral'}>{status}</Chip>
             {(delivery.is_local || delivery.is_simulated) && (
               <LocalDeliveryBadge simulated={delivery.is_simulated} />
             )}
           </div>
         </TableCell>
-        <TableCell className="text-xs">
+        <TableCell className="text-body-sm">
           <span className="block truncate" title={delivery.destination_name}>{delivery.destination_name}</span>
         </TableCell>
-        <TableCell className="text-xs">
+        <TableCell className="text-body-sm">
           <span className="block truncate" title={delivery.rule_name}>{delivery.rule_name}</span>
         </TableCell>
-        <TableCell className="text-xs">
+        <TableCell className="text-body-sm">
           <span className="block truncate" title={delivery.scan_name}>{delivery.scan_name}</span>
         </TableCell>
-        <TableCell className="text-xs">{delivery.matched_count}</TableCell>
-        <TableCell className="text-xs">
+        <TableCell className="text-body-sm">{delivery.matched_count}</TableCell>
+        <TableCell className="text-body-sm">
           <span className="block truncate" title={channelLabel(delivery.channel)}>
             {channelLabel(delivery.channel)}
           </span>
         </TableCell>
-        <TableCell className="text-xs text-muted-foreground">
+        <TableCell className="text-body-sm text-muted-foreground">
           {/* Truncated here; the whole message is the first thing in the
               expanded row, where touch and screen-reader users can reach it
               too — a `title` alone reaches neither (ALR-33). */}
@@ -447,7 +449,7 @@ export function AlertDeliveryRow({
             <div className="min-w-0">
               <span className="block truncate" title={firedTitle}>{firedSummary.headline}</span>
               {firedSummary.rest > 0 && (
-                <span className="block truncate text-[10px]" title={firedTitle}>
+                <span className="block truncate text-micro" title={firedTitle}>
                   +{firedSummary.rest} more
                 </span>
               )}
@@ -463,7 +465,7 @@ export function AlertDeliveryRow({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-9 gap-1 px-2 text-xs sm:h-7"
+                className="h-9 gap-1 px-2 text-body-sm sm:h-7"
                 disabled={retryMut.isPending}
                 aria-label="Retry delivery"
                 title={
@@ -496,7 +498,7 @@ export function AlertDeliveryRow({
       {retryMut.isError && (
         <TableRow>
           <TableCell colSpan={9} className="py-1">
-            <p role="alert" className="text-xs text-destructive">
+            <p role="alert" className="text-body-sm text-destructive">
               Retry failed: {getErrorMessage(retryMut.error)}
             </p>
           </TableCell>
@@ -511,7 +513,7 @@ export function AlertDeliveryRow({
                   (ALR-33). From the list row rather than the detail, so it is
                   on screen before the detail request answers. */}
               {errorMessage && (
-                <div role="alert" className="rounded-lg border border-destructive/40 p-3 text-xs text-destructive">
+                <div role="alert" className="rounded-lg border border-destructive/40 p-3 text-body-sm text-destructive">
                   <div className="mb-1 font-medium">Why it failed</div>
                   <p className="whitespace-pre-wrap break-words">{errorMessage}</p>
                 </div>
@@ -520,18 +522,18 @@ export function AlertDeliveryRow({
                   to see" while the request was in flight, and forever when it
                   failed (ALR-34). */}
               {!detail && !detailFailed && (
-                <p role="status" className="text-xs text-muted-foreground">
+                <p role="status" className="text-body-sm text-muted-foreground">
                   Loading delivery details…
                 </p>
               )}
               {!detail && detailFailed && (
-                <div className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+                <div className="flex flex-wrap items-center gap-2 text-body-sm text-destructive">
                   <p role="alert" className="whitespace-normal">Could not load this delivery&apos;s details: {getErrorMessage(detailError)}</p>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-9 px-3 text-xs sm:h-7 sm:px-2"
+                    className="h-9 px-3 text-body-sm sm:h-7 sm:px-2"
                     onClick={() => void refetchDetail()}
                   >
                     Try again
@@ -542,19 +544,19 @@ export function AlertDeliveryRow({
               <>
               <div className="flex flex-wrap gap-2">
                 {payloadItems && (
-                  <Badge variant="outline" className="text-[10px]">
+                  <Chip variant="outline">
                     {countOf(payloadItems.length, 'item', 'items')}
-                  </Badge>
+                  </Chip>
                 )}
                 {correlationLabels.size > 0 && (
-                  <Badge variant="outline" className="border-warning/50 bg-warning-soft text-warning text-[10px]">
+                  <Chip tone="warning" variant="outline">
                     {countOf(correlationLabels.size, 'correlated group', 'correlated groups')}
-                  </Badge>
+                  </Chip>
                 )}
                 {detail.sent_at && (
-                  <Badge variant="outline" className="text-[10px]">
+                  <Chip variant="outline">
                     sent {formatDateTime(detail.sent_at)}
-                  </Badge>
+                  </Chip>
                 )}
               </div>
               {/* The AI write-up, as a block of its own. It is generated by an
@@ -565,15 +567,15 @@ export function AlertDeliveryRow({
                   the one part of the payload that is written for a human. */}
               {aiExplanation && (
                 <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
-                  <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-primary">
+                  <div className="mb-1.5 flex items-center gap-1.5 text-caption font-medium text-primary">
                     <Sparkles aria-hidden="true" className="h-3.5 w-3.5" />
                     AI explanation
                   </div>
-                  <p className="text-xs leading-relaxed whitespace-pre-wrap">{aiExplanation}</p>
+                  <p className="text-body-sm leading-relaxed whitespace-pre-wrap">{aiExplanation}</p>
                 </div>
               )}
               {detail.items.length === 0 ? (
-                <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">
+                <div className="rounded-lg border border-dashed p-4 text-body-sm text-muted-foreground">
                   {emptyItemsNotice(detail.matched_count)}
                 </div>
               ) : (
@@ -606,32 +608,32 @@ export function AlertDeliveryRow({
                             aria-current={isAnchored ? 'true' : undefined}
                             className={isAnchored ? 'bg-primary/10' : undefined}
                           >
-                            <TableCell className="text-xs">
+                            <TableCell className="text-body-sm">
                               {groupLabel && (
-                                <Badge
+                                <Chip
+                                  tone="warning"
                                   variant="outline"
-                                  className="border-warning/50 bg-warning-soft text-warning text-[10px]"
                                   title="Co-fired with other rows in this group"
                                 >
                                   {groupLabel}
-                                </Badge>
+                                </Chip>
                               )}
                             </TableCell>
-                            <TableCell className="text-xs">
+                            <TableCell className="text-body-sm">
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <span className="font-medium">{item.scope_name}</span>
                                 {/* A tint alone is easy to miss among 8 rows and
                                     says nothing to a screen reader, so the row
                                     the message quoted names itself. */}
                                 {isAnchored && (
-                                  <Badge variant="outline" className="border-primary/50 text-primary text-[10px]">
+                                  <Chip tone="accent" variant="outline">
                                     from your alert
-                                  </Badge>
+                                  </Chip>
                                 )}
                               </div>
                               <div className="text-muted-foreground">{scopeKindLabel(item.scope_type)}</div>
                             </TableCell>
-                            <TableCell className="text-xs">{item.direction}</TableCell>
+                            <TableCell className="text-body-sm">{item.direction}</TableCell>
                             {/* All three are declared `float` on
                                 AlertDeliveryItemResponse, so interpolating them
                                 raw printed full JS precision — "88.318" for a
@@ -641,26 +643,26 @@ export function AlertDeliveryRow({
                                 those columns are float precisely so a sub-unit
                                 measurement survives. Unrounded in the title for
                                 anyone reconciling against the detector. */}
-                            <TableCell className="text-xs" title={String(item.actual_count)}>
+                            <TableCell className="text-body-sm" title={String(item.actual_count)}>
                               {formatIncidentCount(item.actual_count)}
                             </TableCell>
-                            <TableCell className="text-xs">
+                            <TableCell className="text-body-sm">
                               <div title={String(item.expected_count)}>
                                 {formatIncidentCount(item.expected_count)}
                               </div>
                               {basisNote && (
-                                <div className="mt-0.5 max-w-64 text-[10px] leading-snug text-muted-foreground">
+                                <div className="mt-0.5 max-w-64 text-micro leading-snug text-muted-foreground">
                                   {basisNote}
                                 </div>
                               )}
                             </TableCell>
-                            <TableCell className="text-xs" title={String(item.absolute_delta)}>
+                            <TableCell className="text-body-sm" title={String(item.absolute_delta)}>
                               {formatIncidentCount(item.absolute_delta)}
                             </TableCell>
-                            <TableCell className="text-xs">
+                            <TableCell className="text-body-sm">
                               {formatPercentDelta(item.percent_delta, item.expected_count)}
                             </TableCell>
-                            <TableCell className="text-xs">
+                            <TableCell className="text-body-sm">
                               <div className="flex gap-3">
                                 {scopePath && (
                                   <Link
@@ -710,10 +712,10 @@ export function AlertDeliveryRow({
                   kilobytes, and the page body must never scroll sideways. */}
               {renderedMessage && (
                 <details className="rounded-lg border">
-                  <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground">
+                  <summary className="cursor-pointer px-3 py-2 text-body-sm text-muted-foreground">
                     Message as sent
                   </summary>
-                  <pre className="max-h-64 overflow-auto border-t px-3 py-2 text-[11px] leading-relaxed break-words whitespace-pre-wrap">
+                  <pre className="max-h-64 overflow-auto border-t px-3 py-2 text-caption leading-relaxed break-words whitespace-pre-wrap">
                     {renderedMessage}
                   </pre>
                 </details>

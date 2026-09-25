@@ -1,6 +1,7 @@
 import { Variable } from 'lucide-react'
 import type { EventFieldVariableValue } from '@/types'
-import { Badge } from '@/components/ui/badge'
+import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { formatDateTime } from '@/lib/datetime'
 
@@ -17,13 +18,13 @@ export function VariableValueContextTrigger({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
           aria-label="Observed variable values"
         >
           <Variable className="h-3.5 w-3.5" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 space-y-3 p-3 text-xs">
+      <PopoverContent align="start" className="w-80 space-y-3 p-3 text-body-sm">
         {items.map((context) => {
           // A context is the record that this variable is referenced here; the
           // values ride along with it and can be empty. That splits the empty
@@ -51,30 +52,26 @@ export function VariableValueContextTrigger({
           return (
             <div key={context.id} className="space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <code className="min-w-0 truncate rounded bg-muted px-1.5 py-0.5 font-mono">
-                  {`\${${context.variable_name}}`}
-                </code>
+                <CodeToken className="min-w-0">{`\${${context.variable_name}}`}</CodeToken>
                 <div className="flex shrink-0 items-center gap-1">
                   {/* Its own badge rather than a replacement for the kind badge:
                       the kind still describes the stored values truthfully, and
                       losing "All values" would make a complete frozen set look
                       like a sample of one. */}
                   {isExcluded && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      Excluded
-                    </Badge>
+                    <Chip size="xs">Excluded</Chip>
                   )}
                   {/* With nothing counted there is no sample for "Examples" to
                       name, so that case gets its own label. The counted-but-none-
                       kept case keeps "Examples": there the observation is real and
                       only the sample under the badge is missing. */}
-                  <Badge variant="outline" className="text-[10px]">
+                  <Chip size="xs" variant="outline">
                     {nothingStored
                       ? 'No values'
                       : context.value_kind === 'low'
                         ? 'All values'
                         : 'Examples'}
-                  </Badge>
+                  </Chip>
                 </div>
               </div>
               <div className="text-muted-foreground">
@@ -91,13 +88,9 @@ export function VariableValueContextTrigger({
               {context.values.length > 0 ? (
                 <div className="flex max-h-36 flex-wrap gap-1 overflow-auto">
                   {context.values.map((value) => (
-                    <span
-                      key={value}
-                      className="max-w-full truncate rounded border bg-background px-1.5 py-0.5 font-mono"
-                      title={value}
-                    >
+                    <CodeToken key={value} title={value}>
                       {value}
-                    </span>
+                    </CodeToken>
                   ))}
                 </div>
               ) : nothingStored ? (

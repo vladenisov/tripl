@@ -1,5 +1,10 @@
 import { DEFAULT_ENTITY_COLOR } from '@/types'
 import { PageHeader } from '@/components/primitives/page-header'
+import { PageContainer } from '@/components/primitives/page-container'
+import { SaveBar } from '@/components/forms/SaveBar'
+import { examplePlaceholder, sqlPlaceholder } from '@/components/forms/placeholders'
+import { attentionSummary } from '@/components/forms/validation'
+import { Button } from '@/components/ui/button'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -494,14 +499,17 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     <div className="h-full overflow-y-auto">
       {unsaved.dialog}
       {confirmDialog}
+      {/* The metric editor's width and heading, so the two sibling editors
+          read as one family (MET-35); the shell pads the page (DS-3). */}
+      <PageContainer width="narrow">
+      {/* `noValidate`: rules are checked in `validate` and named inline, never
+          by a browser bubble (AU-4). */}
       <form
+        noValidate
         onSubmit={e => {
           e.preventDefault()
           void onSubmit()
         }}
-        // The metric editor's width, gutter and heading, so the two sibling
-        // editors read as one family (MET-35).
-        className="mx-auto max-w-[1100px] px-4 pb-12 pt-4 sm:px-6"
       >
         <button
           type="button"
@@ -509,10 +517,11 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
           className="mb-[14px] inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
           style={{ color: 'var(--fg-muted)' }}
         >
-          <ChevronLeft size={13} /> Fact tables
+          <ChevronLeft size={14} /> Fact tables
         </button>
         <PageHeader
           className="mb-[18px]"
+          eyebrow="Observe · Fact table"
           title={isNew ? 'New fact table' : canWrite ? 'Edit fact table' : 'Fact table'}
         />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
@@ -533,7 +542,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 id="fact-display-name"
                 value={displayName}
                 onChange={onDisplayNameChange}
-                placeholder="Orders"
+                placeholder={examplePlaceholder('Orders')}
                 aria-required
                 {...errorAria(fieldErrors, 'fact-display-name')}
               />
@@ -555,7 +564,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                   value={name}
                   onChange={onNameChange}
                   mono
-                  placeholder="orders"
+                  placeholder={examplePlaceholder('orders')}
                   aria-required
                   {...errorAria(fieldErrors, 'fact-name')}
                 />
@@ -580,7 +589,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 type="color"
                 value={color}
                 onChange={e => setColor(e.target.value)}
-                className="h-8 w-12 cursor-pointer rounded border bg-transparent"
+                className="h-8 w-12 cursor-pointer rounded-sm border bg-transparent"
                 style={{ borderColor: 'var(--border)' }}
               />
             </Field>
@@ -617,7 +626,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 ariaLabel="Fact table SQL"
                 value={sql}
                 onChange={setSql}
-                placeholder="SELECT id, user_id, amount, created_at FROM orders"
+                // Visibly a comment, never a query already in the editor (MT-6).
+                placeholder={sqlPlaceholder('A read-only SELECT over one table or view, e.g.', 'SELECT id, user_id, amount, created_at FROM orders')}
                 dialect={selectedDataSource?.db_type}
                 tables={sqlSchemaData?.tables}
                 minHeight="160px"
@@ -641,7 +651,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 value={timestampColumn}
                 onChange={setTimestampColumn}
                 suggestions={timestampSuggestions}
-                placeholder="created_at"
+                placeholder={examplePlaceholder('created_at')}
                 aria-required
                 {...errorAria(fieldErrors, 'fact-timestamp')}
               />
@@ -652,13 +662,13 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             title="Columns"
             description="Preview introspects the SELECT and records its columns and identifier candidates. Saving previews for you when the SQL or data source changed since."
           >
-            <div className="px-[18px] py-[15px]">
+            <div className="px-4 py-[15px]">
               <button
                 id="fact-preview-columns"
                 type="button"
                 onClick={runPreview}
                 disabled={previewMut.isPending || !sql.trim() || !dataSourceId}
-                className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+                className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
                 style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
               >
                 {previewMut.isPending ? (
@@ -676,7 +686,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               )}
 
               {canWrite && !columnsAreCurrent && !previewMut.isPending && (
-                <p className="mt-3 text-[12px]" style={{ color: 'var(--warning)' }}>
+                <p className="mt-3 text-body-sm" style={{ color: 'var(--warning)' }}>
                   {columns.length > 0
                     ? 'The SQL or data source changed since these columns were read. They refresh when you preview or save.'
                     : 'No columns yet. They are read from the SQL when you preview or save.'}
@@ -686,7 +696,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               {columns.length > 0 && (
                 <div className="mt-4">
                   <div
-                    className="mb-2 text-2xs font-semibold uppercase tracking-[0.05em]"
+                    className="mb-2 micro-label"
                     style={{ color: 'var(--fg-faint)' }}
                   >
                     Columns
@@ -729,7 +739,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               )}
 
               {identifierCandidates.length > 0 && (
-                <div className="mt-3 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="mt-3 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                   Suggested identifiers:{' '}
                   <span className="mono" style={{ color: 'var(--fg)' }}>
                     {identifierCandidates.join(', ')}
@@ -743,9 +753,9 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             title="Row filters"
             description="Reusable named WHERE fragments fact metrics can apply."
           >
-            <div className="px-[18px] py-[15px]">
+            <div className="px-4 py-[15px]">
               {rowFilters.length === 0 ? (
-                <div className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
                   No row filters yet.
                 </div>
               ) : (
@@ -765,7 +775,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                               id={nameId}
                               value={filter.name}
                               onChange={value => updateRowFilter(filter.id, { name: value })}
-                              placeholder="mobile_only"
+                              placeholder={examplePlaceholder('mobile_only')}
                               aria-label={`Row filter ${index + 1} name`}
                               {...errorAria(fieldErrors, nameId)}
                             />
@@ -776,7 +786,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                               value={filter.sql}
                               onChange={value => updateRowFilter(filter.id, { sql: value })}
                               mono
-                              placeholder="platform = 'ios'"
+                              placeholder={examplePlaceholder("platform = 'ios'")}
                               aria-label={`Row filter ${index + 1} SQL condition`}
                               {...errorAria(fieldErrors, sqlId)}
                             />
@@ -788,13 +798,13 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                             className="col-start-2 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)] sm:col-start-3"
                             style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
                           >
-                            <Trash2 size={13} />
+                            <Trash2 size={14} />
                           </button>
                         </div>
                         {rowError && (
                           <p
                             id={fieldErrorId(fieldErrors[nameId] ? nameId : sqlId)}
-                            className="mt-[6px] text-[12px] leading-[1.45]"
+                            className="mt-[6px] text-body-sm leading-[1.45]"
                             style={{ color: 'var(--danger)' }}
                           >
                             {rowError}
@@ -808,7 +818,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               <button
                 type="button"
                 onClick={addRowFilter}
-                className="mt-3 inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+                className="mt-3 inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)]"
                 style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
               >
                 <Plus size={12} /> Add row filter
@@ -855,52 +865,49 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
           </div>
         )}
 
-        <div className="mt-1 flex flex-wrap items-center justify-end gap-[10px]">
+        {/* Sticky, so Save and the reason it is blocked stay on screen on a
+            long form (MT-4). The status jumps to the first flagged field. */}
+        <SaveBar
+          status={attentionSummary(errorEntries.length)}
+          statusTone="danger"
+          onStatusClick={errorEntries[0] ? () => focusField(errorEntries[0]![0]) : undefined}
+        >
           {canWrite && factTable && (
-            <button
+            // Bare red, as destructive actions on a detail page are (DS-20).
+            <Button
               type="button"
+              variant="danger"
               onClick={() => {
                 void onDelete()
               }}
               disabled={busy}
-              className="mr-auto inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-60"
-              style={{ borderColor: 'var(--border)', color: 'var(--danger)' }}
             >
               {deleteMut.isPending ? (
-                <Loader2 className="animate-spin" size={12} />
+                <Loader2 className="animate-spin" aria-hidden="true" />
               ) : (
-                <Trash2 size={12} />
+                <Trash2 aria-hidden="true" />
               )}
               Delete fact table
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
-          >
+          <Button type="button" variant="outline" onClick={onClose}>
             {canWrite ? 'Cancel' : 'Close'}
-          </button>
+          </Button>
           {canWrite && (
-            <button
-              type="submit"
-              disabled={busy}
-              className="inline-flex h-8 items-center gap-[6px] rounded-control px-3 text-[12px] font-medium disabled:opacity-60"
-              style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-            >
+            <Button type="submit" disabled={busy}>
               {saveMut.isPending || previewMut.isPending ? (
-                <Loader2 className="animate-spin" size={12} />
+                <Loader2 className="animate-spin" aria-hidden="true" />
               ) : isNew ? (
-                <Plus size={12} />
+                <Plus aria-hidden="true" />
               ) : (
-                <Save size={12} />
+                <Save aria-hidden="true" />
               )}
               {isNew ? 'Create fact table' : 'Save fact table'}
-            </button>
+            </Button>
           )}
-        </div>
+        </SaveBar>
       </form>
+      </PageContainer>
     </div>
   )
 }
@@ -934,7 +941,7 @@ export default function FactTableEditPage() {
   const loadError = dataSourcesQuery.error ?? factTableQuery.error
   if (loadError) {
     return (
-      <div className="mx-auto max-w-[880px] p-6">
+      <PageContainer width="narrow">
         <ErrorState
           title="Failed to load fact table editor"
           error={loadError}
@@ -945,14 +952,14 @@ export default function FactTableEditPage() {
             ])
           }}
         />
-      </div>
+      </PageContainer>
     )
   }
 
   const isLoading = dataSourcesQuery.isLoading || (!isNew && factTableQuery.isLoading)
   if (isLoading || !slug) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="flex min-h-[240px] items-center justify-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
         Loading…
       </div>
     )

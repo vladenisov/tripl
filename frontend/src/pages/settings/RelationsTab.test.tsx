@@ -54,7 +54,7 @@ describe('RelationsTab', () => {
     expect(
       await screen.findByRole('button', { name: 'Delete relation between purchase.user_id and signup.user_id' }),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Add relation/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /New relation/ })).toBeInTheDocument()
   })
 
   it('offers a viewer neither, and says why once', async () => {
@@ -62,7 +62,7 @@ describe('RelationsTab', () => {
 
     expect(await screen.findByText('purchase.user_id')).toBeInTheDocument()
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
-    expect(screen.queryByRole('button', { name: /Add relation/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New relation/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Delete relation/ })).not.toBeInTheDocument()
   })
 

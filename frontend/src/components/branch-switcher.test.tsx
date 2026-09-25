@@ -153,15 +153,15 @@ describe('BranchSwitcher', () => {
     fireEvent.click(await screen.findByTitle('Switch branch'))
     fireEvent.click(await screen.findByText('checkout-v2'))
 
-    await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
     expect(setBranchId).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(setBranchId).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByTitle('Switch branch'))
     fireEvent.click(await screen.findByText('checkout-v2'))
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(setBranchId).toHaveBeenCalledWith('feat-1'))
   })
 

@@ -11,6 +11,12 @@ import type { Role } from '@/types'
 import ProjectAlertingTab from './ProjectAlertingTab'
 import { at } from '@/test/at'
 
+/** The Inbox's status facet is a FilterSelect chip now (DS-15), not toggle buttons. */
+async function pickInboxStatus(label: string) {
+  fireEvent.click(screen.getByRole('combobox', { name: /^Status filter/ }))
+  fireEvent.click(await screen.findByRole('option', { name: label }))
+}
+
 // The sections are lazy chunks (tripl-fj5g.15). Load them once up front, so no
 // test's first wait also pays for transforming a section's module graph.
 beforeAll(async () => {
@@ -373,11 +379,11 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
 
     // The two subtitles now live on different tabs, so checking both means
     // switching — which is also the cheapest proof the strip works.
-    fireEvent.click(screen.getByRole('tab', { name: 'Delivery log' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Delivery log' }))
     expect(await screen.findByText('1 delivery')).toBeInTheDocument()
     expect(screen.queryByText('1 deliveries')).toBeNull()
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Inbox' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Inbox' }))
     // The group ROW, eight lines under the subtitle the sweep fixed. Scoping
     // that sweep to Panel/SurfPanel subtitles left this one rendering "1 items"
     // directly beneath a correct "1 group" — both counts describe the same
@@ -504,7 +510,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     // Muting freezes a row's sort key, so a muted incident sinks past the page
     // boundary in about a day while the mute lasts a week — and the only
     // control that lifts it lives on the card that muting hides (tripl-oxkt.2).
-    fireEvent.click(screen.getByRole('button', { name: 'Muted' }))
+    await pickInboxStatus('Muted')
 
     await waitFor(() => expect(inboxUrls.at(-1)).toContain('status=muted'))
     expect(await screen.findByText(/Showing 1 of 1/)).toBeInTheDocument()
@@ -512,7 +518,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
 
     // Back to All: a fresh first page, never an offset left pointing into a
     // set that no longer exists.
-    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    await pickInboxStatus('any')
     await waitFor(() => {
       expect(inboxUrls.at(-1)).not.toContain('status=')
       expect(inboxUrls.at(-1)).toContain('offset=0')
@@ -536,9 +542,8 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     }
     // The chips render with the panel, which lands after the first page
     // resolves — the request firing is not enough to assert on them.
-    expect(await screen.findByRole('button', { name: 'Muted' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
+    expect(await screen.findByRole('combobox', { name: /^Status filter/ })).toHaveTextContent(
+      /Status:\s*Muted/,
     )
   })
 
@@ -547,7 +552,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     renderInboxTab()
 
     await screen.findByText(/Showing 1 of 1/)
-    fireEvent.click(screen.getByRole('button', { name: 'Resolved' }))
+    await pickInboxStatus('Resolved')
     expect(
       await screen.findByText(
         'alerting-location:/p/demo/settings/alerting?section=inbox&status=resolved',
@@ -555,7 +560,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     ).toBeInTheDocument()
 
     // ...and "All" removes the key rather than leaving `status=`.
-    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    await pickInboxStatus('any')
     expect(
       await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox'),
     ).toBeInTheDocument()
@@ -569,7 +574,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     for (const url of inboxUrls) {
       expect(url).not.toContain('status=')
     }
-    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('combobox', { name: /^Status filter/ })).toHaveTextContent(/Status:\s*any/)
   })
 
   it('loads the rest of the queue instead of replacing what is on screen', async () => {
@@ -1234,13 +1239,13 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     // The open incident is not in the Muted list. Keeping its id would leave a
     // bar reading "1 selected" over a list that does not contain it — and the
     // cheapest button on that bar silences alerting for a whole scope.
-    fireEvent.click(screen.getByRole('button', { name: 'Muted' }))
+    await pickInboxStatus('Muted')
     await waitFor(() => expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull())
 
     // …and it does not come back when the row does. A selection that survives a
     // round trip through a filter is a selection the operator has forgotten
     // making.
-    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    await pickInboxStatus('any')
     expect(await screen.findByText('Showing 2 of 2 · last 30 days + still silenced')).toBeInTheDocument()
     expect(screen.queryByRole('group', { name: BULK_BAR })).toBeNull()
     expect(screen.getByRole('checkbox', { name: SELECT_FIRST })).not.toBeChecked()
@@ -1653,13 +1658,13 @@ describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
 })
 
 describe('ProjectAlertingTab — Add Email destination', () => {
-  it('renders the Subject Template placeholder as a clean token example (no escape artifact)', async () => {
+  it('renders the subject template placeholder as a clean token example (no escape artifact)', async () => {
     mockAlertingFetch()
     renderTab()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Email' }))
 
-    const subjectInput = await screen.findByPlaceholderText('[${project_name}] ${rule_name}')
+    const subjectInput = await screen.findByPlaceholderText('e.g. [${project_name}] ${rule_name}')
     // The placeholder must match the token syntax shown in the helper text below,
     // with no leaked template-escape characters (the `${'$'}` artifact).
     expect(subjectInput).toBeInTheDocument()
@@ -1873,7 +1878,7 @@ describe('ProjectAlertingTab — the delivery log remembers where it was (ALR-36
     mockDeliveryLog()
     renderLog('/p/demo/settings/alerting?section=audit&delivery_offset=50')
 
-    fireEvent.click(await screen.findByRole('combobox', { name: 'Status' }))
+    fireEvent.click(await screen.findByRole('combobox', { name: /^Status filter/ }))
     fireEvent.click(await screen.findByRole('option', { name: 'Failed' }))
 
     const probe = await screen.findByText(/delivery-location:.*delivery_status=failed/)
@@ -1992,7 +1997,7 @@ describe('ProjectAlertingTab — viewer role (tripl-oxkt.9)', () => {
     renderTab('audit', 'viewer')
 
     expect((await screen.findAllByText('Main Slack')).length).toBeGreaterThan(0)
-    expect(screen.getByLabelText('Status')).toBeEnabled()
+    expect(screen.getByRole('combobox', { name: /^Status filter/ })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Retry delivery' })).toBeNull()
   })
 
@@ -2151,9 +2156,9 @@ describe('ProjectAlertingTab — a config write reaches the incident views (trip
     await screen.findByText(/Showing 1 of 1/)
     const before = inboxRequests().length
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Monitors' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Monitors' }))
     await deleteTheRule()
-    fireEvent.click(screen.getByRole('tab', { name: 'Inbox' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Inbox' }))
 
     // Without the invalidation this stays where it was for a full minute: the
     // incidents the delete destroyed are still on screen, and every button on
@@ -2239,7 +2244,7 @@ describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt
 
     await finishStepTwo()
 
-    expect(await screen.findByText('New Alert Rule')).toBeInTheDocument()
+    expect(await screen.findByText('New alert rule')).toBeInTheDocument()
     // `hidden: true`, because the open modal marks the rest of the page
     // aria-hidden: the tab strip is still THERE and still selected, it is just
     // not in the accessibility tree while a dialog is trapping focus.
@@ -2260,18 +2265,18 @@ describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt
     renderTab()
 
     await finishStepTwo()
-    await screen.findByText('New Alert Rule')
+    await screen.findByText('New alert rule')
     const ruleDialog = screen.getByRole('dialog')
     fireEvent.change(within(ruleDialog).getByLabelText('Name'), {
       target: { value: 'Checkout drops' },
     })
 
     fireEvent.keyDown(ruleDialog, { key: 'Escape' })
-    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
 
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
-    expect(screen.getByText('New Alert Rule')).toBeInTheDocument()
+    expect(screen.getByText('New alert rule')).toBeInTheDocument()
     expect(within(screen.getByRole('dialog')).getByLabelText('Name')).toHaveValue('Checkout drops')
   })
 
@@ -2284,20 +2289,20 @@ describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt
     // on screen right after Create cancels the still-open destination dialog —
     // the create mutation has not resolved yet, so the rule form does not exist
     // and the assertion below passes for the wrong reason.
-    await screen.findByText('New Alert Rule')
+    await screen.findByText('New alert rule')
     fireEvent.click(
       within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }),
     )
-    expect(screen.queryByText('New Alert Rule')).toBeNull()
+    expect(screen.queryByText('New alert rule')).toBeNull()
 
     // The section unmounts when the reader leaves it, so the instruction has to
     // have been cleared on the page — a prop left set would open the form again
     // here.
-    fireEvent.click(screen.getByRole('tab', { name: 'Inbox' }))
-    fireEvent.click(await screen.findByRole('tab', { name: 'Destinations' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Inbox' }))
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Destinations' }))
 
     expect(await screen.findByText('Ops Slack')).toBeInTheDocument()
-    expect(screen.queryByText('New Alert Rule')).toBeNull()
+    expect(screen.queryByText('New alert rule')).toBeNull()
   })
 })
 
@@ -2325,7 +2330,15 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     configured()
     renderTab('inbox')
 
-    expect(await screen.findByRole('tab', { name: 'Inbox' })).toHaveAttribute('tabindex', '0')
+    // Radix roving focus: every tab is out of the Tab order, and the strip
+    // hands focus to the selected one; once it holds focus it is the stop.
+    const inbox = await screen.findByRole('tab', { name: 'Inbox' })
+    for (const name of ['Inbox', 'Monitors', 'Destinations', 'Delivery log']) {
+      expect(screen.getByRole('tab', { name })).toHaveAttribute('tabindex', '-1')
+    }
+    // Radix's roving group records the focused tab in state: focus inside act.
+    act(() => inbox.focus())
+    await waitFor(() => expect(inbox).toHaveAttribute('tabindex', '0'))
     for (const name of ['Monitors', 'Destinations', 'Delivery log']) {
       expect(screen.getByRole('tab', { name })).toHaveAttribute('tabindex', '-1')
     }
@@ -2335,22 +2348,31 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     configured()
     renderTab('inbox')
 
+    // The strip is `ui/Tabs` now (AL-46): Radix moves focus on the next tick,
+    // and selection follows focus, so each step is awaited.
     const inbox = await screen.findByRole('tab', { name: 'Inbox' })
-    inbox.focus()
+    // Radix's roving group records the focused tab in state: focus inside act.
+    act(() => inbox.focus())
     fireEvent.keyDown(inbox, { key: 'ArrowRight' })
 
-    const monitors = screen.getByRole('tab', { name: 'Monitors' })
-    expect(monitors).toHaveAttribute('aria-selected', 'true')
     // Focus travels with the selection, or the next arrow press starts from the
     // button the reader left.
-    expect(monitors).toHaveFocus()
+    await waitFor(() => {
+      const monitors = screen.getByRole('tab', { name: 'Monitors' })
+      expect(monitors).toHaveAttribute('aria-selected', 'true')
+      expect(monitors).toHaveFocus()
+    })
 
-    fireEvent.keyDown(monitors, { key: 'ArrowLeft' })
-    expect(screen.getByRole('tab', { name: 'Inbox' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Monitors' }), { key: 'ArrowLeft' })
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Inbox' })).toHaveAttribute('aria-selected', 'true'),
+    )
 
     // The strip is a ring: left from the first lands on the last.
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Inbox' }), { key: 'ArrowLeft' })
-    expect(screen.getByRole('tab', { name: 'Delivery log' })).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Delivery log' })).toHaveAttribute('aria-selected', 'true'),
+    )
   })
 
   it('jumps to the first and last section with Home and End', async () => {
@@ -2358,14 +2380,19 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     renderTab('destinations')
 
     const destinations = await screen.findByRole('tab', { name: 'Destinations' })
+    act(() => destinations.focus())
     fireEvent.keyDown(destinations, { key: 'End' })
 
-    const audit = screen.getByRole('tab', { name: 'Delivery log' })
-    expect(audit).toHaveAttribute('aria-selected', 'true')
-    expect(audit).toHaveFocus()
+    await waitFor(() => {
+      const audit = screen.getByRole('tab', { name: 'Delivery log' })
+      expect(audit).toHaveAttribute('aria-selected', 'true')
+      expect(audit).toHaveFocus()
+    })
 
-    fireEvent.keyDown(audit, { key: 'Home' })
-    expect(screen.getByRole('tab', { name: 'Inbox' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Delivery log' }), { key: 'Home' })
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Inbox' })).toHaveAttribute('aria-selected', 'true'),
+    )
   })
 
   it('leaves keys it does not own alone', async () => {
@@ -2465,9 +2492,9 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
     ['Email', 'email', { Recipients: 'a@example.com' }, { email_recipients: 'a@example.com' }],
     ['Jira', 'jira', {
       'Base URL': 'https://acme.atlassian.net',
-      'Auth Email': 'a@example.com',
-      'API Token': 'tok',
-      'Project Key': 'eng',
+      'Auth email': 'a@example.com',
+      'API token': 'tok',
+      'Project key': 'eng',
     }, {
       jira_base_url: 'https://acme.atlassian.net',
       jira_auth_email: 'a@example.com',
@@ -2475,7 +2502,7 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
       jira_project_key: 'ENG',
       jira_issue_type: 'Task',
     }],
-    ['Linear', 'linear', { 'API Key': 'lin_api_x', 'Team ID': 'TEAM' }, {
+    ['Linear', 'linear', { 'API key': 'lin_api_x', 'Team ID': 'TEAM' }, {
       linear_api_key: 'lin_api_x',
       linear_team_id: 'TEAM',
     }],
@@ -2506,7 +2533,7 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
 
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Destination "My Slack" created'))
     expect(screen.getByRole('tab', { name: 'Destinations' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.queryByText('New Alert Rule')).toBeNull()
+    expect(screen.queryByText('New alert rule')).toBeNull()
   })
 
   it('attaches a server error to the field it names, in words (ALR-8)', async () => {
@@ -2539,7 +2566,7 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 
     fireEvent.click(screen.getByRole('button', { name: 'Telegram' }))
-    expect(await screen.findByText('New Telegram Destination')).toBeInTheDocument()
+    expect(await screen.findByText('New Telegram destination')).toBeInTheDocument()
     expect(screen.queryByText('Destination refused')).toBeNull()
   })
 
@@ -2570,7 +2597,7 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
     const target = within(dialog).getByLabelText('Target URL')
     expect(target).toHaveAttribute('type', 'password')
     expect(target).toHaveAttribute('autocomplete', 'new-password')
-    expect(within(dialog).getByLabelText('Secret Header Value')).toHaveAttribute('autocomplete', 'new-password')
+    expect(within(dialog).getByLabelText('Secret header value (optional)')).toHaveAttribute('autocomplete', 'new-password')
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show Target URL' }))
     expect(target).toHaveAttribute('type', 'text')
@@ -2583,11 +2610,32 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
 
     await createFromDestinations('Webhook', {
       'Target URL': 'https://example.com/hook',
-      'Secret Header Name': 'X-Key',
+      'Secret header name (optional)': 'X-Key',
     })
 
-    const value = await screen.findByLabelText('Secret Header Value')
+    const value = await screen.findByLabelText('Secret header value (optional)')
     expect(value).toHaveAttribute('aria-invalid', 'true')
+    expect(writes).toHaveLength(0)
+  })
+
+  it('names every missing required field inline instead of a browser bubble (AL-28)', async () => {
+    const writes = mockDestinationWrites(configured())
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Telegram' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New Telegram destination' })
+    expect(dialog.querySelector('form')).toHaveAttribute('novalidate')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    for (const label of ['Name', 'Bot token', 'Chat ID']) {
+      const input = within(dialog).getByLabelText(label)
+      expect(input).toBeRequired()
+      expect(input).not.toHaveAttribute('required')
+      expect(input).toHaveAttribute('aria-invalid', 'true')
+      expect(input).toHaveAccessibleDescription('Required')
+    }
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Fill in: Name, Bot token, Chat ID')
+    await waitFor(() => expect(within(dialog).getByLabelText('Name')).toHaveFocus())
     expect(writes).toHaveLength(0)
   })
 
@@ -2633,8 +2681,8 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
     const dialog = await screen.findByRole('dialog')
 
     expect(within(dialog).getByLabelText('Base URL')).toBeRequired()
-    expect(within(dialog).getByLabelText('Project Key')).toBeRequired()
-    expect(within(dialog).getByLabelText('API Token')).not.toBeRequired()
+    expect(within(dialog).getByLabelText('Project key')).toBeRequired()
+    expect(within(dialog).getByLabelText('API token')).not.toBeRequired()
   })
 
   it('edits a demo local sink as name, switch and schedule, and saves it (ALR-2)', async () => {
@@ -2657,7 +2705,7 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
     const dialog = await screen.findByRole('dialog')
 
     expect(within(dialog).getByRole('combobox', { name: 'Channel' })).toHaveTextContent('Local sink')
-    expect(within(dialog).queryByLabelText('API Key')).toBeNull()
+    expect(within(dialog).queryByLabelText('API key')).toBeNull()
     fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Sink' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
 
@@ -2734,7 +2782,7 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
     fireEvent.click(within(dialog).getByRole('combobox', { name: 'Channel' }))
     fireEvent.click(await screen.findByRole('option', { name: 'Telegram' }))
 
-    expect(await within(dialog).findByText('New Telegram Destination')).toBeInTheDocument()
+    expect(await within(dialog).findByText('New Telegram destination')).toBeInTheDocument()
     expect(within(dialog).queryByText(/must start with https:\/\/hooks\.slack\.com/)).toBeNull()
     expect(within(dialog).queryByRole('alert')).toBeNull()
   })

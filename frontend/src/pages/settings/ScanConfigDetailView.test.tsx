@@ -27,6 +27,15 @@ const STEPS = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())
 const RUN_SCAN_INSTRUCTION = STEPS[0].instruction
 const WATCH_SCAN_INSTRUCTION = at(STEPS, 1).instruction
 
+/**
+ * Radix tabs select on mouse-down (and on focus), not on click, so a bare
+ * `fireEvent.click` never reaches them.
+ */
+function selectTab(tab: HTMLElement) {
+  fireEvent.mouseDown(tab, { button: 0, ctrlKey: false })
+  fireEvent.click(tab)
+}
+
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -154,7 +163,7 @@ describe('ScanConfigDetail — role gating (DATA-6)', () => {
     expect(await screen.findByRole('button', { name: /Run now/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }))
+    selectTab(screen.getByRole('tab', { name: 'Configuration' }))
     const panel = await screen.findByRole('tabpanel')
     expect(within(panel).getByRole('note')).toHaveTextContent(
       'Only an owner can change, replay or delete a scan.',
@@ -292,11 +301,16 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     const overview = await screen.findByRole('tab', { name: 'Overview' })
     fireEvent.keyDown(overview, { key: 'End' })
 
+    // Radix moves focus on the next tick. Activation is manual (a switch can
+    // raise the unsaved-changes dialog), so Enter selects the focused tab.
     const configuration = screen.getByRole('tab', { name: 'Configuration' })
+    await waitFor(() => expect(configuration).toHaveFocus())
+    fireEvent.keyDown(configuration, { key: 'Enter' })
     expect(configuration).toHaveAttribute('aria-selected', 'true')
-    expect(configuration).toHaveFocus()
 
     fireEvent.keyDown(configuration, { key: 'Home' })
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Overview' })).toHaveFocus())
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Overview' }), { key: 'Enter' })
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true'))
   })
 
@@ -312,19 +326,19 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     setupFetch()
     renderAt(`/p/${SLUG}/scans/scan-1`)
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }))
+    selectTab(await screen.findByRole('tab', { name: 'Configuration' }))
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Renamed scan' } })
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Overview', hidden: true }))
-    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    selectTab(screen.getByRole('tab', { name: 'Overview', hidden: true }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
 
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByLabelText('Name')).toHaveValue('Renamed scan')
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    selectTab(screen.getByRole('tab', { name: 'Overview' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true'),
     )
@@ -362,9 +376,9 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     expect(await screen.findByText('Unsaved changes.')).toBeInTheDocument()
     expect(screen.queryByText('Saved.')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    selectTab(screen.getByRole('tab', { name: 'Overview' }))
     expect(
-      await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' }),
+      await screen.findByRole('alertdialog', { name: 'Leave without saving?' }),
     ).toBeInTheDocument()
   })
 
@@ -442,7 +456,7 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
 
     await screen.findByLabelText('Name')
-    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    selectTab(screen.getByRole('tab', { name: 'Overview' }))
     expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })

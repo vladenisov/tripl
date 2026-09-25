@@ -12,7 +12,7 @@ export function ScanErrorTechnicalDetails({ technical }: { technical: string | u
   const isOwner = useIsOwner()
   if (!isOwner || !technical) return null
   return (
-    <details className="mt-1.5 text-[11px]" style={{ color: 'var(--fg-muted)' }}>
+    <details className="mt-1.5 text-caption" style={{ color: 'var(--fg-muted)' }}>
       <summary className="cursor-pointer select-none">View technical details</summary>
       <p className="mono mt-1 whitespace-pre-wrap break-words">{technical}</p>
     </details>

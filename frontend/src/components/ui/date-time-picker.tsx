@@ -136,7 +136,7 @@ function CalendarGrid({
         >
           <ChevronLeft aria-hidden="true" className="size-4" />
         </IconButton>
-        <div aria-live="polite" className="text-sm font-medium">
+        <div aria-live="polite" className="text-body font-medium">
           {monthLabel}
         </div>
         <IconButton
@@ -159,7 +159,7 @@ function CalendarGrid({
                 key={day.getDay()}
                 scope="col"
                 abbr={day.toLocaleDateString(undefined, { weekday: "long" })}
-                className="text-muted-foreground pb-1 text-center text-[11px] font-normal"
+                className="text-muted-foreground pb-1 text-center text-caption font-normal"
               >
                 {day.toLocaleDateString(undefined, { weekday: "narrow" })}
               </th>
@@ -191,7 +191,7 @@ function CalendarGrid({
                         "inline-flex size-8 items-center justify-center rounded-md text-body outline-none transition-colors",
                         "hover:bg-surface-hover focus-visible:ring-ring/50 focus-visible:ring-[3px]",
                         sameDay(day, today) && !isSelected && "font-semibold text-primary",
-                        isSelected && "bg-primary text-primary-foreground hover:bg-primary/90",
+                        isSelected && "bg-accent-solid text-accent-solid-fg hover:bg-accent-solid/90",
                       )}
                     >
                       {day.getDate()}

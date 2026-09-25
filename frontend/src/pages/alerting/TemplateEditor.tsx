@@ -163,7 +163,7 @@ export function TemplateEditor({
                   ))}
                 </SelectContent>
               </Select>
-              <div className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+              <div className="rounded-md border bg-muted/20 p-3 text-body-sm text-muted-foreground">
                 {FORMAT_HELP[messageFormat].map(helpLine => (
                   <div key={helpLine} className="font-mono leading-5">
                     {helpLine}
@@ -172,13 +172,13 @@ export function TemplateEditor({
               </div>
             </>
           ) : formatSelector ? (
-            <div className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+            <div className="rounded-md border bg-muted/20 p-3 text-body-sm text-muted-foreground">
               Pick a destination to choose a message format — the choices depend on the channel.
             </div>
           ) : (
             // No "Message format" label here: it labelled a static note, not
             // a control (ALR-18).
-            <div className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+            <div className="rounded-md border bg-muted/20 p-3 text-body-sm text-muted-foreground">
               Uses the same escaping and channel formatting as the selected message format.
             </div>
           )}
@@ -195,17 +195,17 @@ export function TemplateEditor({
                   phone, and Radix clamps the position but not the width, so
                   the list ran off screen with its descriptions cut (ALR-20). */}
               <PopoverContent align="end" className="w-[min(28rem,calc(100vw-2rem))] space-y-2">
-                <div className="text-sm font-medium">Available variables</div>
+                <div className="text-body font-medium">Available variables</div>
                 <div className="max-h-72 overflow-y-auto space-y-1">
                   {variableOptions.map(option => (
                     <button
                       key={option.name}
                       type="button"
-                      className="flex w-full items-start justify-between gap-3 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+                      className="flex w-full items-start justify-between gap-3 rounded-md px-2 py-1.5 text-left text-body hover:bg-muted"
                       onClick={() => insertVariable(option.name)}
                     >
-                      <span className="font-mono text-xs">{`\${${option.name}}`}</span>
-                      <span className="text-xs text-muted-foreground">{option.description}</span>
+                      <span className="font-mono text-body-sm">{`\${${option.name}}`}</span>
+                      <span className="text-body-sm text-muted-foreground">{option.description}</span>
                     </button>
                   ))}
                 </div>
@@ -265,14 +265,14 @@ export function TemplateEditor({
                     onMouseDown={event => event.preventDefault()}
                     onClick={() => insertVariable(option.name)}
                   >
-                    <span className="font-mono text-xs">{`\${${option.name}}`}</span>
-                    <span className="text-xs text-muted-foreground">{option.description}</span>
+                    <span className="font-mono text-body-sm">{`\${${option.name}}`}</span>
+                    <span className="text-body-sm text-muted-foreground">{option.description}</span>
                   </button>
                 ))}
             </AnchoredListbox>
           </div>
           {unknownVariables.length > 0 && (
-            <p id={warningId} className="text-xs text-warning">
+            <p id={warningId} className="text-body-sm text-warning">
               {unknownVariables.length === 1 ? 'Unknown variable' : 'Unknown variables'}{' '}
               {unknownVariables.map(name => `\${${name}}`).join(', ')} — this template does not
               offer {unknownVariables.length === 1 ? 'it' : 'them'}, so saving will be refused.
@@ -280,9 +280,9 @@ export function TemplateEditor({
             </p>
           )}
           {error && (
-            <p id={fieldErrorId(textareaId)} className="text-xs text-destructive">{error}</p>
+            <p id={fieldErrorId(textareaId)} className="text-body-sm text-destructive">{error}</p>
           )}
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             {helperText}
           </p>
         </div>

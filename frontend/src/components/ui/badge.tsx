@@ -1,50 +1,71 @@
 import * as React from "react"
-import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
+import {
+  chipVariants,
+  type ChipSize,
+  type ChipTone,
+  type ChipVariant,
+} from "@/components/primitives/chip-variants"
 
-const badgeVariants = cva(
-  "inline-flex items-center justify-center rounded-md border px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none transition-colors",
-  {
-    variants: {
-      variant: {
-        default:
-          "border-transparent bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
-        secondary:
-          "border-transparent bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/80",
-        // Solid red: reserved for counts that demand attention. A red STATE
-        // ("Failed", "Noisy") is the soft `danger` below, like every other
-        // tone — the solid fill was louder than anything else on the page and
-        // broke the statusLexicon's tone contract (DS-37).
-        destructive:
-          "border-transparent bg-destructive text-destructive-foreground [a&]:hover:bg-destructive/90",
-        outline: "text-foreground [a&]:hover:bg-surface-hover [a&]:hover:text-foreground",
-        // Tone tokens, not palette shades: `--success` is pinned as the AA-safe
-        // ink for its own `--success-soft` fill in BOTH themes, so these need no
-        // `dark:` twin to hand-maintain (src/theme-contrast.test.ts).
-        success: "border-transparent bg-success-soft text-success",
-        warning: "border-transparent bg-warning-soft text-warning",
-        info: "border-transparent bg-info-soft text-info",
-        danger: "border-transparent bg-danger-soft text-danger",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-    },
-  }
-)
+/*
+ * Badge is a thin alias over the Chip classes (DS-6): one pill geometry for
+ * every status. The old names keep working, mapped onto the taxonomy:
+ *   - no variant / `default` / `secondary` / `neutral` → neutral soft pill.
+ *     `default` used to be a solid brand block, so a Badge that simply forgot
+ *     its variant was the loudest thing in its row.
+ *   - `outline` → neutral outlined tag (kind / category)
+ *   - `success` / `warning` / `info` / `danger` / `accent` → soft tone
+ *   - `destructive` → solid red, reserved for counts that demand attention; a
+ *     red STATE ("Failed") is the soft `danger` (DS-37)
+ *   - `solid` → solid brand fill, only when a brand block is really meant
+ * New code should use <Chip tone variant> directly.
+ */
+type BadgeVariant =
+  | "default"
+  | "neutral"
+  | "secondary"
+  | "outline"
+  | "destructive"
+  | "solid"
+  | "accent"
+  | "success"
+  | "warning"
+  | "info"
+  | "danger"
+
+const BADGE_TO_CHIP: Record<BadgeVariant, { tone: ChipTone; variant: ChipVariant }> = {
+  default: { tone: "neutral", variant: "soft" },
+  neutral: { tone: "neutral", variant: "soft" },
+  secondary: { tone: "neutral", variant: "soft" },
+  outline: { tone: "neutral", variant: "outline" },
+  destructive: { tone: "danger", variant: "solid" },
+  solid: { tone: "accent", variant: "solid" },
+  accent: { tone: "accent", variant: "soft" },
+  success: { tone: "success", variant: "soft" },
+  warning: { tone: "warning", variant: "soft" },
+  info: { tone: "info", variant: "soft" },
+  danger: { tone: "danger", variant: "soft" },
+}
 
 function Badge({
   className,
   variant,
+  size = "sm",
   ...props
-}: React.ComponentProps<"span"> & VariantProps<typeof badgeVariants>) {
+}: React.ComponentProps<"span"> & {
+  variant?: BadgeVariant | null
+  size?: ChipSize
+}) {
+  const chip = BADGE_TO_CHIP[variant ?? "default"]
   return (
     <span
       data-slot="badge"
-      className={cn(badgeVariants({ variant }), className)}
+      data-tone={chip.tone}
+      className={cn(chipVariants({ ...chip, size }), className)}
       {...props}
     />
   )
 }
 
 export { Badge }
+export type { BadgeVariant }

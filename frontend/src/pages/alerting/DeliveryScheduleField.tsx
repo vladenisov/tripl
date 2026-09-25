@@ -189,9 +189,9 @@ export function DeliveryScheduleField({
       )}
 
       {error ? (
-        <p id="destination-cadence-error" className="text-xs text-destructive">{error}</p>
+        <p id="destination-cadence-error" className="text-body-sm text-destructive">{error}</p>
       ) : (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-body-sm text-muted-foreground">
           {draft.mode === "immediate"
             ? "Alerts are sent as soon as a collection finds something."
             : `${describeCron(value)} (${projectTimezone}). Everything found in between is collected into one message.`}

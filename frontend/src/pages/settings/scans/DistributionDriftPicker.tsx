@@ -1,4 +1,4 @@
-import { Badge } from '@/components/ui/badge'
+import { Chip } from '@/components/primitives/chip'
 import { Checkbox } from '@/components/ui/checkbox'
 import type { ScanConfigPreview } from '@/types'
 import { isJsonPreviewType } from './scanUtils'
@@ -28,8 +28,8 @@ export function DistributionDriftPicker({
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
       <div>
-        <div className="text-sm font-medium">Distribution drift</div>
-        <p className="text-xs text-muted-foreground">
+        <div className="text-body font-medium">Distribution drift</div>
+        <p className="text-body-sm text-muted-foreground">
           Selected scalar fields are compared against their rolling baseline with PSI.
         </p>
       </div>
@@ -39,7 +39,7 @@ export function DistributionDriftPicker({
           return (
             <label
               key={column.name}
-              className="flex items-center gap-2 rounded-md border bg-background p-2 text-sm"
+              className="flex items-center gap-2 rounded-md border bg-background p-2 text-body"
             >
               <Checkbox
                 checked={selectedFields.includes(column.name)}
@@ -49,14 +49,14 @@ export function DistributionDriftPicker({
                   if (!disabled) onToggleField(column.name)
                 }}
               />
-              <span className="min-w-0 flex-1 truncate font-mono text-xs">{column.name}</span>
-              {disabled && <Badge variant="outline" className="text-[10px]">reserved</Badge>}
+              <span className="min-w-0 flex-1 truncate font-mono text-body-sm">{column.name}</span>
+              {disabled && <Chip variant="outline" size="xs">reserved</Chip>}
             </label>
           )
         })}
       </div>
       {availableColumns.length === 0 && (
-        <p className="text-xs text-muted-foreground">No scalar columns found in preview.</p>
+        <p className="text-body-sm text-muted-foreground">No scalar columns found in preview.</p>
       )}
     </div>
   )

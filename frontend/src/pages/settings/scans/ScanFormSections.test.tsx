@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Project, ScanConfig } from '@/types'
@@ -115,6 +115,31 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe('ScanFormSections — the New scan page scaffolding', () => {
+  // MT-6 / DA-37: an example query that reads as code already in the editor
+  // made "SQL is required" baffling; every placeholder line is a comment.
+  it('shows the base-query example as a comment, not a runnable query', async () => {
+    setupFetch()
+    renderCreatePage()
+
+    const editor = await screen.findByPlaceholderText(/SELECT \* FROM analytics\.events/)
+    const lines = (editor.getAttribute('placeholder') ?? '').split('\n')
+    expect(lines.every(line => line.startsWith('--'))).toBe(true)
+  })
+
+  // DS-1: a real h1 under the Govern eyebrow, and a sticky Create (AU-6).
+  it('has the shared page header and a sticky save bar', async () => {
+    setupFetch()
+    const { container } = renderCreatePage()
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'New scan' })).toBeInTheDocument()
+    expect(screen.getByText('Govern · Scan')).toBeInTheDocument()
+    const bar = container.querySelector('[data-slot="save-bar"]')
+    expect(bar).not.toBeNull()
+    expect(within(bar as HTMLElement).getByRole('button', { name: /Create scan/ })).toBeInTheDocument()
+  })
+})
+
 describe('ScanFormSections — progressive disclosure', () => {
   // The form asks 22 questions. Eight of them need knowledge of tripl's
   // detection internals that exists nowhere else in the product; they must not
@@ -193,8 +218,9 @@ describe('ScanFormSections — where event names come from', () => {
     await screen.findByText('New scan')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
-    // The SQL editor is lazy-loaded, so it may land a tick after the form.
-    fireEvent.change(await screen.findByPlaceholderText('SELECT * FROM analytics.events'), {
+    // The SQL editor is lazy-loaded, so it may land a tick after the form. Its
+    // placeholder is the example as an SQL comment (MT-6).
+    fireEvent.change(await screen.findByPlaceholderText(/SELECT \* FROM analytics\.events/), {
       target: { value: 'SELECT * FROM analytics.events' },
     })
 
@@ -237,7 +263,7 @@ describe('ScanFormSections — the answer comes after the questions', () => {
     await screen.findByText('New scan')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
-    fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
+    fireEvent.change(screen.getByPlaceholderText(/SELECT \* FROM analytics\.events/), {
       target: { value: 'SELECT * FROM analytics.events' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Load preview/ }))
@@ -344,7 +370,7 @@ describe('ScanFormSections — the mode choice', () => {
     await screen.findByText('New scan')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
-    fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
+    fireEvent.change(screen.getByPlaceholderText(/SELECT \* FROM analytics\.events/), {
       target: { value: 'SELECT * FROM analytics.events' },
     })
     // How events are named is asked for before the time column, so answer it —

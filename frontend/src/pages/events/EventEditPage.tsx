@@ -12,6 +12,7 @@ import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { CommentThread } from '@/components/comment-thread'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { ErrorState } from '@/components/error-state'
+import { PageContainer } from '@/components/primitives/page-container'
 import { eventCommentsKey, eventKey, eventTypesKey, metaFieldsKey, variablesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import { DraftDiscussionNote } from './DraftDiscussionNote'
@@ -109,7 +110,7 @@ export default function EventEditPage() {
 
   if (loadError) {
     return (
-      <div className="mx-auto max-w-[880px] p-6">
+      <PageContainer width="narrow">
         <ErrorState
           title="Failed to load event editor"
           error={loadError}
@@ -122,7 +123,7 @@ export default function EventEditPage() {
             ])
           }}
         />
-      </div>
+      </PageContainer>
     )
   }
 
@@ -134,7 +135,7 @@ export default function EventEditPage() {
 
   if (isLoading || !slug) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="flex min-h-[240px] items-center justify-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
         Loading…
       </div>
     )
@@ -153,7 +154,8 @@ export default function EventEditPage() {
         // authoring surface that never said which plan it was writing to. The
         // read is lenient and the write is strict, so a mismatch rendered a
         // perfectly normal form and failed as a bare 404 at Save.
-        <div className="mx-auto max-w-[880px] px-4 sm:px-6 pt-4">
+        // The form's narrow column, from the shell's own left edge (DS-3).
+        <div className="mb-4 max-w-[880px]">
           <EntityBranchBanner
             slug={slug}
             rowBranchId={eventQuery.data?.branch_id}
@@ -196,9 +198,11 @@ export default function EventEditPage() {
           there reads as part of the specification. Edit only: there is no
           event to hang a thread on until one exists. */}
       {eventId && (
-        <div className="mx-auto max-w-[880px] px-4 sm:px-6 pb-10">
+        // Below the sticky save bar with a clear break, so the page end is not
+        // mistaken for more of the form (AU-6).
+        <div className="mt-10 max-w-[880px] pb-10">
           {handoff?.commentError && (
-            <p role="alert" className="mb-2 text-xs text-destructive">
+            <p role="alert" className="mb-2 text-body-sm text-destructive">
               {handoff.commentError}
             </p>
           )}

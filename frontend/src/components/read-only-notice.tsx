@@ -20,7 +20,7 @@ export function ReadOnlyNotice({
   return (
     <p
       role="note"
-      className={`rounded-md border border-dashed p-3 text-xs text-muted-foreground ${className}`}
+      className={`rounded-md border border-dashed p-3 text-body-sm text-muted-foreground ${className}`}
     >
       {children}
     </p>

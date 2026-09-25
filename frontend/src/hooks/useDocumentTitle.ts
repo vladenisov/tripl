@@ -184,6 +184,44 @@ export function resolveTitleFromPath(pathname: string): { label: string; slug?: 
   return { label: NOT_FOUND_TITLE_LABEL } // unmatched authed path → the 404 page
 }
 
+// What a detail route shows, for its tab title (JR-33). Keyed by the segment
+// after `/p/:slug/`, then (for monitoring) by the scope segment.
+const MONITORING_SCOPE_KINDS: Record<string, string> = {
+  event: 'Event',
+  'event-type': 'Event type volume',
+  'project-total': 'Volume',
+  metric: 'Metric',
+}
+const DETAIL_SURFACE_KINDS: Record<string, string> = {
+  monitors: 'Alert rule',
+  scans: 'Scan',
+}
+
+/**
+ * The kind of entity a project detail route shows ("Event type volume",
+ * "Alert rule"), or null when the path is not a detail route. Pure.
+ */
+export function resolveEntityKind(pathname: string): string | null {
+  const [head, slug, surface, sub, id] = pathname.split('/').filter(Boolean)
+  if (head !== 'p' || !slug || !surface || !sub) return null
+  if (surface === 'monitoring') return id ? (MONITORING_SCOPE_KINDS[sub] ?? null) : null
+  return DETAIL_SURFACE_KINDS[surface] ?? null
+}
+
+/**
+ * The page label for a detail page once its entity has loaded (JR-33): the
+ * entity's own name, then what kind of thing it is, so three open monitoring
+ * tabs no longer all read "Monitoring · acme · tripl". Pass the result to
+ * {@link useDocumentTitle} without a slug:
+ * `"Screen View · Event type volume · tripl"`.
+ */
+export function entityTitleLabel(entity: string, kind: string): string {
+  return [entity, kind]
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .join(TITLE_SEPARATOR)
+}
+
 /**
  * Set `document.title` to the composed per-page title whenever the label or slug
  * changes. Wired in exactly one place — the app shell — rather than in every

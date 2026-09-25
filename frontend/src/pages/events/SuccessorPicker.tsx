@@ -93,7 +93,7 @@ export function SuccessorPicker({
           ))}
         </SelectControl>
         {hiddenCount > 0 && (
-          <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
             {hiddenCount} more not shown — narrow the search.
           </p>
         )}

@@ -66,7 +66,7 @@ export function IncidentDeliveries({
   const total = data?.pages[0]?.total ?? 0
 
   if (isLoading) {
-    return <p className="mt-2 text-2xs text-muted-foreground">Loading deliveries…</p>
+    return <p className="mt-2 text-micro text-muted-foreground">Loading deliveries…</p>
   }
 
   // A failed request must not read as "nothing was sent". They are opposite
@@ -74,7 +74,7 @@ export function IncidentDeliveries({
   // empty state would state the reassuring one on no evidence.
   if (isError) {
     return (
-      <p role="alert" className="mt-2 text-2xs text-destructive">
+      <p role="alert" className="mt-2 text-micro text-destructive">
         Could not load deliveries: {getErrorMessage(error)}
       </p>
     )
@@ -82,7 +82,7 @@ export function IncidentDeliveries({
 
   if (items.length === 0) {
     return (
-      <p className="mt-2 text-2xs text-muted-foreground">
+      <p className="mt-2 text-micro text-muted-foreground">
         No delivery recorded for this incident.
       </p>
     )
@@ -90,7 +90,7 @@ export function IncidentDeliveries({
 
   return (
     <div className="mt-2 space-y-2">
-    <div className="overflow-x-auto rounded border">
+    <div className="overflow-x-auto rounded-sm border">
       <DeliveryTable>
         {items.map(delivery => (
           <AlertDeliveryRow
@@ -105,7 +105,7 @@ export function IncidentDeliveries({
     </div>
     {total > items.length && (
       <div className="flex flex-wrap items-center gap-2">
-        <p className="text-2xs text-muted-foreground">
+        <p className="text-micro text-muted-foreground">
           Showing {items.length} of {countOf(total, 'delivery', 'deliveries')}.
         </p>
         {query.hasNextPage && (
@@ -113,7 +113,7 @@ export function IncidentDeliveries({
             type="button"
             variant="outline"
             size="sm"
-            className="h-9 px-3 text-xs sm:h-7 sm:px-2 sm:text-[11px]"
+            className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
             disabled={query.isFetchingNextPage}
             onClick={() => void query.fetchNextPage()}
           >

@@ -1,10 +1,11 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { UNSAFE_DataRouterContext, type BlockerFunction } from 'react-router-dom'
 import { NavigationBlocker } from '@/components/navigation-blocker'
+import { UNSAVED_CONFIRM_COPY } from '@/components/settings/unsaved-changes'
 import { useConfirm } from './useConfirm'
 
 export const UNSAVED_CHANGES_MESSAGE =
-  'Your changes have not been saved. Leave anyway and discard them?'
+  'Your changes have not been saved. Leaving now discards them.'
 
 type GuardOptions = {
   /** What is at stake, phrased for the confirm dialog. */
@@ -67,9 +68,9 @@ function useConfirmDiscard(isDirty: boolean, message: string) {
   const confirmDiscard = useCallback(async (): Promise<boolean> => {
     if (!dirtyRef.current) return true
     return confirm({
-      title: 'Discard unsaved changes?',
+      // "Leave without saving?" / Keep editing / Discard changes (AU-42).
+      ...UNSAVED_CONFIRM_COPY,
       message,
-      confirmLabel: 'Discard',
       variant: 'danger',
     })
   }, [confirm, message])

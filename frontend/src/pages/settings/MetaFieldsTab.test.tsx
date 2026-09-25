@@ -64,11 +64,11 @@ describe('MetaFieldsTab — Allow multiple (tripl-h2sx.31)', () => {
     vi.mocked(metaFieldsApi.create).mockResolvedValue(metaField({ id: 'mf-1', name: 'jira_keys' }))
     renderTab()
 
-    fireEvent.click(screen.getByRole('button', { name: /Add meta field/i }))
-    fireEvent.change(screen.getByLabelText(/Name \(e.g. jira_link\)/), {
+    fireEvent.click(screen.getByRole('button', { name: /New meta field/i }))
+    fireEvent.change(screen.getByLabelText('Name'), {
       target: { value: 'jira_keys' },
     })
-    fireEvent.change(screen.getByLabelText('Display Name'), { target: { value: 'Jira keys' } })
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Jira keys' } })
     fireEvent.click(screen.getByLabelText('Multiple values'))
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
@@ -84,7 +84,7 @@ describe('MetaFieldsTab — Allow multiple (tripl-h2sx.31)', () => {
   it('does not offer the box for a type that cannot hold a list', async () => {
     renderTab()
 
-    fireEvent.click(screen.getByRole('button', { name: /Add meta field/i }))
+    fireEvent.click(screen.getByRole('button', { name: /New meta field/i }))
     expect(screen.getByLabelText('Multiple values')).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'date' } })
@@ -95,11 +95,11 @@ describe('MetaFieldsTab — Allow multiple (tripl-h2sx.31)', () => {
     vi.mocked(metaFieldsApi.create).mockResolvedValue(metaField({ id: 'mf-1', name: 'shipped' }))
     renderTab()
 
-    fireEvent.click(screen.getByRole('button', { name: /Add meta field/i }))
-    fireEvent.change(screen.getByLabelText(/Name \(e.g. jira_link\)/), {
+    fireEvent.click(screen.getByRole('button', { name: /New meta field/i }))
+    fireEvent.change(screen.getByLabelText('Name'), {
       target: { value: 'shipped' },
     })
-    fireEvent.change(screen.getByLabelText('Display Name'), { target: { value: 'Shipped' } })
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Shipped' } })
     fireEvent.click(screen.getByLabelText('Multiple values'))
     fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'boolean' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
@@ -133,7 +133,7 @@ describe('MetaFieldsTab — read-only visitors', () => {
 
     expect(await screen.findByText('jira_link')).toBeInTheDocument()
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
-    expect(screen.queryByRole('button', { name: /Add meta field/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New meta field/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit Jira link' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete Jira link' })).not.toBeInTheDocument()
   })
@@ -143,7 +143,7 @@ describe('MetaFieldsTab — read-only visitors', () => {
     renderTab([FIELD], { auth: authAs('editor'), project: demo })
 
     expect(await screen.findByText('jira_link')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Add meta field/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New meta field/ })).not.toBeInTheDocument()
   })
 
   it('lets an editor write in a demo they created', async () => {
@@ -151,7 +151,7 @@ describe('MetaFieldsTab — read-only visitors', () => {
     renderTab([FIELD], { auth: authAs('editor'), project: demo })
 
     expect(await screen.findByRole('button', { name: 'Edit Jira link' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Add meta field/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /New meta field/ })).toBeInTheDocument()
   })
 })
 
@@ -197,6 +197,39 @@ describe('MetaFieldsTab — load and delete states (PLAN-41 / PLAN-54)', () => {
 
     await waitFor(() =>
       expect(queryClient.getQueryState(['metaFields', 'demo'])?.isInvalidated).toBe(true),
+    )
+  })
+})
+
+describe('MetaFieldsTab — inline validation (AU-4)', () => {
+  it('flags every empty required field inline instead of a browser bubble', async () => {
+    renderTab()
+
+    fireEvent.click(screen.getByRole('button', { name: /New meta field/i }))
+    expect(screen.getByRole('dialog', { name: 'New meta field' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    for (const label of ['Name', 'Display name']) {
+      const input = screen.getByLabelText(label)
+      expect(input).not.toHaveAttribute('required')
+      expect(input).toHaveAttribute('aria-invalid', 'true')
+      expect(input).toHaveAccessibleDescription('Required')
+    }
+    expect(metaFieldsApi.create).not.toHaveBeenCalled()
+  })
+
+  it('removes an enum option with a labelled X button', async () => {
+    renderTab()
+
+    fireEvent.click(screen.getByRole('button', { name: /New meta field/i }))
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'enum' } })
+    const input = screen.getByLabelText('Enum options')
+    fireEvent.change(input, { target: { value: 'high' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove option high' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Remove option high' })).not.toBeInTheDocument(),
     )
   })
 })

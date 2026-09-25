@@ -1,6 +1,8 @@
 import { memo } from 'react'
 import { Ban, Pencil, Trash2 } from 'lucide-react'
 import { IconButton } from '@/components/ui/icon-button'
+import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
@@ -67,7 +69,7 @@ function VariablesTableRowImpl({
           />
         )}
       </TableCell>
-      <TableCell className="font-mono text-xs align-top">
+      <TableCell className="font-mono text-body-sm align-top">
         {/* Pills never wrap and never shrink; the variable name absorbs the
             squeeze instead. In a ~225px column the drift badge broke inside its
             own pill — "1" on one line, "drift" on the next — which reads as a
@@ -75,29 +77,31 @@ function VariablesTableRowImpl({
             (tripl-bb8m). `whitespace-nowrap` is the house pattern here; the same
             badge in ScansTab already carries it. */}
         <div className="flex min-w-0 items-center gap-2">
-          <code className="min-w-0 truncate rounded bg-primary/10 px-1.5 py-0.5 text-primary" title={`\${${variable.name}}`}>
+          <code className="min-w-0 truncate rounded-sm bg-primary/10 px-1.5 py-0.5 text-primary" title={`\${${variable.name}}`}>
             {`\${${variable.name}}`}
           </code>
-          <span className="shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {/* The badge taxonomy (DS-6): the type is a kind tag, the drift
+              count a warning status. Both pills, in sans. */}
+          <Chip variant="outline" size="xs" className="font-sans">
             {typeLabel}
-          </span>
+          </Chip>
           {driftCount > 0 && (
-            <span className="shrink-0 whitespace-nowrap rounded border border-warning/40 bg-warning-soft px-1.5 py-0.5 text-[10px] font-medium text-warning" title="Observed values outside the documented list">
+            <Chip tone="warning" size="xs" className="font-sans" title="Observed values outside the documented list">
               {driftCount} drift{driftCount === 1 ? '' : 's'}
-            </span>
+            </Chip>
           )}
         </div>
         {bindings.length > 0 && (
           <div className="mt-1 space-y-0.5">
             {bindings.map(binding => (
-              <div key={binding} className="max-w-52 truncate text-[10px] text-muted-foreground" title={binding}>
+              <div key={binding} className="max-w-52 truncate text-micro text-muted-foreground" title={binding}>
                 ↳ {binding}
               </div>
             ))}
           </div>
         )}
       </TableCell>
-      <TableCell className="text-xs align-top">
+      <TableCell className="text-body-sm align-top">
         {eventCount === 0 ? (
           <span className="text-muted-foreground">—</span>
         ) : eventNames.length <= MAX_INLINE_EVENTS ? (
@@ -122,19 +126,19 @@ function VariablesTableRowImpl({
           </details>
         )}
       </TableCell>
-      <TableCell className="text-xs text-muted-foreground align-top">{variable.description}</TableCell>
+      <TableCell className="text-body-sm text-muted-foreground align-top">{variable.description}</TableCell>
       <TableCell className="align-top">
         {documentedValues.length > 0 ? (
           <div className="flex max-w-sm flex-wrap gap-1">
             {documentedValues.slice(0, MAX_CHIPS).map(value => (
-              <span key={value} className="max-w-28 truncate rounded border border-primary/30 bg-primary/5 px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
+              <CodeToken key={value} className="max-w-28" title={value}>{value}</CodeToken>
             ))}
             {documentedValues.length > MAX_CHIPS && (
-              <span className="text-[10px] text-muted-foreground">+{documentedValues.length - MAX_CHIPS}</span>
+              <span className="text-micro text-muted-foreground">+{documentedValues.length - MAX_CHIPS}</span>
             )}
           </div>
         ) : (
-          <span className="text-xs text-muted-foreground">—</span>
+          <span className="text-body-sm text-muted-foreground">—</span>
         )}
       </TableCell>
       <TableCell>
@@ -147,21 +151,21 @@ function VariablesTableRowImpl({
         {observedValues.length > 0 ? (
           <div className="flex max-w-sm flex-wrap gap-1">
             {observedValues.slice(0, MAX_CHIPS).map(value => (
-              <span key={value} className="max-w-28 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
+              <CodeToken key={value} className="max-w-28" title={value}>{value}</CodeToken>
             ))}
             {observedValues.length > MAX_CHIPS && (
-              <span className="text-[10px] text-muted-foreground">+{observedValues.length - MAX_CHIPS}</span>
+              <span className="text-micro text-muted-foreground">+{observedValues.length - MAX_CHIPS}</span>
             )}
           </div>
         ) : contextCount > 0 ? (
           <span
-            className="text-xs text-muted-foreground"
+            className="text-body-sm text-muted-foreground"
             title={`${contextCount} value context${contextCount === 1 ? '' : 's'}, none holding a value`}
           >
             No values stored
           </span>
         ) : (
-          <span className="text-xs text-muted-foreground">—</span>
+          <span className="text-body-sm text-muted-foreground">—</span>
         )}
       </TableCell>
       <TableCell>

@@ -353,7 +353,7 @@ describe('EventsPage', () => {
     expect(eventsGrid?.querySelector('button[aria-label="More actions"]')).toBeNull()
     // tripl-dmch.12 dropped the per-row SignalLink arrow anchors (one incident =
     // one saturated indicator, the Monitor-cell chip). The only surviving
-    // monitoring anchor here is the open Tab Dynamics card's "View signal" link
+    // monitoring anchor here is the open tab volume card's "View signal" link
     // for the active tab (project_total); the row-level event/event-type anchors
     // and the "Open recent anomaly" affordance are gone.
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).toBeInTheDocument()
@@ -381,7 +381,7 @@ describe('EventsPage', () => {
     expectAbsent('button', 'Archive event')
     expectAbsent('button', 'Delete event')
 
-    // The "<Tab> Dynamics" chart now defaults open (UX-14), so the toggle reads
+    // The "<Tab> volume" chart now defaults open (UX-14), so the toggle reads
     // "Hide chart" and the signal link in its header is visible without a click.
     expect(screen.getByRole('button', { name: /Hide chart/ })).toBeInTheDocument()
     expect(await screen.findByText('View signal')).toBeInTheDocument()
@@ -394,7 +394,7 @@ describe('EventsPage', () => {
     const chartSignalsStat = screen.getByText('Chart signals').closest('dl')
     expect(chartSignalsStat).not.toBeNull()
     expect(chartSignalsStat).toHaveTextContent('2')
-    expect(chartSignalsStat).toHaveTextContent('live')
+    expect(chartSignalsStat).toHaveTextContent('open')
     expect(screen.queryByText('Active signals')).not.toBeInTheDocument()
     // The scope note is a focusable button, not hover-only chrome.
     expect(
@@ -490,7 +490,7 @@ describe('EventsPage', () => {
     const { container } = renderEventsPage(['/p/demo/events/page'])
 
     expect(await screen.findByText('Active Signup')).toBeInTheDocument()
-    expect(screen.getByText('Page Dynamics')).toBeInTheDocument()
+    expect(screen.getByText('Page volume')).toBeInTheDocument()
     await waitFor(() => {
       expect(container.querySelector('a[href="/p/demo/monitoring/event-type/type-1"]')).toBeInTheDocument()
     })
@@ -534,7 +534,7 @@ describe('EventsPage', () => {
 
     expect(await screen.findByText('Homepage View')).toBeInTheDocument()
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
-    expectAbsent('button', 'New Event')
+    expectAbsent('button', 'New event')
     expectAbsent('checkbox', 'Select Homepage View')
     expectAbsent('checkbox', 'Select all visible events')
     expectAbsent('button', 'Drag to reorder Homepage View')
@@ -631,6 +631,14 @@ describe('EventsPage', () => {
     renderEventsPage()
 
     expect(await screen.findByText('Homepage View')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Select Homepage View'))
+    // One of two selected: the header box reads "mixed", and a click from
+    // there clears the selection rather than selecting everything (EV-26).
+    const selectAll = screen.getByRole('checkbox', { name: 'Select all visible events' })
+    expect(selectAll).toHaveAttribute('aria-checked', 'mixed')
+    fireEvent.click(selectAll)
+    expect(screen.getByLabelText('Select Homepage View')).toHaveAttribute('aria-checked', 'false')
+
     fireEvent.click(screen.getByLabelText('Select Homepage View'))
     fireEvent.click(screen.getByLabelText('Select Settings View'))
 
@@ -801,7 +809,8 @@ describe('EventsPage', () => {
     renderEventsPage()
 
     // "New event" navigates to the page-based editor (no Sheet/dialog).
-    fireEvent.click(await screen.findByRole('button', { name: 'New Event' }))
+    // Two on an empty project: the toolbar's and the empty state's.
+    fireEvent.click((await screen.findAllByRole('button', { name: 'New event' }))[0]!)
     expect(await screen.findByRole('heading', { name: 'New event' })).toBeInTheDocument()
 
     fireEvent.change(at(screen.getAllByRole('combobox'), 0), { target: { value: 'type-1' } })
@@ -885,9 +894,9 @@ describe('EventsPage', () => {
 
     renderEventsPage()
 
-    // The empty state renders and the primary "New Event" action stays reachable.
+    // The empty state renders and the primary "New event" action stays reachable.
     expect(await screen.findByText('No events yet')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'New Event' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'New event' }).length).toBeGreaterThan(0)
 
     // The toolbar collapses only once the events query has SETTLED — not during the
     // initial load, so a populated project never flashes the minimal bar
@@ -895,8 +904,8 @@ describe('EventsPage', () => {
     // checks below.
     await waitFor(() =>
       expect(
-        screen.queryByRole('textbox', {
-          name: 'Filter events by name, tag, or field',
+        screen.queryByRole('searchbox', {
+          name: 'Search events',
           hidden: true,
         }),
       ).not.toBeInTheDocument(),
@@ -909,8 +918,8 @@ describe('EventsPage', () => {
     expectAbsent('combobox', 'Sort order')
     expectAbsent('button', 'More actions')
 
-    // The empty "All Events Dynamics" chart card is gone until events exist.
-    expect(screen.queryByText('All Events Dynamics')).not.toBeInTheDocument()
+    // The empty "Event volume" chart card is gone until events exist.
+    expect(screen.queryByText('Event volume')).not.toBeInTheDocument()
     expect(screen.queryByText('No recent volume to chart')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Show chart|Hide chart/ })).not.toBeInTheDocument()
   })

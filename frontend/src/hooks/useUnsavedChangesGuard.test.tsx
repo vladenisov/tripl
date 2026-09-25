@@ -49,14 +49,17 @@ describe('useUnsavedChangesGuard', () => {
     expect(await screen.findByText('Elsewhere')).toBeInTheDocument()
   })
 
-  it('asks before leaving a dirty form, and stays on Cancel', async () => {
+  it('asks before leaving a dirty form, and stays on Keep editing', async () => {
     const router = renderForm()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'draft' } })
     fireEvent.click(screen.getByRole('link', { name: 'Leave' }))
 
-    const dialog = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    const dialog = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
     expect(dialog).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    // The safe answer is the default (AU-42): Enter keeps the draft.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Keep editing' })).toHaveFocus())
+    expect(screen.getByRole('button', { name: 'Discard changes' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
 
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(router.state.location.pathname).toBe('/form')
@@ -67,7 +70,7 @@ describe('useUnsavedChangesGuard', () => {
     renderForm()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'draft' } })
     fireEvent.click(screen.getByRole('link', { name: 'Leave' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     expect(await screen.findByText('Elsewhere')).toBeInTheDocument()
   })
 
@@ -85,7 +88,7 @@ describe('useUnsavedChangesGuard', () => {
       await router.navigate(-1)
     })
     expect(await screen.findByRole('alertdialog')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(router.state.location.pathname).toBe('/form')
   })
@@ -158,12 +161,12 @@ describe('useUnsavedDialogGuard', () => {
     render(<DialogForm onClosed={() => { closed = true }} />)
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'draft' } })
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(closed).toBe(false)
 
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(closed).toBe(true))
   })
 })

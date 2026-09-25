@@ -5,9 +5,10 @@ import { Layers, Pencil } from 'lucide-react'
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
-import { Badge } from '@/components/ui/badge'
+import { Chip } from '@/components/primitives/chip'
+import { LoadingState } from '@/components/primitives/loading-state'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardTitle } from '@/components/ui/card'
 import { MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -130,32 +131,32 @@ export function BreakdownsTab({
 
   return (
     <Card>
-      <CardContent className="p-4 sm:p-6">
-        <ChartCardHeader
-          title={(
-            <>
-              <Layers aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-lg font-semibold">Breakdowns</h2>
-            </>
-          )}
+      <ChartCardHeader
+        title={(
+          <>
+            <Layers aria-hidden="true" className="size-4 text-muted-foreground" />
+            <CardTitle as="h2">Breakdowns</CardTitle>
+          </>
+        )}
+      >
+        <Select
+          value={selectedColumn}
+          onValueChange={onColumnChange}
+          disabled={!breakdowns?.columns.length}
         >
-          <Select
-            value={selectedColumn}
-            onValueChange={onColumnChange}
-            disabled={!breakdowns?.columns.length}
-          >
-            <SelectTrigger className="h-8 w-full sm:w-[200px]" aria-label="Breakdown column">
-              <SelectValue placeholder="Column" />
-            </SelectTrigger>
-            <SelectContent>
-              {breakdowns?.columns.map(option => (
-                <SelectItem key={option} value={option}>
-                  {option}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </ChartCardHeader>
+          <SelectTrigger className="w-full sm:w-[200px]" aria-label="Breakdown column">
+            <SelectValue placeholder="Column" />
+          </SelectTrigger>
+          <SelectContent>
+            {breakdowns?.columns.map(option => (
+              <SelectItem key={option} value={option}>
+                {option}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </ChartCardHeader>
+      <CardContent>
         {query.isError ? (
           // Not "No breakdown groups yet" — that told the reader to go
           // configure something that was already configured (MON-8).
@@ -166,15 +167,16 @@ export function BreakdownsTab({
             onRetry={() => void query.refetch()}
           />
         ) : query.isLoading ? (
-          <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
-            Loading breakdowns…
-          </div>
+          <LoadingState
+            label="Loading breakdowns…"
+            className="flex h-[280px] items-center justify-center text-body-sm"
+          />
         ) : !breakdowns?.columns.length ? (
-          <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
+          <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-body text-muted-foreground">
             <p>No breakdown groups yet.</p>
             {scope === 'metric' ? (
               <>
-                <p className="text-xs">
+                <p className="text-body-sm">
                   Add breakdown columns in the metric settings — each configured
                   column splits this metric into a series per value after the next
                   collection.
@@ -190,7 +192,7 @@ export function BreakdownsTab({
                 </Button>
               </>
             ) : (
-              <p className="text-xs">
+              <p className="text-body-sm">
                 Edit this event and add a column under “Metric breakdowns”, then run a
                 scan — its volume will split into a series per value of that column.
               </p>
@@ -209,7 +211,7 @@ export function BreakdownsTab({
               to={timeRange.to}
             />
             {chart.hiddenCount > 0 && (
-              <p className="mt-2 text-xs text-muted-foreground">
+              <p className="mt-2 text-body-sm text-muted-foreground">
                 Showing the first {BREAKDOWN_SERIES_CAP} of {chart.series.length + chart.hiddenCount} values
                 — pick values below to compare others.
               </p>
@@ -224,29 +226,28 @@ export function BreakdownsTab({
             />
             {latestParityAnomalies.length > 0 && (
               <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
-                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                <p className="mb-2 text-body-sm font-medium text-muted-foreground">
                   {selectedColumn} share anomalies
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {latestParityAnomalies.map(({ series, anomaly }) => (
-                    <Badge
+                    // A status flag in the one pill idiom (DS-6): a drop in the
+                    // danger tone, a spike in the warning tone.
+                    <Chip
                       key={`${series.breakdown_value}-${anomaly.bucket}`}
                       aria-label={`${breakdownLabel(series)} share ${anomaly.direction}: ${formatPercent(anomaly.expected_share)} -> ${formatPercent(anomaly.actual_share)}`}
-                      variant="outline"
-                      className={anomaly.direction === 'drop'
-                        ? 'border-destructive/50 text-destructive'
-                        : 'border-warning/50 text-warning'}
+                      tone={anomaly.direction === 'drop' ? 'danger' : 'warning'}
                     >
                       {breakdownLabel(series)}
                       {' share '}{anomaly.direction}:{' '}
                       {formatPercent(anomaly.expected_share)} {'->'} {formatPercent(anomaly.actual_share)}
-                    </Badge>
+                    </Chip>
                   ))}
                 </div>
               </div>
             )}
             {breakdowns?.interval && (
-              <p className="mt-2 text-xs text-muted-foreground">
+              <p className="mt-2 text-body-sm text-muted-foreground">
                 Collection interval: {breakdowns.interval}
               </p>
             )}
@@ -291,7 +292,7 @@ function BreakdownValueChips({
             aria-pressed={isSelected}
             aria-label={`Toggle ${option.label}`}
             onClick={() => onToggle(option.label)}
-            className={`flex min-w-0 items-center gap-2 rounded-md border px-2 py-1 text-xs transition-colors hover:bg-muted/40 ${
+            className={`flex min-w-0 items-center gap-2 rounded-md border px-2 py-1 text-body-sm transition-colors hover:bg-muted/40 ${
               isSelected
                 ? 'border-[var(--accent)]/60 bg-[var(--accent-soft)]'
                 : isVisible
@@ -308,13 +309,7 @@ function BreakdownValueChips({
         )
       })}
       {hasFilter && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-6 px-2 text-xs"
-          onClick={onReset}
-        >
+        <Button type="button" variant="ghost" size="xs" onClick={onReset}>
           Show all
         </Button>
       )}

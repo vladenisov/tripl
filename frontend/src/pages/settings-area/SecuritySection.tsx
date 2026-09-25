@@ -53,7 +53,7 @@ export default function SecuritySection() {
         title="Password"
         description="Get a reset link by email and choose a new password from it. Your current password keeps working until you do."
       >
-        <div className="flex flex-col gap-2 px-[18px] py-[14px]">
+        <div className="flex flex-col gap-2 px-4 py-[14px]">
           <div>
             <Button
               variant="outline"
@@ -65,7 +65,7 @@ export default function SecuritySection() {
               {resetMut.isPending ? 'Sending…' : 'Email me a reset link'}
             </Button>
           </div>
-          <div aria-live="polite" className="text-[12px] leading-[1.45]">
+          <div aria-live="polite" className="text-body-sm leading-[1.45]">
             {resetMut.isSuccess &&
               (resetMut.data.email_configured ? (
                 <span style={{ color: 'var(--success)' }}>
@@ -79,7 +79,7 @@ export default function SecuritySection() {
               ))}
           </div>
           {resetMut.isError && (
-            <p role="alert" className="m-0 text-[12px]" style={{ color: 'var(--danger)' }}>
+            <p role="alert" className="m-0 text-body-sm" style={{ color: 'var(--danger)' }}>
               Could not request a reset link: {getErrorMessage(resetMut.error)}
             </p>
           )}

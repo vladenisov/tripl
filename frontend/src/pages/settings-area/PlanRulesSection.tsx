@@ -53,7 +53,7 @@ export default function PlanRulesSection() {
         title="Coming later"
         description="What these rules will cover once they are built. There is nothing to configure yet."
       >
-        <div className="space-y-4 px-[18px] py-[15px]">
+        <div className="space-y-4 px-4 py-[15px]">
           {PLANNED_RULES.map((group, index) => (
             <section key={group.title} aria-labelledby={`plan-rules-${index}`}>
               <h3

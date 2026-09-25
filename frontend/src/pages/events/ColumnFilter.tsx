@@ -36,7 +36,7 @@ export function ColumnFilter({
           aria-label={`Filter ${label}`}
           title={active ? `Filter: ${value}` : `Filter ${label}`}
           className={cn(
-            'tripl-col-filter inline-flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity',
+            'tripl-col-filter inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm transition-opacity',
             active
               ? 'opacity-100 text-[color:var(--accent)]'
               // Hover-revealed only where there is hover: on a touch screen
@@ -59,7 +59,7 @@ export function ColumnFilter({
         className="w-56 p-2"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="mb-1.5 px-1 micro-label" style={{ color: 'var(--fg-subtle)' }}>
           {label}
         </div>
         {type === 'text' && (
@@ -72,7 +72,7 @@ export function ColumnFilter({
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === 'Escape') setOpen(false)
             }}
-            className="h-7 text-xs"
+            className="h-7"
           />
         )}
         {type === 'enum' && options && (
@@ -118,7 +118,7 @@ export function ColumnFilter({
             <button
               type="button"
               onClick={clear}
-              className="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-[11px] hover:bg-[var(--surface-hover)]"
+              className="flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-caption hover:bg-[var(--surface-hover)]"
               style={{ color: 'var(--fg-muted)' }}
             >
               <X className="h-3 w-3" />
@@ -146,17 +146,17 @@ function FilterOptionRow({
     <button
       type="button"
       onClick={onSelect}
-      className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px] hover:bg-[var(--surface-hover)]"
+      className="flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-body-sm hover:bg-[var(--surface-hover)]"
       style={{ color: muted ? 'var(--fg-subtle)' : 'var(--fg)' }}
     >
       <span
         className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border"
         style={{
-          background: checked ? 'var(--accent)' : 'transparent',
-          borderColor: checked ? 'var(--accent)' : 'var(--border-strong)',
+          background: checked ? 'var(--accent-solid)' : 'transparent',
+          borderColor: checked ? 'var(--accent-solid)' : 'var(--border-strong)',
         }}
       >
-        {checked && <Check className="h-2.5 w-2.5" style={{ color: 'var(--accent-fg)' }} />}
+        {checked && <Check className="size-3" style={{ color: 'var(--accent-solid-fg)' }} />}
       </span>
       <span className="flex-1 truncate">{label}</span>
     </button>

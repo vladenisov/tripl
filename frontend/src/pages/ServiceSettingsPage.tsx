@@ -1,14 +1,13 @@
 import { PageHeader } from '@/components/primitives/page-header'
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Save } from 'lucide-react'
 
 import { serviceSettingsApi } from '@/api/serviceSettings'
 import type { ServiceSettingsSectionKey } from './serviceSettingsTabs'
 import { useAuth } from '@/components/auth-context'
 import { useUnsavedChanges } from '@/components/settings/unsaved-changes'
 import { ErrorState } from '@/components/error-state'
-import { Button } from '@/components/ui/button'
+import { SettingsSaveBar } from '@/components/settings/kit'
 import { Card, CardContent } from '@/components/ui/card'
 import { useConfirm } from '@/hooks/useConfirm'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -230,9 +229,9 @@ export default function ServiceSettingsSection({
     return (
       <div className="max-w-3xl">
         <Card>
-          <CardContent className="p-5">
+          <CardContent>
             <PageHeader title="Service settings" />
-            <p className="mt-2 text-sm text-muted-foreground">
+            <p className="mt-2 text-body text-muted-foreground">
               Owner role is required to view or change instance-level settings.
             </p>
           </CardContent>
@@ -265,58 +264,30 @@ export default function ServiceSettingsSection({
     <div className="min-w-0 space-y-5">
       {dialog}
       {section !== 'system' && (
-        <div
-          // The only Save control used to be a non-sticky first child of the
-          // scrolling pane, so the AI page's three prompt textareas — the
-          // fields most likely to be edited — were all edited with it
-          // off-screen (tripl-l8v2). `top-[52px]` clears the phone-only header
-          // in SettingsLayout; from `md` up that header is gone.
-          className="sticky top-[52px] z-10 flex flex-wrap items-center justify-between gap-3 py-3 md:top-0"
-          style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border-subtle)' }}
-        >
-          {/* 12.5px, the kit's body-sm: at text-sm this note sat above the
-              13px page description in weight. */}
-          <div className="min-w-0 flex-1 basis-64 text-body-sm leading-[1.5] text-muted-foreground">
-            <p>{applyNote(section)}</p>
-            {otherDirty.length > 0 && (
-              <p className="mt-1" style={{ color: 'var(--warning)' }}>
-                Also unsaved: {otherDirty.map(key => SECTION_LABELS[key]).join(', ')}. Save
-                changes here saves {SECTION_LABELS[section]} only.
-              </p>
-            )}
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {/* The mutation is shared by every section, but its error belongs
-                to the one it wrote: a Security 422 is not an AI failure. */}
-            {saveMut.isError && saveMut.variables && writeSection(saveMut.variables) === activeSection && (
-              <span role="alert" className="text-xs text-destructive">
-                {getErrorMessage(saveMut.error)}
-              </span>
-            )}
-            {sectionInvalid && (
-              <span className="text-xs text-destructive">Fix the highlighted fields to save.</span>
-            )}
-            <Button
-              type="button"
-              variant="outline"
-              onClick={discard}
-              disabled={!sectionDirty || saveMut.isPending}
-            >
-              Discard
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void save()}
-              disabled={!sectionDirty || sectionInvalid || saveMut.isPending}
-              // A neutral surface when disabled: the default half-opacity teal
-              // read as an enabled button.
-              className="disabled:bg-[var(--bg-sunken)] disabled:text-[var(--fg-subtle)] disabled:opacity-100 disabled:shadow-none"
-            >
-              <Save className="h-3.5 w-3.5" />
-              {saveMut.isPending ? 'Saving...' : 'Save changes'}
-            </Button>
-          </div>
-        </div>
+        // The one settings save model (ST-3): the kit's sticky bar, shared
+        // with Project · General. The only Save control used to be a
+        // non-sticky first child of the scrolling pane, so the AI page's three
+        // prompt textareas were all edited with it off-screen (tripl-l8v2).
+        <SettingsSaveBar
+          note={applyNote(section)}
+          warning={
+            otherDirty.length > 0
+              ? `Also unsaved: ${otherDirty.map(key => SECTION_LABELS[key]).join(', ')}. Save changes here saves ${SECTION_LABELS[section]} only.`
+              : undefined
+          }
+          // The mutation is shared by every section, but its error belongs
+          // to the one it wrote: a Security 422 is not an AI failure.
+          error={
+            saveMut.isError && saveMut.variables && writeSection(saveMut.variables) === activeSection
+              ? getErrorMessage(saveMut.error)
+              : undefined
+          }
+          dirty={sectionDirty}
+          invalid={sectionInvalid}
+          pending={saveMut.isPending}
+          onDiscard={discard}
+          onSave={() => void save()}
+        />
       )}
 
       {section === 'runtime' && (

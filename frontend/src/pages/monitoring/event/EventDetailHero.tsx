@@ -1,16 +1,17 @@
 import type { ReactNode } from 'react'
-import { Link } from 'react-router-dom'
 import {
-  ArrowDown, ArrowUp, ChevronLeft, Code, Eye, MoreHorizontal, Pencil, TrendingUp,
+  ArrowDown, ArrowUp, Code, Eye, MoreHorizontal, Pencil, TrendingUp,
 } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
+import { MiniStat, MiniStatStrip, type MiniStatTone } from '@/components/primitives/mini-stat'
+import { PageHeader } from '@/components/primitives/page-header'
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { MetricsChart } from '@/components/ui/chart-lazy'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { useBranchLinkProps } from '@/hooks/useBranch'
 import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { eventNameLabel } from '@/lib/eventName'
@@ -28,14 +29,12 @@ function formatNum(value: number): string {
 }
 
 export function EventDetailHero({
-  slug,
   event,
   eventType,
   metrics,
   onEdit,
   onMetrics,
 }: {
-  slug: string
   event: TEvent
   eventType: EventType | undefined
   metrics: EventMetricsResponse | undefined
@@ -48,8 +47,14 @@ export function EventDetailHero({
   const signalTone = signalDirectionTone(signal?.direction ?? 'spike')
   return (
     <div className="space-y-[18px]">
-      <EventDetailBreadcrumb slug={slug} name={event.name} branchId={event.branch_id ?? null} />
-      <EventDetailHeader event={event} eventType={eventType} signal={signal} onEdit={onEdit} onMetrics={onMetrics} />
+      <EventDetailHeader
+        event={event}
+        eventType={eventType}
+        signal={signal}
+        onEdit={onEdit}
+        onMetrics={onMetrics}
+        stats={<EventStatStrip event={event} stats={stats} />}
+      />
       {signal && <EventSignalBanner signal={signal} tone={signalTone} />}
       {signal && (
         <EventSignalMiniChart
@@ -57,151 +62,96 @@ export function EventDetailHero({
           interval={metrics?.interval ?? null}
           sigmaThreshold={metrics?.sigma_threshold}
           signal={signal}
-          tone={signalTone}
         />
       )}
-      <EventStatStrip event={event} stats={stats} />
     </div>
   )
 }
 
 /**
- * "Plan / Events / <name>". Plan is the sidebar group, not a page, so it is
- * plain text; Events is a real link to the catalog. Both crumbs used to pop
- * history, so "Plan" could land the reader on Anomalies or wherever they had
- * come from (MON-38). The Prev/Next buttons that sat here were permanently
- * disabled "Coming soon" placeholders and are gone until they work.
+ * The shared page header (DS-1): one h1 in the page title's sans, since the
+ * name is a display name and not code (DS-17); the nav group and collection
+ * as the eyebrow; the KPI strip in its `stats` slot (DS-5). The in-page
+ * "Plan / Events / <name>" breadcrumb that sat above it repeated the top bar's
+ * trail 120px apart (DS-3 / JR-33), so the top bar is the one trail now.
  */
-function EventDetailBreadcrumb({
-  slug,
-  name,
-  branchId,
-}: {
-  slug: string
-  name: string
-  branchId: string | null
-}) {
-  const branchLink = useBranchLinkProps()
-  return (
-    <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2 text-caption">
-      <span style={{ color: 'var(--fg-subtle)' }}>Plan</span>
-      <span aria-hidden style={{ color: 'var(--fg-faint)' }}>/</span>
-      <Link
-        {...branchLink(`/p/${slug}/events`, branchId)}
-        className="inline-flex items-center gap-1 transition-colors hover:text-[var(--fg)]"
-        style={{ color: 'var(--fg-muted)' }}
-      >
-        <ChevronLeft aria-hidden size={13} /> Events
-      </Link>
-      <span aria-hidden style={{ color: 'var(--fg-faint)' }}>/</span>
-      {/* A blank name left this crumb empty, so the trail ended in nothing
-          (tripl-wkwv.5). Plain string rather than <EventName>: the crumb
-          truncates and carries its own native title. */}
-      <span
-        aria-current="page"
-        className="mono min-w-0 truncate"
-        style={{ color: 'var(--fg)' }}
-        title={eventNameLabel(name)}
-      >
-        {eventNameLabel(name)}
-      </span>
-    </nav>
-  )
-}
-
-function HeroAction({
-  icon,
-  label,
-  primary,
-  onClick,
-  disabled,
-  title,
-}: {
-  icon: ReactNode
-  label: string
-  primary?: boolean
-  onClick?: () => void
-  disabled?: boolean
-  /** Hover/long-press hint — used to explain why a disabled action is inert. */
-  title?: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className="inline-flex h-8 items-center gap-[6px] rounded-control border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-      style={{
-        background: primary ? 'var(--accent)' : 'var(--surface)',
-        color: primary ? 'var(--accent-fg)' : 'var(--fg)',
-        borderColor: primary ? 'var(--accent)' : 'var(--border)',
-      }}
-    >
-      {icon} {label}
-    </button>
-  )
-}
-
 function EventDetailHeader({
   event,
   eventType,
   signal,
   onEdit,
   onMetrics,
+  stats,
 }: {
   event: TEvent
   eventType: EventType | undefined
   signal: MonitoringSignal | null
   onEdit?: () => void
   onMetrics: () => void
+  stats: ReactNode
 }) {
   const status = event.status as EventStatus
   const statusTone = EVENT_STATUS_TONE[status] ?? 'neutral'
   const typeColor = eventType?.color ?? 'var(--fg-faint)'
   const typeLabel = eventType?.display_name ?? event.event_type?.display_name ?? 'Event'
   return (
-    <div className="flex flex-wrap items-start gap-[13px]">
-      <span className="mt-[7px] flex-shrink-0">
-        {signal
-          ? <Dot tone={signalDirectionTone(signal.direction)} pulse size={8} />
-          : <Dot tone={statusTone} size={8} />}
-      </span>
-      {/* `basis-60` makes the title column ask for 240px, so on a phone the
-          action group below wraps onto its own line instead of the heading
-          being crushed to ~107px and painted under the buttons
-          (tripl-jfm3.41). `break-all` then wraps a long mono event name rather
-          than letting it overflow the column. */}
-      <div className="min-w-0 flex-1 basis-60">
-        <div className="flex flex-wrap items-center gap-[10px]">
-          {/* Never an empty top-level heading: a blank name gave the whole page
-              no accessible title (tripl-wkwv.5). */}
-          <h1 className="mono m-0 min-w-0 break-all text-title font-semibold tracking-[-0.01em]">
-            {eventNameLabel(event.name)}
-          </h1>
-          <Chip tone={statusTone} size="sm">{EVENT_STATUS_LABELS[status] ?? event.status}</Chip>
-          {event.tags.map(tag => <Chip key={tag.id} size="xs">{tag.name}</Chip>)}
-        </div>
-        <div className="mt-[7px] flex flex-wrap items-center gap-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-          <span className="inline-flex items-center gap-[5px]">
-            <span className="h-[7px] w-[7px] rounded-[2px]" style={{ background: typeColor }} />
-            {typeLabel}
+    <PageHeader
+      eyebrow="Plan · Event"
+      // Never an empty top-level heading: a blank name gave the whole page no
+      // accessible title (tripl-wkwv.5). The status dot is decoration.
+      title={
+        <>
+          <span className="mr-2.5 inline-flex align-middle">
+            {signal
+              ? <Dot tone={signalDirectionTone(signal.direction)} pulse size={8} />
+              : <Dot tone={statusTone} size={8} />}
           </span>
-          <span style={{ color: 'var(--fg-faint)' }}>·</span>
-          <span>updated {formatRelativeTime(event.updated_at)}</span>
-        </div>
-        {event.description && (
-          <p className="mt-[7px] max-w-[62ch] text-body leading-snug" style={{ color: 'var(--fg-muted)' }}>
-            {event.description}
-          </p>
-        )}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <HeroAction icon={<TrendingUp size={12} />} label="Metrics" onClick={onMetrics} />
-        {onEdit && <HeroAction icon={<Pencil size={12} />} label="Edit" primary onClick={onEdit} />}
-        <EventActionOverflow />
-      </div>
-    </div>
+          {eventNameLabel(event.name)}
+        </>
+      }
+      titleAddon={
+        <>
+          <Chip tone={statusTone} size="sm">{EVENT_STATUS_LABELS[status] ?? event.status}</Chip>
+          {/* Tags are kind tags: outline, not a status fill (DS-6). */}
+          {event.tags.map(tag => <Chip key={tag.id} variant="outline" size="xs">{tag.name}</Chip>)}
+        </>
+      }
+      description={
+        <>
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-[5px]">
+              <span className="h-[7px] w-[7px] rounded-sm" style={{ background: typeColor }} />
+              {typeLabel}
+            </span>
+            <span style={{ color: 'var(--fg-faint)' }}>·</span>
+            <span>updated {formatRelativeTime(event.updated_at)}</span>
+          </span>
+          {event.description && (
+            <span className="mt-[7px] block max-w-[62ch] text-body leading-snug" style={{ color: 'var(--fg-muted)' }}>
+              {event.description}
+            </span>
+          )}
+        </>
+      }
+      // The Button primitive, so the primary Edit gets the shared hover, focus
+      // ring and disabled look instead of an inline accent fill (AU-7).
+      actions={
+        <>
+          <Button variant="outline" onClick={onMetrics}>
+            <TrendingUp aria-hidden="true" />
+            Metrics
+          </Button>
+          {onEdit && (
+            <Button onClick={onEdit}>
+              <Pencil aria-hidden="true" />
+              Edit
+            </Button>
+          )}
+          <EventActionOverflow />
+        </>
+      }
+      stats={stats}
+    />
   )
 }
 
@@ -214,20 +164,12 @@ function EventActionOverflow() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="More actions"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ background: 'var(--surface)', color: 'var(--fg-muted)', borderColor: 'var(--border)' }}
-        >
-          <MoreHorizontal size={14} />
-        </button>
+        <Button variant="outline" size="icon" aria-label="More actions" className="text-fg-muted">
+          <MoreHorizontal aria-hidden="true" />
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={6} className="w-[180px]">
-        <DropdownMenuLabel
-          className="text-[10px] font-semibold uppercase tracking-[0.08em]"
-          style={{ color: 'var(--fg-faint)' }}
-        >
+        <DropdownMenuLabel className="micro-label text-fg-tertiary">
           Coming soon
         </DropdownMenuLabel>
         <DropdownMenuItem disabled className="text-body-sm">
@@ -256,7 +198,7 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: S
         border: `1px solid color-mix(in oklab, var(--${tone}) 35%, var(--border))`,
       }}
     >
-      <Arrow size={15} style={{ color: `var(--${tone})` }} />
+      <Arrow size={16} style={{ color: `var(--${tone})` }} />
       <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
         {signal.direction === 'drop' ? 'Volume drop' : 'Volume spike'} detected
         {delta === null
@@ -265,7 +207,7 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: S
         {` (${formatSignalSeverity(signal)}).`}
       </span>
       <div className="flex-1" />
-      <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
         {formatTimestamp(signal.bucket)}
       </span>
     </div>
@@ -295,14 +237,12 @@ function EventSignalMiniChart({
   interval,
   sigmaThreshold,
   signal,
-  tone,
 }: {
   data: EventMetricPoint[]
   interval: string | null
   /** `EventMetricsResponse.sigma_threshold`, threaded from the hero's already-fetched series. */
   sigmaThreshold: number | undefined
   signal: MonitoringSignal
-  tone: 'danger' | 'warning'
 }) {
   if (data.length === 0) return null
   const granularity = granularityForInterval(interval) ?? 'hour'
@@ -312,7 +252,7 @@ function EventSignalMiniChart({
       className="rounded-card border px-[14px] pb-[6px] pt-[10px]"
       style={SURFACE_STYLE}
     >
-      <div className="mb-[6px] flex items-baseline justify-between gap-3 text-[11px]">
+      <div className="mb-[6px] flex items-baseline justify-between gap-3 text-caption">
         <span className="font-medium" style={{ color: 'var(--fg-subtle)' }}>Volume</span>
         {/* Same `expected > 0` gate the banner uses, so the two cannot disagree
             about whether this signal had a baseline at all — and the SAME
@@ -330,7 +270,9 @@ function EventSignalMiniChart({
       <MetricsChart
         data={data}
         height={104}
-        color={`var(--${tone})`}
+        // No `color`: the chart's single-series default, the same colour as
+        // the Volume tab below. The anomaly is marked by its danger dot and
+        // band, not by painting the whole line red (DS-27).
         granularity={granularity}
         seriesLabel="events"
         sigmaThreshold={sigmaThreshold}
@@ -339,7 +281,11 @@ function EventSignalMiniChart({
   )
 }
 
-function StatCard({
+/**
+ * One stat of the header's KPI strip. The hover hint explains an empty value;
+ * `empty` greys a no-data figure ("—") instead of printing it in full ink.
+ */
+function EventStat({
   label,
   value,
   tone,
@@ -348,40 +294,41 @@ function StatCard({
 }: {
   label: string
   value: string
-  tone?: 'danger' | 'warning'
+  tone?: MiniStatTone
   /** Hover/long-press explanation, e.g. for an empty "—" value. */
   hint?: string
-  /** De-emphasise the value when it represents a no-data ("—" / "0") state. */
+  /** De-emphasise the value when it represents a no-data ("—") state. */
   empty?: boolean
 }) {
-  const color = empty
-    ? 'var(--fg-faint)'
-    : tone === 'danger'
-      ? 'var(--danger)'
-      : tone === 'warning'
-        ? 'var(--warning)'
-        : 'var(--fg)'
   return (
-    <div className="rounded-card border px-[14px] py-[11px]" style={SURFACE_STYLE} title={hint}>
-      <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>{label}</div>
-      <div className="mono tnum mt-1 text-[19px] font-medium" style={{ color }}>{value}</div>
+    <div title={hint}>
+      <MiniStat
+        label={label}
+        value={empty ? <span style={{ color: 'var(--fg-faint)' }}>{value}</span> : value}
+        valueTone={tone}
+      />
     </div>
   )
 }
 
+/**
+ * The page-KPI strip every page uses (DS-5), in place of four bordered tiles
+ * with 19px mono figures: sans tabular figures (DS-17), so "2h ago" no longer
+ * reads as code.
+ */
 function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailStats }) {
-  const deltaTone: 'danger' | 'warning' | undefined = stats.delta24h == null
+  const deltaTone: MiniStatTone | undefined = stats.delta24h == null
     ? undefined
     : stats.delta24h > 20 ? 'danger' : stats.delta24h < -20 ? 'warning' : undefined
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <StatCard
+    <MiniStatStrip boxed>
+      <EventStat
         label="Volume · 24h"
         value={stats.volume24h == null ? '—' : formatNum(stats.volume24h)}
         empty={stats.volume24h == null}
         hint={stats.volume24h == null ? 'No events in the last 24h' : undefined}
       />
-      <StatCard
+      <EventStat
         label="Δ · 24h"
         // The Events list's figure and its "*" for a window short of 24h, so
         // the two surfaces cannot disagree about the same event (MON-28).
@@ -392,7 +339,7 @@ function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailSta
         empty={stats.delta24h == null}
         hint={stats.deltaHint}
       />
-      <StatCard
+      <EventStat
         label="Schema drifts"
         value={formatNum(event.drift_count)}
         tone={event.drift_count > 0 ? 'warning' : undefined}
@@ -400,13 +347,13 @@ function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailSta
         // no-data glyph the empty state would otherwise show.
         hint={event.drift_count === 0 ? 'No schema drifts detected' : undefined}
       />
-      <StatCard
+      <EventStat
         label="Last seen"
         value={event.last_seen_at ? formatRelativeTime(event.last_seen_at) : '—'}
         empty={!event.last_seen_at}
         hint={event.last_seen_at ? undefined : 'No hits recorded yet'}
       />
-    </div>
+    </MiniStatStrip>
   )
 }
 
@@ -423,9 +370,7 @@ export function EventDetailSkeleton() {
         <Skeleton className="h-6 w-64 max-w-full" />
         <Skeleton className="h-4 w-40" />
       </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {[0, 1, 2, 3].map(index => <Skeleton key={index} className="h-[62px]" />)}
-      </div>
+      <Skeleton className="h-[58px]" />
       <Skeleton className="h-[240px]" />
     </div>
   )

@@ -213,11 +213,11 @@ describe('BranchProvider', () => {
     fireEvent.change(screen.getByLabelText('Draft'), { target: { value: 'draft' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Back' }))
-    await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
     expect(branchShown()).toBe('main')
 
     // Keeping the draft keeps its branch, and the address says so again.
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(searchShown()).toBe(''))
     expect(branchShown()).toBe('main')
     expect(screen.getByLabelText('Draft')).toHaveValue('draft')
@@ -232,7 +232,7 @@ describe('BranchProvider', () => {
     fireEvent.change(screen.getByLabelText('Draft'), { target: { value: 'draft' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Back' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(branchShown()).toBe(FEATURE.id))
     expect(searchShown()).toBe(`?branch=${FEATURE.id}`)
   })

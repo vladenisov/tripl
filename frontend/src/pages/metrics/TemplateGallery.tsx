@@ -18,7 +18,7 @@ export function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
       title="Start from a template"
       description="Prefill the form for a common metric, then point it at your data — or start from scratch."
     >
-      <div className="px-[18px] py-4">
+      <div className="px-4 py-4">
         <div
           role="group"
           aria-label="Metric templates"
@@ -31,7 +31,7 @@ export function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
                 key={template.id}
                 type="button"
                 onClick={() => onPick(template)}
-                className="flex items-start gap-2.5 rounded-[9px] px-[13px] py-[11px] text-left transition-colors hover:bg-[var(--surface-hover)]"
+                className="flex items-start gap-2.5 rounded-card px-[13px] py-[11px] text-left transition-colors hover:bg-[var(--surface-hover)]"
                 style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
               >
                 <span
@@ -42,7 +42,7 @@ export function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
                     color: 'var(--fg-muted)',
                   }}
                 >
-                  <Icon size={15} />
+                  <Icon size={16} />
                 </span>
                 <span className="min-w-0">
                   <span
@@ -66,7 +66,7 @@ export function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
           <button
             type="button"
             onClick={onSkip}
-            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            className="inline-flex h-8 items-center rounded-control px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ border: '1px solid var(--border)', color: 'var(--fg-muted)' }}
           >
             Start from scratch

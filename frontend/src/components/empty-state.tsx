@@ -48,14 +48,21 @@ export function EmptyState({
     >
       {Icon &&
         (compact ? (
-          <Icon className="mb-2 h-5 w-5 text-muted-foreground" aria-hidden="true" />
+          // A sunken well in the panel form too, so an empty panel reads as
+          // intentional rather than as a stray icon (DS-21).
+          <div className="mb-2.5 flex size-10 items-center justify-center rounded-full bg-bg-sunken">
+            <Icon className="size-5 text-muted-foreground" aria-hidden="true" />
+          </div>
         ) : (
           <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-            <Icon className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+            <Icon className="size-5 text-muted-foreground" aria-hidden="true" />
           </div>
         ))}
+      {/* On the type scale (DS-21): the page form titles at 15px over 13px
+          body; the panel form sits under a 12.5px panel title, so it titles
+          at that size over caption body instead of out-sizing it. */}
       <Heading
-        className={cn('font-semibold text-foreground', compact ? 'text-body-sm' : 'text-sm')}
+        className={`font-semibold text-foreground ${compact ? 'text-body-sm' : 'text-heading'}`}
       >
         {title}
       </Heading>
@@ -63,7 +70,7 @@ export function EmptyState({
         <p
           className={cn(
             'mt-1 max-w-sm text-muted-foreground',
-            compact ? 'text-[12px]' : 'text-sm',
+            compact ? 'text-caption' : 'text-body',
           )}
         >
           {description}

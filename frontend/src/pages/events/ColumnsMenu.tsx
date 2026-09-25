@@ -59,12 +59,12 @@ export function ColumnsMenu({
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="h-8 text-xs">
-          <LayoutGrid className="h-3 w-3" />
+        <Button variant="outline" size="sm">
+          <LayoutGrid />
           <span className="max-sm:sr-only">Columns</span>
           {badge && (
             <span
-              className="ml-1 text-2xs"
+              className="ml-1 text-micro"
               style={{ color: 'var(--fg-subtle)' }}
             >
               {badge}
@@ -74,7 +74,7 @@ export function ColumnsMenu({
       </PopoverTrigger>
       <PopoverContent align="end" className="w-60 p-1.5">
         <div
-          className="px-2 pb-1 pt-1.5 text-2xs font-semibold uppercase tracking-[0.06em]"
+          className="px-2 pb-1 pt-1.5 micro-label"
           style={{ color: 'var(--fg-subtle)' }}
         >
           Toggle columns
@@ -126,7 +126,7 @@ export function ColumnsMenu({
         {fieldColumns.length > 0 && (
           <>
             <div
-              className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.06em]"
+              className="px-2 pb-1 pt-2 micro-label"
               style={{ color: 'var(--fg-faint)' }}
             >
               Fields
@@ -145,7 +145,7 @@ export function ColumnsMenu({
         {metaFields.length > 0 && (
           <>
             <div
-              className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.06em]"
+              className="px-2 pb-1 pt-2 micro-label"
               style={{ color: 'var(--fg-faint)' }}
             >
               Meta
@@ -162,7 +162,7 @@ export function ColumnsMenu({
           </>
         )}
         <div
-          className="border-t px-2 pb-1 pt-2 text-[10px]"
+          className="border-t px-2 pb-1 pt-2 text-micro"
           style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
         >
           Event stays pinned to the left edge while you scroll. Type and{' '}
@@ -189,22 +189,22 @@ function ColumnToggle({
       type="button"
       disabled={pinned}
       onClick={onChange}
-      className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[12px] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed"
+      className="flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-body-sm hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed"
       style={{ color: pinned ? 'var(--fg-faint)' : 'var(--fg)' }}
     >
       <span
         className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border"
         style={{
-          background: checked ? 'var(--accent)' : 'transparent',
-          borderColor: checked ? 'var(--accent)' : 'var(--border-strong)',
+          background: checked ? 'var(--accent-solid)' : 'transparent',
+          borderColor: checked ? 'var(--accent-solid)' : 'var(--border-strong)',
         }}
       >
-        {checked && <Check className="h-2.5 w-2.5" style={{ color: 'var(--accent-fg)' }} />}
+        {checked && <Check className="size-3" style={{ color: 'var(--accent-solid-fg)' }} />}
       </span>
       <span className="flex-1 truncate">{label}</span>
       {pinned && (
         <span
-          className="text-[9px] uppercase tracking-[0.05em]"
+          className="micro-label"
           style={{ color: 'var(--fg-faint)' }}
         >
           pinned

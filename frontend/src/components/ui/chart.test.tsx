@@ -31,8 +31,9 @@ import {
   MiniMetricsChart,
   MultiSeriesTooltip,
   renderCountSeries,
+  SINGLE_SERIES_COLOR,
 } from './chart'
-import { EVENTS_NOUN, formatTooltipLabel } from './chart-format'
+import { EVENTS_NOUN, formatTooltipLabel, SERIES_COLORS } from './chart-format'
 import { at } from '@/test/at'
 
 describe('MetricsChart', () => {
@@ -909,5 +910,56 @@ describe('tooltip nouns agree with the count', () => {
     )
 
     expect(screen.getByText('1,234 events')).toBeInTheDocument()
+  })
+})
+
+describe('single-series default colour (DS-27)', () => {
+  // Every colour-bearing prop in a rendered element tree.
+  function colorsIn(node: unknown, out: Set<string> = new Set()): Set<string> {
+    if (Array.isArray(node)) {
+      node.forEach((child) => colorsIn(child, out))
+      return out
+    }
+    if (!node || typeof node !== 'object' || !('props' in node)) return out
+    const props = (node as ReactElement<Record<string, unknown>>).props
+    for (const key of ['stroke', 'fill', 'stopColor']) {
+      if (typeof props[key] === 'string') out.add(props[key] as string)
+    }
+    colorsIn(props.children, out)
+    return out
+  }
+
+  it('is the first categorical slot, not the user accent', () => {
+    expect(SINGLE_SERIES_COLOR).toBe(SERIES_COLORS[0])
+    expect(SINGLE_SERIES_COLOR).not.toMatch(/--(accent|primary|chart-\d)\b/)
+  })
+
+  it('draws a MetricsChart without a color prop in that slot', () => {
+    // jsdom measures 0×0, and the chart mounts only once its wrapper has a size.
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ width: 400, height: 200, x: 0, y: 0, top: 0, left: 0, right: 400, bottom: 200, toJSON: () => ({}) })
+    composedChartProps.length = 0
+    render(
+      <MetricsChart
+        granularity="day"
+        data={[
+          {
+            bucket: '2026-01-01T10:00:00Z',
+            count: 10,
+            expected_count: null,
+            stddev: null,
+            is_anomaly: false,
+            anomaly_direction: null,
+            z_score: null,
+          },
+        ]}
+      />,
+    )
+    rect.mockRestore()
+    expect(composedChartProps).not.toHaveLength(0)
+    const colors = colorsIn(at(composedChartProps, -1).children)
+    expect(colors).toContain(SINGLE_SERIES_COLOR)
+    expect([...colors].some((color) => /var\(--(accent|primary)\)/.test(color))).toBe(false)
   })
 })

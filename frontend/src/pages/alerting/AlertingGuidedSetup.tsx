@@ -47,7 +47,7 @@ export function AlertingGuidedSetup({ channels, onPickChannel }: AlertingGuidedS
   return (
     <Panel title="Set up alerting" subtitle="No destinations or rules yet">
       <div className="space-y-6 p-5">
-        <p className="max-w-prose text-sm text-muted-foreground">
+        <p className="max-w-prose text-body text-muted-foreground">
           Alerting routes active anomaly signals to the channels your team already watches. Three
           steps and you are live.
         </p>
@@ -60,20 +60,20 @@ export function AlertingGuidedSetup({ channels, onPickChannel }: AlertingGuidedS
               style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
             >
               <div
-                className="flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold"
+                className="flex h-7 w-7 items-center justify-center rounded-full text-body-sm font-semibold"
                 style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
               >
                 {step.n}
               </div>
-              <div className="mt-3 text-sm font-medium text-foreground">{step.title}</div>
-              <p className="mt-1 text-xs text-muted-foreground">{step.body}</p>
+              <div className="mt-3 text-body font-medium text-foreground">{step.title}</div>
+              <p className="mt-1 text-body-sm text-muted-foreground">{step.body}</p>
             </li>
           ))}
         </ol>
 
         {canWrite ? (
           <div className="space-y-2">
-            <span className="text-xs font-medium text-muted-foreground">Start by picking a channel</span>
+            <span className="text-body-sm font-medium text-muted-foreground">Start by picking a channel</span>
             <div className="flex flex-wrap items-center gap-2">
               {channels.map(({ channel, label, Icon }) => (
                 <Button key={channel} variant="outline" size="sm" onClick={() => onPickChannel(channel)}>
@@ -84,7 +84,7 @@ export function AlertingGuidedSetup({ channels, onPickChannel }: AlertingGuidedS
             </div>
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-body-sm text-muted-foreground">
             Your account has the viewer role, so the first destination is created by an editor or
             owner. Once one exists, incidents and their deliveries show up here for everyone.
           </p>
