@@ -98,4 +98,21 @@ describe('EventsHeader', () => {
       screen.getByRole('button', { name: '1 schema drift on event type Structured' }),
     ).toBeInTheDocument()
   })
+
+  it('under a column filter, counts the matches, not the server total', () => {
+    // "Total 5,000" sat above a table a column filter had narrowed to 12 rows.
+    render(
+      <EventsHeader
+        total={5000}
+        columnFilter={{ matching: 12, checked: 400 }}
+        inReviewCount={0}
+        projectTotalSignal={null}
+        eventTypeSignals={new Map()}
+      />,
+    )
+
+    const stat = screen.getByText('Matching').closest('dl')
+    expect(stat).toHaveTextContent(`12${(400).toLocaleString()} of ${(5000).toLocaleString()} checked`)
+    expect(screen.queryByText('Total')).not.toBeInTheDocument()
+  })
 })

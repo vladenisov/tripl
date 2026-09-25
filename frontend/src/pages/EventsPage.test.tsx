@@ -97,10 +97,8 @@ function viewerAuth(): AuthContextValue {
 function renderEventsPage(
   initialEntries: string[] = ['/p/demo/events'],
   auth: AuthContextValue | null = null,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
@@ -1224,5 +1222,92 @@ describe('EventsPage current view', () => {
     )
     // Success, not the optimistic moment, clears the selection.
     expect(screen.queryByRole('combobox', { name: 'Set status' })).not.toBeInTheDocument()
+  })
+
+  it('undoes to what the table showed, not a stale list in another cache (EVT-11)', async () => {
+    vi.mocked(toast.success).mockClear()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // Another tab's list, cached before this one and minutes out of date.
+    queryClient.setQueryData(['events', 'demo', null, 'stale-tab'], {
+      items: [{ ...screenEvent('event-1', 'checkout_view', 'checkout'), status: 'archived' }],
+      total: 1,
+    })
+    const { bulkUpdateBodies } = mockCatalogFetch({
+      events: [
+        screenEvent('event-1', 'checkout_view', 'checkout'),
+        { ...screenEvent('event-2', 'home_view', 'home'), status: 'draft' },
+      ],
+    })
+
+    renderEventsPage(['/p/demo/events'], null, queryClient)
+
+    expect(await screen.findByText('checkout_view')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Select checkout_view'))
+    fireEvent.click(screen.getByLabelText('Select home_view'))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Set status' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Implemented' }))
+    await waitFor(() => expect(toast.success).toHaveBeenCalled())
+
+    // A newer selection, made before Undo, is the operator's; Undo keeps it.
+    fireEvent.click(screen.getByLabelText('Select home_view'))
+    const [, options] = vi.mocked(toast.success).mock.calls[0]
+    const action = (options as unknown as { action: { onClick: () => void } }).action
+    action.onClick()
+
+    await waitFor(() =>
+      expect(bulkUpdateBodies.slice(1)).toEqual([
+        { event_ids: ['event-1'], status: 'live' },
+        { event_ids: ['event-2'], status: 'draft' },
+      ]),
+    )
+    await waitFor(() => expect(screen.getByLabelText('Select home_view')).toBeChecked())
+    expect(screen.getByRole('combobox', { name: 'Set status' })).toBeInTheDocument()
+  })
+
+  it('keeps the selection when only the sort order changes', async () => {
+    // Sorting reorders the same set; the selection belongs to the set.
+    mockCatalogFetch({
+      events: [
+        screenEvent('event-1', 'checkout_view', 'checkout'),
+        screenEvent('event-2', 'home_view', 'home'),
+      ],
+    })
+
+    renderEventsPage()
+
+    expect(await screen.findByText('checkout_view')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Select checkout_view'))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Sort order' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Busiest first' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('sort=volume'),
+    )
+    expect(screen.getByLabelText('Select checkout_view')).toBeChecked()
+    expect(screen.getByRole('combobox', { name: 'Set status' })).toBeInTheDocument()
+  })
+
+  it("shows the type's schema drift in the embedded table, which has no header (EVT-33)", async () => {
+    mockCatalogFetch({
+      events: [makeEvent({ ...screenEvent('event-1', 'checkout_view', 'checkout'), drift_count: 2 })],
+    })
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1']}>
+          <Routes>
+            <Route
+              path="/p/:slug/settings/event-types/:id"
+              element={<EventsPage lockType="page" embedded />}
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('checkout_view')).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: '2 schema drifts on this event type' }),
+    ).toBeInTheDocument()
   })
 })

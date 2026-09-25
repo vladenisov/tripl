@@ -11,8 +11,9 @@ export function useEventsSelection({
    * Identifies the result set the selection was made in (tab, branch, server
    * filters). When it changes the selection is dropped: 20 rows ticked on
    * Review and then "Set status" on Archived changed 20 events the operator
-   * could no longer see (EVT-10). Client-side column filters are not part of
-   * it; the bar and the confirmations name off-screen rows instead.
+   * could no longer see (EVT-10). Sort order is not part of it — it reorders
+   * the same set. Client-side column filters are not part of it either; the
+   * bar and the confirmations name off-screen rows instead.
    */
   scopeKey?: string
 }) {

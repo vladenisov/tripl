@@ -57,7 +57,10 @@ The catalog is a table of plan **events**, split into one tab per **event type**
 (plus an "all" view). Each row shows the event name, status, tags, recent volume
 and its latest anomaly **signal** state. An event type with open drift gets one
 **schema-drift badge** beside the page heading, once per type rather than on
-every row of it. Controls include free-text search, status and tag filters, a
+every row of it; the events table on an event type's settings page shows that
+type's badge above its toolbar. Under a per-column field or meta filter the
+heading's **Total** becomes **Matching**: the matches among the rows checked so
+far, as the table footer counts them. Controls include free-text search, status and tag filters, a
 "silent since N days" filter, a **Reviewed** filter (Any / Reviewed / Not
 reviewed, carried in the URL as `?reviewed=true|false`), per-column field-value
 and meta-value filters,
@@ -67,10 +70,11 @@ clusters for group selection, and expand the selection from loaded rows to
 **Select all N** matching events before a bulk status/owner/review/delete action.
 Per-column field and meta filters count as part of "matching" too, so under one
 the button reads **Select all matching**. The selection is cleared when you
-switch tab, branch or server filter; a bulk change that reaches rows off screen,
+switch tab, branch or server filter, but not when you only change the sort; a bulk change that reaches rows off screen,
 covers more than 50 events or archives asks first, and a finished status, owner
 or reviewed change offers **Undo** in its toast when every changed row was
-loaded. Drag-to-reorder is off while the list is sorted **Busiest first**,
+loaded. Undo restores the values the table showed, and leaves any selection you
+have made since alone. Drag-to-reorder is off while the list is sorted **Busiest first**,
 because the rows are not in catalog order then.
 The **Reviewed** column is hidden by default in the column picker but is forced
 visible on the review tab (`/events/review`).

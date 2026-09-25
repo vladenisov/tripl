@@ -16,7 +16,7 @@ import type { EventListItem } from '@/types'
 
 import { BulkActionBar } from './events/BulkActionBar'
 import { bulkUpdateConfirmation } from './events/bulkConfirm'
-import { EventsHeader, type EventTypeDrift } from './events/EventsHeader'
+import { EventsHeader, EventTypeDriftBadges, type EventTypeDrift } from './events/EventsHeader'
 import { EventsTable } from './events/EventsTable'
 import { EventsToolbar } from './events/EventsToolbar'
 import { TabMetricsCard } from './events/TabMetricsCard'
@@ -29,7 +29,12 @@ import {
 import { useColumnVisibility } from './events/useColumnVisibility'
 import { useEventsBulkDelete } from './events/useEventsBulkDelete'
 import { useEventsDndSensors } from './events/useEventsDndSensors'
-import { useEventMutations, type BulkUpdatePatch } from './events/useEventMutations'
+import {
+  buildBulkUndo,
+  bulkPreviousValues,
+  useEventMutations,
+  type BulkUpdatePatch,
+} from './events/useEventMutations'
 import { useEventRowActions } from './events/useEventRowActions'
 import { useEventsPageData } from './events/useEventsPageData'
 import { useEventRowMetrics } from './events/useEventRowMetrics'
@@ -169,6 +174,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     serverFilters,
     isUnknownTab,
     eventsQuery,
+    reportFirstPageInView,
     rawEvents,
     total,
     fetchAllMatching,
@@ -249,8 +255,9 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
   } = useEventsSelection({
     events,
     // A selection belongs to the result set it was made in: a new tab, branch
-    // or server filter drops it (EVT-10).
-    scopeKey: JSON.stringify([activeTab, branchId, serverFilters]),
+    // or server filter drops it (EVT-10). Sort order is not part of it: it
+    // reorders the same set, so switching sort keeps the selection.
+    scopeKey: JSON.stringify([activeTab, branchId, { ...serverFilters, order_by: undefined }]),
   })
 
   const mutations = useEventMutations({
@@ -259,7 +266,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     onBulkDeleteSuccess: clearSelection,
     onBulkUpdateSuccess: clearSelection,
   })
-  const { bulkDeleteMut, bulkUpdateMut } = mutations
+  const { bulkDeleteMut, bulkUpdateMut, bulkUndoMut } = mutations
 
   // Drag-reorder renumbers the catalog order of the rows it is sent, so it is
   // only offered while the rows ARE in catalog order. Under "Busiest first" one
@@ -294,6 +301,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     total,
     eventsQuery,
     isClientFiltered,
+    reportFirstPageInView,
   })
 
   const onToggleExpandedCell = useCallback((cellKey: string | null) => {
@@ -334,6 +342,11 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     return [...byType.values()]
   }, [eventTypes, rawEvents])
 
+  const shownTypeDrifts = useMemo(
+    () => (activeEt ? typeDrifts.filter(d => d.eventTypeId === activeEt.id) : typeDrifts),
+    [activeEt, typeDrifts],
+  )
+
   const handleBulkDelete = useEventsBulkDelete({
     selectedEventIds,
     selectedVisibleEventIds,
@@ -357,6 +370,9 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
   const runBulkUpdate = useCallback(async (patch: BulkUpdatePatch, actionLabel: string) => {
     const eventIds = selectedEventIds
     if (!eventIds.length) return
+    // What each row holds in the list the table renders, taken before anything
+    // changes, for the Undo.
+    const undo = buildBulkUndo(eventIds, patch, bulkPreviousValues(rawEvents, eventIds))
     const confirmation = bulkUpdateConfirmation({
       selectedCount: eventIds.length,
       selectedVisibleCount: selectedVisibleEventIds.length,
@@ -365,27 +381,24 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     })
     if (confirmation && !(await confirm(confirmation))) return
     bulkUpdateMut.mutate({ eventIds, ...patch }, {
-      onSuccess: (_data, _vars, result) => {
-        const undo = result?.undo
+      onSuccess: () => {
         toast.success(bulkUpdateSummary(eventIds.length, patch, ownerName), {
-          action: undo
-            ? {
-                label: 'Undo',
-                onClick: () => {
-                  void (async () => {
-                    try {
-                      for (const group of undo) await bulkUpdateMut.mutateAsync(group)
-                    } catch {
-                      // The failed request already raised the global error toast.
-                    }
-                  })()
-                },
-              }
-            : undefined,
+          // One mutation for every group: it leaves the selection the operator
+          // has made since alone and refreshes the lists once. A failure
+          // raises the global error toast.
+          action: undo ? { label: 'Undo', onClick: () => bulkUndoMut.mutate(undo) } : undefined,
         })
       },
     })
-  }, [bulkUpdateMut, confirm, ownerName, selectedEventIds, selectedVisibleEventIds])
+  }, [
+    bulkUndoMut,
+    bulkUpdateMut,
+    confirm,
+    ownerName,
+    rawEvents,
+    selectedEventIds,
+    selectedVisibleEventIds,
+  ])
 
   const handleBulkSetStatus = useCallback((status: EventStatus) => {
     void runBulkUpdate({ status }, `Set status to ${EVENT_STATUS_LABELS[status]}`)
@@ -596,13 +609,24 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
       {!embedded && (
         <EventsHeader
           total={total}
+          columnFilter={
+            isClientFiltered ? { matching: events.length, checked: rawEvents.length } : null
+          }
           inReviewCount={inReviewCount}
           projectTotalSignal={projectTotalSignal}
           eventTypeSignals={eventTypeSignals}
           activeType={activeEt}
           slug={slug}
-          typeDrifts={activeEt ? typeDrifts.filter(d => d.eventTypeId === activeEt.id) : typeDrifts}
+          typeDrifts={shownTypeDrifts}
         />
+      )}
+      {/* The embedded table (an event type's detail view) has no header, and
+          the rows no longer carry the badge (EVT-33), so the type's drift
+          shows here or nowhere. */}
+      {embedded && slug && shownTypeDrifts.length > 0 && (
+        <div className="mb-3 flex items-center">
+          <EventTypeDriftBadges slug={slug} typeDrifts={shownTypeDrifts} namesType={!!activeEt} />
+        </div>
       )}
 
       {blockingError && (
@@ -678,7 +702,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
             onSelectAllMatching={() => { void handleSelectAllMatching() }}
             isSelectingAll={isSelectingAll}
             isDeleting={bulkDeleteMut.isPending}
-            isUpdating={bulkUpdateMut.isPending}
+            isUpdating={bulkUpdateMut.isPending || bulkUndoMut.isPending}
             onSetStatus={handleBulkSetStatus}
             onMarkReviewed={handleBulkMarkReviewed}
             onAssignOwner={handleBulkAssignOwner}

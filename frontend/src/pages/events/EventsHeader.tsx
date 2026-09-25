@@ -39,7 +39,7 @@ const CHART_SIGNALS_HELP =
 // implemented" (tripl-jfm3.29): name the bucket so two adjacent numbers stop
 // reading as one.
 const IN_REVIEW_HELP =
-  'Events whose status is In Review across the whole project on this branch. It ignores the tab, filters and search, so it can be larger than the Total beside it — that one counts only what the current tab and filters match.'
+  'Events whose status is In Review across the whole project on this branch. It ignores the tab, filters and search, so it can be larger than the count beside it — that one counts only what the current tab and filters match.'
 
 /**
  * The `(i)` affordance beside a stat whose scope is not self-evident. A Radix
@@ -69,8 +69,45 @@ function StatHelp({ help }: { help: string }) {
   )
 }
 
+/**
+ * Open schema drift, one badge per event type (EVT-33). The page header shows
+ * it; the embedded table (an event type's detail view), which has no header,
+ * shows it above its toolbar.
+ */
+export function EventTypeDriftBadges({
+  slug,
+  typeDrifts,
+  namesType,
+}: {
+  slug: string
+  typeDrifts: EventTypeDrift[]
+  /** The page already names the one type shown, so the badge need not. */
+  namesType: boolean
+}) {
+  if (typeDrifts.length === 0) return null
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5 self-center">
+      {typeDrifts.map(drift => (
+        <ScenarioCoachMark key={drift.eventTypeId} step="reconcile/review-drift" when={!!drift.coach}>
+          {/* A span, not the badge itself: the badge's own root is a
+              Radix PopoverTrigger slot, which must keep its ref. */}
+          <span className="inline-flex">
+            <EventDriftBadge
+              slug={slug}
+              eventTypeId={drift.eventTypeId}
+              count={drift.count}
+              typeLabel={namesType ? undefined : drift.label}
+            />
+          </span>
+        </ScenarioCoachMark>
+      ))}
+    </span>
+  )
+}
+
 export function EventsHeader({
   total,
+  columnFilter = null,
   inReviewCount,
   projectTotalSignal,
   eventTypeSignals,
@@ -78,8 +115,17 @@ export function EventsHeader({
   slug,
   typeDrifts = [],
 }: {
-  /** Events the current tab and filters match; formatted like the table footer. */
+  /**
+   * Events the tab, search and server-side filters match (the server count);
+   * formatted like the table footer.
+   */
   total: number
+  /**
+   * Set while a column (field/meta) filter narrows the table. Those filters are
+   * client-side, so `total` does not count their matches; the header then says
+   * what the footer does — the matches among the rows checked so far.
+   */
+  columnFilter?: { matching: number; checked: number } | null
   /**
    * Events whose STATUS is `in_review` — not the count of unreviewed events.
    * The two are independent axes (an event can be marked reviewed and still be
@@ -111,23 +157,8 @@ export function EventsHeader({
         <h1 className="m-0 text-[20px] font-semibold tracking-[-0.01em]">
           {activeType ? `${activeType.display_name} events` : 'Events'}
         </h1>
-        {slug && typeDrifts.length > 0 && (
-          <span className="inline-flex flex-wrap items-center gap-1.5 self-center">
-            {typeDrifts.map(drift => (
-              <ScenarioCoachMark key={drift.eventTypeId} step="reconcile/review-drift" when={!!drift.coach}>
-                {/* A span, not the badge itself: the badge's own root is a
-                    Radix PopoverTrigger slot, which must keep its ref. */}
-                <span className="inline-flex">
-                  <EventDriftBadge
-                    slug={slug}
-                    eventTypeId={drift.eventTypeId}
-                    count={drift.count}
-                    typeLabel={activeType ? undefined : drift.label}
-                  />
-                </span>
-              </ScenarioCoachMark>
-            ))}
-          </span>
+        {slug && (
+          <EventTypeDriftBadges slug={slug} typeDrifts={typeDrifts} namesType={!!activeType} />
         )}
       </div>
       {/* Wraps rather than overflows: the scoped "In review · project" caption
@@ -137,7 +168,15 @@ export function EventsHeader({
         {/* The one place the count appears in the header: the heading used to
             repeat it beside the h1, unformatted, while the footer formatted
             the same number (EVT-16). */}
-        <MiniStat label="Total" value={total.toLocaleString()} />
+        {columnFilter ? (
+          <MiniStat
+            label="Matching"
+            value={columnFilter.matching.toLocaleString()}
+            delta={`${columnFilter.checked.toLocaleString()} of ${total.toLocaleString()} checked`}
+          />
+        ) : (
+          <MiniStat label="Total" value={total.toLocaleString()} />
+        )}
         <MiniStatDivider />
         <div className="inline-flex items-center gap-1">
           <MiniStat

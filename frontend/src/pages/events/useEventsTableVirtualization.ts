@@ -55,6 +55,49 @@ export function shouldFetchNextPage({
 }
 
 /**
+ * Whether a client-side filter is still sweeping unloaded pages for matches.
+ * Only while a page is wanted or on its way: a virtualized list pages on
+ * scroll, so with the viewport far from the end nothing is fetching and
+ * "Searching the rest…" would sit there forever.
+ */
+export function isScanningForMatches({
+  isClientFiltered,
+  hasNextPage,
+  wantsNextPage,
+  isFetchingNextPage,
+}: {
+  isClientFiltered: boolean
+  hasNextPage: boolean
+  wantsNextPage: boolean
+  isFetchingNextPage: boolean
+}): boolean {
+  return isClientFiltered && hasNextPage && (wantsNextPage || isFetchingNextPage)
+}
+
+/**
+ * Whether every row the table renders comes from the list's first page, so a
+ * refresh may cut the list back to that page without changing what is on
+ * screen (see `refreshEventsLists`). `lastRenderedIndex` is the last rendered
+ * row: the last virtual row (overscan included) when virtualizing, else the
+ * last row. A row past the loaded set is a placeholder for a later page.
+ */
+export function isFirstPageInView({
+  events,
+  firstPage,
+  pageCount,
+  lastRenderedIndex,
+}: {
+  events: Pick<EventListItem, 'id'>[]
+  firstPage: Pick<EventListItem, 'id'>[] | undefined
+  pageCount: number
+  lastRenderedIndex: number | undefined
+}): boolean {
+  if (pageCount <= 1 || lastRenderedIndex === undefined || lastRenderedIndex < 0) return true
+  const lastId = events[lastRenderedIndex]?.id
+  return lastId !== undefined && !!firstPage?.some(event => event.id === lastId)
+}
+
+/**
  * Row count the virtualizer sizes its scroll spacer to. Use the server `total`
  * (not the loaded-so-far page length) so the spacer is full-height from the
  * first paint and the scrollbar maps linearly to every row; rows past the
@@ -83,11 +126,14 @@ export function useEventsTableVirtualization({
   total,
   eventsQuery,
   isClientFiltered,
+  reportFirstPageInView,
 }: {
   events: EventListItem[]
   total: number
   eventsQuery: ReturnType<typeof useEventsQuery>['eventsQuery']
   isClientFiltered: boolean
+  /** Told whether the rows on screen all come from the first page. */
+  reportFirstPageInView?: (inView: boolean) => void
 }) {
   const tableScrollRef = useRef<HTMLDivElement>(null)
   const { density } = useTheme()
@@ -143,6 +189,16 @@ export function useEventsTableVirtualization({
     if (wantsNextPage) void fetchNextPage()
   }, [wantsNextPage, fetchNextPage, events.length])
 
+  const firstPageInView = isFirstPageInView({
+    events,
+    firstPage: eventsQuery.data?.pages[0]?.items,
+    pageCount: eventsQuery.data?.pages.length ?? 0,
+    lastRenderedIndex: virtualize ? lastVisibleIndex : events.length - 1,
+  })
+  useEffect(() => {
+    reportFirstPageInView?.(firstPageInView)
+  }, [reportFirstPageInView, firstPageInView])
+
   // The rows actually inside the scroll viewport, for the footer's "Showing
   // X–Y". `virtualItems` also holds the overscan rows either side, so the range
   // read off them was up to 24 rows wider than what was on screen (EVT-16).
@@ -166,6 +222,11 @@ export function useEventsTableVirtualization({
     /** Ref for a rendered row (with `data-index`) so its real height is used. */
     measureRow: rowVirtualizer.measureElement,
     /** A client-side filter is still sweeping unloaded pages for matches. */
-    isScanningForMatches: isClientFiltered && eventsQuery.hasNextPage,
+    isScanningForMatches: isScanningForMatches({
+      isClientFiltered,
+      hasNextPage: eventsQuery.hasNextPage,
+      wantsNextPage,
+      isFetchingNextPage: eventsQuery.isFetchingNextPage,
+    }),
   }
 }

@@ -13,6 +13,7 @@
  */
 
 import type { QueryClient, QueryKey } from '@tanstack/react-query'
+import { refreshEventsLists } from '@/lib/eventsListCache'
 import { projectEventTypesKey } from '@/lib/queryKeys'
 
 export const PROJECT_EVENT_TYPES = [
@@ -106,7 +107,10 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
 
 /**
  * Invalidate every mapped query key for an event. Idempotent — a duplicated
- * event (e.g. replayed on reconnect) simply re-marks the same keys stale.
+ * event (e.g. replayed on reconnect) simply re-marks the same keys stale. The
+ * events lists refresh the way a bulk edit refreshes them
+ * (`refreshEventsLists`), so a scan landing does not re-request every page
+ * the catalog table has scrolled through when it need not.
  */
 export function invalidateForEvent(
   queryClient: QueryClient,
@@ -114,6 +118,7 @@ export function invalidateForEvent(
   slug: string,
 ): void {
   for (const queryKey of invalidationKeysFor(type, slug)) {
-    void queryClient.invalidateQueries({ queryKey })
+    if (queryKey[0] === 'events') void refreshEventsLists(queryClient, queryKey)
+    else void queryClient.invalidateQueries({ queryKey })
   }
 }

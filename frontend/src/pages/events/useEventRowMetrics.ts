@@ -98,14 +98,7 @@ export function useEventRowMetrics({
   // new observer with no previous data. So the key stays per bucket, the query
   // function reads the current window, and a step invalidates the buckets —
   // they refetch in the background and keep showing the last answer meanwhile.
-  const qc = useQueryClient()
-  const previousRangeRef = useRef(rowMetricsRange)
-  useEffect(() => {
-    if (previousRangeRef.current === rowMetricsRange) return
-    previousRangeRef.current = rowMetricsRange
-    void qc.invalidateQueries({ queryKey: ['eventWindowMetrics', slug] })
-  }, [qc, rowMetricsRange, slug])
-
+  //
   // `combine` runs on every render and isn't memoized by React Query, so it only
   // flattens (structural sharing keeps the array stable when data is unchanged);
   // the id→metric Map is built in a downstream useMemo keyed on that array.
@@ -125,6 +118,18 @@ export function useEventRowMetrics({
     })),
     combine: results => results.flatMap(result => result.data ?? EMPTY_EVENT_WINDOW_METRICS),
   })
+
+  // Declared AFTER `useQueries` on purpose: effects run in order, and
+  // `useQueries` hands its observers the new query function (the one closing
+  // over the new window) in an effect of its own. Invalidating first refetched
+  // with the previous function, so every step re-requested the old window.
+  const qc = useQueryClient()
+  const previousRangeRef = useRef(rowMetricsRange)
+  useEffect(() => {
+    if (previousRangeRef.current === rowMetricsRange) return
+    previousRangeRef.current = rowMetricsRange
+    void qc.invalidateQueries({ queryKey: ['eventWindowMetrics', slug] })
+  }, [qc, rowMetricsRange, slug])
 
   const eventWindowMetricsByEvent = useMemo(
     () => new Map(eventWindowMetrics.map(metric => [metric.event_id, metric])),

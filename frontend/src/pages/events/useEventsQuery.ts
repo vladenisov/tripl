@@ -1,9 +1,10 @@
-import { useCallback, useDeferredValue, useMemo } from 'react'
+import { useCallback, useDeferredValue, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useInfiniteQuery } from '@tanstack/react-query'
 
 import { eventsApi } from '@/api/events'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { FIRST_PAGE_IN_VIEW_META } from '@/lib/eventsListCache'
 import { EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import type { EventListItem, EventType } from '@/types'
 
@@ -326,7 +327,20 @@ export function useEventsQuery({
     ],
   )
 
+  // Whether the table's viewport lies inside the first page, reported by the
+  // virtualizer (`reportFirstPageInView`) and read by `refreshEventsLists`
+  // when a mutation or a realtime event refreshes the list.
+  const firstPageInViewRef = useRef(true)
+  const reportFirstPageInView = useCallback((inView: boolean) => {
+    firstPageInViewRef.current = inView
+  }, [])
+  const listMeta = useMemo(
+    () => ({ [FIRST_PAGE_IN_VIEW_META]: () => firstPageInViewRef.current }),
+    [],
+  )
+
   const eventsQuery = useInfiniteQuery({
+    meta: listMeta,
     queryKey: [
       'events',
       slug,
@@ -440,6 +454,7 @@ export function useEventsQuery({
     isUnknownTab,
     // query
     eventsQuery,
+    reportFirstPageInView,
     rawEvents,
     total,
     fetchAllMatching,

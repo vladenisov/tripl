@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-query'
 
 import { eventsApi } from '@/api/events'
+import { refreshEventsLists } from '@/lib/eventsListCache'
 import type { EventStatus } from '@/lib/eventStatus'
 import type { EventListItem, EventListResponse } from '@/types'
 
@@ -30,6 +31,62 @@ export type BulkUpdatePatch = {
 type BulkUpdateVars = { eventIds: string[] } & BulkUpdatePatch
 
 type PreviousValues = Map<string, Pick<EventListItem, 'status' | 'sunset_at' | 'reviewed' | 'owner_id'>>
+
+/**
+ * What each of `eventIds` holds now among `items`, for a bulk update's Undo.
+ * Read from the list the table renders, not from whichever cached list holds
+ * the row first: another tab's inactive list can be minutes stale, and an
+ * Undo built from it restored values the operator never saw.
+ */
+export function bulkPreviousValues(items: EventListItem[], eventIds: string[]): PreviousValues {
+  const idSet = new Set(eventIds)
+  const previous: PreviousValues = new Map()
+  for (const e of items) {
+    if (!idSet.has(e.id)) continue
+    previous.set(e.id, {
+      status: e.status,
+      sunset_at: e.sunset_at,
+      reviewed: e.reviewed,
+      owner_id: e.owner_id,
+    })
+  }
+  return previous
+}
+
+/**
+ * `eventIds` moved into the order given, within `items`: the rows among them
+ * keep the positions they held, handed out in the new order. Rows not in
+ * `eventIds` stay put.
+ */
+export function permuteEvents(items: EventListItem[], eventIds: string[]): EventListItem[] {
+  const indexById = new Map(eventIds.map((id, i) => [id, i]))
+  const moved = items
+    .filter((event) => indexById.has(event.id))
+    .sort((left, right) => indexById.get(left.id)! - indexById.get(right.id)!)
+  let pointer = 0
+  return items.map((event) => (indexById.has(event.id) ? moved[pointer++] : event))
+}
+
+/**
+ * `permuteEvents` over an infinite list as ONE list. A drag across a page
+ * boundary moves rows between pages; permuting each page on its own left them
+ * in the wrong order. The result is re-split into the original page sizes.
+ */
+export function permuteInfinitePages(
+  data: InfiniteData<EventListResponse>,
+  eventIds: string[],
+): InfiniteData<EventListResponse> {
+  const flat = permuteEvents(data.pages.flatMap((page) => page.items), eventIds)
+  let offset = 0
+  return {
+    ...data,
+    pages: data.pages.map((page) => {
+      const items = flat.slice(offset, offset + page.items.length)
+      offset += page.items.length
+      return { ...page, items }
+    }),
+  }
+}
 
 /**
  * The bulk updates that put `eventIds` back the way they were before `patch`,
@@ -108,18 +165,22 @@ export function useEventMutations({
     }
   }, [qc])
 
-  // Reconcile with the server after a mutation. Invalidating an infinite query
-  // re-requests EVERY loaded page, one after another, so after scrolling 12
-  // pages each bulk action fired 12 sequential 200-row requests (EVT-12). The
-  // list is cut back to its first page first; the rest refill on demand as the
-  // table scrolls to them, exactly as they loaded the first time.
-  const refreshEventsCaches = useCallback(() => {
-    qc.setQueriesData<EventsQueryData>({ queryKey: eventsKey }, (data) => {
-      if (!data || !('pages' in data) || data.pages.length <= 1) return data
-      return { pages: data.pages.slice(0, 1), pageParams: data.pageParams.slice(0, 1) }
-    })
-    return qc.invalidateQueries({ queryKey: eventsKey })
-  }, [qc, eventsKey])
+  // Reconcile with the server after a mutation, without re-requesting every
+  // loaded page when nobody would see the difference (EVT-12).
+  const refreshEventsCaches = useCallback(
+    () => refreshEventsLists(qc, eventsKey),
+    [qc, eventsKey],
+  )
+
+  const applyBulkPatch = useCallback(
+    (eventIds: string[], patch: BulkUpdatePatch) => {
+      const idSet = new Set(eventIds)
+      return applyToEventsCaches((items) =>
+        items.map((e) => (idSet.has(e.id) ? { ...e, ...patch } : e)),
+      )
+    },
+    [applyToEventsCaches],
+  )
 
   const bulkDeleteMut = useMutation({
     mutationFn: (eventIds: string[]) => eventsApi.bulkDelete(slug!, eventIds, branchId),
@@ -139,26 +200,32 @@ export function useEventMutations({
       eventsApi.bulkUpdate(slug!, eventIds, patch, branchId),
     onMutate: async ({ eventIds, ...patch }) => {
       await qc.cancelQueries({ queryKey: eventsKey })
-      const idSet = new Set(eventIds)
-      // What each row held before, for the success toast's Undo.
-      const previous: PreviousValues = new Map()
-      const snapshots = applyToEventsCaches((items) =>
-        items.map((e) => {
-          if (!idSet.has(e.id)) return e
-          if (!previous.has(e.id)) {
-            previous.set(e.id, {
-              status: e.status,
-              sunset_at: e.sunset_at,
-              reviewed: e.reviewed,
-              owner_id: e.owner_id,
-            })
-          }
-          return { ...e, ...patch }
-        }),
-      )
-      return { snapshots, undo: buildBulkUndo(eventIds, patch, previous) }
+      return { snapshots: applyBulkPatch(eventIds, patch) }
     },
     onSuccess: () => onBulkUpdateSuccess?.(),
+    onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
+    onSettled: () => refreshEventsCaches(),
+  })
+
+  // A bulk update's Undo: the groups `buildBulkUndo` made, sent in turn as ONE
+  // mutation. Through `bulkUpdateMut` each group cleared whatever the operator
+  // had selected since and refreshed the lists once per group.
+  const bulkUndoMut = useMutation({
+    mutationFn: async (groups: BulkUpdateVars[]) => {
+      for (const { eventIds, ...patch } of groups) {
+        await eventsApi.bulkUpdate(slug!, eventIds, patch, branchId)
+      }
+    },
+    onMutate: async (groups) => {
+      await qc.cancelQueries({ queryKey: eventsKey })
+      let snapshots: Snapshot[] | undefined
+      for (const { eventIds, ...patch } of groups) {
+        const taken = applyBulkPatch(eventIds, patch)
+        // The first group's snapshots hold the lists as they were before any.
+        snapshots ??= taken
+      }
+      return { snapshots }
+    },
     onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
     onSettled: () => refreshEventsCaches(),
   })
@@ -168,32 +235,19 @@ export function useEventMutations({
     onMutate: async (eventIds) => {
       await qc.cancelQueries({ queryKey: eventsKey })
       const snapshots = qc.getQueriesData<EventsQueryData>({ queryKey: eventsKey })
-      const reorderItems = (items: EventListItem[]) => {
-        const indexById = new Map(eventIds.map((id, i) => [id, i]))
-        const idSet = new Set(eventIds)
-        const reorderedIns = items
-          .filter((event) => idSet.has(event.id))
-          .sort((left, right) => indexById.get(left.id)! - indexById.get(right.id)!)
-        let pointer = 0
-        return items.map((event) =>
-          idSet.has(event.id) ? reorderedIns[pointer++] : event,
-        )
-      }
       qc.setQueriesData<EventsQueryData>({ queryKey: eventsKey }, (data) => {
         if (!data) return data
-        if ('pages' in data) {
-          return {
-            ...data,
-            pages: data.pages.map(page => ({ ...page, items: reorderItems(page.items) })),
-          }
-        }
-        return { ...data, items: reorderItems(data.items) }
+        if ('pages' in data) return permuteInfinitePages(data, eventIds)
+        return { ...data, items: permuteEvents(data.items, eventIds) }
       })
       return { snapshots }
     },
-    // The optimistic permutation is exactly what the server applies (it hands
-    // the same rows' existing order slots out in the order sent), so success
-    // only marks the lists stale; nothing is re-requested for a drag.
+    // The server hands the sent rows' existing order slots back out in the
+    // order sent. In a catalog-ordered list holding all of those rows — the
+    // table the drag happened in — that is the same permutation as the one
+    // applied above across the whole list, so success only marks the lists
+    // stale and nothing is re-requested for a drag. Lists in another order, or
+    // holding only some of the rows, catch up when they are next read.
     onSuccess: () => qc.invalidateQueries({ queryKey: eventsKey, refetchType: 'none' }),
     onError: (_error, _vars, ctx) => {
       rollbackEventsCaches(ctx?.snapshots)
@@ -204,6 +258,7 @@ export function useEventMutations({
   return {
     bulkDeleteMut,
     bulkUpdateMut,
+    bulkUndoMut,
     reorderEventsMut,
   }
 }
