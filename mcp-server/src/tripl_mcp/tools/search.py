@@ -54,8 +54,9 @@ def register(mcp: FastMCP) -> None:
         annotations=READ_ONLY,
         description=(
             "Search the tripl tracking plan with a natural-language phrase or partial "
-            "event name. ALWAYS search first, then fetch the canonical entity by id "
-            "(get_event etc.) before making decisions or edits. 'types' restricts to "
+            "event name. Use it to find an entity when you do not know its id; hits "
+            "are ranked summaries, so read the entity itself (get_event etc.) before "
+            "relying on its details or editing it. 'types' restricts to "
             "entity kinds, spelled the way a hit's entity_type is spelled — plan "
             "content (event, event_type, field, ...) and project configuration "
             "(scan_config, alert_rule) alike; an unfiltered search shows which kinds "

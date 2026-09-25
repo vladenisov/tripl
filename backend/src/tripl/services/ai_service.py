@@ -20,6 +20,39 @@ from tripl.services.project_service import get_project_id_by_slug
 logger = logging.getLogger(__name__)
 
 
+# Structured output for the describe feature, so the answer is the object the
+# parser below expects rather than prose that asks politely for JSON. Servers
+# that do not support it get the request retried without it, and the parser
+# still tolerates fenced or plain-text answers from them.
+_DESCRIBE_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "event_description",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["description", "field_suggestions"],
+            "properties": {
+                "description": {"type": "string"},
+                "field_suggestions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["field_name", "description"],
+                        "properties": {
+                            "field_name": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 def _strip_markdown_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
@@ -113,7 +146,11 @@ async def suggest_event_description(
     user_prompt = "\n".join(lines)
     config = await app_settings_service.get_ai_config(session)
     raw = await asyncio.to_thread(
-        llm_service.complete, config.describe_system_prompt, user_prompt, config=config
+        llm_service.complete,
+        config.describe_system_prompt,
+        user_prompt,
+        response_format=_DESCRIBE_RESPONSE_FORMAT,
+        config=config,
     )
     if raw is None:
         raise HTTPException(
@@ -169,7 +206,11 @@ async def suggest_event_type_descriptions(
     user_prompt = "\n".join(lines)
     config = await app_settings_service.get_ai_config(session)
     raw = await asyncio.to_thread(
-        llm_service.complete, config.describe_system_prompt, user_prompt, config=config
+        llm_service.complete,
+        config.describe_system_prompt,
+        user_prompt,
+        response_format=_DESCRIBE_RESPONSE_FORMAT,
+        config=config,
     )
     if raw is None:
         raise HTTPException(

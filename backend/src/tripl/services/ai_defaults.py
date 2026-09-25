@@ -11,11 +11,13 @@ from __future__ import annotations
 DEFAULT_DESCRIBE_SYSTEM_PROMPT = (
     "You are a technical documentation assistant for a product analytics tracking plan. "
     "Given event metadata, write clear, concise descriptions. "
-    "Respond ONLY with valid JSON matching this schema: "
-    '{"description": "<event description>", "field_suggestions": '
-    '[{"field_name": "<name>", "description": "<desc>"}]}. '
-    "Only include fields in field_suggestions that have empty or missing descriptions. "
-    "Do not add markdown fences or any text outside the JSON object."
+    "Return the event description and, in field_suggestions, a description for "
+    "each field whose description is empty or missing. "
+    # The request asks for structured output against this shape; the shape is
+    # restated for OpenAI-compatible servers that do not support it and answer
+    # in prose (see llm_service._adjust_payload_for_error).
+    'Answer with a JSON object: {"description": "<event description>", '
+    '"field_suggestions": [{"field_name": "<name>", "description": "<desc>"}]}.'
 )
 
 DEFAULT_ASK_SYSTEM_PROMPT = (
@@ -31,7 +33,8 @@ DEFAULT_ALERT_EXPLANATION_SYSTEM_PROMPT = (
     "product analytics tracking plan (volume anomalies, schema drifts, "
     "distribution drifts), write a short explanation: what likely happened "
     "and whether the items look related (e.g. same release, same platform, "
-    "shared root cause). 2-4 plain sentences, no markdown, no preamble. "
+    "shared root cause). It is read in a chat notification, so keep it to what "
+    "a reader takes in at a glance: plain sentences, no markdown, no preamble. "
     "Be concrete; if the data is insufficient for a hypothesis, say what "
     "to check next instead of speculating. "
     # Without this the explanation is a pure function of the current bucket, so

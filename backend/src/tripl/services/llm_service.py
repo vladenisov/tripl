@@ -13,7 +13,8 @@ from tripl.services.app_settings_service import AiConfig, env_ai_config
 logger = logging.getLogger(__name__)
 
 _MAX_USER_PROMPT_CHARS = 24_000
-_MAX_PARAM_RETRIES = 3
+# One attempt plus one per parameter _adjust_payload_for_error can drop.
+_MAX_PARAM_RETRIES = 4
 
 
 def is_enabled(config: AiConfig | None = None) -> bool:
@@ -72,7 +73,8 @@ def _adjust_payload_for_error(payload: dict[str, Any], error: dict[str, Any]) ->
     """Mutate payload to work around an unsupported-parameter error.
 
     Newer OpenAI models (gpt-5.x, o-series) reject ``max_tokens`` in favor of
-    ``max_completion_tokens`` and only allow the default ``temperature``.
+    ``max_completion_tokens`` and only allow the default ``temperature``; some
+    OpenAI-compatible servers do not support ``response_format``.
     Returns True when the payload changed and the request is worth retrying.
     """
     if error.get("code") not in {"unsupported_parameter", "unsupported_value"}:
@@ -84,6 +86,9 @@ def _adjust_payload_for_error(payload: dict[str, Any], error: dict[str, Any]) ->
     if param == "temperature" and "temperature" in payload:
         del payload["temperature"]
         return True
+    if param == "response_format" and "response_format" in payload:
+        del payload["response_format"]
+        return True
     return False
 
 
@@ -93,6 +98,7 @@ def complete(
     *,
     max_tokens: int | None = None,
     temperature: float = 0.2,
+    response_format: dict[str, Any] | None = None,
     config: AiConfig | None = None,
 ) -> str | None:
     cfg = config if config is not None else env_ai_config()
@@ -113,6 +119,8 @@ def complete(
         "max_tokens": max_tokens if max_tokens is not None else cfg.ai_max_output_tokens,
         "temperature": temperature,
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
 
     url = cfg.ai_base_url.rstrip("/") + "/chat/completions"
     body: str | None = None

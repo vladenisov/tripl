@@ -113,6 +113,30 @@ def test_llm_complete_retries_with_max_completion_tokens(monkeypatch: pytest.Mon
     assert "temperature" not in sent_payloads[2]
 
 
+def test_llm_complete_drops_response_format_a_server_does_not_support(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(llm_service.settings, "ai_enabled", True)
+    monkeypatch.setattr(llm_service.settings, "ai_api_key", "sk-test")
+    sent_payloads = []
+
+    def fake_post(url, payload, api_key, timeout):
+        sent_payloads.append(json.loads(json.dumps(payload)))
+        for param in ("max_tokens", "temperature", "response_format"):
+            if param in payload:
+                return None, {"code": "unsupported_parameter", "param": param}
+        return _success_body("described"), None
+
+    monkeypatch.setattr(llm_service, "_post_chat_completions", fake_post)
+    result = llm_service.complete(
+        "system", "user", max_tokens=50, response_format={"type": "json_object"}
+    )
+    assert result == "described"
+    assert sent_payloads[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in sent_payloads[-1]
+    assert len(sent_payloads) == 4
+
+
 def test_llm_complete_returns_none_on_non_retryable_error(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(llm_service.settings, "ai_enabled", True)
     monkeypatch.setattr(llm_service.settings, "ai_api_key", "sk-test")
@@ -178,10 +202,11 @@ async def test_describe_event_returns_suggestion(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ):
     _, event_id = await _setup_event(client, "ai-describe")
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     def fake_complete(system_prompt: str, user_prompt: str, **kwargs: object) -> str:
         captured["user_prompt"] = user_prompt
+        captured["response_format"] = kwargs.get("response_format")
         return json.dumps(
             {
                 "description": "Home page render event.",
@@ -201,8 +226,12 @@ async def test_describe_event_returns_suggestion(
     assert data["description"] == "Home page render event."
     assert data["field_suggestions"] == [{"field_name": "screen", "description": "Screen slug."}]
     # The prompt carries the event identity and its fields.
-    assert "Home Page View" in captured["user_prompt"]
-    assert "screen" in captured["user_prompt"]
+    assert "Home Page View" in str(captured["user_prompt"])
+    assert "screen" in str(captured["user_prompt"])
+    # The answer is requested as structured output, not only asked for in prose.
+    response_format = captured["response_format"]
+    assert isinstance(response_format, dict)
+    assert response_format["type"] == "json_schema"
 
 
 @pytest.mark.asyncio
