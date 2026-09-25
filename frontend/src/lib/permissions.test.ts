@@ -4,6 +4,7 @@ import {
   VIEWER_READ_ONLY_NOTICE,
   canManageProject,
   canWrite,
+  canWriteProject,
   isOwner,
   ownerOnlyReason,
 } from './permissions'
@@ -90,5 +91,35 @@ describe('canManageProject', () => {
 describe('ownerOnlyReason', () => {
   it('names the role that can act', () => {
     expect(ownerOnlyReason('edit scans')).toBe('Only an owner can edit scans.')
+  })
+})
+
+describe('canWriteProject', () => {
+  const editor = { id: 'u-editor', role: 'editor' as const }
+  const owner = { id: 'u-owner', role: 'owner' as const }
+  const viewer = { id: 'u-viewer', role: 'viewer' as const }
+
+  it('follows canWrite on a real project', () => {
+    const project = { is_demo: false, created_by_user_id: 'someone-else' }
+    expect(canWriteProject(editor, project)).toBe(true)
+    expect(canWriteProject(owner, project)).toBe(true)
+    expect(canWriteProject(viewer, project)).toBe(false)
+  })
+
+  it("closes another user's demo to an editor, as ProjectMutationScope does", () => {
+    const demo = { is_demo: true, created_by_user_id: 'someone-else' }
+    expect(canWriteProject(editor, demo)).toBe(false)
+    expect(canWriteProject(owner, demo)).toBe(true)
+  })
+
+  it('lets the creator of a demo write in it, unless demoted to viewer', () => {
+    expect(canWriteProject(editor, { is_demo: true, created_by_user_id: 'u-editor' })).toBe(true)
+    expect(canWriteProject(viewer, { is_demo: true, created_by_user_id: 'u-viewer' })).toBe(false)
+  })
+
+  it('degrades to canWrite when the user or project is not known yet', () => {
+    expect(canWriteProject(editor, undefined)).toBe(true)
+    expect(canWriteProject(undefined, { is_demo: true, created_by_user_id: 'x' })).toBe(true)
+    expect(canWriteProject(viewer, undefined)).toBe(false)
   })
 })

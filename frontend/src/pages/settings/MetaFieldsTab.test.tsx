@@ -1,7 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { MetaFieldDefinition } from '@/types'
+import type { MetaFieldDefinition, Project } from '@/types'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
+import { ActiveProjectContext } from '@/components/active-project-context'
 import { metaFieldsApi } from '@/api/metaFields'
 import { MetaFieldsTab } from './MetaFieldsTab'
 
@@ -30,12 +33,20 @@ function metaField(over: Partial<MetaFieldDefinition> & { id: string; name: stri
   } as MetaFieldDefinition
 }
 
-function renderTab(fields: MetaFieldDefinition[] = []) {
+function renderTab(
+  fields: MetaFieldDefinition[] = [],
+  { auth = null, project }: { auth?: AuthContextValue | null; project?: Project } = {},
+) {
   vi.mocked(metaFieldsApi.list).mockResolvedValue(fields)
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MetaFieldsTab slug="demo" />
+      <AuthContext.Provider value={auth}>
+        {/* What the app shell provides once it has resolved the URL's project. */}
+        <ActiveProjectContext.Provider value={project}>
+          <MetaFieldsTab slug="demo" />
+        </ActiveProjectContext.Provider>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -107,5 +118,35 @@ describe('MetaFieldsTab — Allow multiple (tripl-h2sx.31)', () => {
 
     fireEvent.click(screen.getByLabelText('Multiple values'))
     expect(screen.getByText(/keeps the first value only/)).toBeInTheDocument()
+  })
+})
+
+describe('MetaFieldsTab — read-only visitors', () => {
+  const FIELD = metaField({ id: 'mf-1', name: 'jira_link', display_name: 'Jira link' })
+
+  it('offers a viewer no write controls, and says why once', async () => {
+    renderTab([FIELD], { auth: authAs('viewer') })
+
+    expect(await screen.findByText('jira_link')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expect(screen.queryByRole('button', { name: /Add meta field/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit Jira link' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete Jira link' })).not.toBeInTheDocument()
+  })
+
+  it("treats an editor in another user's demo as read-only, as the API does", async () => {
+    const demo = { slug: 'demo', is_demo: true, created_by_user_id: 'someone-else' } as Project
+    renderTab([FIELD], { auth: authAs('editor'), project: demo })
+
+    expect(await screen.findByText('jira_link')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add meta field/ })).not.toBeInTheDocument()
+  })
+
+  it('lets an editor write in a demo they created', async () => {
+    const demo = { slug: 'demo', is_demo: true, created_by_user_id: 'editor-1' } as Project
+    renderTab([FIELD], { auth: authAs('editor'), project: demo })
+
+    expect(await screen.findByRole('button', { name: 'Edit Jira link' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Add meta field/ })).toBeInTheDocument()
   })
 })

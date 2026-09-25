@@ -4,7 +4,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dataSourcesApi } from '@/api/dataSources'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
-import { useDirtySinceOpen, useUnsavedDialogGuard } from '@/hooks/useUnsavedChangesGuard'
+import {
+  UNSAVED_CHANGES_MESSAGE,
+  useDirtySinceOpen,
+  useUnsavedDialogGuard,
+} from '@/hooks/useUnsavedChangesGuard'
+import { LEAVE_CONFIRMED, useUnsavedChanges } from '@/components/settings/unsaved-changes'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { DataSource, DbType } from '@/types'
 import { DB_TYPE_OPTIONS } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -121,7 +127,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   })
   const dataSources = dataSourcesQuery.data ?? EMPTY_DATA_SOURCES
 
+  // Create and update render their error inside their dialog.
   const createMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => {
       const connectionSettings = buildConnectionSettings(dbType, settings)
       return dataSourcesApi.create({
@@ -138,6 +146,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   })
 
   const updateMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (id: string) => {
       const editDbType = editingDs?.db_type
       if (!editDbType) throw new Error('No data source is being edited')
@@ -223,10 +232,13 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     navigate(`/settings/data-sources/${ds.id}`, { replace: true })
   }, [navigate, populateEditForm])
 
+  // Every caller has already settled the draft: the dialog guard asked, or
+  // there was nothing to ask about, or it was just saved. LEAVE_CONFIRMED tells
+  // the settings shell's blocker so, or it would ask a second time.
   const closeEdit = () => {
     editingDsIdRef.current = null
     setEditingDs(null)
-    navigate('/settings/data-sources', { replace: true })
+    navigate('/settings/data-sources', { replace: true, state: LEAVE_CONFIRMED })
   }
 
   useEffect(() => {
@@ -264,6 +276,20 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const createGuard = useUnsavedDialogGuard(createDirty)
   const editDirty = useDirtySinceOpen(!!editingDs, { editName, editCore, editSettings })
   const editGuard = useUnsavedDialogGuard(editDirty)
+  // The edit dialog has a URL of its own, so browser Back closes it without
+  // any of the dialog's close requests running. Registering the draft with the
+  // settings shell puts Back (and every other way out of this URL) behind the
+  // shell's blocker as well.
+  const { registerUnsaved } = useUnsavedChanges()
+  const editingId = editingDs?.id
+  useEffect(() => {
+    registerUnsaved(
+      editDirty && editingId
+        ? { keptBy: path => path === `data-sources/${editingId}`, message: UNSAVED_CHANGES_MESSAGE }
+        : null,
+    )
+    return () => registerUnsaved(null)
+  }, [editDirty, editingId, registerUnsaved])
 
   const healthyCount = dataSources.filter(
     (ds) => ds.last_test_status === 'success' && !isHealthCheckStale(ds),

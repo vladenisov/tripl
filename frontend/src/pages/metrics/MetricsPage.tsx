@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { PageHead } from '@/components/settings/kit'
 import { FactTablesList } from '@/pages/fact-tables/FactTablesList'
 import { MetricsCatalog } from './MetricsCatalog'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 export type MetricsTab = 'catalog' | 'fact-tables'
@@ -24,7 +24,7 @@ const TABS: { id: MetricsTab; label: string; path: (slug: string) => string }[] 
  */
 export default function MetricsPage({ tab = 'catalog' }: { tab?: MetricsTab }) {
   const { slug } = useParams<{ slug: string }>()
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
 
   // Creating a metric or fact table is an editor's job; a viewer gets the
   // catalog and one line saying why there is no New button.

@@ -32,6 +32,9 @@ import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import { eventTypesKey, projectEventTypesKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
 const DEFAULT_COLOR = '#6366f1'
@@ -76,6 +79,7 @@ function requiredFieldCount(eventType: EventType): number {
 export function EventTypesTab({ slug }: { slug: string }) {
   const navigate = useNavigate()
   const branchId = useActiveBranchId()
+  const canWrite = useCanWriteProject()
   const [creating, setCreating] = useState(false)
 
   const { data: eventTypes = [] } = useQuery({
@@ -121,11 +125,14 @@ export function EventTypesTab({ slug }: { slug: string }) {
             naming. Settings here apply to every event of that type.
           </p>
         </div>
-        <Button size="sm" onClick={() => setCreating(true)}>
-          <Plus className="size-3.5" />
-          New type
-        </Button>
+        {canWrite && (
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus className="size-3.5" />
+            New type
+          </Button>
+        )}
       </div>
+      {!canWrite && <ReadOnlyNotice />}
 
       <SurfPanel title="All types" subtitle={countOf(sorted.length, 'type', 'types')}>
         {sorted.length === 0 ? (
@@ -248,6 +255,8 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
   const [color, setColor] = useState(DEFAULT_COLOR)
 
   const createMut = useMutation({
+    // Its error is rendered under the form.
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       eventTypesApi.create(
         slug,
@@ -389,6 +398,7 @@ export function FieldsEditor({
   branchId: string | null
 }) {
   const qc = useQueryClient()
+  const canWrite = useCanWriteProject()
   // editing view-state: null = list, 'new' = add subpage, field = edit subpage.
   const [editing, setEditing] = useState<FieldDefinition | 'new' | null>(null)
   const { confirm, dialog } = useConfirm()
@@ -396,7 +406,9 @@ export function FieldsEditor({
   const sortedFields = [...eventType.field_definitions].sort((a, b) => a.order - b.order)
   const invalidate = () => qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
 
+  // Create and update render their error on the field page (`error` below).
   const createMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (draft: FieldDraft) =>
       fieldsApi.create(
         slug,
@@ -423,6 +435,7 @@ export function FieldsEditor({
   })
 
   const updateMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: ({ id, draft }: { id: string; draft: FieldDraft }) =>
       fieldsApi.update(
         slug,
@@ -504,10 +517,12 @@ export function FieldsEditor({
       title="Fields"
       description={`${sortedFields.length} field definitions applied to every ${eventType.display_name.toLowerCase()} event.`}
       right={
-        <Button variant="outline" size="sm" onClick={() => setEditing('new')}>
-          <Plus className="size-3" />
-          Add field
-        </Button>
+        canWrite && (
+          <Button variant="outline" size="sm" onClick={() => setEditing('new')}>
+            <Plus className="size-3" />
+            Add field
+          </Button>
+        )
       }
     >
       {dialog}
@@ -555,6 +570,7 @@ export function FieldsEditor({
                 isFirst={idx === 0}
                 isLast={idx === sortedFields.length - 1}
                 reordering={reorderMut.isPending}
+                canWrite={canWrite}
                 onMoveUp={() => moveField(idx, -1)}
                 onMoveDown={() => moveField(idx, 1)}
                 onEdit={() => setEditing(f)}
@@ -573,6 +589,8 @@ interface FieldRowProps {
   isFirst: boolean
   isLast: boolean
   reordering: boolean
+  /** False for a read-only visitor: the row is information, not a way in. */
+  canWrite: boolean
   onMoveUp: () => void
   onMoveDown: () => void
   onEdit: () => void
@@ -584,6 +602,7 @@ function FieldRow({
   isFirst,
   isLast,
   reordering,
+  canWrite,
   onMoveUp,
   onMoveDown,
   onEdit,
@@ -591,16 +610,16 @@ function FieldRow({
 }: FieldRowProps) {
   const contractCount = fieldContractRuleCount(field)
   return (
-    <ListRow onClick={onEdit}>
+    <ListRow onClick={canWrite ? onEdit : undefined}>
       <Td className="pr-0" onClick={(e) => e.stopPropagation()}>
-        <div className="flex flex-col gap-px">
+        {canWrite && <div className="flex flex-col gap-px">
           <IconButton title="Move up" disabled={isFirst || reordering} onClick={onMoveUp}>
             <ChevronUp className="size-3" />
           </IconButton>
           <IconButton title="Move down" disabled={isLast || reordering} onClick={onMoveDown}>
             <ChevronDown className="size-3" />
           </IconButton>
-        </div>
+        </div>}
       </Td>
       <Td>
         <span className="mono text-[12px]">{field.name}</span>
@@ -640,14 +659,14 @@ function FieldRow({
         )}
       </Td>
       <Td onClick={(e) => e.stopPropagation()}>
-        <div className="flex justify-end gap-0.5">
+        {canWrite && <div className="flex justify-end gap-0.5">
           <IconButton title="Edit field" onClick={onEdit}>
             <Pencil className="size-3.5" />
           </IconButton>
           <IconButton title="Delete field" danger onClick={onDelete}>
             <Trash2 className="size-3.5" />
           </IconButton>
-        </div>
+        </div>}
       </Td>
     </ListRow>
   )
@@ -674,8 +693,11 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
   // Cancel and "← Fields" threw a half-filled contract away without asking.
   // The page guard also covers leaving through the app (the sidebar, Back) and
   // reload; a successful save unmounts this page, so it needs no release.
+  // A read-only visitor has nothing to lose, so the guard never arms for one.
+  const canWrite = useCanWriteProject()
   const unsaved = useUnsavedChangesGuard(
-    JSON.stringify(draft) !== JSON.stringify(initialDraft) || enumInput.trim() !== '',
+    canWrite
+      && (JSON.stringify(draft) !== JSON.stringify(initialDraft) || enumInput.trim() !== ''),
   )
   const cancel = () => unsaved.requestLeave(onCancel)
   const set = <K extends keyof FieldDraft>(key: K, value: FieldDraft[K]) =>
@@ -873,6 +895,7 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
 
 export function OwnersEditor({ slug, eventType }: { slug: string; eventType: EventType }) {
   const qc = useQueryClient()
+  const canWrite = useCanWriteProject()
   const [selectedUserId, setSelectedUserId] = useState('')
 
   const { data: owners = [] } = useQuery({
@@ -928,19 +951,21 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
                 <span className="mono text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
                   {owner.user_email}
                 </span>
-                <IconButton
-                  title="Remove owner"
-                  danger
-                  disabled={removeMut.isPending}
-                  onClick={() => removeMut.mutate(owner.id)}
-                >
-                  <X className="size-3" />
-                </IconButton>
+                {canWrite && (
+                  <IconButton
+                    title="Remove owner"
+                    danger
+                    disabled={removeMut.isPending}
+                    onClick={() => removeMut.mutate(owner.id)}
+                  >
+                    <X className="size-3" />
+                  </IconButton>
+                )}
               </span>
             ))}
           </div>
         )}
-        {availableUsers.length > 0 && (
+        {canWrite && availableUsers.length > 0 && (
           <div className="flex gap-2">
             <div className="max-w-[320px] flex-1">
               <SSelect
@@ -1236,7 +1261,15 @@ function Td({
   )
 }
 
-function ListRow({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+function ListRow({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
+  // No action, no button: a read-only row must not announce itself as one.
+  if (!onClick) {
+    return (
+      <tr className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+        {children}
+      </tr>
+    )
+  }
   return (
     <tr
       role="button"

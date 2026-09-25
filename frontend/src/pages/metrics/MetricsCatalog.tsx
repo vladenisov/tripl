@@ -66,7 +66,7 @@ import {
   type SqlMetricCreate,
 } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 
 // The metric name gets the widest flexible track on purpose. Its cell packs a
 // dot, a truncating name and a nowrap kind chip, so the widest chip ("Event
@@ -339,7 +339,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   const qc = useQueryClient()
   // Reorder, bulk status and every row action are EditorUserDep; a viewer gets
   // the catalog to read and drill into, without controls that end in a 403.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const [searchInput, setSearchInput] = useState('')
   const [statusFilter, setStatusFilter] = useState<'' | MetricStatus>('')
   // The kind filter lives in the URL rather than in component state so each kind

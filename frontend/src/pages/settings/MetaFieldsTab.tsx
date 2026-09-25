@@ -18,9 +18,12 @@ import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
 import { META_FIELD_LINK_PLACEHOLDER, MULTI_VALUE_META_FIELD_TYPES } from "@/lib/metaFields"
 import { getErrorMessage } from '@/lib/utils'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 export function MetaFieldsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
+  const canWrite = useCanWriteProject()
   const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -157,6 +160,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   return (
     <div className="space-y-4">
       {dialog}
+      {!canWrite && <ReadOnlyNotice />}
 
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -339,9 +343,11 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
         title="Schema & fields"
         subtitle={`${metaFields.length} field${metaFields.length === 1 ? '' : 's'}`}
         right={
-          <Button size="sm" onClick={() => setShowForm(true)}>
-            <Plus className="mr-2 h-4 w-4" />Add meta field
-          </Button>
+          canWrite && (
+            <Button size="sm" onClick={() => setShowForm(true)}>
+              <Plus className="mr-2 h-4 w-4" />Add meta field
+            </Button>
+          )
         }
       >
         {metaFields.length > 0 ? (
@@ -382,10 +388,12 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableCell>{mf.is_required ? <span className="text-success font-medium text-xs">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{mf.default_value ?? '—'}</TableCell>
                   <TableCell>
-                    <div className="flex gap-1 justify-end">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit ${mf.display_name}`} onClick={() => startEdit(mf)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${mf.display_name}`} onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
-                    </div>
+                    {canWrite && (
+                      <div className="flex gap-1 justify-end">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit ${mf.display_name}`} onClick={() => startEdit(mf)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${mf.display_name}`} onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

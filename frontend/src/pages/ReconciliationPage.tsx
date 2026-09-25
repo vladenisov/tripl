@@ -27,7 +27,7 @@ import { eventNameLabel } from '@/lib/eventName'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { coverageTone, toneVar } from '@/lib/statusLexicon'
 import { eventTypesKey } from '@/lib/queryKeys'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 const COVERAGE_DAYS = 14 as const
@@ -97,7 +97,7 @@ export default function ReconciliationPage() {
   const { notifyStepCompleted } = useDemoScenarioActions()
   // Accept, dismiss and archive are EditorUserDep (DATA-7); a viewer reads the
   // reconciliation without the checkboxes and buttons that only answer 403.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
 
   const [shadowStatus, setShadowStatus] = useState<ShadowEventStatus>('new')
   const [acceptingId, setAcceptingId] = useState<string | null>(null)

@@ -539,6 +539,39 @@ describe('ScansTab', () => {
     expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans')
   })
 
+  it('replaces /scans/new with the created scan, so Back returns to the list', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans') && method === 'POST') {
+        return mockJsonResponse({ ...scanConfig, id: 'scan-new' })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/data-sources/') && url.includes('/schema')) return mockJsonResponse({ tables: [] })
+      if (url.includes('/event-types')) {
+        return mockJsonResponse([{ id: 'et-1', name: 'click', display_name: 'Click', fields: [] }])
+      }
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    renderRoute('/p/demo/scans/new')
+
+    await screen.findByRole('heading', { name: 'New scan' })
+    fireEvent.click(screen.getByLabelText('Catalog only'))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
+    fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
+      target: { value: 'SELECT * FROM analytics.events' },
+    })
+    await screen.findByRole('option', { name: 'Click' })
+    fireEvent.change(screen.getByLabelText('Event type'), { target: { value: 'et-1' } })
+    fireEvent.click(screen.getByRole('button', { name: /Create scan/ }))
+
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/scan-new', { replace: true }),
+    )
+  })
+
   it('sends a non-owner who opens /scans/new to the list', async () => {
     setupFetch()
     renderRoute('/p/demo/scans/new', 'editor')

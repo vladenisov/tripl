@@ -84,7 +84,7 @@ import { useDemoScenarioActions, useScenarioArtifacts } from '@/demo/demoScenari
 import { eventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 
 /**
  * Everything a manual collect needs, captured when the button is pressed and
@@ -284,7 +284,7 @@ export default function MonitoringDetailPage() {
   const location = useLocation()
   // Edit, collect, delete and annotations are EditorUserDep; a viewer reads the
   // page without them instead of meeting each as a 403 (MON-6).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   // Return to wherever the user came from (e.g. an event-type tab with its filters),
   // not always the "all events" list. location.key is 'default' only when this page was
   // opened directly (deep link / refresh) with no in-app history to pop back to.

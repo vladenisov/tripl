@@ -11,7 +11,7 @@ import { Frame, ImagePlus, Loader2, Trash2, Upload, X } from 'lucide-react'
 import { useConfirm } from '@/hooks/useConfirm'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 
 interface Props {
   slug: string
@@ -37,7 +37,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const queryClient = useQueryClient()
   // Upload, attach and delete are editor actions; a viewer browses the specs.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const [error, setError] = useState<string | null>(null)
   const [opened, setOpened] = useState<EventPhoto | null>(null)
   const [dragOver, setDragOver] = useState(false)

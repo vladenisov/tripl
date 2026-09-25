@@ -27,7 +27,7 @@ import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanM
 import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import { projectEventTypesKey } from '@/lib/queryKeys'
-import { useCanWrite, useIsOwner } from '@/lib/permissions'
+import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 
 function chipList(values: string[]) {
   if (values.length === 0) return <NoneTag />
@@ -126,7 +126,7 @@ export function ScanDetail({
   const qc = useQueryClient()
   const canApplyGroups = useIsOwner()
   // Retry and Stop are run/cancel, which the backend gives any editor.
-  const canRun = useCanWrite()
+  const canRun = useCanWriteProject()
   const { notifyScanRunStarted } = useDemoScenarioActions()
   // Null for every non-demo project — no row is ever the scenario's row.
   const { scanJobId } = useScenarioArtifacts()

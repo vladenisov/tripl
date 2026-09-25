@@ -9,7 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { getErrorMessage } from '@/lib/utils'
 import { projectEventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 
 const DRIFT_LABEL: Record<string, string> = {
   new_field: 'new',
@@ -46,7 +46,7 @@ export function EventDriftBadge({
   const qc = useQueryClient()
   const { notifyStepCompleted } = useDemoScenarioActions()
   // Triage is an editor action; a viewer still reads the drift list.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
 
   const driftsQuery = useQuery({
     meta: SILENT_ERROR_META,

@@ -12,7 +12,7 @@ import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatRelativeTime } from '@/lib/datetime'
 import type { FactTableListItem } from '@/types'
 import { dataSourcesKey } from '@/lib/queryKeys'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 
 const FACT_TABLE_GRID = 'grid grid-cols-[1.7fr_1fr_1fr_84px] items-center gap-3 px-4'
 
@@ -24,7 +24,7 @@ const FACT_TABLE_GRID = 'grid grid-cols-[1.7fr_1fr_1fr_84px] items-center gap-3 
  * than as a standalone surface.
  */
 export function FactTablesList({ slug }: { slug?: string }) {
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const factTablesQuery = useQuery({
     queryKey: ['fact-tables', slug],
     queryFn: () => factTablesApi.list(slug!),

@@ -1,5 +1,6 @@
 import { useContext } from 'react'
 
+import { ActiveProjectContext } from '@/components/active-project-context'
 import { AuthContext } from '@/components/auth-context'
 import type { AuthUser, Project, Role } from '@/types'
 
@@ -36,6 +37,46 @@ export function canWrite(role: Role | null | undefined): boolean {
 export function useCanWrite(): boolean {
   const auth = useContext(AuthContext)
   return canWrite(auth?.user?.role)
+}
+
+/**
+ * May this user write inside this project (its plan, metrics, scans, alerting)?
+ *
+ * {@link canWrite} answers "may this role edit something". Every slug-scoped
+ * write route also passes `require_project_mutation_access`
+ * (backend/src/tripl/api/deps.py), whose `ProjectMutationScope.allows`
+ * (services/project_service.py) closes a DEMO to everyone but an owner and the
+ * user who created it. This mirrors that half.
+ *
+ * The same rule also closes a real (non-demo) project created by another
+ * EDITOR. The client cannot see that half: `ProjectResponse` carries the
+ * creator's id but not the creator's role, so a shared workspace project (made
+ * by an owner) and another editor's project look the same here. Those writes
+ * stay offered and the API's 403 is the answer.
+ *
+ * Missing information degrades to {@link canWrite}'s answer for the same reason
+ * given there: no session or no project loaded yet is not evidence of a
+ * read-only visitor.
+ */
+export function canWriteProject(
+  user: Pick<AuthUser, 'id' | 'role'> | null | undefined,
+  project: Pick<Project, 'is_demo' | 'created_by_user_id'> | null | undefined,
+): boolean {
+  if (!canWrite(user?.role)) return false
+  if (!user || !project?.is_demo) return true
+  if (isOwner(user.role)) return true
+  return project.created_by_user_id != null && project.created_by_user_id === user.id
+}
+
+/**
+ * {@link canWriteProject} for the signed-in user and the project the app shell
+ * resolved for the URL ({@link ActiveProjectContext}). Outside the shell there
+ * is no project, and the answer is {@link canWrite}'s.
+ */
+export function useCanWriteProject(): boolean {
+  const auth = useContext(AuthContext)
+  const project = useContext(ActiveProjectContext)
+  return canWriteProject(auth?.user, project)
 }
 
 /**

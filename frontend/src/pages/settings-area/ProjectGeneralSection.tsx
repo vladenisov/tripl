@@ -330,13 +330,17 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const [anomaliesPeriod, setAnomaliesPeriod] = useState('30d')
   const [driftsPeriod, setDriftsPeriod] = useState('30d')
 
+  // The reset, preview and retire mutations below each render their error in
+  // their own danger-zone row (`feedback`), so the global toast stays quiet.
   const resetAnomaliesMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (period: DetectionResetPeriod) => projectsApi.resetAnomalies(slug, period),
     onSuccess: () => {
       for (const key of ANOMALY_INVALIDATE_KEYS) qc.invalidateQueries({ queryKey: key })
     },
   })
   const resetDriftsMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (period: DetectionResetPeriod) => projectsApi.resetDrifts(slug, period),
     onSuccess: () => {
       for (const key of DRIFT_INVALIDATE_KEYS) qc.invalidateQueries({ queryKey: key })
@@ -348,10 +352,12 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   // the same shape and very much not the same event.
   const [retirementPreview, setRetirementPreview] = useState<VariableRetirementCounts>()
   const previewRetirementMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.retireUnusedVariables(slug, { dry_run: true }),
     onSuccess: setRetirementPreview,
   })
   const retireVariablesMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.retireUnusedVariables(slug, { dry_run: false }),
     onSuccess: () => {
       setRetirementPreview(undefined)
@@ -669,7 +675,13 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
                     }
                   />
                   <DangerRetireVariablesRow
-                    onPreview={() => previewRetirementMut.mutate()}
+                    onPreview={() => {
+                      // The row shows one outcome, and an earlier retire's
+                      // result outranks the preview's: drop it, or a failed
+                      // preview would have nowhere to show.
+                      retireVariablesMut.reset()
+                      previewRetirementMut.mutate()
+                    }}
                     onRetire={() => {
                       void handleRetireVariables()
                     }}

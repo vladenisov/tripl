@@ -347,9 +347,11 @@ Every workspace member has a **role** that applies across the instance:
 
 - **Viewer** — can look, can't change anything. Pages show a viewer what there
   is to read and leave out the buttons that change it, with one line saying so.
-- **Editor** — can change the plan and alerts, and run scans. A project's own
-  name, slug and retention can be changed only by the person who created it or
-  an owner.
+- **Editor** — can change the plan and alerts, and run scans, in the projects
+  an owner created and in their own. A demo, or a project another editor
+  created, is that person's to change (and an owner's). A project's own name,
+  slug and retention can be changed only by the person who created it or an
+  owner.
 - **Owner** — full control, including data sources, writing and changing scans,
   managing people, and deleting the project.
 

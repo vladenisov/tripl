@@ -19,6 +19,9 @@ export interface VariablesTableRowProps {
   selected: boolean
   focused: boolean
   rowRef?: React.Ref<HTMLTableRowElement>
+  /** False for a read-only visitor: no selection, exclude or delete. Edit stays,
+   * because its dialog is where the drift and observed values are read. */
+  canWrite?: boolean
   onToggleSelect: (id: string) => void
   onEdit: (variable: Variable) => void
   onExclude: (variable: Variable) => void
@@ -31,6 +34,7 @@ function VariablesTableRowImpl({
   selected,
   focused,
   rowRef,
+  canWrite = true,
   onToggleSelect,
   onEdit,
   onExclude,
@@ -54,12 +58,14 @@ function VariablesTableRowImpl({
       className={focused ? 'bg-primary/5 outline outline-1 outline-primary/40' : undefined}
     >
       <TableCell className="align-top">
-        <input
-          type="checkbox"
-          aria-label={`Select variable ${variable.name}`}
-          checked={selected}
-          onChange={() => onToggleSelect(variable.id)}
-        />
+        {canWrite && (
+          <input
+            type="checkbox"
+            aria-label={`Select variable ${variable.name}`}
+            checked={selected}
+            onChange={() => onToggleSelect(variable.id)}
+          />
+        )}
       </TableCell>
       <TableCell className="font-mono text-xs align-top">
         {/* Pills never wrap and never shrink; the variable name absorbs the
@@ -168,12 +174,16 @@ function VariablesTableRowImpl({
               <Pencil className="h-3 w-3" aria-hidden="true" />
             </Button>
           </ScenarioCoachMark>
-          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-warning" aria-label={`Exclude variable ${variable.name} from scans`} onClick={() => onExclude(variable)}>
-            <Ban className="h-3 w-3" aria-hidden="true" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${variable.name}`} onClick={() => onDelete(variable)}>
-            <Trash2 className="h-3 w-3" aria-hidden="true" />
-          </Button>
+          {canWrite && (
+            <>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-warning" aria-label={`Exclude variable ${variable.name} from scans`} onClick={() => onExclude(variable)}>
+                <Ban className="h-3 w-3" aria-hidden="true" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${variable.name}`} onClick={() => onDelete(variable)}>
+                <Trash2 className="h-3 w-3" aria-hidden="true" />
+              </Button>
+            </>
+          )}
         </div>
       </TableCell>
     </TableRow>

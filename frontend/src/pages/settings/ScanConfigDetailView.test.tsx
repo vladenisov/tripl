@@ -161,6 +161,10 @@ describe('ScanConfigDetail — role gating (DATA-6)', () => {
     expect(within(panel).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: /Delete/ })).not.toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: /Replay/ })).not.toBeInTheDocument()
+    // The schema lookup behind SQL autocomplete is editor-scoped on a route this
+    // user cannot edit through, and read-only SQL has no use for it anyway.
+    const fetched = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => String(input))
+    expect(fetched.some(url => url.includes('/schema'))).toBe(false)
   })
 })
 
@@ -308,6 +312,41 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true'),
     )
+  })
+
+  it('keeps an edit typed while a save was in flight unsaved', async () => {
+    const saveable = { ...scanConfig, event_type_column: 'event_name' }
+    let answerSave: (response: Response) => void = () => {}
+    let saveSent = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith('/projects/demo/scans/scan-1') && method === 'PATCH') {
+        saveSent = true
+        return new Promise<Response>(resolve => {
+          answerSave = resolve
+        })
+      }
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([saveable])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Sent name' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[0])
+    await waitFor(() => expect(saveSent).toBe(true))
+    // Typed after the request left, before it answered.
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Typed during save' } })
+    answerSave(mockJsonResponse({ ...saveable, name: 'Sent name' }))
+    expect((await screen.findAllByText('Saved.')).length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    expect(
+      await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' }),
+    ).toBeInTheDocument()
   })
 
   it('switches tabs at once while nothing is edited', async () => {

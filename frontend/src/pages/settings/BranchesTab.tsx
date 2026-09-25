@@ -66,7 +66,7 @@ import type {
   ResolutionChoice,
 } from '@/types'
 import { planBranchesKey } from '@/lib/queryKeys'
-import { ownerOnlyReason, useCanWrite, useIsOwner } from '@/lib/permissions'
+import { ownerOnlyReason, useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
@@ -438,7 +438,7 @@ function describeBranchActionError(error: unknown): string {
 export function BranchesTab({ slug, branchId }: { slug: string; branchId?: string }) {
   const qc = useQueryClient()
   // Every branch write is EditorUserDep (PLAN-11); a viewer follows the review.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const navigate = useNavigate()
   const { confirm, dialog } = useConfirm()
   const [createOpen, setCreateOpen] = useState(false)
@@ -802,7 +802,7 @@ function FeatureBranchDetail({
   confirm,
 }: FeatureBranchDetailProps) {
   const qc = useQueryClient()
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const usersById = useUsersById()
   const branchLink = useBranchLinkProps()
   // The ticket a branch is named after, linked through the meta field that
@@ -1783,7 +1783,7 @@ function StateView({ state }: { state: Record<string, unknown> }) {
 
 function ConflictsPanel({ slug, branchId }: { slug: string; branchId: string }) {
   const qc = useQueryClient()
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const { data: conflicts } = useQuery({
     queryKey: ['planBranchConflicts', slug, branchId],
     queryFn: () => planBranchesApi.getConflicts(slug, branchId),

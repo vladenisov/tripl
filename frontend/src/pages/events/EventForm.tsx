@@ -49,7 +49,7 @@ import { branchTicket } from '@/lib/branchTicket'
 import { eventTypesKey, planBranchesKey, variablesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 // Replacement candidates offered at once. Deliberately small, for the reason
@@ -443,7 +443,7 @@ export function EventForm({
   const branchLink = useBranchLinkProps()
   // A viewer reaching this page (a shared link, Back) gets the event read-only:
   // every control disabled and no Save, instead of a form whose Save is a 403.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const aiEnabled = useAiStatus(slug)
   const { step: scenarioStep } = useDemoScenario()
   const { notifyStepCompleted } = useDemoScenarioActions()
@@ -809,7 +809,14 @@ export function EventForm({
     onSuccess: data => setDescription(data.description),
   })
 
-  const saveMut = useMutation<EventMutationResponse, unknown, boolean>({
+  // `snapshot` is the draft as this save SENT it, carried in the variables: the
+  // form may have been edited while the request was in flight, and storing the
+  // snapshot of whatever render answers would mark those edits as saved.
+  const saveMut = useMutation<
+    EventMutationResponse,
+    unknown,
+    { closeAfterSave: boolean; snapshot: string }
+  >({
     meta: SILENT_ERROR_META,
     mutationFn: () => {
       const payload = {
@@ -853,11 +860,11 @@ export function EventForm({
           )
         : eventsApi.create(slug, payload, branchId)
     },
-    onSuccess: async (_data, closeAfterSave: boolean) => {
+    onSuccess: async (_data, { closeAfterSave, snapshot }) => {
       // The draft is saved: nothing below may be stopped by the leave guard,
       // including a caller that navigates to the created event.
       unsaved.release()
-      setSavedSnapshot(draftSnapshot)
+      setSavedSnapshot(snapshot)
       qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
       qc.invalidateQueries({ queryKey: ['eventTags', slug, branchId] })
       if (event) qc.invalidateQueries({ queryKey: ['event', slug] })
@@ -917,7 +924,7 @@ export function EventForm({
 
   const saveAndAddAnother = () => {
     if (cannotSave || !formRef.current?.reportValidity()) return
-    saveMut.mutate(false)
+    saveMut.mutate({ closeAfterSave: false, snapshot: draftSnapshot })
   }
 
   const typeLabel = selectedEt?.display_name ?? etId
@@ -927,7 +934,7 @@ export function EventForm({
       {unsaved.dialog}
       <form
         ref={formRef}
-        onSubmit={e => { e.preventDefault(); if (cannotSave) return; saveMut.mutate(true) }}
+        onSubmit={e => { e.preventDefault(); if (cannotSave) return; saveMut.mutate({ closeAfterSave: true, snapshot: draftSnapshot }) }}
         className="mx-auto max-w-[880px] px-4 sm:px-6 pb-12 pt-4"
       >
         <button

@@ -32,7 +32,7 @@ import {
   muteName,
   unmuteName,
 } from '@/lib/mutePresets'
-import { VIEWER_READ_ONLY_NOTICE, useCanWrite } from '@/lib/permissions'
+import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import type {
@@ -237,7 +237,7 @@ export function AlertingInbox({
   // whose every click came back 403 (tripl-oxkt.9). Read once for the section;
   // the cards below omit their action cluster entirely rather than showing 250
   // disabled buttons with no explanation attached to any of them.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
 
   // Which OTHER loaded incidents share a scope. Two groups on the same scope
   // are the same event seen through different detectors, and muting one leaves

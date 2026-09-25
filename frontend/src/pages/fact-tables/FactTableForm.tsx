@@ -27,7 +27,8 @@ import type {
   FactTableUpdate,
 } from '@/types'
 import { dataSourcesKey } from '@/lib/queryKeys'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 const DEFAULT_COLOR = '#6366f1'
@@ -109,7 +110,7 @@ interface FactTableFormProps {
 export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTableFormProps) {
   const qc = useQueryClient()
   // Fact-table writes and previews are editor-only (MET-6).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const isNew = !factTable
 
   const [displayName, setDisplayName] = useState(factTable?.display_name ?? '')
@@ -150,7 +151,9 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     () => dataSources.find(ds => ds.id === dataSourceId),
     [dataSources, dataSourceId],
   )
-  const { data: sqlSchemaData } = useDataSourceSchema(dataSourceId || undefined)
+  // The schema route is editor-only, so a read-only visitor would get a 403
+  // for autocomplete they cannot use: skip the request instead.
+  const { data: sqlSchemaData } = useDataSourceSchema(canWrite ? dataSourceId || undefined : undefined)
 
   const previewMut = useMutation({
     mutationFn: (): Promise<FactTablePreviewResponse> =>
@@ -252,6 +255,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   const unsaved = useUnsavedChangesGuard(canWrite && draftSnapshot !== initialSnapshot)
 
   const saveMut = useMutation({
+    // Rendered inline at the foot of the form ("Could not save …").
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       factTable
         ? factTablesApi.update(slug, factTable.id, buildUpdatePayload())
@@ -386,6 +391,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 dialect={selectedDataSource?.db_type}
                 tables={sqlSchemaData?.tables}
                 minHeight="160px"
+                readOnly={!canWrite}
               />
             </FField>
             <FField

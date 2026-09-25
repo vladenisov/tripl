@@ -322,6 +322,47 @@ describe('ProjectGeneralSection', () => {
   })
 })
 
+describe('ProjectGeneralSection — retire unused variables', () => {
+  it('shows a failed preview after an earlier retire, instead of the stale retire result', async () => {
+    const counts = {
+      scanned: 10, retirable: 4, retired: 0, kept_referenced: 0, kept_observed: 0,
+      kept_documented: 0, kept_user_edited: 0, kept_excluded: 0,
+    }
+    let calls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo') && (init?.method ?? 'GET') === 'GET') {
+        return jsonResponse(PROJECT)
+      }
+      if (url.endsWith('/danger/retire-unused-variables') && init?.method === 'POST') {
+        calls += 1
+        const { dry_run: dryRun } = JSON.parse(String(init.body)) as { dry_run: boolean }
+        if (calls === 3) {
+          return new Response(JSON.stringify({ detail: 'Preview unavailable' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return jsonResponse(dryRun ? counts : { ...counts, retirable: 0, retired: 4 })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }))
+    expect(await screen.findByText('4 of 10 variables can be retired.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Retire$/ }))
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Retire variables' }),
+    )
+    expect(await screen.findByText('Retired 4 of 10 variables.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    expect(await screen.findByText('Preview unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('Retired 4 of 10 variables.')).not.toBeInTheDocument()
+  })
+})
+
 describe('ProjectGeneralSection unsaved-changes guard (WS-13)', () => {
   function renderWithShell(auth: AuthContextValue) {
     const registered: (UnsavedWork | null)[] = []

@@ -24,7 +24,7 @@ import { BackLink, SrcIcon } from './scans/scanLayout'
 import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
 import { deriveScanRunInfo } from './scans/scanUtils'
 import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
-import { useCanWrite, useIsOwner } from '@/lib/permissions'
+import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 type DetailTab = 'overview' | 'configuration'
@@ -33,7 +33,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   const navigate = useNavigate()
   const qc = useQueryClient()
   const { notifyScanRunStarted } = useDemoScenarioActions()
-  const canRun = useCanWrite()
+  const canRun = useCanWriteProject()
   const isOwner = useIsOwner()
   // The tab lives in `?tab=` so a reload lands where the reader was, instead of
   // always on Overview (DATA-12). `replace`: flipping tabs is not history.

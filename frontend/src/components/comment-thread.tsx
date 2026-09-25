@@ -5,7 +5,7 @@ import { Loader2, MessageCircle, Trash2 } from 'lucide-react'
 import { formatDateTime } from '@/lib/datetime'
 import { isThreadUnanswered, threadStateLabel } from '@/components/commentThreadState'
 import type { EventCommentAction, EventCommentStatus } from '@/types'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 
 /**
  * The shape the thread renders. Both anchors — a photo and an event — keep
@@ -94,7 +94,7 @@ export function CommentThread({
   const queryClient = useQueryClient()
   // Every comment write (post, reply, resolve, delete) is EditorUserDep on the
   // backend, so a viewer reads the thread and is offered none of them.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const [body, setBody] = useState(initialBody)
   const [replyTo, setReplyTo] = useState<string | null>(null)
 

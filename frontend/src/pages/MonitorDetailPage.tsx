@@ -26,7 +26,7 @@ import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { formatCooldown } from './alerting/constants'
 import { InertScopeNotice, inertScopeSentence, type DriftScope } from './alerting/InertScopeNotice'
 import type { AlertDelivery, MonitorDetail } from '@/types'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
@@ -34,7 +34,7 @@ export default function MonitorDetailPage() {
   const { slug, monitorId } = useParams<{ slug: string; monitorId: string }>()
   const queryClient = useQueryClient()
   // Mute and retry are editor actions (MON-6); a viewer reads the history.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
 
   const monitorKey = useMemo(() => ['monitor', slug, monitorId], [slug, monitorId])
   const historyKey = useMemo(() => ['monitor-history', slug, monitorId], [slug, monitorId])
@@ -106,7 +106,9 @@ export default function MonitorDetailPage() {
             eyebrow="Observe"
             title={monitor.rule_name}
             right={
-              slug ? (
+              // Editing a rule is an editor's job; the link would land a
+              // viewer on a read-only Monitors section.
+              slug && canWrite ? (
                 <Link
                   // A monitor IS an alert rule — the standalone list that used
                   // the first noun is gone, and rules are edited in the

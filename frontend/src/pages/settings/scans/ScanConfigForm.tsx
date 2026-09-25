@@ -19,7 +19,7 @@ import {
   MetricsDriftSection,
   ScanEssentialsSection,
 } from './ScanFormSections'
-import { scanFormBlocker, useScanForm } from './useScanForm'
+import { scanFormBlocker, useScanForm, type ScanFormPayload } from './useScanForm'
 import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
 import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
@@ -70,11 +70,14 @@ export function ScanConfigurationTab({
   }, [dirty, onDirtyChange])
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
 
+  // The payload travels as the mutation's variables so the saved snapshot is
+  // the one this request SENT, not whatever the form holds when it answers
+  // (an edit typed while the save was in flight must stay dirty).
   const updateMut = useMutation({
     meta: SILENT_ERROR_META,
-    mutationFn: () => scansApi.update(slug, scanConfig.id, form.toBackendPayload()),
-    onSuccess: () => {
-      setSavedSnapshot(payloadSnapshot)
+    mutationFn: (payload: ScanFormPayload) => scansApi.update(slug, scanConfig.id, payload),
+    onSuccess: (_saved, payload) => {
+      setSavedSnapshot(JSON.stringify(payload))
       return qc.invalidateQueries({ queryKey: ['scans', slug] })
     },
   })
@@ -108,7 +111,7 @@ export function ScanConfigurationTab({
       <Button
         type="button"
         size="sm"
-        onClick={() => updateMut.mutate()}
+        onClick={() => updateMut.mutate(form.toBackendPayload())}
         disabled={updateMut.isPending || saveBlocker !== null}
         title={saveBlocker ?? undefined}
       >
@@ -125,6 +128,7 @@ export function ScanConfigurationTab({
     eventTypes: eventTypes as EventType[],
     sourceLocked: true,
     footerFor: canEdit ? footerFor : undefined,
+    readOnly: !canEdit,
   }
 
   return (
@@ -236,6 +240,8 @@ export function ScanCreatePage({
   })
 
   const createMut = useMutation({
+    // Rendered inline below as "Could not create scan".
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       scansApi.create(slug, {
         data_source_id: form.state.dataSourceId,

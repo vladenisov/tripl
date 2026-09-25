@@ -4,6 +4,8 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EventType, FieldDefinition } from '@/types'
 import { BranchContext } from '@/components/branch-context-internal'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
 import { EventTypesTab, FieldsEditor } from './EventTypesTab'
 import { EventTypeDetail } from './EventTypeDetailView'
 
@@ -54,18 +56,26 @@ const CHECKOUT = eventType({
   ],
 })
 
-function renderWithRoutes(initialPath: string, fetchImpl: typeof fetch) {
+const VIEWER = authAs('viewer')
+
+function renderWithRoutes(
+  initialPath: string,
+  fetchImpl: typeof fetch,
+  auth: AuthContextValue | null = null,
+) {
   vi.spyOn(globalThis, 'fetch').mockImplementation(fetchImpl)
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
-          <Route path="/p/:slug/settings/event-types" element={<EventTypesTab slug="demo" />} />
-          <Route path="/p/:slug/events/:tab" element={<div>events for tab</div>} />
-        </Routes>
-      </MemoryRouter>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
+            <Route path="/p/:slug/settings/event-types" element={<EventTypesTab slug="demo" />} />
+            <Route path="/p/:slug/events/:tab" element={<div>events for tab</div>} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -140,6 +150,23 @@ describe('EventTypesTab list', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Cancel/i }))
     expect(await screen.findByText('All types')).toBeInTheDocument()
+  })
+
+  it('offers a viewer no New type, and says why once', async () => {
+    renderWithRoutes(
+      '/p/demo/settings/event-types',
+      async (input) => {
+        const url = String(input)
+        if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+        if (url.endsWith('/owners')) return mockJsonResponse([])
+        throw new Error(`Unhandled fetch: ${url}`)
+      },
+      VIEWER,
+    )
+
+    expect(await screen.findByText('Checkout')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expect(screen.queryByRole('button', { name: /New type/i })).not.toBeInTheDocument()
   })
 
   it('shows an understandable merge status (ungated) instead of "open merge"', async () => {
@@ -354,6 +381,57 @@ describe('EventTypeDetail tabbed page', () => {
     // back to fields list
     fireEvent.click(screen.getByRole('button', { name: /Fields/i }))
     await waitFor(() => expect(screen.queryByText('Edit field · order_id')).not.toBeInTheDocument())
+  })
+
+  it('shows a viewer the settings with no way to change them', async () => {
+    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input), VIEWER)
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+    expect(await screen.findByText('General')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expect(screen.queryByRole('button', { name: /Save changes/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add field/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit field' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete field' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Danger zone')).not.toBeInTheDocument()
+    // The General card still shows its values, in controls that cannot change.
+    expect(screen.getByDisplayValue('Revenue-critical.')).toBeDisabled()
+
+    // A field row is information for a viewer, not a way into the editor.
+    fireEvent.click(screen.getByText('order_id'))
+    expect(screen.queryByText('Edit field · order_id')).not.toBeInTheDocument()
+  })
+
+  it('asks before a tab switch throws away a field draft (DATA-12)', async () => {
+    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'coupon' } })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Summary' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('tab', { name: 'Settings' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByLabelText('Name')).toHaveValue('coupon')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Summary' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Summary' })).toHaveAttribute('aria-selected', 'true'),
+    )
+  })
+
+  it('switches tabs at once with no draft', async () => {
+    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Summary' }))
+
+    expect(screen.getByRole('tab', { name: 'Summary' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 
   it('opens a page-style add-field subpage', async () => {

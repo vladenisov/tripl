@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
+import { AuthContext } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataSource, EventListItem, MetricDefinitionDetailResponse } from '@/types'
 import { MetricForm } from './MetricForm'
@@ -29,15 +31,18 @@ vi.mock('@uiw/react-codemirror', () => ({
     value,
     onChange,
     placeholder,
+    readOnly,
     'aria-label': ariaLabel,
   }: {
     value: string
     onChange: (v: string) => void
     placeholder?: string
+    readOnly?: boolean
     'aria-label'?: string
   }) => (
     <textarea
       aria-label={ariaLabel}
+      readOnly={readOnly}
       value={value}
       placeholder={placeholder}
       onChange={e => onChange(e.target.value)}
@@ -1215,5 +1220,37 @@ describe('MetricForm unsaved-changes guard (MET-5)', () => {
       target: { value: 'Orders' },
     })
     expect(reloadIsGuarded()).toBe(true)
+  })
+})
+
+const VIEWER = authAs('viewer')
+
+describe('MetricForm for a viewer', () => {
+  it('shows the SQL read-only and never asks for the editor-only schema', () => {
+    render(
+      createElement(
+        AuthContext.Provider,
+        { value: VIEWER },
+        createElement(MetricForm, {
+          slug: 'demo',
+          metric: EDIT_METRIC,
+          dataSources: DATA_SOURCES,
+          events: EVENTS,
+          onClose: vi.fn(),
+        }),
+      ),
+      { wrapper },
+    )
+
+    expect(screen.getByLabelText('Metric SQL')).toHaveAttribute('readonly')
+    expect(useDataSourceSchemaMock).toHaveBeenCalled()
+    expect(useDataSourceSchemaMock.mock.calls.every(([dsId]) => dsId === undefined)).toBe(true)
+  })
+
+  it('asks an editor for the schema of the chosen source', () => {
+    renderForm(EDIT_METRIC)
+
+    expect(screen.getByLabelText('Metric SQL')).not.toHaveAttribute('readonly')
+    expect(useDataSourceSchemaMock).toHaveBeenCalledWith('ds-1')
   })
 })

@@ -46,7 +46,7 @@ import { groupEventNames, type EventNameGroup } from './eventNameGroups'
 import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
 import { variablesKey } from '@/lib/queryKeys'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 
 /** Cap the cluster list so the summary header stays compact; the rest fold into a count. */
 const MAX_VISIBLE_CLUSTERS = 6
@@ -170,7 +170,7 @@ export function EventsTable({
 }: EventsTableProps) {
   const branchId = useActiveBranchId()
   // Selecting is only ever for a bulk edit, which a viewer cannot make.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const emptyCopy = eventsEmptyCopy(
     emptyContext ?? { activeTab: 'all', hasActiveFilters: false, search: '' },
   )

@@ -20,7 +20,9 @@ function NewScanRoute({ slug }: { slug: string }) {
     <ScanCreatePage
       slug={slug}
       onBack={() => navigate(`/p/${slug}/scans`)}
-      onCreated={created => navigate(`/p/${slug}/scans/${created.id}`)}
+      // Replace the /new entry: Back from the created scan goes to the list,
+      // not to an empty New scan form.
+      onCreated={created => navigate(`/p/${slug}/scans/${created.id}`, { replace: true })}
     />
   )
 }

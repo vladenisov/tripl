@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { SettingsLayout } from '@/components/settings/SettingsLayout'
 import DataSourcesPage from './DataSourcesPage'
 import type { DataSource } from '@/types'
 
@@ -841,5 +842,66 @@ describe('DataSourcesPage', () => {
       expect(screen.queryByRole('dialog', { name: 'New data source' })).not.toBeInTheDocument(),
     )
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  describe('inside the settings takeover', () => {
+    // A DATA router and the real shell: browser Back is only interceptable by
+    // the shell's blocker, which is what the edit dialog registers with.
+    function renderInTakeover() {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      })
+      const page = (
+        <SettingsLayout activePath="data-sources" backHref="/">
+          <DataSourcesPage />
+          <LocationProbe />
+        </SettingsLayout>
+      )
+      const router = createMemoryRouter(
+        [
+          { path: '/settings/data-sources', element: page },
+          { path: '/settings/data-sources/:dsId', element: page },
+        ],
+        { initialEntries: ['/settings/data-sources', '/settings/data-sources/ds-1'], initialIndex: 1 },
+      )
+      vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+        Promise.resolve(jsonResponse([DATA_SOURCE])),
+      )
+      render(
+        <QueryClientProvider client={queryClient}>
+          <AuthContext.Provider value={authValue('owner')}>
+            <RouterProvider router={router} />
+          </AuthContext.Provider>
+        </QueryClientProvider>,
+      )
+      return router
+    }
+
+    it('asks before browser Back throws away a dirty edit, and keeps it on Cancel', async () => {
+      const router = renderInTakeover()
+      await screen.findByRole('dialog', { name: 'Edit data source' })
+      fireEvent.change(screen.getByPlaceholderText('Default'), { target: { value: '120' } })
+
+      await act(() => router.navigate(-1))
+      const confirm = await screen.findByRole('alertdialog', { name: 'Leave with unsaved changes?' })
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+      expect(router.state.location.pathname).toBe('/settings/data-sources/ds-1')
+      expect(screen.getByPlaceholderText('Default')).toHaveValue(120)
+    })
+
+    it("asks once, not twice, when the dialog's own Cancel discards the edit", async () => {
+      const router = renderInTakeover()
+      await screen.findByRole('dialog', { name: 'Edit data source' })
+      fireEvent.change(screen.getByPlaceholderText('Default'), { target: { value: '120' } })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+
+      await waitFor(() => expect(router.state.location.pathname).toBe('/settings/data-sources'))
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+      expect(screen.queryByRole('dialog', { name: 'Edit data source' })).not.toBeInTheDocument()
+    })
   })
 })

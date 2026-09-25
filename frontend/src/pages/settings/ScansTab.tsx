@@ -25,7 +25,7 @@ import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
 import { countOf, pluralize } from "@/lib/plural"
 import { dataSourcesKey, projectEventTypesKey } from '@/lib/queryKeys'
-import { useCanWrite, useIsOwner } from '@/lib/permissions'
+import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 interface RecentRun {
@@ -52,7 +52,7 @@ export function ScansTab({ slug }: { slug: string }) {
   // Authoring a scan (and its SQL) is OwnerUserDep; running one is an editor's
   // job (DATA-6). Each control below is offered only to a role that can use it.
   const isOwner = useIsOwner()
-  const canRun = useCanWrite()
+  const canRun = useCanWriteProject()
   // Captured once at mount so the 24h window stays stable across re-renders
   // (keeps the rows-scanned KPI pure rather than reading the wall clock in render).
   const [mountedAtMs] = useState(() => Date.now())

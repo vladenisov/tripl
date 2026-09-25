@@ -43,7 +43,7 @@ import { useEventsTableOverflow } from './events/useEventsTableOverflow'
 import { useEventsTableVirtualization } from './events/useEventsTableVirtualization'
 import { useEventsViewState } from './events/useEventsViewState'
 import { useSavedViews } from './events/useSavedViews'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 interface EventsPageProps {
@@ -67,7 +67,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   const branchId = useActiveBranchId()
   // Viewers read the plan; every create, bulk, reorder and edit affordance is
   // an editor's, and each used to end in a 403 toast (EVT-9).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const { search: locationSearch } = useLocation()
   const usersQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
   const usersById = useMemo(

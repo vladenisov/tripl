@@ -17,7 +17,9 @@ For the underlying mental model (events vs. event types, scopes, signals) read
 
 :::note Permissions
 Mutations (create/update/delete) require at least the **editor** role; viewers
-are rejected. Data sources and the workspace/instance settings require the
+are rejected. Inside a project an editor may also need to own it: a demo, or a
+project another editor created, is changed only by its creator or an owner.
+Data sources and the workspace/instance settings require the
 **owner** role. Read surfaces are available to any signed-in member. Owner-only
 command-palette entries (such as **Runtime**) are hidden for non-owners.
 :::
@@ -1784,11 +1786,14 @@ the draft stays exactly where it is.
 The authoring pages outside the takeover ask the same question. The event,
 bulk-event, metric and fact-table forms, the new-scan page, a scan's
 **Configuration** tab (switching to **Overview** included) and the event-type
-field page all ask before a link, the sidebar, **Back**, **Cancel** or the back
-chevron drops edits you have not saved; reload and closing the tab get the
-browser's own prompt. The alert rule, alert destination and data-source dialogs
-ask before **Esc**, a click outside or **Cancel** closes them with your changes
-in them. A form you have not changed, or have changed back, never asks.
+field page (switching to another tab of the event type included) all ask before
+a link, the sidebar, switching branch in the sidebar, **Back**, **Cancel** or
+the back chevron drops edits you have not saved; reload and closing the tab get
+the browser's own prompt. The alert rule, alert destination and data-source
+dialogs ask before **Esc**, a click outside or **Cancel** closes them with your
+changes in them, and the data-source edit dialog, which has an address of its
+own, asks before **Back** too. A form you have not changed, or have changed
+back, never asks.
 
 The two halves of the app-wide palette's list narrow differently, and on purpose.
 

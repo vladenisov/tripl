@@ -215,6 +215,19 @@ describe('MonitorDetailPage', () => {
       screen.queryByRole('button', { name: expectedMutePresetName(RULE, '1h') }),
     ).not.toBeInTheDocument()
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    // Nothing to edit from here either: the rule editor is an editor's.
+    expect(screen.queryByRole('link', { name: /Edit rule/ })).not.toBeInTheDocument()
+  })
+
+  it('links an editor to the rule editor', async () => {
+    mockApi()
+
+    renderDetail()
+
+    expect(await screen.findByRole('link', { name: /Edit rule/ })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting?section=monitors',
+    )
   })
 
   // The Condition panel described everything that narrows a rule except the

@@ -58,7 +58,8 @@ import {
   type SqlTemplateId,
 } from './metricTemplates'
 import { dataSourcesKey } from '@/lib/queryKeys'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 // The single fact operand shape sent to the backend (numerator / denominator /
@@ -608,7 +609,7 @@ interface MetricFormProps {
 export function MetricForm({ slug, metric, dataSources, events, onClose }: MetricFormProps) {
   const qc = useQueryClient()
   // Create, update and preview are all EditorUserDep (MET-6).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const isNew = !metric
 
   const initialConfig = (metric?.config ?? {}) as Record<string, unknown>
@@ -762,7 +763,9 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     () => dataSources.find(ds => ds.id === dataSourceId),
     [dataSources, dataSourceId],
   )
-  const { data: sqlSchemaData } = useDataSourceSchema(dataSourceId || undefined)
+  // The schema route is editor-only, so a read-only visitor would get a 403
+  // for autocomplete they cannot use: skip the request instead.
+  const { data: sqlSchemaData } = useDataSourceSchema(canWrite ? dataSourceId || undefined : undefined)
   const selectedDbType = selectedDataSource?.db_type
 
   // Unique column names across every table of the selected data source, in
@@ -995,6 +998,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   const unsaved = useUnsavedChangesGuard(canWrite && draftSnapshot !== initialSnapshot)
 
   const saveMut = useMutation({
+    // Rendered inline at the foot of the form ("Could not save …").
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       metric
         ? metricsCatalogApi.update(slug, metric.id, buildUpdatePayload())
@@ -1395,6 +1400,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                   dialect={selectedDataSource?.db_type}
                   tables={sqlSchemaData?.tables}
                   minHeight="220px"
+                  readOnly={!canWrite}
                 />
                 <div className="mt-[10px] flex items-center gap-[10px]">
                   <button

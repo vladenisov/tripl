@@ -14,7 +14,7 @@ import { ChevronLeft, Loader2, Plus } from 'lucide-react'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard } from './eventFormLayout'
 import { nameFormatBaseColumns } from './utils'
 import { bulkUnsupportedReason, parseBulkDraft, type BulkRow } from './bulkEventDraft'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
@@ -63,7 +63,7 @@ export default function EventBulkForm() {
   const qc = useQueryClient()
   // Creating events is an editor action; a viewer who lands here by URL is
   // told so up front rather than after pasting a list.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
 
   // `null` is "not chosen yet": until the reader picks, the type the route names
   // (`/events/se/bulk`) is the choice, as on the single-event form

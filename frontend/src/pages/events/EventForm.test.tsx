@@ -1398,6 +1398,26 @@ function reloadIsGuarded(): boolean {
 }
 
 describe('EventForm unsaved-changes guard (EVT-8)', () => {
+  it('keeps an edit typed while "Save and add another" was in flight unsaved', async () => {
+    let answerCreate: (value: never) => void = () => {}
+    vi.mocked(eventsApi.create).mockImplementation(
+      () => new Promise(resolve => { answerCreate = resolve as (value: never) => void }),
+    )
+    renderForm(null)
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Sent title' } })
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:started' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save and add another/i }))
+    await waitFor(() => expect(eventsApi.create).toHaveBeenCalled())
+
+    // Typed after the request left, before it answered: not part of the save.
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Typed during save' } })
+    await act(async () => answerCreate({ name: 'checkout:started' } as never))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Created checkout:started')
+    expect(reloadIsGuarded()).toBe(true)
+  })
+
   it('arms the reload prompt only once the author has changed something', () => {
     renderForm(null)
     expect(reloadIsGuarded()).toBe(false)

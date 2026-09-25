@@ -41,7 +41,7 @@ import {
   formatRelativeTime,
   splitTemplateValue,
 } from './utils'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 
 export type RowAction =
   | 'edit'
@@ -144,7 +144,7 @@ export const EventRow = memo(function EventRow({
 }: EventRowProps) {
   // Reorder, select-for-bulk and edit are all editor actions; a viewer gets
   // the row without them (the cells stay, so the columns line up).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const {
     attributes,
     listeners,

@@ -12,6 +12,25 @@ type GuardOptions = {
 }
 
 /**
+ * The page guard that is mounted right now, for exits that are neither a
+ * navigation nor inside the guarded page: the sidebar's branch switcher swaps
+ * the data every page renders, which remounts a form without changing the URL,
+ * so no router blocker sees it. One slot, for the same reason a router consults
+ * one blocker: only one page guard is mounted at a time.
+ */
+let activePageLeave: ((action: () => void) => void) | null = null
+
+/**
+ * Run `action` once the mounted page guard (if any) lets the page go: at once
+ * when there is no guard or its form is clean, after a confirm when dirty.
+ * For controls outside the page that replace what it shows (BranchSwitcher).
+ */
+export function requestPageLeave(action: () => void): void {
+  if (activePageLeave) activePageLeave(action)
+  else action()
+}
+
+/**
  * Reload and tab-close are not React navigations, so only the browser's own
  * prompt can stop them, and only from a listener that exists while the draft
  * does. Registered off the dirty flag alone so a form nobody has typed into
@@ -84,7 +103,9 @@ function useConfirmDiscard(isDirty: boolean, message: string) {
  * successful save: the state that made the form dirty has not re-rendered yet,
  * and the draft is no longer at risk. `requestLeave(action)` is for exits that
  * are not navigations (a tab switch inside the page): it runs `action` at once
- * when clean, and after a confirm when dirty.
+ * when clean, and after a confirm when dirty. Controls outside the page that
+ * replace its content without navigating (the branch switcher) reach the same
+ * confirm through {@link requestPageLeave}.
  *
  * A router consults only ONE blocker, the most recently registered. Do not use
  * this inside the settings takeover (SettingsLayout owns that blocker; register
@@ -106,6 +127,13 @@ export function useUnsavedChangesGuard(
   }, [])
 
   useBeforeUnloadWhile(isDirty)
+
+  useEffect(() => {
+    activePageLeave = runIfDiscarded
+    return () => {
+      if (activePageLeave === runIfDiscarded) activePageLeave = null
+    }
+  }, [runIfDiscarded])
 
   const shouldBlock = useCallback<BlockerFunction>(
     ({ currentLocation, nextLocation }) =>
