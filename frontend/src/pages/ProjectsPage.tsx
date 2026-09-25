@@ -61,6 +61,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { dataSourcesKey } from '@/lib/queryKeys'
+import { canWrite, isOwner as isOwnerRole } from '@/lib/permissions'
 
 export default function MainPage() {
   const queryClient = useQueryClient()
@@ -196,8 +197,8 @@ export default function MainPage() {
     : dataSourcesQuery.isLoading
       ? '...'
       : String(dataSourceCount)
-  const isOwner = user?.role === 'owner'
-  const canCreateProject = user?.role === 'owner' || user?.role === 'editor'
+  const isOwner = isOwnerRole(user?.role)
+  const canCreateProject = canWrite(user?.role)
   const canDeleteProject = isOwner
   // Loaded-and-empty workspace: the welcome hero replaces the header CTA pair,
   // the all-zero stat band, and the old EmptyState until the first project

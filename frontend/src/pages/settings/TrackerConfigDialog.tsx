@@ -17,6 +17,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { getErrorMessage } from '@/lib/utils'
 import type { ProjectTrackerConfig, ProjectTrackerConfigUpdate } from '@/types'
+import { isOwner } from '@/lib/permissions'
 
 const DEFAULT_ISSUE_TYPE = 'Task'
 
@@ -75,7 +76,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
   const { user } = useAuth()
   // PATCH is owner-only on the backend; mirror the merge-policy / general
   // settings gate so non-owners get a read-only view instead of a 403.
-  const canEdit = user?.role === 'owner'
+  const canEdit = isOwner(user?.role)
 
   const enabledId = useId()
   const baseUrlId = useId()

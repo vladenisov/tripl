@@ -74,6 +74,9 @@ interface SectionProps {
   // Configuration tab supplies a per-card Save footer; the create page omits it
   // and uses a single Create button at the bottom of the page instead.
   footerFor?: () => React.ReactNode
+  // Configuration tab for someone who may not edit it: the SQL is shown, not
+  // editable, and the editor-only schema lookup behind autocomplete is skipped.
+  readOnly?: boolean
 }
 
 /**
@@ -164,6 +167,7 @@ export function ScanEssentialsSection({
   eventTypes,
   sourceLocked,
   footerFor,
+  readOnly = false,
 }: SectionProps) {
   const {
     state, set, preview, dryRun, dryRunStale,
@@ -194,7 +198,7 @@ export function ScanEssentialsSection({
   const namesEventsFromColumn = !state.eventTypeId || Boolean(state.eventTypeColumn)
   const selectedSource = dataSources.find(ds => ds.id === state.dataSourceId)
   const sourceName = selectedSource?.name ?? ''
-  const { data: schemaData } = useDataSourceSchema(state.dataSourceId || undefined)
+  const { data: schemaData } = useDataSourceSchema(readOnly ? undefined : state.dataSourceId || undefined)
 
   // A saved config opens its edit form before any preview has been loaded, so
   // the column list is empty and a <select> whose value matches no option shows
@@ -298,6 +302,7 @@ export function ScanEssentialsSection({
           placeholder="SELECT * FROM analytics.events"
           dialect={selectedSource?.db_type}
           tables={schemaData?.tables}
+          readOnly={readOnly}
         />
       </Field>
       {/* The button loads the sample rows; the ANSWER it also computes is

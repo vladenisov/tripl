@@ -11,6 +11,7 @@ import type {
   MetricDefinitionListItem,
   MetricDefinitionListResponse,
 } from '@/types'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import MetricsPage, { type MetricsTab } from './MetricsPage'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
@@ -164,19 +165,25 @@ function EditRouteProbe() {
   return <div data-testid="edit-route">{metricId}</div>
 }
 
-function renderMetrics(tab: MetricsTab = 'catalog', pathOverride?: string) {
+function renderMetrics(
+  tab: MetricsTab = 'catalog',
+  pathOverride?: string,
+  auth: AuthContextValue | null = null,
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const path =
     pathOverride ?? (tab === 'fact-tables' ? '/p/demo/metrics/fact-tables' : '/p/demo/metrics')
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/p/:slug/metrics" element={<MetricsPage tab="catalog" />} />
-          <Route path="/p/:slug/metrics/fact-tables" element={<MetricsPage tab="fact-tables" />} />
-          <Route path="/p/:slug/metrics/:metricId/edit" element={<EditRouteProbe />} />
-        </Routes>
-      </MemoryRouter>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/p/:slug/metrics" element={<MetricsPage tab="catalog" />} />
+            <Route path="/p/:slug/metrics/fact-tables" element={<MetricsPage tab="fact-tables" />} />
+            <Route path="/p/:slug/metrics/:metricId/edit" element={<EditRouteProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -200,6 +207,45 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+function viewerAuth(): AuthContextValue {
+  return {
+    user: {
+      id: 'viewer-1',
+      email: 'viewer@example.com',
+      name: 'Viewer',
+      role: 'viewer',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+describe('MetricsPage — a viewer reads the catalog without write controls (MET-6)', () => {
+  it('hides New, the select boxes, the reorder handles and the row menu', async () => {
+    mockList({
+      items: [
+        makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+        makeItem({ id: 'm-2', display_name: 'Signups', name: 'signups' }),
+      ],
+      total: 2,
+    })
+    renderMetrics('catalog', undefined, viewerAuth())
+
+    expect(await screen.findByText('Checkout conversion')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expect(screen.queryByRole('link', { name: /New metric/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'Select all metrics' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'Select Checkout conversion' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reorder Checkout conversion' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Actions for Checkout conversion' })).not.toBeInTheDocument()
+  })
 })
 
 describe('MetricsPage — the kind filter is deep-linkable (tripl-2su6.19)', () => {
@@ -587,7 +633,7 @@ describe('MetricsPage', () => {
         fireEvent.click(await screen.findByRole('menuitem', { name: 'Collect now' }))
 
         await waitFor(() =>
-          expect(toast.error).toHaveBeenCalledWith('Could not start collection.'),
+          expect(toast.error).toHaveBeenCalledWith('Could not start collection — 503'),
         )
         // No watch starts, so the status endpoint is never polled.
         expect(metricsCatalogApi.get).not.toHaveBeenCalled()

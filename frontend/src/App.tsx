@@ -5,6 +5,7 @@ import { projectsApi } from './api/projects'
 import { AuthProvider } from './components/auth-provider'
 import { useAuth } from './components/auth-context'
 import { ErrorState } from './components/error-state'
+import { KeyedRoute } from './components/keyed-route'
 import Layout from './components/Layout'
 import { ThemeProvider } from './components/theme-provider'
 import { Toaster } from './components/ui/sonner'
@@ -402,7 +403,15 @@ export default function App() {
             <Route path="/p/:slug/monitoring" element={<ProjectSettingsRedirect tab="monitoring" />} />
             <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />
             <Route path="/p/:slug/events/detail/:eventId" element={<EventDetailRedirect />} />
-            <Route path="/p/:slug/monitoring/:scope/:id" element={withSuspense(<MonitoringDetailPage />)} />
+            {/* Keyed per entity: the page is reached from itself (successor links, the
+                bell, Back), and a reused instance kept the previous entity's chart,
+                filters and tab under the new header. */}
+            <Route
+              path="/p/:slug/monitoring/:scope/:id"
+              element={withSuspense(
+                <KeyedRoute params={['slug', 'scope', 'id']}><MonitoringDetailPage /></KeyedRoute>,
+              )}
+            />
             <Route path="/p/:slug/events/:tab/new" element={withSuspense(<EventEditPage />)} />
             {/* Before /events/:tab/:eventId, or "bulk" resolves as an event id. */}
             <Route path="/p/:slug/events/:tab/bulk" element={withSuspense(<EventBulkPage />)} />

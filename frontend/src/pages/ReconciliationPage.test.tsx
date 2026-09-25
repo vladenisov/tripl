@@ -9,6 +9,7 @@ import type {
   ShadowEventsResponse,
 } from '@/api/reconciliation'
 import { DEAD_EVENT_DAYS } from '@/lib/coverage'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ReconciliationPage from './ReconciliationPage'
 
 function jsonResponse(body: unknown) {
@@ -104,15 +105,17 @@ function mockFetch(): void {
   })
 }
 
-function renderPage() {
+function renderPage(auth: AuthContextValue | null = null) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/reconciliation']}>
-        <Routes>
-          <Route path="/p/:slug/reconciliation" element={<ReconciliationPage />} />
-        </Routes>
-      </MemoryRouter>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={['/p/demo/reconciliation']}>
+          <Routes>
+            <Route path="/p/:slug/reconciliation" element={<ReconciliationPage />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -122,6 +125,32 @@ afterEach(() => {
 })
 
 describe('ReconciliationPage', () => {
+  it('offers a viewer no accept, dismiss, archive or selection (DATA-7)', async () => {
+    mockFetch()
+    renderPage({
+      user: {
+        id: 'viewer-1',
+        email: 'viewer@example.com',
+        name: 'Viewer',
+        role: 'viewer',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+    })
+
+    expect(await screen.findByText('legacy_banner_shown')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Archive/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+  })
+
   it('renders the coverage hero and govern header', async () => {
     mockFetch()
     renderPage()

@@ -7,6 +7,7 @@ import { authApi } from '@/api/auth'
 import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
 import { AuthContext, type AuthContextValue, type AuthStatus } from './auth-context'
 import type { AuthUser } from '@/types'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 const AUTH_QUERY_KEY = ['auth', 'me'] as const
 
@@ -19,6 +20,7 @@ function clearProtectedQueries(queryClient: QueryClient) {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const meQuery = useQuery<AuthUser | null, Error>({
+    meta: SILENT_ERROR_META,
     queryKey: AUTH_QUERY_KEY,
     queryFn: authApi.me,
     retry: false,

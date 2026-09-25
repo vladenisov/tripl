@@ -34,6 +34,7 @@ import { buildNavGroups, type NavGroup, type NavItem, type NavTone } from '@/lib
 import { commandPaletteShortcutLabel } from '@/lib/platform'
 import type { EventType, Project } from '@/types'
 import { eventTypesKey } from '@/lib/queryKeys'
+import { isOwner as isOwnerRole } from '@/lib/permissions'
 
 const SIDEBAR_STORAGE_KEY = 'tripl-sidebar-collapsed'
 const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
@@ -170,7 +171,7 @@ export function AppSidebar() {
   // Owner-only items are dropped rather than shown-and-denied: the routes behind
   // them 403 for everyone else, and a nav entry that always fails reads as a
   // broken app rather than a permission boundary (tripl-jfm3.110).
-  const isOwner = auth.user?.role === 'owner'
+  const isOwner = isOwnerRole(auth.user?.role)
   const navGroups: NavGroup[] = slug
     ? buildNavGroups(slug, project?.summary).map((group) => ({
         ...group,

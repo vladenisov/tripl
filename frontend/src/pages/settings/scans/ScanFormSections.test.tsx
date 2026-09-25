@@ -93,7 +93,7 @@ function renderCreatePage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ScanCreatePage slug="demo" onBack={() => {}} />
+      <ScanCreatePage slug="demo" onBack={() => {}} onCreated={() => {}} />
     </QueryClientProvider>,
   )
 }

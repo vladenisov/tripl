@@ -38,6 +38,7 @@ import {
   resetConfirm,
   resetPayload,
 } from './settings-service/serviceSettingsHelpers'
+import { isOwner } from '@/lib/permissions'
 
 const UNSAVED_MESSAGE =
   'Instance settings you edited here have not been saved. Leaving this page drops them — anything typed into a prompt or a field is gone.'
@@ -78,7 +79,7 @@ export default function ServiceSettingsSection({
   const settingsQuery = useQuery({
     queryKey: ['serviceSettings'],
     queryFn: serviceSettingsApi.get,
-    enabled: user?.role === 'owner',
+    enabled: isOwner(user?.role),
   })
 
   if (settingsQuery.data && hydratedSettings !== settingsQuery.data) {
@@ -161,7 +162,7 @@ export default function ServiceSettingsSection({
     setSecretDrafts(EMPTY_SECRET_DRAFTS)
   }
 
-  if (user?.role !== 'owner') {
+  if (!isOwner(user?.role)) {
     return (
       <div className="max-w-3xl">
         <Card>

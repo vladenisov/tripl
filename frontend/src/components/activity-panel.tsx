@@ -20,6 +20,7 @@ import { formatRelativeTime } from '@/lib/datetime'
 import { resolveActivityTargetPath } from '@/lib/navigation'
 import { countOf } from '@/lib/plural'
 import type { ActivityItem, ActivityItemSeverity, ActivityItemType } from '@/types'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 const ACTIVITY_LIMIT = 20
 
@@ -160,6 +161,7 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
   // map, so poll only while the stream is unavailable (and never on a hidden tab).
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   const activityQuery = useQuery({
+    meta: SILENT_ERROR_META,
     queryKey: ['activity', slug ?? 'workspace'],
     queryFn: () => activityApi.list({ slug, limit: ACTIVITY_LIMIT }),
     enabled: open,

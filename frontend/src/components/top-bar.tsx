@@ -34,6 +34,7 @@ import { Dot } from '@/components/primitives/dot'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDelivery, MonitoringSignal } from '@/types'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 type TopBarProps = {
   title: string
@@ -139,6 +140,7 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
   // (tripl-jfm3.119) — Overview renders this bar, so it used to fetch twice.
   const signalsQuery = useExpandedSignals(projectSlug)
   const deliveriesQuery = useQuery({
+    meta: SILENT_ERROR_META,
     queryKey: ['topbarNotifications', projectSlug, 'deliveries'],
     queryFn: () => alertingApi.listDeliveries(projectSlug!, { limit: 5 }),
     enabled: !!projectSlug,
@@ -347,6 +349,7 @@ function DeliveryNotification({
   // backend flips it back to 'pending', so we invalidate the notifications
   // deliveries query (and the full alerting list) to pull the fresh status.
   const retryMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => alertingApi.retryDelivery(slug, delivery.id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['topbarNotifications', slug, 'deliveries'] })

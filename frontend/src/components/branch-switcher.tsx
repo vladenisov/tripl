@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Check, ChevronDown, GitBranch, GitCompare, Plus } from 'lucide-react'
 import { planBranchesApi } from '@/api/planBranches'
 import { useBranchContext } from '@/hooks/useBranch'
+import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
 import { Chip } from '@/components/primitives/chip'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { PlanBranchSummary } from '@/types'
@@ -30,6 +31,14 @@ export function BranchSwitcher({ slug }: { slug: string }) {
   const active = branchId ? (branches.find((b) => b.id === branchId) ?? null) : (mainBranch ?? null)
   const activeLabel = active?.name ?? 'main'
   const onMain = !branchId || active?.kind === 'main'
+
+  // Switching branch swaps the data under the page without a navigation, so a
+  // form with a draft would be remounted empty. Ask the page's unsaved-changes
+  // guard first; the popover closes either way.
+  const switchTo = (id: string | null) => {
+    setOpen(false)
+    requestPageLeave(() => setBranchId(id))
+  }
 
   const goToBranches = () => {
     setOpen(false)
@@ -74,10 +83,7 @@ export function BranchSwitcher({ slug }: { slug: string }) {
             <BranchRow
               branch={mainBranch}
               active={onMain}
-              onSelect={() => {
-                setBranchId(null)
-                setOpen(false)
-              }}
+              onSelect={() => switchTo(null)}
             />
           )}
           {workingBranches.map((branch) => (
@@ -85,10 +91,7 @@ export function BranchSwitcher({ slug }: { slug: string }) {
               key={branch.id}
               branch={branch}
               active={branchId === branch.id}
-              onSelect={() => {
-                setBranchId(branch.id)
-                setOpen(false)
-              }}
+              onSelect={() => switchTo(branch.id)}
             />
           ))}
           {!branchesQuery.isFetching && workingBranches.length === 0 && (

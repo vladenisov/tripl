@@ -21,6 +21,7 @@ import { getErrorMessage } from '@/lib/utils'
 import { SCard, SHeader } from '@/components/settings/kit'
 import { describeKeyCounts, isKeyInactive } from './apiKeyStatus'
 import type { ApiKey, ApiKeyScope, ApiKeyWithToken } from '@/types'
+import { canWrite } from '@/lib/permissions'
 
 /**
  * Workspace · API keys. Reuses the real apiKeysApi wiring (the same create /
@@ -82,7 +83,7 @@ export default function ApiKeysSection() {
   }
 
   const keys = listQuery.data ?? []
-  const canCreateWriteKeys = user?.role === 'owner' || user?.role === 'editor'
+  const canCreateWriteKeys = canWrite(user?.role)
 
   // The card used to headline "Active keys · N keys" off the unfiltered list,
   // so revoked and expired tokens were counted as live ones on a credentials

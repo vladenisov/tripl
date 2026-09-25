@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import {
@@ -10,8 +10,10 @@ import {
   writeScenarioState,
 } from '@/demo/scenarioModel'
 import { liveLoopState } from '@/demo/scenarioTestState'
-import type { Project } from '@/types'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import type { Project, Role } from '@/types'
 import { ScansTab } from './ScansTab'
+import ProjectScansPage from '../ProjectScansPage'
 
 const navigateMock = vi.fn()
 
@@ -171,13 +173,51 @@ function setupFetchWithJobs(jobs: unknown[], runCalls?: { method: string; url: s
 // The scan rows now carry a real <Link> to the detail page, so the tab needs a
 // router. useNavigate is still the mock above — Link resolves its href through
 // react-router's own internals, which the mock does not intercept.
-function renderTab() {
+function authAs(role: Role): AuthContextValue {
+  return {
+    user: {
+      id: `${role}-1`,
+      email: `${role}@example.com`,
+      name: role,
+      role,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+/** As an owner unless a test says otherwise: authoring a scan is owner-only. */
+function renderTab(role: Role = 'owner') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/scans']}>
-        <ScansTab slug="demo" />
-      </MemoryRouter>
+      <AuthContext.Provider value={authAs(role)}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
+          <ScansTab slug="demo" />
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+}
+
+/** The routed page, for the paths ScansTab alone cannot answer (`/scans/new`). */
+function renderRoute(path: string, role: Role = 'owner') {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <AuthContext.Provider value={authAs(role)}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -189,6 +229,25 @@ afterEach(() => {
 })
 
 describe('ScansTab', () => {
+  it('offers an editor Run now but no scan authoring (DATA-6)', async () => {
+    setupFetch()
+    renderTab('editor')
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/done by an owner/)
+    expect(await screen.findByRole('button', { name: 'Run Main events scan now' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New scan/ })).not.toBeInTheDocument()
+  })
+
+  it('offers a viewer neither authoring nor runs (DATA-6)', async () => {
+    setupFetchWithJobs([failedJob('job-f1', '2026-01-01T00:00:00Z')])
+    renderTab('viewer')
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/viewer role/)
+    await screen.findByText('Recent runs')
+    expect(screen.queryByRole('button', { name: /Run .* now|Run again/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New scan/ })).not.toBeInTheDocument()
+  })
+
   it('renders the scan list with KPIs and config rows', async () => {
     setupFetch()
     renderTab()
@@ -447,7 +506,7 @@ describe('ScansTab', () => {
     expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/scan-1')
   })
 
-  it('opens the create page in place and gates column mapping behind preview', async () => {
+  it('opens the create page on its own route, so Back and reload keep it (DATA-13)', async () => {
     setupFetch()
     renderTab()
 
@@ -458,10 +517,15 @@ describe('ScansTab', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /New scan/i }))
 
-    // In-place page view — no router navigation occurred.
-    expect(navigateMock).not.toHaveBeenCalled()
-    // Scoped to the heading: the list's own "New scan" BUTTON now carries the
-    // same words, so a bare text query would match it and pass either way.
+    expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/new')
+  })
+
+  it('renders the create page at /scans/new and gates column mapping behind preview', async () => {
+    setupFetch()
+    renderRoute('/p/demo/scans/new')
+
+    // Scoped to the heading: the list's own "New scan" BUTTON carries the same
+    // words, so a bare text query would match it and pass either way.
     expect(await screen.findByRole('heading', { name: 'New scan' })).toBeInTheDocument()
     // The essentials block is always visible; everything else is a collapsed
     // section whose fields are not mounted until it is opened.
@@ -470,11 +534,50 @@ describe('ScansTab', () => {
     expect(screen.getByRole('button', { name: /Limits/ })).toBeInTheDocument()
     expect(screen.queryByLabelText('Row cap per run')).toBeNull()
 
-    // Cancel returns to the list without navigation.
+    // Cancel on an untouched form goes back to the list without asking.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.getByText('Main events scan')).toBeInTheDocument())
+    expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans')
+  })
+
+  it('replaces /scans/new with the created scan, so Back returns to the list', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans') && method === 'POST') {
+        return mockJsonResponse({ ...scanConfig, id: 'scan-new' })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/data-sources/') && url.includes('/schema')) return mockJsonResponse({ tables: [] })
+      if (url.includes('/event-types')) {
+        return mockJsonResponse([{ id: 'et-1', name: 'click', display_name: 'Click', fields: [] }])
+      }
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    renderRoute('/p/demo/scans/new')
+
+    await screen.findByRole('heading', { name: 'New scan' })
+    fireEvent.click(screen.getByLabelText('Catalog only'))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
+    fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByPlaceholderText('SELECT * FROM analytics.events'), {
+      target: { value: 'SELECT * FROM analytics.events' },
+    })
+    await screen.findByRole('option', { name: 'Click' })
+    fireEvent.change(screen.getByLabelText('Event type'), { target: { value: 'et-1' } })
+    fireEvent.click(screen.getByRole('button', { name: /Create scan/ }))
+
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/scan-new', { replace: true }),
+    )
+  })
+
+  it('sends a non-owner who opens /scans/new to the list', async () => {
+    setupFetch()
+    renderRoute('/p/demo/scans/new', 'editor')
+
+    expect(await screen.findByText('Main events scan')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'New scan' })).not.toBeInTheDocument()
-    expect(navigateMock).not.toHaveBeenCalled()
   })
 })
 
@@ -532,11 +635,13 @@ describe('ScansTab — coached demo scenario', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/p/${SLUG}/scans`]}>
-          <DemoScenarioProvider project={project} pollIntervalMs={10}>
-            <ScansTab slug={SLUG} />
-          </DemoScenarioProvider>
-        </MemoryRouter>
+        <AuthContext.Provider value={authAs('owner')}>
+          <MemoryRouter initialEntries={[`/p/${SLUG}/scans`]}>
+            <DemoScenarioProvider project={project} pollIntervalMs={10}>
+              <ScansTab slug={SLUG} />
+            </DemoScenarioProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
   }

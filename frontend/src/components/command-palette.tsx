@@ -54,6 +54,8 @@ import { Kbd } from '@/components/primitives/kbd'
 import type { AiAskResponse } from '@/api/ai'
 import type { SearchEntityType, SearchResult } from '@/types'
 import { eventTypesKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { isOwner as isOwnerRole } from '@/lib/permissions'
 
 export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [open, setOpenState] = useState(false)
@@ -362,6 +364,7 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
     staleTime: 30_000,
   })
   const searchQuery = useQuery({
+    meta: SILENT_ERROR_META,
     queryKey: ['commandPaletteSearch', searchSlug, debouncedQuery],
     queryFn: () =>
       searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12 }),
@@ -418,6 +421,7 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
   const aiEnabled = useAiStatus(searchSlug)
 
   const askMutation = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (question: string) =>
       aiApi.ask(searchSlug!, question, branchId),
     onSuccess: data => setAiResult(data),
@@ -479,7 +483,7 @@ function CommandPalette({ onRestoreFocus }: { onRestoreFocus: () => void }) {
     onSelect: () => goTo(path),
   })
 
-  const isOwner = auth.user?.role === 'owner'
+  const isOwner = isOwnerRole(auth.user?.role)
 
   // Workspace destinations, at the canonical paths and under the sidebar's and
   // settings rail's own labels. Three of these pointed at retired URLs that only

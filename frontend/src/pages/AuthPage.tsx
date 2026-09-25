@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
 import { PASSWORD_MIN_LENGTH, PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
 import type { AuthUser } from '@/types'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 type AuthMode = 'login' | 'register' | 'forgot' | 'reset'
 
@@ -77,6 +78,7 @@ export default function AuthPage() {
       : chosenMode
 
   const authMutation = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       mode === 'login'
         ? authApi.login({ email, password })
@@ -93,10 +95,12 @@ export default function AuthPage() {
   })
 
   const forgotMutation = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => authApi.requestPasswordReset({ email }),
   })
 
   const resetMutation = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       authApi.confirmPasswordReset({ token: resetToken, new_password: newPassword }),
   })

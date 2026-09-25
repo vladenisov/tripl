@@ -27,6 +27,8 @@ import { eventNameLabel } from '@/lib/eventName'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { coverageTone, toneVar } from '@/lib/statusLexicon'
 import { eventTypesKey } from '@/lib/queryKeys'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 const COVERAGE_DAYS = 14 as const
 // Deliberately NOT COVERAGE_DAYS. Dead events answer a different question than
@@ -93,6 +95,9 @@ export default function ReconciliationPage() {
   const branchId = useActiveBranchId()
   const qc = useQueryClient()
   const { notifyStepCompleted } = useDemoScenarioActions()
+  // Accept, dismiss and archive are EditorUserDep (DATA-7); a viewer reads the
+  // reconciliation without the checkboxes and buttons that only answer 403.
+  const canWrite = useCanWriteProject()
 
   const [shadowStatus, setShadowStatus] = useState<ShadowEventStatus>('new')
   const [acceptingId, setAcceptingId] = useState<string | null>(null)
@@ -246,6 +251,8 @@ export default function ReconciliationPage() {
         </Button>
       </div>
 
+      {!canWrite && <ReadOnlyNotice />}
+
       {/* Data match — share of planned events actually seen in data (distinct from plan coverage) */}
       <Panel
         title="Data match"
@@ -381,11 +388,11 @@ export default function ReconciliationPage() {
                 eventTypes={eventTypes}
                 selectedEventTypeId={selectedEventType[item.id] ?? ''}
                 error={rowError[item.id]}
-                onAccept={() => handleAccept(item)}
-                onDismiss={() => {
+                onAccept={canWrite ? () => handleAccept(item) : undefined}
+                onDismiss={canWrite ? () => {
                   setAcceptingId(null)
                   dismissMutation.mutate(item.id)
-                }}
+                } : undefined}
                 onSelectEventType={(value) =>
                   setSelectedEventType((prev) => ({ ...prev, [item.id]: value }))
                 }
@@ -412,7 +419,7 @@ export default function ReconciliationPage() {
           // this subtitle and Coverage's report the same number.
           subtitle={`Implemented events with no data in the last ${DEAD_DAYS} days`}
           right={
-            deadItems.length > 0 ? (
+            canWrite && deadItems.length > 0 ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -431,11 +438,13 @@ export default function ReconciliationPage() {
         >
           {deadItems.length > 0 && (
             <div className="flex items-center gap-2.5 px-4 py-2">
-              <Checkbox
-                checked={allDeadSelected}
-                onCheckedChange={(value) => toggleSelectAllDead(value === true)}
-                aria-label="Select all dead events"
-              />
+              {canWrite && (
+                <Checkbox
+                  checked={allDeadSelected}
+                  onCheckedChange={(value) => toggleSelectAllDead(value === true)}
+                  aria-label="Select all dead events"
+                />
+              )}
               <span className="text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
                 Planned events not seen in your data recently — often expected.
               </span>
@@ -479,7 +488,7 @@ export default function ReconciliationPage() {
               item={item}
               slug={slug}
               selected={selectedDead.includes(item.event_id)}
-              onToggle={toggleDeadSelection}
+              onToggle={canWrite ? toggleDeadSelection : undefined}
             />
           ))}
         </Panel>
@@ -613,8 +622,9 @@ function ShadowRow({
   eventTypes: ReadonlyArray<{ id: string; display_name: string }>
   selectedEventTypeId: string
   error?: string
-  onAccept: () => void
-  onDismiss: () => void
+  /** Omitted for a viewer, as is `onDismiss`. */
+  onAccept?: () => void
+  onDismiss?: () => void
   onSelectEventType: (value: string) => void
   onConfirm: () => void
   onCancel: () => void
@@ -648,7 +658,7 @@ function ShadowRow({
             no type
           </span>
         )}
-        {item.status === 'new' && (
+        {item.status === 'new' && onAccept && onDismiss && (
           <div className="flex shrink-0 gap-1.5">
             {/* Exactly one row coaches: the seeded shadow candidate. */}
             <ScenarioCoachMark
@@ -719,7 +729,8 @@ function DeadRow({
   item: DeadEvent
   slug: string | undefined
   selected: boolean
-  onToggle: (id: string) => void
+  /** Omitted for a viewer: selecting is only ever for Archive. */
+  onToggle?: (id: string) => void
 }) {
   const isNever = !item.last_seen_at
   return (
@@ -727,11 +738,13 @@ function DeadRow({
       className="flex items-center gap-2.5 border-t px-4 py-2.5"
       style={{ borderColor: 'var(--border-subtle)' }}
     >
-      <Checkbox
-        checked={selected}
-        onCheckedChange={() => onToggle(item.event_id)}
-        aria-label={`Select ${eventNameLabel(item.name)}`}
-      />
+      {onToggle && (
+        <Checkbox
+          checked={selected}
+          onCheckedChange={() => onToggle(item.event_id)}
+          aria-label={`Select ${eventNameLabel(item.name)}`}
+        />
+      )}
       <Dot tone="neutral" size={6} />
       <Link
         to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}

@@ -43,6 +43,8 @@ import { useEventsTableOverflow } from './events/useEventsTableOverflow'
 import { useEventsTableVirtualization } from './events/useEventsTableVirtualization'
 import { useEventsViewState } from './events/useEventsViewState'
 import { useSavedViews } from './events/useSavedViews'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 interface EventsPageProps {
   /** Lock the page to a single event type (by name), decoupling it from the
@@ -63,6 +65,9 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     slug,
   } = useEventsRouteState(lockType)
   const branchId = useActiveBranchId()
+  // Viewers read the plan; every create, bulk, reorder and edit affordance is
+  // an editor's, and each used to end in a 403 toast (EVT-9).
+  const canWrite = useCanWriteProject()
   const { search: locationSearch } = useLocation()
   const usersQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
   const usersById = useMemo(
@@ -452,11 +457,12 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
 
       {!blockingError && (
         <>
+          {!canWrite && <ReadOnlyNotice className="mb-3" />}
           {hasNoEvents ? (
             // Empty project: keep creating an event reachable, drop the rest.
             // Mirrors the toolbar's own primary action (EventsToolbar.tsx) — the
             // lane for this fix cannot add a "minimal" mode to that component.
-            <div className="mb-3 flex justify-end">
+            canWrite && <div className="mb-3 flex justify-end">
               <Button onClick={openNewEvent} size="sm" className="h-8 text-xs">
                 <Plus className="h-3.5 w-3.5" />
                 New Event
@@ -498,13 +504,13 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               onExportCsv={handleExportCsv}
               canExport={canExportCsv}
               isExporting={isExporting}
-              onNewEvent={openNewEvent}
-              onBulkNew={() => setShowBulk(true)}
+              onNewEvent={canWrite ? openNewEvent : undefined}
+              onBulkNew={canWrite ? () => setShowBulk(true) : undefined}
             />
           )}
 
           <BulkActionBar
-            selectedCount={selectedCount}
+            selectedCount={canWrite ? selectedCount : 0}
             selectedVisibleCount={selectedVisibleEventIds.length}
             matchingTotal={total}
             onSelectAllMatching={handleSelectAllMatching}

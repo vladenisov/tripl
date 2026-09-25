@@ -82,6 +82,9 @@ import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions, useScenarioArtifacts } from '@/demo/demoScenarioContext'
 import { eventTypesKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { getErrorMessage } from '@/lib/utils'
+import { useCanWriteProject } from '@/lib/permissions'
 
 /**
  * Everything a manual collect needs, captured when the button is pressed and
@@ -279,6 +282,9 @@ export default function MonitoringDetailPage() {
   }>()
   const navigate = useNavigate()
   const location = useLocation()
+  // Edit, collect, delete and annotations are EditorUserDep; a viewer reads the
+  // page without them instead of meeting each as a 403 (MON-6).
+  const canWrite = useCanWriteProject()
   // Return to wherever the user came from (e.g. an event-type tab with its filters),
   // not always the "all events" list. location.key is 'default' only when this page was
   // opened directly (deep link / refresh) with no in-app history to pop back to.
@@ -727,6 +733,7 @@ export default function MonitoringDetailPage() {
   const [annotationBucket, setAnnotationBucket] = useState('')
   const [annotationLabel, setAnnotationLabel] = useState('')
   const createAnnotationMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       chartAnnotationsApi.create(slug!, {
         bucket: new Date(annotationBucket).toISOString(),
@@ -783,6 +790,7 @@ export default function MonitoringDetailPage() {
       : 'Source refresh started — current fact data will update shortly.'
 
   const collectMut = useMutation({
+    meta: SILENT_ERROR_META,
     // The target travels WITH the mutation instead of being re-read in onSuccess.
     // react-query refreshes the observer's options every render, so onSuccess saw
     // the CURRENT scopeId: firing a collect for metric A and navigating to B
@@ -805,7 +813,9 @@ export default function MonitoringDetailPage() {
       // Inert outside a ready demo project.
       notifyMetricCollectStarted(target.scopeId)
     },
-    onError: () => toast.error('Could not start collection.'),
+    // Its own toast (silenced in the backstop), so the one message carries both
+    // what failed and why.
+    onError: error => toast.error(`Could not start collection — ${getErrorMessage(error)}`),
   })
   // Key the spinner to the metric actually being collected — both while the POST
   // is in flight and while the watch polls — so a run on metric A does not read
@@ -937,14 +947,14 @@ export default function MonitoringDetailPage() {
           onBack={goBack}
           // Branch-aware: a bare path would drop the branch out of the URL and
           // leave the editor relying on context alone (tripl-h2sx.2).
-          onEdit={() => {
+          onEdit={canWrite ? () => {
             const link = branchLink(
               `/p/${slug}/events/${event.event_type?.name ?? 'all'}/${event.id}/edit`,
               event.branch_id ?? branchId,
             )
             link.onClick()
             navigate(link.to)
-          }}
+          } : undefined}
           onMetrics={() => metricsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
         />
       ) : (
@@ -958,7 +968,7 @@ export default function MonitoringDetailPage() {
               <ArrowLeft className="mr-2 h-4 w-4" />
               {backAffordance.label}
             </Button>
-            {scope === 'metric' && (
+            {scope === 'metric' && canWrite && (
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
@@ -1222,49 +1232,52 @@ export default function MonitoringDetailPage() {
                 Mark deploys, releases, or incidents so the chart shows what
                 changed when. Snaps to the closest bucket of the current
                 scope.
+                {!canWrite && ' Adding and removing them is done by an editor or owner.'}
               </p>
-              <form
-                className="flex flex-wrap items-center gap-2"
-                onSubmit={event => {
-                  event.preventDefault()
-                  if (!annotationBucket || !annotationLabel.trim()) return
-                  createAnnotationMut.mutate()
-                }}
-              >
-                <div className="flex flex-col gap-0.5">
-                  <Label htmlFor="annotation-bucket" className="sr-only">Date and time</Label>
-                  <Input
-                    id="annotation-bucket"
-                    type="datetime-local"
-                    value={annotationBucket}
-                    onChange={event => setAnnotationBucket(event.target.value)}
-                    className="h-8 w-[200px]"
-                  />
-                  <span className="text-[10px] text-muted-foreground">
-                    YYYY-MM-DD HH:mm
-                  </span>
-                </div>
-                <Label htmlFor="annotation-label" className="sr-only">Label</Label>
-                <Input
-                  id="annotation-label"
-                  placeholder="Label (e.g. v1.4 deploy)"
-                  value={annotationLabel}
-                  onChange={event => setAnnotationLabel(event.target.value)}
-                  className="h-8 w-[280px]"
-                />
-                <Button
-                  type="submit"
-                  size="sm"
-                  variant="secondary"
-                  disabled={
-                    !annotationBucket
-                    || !annotationLabel.trim()
-                    || createAnnotationMut.isPending
-                  }
+              {canWrite && (
+                <form
+                  className="flex flex-wrap items-center gap-2"
+                  onSubmit={event => {
+                    event.preventDefault()
+                    if (!annotationBucket || !annotationLabel.trim()) return
+                    createAnnotationMut.mutate()
+                  }}
                 >
-                  Add
-                </Button>
-              </form>
+                  <div className="flex flex-col gap-0.5">
+                    <Label htmlFor="annotation-bucket" className="sr-only">Date and time</Label>
+                    <Input
+                      id="annotation-bucket"
+                      type="datetime-local"
+                      value={annotationBucket}
+                      onChange={event => setAnnotationBucket(event.target.value)}
+                      className="h-8 w-[200px]"
+                    />
+                    <span className="text-[10px] text-muted-foreground">
+                      YYYY-MM-DD HH:mm
+                    </span>
+                  </div>
+                  <Label htmlFor="annotation-label" className="sr-only">Label</Label>
+                  <Input
+                    id="annotation-label"
+                    placeholder="Label (e.g. v1.4 deploy)"
+                    value={annotationLabel}
+                    onChange={event => setAnnotationLabel(event.target.value)}
+                    className="h-8 w-[280px]"
+                  />
+                  <Button
+                    type="submit"
+                    size="sm"
+                    variant="secondary"
+                    disabled={
+                      !annotationBucket
+                      || !annotationLabel.trim()
+                      || createAnnotationMut.isPending
+                    }
+                  >
+                    Add
+                  </Button>
+                </form>
+              )}
               {createAnnotationMut.isError && (
                 <p role="alert" className="text-xs text-destructive">
                   {createAnnotationMut.error instanceof Error
@@ -1292,16 +1305,18 @@ export default function MonitoringDetailPage() {
                           <Badge variant="outline" className="text-[10px]">project-wide</Badge>
                         )}
                       </div>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                        onClick={() => deleteAnnotationMut.mutate(annotation.id)}
-                        disabled={deleteAnnotationMut.isPending}
-                        aria-label={`Delete annotation ${annotation.label}`}
-                      >
-                        <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
-                      </Button>
+                      {canWrite && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => deleteAnnotationMut.mutate(annotation.id)}
+                          disabled={deleteAnnotationMut.isPending}
+                          aria-label={`Delete annotation ${annotation.label}`}
+                        >
+                          <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -2099,7 +2114,8 @@ function EventDetailHero({
   eventType: EventType | undefined
   metrics: EventMetricsResponse | undefined
   onBack: () => void
-  onEdit: () => void
+  /** Omitted for a viewer, who gets no Edit action. */
+  onEdit?: () => void
   onMetrics: () => void
 }) {
   const stats = computeEventStats(metrics)
@@ -2223,7 +2239,7 @@ function EventDetailHeader({
   event: TEvent
   eventType: EventType | undefined
   signal: MonitoringSignal | null
-  onEdit: () => void
+  onEdit?: () => void
   onMetrics: () => void
 }) {
   const status = event.status as EventStatus
@@ -2268,7 +2284,7 @@ function EventDetailHeader({
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <HeroAction icon={<TrendingUp size={12} />} label="Metrics" onClick={onMetrics} />
-        <HeroAction icon={<Pencil size={12} />} label="Edit" primary onClick={onEdit} />
+        {onEdit && <HeroAction icon={<Pencil size={12} />} label="Edit" primary onClick={onEdit} />}
         <EventActionOverflow />
       </div>
     </div>

@@ -14,9 +14,12 @@ import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
 import { getErrorMessage } from '@/lib/utils'
 import { eventTypesKey } from '@/lib/queryKeys'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 export function RelationsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
+  const canWrite = useCanWriteProject()
   const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
   const [srcEtId, setSrcEtId] = useState('')
@@ -73,6 +76,7 @@ export function RelationsTab({ slug }: { slug: string }) {
   return (
     <div className="space-y-4">
       {dialog}
+      {!canWrite && <ReadOnlyNotice />}
 
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -126,9 +130,11 @@ export function RelationsTab({ slug }: { slug: string }) {
         title="Relations"
         subtitle={`${relations.length} relation${relations.length === 1 ? '' : 's'}`}
         right={
-          <Button size="sm" onClick={() => setShowForm(true)}>
-            <Plus className="mr-2 h-4 w-4" />Add relation
-          </Button>
+          canWrite && (
+            <Button size="sm" onClick={() => setShowForm(true)}>
+              <Plus className="mr-2 h-4 w-4" />Add relation
+            </Button>
+          )
         }
       >
         {relations.length > 0 ? (
@@ -150,7 +156,9 @@ export function RelationsTab({ slug }: { slug: string }) {
                   <TableCell className="font-mono text-xs">{etMap[r.target_event_type_id]?.name ?? '?'}</TableCell>
                   <TableCell className="text-muted-foreground text-xs">{r.relation_type}</TableCell>
                   <TableCell>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete relation between ${etMap[r.source_event_type_id]?.name ?? '?'} and ${etMap[r.target_event_type_id]?.name ?? '?'}`} onClick={() => handleDelete(r)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
+                    {canWrite && (
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete relation between ${etMap[r.source_event_type_id]?.name ?? '?'} and ${etMap[r.target_event_type_id]?.name ?? '?'}`} onClick={() => handleDelete(r)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

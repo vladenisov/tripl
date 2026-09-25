@@ -3,7 +3,7 @@ import { Trash2, Webhook } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { VIEWER_READ_ONLY_NOTICE, useCanWrite } from '@/lib/permissions'
+import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
 import type { AlertDestination } from '@/types'
 
 import { CHANNEL_META } from './channelMeta'
@@ -65,7 +65,7 @@ export function DestinationsSection({
   // (deps.py `require_editor`), so a viewer gets the configuration as a
   // read-only report: every value stays on screen, nothing offers to change it
   // (tripl-oxkt.9).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   // One source of truth for the channel buttons so the zero-state CTA and the
   // populated-state "add another" row stay in sync.
   const channelButtons = CHANNEL_META.map(({ channel, label, Icon }) => (

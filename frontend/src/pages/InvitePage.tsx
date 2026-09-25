@@ -6,6 +6,7 @@ import { invitationsApi } from '@/api/invitations'
 import { useAuth } from '@/components/auth-context'
 import { ROLE_OPTIONS } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 /**
  * Redeem an invitation into an account.
@@ -27,12 +28,14 @@ export default function InvitePage() {
   const [name, setName] = useState('')
 
   const previewQuery = useQuery({
+    meta: SILENT_ERROR_META,
     queryKey: ['invitationPreview', token],
     queryFn: () => invitationsApi.preview(token),
     retry: false,
   })
 
   const acceptMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => invitationsApi.accept(token, password, name.trim() || undefined),
     onSuccess: () => {
       // The API already set the session cookie, so pull the new identity into

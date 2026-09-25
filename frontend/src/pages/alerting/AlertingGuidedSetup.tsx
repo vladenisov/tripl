@@ -2,7 +2,7 @@ import type { LucideIcon } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Panel } from '@/components/settings/kit'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 
 import type { DestinationChannel } from './constants'
 
@@ -50,7 +50,7 @@ export function AlertingGuidedSetup({ channels, onPickChannel }: AlertingGuidedS
   // on a project that has none, which is exactly the question a viewer landing
   // here has. Only the buttons that would 403 come off, and the last step says
   // who does it instead (tripl-oxkt.9).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   return (
     <Panel title="Set up alerting" subtitle="No destinations or rules yet">
       <div className="space-y-6 p-5">

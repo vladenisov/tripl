@@ -101,7 +101,11 @@ export default function ProjectSettingsPage() {
           {/* `itemId` focuses one delivery and `?item=` one row inside it —
               together the target of the deep link an alert message carries for
               scopes with no monitoring page. */}
+          {/* Keyed by project: filters, drafts and an open destination dialog
+              from project A must not carry into project B (a dialog would
+              PATCH A's destination id under B's slug). */}
           <ProjectAlertingTab
+            key={slug}
             slug={slug}
             focusDeliveryId={itemId}
             focusItemKey={focusItemKey}

@@ -531,7 +531,8 @@ function AnomalyRow({
         </span>
         {signal.incident_child && (
           <span
-            className="shrink-0 whitespace-nowrap text-[10.5px]"
+            // Dropped on phones, where it left the scope name a few letters.
+            className="hidden shrink-0 whitespace-nowrap text-[10.5px] sm:inline"
             style={{ color: 'var(--fg-faint)' }}
             title="This scope fired as part of a project-total spike or drop on the same bucket"
           >

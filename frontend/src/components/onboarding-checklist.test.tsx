@@ -207,6 +207,15 @@ describe('OnboardingChecklist', () => {
     expect(screen.getByText(/ask an owner/i)).toBeInTheDocument()
   })
 
+  it('is not shown to a viewer, who can take none of its steps', () => {
+    // Plan, scans and alerting are editor-gated and sources owner-only; the
+    // card could never reach done for this role and just sat there.
+    renderChecklist({ role: 'viewer', summary: makeSummary({ event_type_count: 4 }) })
+
+    expect(screen.queryByRole('list', { name: 'Setup steps' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/of \d/)).not.toBeInTheDocument()
+  })
+
   it('treats an anonymous (no-user) context as a non-owner', () => {
     renderChecklist({ role: null, summary: makeSummary({ event_type_count: 4 }) })
 

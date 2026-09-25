@@ -7,6 +7,10 @@ import { eventTypeOwnersApi } from '@/api/eventTypeOwners'
 import { eventTypesApi } from '@/api/eventTypes'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
+import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 import type { EventType, EventTypeOwner } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -43,7 +47,14 @@ const TABS: { id: DetailTab; label: string }[] = [
 export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventTypeId: string }) {
   const navigate = useNavigate()
   const branchId = useActiveBranchId()
-  const [tab, setTab] = useState<DetailTab>('summary')
+  const [tab, showTab] = useState<DetailTab>('summary')
+  // The Settings tab can hold the field subpage, whose unsaved-changes guard is
+  // the page guard while it is mounted; switching tabs unmounts it, so the
+  // switch goes through that guard (asks only when the field has a draft).
+  const setTab = (next: DetailTab) => {
+    if (next === tab) return
+    requestPageLeave(() => showTab(next))
+  }
 
   const { data: eventTypes = [], isSuccess } = useQuery({
     queryKey: eventTypesKey(slug, branchId),
@@ -265,12 +276,16 @@ interface SettingsTabProps {
 }
 
 function SettingsTab({ slug, eventType, branchId, onDeleted }: SettingsTabProps) {
+  const canWrite = useCanWriteProject()
   return (
     <div className="max-w-[880px]">
-      <GeneralCard slug={slug} eventType={eventType} branchId={branchId} />
+      {!canWrite && <ReadOnlyNotice className="mb-3" />}
+      <GeneralCard slug={slug} eventType={eventType} branchId={branchId} canWrite={canWrite} />
       <FieldsEditor slug={slug} eventType={eventType} branchId={branchId} />
       {branchId === null && <OwnersEditor slug={slug} eventType={eventType} />}
-      <DangerZoneCard slug={slug} eventType={eventType} branchId={branchId} onDeleted={onDeleted} />
+      {canWrite && (
+        <DangerZoneCard slug={slug} eventType={eventType} branchId={branchId} onDeleted={onDeleted} />
+      )}
     </div>
   )
 }
@@ -279,10 +294,12 @@ function GeneralCard({
   slug,
   eventType,
   branchId,
+  canWrite,
 }: {
   slug: string
   eventType: EventType
   branchId: string | null
+  canWrite: boolean
 }) {
   const qc = useQueryClient()
   const [displayName, setDisplayName] = useState(eventType.display_name)
@@ -290,6 +307,8 @@ function GeneralCard({
   const [color, setColor] = useState(eventType.color || '#6366f1')
 
   const updateMut = useMutation({
+    // Its error is rendered under the card.
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       eventTypesApi.update(
         slug,
@@ -307,20 +326,22 @@ function GeneralCard({
         updateMut.mutate()
       }}
     >
-      <SCard title="General" footer={<SaveFooter pending={updateMut.isPending} />}>
-        <SField label="Name" hint="Used in queries and ingestion — can't be changed.">
-          <SInput value={eventType.name} onChange={() => undefined} mono disabled />
-        </SField>
-        <SField label="Display name">
-          <SInput value={displayName} onChange={setDisplayName} />
-        </SField>
-        <SField label="Description">
-          <Textarea value={description} rows={2} onChange={(e) => setDescription(e.target.value)} />
-        </SField>
-        <SField label="Color" last>
-          <ColorPicker value={color} onChange={setColor} />
-        </SField>
-      </SCard>
+      <fieldset disabled={!canWrite} className="contents">
+        <SCard title="General" footer={canWrite ? <SaveFooter pending={updateMut.isPending} /> : undefined}>
+          <SField label="Name" hint="Used in queries and ingestion — can't be changed.">
+            <SInput value={eventType.name} onChange={() => undefined} mono disabled />
+          </SField>
+          <SField label="Display name">
+            <SInput value={displayName} onChange={setDisplayName} />
+          </SField>
+          <SField label="Description">
+            <Textarea value={description} rows={2} onChange={(e) => setDescription(e.target.value)} />
+          </SField>
+          <SField label="Color" last>
+            <ColorPicker value={color} onChange={setColor} />
+          </SField>
+        </SCard>
+      </fieldset>
       {updateMut.isError && (
         <p className="mb-3 text-sm" style={{ color: 'var(--danger)' }}>
           {getErrorMessage(updateMut.error)}

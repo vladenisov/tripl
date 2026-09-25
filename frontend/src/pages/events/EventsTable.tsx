@@ -46,6 +46,7 @@ import { groupEventNames, type EventNameGroup } from './eventNameGroups'
 import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
 import { variablesKey } from '@/lib/queryKeys'
+import { useCanWriteProject } from '@/lib/permissions'
 
 /** Cap the cluster list so the summary header stays compact; the rest fold into a count. */
 const MAX_VISIBLE_CLUSTERS = 6
@@ -168,6 +169,8 @@ export function EventsTable({
   emptyContext,
 }: EventsTableProps) {
   const branchId = useActiveBranchId()
+  // Selecting is only ever for a bulk edit, which a viewer cannot make.
+  const canWrite = useCanWriteProject()
   const emptyCopy = eventsEmptyCopy(
     emptyContext ?? { activeTab: 'all', hasActiveFilters: false, search: '' },
   )
@@ -348,11 +351,13 @@ export function EventsTable({
                 <TableRow>
                   <TableHead className="w-8 px-1" aria-label="Reorder" />
                   <TableHead className="tripl-pin-l w-10 pl-5">
-                    <Checkbox
-                      checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
-                      onCheckedChange={(checked) => toggleAllVisibleSelected(checked === true)}
-                      aria-label="Select all visible events"
-                    />
+                    {canWrite && (
+                      <Checkbox
+                        checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
+                        onCheckedChange={(checked) => toggleAllVisibleSelected(checked === true)}
+                        aria-label="Select all visible events"
+                      />
+                    )}
                   </TableHead>
                   {/* Pinned left with the checkbox: 8 of 17 columns sit
                       off-screen at 1512px, so without this the reader scrolls

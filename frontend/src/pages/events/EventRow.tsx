@@ -41,6 +41,7 @@ import {
   formatRelativeTime,
   splitTemplateValue,
 } from './utils'
+import { useCanWriteProject } from '@/lib/permissions'
 
 export type RowAction =
   | 'edit'
@@ -141,6 +142,9 @@ export const EventRow = memo(function EventRow({
   onToggleExpanded,
   onRowAction,
 }: EventRowProps) {
+  // Reorder, select-for-bulk and edit are all editor actions; a viewer gets
+  // the row without them (the cells stay, so the columns line up).
+  const canWrite = useCanWriteProject()
   const {
     attributes,
     listeners,
@@ -148,7 +152,7 @@ export const EventRow = memo(function EventRow({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: ev.id })
+  } = useSortable({ id: ev.id, disabled: !canWrite })
   const dragStyle: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -208,22 +212,26 @@ export const EventRow = memo(function EventRow({
       className="group/row"
     >
       <TableCell className="w-8 px-1">
-        <button
-          type="button"
-          className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 active:cursor-grabbing"
-          aria-label={`Drag to reorder ${nameLabel}`}
-          {...attributes}
-          {...listeners}
-        >
-          <GripVertical className="h-3.5 w-3.5" />
-        </button>
+        {canWrite && (
+          <button
+            type="button"
+            className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 active:cursor-grabbing"
+            aria-label={`Drag to reorder ${nameLabel}`}
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </button>
+        )}
       </TableCell>
       <TableCell className="tripl-pin-l w-10 pl-5">
-        <Checkbox
-          checked={selected}
-          onCheckedChange={(checked) => onToggleSelected(ev.id, checked === true)}
-          aria-label={`Select ${nameLabel}`}
-        />
+        {canWrite && (
+          <Checkbox
+            checked={selected}
+            onCheckedChange={(checked) => onToggleSelected(ev.id, checked === true)}
+            aria-label={`Select ${nameLabel}`}
+          />
+        )}
       </TableCell>
       <TableCell
         className="tripl-pin-l border-r font-medium"
@@ -294,18 +302,20 @@ export const EventRow = memo(function EventRow({
               </span>
             </ScenarioCoachMark>
           )}
-          <ScenarioCoachMark step="edit-event/open-editor" when={coachEdit}>
-            <button
-              type="button"
-              onClick={() => onRowAction('edit', ev)}
-              aria-label={`Edit ${nameLabel}`}
-              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 ${
-                coachEdit ? 'opacity-100' : 'opacity-0'
-              }`}
-            >
-              <Pencil className="h-3 w-3" aria-hidden="true" />
-            </button>
-          </ScenarioCoachMark>
+          {canWrite && (
+            <ScenarioCoachMark step="edit-event/open-editor" when={coachEdit}>
+              <button
+                type="button"
+                onClick={() => onRowAction('edit', ev)}
+                aria-label={`Edit ${nameLabel}`}
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 ${
+                  coachEdit ? 'opacity-100' : 'opacity-0'
+                }`}
+              >
+                <Pencil className="h-3 w-3" aria-hidden="true" />
+              </button>
+            </ScenarioCoachMark>
+          )}
         </div>
       </TableCell>
       {!hideType && (

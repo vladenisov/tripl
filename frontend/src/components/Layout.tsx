@@ -13,6 +13,7 @@ import { ActivityPanel } from '@/components/activity-panel'
 import { AppSidebar } from '@/components/app-sidebar'
 import { BranchProvider } from '@/components/branch-context'
 import { CommandPaletteProvider } from '@/components/command-palette'
+import { ActiveProjectContext } from '@/components/active-project-context'
 import { ErrorState } from '@/components/error-state'
 import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import { TopBar } from '@/components/top-bar'
@@ -271,6 +272,7 @@ export default function Layout() {
         started keeps being watched while they walk to the metrics catalog.
         Inert for every non-demo project. */}
     <DemoScenarioProvider project={activeProject}>
+    <ActiveProjectContext.Provider value={activeProject ?? confirmProject.data}>
     <TweaksPanelProvider>
       <CommandPaletteProvider>
         <div
@@ -395,6 +397,7 @@ export default function Layout() {
         </div>
       </CommandPaletteProvider>
     </TweaksPanelProvider>
+    </ActiveProjectContext.Provider>
     </DemoScenarioProvider>
     </ProjectEventStreamProvider>
     </BranchProvider>

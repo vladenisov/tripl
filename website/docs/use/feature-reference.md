@@ -17,7 +17,9 @@ For the underlying mental model (events vs. event types, scopes, signals) read
 
 :::note Permissions
 Mutations (create/update/delete) require at least the **editor** role; viewers
-are rejected. Data sources and the workspace/instance settings require the
+are rejected. Inside a project an editor may also need to own it: a demo, or a
+project another editor created, is changed only by its creator or an owner.
+Data sources and the workspace/instance settings require the
 **owner** role. Read surfaces are available to any signed-in member. Owner-only
 command-palette entries (such as **Runtime**) are hidden for non-owners.
 :::
@@ -1305,6 +1307,12 @@ every non-archived status and therefore reports a larger total.
 legacy `/p/<slug>/settings/scans` path still resolves — it redirects here, so old
 bookmarks and links keep working.
 
+**New scan** opens its own page at `/p/<slug>/scans/new` (owners only), so
+**Back** returns to the list and a reload keeps you on the form; creating the
+scan takes you to its page, where **Run now** is. A scan's page remembers its
+tab in the address (`?tab=configuration`), so a reload stays on the tab you
+were reading.
+
 Every scan surface states the chain a scan feeds, because a scan's output reaches
 you as anomalies and alerts and nothing on these screens used to say so. The list
 says it once for all scans; the form says it under the mode you have selected;
@@ -1774,6 +1782,18 @@ the browser's own prompt rather than ours — reload and closing the tab. A
 destination that keeps the draft, like moving between two Instance sections,
 passes without a word. Opening a rail link in a new tab is not a leave at all:
 the draft stays exactly where it is.
+
+The authoring pages outside the takeover ask the same question. The event,
+bulk-event, metric and fact-table forms, the new-scan page, a scan's
+**Configuration** tab (switching to **Overview** included) and the event-type
+field page (switching to another tab of the event type included) all ask before
+a link, the sidebar, switching branch in the sidebar, **Back**, **Cancel** or
+the back chevron drops edits you have not saved; reload and closing the tab get
+the browser's own prompt. The alert rule, alert destination and data-source
+dialogs ask before **Esc**, a click outside or **Cancel** closes them with your
+changes in them, and the data-source edit dialog, which has an address of its
+own, asks before **Back** too. A form you have not changed, or have changed
+back, never asks.
 
 The two halves of the app-wide palette's list narrow differently, and on purpose.
 

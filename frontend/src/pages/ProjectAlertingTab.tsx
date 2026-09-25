@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useDirtySinceOpen, useUnsavedDialogGuard } from '@/hooks/useUnsavedChangesGuard'
 import {
   ALERT_INBOX_STATUSES,
   bulkInboxActionSuccessMessage,
@@ -30,7 +31,7 @@ import {
   muteConfirmMessage,
   stripValueErrorPrefix,
 } from '@/lib/alertStatus'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDestination, AlertInboxListResponse } from '@/types'
 
@@ -67,6 +68,7 @@ import {
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
 import { projectEventTypesKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 // The page does four jobs — triage incidents, tune what routes, configure the
 // channels it routes to, audit delivery — and stacking them on one scroll made
@@ -134,7 +136,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // The page reads the role for the one write path that is not a button of its
   // own: this dialog, which can outlive the control that opened it
   // (tripl-oxkt.9).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const [createType, setCreateType] = useState<DestinationChannel | null>(null)
   const [destinationForm, setDestinationForm] = useState<DestinationFormState>(defaultDestinationForm('slack'))
   const [editingDestination, setEditingDestination] = useState<AlertDestination | null>(null)
@@ -452,7 +454,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       destination_id: destination.id,
     })))
 
+  // Create and update render their error inside the destination dialog
+  // (`destinationMutation` below); delete has no inline error and keeps the toast.
   const createDestinationMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => {
       // The demo-only ``demo_sink`` is created by the seeder, never here — so the
       // create payload always carries a real ``DestinationChannel``. Narrow the
@@ -487,6 +492,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   })
 
   const updateDestinationMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => {
       if (!editingDestination) throw new Error('Missing destination')
       return alertingApi.updateDestination(slug, editingDestination.id, {
@@ -565,6 +571,13 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     setEditingDestination(null)
     setDestinationForm(defaultDestinationForm('slack'))
   }
+
+  // Same as the rule dialog (ALR-17): a close that would drop typed-in
+  // credentials or templates asks first.
+  const destinationDialogOpen = canWrite && (!!createType || !!editingDestination)
+  const destinationGuard = useUnsavedDialogGuard(
+    useDirtySinceOpen(destinationDialogOpen, destinationForm),
+  )
 
   const handleDeleteDestination = async (destination: AlertDestination) => {
     const ok = await confirm({
@@ -835,6 +848,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
    * either all moved or none of it did.
    */
   const inboxBulkActionMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: ({ correlationGroupIds, action, mutedUntil, note }: InboxBulkActionVariables) =>
       alertingApi.applyInboxBulkAction(slug, {
         correlation_group_ids: correlationGroupIds,
@@ -1224,7 +1238,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       {/* Gated on the role as well as on the two state flags: `refresh()` can
           rewrite the session mid-visit, and a create form left open across a
           demotion would still POST its Create. */}
-      <Dialog open={canWrite && (!!createType || !!editingDestination)} onOpenChange={open => { if (!open) closeDestinationDialog() }}>
+      {destinationGuard.dialog}
+      <Dialog open={destinationDialogOpen} onOpenChange={open => { if (!open) destinationGuard.requestClose(closeDestinationDialog) }}>
         <DialogContent className="max-w-lg">
           <form onSubmit={event => { event.preventDefault(); destinationMutation.mutate() }}>
             <DialogHeader>
@@ -1498,7 +1513,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
               )}
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={closeDestinationDialog}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => destinationGuard.requestClose(closeDestinationDialog)}>Cancel</Button>
               <Button type="submit" disabled={destinationMutation.isPending}>
                 {editingDestination ? 'Save' : 'Create'}
               </Button>

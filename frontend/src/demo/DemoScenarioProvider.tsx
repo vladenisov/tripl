@@ -60,6 +60,7 @@ import {
   type ScenarioState,
   type ScenarioStepId,
 } from './scenarioModel'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 /** How often to re-check the artifact the user is waiting on. */
 const DEFAULT_POLL_INTERVAL_MS = 3000
@@ -156,6 +157,7 @@ export function DemoScenarioProvider({
   useQuery({
     queryKey: ['demo-scenario-scan-watch', slug, scanTarget?.scanJobId],
     enabled: Boolean(slug && scanTarget),
+    meta: SILENT_ERROR_META,
     refetchInterval: pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     gcTime: 0,
     retry: false,
@@ -206,6 +208,7 @@ export function DemoScenarioProvider({
       metricTarget?.startedAt,
     ],
     enabled: Boolean(slug && metricTarget),
+    meta: SILENT_ERROR_META,
     refetchInterval: pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     gcTime: 0,
     retry: false,

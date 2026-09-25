@@ -10,6 +10,8 @@ import { Input } from '@/components/ui/input'
 import { Frame, ImagePlus, Loader2, Trash2, Upload, X } from 'lucide-react'
 import { useConfirm } from '@/hooks/useConfirm'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { useCanWriteProject } from '@/lib/permissions'
 
 interface Props {
   slug: string
@@ -34,6 +36,8 @@ function figmaEmbedUrl(externalUrl: string): string {
 export default function EventPhotosSection({ slug, eventId }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const queryClient = useQueryClient()
+  // Upload, attach and delete are editor actions; a viewer browses the specs.
+  const canWrite = useCanWriteProject()
   const [error, setError] = useState<string | null>(null)
   const [opened, setOpened] = useState<EventPhoto | null>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -49,6 +53,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
   })
 
   const uploadMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: async (files: File[]) => {
       const uploaded: EventPhoto[] = []
       for (const file of files) {
@@ -66,6 +71,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
   })
 
   const figmaMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => eventPhotosApi.attachFigma(slug, eventId, figmaUrl.trim(), figmaTitle.trim()),
     onSuccess: () => {
       setError(null)
@@ -79,6 +85,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
   })
 
   const deleteMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (photoId: string) => eventPhotosApi.delete(slug, eventId, photoId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: photosKey })
@@ -123,74 +130,80 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
             <h2 className="text-lg font-semibold">Photos &amp; specs</h2>
             <span className="text-xs text-muted-foreground">({photos.length})</span>
           </div>
-          <div className="flex items-center gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={ACCEPT}
-              multiple
-              className="hidden"
-              onChange={event => {
-                handleFiles(event.target.files)
-                event.target.value = ''
-              }}
+          {canWrite && (
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPT}
+                multiple
+                className="hidden"
+                onChange={event => {
+                  handleFiles(event.target.files)
+                  event.target.value = ''
+                }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploadMut.isPending}
+              >
+                {uploadMut.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Upload className="mr-2 h-4 w-4" />
+                )}
+                Upload image
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {canWrite && (
+          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
+            <Frame className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+            <label htmlFor="figma-url" className="sr-only">Figma URL</label>
+            <Input
+              id="figma-url"
+              placeholder="https://www.figma.com/file/…"
+              value={figmaUrl}
+              onChange={event => setFigmaUrl(event.target.value)}
+              className="h-8 max-w-md"
+            />
+            <label htmlFor="figma-title" className="sr-only">Title (optional)</label>
+            <Input
+              id="figma-title"
+              placeholder="Title (optional)"
+              value={figmaTitle}
+              onChange={event => setFigmaTitle(event.target.value)}
+              className="h-8 max-w-xs"
             />
             <Button
               size="sm"
-              variant="outline"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploadMut.isPending}
+              variant="secondary"
+              disabled={!figmaUrl.trim() || figmaMut.isPending}
+              onClick={() => figmaMut.mutate()}
             >
-              {uploadMut.isPending ? (
+              {figmaMut.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Upload className="mr-2 h-4 w-4" />
-              )}
-              Upload image
+              ) : null}
+              Attach spec
             </Button>
           </div>
-        </div>
-
-        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
-          <Frame className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          <label htmlFor="figma-url" className="sr-only">Figma URL</label>
-          <Input
-            id="figma-url"
-            placeholder="https://www.figma.com/file/…"
-            value={figmaUrl}
-            onChange={event => setFigmaUrl(event.target.value)}
-            className="h-8 max-w-md"
-          />
-          <label htmlFor="figma-title" className="sr-only">Title (optional)</label>
-          <Input
-            id="figma-title"
-            placeholder="Title (optional)"
-            value={figmaTitle}
-            onChange={event => setFigmaTitle(event.target.value)}
-            className="h-8 max-w-xs"
-          />
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={!figmaUrl.trim() || figmaMut.isPending}
-            onClick={() => figmaMut.mutate()}
-          >
-            {figmaMut.isPending ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : null}
-            Attach spec
-          </Button>
-        </div>
+        )}
 
         <div
           role="region"
           aria-label="Photo upload area"
           onDragOver={event => {
+            if (!canWrite) return
             event.preventDefault()
             setDragOver(true)
           }}
           onDragLeave={() => setDragOver(false)}
           onDrop={event => {
+            if (!canWrite) return
             event.preventDefault()
             setDragOver(false)
             handleFiles(event.dataTransfer.files)
@@ -206,8 +219,14 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
           ) : photos.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-1 py-6 text-center text-sm text-muted-foreground">
               <ImagePlus className="h-6 w-6 text-muted-foreground/70" />
-              <div>Drop images here, click <span className="font-medium">Upload</span>, or attach a Figma URL above</div>
-              <div className="text-xs">JPEG, PNG, GIF, or WebP</div>
+              {canWrite ? (
+                <>
+                  <div>Drop images here, click <span className="font-medium">Upload</span>, or attach a Figma URL above</div>
+                  <div className="text-xs">JPEG, PNG, GIF, or WebP</div>
+                </>
+              ) : (
+                <div>No photos or specs attached yet.</div>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
@@ -216,9 +235,9 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
                   key={photo.id}
                   photo={photo}
                   onOpen={() => setOpened(photo)}
-                  onDelete={() => {
+                  onDelete={canWrite ? () => {
                     void handleDelete(photo)
-                  }}
+                  } : undefined}
                   deleting={deleteMut.isPending && deleteMut.variables === photo.id}
                 />
               ))}
@@ -262,7 +281,8 @@ function PhotoTile({
 }: {
   photo: EventPhoto
   onOpen: () => void
-  onDelete: () => void
+  /** Omitted for a viewer, who gets the tile without its delete button. */
+  onDelete?: () => void
   deleting: boolean
 }) {
   const isFigma = photo.kind === 'figma'
@@ -290,19 +310,21 @@ function PhotoTile({
         <span className="truncate text-xs text-white" title={photo.original_filename}>
           {photo.original_filename || (isFigma ? 'Figma frame' : 'photo')}
         </span>
-        <Button
-          size="icon"
-          variant="destructive"
-          aria-label="Delete photo"
-          className="h-7 w-7 shrink-0"
-          disabled={deleting}
-          onClick={event => {
-            event.stopPropagation()
-            onDelete()
-          }}
-        >
-          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
+        {onDelete && (
+          <Button
+            size="icon"
+            variant="destructive"
+            aria-label="Delete photo"
+            className="h-7 w-7 shrink-0"
+            disabled={deleting}
+            onClick={event => {
+              event.stopPropagation()
+              onDelete()
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+          </Button>
+        )}
       </div>
       <div className="absolute right-1 top-1 rounded bg-black/50 px-1.5 py-0.5 text-[10px] text-white">
         {isFigma ? 'Figma' : formatSize(photo.size_bytes)}

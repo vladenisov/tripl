@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { surfaceMutationError } from '@/lib/errorFeedback'
 import { createElement, type ReactNode } from 'react'
+import { AuthContext } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataSource, FactTable } from '@/types'
 import { FactTableForm } from './FactTableForm'
@@ -21,15 +25,18 @@ vi.mock('@uiw/react-codemirror', () => ({
     value,
     onChange,
     placeholder,
+    readOnly,
     'aria-label': ariaLabel,
   }: {
     value: string
     onChange: (v: string) => void
     placeholder?: string
+    readOnly?: boolean
     'aria-label'?: string
   }) => (
     <textarea
       aria-label={ariaLabel}
+      readOnly={readOnly}
       value={value}
       placeholder={placeholder}
       onChange={e => onChange(e.target.value)}
@@ -39,8 +46,11 @@ vi.mock('@uiw/react-codemirror', () => ({
 
 // The SQL editor fetches the data-source schema for autocomplete; stub it so the
 // form test never reaches the network.
+const { useDataSourceSchemaMock } = vi.hoisted(() => ({
+  useDataSourceSchemaMock: vi.fn<(dsId?: string) => { data: unknown }>(() => ({ data: undefined })),
+}))
 vi.mock('@/hooks/useDataSourceSchema', () => ({
-  useDataSourceSchema: () => ({ data: undefined }),
+  useDataSourceSchema: useDataSourceSchemaMock,
   toSQLNamespace: () => ({}),
 }))
 
@@ -316,5 +326,115 @@ describe('FactTableForm', () => {
     expect(factTableId).toBe('ft-9')
     expect(payload).not.toHaveProperty('name')
     expect(payload).toMatchObject({ display_name: 'Orders renamed' })
+  })
+})
+
+/** Whether a reload/tab-close right now would get the browser's prompt. */
+function reloadIsGuarded(): boolean {
+  const event = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(event)
+  return event.defaultPrevented
+}
+
+describe('FactTableForm unsaved-changes guard (MET-5)', () => {
+  it('arms the reload prompt once the draft differs from what the form opened with', () => {
+    renderForm()
+    expect(reloadIsGuarded()).toBe(false)
+
+    fillRequired()
+    expect(reloadIsGuarded()).toBe(true)
+  })
+
+  it('leaves an untouched edit form unguarded, row filters included', () => {
+    renderForm({
+      id: 'ft-1',
+      project_id: 'p-1',
+      name: 'orders',
+      display_name: 'Orders',
+      description: '',
+      color: '#6366f1',
+      order: 0,
+      data_source_id: 'ds-1',
+      timestamp_column: 'created_at',
+      columns: [],
+      identifier_columns: [],
+      // Each row gets a fresh client-side id on mount; those are not edits.
+      row_filters: [{ name: 'ios_only', sql: "platform = 'ios'" }],
+      sql: 'SELECT id, created_at FROM orders',
+      created_at: '2026-06-01T00:00:00Z',
+      updated_at: '2026-06-20T00:00:00Z',
+    } as unknown as FactTable)
+    expect(reloadIsGuarded()).toBe(false)
+  })
+})
+
+const VIEWER = authAs('viewer')
+
+describe('FactTableForm for a viewer', () => {
+  const SAVED = {
+    id: 'ft-1',
+    project_id: 'p-1',
+    name: 'orders',
+    display_name: 'Orders',
+    description: '',
+    color: '#6366f1',
+    order: 0,
+    data_source_id: 'ds-1',
+    timestamp_column: 'created_at',
+    columns: [],
+    identifier_columns: [],
+    row_filters: [],
+    sql: 'SELECT id, created_at FROM orders',
+    created_at: '2026-06-01T00:00:00Z',
+    updated_at: '2026-06-20T00:00:00Z',
+  } as unknown as FactTable
+
+  it('shows the SQL read-only and never asks for the editor-only schema', () => {
+    useDataSourceSchemaMock.mockClear()
+    render(
+      createElement(
+        AuthContext.Provider,
+        { value: VIEWER },
+        createElement(FactTableForm, {
+          slug: 'demo',
+          factTable: SAVED,
+          dataSources: DATA_SOURCES,
+          onClose: vi.fn(),
+        }),
+      ),
+      { wrapper },
+    )
+
+    expect(screen.getByLabelText('Fact table SQL')).toHaveAttribute('readonly')
+    expect(useDataSourceSchemaMock).toHaveBeenCalled()
+    expect(useDataSourceSchemaMock.mock.calls.every(([dsId]) => dsId === undefined)).toBe(true)
+  })
+
+  it('asks an editor for the schema of the chosen source', () => {
+    useDataSourceSchemaMock.mockClear()
+    renderForm(SAVED)
+
+    expect(screen.getByLabelText('Fact table SQL')).not.toHaveAttribute('readonly')
+    expect(useDataSourceSchemaMock).toHaveBeenCalledWith('ds-1')
+  })
+})
+
+describe('FactTableForm save failure', () => {
+  it('says it once, inline, and keeps the app-wide toast quiet', async () => {
+    // The backstop main.tsx registers, so the test sees what the app does.
+    queryClient = new QueryClient({
+      mutationCache: new MutationCache({ onError: surfaceMutationError }),
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const toastError = vi.spyOn(toast, 'error')
+    vi.mocked(factTablesApi.create).mockRejectedValueOnce(new Error('Name already taken'))
+    renderForm()
+
+    fillRequired()
+    submit()
+
+    expect(await screen.findByText('Could not save fact table')).toBeInTheDocument()
+    expect(toastError).not.toHaveBeenCalled()
+    toastError.mockRestore()
   })
 })

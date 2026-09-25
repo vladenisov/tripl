@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatIsoDate } from '@/lib/datetime'
-import { VIEWER_READ_ONLY_NOTICE, useCanWrite } from '@/lib/permissions'
+import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
 import type {
   AlertDeliveryDetail,
@@ -131,7 +131,7 @@ export function AlertAuditPanel({
   // it is editor-only; the row omits its own button, so this is here purely to
   // say so once instead of leaving a viewer to wonder why failed rows offer
   // nothing (tripl-oxkt.9).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const items = deliveries?.items ?? []
   const total = deliveries?.total ?? 0
   const rangeStart = deliveryOffset + 1

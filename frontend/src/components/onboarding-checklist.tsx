@@ -7,6 +7,7 @@ import { Panel } from '@/components/settings/kit'
 import { hasExecutedScanJob } from '@/components/onboarding-utils'
 import { useAuth } from '@/components/auth-context'
 import type { ProjectSummary } from '@/types'
+import { canWrite, isOwner as isOwnerRole } from '@/lib/permissions'
 
 /**
  * Guided first-run checklist (UX-24). A newcomer lands on the Overview with no
@@ -191,7 +192,14 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
 
   if (readDismissed(slug)) return null
 
-  const isOwner = user?.role === 'owner'
+  // Every step but "Review reconciliation" is an editor's job (plan, scans and
+  // alerting are editor-gated, sources owner-only), and that one ticks on data
+  // arriving, not on anything the reader does. For a viewer this card was a
+  // to-do list they could never work through and never finish, pinned until
+  // dismissed — so it is simply not theirs.
+  if (!canWrite(user?.role)) return null
+
+  const isOwner = isOwnerRole(user?.role)
   const steps = buildSteps(slug, summary, sourceCount)
   // Owner-only steps don't count toward a non-owner's progress: an editor can't
   // action them, so counting them would leave the checklist permanently short of

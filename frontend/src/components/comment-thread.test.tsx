@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext, type AuthContextValue } from './auth-context'
 import { CommentThread, type ThreadComment } from './comment-thread'
 
 function comment(overrides: Partial<ThreadComment> & { id: string }): ThreadComment {
@@ -60,6 +61,45 @@ afterEach(() => {
 })
 
 describe('CommentThread', () => {
+  it('lets a viewer read the thread but offers no write (EVT-9)', async () => {
+    const viewer: AuthContextValue = {
+      user: {
+        id: 'viewer-1',
+        email: 'viewer@example.com',
+        name: 'Viewer',
+        role: 'viewer',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+    }
+    render(
+      createElement(
+        AuthContext.Provider,
+        { value: viewer },
+        createElement(CommentThread, {
+          queryKey: ['thread', 'demo'],
+          list: () => Promise.resolve([comment({ id: 'c1', body: 'is this still sent?' })]),
+          create: vi.fn(),
+          remove: vi.fn(),
+          onAction: vi.fn(),
+        }),
+      ),
+      { wrapper },
+    )
+
+    expect(await screen.findByText('is this still sent?')).toBeInTheDocument()
+    expect(screen.getByText(/commenting is done by an editor or owner/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Write a comment')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete comment' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'resolve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'reply' })).not.toBeInTheDocument()
+  })
+
   it('says the thread is empty rather than showing nothing', async () => {
     renderThread([])
     expect(await screen.findByText('No comments yet. Start the thread.')).toBeInTheDocument()

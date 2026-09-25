@@ -14,7 +14,7 @@ import { formatDateTime } from '@/lib/datetime'
 import { factColumnValueKind } from '@/lib/factColumnValueKind'
 import { METRIC_KIND_LABEL } from '@/types'
 import type { MetricDefinitionDetailResponse } from '@/types'
-import { useCanWrite } from '@/lib/permissions'
+import { useCanWriteProject } from '@/lib/permissions'
 import { dataSourcesKey } from '@/lib/queryKeys'
 
 /** Names are best-effort; when a lookup misses we fall back to a short id. */
@@ -496,7 +496,7 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
   // editor authored — and a role that cannot author metrics has no business
   // reading it. Without this the panel would render and answer 403 on expand,
   // which reads as a broken page rather than as a boundary.
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   const [open, setOpen] = useState(false)
   const query = useQuery({
     queryKey: ['metric-generated-sql', slug, metricId],

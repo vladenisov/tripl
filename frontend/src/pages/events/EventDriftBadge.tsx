@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { getErrorMessage } from '@/lib/utils'
 import { projectEventTypesKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { useCanWriteProject } from '@/lib/permissions'
 
 const DRIFT_LABEL: Record<string, string> = {
   new_field: 'new',
@@ -43,14 +45,18 @@ export function EventDriftBadge({
   const [open, setOpen] = useState(false)
   const qc = useQueryClient()
   const { notifyStepCompleted } = useDemoScenarioActions()
+  // Triage is an editor action; a viewer still reads the drift list.
+  const canWrite = useCanWriteProject()
 
   const driftsQuery = useQuery({
+    meta: SILENT_ERROR_META,
     queryKey: ['eventTypeDrifts', slug, eventTypeId],
     queryFn: () => eventTypesApi.listDrifts(slug, eventTypeId),
     enabled: open,
     staleTime: 30_000,
   })
   const actionMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: ({
       driftId,
       action,
@@ -150,49 +156,51 @@ export function EventDriftBadge({
                       e.g. {drift.sample_value}
                     </div>
                   )}
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {drift.status === 'open' || drift.status === 'snoozed' ? (
-                      <>
+                  {canWrite && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {drift.status === 'open' || drift.status === 'snoozed' ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-1.5 text-[10px]"
+                            disabled={actionMut.isPending}
+                            onClick={() => actionMut.mutate({ driftId: drift.id, action: 'accept' })}
+                          >
+                            Accept
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-1.5 text-[10px]"
+                            disabled={actionMut.isPending}
+                            onClick={() => actionMut.mutate({ driftId: drift.id, action: 'snooze' })}
+                          >
+                            Snooze
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-1.5 text-[10px]"
+                            disabled={actionMut.isPending}
+                            onClick={() => actionMut.mutate({ driftId: drift.id, action: 'false_positive' })}
+                          >
+                            False positive
+                          </Button>
+                        </>
+                      ) : (
                         <Button
                           size="sm"
                           variant="outline"
                           className="h-6 px-1.5 text-[10px]"
                           disabled={actionMut.isPending}
-                          onClick={() => actionMut.mutate({ driftId: drift.id, action: 'accept' })}
+                          onClick={() => actionMut.mutate({ driftId: drift.id, action: 'reopen' })}
                         >
-                          Accept
+                          Reopen
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-6 px-1.5 text-[10px]"
-                          disabled={actionMut.isPending}
-                          onClick={() => actionMut.mutate({ driftId: drift.id, action: 'snooze' })}
-                        >
-                          Snooze
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-6 px-1.5 text-[10px]"
-                          disabled={actionMut.isPending}
-                          onClick={() => actionMut.mutate({ driftId: drift.id, action: 'false_positive' })}
-                        >
-                          False positive
-                        </Button>
-                      </>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-1.5 text-[10px]"
-                        disabled={actionMut.isPending}
-                        onClick={() => actionMut.mutate({ driftId: drift.id, action: 'reopen' })}
-                      >
-                        Reopen
-                      </Button>
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <span
                   className="shrink-0 text-[10px] tnum"

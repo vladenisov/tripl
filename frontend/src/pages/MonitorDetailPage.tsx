@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowLeft, Bell, BellOff, RefreshCw, Settings2 } from 'l
 import { alertingApi } from '@/api/alerting'
 import { InfoRow, PageHead, Panel } from '@/components/settings/kit'
 import { ErrorState } from '@/components/error-state'
+import { FormRow } from '@/components/ui/form-row'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
@@ -25,10 +26,15 @@ import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { formatCooldown } from './alerting/constants'
 import { InertScopeNotice, inertScopeSentence, type DriftScope } from './alerting/InertScopeNotice'
 import type { AlertDelivery, MonitorDetail } from '@/types'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 export default function MonitorDetailPage() {
   const { slug, monitorId } = useParams<{ slug: string; monitorId: string }>()
   const queryClient = useQueryClient()
+  // Mute and retry are editor actions (MON-6); a viewer reads the history.
+  const canWrite = useCanWriteProject()
 
   const monitorKey = useMemo(() => ['monitor', slug, monitorId], [slug, monitorId])
   const historyKey = useMemo(() => ['monitor-history', slug, monitorId], [slug, monitorId])
@@ -50,10 +56,12 @@ export default function MonitorDetailPage() {
   })
 
   const muteMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (mutedUntil: string) => alertingApi.muteMonitor(slug!, monitorId!, mutedUntil),
     onSuccess: (data) => queryClient.setQueryData(monitorKey, data),
   })
   const unmuteMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => alertingApi.unmuteMonitor(slug!, monitorId!),
     onSuccess: (data) => queryClient.setQueryData(monitorKey, data),
   })
@@ -98,7 +106,9 @@ export default function MonitorDetailPage() {
             eyebrow="Observe"
             title={monitor.rule_name}
             right={
-              slug ? (
+              // Editing a rule is an editor's job; the link would land a
+              // viewer on a read-only Monitors section.
+              slug && canWrite ? (
                 <Link
                   // A monitor IS an alert rule — the standalone list that used
                   // the first noun is gone, and rules are edited in the
@@ -133,17 +143,24 @@ export default function MonitorDetailPage() {
             )}
           </div>
 
-          <MuteControl
-            // The same string the heading above shows: the button names have to
-            // match what the operator just read, or the announcement identifies
-            // a monitor by a noun that appears nowhere on screen (tripl-in45).
-            ruleName={monitor.rule_name}
-            muted={monitor.muted}
-            onMute={(ms) => muteMut.mutate(muteUntilIso(ms))}
-            onUnmute={() => unmuteMut.mutate()}
-            isPending={muteMut.isPending || unmuteMut.isPending}
-            errorMessage={muteError instanceof Error ? muteError.message : null}
-          />
+          {canWrite ? (
+            <MuteControl
+              // The same string the heading above shows: the button names have to
+              // match what the operator just read, or the announcement identifies
+              // a monitor by a noun that appears nowhere on screen (tripl-in45).
+              ruleName={monitor.rule_name}
+              muted={monitor.muted}
+              onMute={(ms) => muteMut.mutate(muteUntilIso(ms))}
+              onUnmute={() => unmuteMut.mutate()}
+              isPending={muteMut.isPending || unmuteMut.isPending}
+              errorMessage={muteError instanceof Error ? muteError.message : null}
+            />
+          ) : (
+            <ReadOnlyNotice>
+              Read-only: your account has the viewer role. Muting this monitor and
+              retrying its deliveries are done by an editor or owner.
+            </ReadOnlyNotice>
+          )}
 
           <RecencyStrip monitor={monitor} />
 
@@ -156,7 +173,7 @@ export default function MonitorDetailPage() {
             total={historyQuery.data?.total ?? 0}
             isLoading={historyQuery.isLoading}
             isError={historyQuery.isError}
-            onRetry={(deliveryId) => retryMut.mutate(deliveryId)}
+            onRetry={canWrite ? (deliveryId) => retryMut.mutate(deliveryId) : undefined}
             retryingId={retryMut.isPending ? (retryMut.variables ?? null) : null}
           />
         </>
@@ -432,14 +449,19 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
         mono={false}
         last
       />
-      <div
-        className="flex items-start gap-4 px-[18px] py-[11px]"
+      {/* Stacks below `sm`, like the InfoRows above it (MON-32). */}
+      <FormRow
+        labelWidth={200}
+        captionClassName="sm:pt-1"
+        className="gap-1 px-[18px] py-[11px] sm:gap-4"
         style={{ borderTop: '1px solid var(--border-subtle)' }}
+        caption={
+          <span className="text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            Watching
+          </span>
+        }
       >
-        <span className="shrink-0 pt-1 text-[12.5px]" style={{ width: 200, color: 'var(--fg-subtle)' }}>
-          Watching
-        </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <div className="flex min-w-0 flex-wrap gap-1.5">
             {scopes.length > 0 ? (
               scopes.map((scope) => (
@@ -474,7 +496,7 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
             />
           ))}
         </div>
-      </div>
+      </FormRow>
     </Panel>
   )
 }
@@ -482,11 +504,17 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
 function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail }) {
   return (
     <Panel title="Routes to" subtitle="Where firing alerts are delivered">
-      <div className="flex items-center gap-4 px-[18px] py-[11px]" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-        <span className="shrink-0 text-[12.5px]" style={{ width: 200, color: 'var(--fg-subtle)' }}>
-          Destination
-        </span>
-        <span className="flex min-w-0 flex-1 items-center gap-2">
+      <FormRow
+        labelWidth={200}
+        className="gap-1 px-[18px] py-[11px] sm:items-center sm:gap-4"
+        style={{ borderBottom: '1px solid var(--border-subtle)' }}
+        caption={
+          <span className="text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            Destination
+          </span>
+        }
+      >
+        <span className="flex min-w-0 items-center gap-2">
           <Chip tone="neutral" size="xs">
             {monitor.destination_type}
           </Chip>
@@ -495,16 +523,17 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
               to={`/p/${slug}/settings/alerting`}
               className="min-w-0 truncate text-[12.5px] no-underline hover:underline"
               style={{ color: 'var(--fg)' }}
+              title={monitor.destination_name}
             >
               {monitor.destination_name}
             </Link>
           ) : (
-            <span className="min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }}>
+            <span className="min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }} title={monitor.destination_name}>
               {monitor.destination_name}
             </span>
           )}
         </span>
-      </div>
+      </FormRow>
       <InfoRow
         label="Status"
         value={
@@ -540,7 +569,8 @@ function FiredHistoryTimeline({
   total: number
   isLoading: boolean
   isError: boolean
-  onRetry: (deliveryId: string) => void
+  /** Omitted for a viewer, whose rows carry no Retry. */
+  onRetry?: (deliveryId: string) => void
   retryingId: string | null
 }) {
   return (
@@ -563,7 +593,7 @@ function FiredHistoryTimeline({
             <DeliveryRow
               key={delivery.id}
               delivery={delivery}
-              onRetry={() => onRetry(delivery.id)}
+              onRetry={onRetry ? () => onRetry(delivery.id) : undefined}
               retrying={retryingId === delivery.id}
             />
           ))}
@@ -579,7 +609,7 @@ function DeliveryRow({
   retrying,
 }: {
   delivery: AlertDelivery
-  onRetry: () => void
+  onRetry?: () => void
   retrying: boolean
 }) {
   return (
@@ -602,7 +632,7 @@ function DeliveryRow({
         >
           {formatRelativeTime(delivery.created_at)}
         </span>
-        {delivery.status === 'failed' && (
+        {delivery.status === 'failed' && onRetry && (
           <ActionButton
             icon={<RefreshCw className="h-3 w-3" />}
             label={retrying ? 'Retrying…' : 'Retry'}

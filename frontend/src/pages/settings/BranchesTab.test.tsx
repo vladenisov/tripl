@@ -7,11 +7,13 @@ import { ApiError } from '@/api/client'
 import { metaFieldsApi } from '@/api/metaFields'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type {
   ImplementationTicket,
   PlanBranchDiffSummary,
   PlanBranchSummary,
   ProjectBranchSettings,
+  Role,
   UserListItem,
 } from '@/types'
 import { BranchesTab } from './BranchesTab'
@@ -161,17 +163,39 @@ function BranchesTabRoute() {
   return <BranchesTab slug="demo" branchId={branchId} />
 }
 
-function renderTab(branchId?: string) {
+function authAs(role: Role): AuthContextValue {
+  return {
+    user: {
+      id: `${role}-1`,
+      email: `${role}@example.com`,
+      name: role,
+      role,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+/** Rendered as an owner unless a test says otherwise: the merge policy form is
+ * owner-only, and most tests here exercise the full set of actions. */
+function renderTab(branchId?: string, role: Role = 'owner') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const path = `/p/demo/settings/branches${branchId ? `/${branchId}` : ''}`
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
-          <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
-        </Routes>
-      </MemoryRouter>
+      <AuthContext.Provider value={authAs(role)}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
+            <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -1050,6 +1074,29 @@ describe('BranchesTab', () => {
         block_self_approval: true,
       }),
     )
+  })
+
+  it('shows an editor the merge policy read-only, as the owner-only PATCH requires', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN], total: 1 })
+    renderTab(undefined, 'editor')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge policy/i }))
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByLabelText('Required approvals')).toBeDisabled()
+    expect(within(dialog).getByText('Only an owner can change the merge policy.')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+  })
+
+  it('offers a viewer no branch actions (PLAN-11)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    renderTab(FEATURE.id, 'viewer')
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/viewer role/)
+    await screen.findByRole('link', { name: 'Events on this branch' })
+    expect(screen.queryByRole('button', { name: /New branch/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'New event on this branch' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete branch' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Approve|Request changes|Merge to main/ })).not.toBeInTheDocument()
   })
 
   it('shows the approvals chip against the required quota', async () => {

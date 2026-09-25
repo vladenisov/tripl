@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/api/client'
 import { eventTypesApi } from '@/api/eventTypes'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import { EventDriftBadge } from './EventDriftBadge'
 
 vi.mock('@/api/eventTypes', () => ({
@@ -59,6 +60,38 @@ afterEach(() => {
 })
 
 describe('EventDriftBadge', () => {
+  it('shows a viewer the drifts without the triage buttons (EVT-9)', async () => {
+    vi.mocked(eventTypesApi.listDrifts).mockResolvedValue({ items: [DRIFT], total: 1 })
+    const viewer: AuthContextValue = {
+      user: {
+        id: 'viewer-1',
+        email: 'viewer@example.com',
+        name: 'Viewer',
+        role: 'viewer',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={viewer}>
+          <EventDriftBadge slug="demo" eventTypeId="et-1" count={1} />
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '1 schema drift on this event type' }))
+    expect(await screen.findByText(/action/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Snooze' })).not.toBeInTheDocument()
+  })
+
   it('renders the backend 409 verbatim when the accept is blocked', async () => {
     // Without this the guard is invisible: the button just stops pending and the
     // drift stays open with no explanation (tripl-3mmh).
