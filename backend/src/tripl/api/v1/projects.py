@@ -1,13 +1,15 @@
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.api.deps import (
     BranchIdDep,
+    CurrentUserDep,
     EditorUserDep,
     OwnerUserDep,
     SessionDep,
+    can_mutate_project,
 )
 from tripl.config import settings
 from tripl.models.domain_enums import UserRole
@@ -119,6 +121,22 @@ async def _record_lifecycle(
     )
 
 
+async def _for_caller(
+    session: AsyncSession, request: Request, user: User, projects: list[ProjectResponse]
+) -> list[ProjectResponse]:
+    """``projects`` with ``can_mutate`` answered for this caller (see ProjectResponse)."""
+    return await project_service.with_can_mutate(
+        session, projects, lambda scope: can_mutate_project(request, user, scope)
+    )
+
+
+async def _one_for_caller(
+    session: AsyncSession, request: Request, user: User, project: ProjectResponse
+) -> ProjectResponse:
+    (annotated,) = await _for_caller(session, request, user, [project])
+    return annotated
+
+
 def _require_demo_enabled() -> None:
     """Enforce the master rollback switch on demo PROVISIONING paths only.
 
@@ -132,8 +150,11 @@ def _require_demo_enabled() -> None:
 
 
 @router.get("", response_model=list[ProjectResponse])
-async def list_projects(session: SessionDep) -> list[ProjectResponse]:
-    return await project_service.list_projects(session)
+async def list_projects(
+    session: SessionDep, request: Request, current_user: CurrentUserDep
+) -> list[ProjectResponse]:
+    projects = await project_service.list_projects(session)
+    return await _for_caller(session, request, current_user, projects)
 
 
 @router.post(
@@ -142,7 +163,7 @@ async def list_projects(session: SessionDep) -> list[ProjectResponse]:
     status_code=201,
 )
 async def create_project(
-    session: SessionDep, current_user: EditorUserDep, data: ProjectCreate
+    session: SessionDep, request: Request, current_user: EditorUserDep, data: ProjectCreate
 ) -> ProjectResponse:
     # Record the creator so the editor who made a project keeps control of it
     # (see _require_project_manager) without needing an owner for every rename.
@@ -156,7 +177,7 @@ async def create_project(
         slug=project.slug,
         payload=data.model_dump(),
     )
-    return project
+    return await _one_for_caller(session, request, current_user, project)
 
 
 @router.post(
@@ -164,7 +185,9 @@ async def create_project(
     response_model=ProjectResponse,
     status_code=201,
 )
-async def create_demo_project(session: SessionDep, current_user: EditorUserDep) -> ProjectResponse:
+async def create_demo_project(
+    session: SessionDep, request: Request, current_user: EditorUserDep
+) -> ProjectResponse:
     _require_demo_enabled()
     project = await demo_service.create_demo_project(session, created_by=current_user.id)
     # A demo is a project, and generating one is a person's decision — so it files
@@ -180,7 +203,7 @@ async def create_demo_project(session: SessionDep, current_user: EditorUserDep) 
         slug=project.slug,
         payload={"is_demo": True},
     )
-    return project
+    return await _one_for_caller(session, request, current_user, project)
 
 
 @router.post("/demo/cancel", response_model=DemoCancelResponse)
@@ -197,7 +220,7 @@ async def cancel_demo_provisioning(
 
 @router.post("/demo/{slug}/reset", response_model=ProjectResponse)
 async def reset_demo_project(
-    session: SessionDep, current_user: EditorUserDep, slug: str
+    session: SessionDep, request: Request, current_user: EditorUserDep, slug: str
 ) -> ProjectResponse:
     """Re-seed a demo in place. Restricted to the demo's creator or an owner."""
     # Reset re-provisions the demo from scratch, so it IS a provisioning path and
@@ -223,7 +246,7 @@ async def reset_demo_project(
         slug=replacement.slug,
         payload={"is_demo": True},
     )
-    return replacement
+    return await _one_for_caller(session, request, current_user, replacement)
 
 
 @router.delete("/demo/{slug}", status_code=204)
@@ -249,13 +272,20 @@ async def delete_demo_project(session: SessionDep, current_user: EditorUserDep, 
 
 
 @router.get("/{slug}", response_model=ProjectResponse)
-async def get_project(session: SessionDep, slug: str) -> ProjectResponse:
-    return await project_service.get_project(session, slug)
+async def get_project(
+    session: SessionDep, request: Request, current_user: CurrentUserDep, slug: str
+) -> ProjectResponse:
+    project = await project_service.get_project(session, slug)
+    return await _one_for_caller(session, request, current_user, project)
 
 
 @router.patch("/{slug}", response_model=ProjectResponse)
 async def update_project(
-    session: SessionDep, current_user: EditorUserDep, slug: str, data: ProjectUpdate
+    session: SessionDep,
+    request: Request,
+    current_user: EditorUserDep,
+    slug: str,
+    data: ProjectUpdate,
 ) -> ProjectResponse:
     project = await project_service.get_project_by_slug(session, slug)
     _require_project_manager(current_user, project)
@@ -277,7 +307,7 @@ async def update_project(
         slug=updated.slug,
         payload=data.model_dump(exclude_unset=True),
     )
-    return updated
+    return await _one_for_caller(session, request, current_user, updated)
 
 
 # ``current_user`` as a parameter rather than a route dependency: the same

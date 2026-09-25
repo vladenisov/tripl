@@ -232,6 +232,23 @@ export interface ScanJob {
   updated_at: string
 }
 
+// Mirrors ScanActivityItem / ScanActivityResponse (schemas/scan_job.py): the
+// Scans list's per-scan figures, aggregated in SQL over the whole history.
+export interface ScanActivityItem {
+  scan_config_id: string
+  latest_job: ScanJob | null
+  // Consecutive failed runs, newest first, looking past queued/running jobs.
+  failing_streak: number
+  // Rows read by jobs stamped (completed, else started) inside the window.
+  rows_read_24h: number
+}
+
+export interface ScanActivityResponse {
+  window_from: string
+  window_to: string
+  items: ScanActivityItem[]
+}
+
 // ─── Dry run: "what would this scan create?" ──────────────────────────────────
 // Mirrors the backend's ScanDryRun* Pydantic models (schemas/scan_config.py).
 // The payload is computed by the SAME planner a real run uses, so the names

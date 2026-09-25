@@ -9,6 +9,7 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
 import { ErrorState } from '@/components/error-state'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { eventTypesKey } from '@/lib/queryKeys'
 import { ChevronLeft, Loader2, Plus } from 'lucide-react'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard } from './eventFormLayout'
@@ -295,45 +296,50 @@ export default function EventBulkForm() {
                 }
               >
                 <div className="max-h-[360px] overflow-auto">
-                  <table className="w-full text-[12px]" aria-label="Events to create">
-                    <thead>
-                      <tr style={{ color: 'var(--fg-subtle)' }}>
-                        <th scope="col" className="px-[18px] py-2 text-left font-medium">Line</th>
-                        <th scope="col" className="py-2 text-left font-medium">Event</th>
-                        <th scope="col" className="px-[18px] py-2 text-left font-medium">Title</th>
-                        <th scope="col" className="px-[18px] py-2 text-left font-medium">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  {/* The box above scrolls both ways, so the table's own
+                      wrapper does not add a second scroller whose bar sits
+                      below the fold. The line number only matters for matching
+                      a row back to the paste; a phone keeps the event, title
+                      and verdict. */}
+                  <Table scroll={false} className="text-[12px]" aria-label="Events to create">
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead scope="col" className="hidden px-[18px] md:table-cell">Line</TableHead>
+                        <TableHead scope="col" className="max-md:pl-[18px]">Event</TableHead>
+                        <TableHead scope="col" className="px-[18px]">Title</TableHead>
+                        <TableHead scope="col" className="px-[18px]">Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {rows.map(row => (
-                        <tr key={row.line} style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                          <td
-                            className="px-[18px] py-[6px] tabular-nums"
+                        <TableRow key={row.line}>
+                          <TableCell
+                            className="hidden px-[18px] py-[6px] tabular-nums md:table-cell"
                             style={{ color: 'var(--fg-subtle)' }}
                           >
                             {row.line}
-                          </td>
-                          <td className="mono py-[6px]">{row.name}</td>
+                          </TableCell>
+                          <TableCell className="mono py-[6px] max-md:pl-[18px]">{row.name}</TableCell>
                           {/* The parse is the only place a stray fourth column
                               becomes visible before it is stored as a title. */}
-                          <td
+                          <TableCell
                             className="px-[18px] py-[6px]"
                             style={{ color: row.title ? undefined : 'var(--fg-subtle)' }}
                           >
                             {row.title || '—'}
-                          </td>
-                          <td
+                          </TableCell>
+                          <TableCell
                             className="px-[18px] py-[6px]"
                             style={{ color: STATUS_COLOR[row.status] }}
                           >
                             {row.status === 'incomplete'
                               ? `missing ${row.missing.join(', ')}`
                               : STATUS_LABEL[row.status]}
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       ))}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
               </SurfCard>
             )}

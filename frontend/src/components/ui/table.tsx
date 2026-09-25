@@ -1,14 +1,25 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+function Table({
+  className,
+  scroll = true,
+  ...props
+}: React.ComponentProps<"table"> & {
+  /** `false` for a table inside a scroll region of its own: that region stays
+   *  the one element that scrolls (and the one keyboard users can focus). */
+  scroll?: boolean
+}) {
   // `tripl-scroll-x` adds the edge fade/shadow that tells the reader the columns
   // continue past the right edge. This container — not the outer
   // `.tripl-table-wrap` — is the element that actually scrolls, and its
   // horizontal scrollbar sits far below the header row on a long table
   // (tripl-jfm3.36 / .70).
   return (
-    <div data-slot="table-container" className="tripl-scroll-x relative w-full overflow-x-auto">
+    <div
+      data-slot="table-container"
+      className={cn("relative w-full", scroll && "tripl-scroll-x overflow-x-auto")}
+    >
       <table data-slot="table" className={cn("w-full caption-bottom text-sm", className)} {...props} />
     </div>
   )

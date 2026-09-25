@@ -1,5 +1,5 @@
-import { useState, type CSSProperties, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
@@ -25,8 +25,15 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { Button } from '@/components/ui/button'
 import { FormRow } from '@/components/ui/form-row'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
+import { ErrorState } from '@/components/error-state'
+import {
+  createFieldControlIdSlot,
+  FieldControlIdContext,
+  useFieldControlId,
+} from '@/components/settings/field-control-id'
 import { Chip } from '@/components/primitives/chip'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { countOf } from '@/lib/plural'
@@ -35,6 +42,13 @@ import { eventTypesKey, projectEventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
+import {
+  parseContract,
+  validateContract,
+  type ContractDraft,
+  type ContractErrors,
+} from './fieldContract'
+import { describedByIds, SFieldHintContext, useSFieldHintId } from './sFieldContext'
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
 const DEFAULT_COLOR = '#6366f1'
@@ -49,13 +63,6 @@ const TH_STYLE: CSSProperties = {
   letterSpacing: '0.04em',
 }
 const TD_STYLE: CSSProperties = { padding: '10px 14px', fontSize: 12.5, verticalAlign: 'middle' }
-
-function parseOptionalNumberInput(value: string): number | null {
-  const trimmed = value.trim()
-  if (!trimmed) return null
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : null
-}
 
 function fieldContractRuleCount(field: FieldDefinition): number {
   return [
@@ -77,15 +84,17 @@ function requiredFieldCount(eventType: EventType): number {
 // ─────────────────────────── Event types list ───────────────────────────
 
 export function EventTypesTab({ slug }: { slug: string }) {
-  const navigate = useNavigate()
   const branchId = useActiveBranchId()
   const canWrite = useCanWriteProject()
   const [creating, setCreating] = useState(false)
 
-  const { data: eventTypes = [] } = useQuery({
+  const typesQuery = useQuery({
     queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug, branchId),
+    // Rendered in the panel below, with a retry.
+    meta: SILENT_ERROR_META,
   })
+  const eventTypes = typesQuery.data ?? []
 
   // Per-type owners drive the list's Owner column and the derived merge Status
   // (no owners ⇒ anyone can merge ⇒ "ungated"; owners present ⇒ "gated").
@@ -93,16 +102,25 @@ export function EventTypesTab({ slug }: { slug: string }) {
   // own deep-copied ids, so asking for their owners was one 404 per type on
   // every visit in branch context, for a column the page then hid anyway
   // (tripl-kjhi.11). The editor for owners is likewise main-only.
+  //
+  // Still one request per type on main: the list response carries no owners
+  // and there is no batched owners endpoint yet (PLAN-42 needs one).
+  const onMain = branchId === null
   const ownerQueries = useQueries({
     queries: eventTypes.map((et) => ({
       queryKey: ['eventTypeOwners', slug, et.id],
       queryFn: () => eventTypeOwnersApi.list(slug, et.id),
-      enabled: branchId === null,
+      enabled: onMain,
+      // An unanswered owners request makes the Status cell say "—" rather
+      // than guess, so a toast per type would only repeat it.
+      meta: SILENT_ERROR_META,
     })),
   })
-  const ownersByType = new Map<string, EventTypeOwner[]>()
+  // `undefined` = not known (still loading, or the request failed), which is
+  // NOT the same as "no owners" and must not be rendered as "ungated".
+  const ownersByType = new Map<string, EventTypeOwner[] | undefined>()
   eventTypes.forEach((et, i) => {
-    ownersByType.set(et.id, ownerQueries[i]?.data ?? [])
+    ownersByType.set(et.id, ownerQueries[i]?.data)
   })
 
   if (creating) {
@@ -114,6 +132,10 @@ export function EventTypesTab({ slug }: { slug: string }) {
   // (no sensitive fields / no owners anywhere) is noise, not information.
   const showSensitive = sorted.some((et) => sensitiveFieldCount(et) > 0)
   const showOwner = sorted.some((et) => (ownersByType.get(et.id) ?? []).length > 0)
+  // Owners live on main, so a branch cannot know whether a type is gated. The
+  // column used to say "ungated" for every row there — wrong for exactly the
+  // types whose owners will block this branch's merge (PLAN-40).
+  const showStatus = onMain
 
   return (
     <div className="flex flex-col gap-[18px]">
@@ -134,8 +156,29 @@ export function EventTypesTab({ slug }: { slug: string }) {
       </div>
       {!canWrite && <ReadOnlyNotice />}
 
-      <SurfPanel title="All types" subtitle={countOf(sorted.length, 'type', 'types')}>
-        {sorted.length === 0 ? (
+      <SurfPanel
+        title="All types"
+        subtitle={typesQuery.isPending ? 'Loading…' : countOf(sorted.length, 'type', 'types')}
+      >
+        {typesQuery.isPending ? (
+          // A pending list is not an empty one: "No event types yet" used to
+          // flash on every cold load and stay up on a 500 (PLAN-41).
+          <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading event types">
+            {Array.from({ length: 3 }, (_, index) => (
+              <Skeleton key={index} className="h-10 w-full" />
+            ))}
+          </div>
+        ) : typesQuery.isError ? (
+          <div className="p-4">
+            <ErrorState
+              compact
+              title="Couldn't load event types"
+              error={typesQuery.error}
+              onRetry={() => { void typesQuery.refetch() }}
+              retryLabel="Retry"
+            />
+          </div>
+        ) : sorted.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             No event types yet. Create one to categorize your events.
           </p>
@@ -148,24 +191,31 @@ export function EventTypesTab({ slug }: { slug: string }) {
                 <Th align="right">Required</Th>
                 {showSensitive && <Th>Sensitive</Th>}
                 {showOwner && <Th>Owner</Th>}
-                <Th>Status</Th>
+                {showStatus && <Th>Status</Th>}
                 <Th style={{ width: 40 }} />
               </tr>
             </thead>
             <tbody>
               {sorted.map((et) => (
-                <ListRow
-                  key={et.id}
-                  onClick={() => navigate(`/p/${slug}/settings/event-types/${et.id}`)}
-                >
+                <ListRow key={et.id}>
                   <Td>
                     <div className="flex items-center gap-2.5">
                       <span
                         className="size-[9px] shrink-0 rounded-[3px]"
                         style={{ background: et.color || DEFAULT_COLOR }}
+                        aria-hidden="true"
                       />
                       <div className="min-w-0">
-                        <div className="text-[13px] font-semibold">{et.display_name}</div>
+                        {/* A real link, not a `role="button"` row: the row keeps
+                            its cell semantics, so a screen reader still reads the
+                            column headers (PLAN-39). */}
+                        <Link
+                          to={`/p/${slug}/settings/event-types/${et.id}`}
+                          className="text-[13px] font-semibold hover:underline"
+                          style={{ color: 'var(--fg)' }}
+                        >
+                          {et.display_name}
+                        </Link>
                         <div className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
                           {et.name}_*
                         </div>
@@ -207,27 +257,43 @@ export function EventTypesTab({ slug }: { slug: string }) {
                       })()}
                     </Td>
                   )}
+                  {showStatus && (
+                    <Td>
+                      {(() => {
+                        const owners = ownersByType.get(et.id)
+                        if (owners === undefined) {
+                          return (
+                            <span style={{ color: 'var(--fg-faint)' }} title="Owners not known yet">
+                              —
+                            </span>
+                          )
+                        }
+                        return owners.length > 0 ? (
+                          <Chip
+                            tone="accent"
+                            size="xs"
+                            title="Has owners — a branch that edits this type needs an owner's approval to merge"
+                          >
+                            gated
+                          </Chip>
+                        ) : (
+                          <Chip
+                            tone="neutral"
+                            size="xs"
+                            title="No owners — anyone can merge changes to this type"
+                          >
+                            ungated
+                          </Chip>
+                        )
+                      })()}
+                    </Td>
+                  )}
                   <Td>
-                    {(ownersByType.get(et.id) ?? []).length > 0 ? (
-                      <Chip
-                        tone="accent"
-                        size="xs"
-                        title="Has owners — a branch that edits this type needs an owner's approval to merge"
-                      >
-                        gated
-                      </Chip>
-                    ) : (
-                      <Chip
-                        tone="neutral"
-                        size="xs"
-                        title="No owners — anyone can merge changes to this type"
-                      >
-                        ungated
-                      </Chip>
-                    )}
-                  </Td>
-                  <Td>
-                    <ChevronRight className="size-3.5" style={{ color: 'var(--fg-faint)' }} />
+                    <ChevronRight
+                      className="size-3.5"
+                      style={{ color: 'var(--fg-faint)' }}
+                      aria-hidden="true"
+                    />
                   </Td>
                 </ListRow>
               ))}
@@ -292,7 +358,7 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
             <SInput value={displayName} onChange={setDisplayName} placeholder="Checkout" />
           </SField>
           <SField label="Description">
-            <Textarea value={description} rows={2} onChange={(e) => setDescription(e.target.value)} />
+            <STextarea value={description} onChange={setDescription} />
           </SField>
           <SField label="Color" last>
             <ColorPicker value={color} onChange={setColor} />
@@ -309,9 +375,12 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
 }
 
 export function ColorPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  // Takes the enclosing SField's label when there is one.
+  const id = useFieldControlId()
   return (
     <div className="flex items-center gap-2.5">
       <input
+        id={id}
         type="color"
         value={value || DEFAULT_COLOR}
         onChange={(e) => onChange(e.target.value)}
@@ -328,7 +397,7 @@ export function ColorPicker({ value, onChange }: { value: string; onChange: (v: 
 
 // ─────────────────────────── Fields editor ───────────────────────────
 
-interface FieldDraft {
+interface FieldDraft extends ContractDraft {
   name: string
   display_name: string
   field_type: string
@@ -336,11 +405,6 @@ interface FieldDraft {
   description: string
   enum_options: string[]
   sensitivity: Sensitivity
-  contract_max_bad_rate: string
-  contract_required_max_null_rate: string
-  contract_regex: string
-  contract_min_value: string
-  contract_max_value: string
 }
 
 function emptyDraft(): FieldDraft {
@@ -378,14 +442,11 @@ function draftFromField(f: FieldDefinition): FieldDraft {
   }
 }
 
+// Only ever called on a draft FieldEditPage has validated (validateContract):
+// an input that does not parse is an error on the form, never a dropped or
+// tightened rule (PLAN-38).
 function draftContract(draft: FieldDraft) {
-  return {
-    contract_required_max_null_rate: parseOptionalNumberInput(draft.contract_required_max_null_rate),
-    contract_regex: draft.contract_regex.trim() || null,
-    contract_min_value: parseOptionalNumberInput(draft.contract_min_value),
-    contract_max_value: parseOptionalNumberInput(draft.contract_max_value),
-    contract_max_bad_rate: parseOptionalNumberInput(draft.contract_max_bad_rate) ?? 0,
-  }
+  return parseContract(draft)
 }
 
 export function FieldsEditor({
@@ -458,10 +519,37 @@ export function FieldsEditor({
     },
   })
 
+  // Applied to the cached list at once, so the row moves with the click instead
+  // of after a full refetch (PLAN-37); a refusal puts the server's order back.
   const reorderMut = useMutation({
+    // Its error is rendered above the table.
+    meta: SILENT_ERROR_META,
     mutationFn: (fieldIds: string[]) => fieldsApi.reorder(slug, eventType.id, fieldIds, branchId),
-    onSuccess: invalidate,
+    onMutate: async (fieldIds: string[]) => {
+      const key = eventTypesKey(slug, branchId)
+      await qc.cancelQueries({ queryKey: key })
+      const orderOf = new Map(fieldIds.map((id, order) => [id, order]))
+      qc.setQueryData<EventType[]>(key, (types) =>
+        types?.map((et) =>
+          et.id !== eventType.id
+            ? et
+            : {
+                ...et,
+                field_definitions: et.field_definitions.map((f) => ({
+                  ...f,
+                  order: orderOf.get(f.id) ?? f.order,
+                })),
+              },
+        ),
+      )
+    },
+    onSettled: invalidate,
   })
+  // Said aloud after a move, because the row jumping is only visible (PLAN-37).
+  const [moveAnnouncement, setMoveAnnouncement] = useState('')
+  // After a move to the top or bottom the pressed button turns disabled and
+  // focus would fall to <body>; this names the button that takes it instead.
+  const [focusRequest, setFocusRequest] = useState<{ fieldId: string; button: 'up' | 'down' } | null>(null)
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => fieldsApi.del(slug, eventType.id, id, branchId),
@@ -482,12 +570,20 @@ export function FieldsEditor({
   }
 
   const moveField = (idx: number, direction: -1 | 1) => {
+    // Ignored rather than disabled while a move is in flight: disabling every
+    // move button took focus away from the one just pressed.
+    if (reorderMut.isPending) return
     const newIdx = idx + direction
     if (newIdx < 0 || newIdx >= sortedFields.length) return
     const reordered = [...sortedFields]
     const [moved] = reordered.splice(idx, 1)
     reordered.splice(newIdx, 0, moved)
+    reorderMut.reset()
     reorderMut.mutate(reordered.map((f) => f.id))
+    setMoveAnnouncement(`${moved.name} moved to position ${newIdx + 1} of ${sortedFields.length}`)
+    if (newIdx === 0) setFocusRequest({ fieldId: moved.id, button: 'down' })
+    else if (newIdx === sortedFields.length - 1) setFocusRequest({ fieldId: moved.id, button: 'up' })
+    else setFocusRequest(null)
   }
 
   if (editing) {
@@ -544,6 +640,14 @@ export function FieldsEditor({
           {getErrorMessage(deleteMut.error)}
         </div>
       )}
+      {reorderMut.isError && (
+        <div role="alert" className="px-[18px] py-2 text-[12.5px] text-destructive">
+          Could not reorder fields: {getErrorMessage(reorderMut.error)}
+        </div>
+      )}
+      <p aria-live="polite" className="sr-only">
+        {moveAnnouncement}
+      </p>
       {sortedFields.length === 0 ? (
         <p className="px-[18px] py-3.5 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
           No fields defined yet.
@@ -569,7 +673,8 @@ export function FieldsEditor({
                 field={f}
                 isFirst={idx === 0}
                 isLast={idx === sortedFields.length - 1}
-                reordering={reorderMut.isPending}
+                focusButton={focusRequest?.fieldId === f.id ? focusRequest.button : null}
+                onFocused={() => setFocusRequest(null)}
                 canWrite={canWrite}
                 onMoveUp={() => moveField(idx, -1)}
                 onMoveDown={() => moveField(idx, 1)}
@@ -588,7 +693,9 @@ interface FieldRowProps {
   field: FieldDefinition
   isFirst: boolean
   isLast: boolean
-  reordering: boolean
+  /** Which move button should take focus after this row moved, if any. */
+  focusButton: 'up' | 'down' | null
+  onFocused: () => void
   /** False for a read-only visitor: the row is information, not a way in. */
   canWrite: boolean
   onMoveUp: () => void
@@ -601,7 +708,8 @@ function FieldRow({
   field,
   isFirst,
   isLast,
-  reordering,
+  focusButton,
+  onFocused,
   canWrite,
   onMoveUp,
   onMoveDown,
@@ -609,20 +717,44 @@ function FieldRow({
   onDelete,
 }: FieldRowProps) {
   const contractCount = fieldContractRuleCount(field)
+  const upRef = useRef<HTMLButtonElement>(null)
+  const downRef = useRef<HTMLButtonElement>(null)
+  // The move just put this row at an edge, so the button that was pressed is
+  // now disabled; hand focus to the one that still works (PLAN-37).
+  useEffect(() => {
+    if (!focusButton) return
+    const target = focusButton === 'up' ? upRef.current : downRef.current
+    if (target && !target.disabled) {
+      target.focus()
+      onFocused()
+    }
+  }, [focusButton, isFirst, isLast, onFocused])
   return (
-    <ListRow onClick={canWrite ? onEdit : undefined}>
-      <Td className="pr-0" onClick={(e) => e.stopPropagation()}>
+    <ListRow>
+      <Td className="pr-0">
         {canWrite && <div className="flex flex-col gap-px">
-          <IconButton title="Move up" disabled={isFirst || reordering} onClick={onMoveUp}>
+          <IconButton ref={upRef} title={`Move ${field.name} up`} disabled={isFirst} onClick={onMoveUp}>
             <ChevronUp className="size-3" />
           </IconButton>
-          <IconButton title="Move down" disabled={isLast || reordering} onClick={onMoveDown}>
+          <IconButton ref={downRef} title={`Move ${field.name} down`} disabled={isLast} onClick={onMoveDown}>
             <ChevronDown className="size-3" />
           </IconButton>
         </div>}
       </Td>
       <Td>
-        <span className="mono text-[12px]">{field.name}</span>
+        {/* The way into the editor is this button, not a `role="button"` row
+            wrapped around the move, edit and delete buttons (PLAN-39). */}
+        {canWrite ? (
+          <button
+            type="button"
+            onClick={onEdit}
+            className="mono text-left text-[12px] hover:underline"
+          >
+            {field.name}
+          </button>
+        ) : (
+          <span className="mono text-[12px]">{field.name}</span>
+        )}
       </Td>
       <Td>
         <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
@@ -658,12 +790,12 @@ function FieldRow({
           <span style={{ color: 'var(--fg-faint)' }}>—</span>
         )}
       </Td>
-      <Td onClick={(e) => e.stopPropagation()}>
+      <Td>
         {canWrite && <div className="flex justify-end gap-0.5">
-          <IconButton title="Edit field" onClick={onEdit}>
+          <IconButton title="Edit field" label={`Edit field ${field.name}`} onClick={onEdit}>
             <Pencil className="size-3.5" />
           </IconButton>
-          <IconButton title="Delete field" danger onClick={onDelete}>
+          <IconButton title="Delete field" label={`Delete field ${field.name}`} danger onClick={onDelete}>
             <Trash2 className="size-3.5" />
           </IconButton>
         </div>}
@@ -709,12 +841,48 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
     setEnumInput('')
   }
 
+  // Contract errors show as soon as something invalid is typed, and a required
+  // one left blank shows once Save was tried (PLAN-38).
+  const [submitAttempted, setSubmitAttempted] = useState(false)
+  const contractErrors = validateContract(draft)
+  const contractError = (key: keyof ContractErrors): string | undefined =>
+    submitAttempted || draft[key].trim() !== '' ? contractErrors[key] : undefined
+  const requiredId = useId()
+  const enumInputId = useId()
+  const errorIdBase = useId()
+  const errorId = (key: keyof ContractErrors) => `${errorIdBase}-${key}`
+
   const submit = () => {
-    if (!isEdit && !draft.name.trim()) {
-      setNameMissing(true)
-      return
-    }
+    setSubmitAttempted(true)
+    const nameProblem = !isEdit && !draft.name.trim()
+    if (nameProblem) setNameMissing(true)
+    if (nameProblem || Object.keys(contractErrors).length > 0) return
     onSubmit(draft)
+  }
+
+  const contractInput = (
+    key: keyof ContractErrors,
+    props: { placeholder?: string; decimal?: boolean } = {},
+  ) => {
+    const error = contractError(key)
+    return (
+      <>
+        <SInput
+          value={draft[key]}
+          onChange={(v) => set(key, v)}
+          mono
+          placeholder={props.placeholder}
+          inputMode={props.decimal ? 'decimal' : undefined}
+          invalid={!!error}
+          describedBy={error ? errorId(key) : undefined}
+        />
+        {error && (
+          <p id={errorId(key)} className="mt-1 text-[12px]" style={{ color: 'var(--danger)' }}>
+            {error}
+          </p>
+        )}
+      </>
+    )
   }
 
   return (
@@ -744,7 +912,6 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
               }}
               mono
               placeholder="e.g. order_id"
-              ariaLabel="Name"
               invalid={nameMissing}
               describedBy={nameMissing ? 'field-name-error' : undefined}
             />
@@ -776,12 +943,12 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
             options={SENSITIVITY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
           />
         </SField>
-        <SField label="Required">
+        <SField label="Required" htmlFor={requiredId}>
           <div className="flex items-center gap-2.5">
             <Switch
+              id={requiredId}
               checked={draft.is_required}
               onCheckedChange={(c) => set('is_required', c)}
-              aria-label="Required"
             />
             <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
               Must be present on every event
@@ -796,10 +963,11 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
           />
         </SField>
         {draft.field_type === 'enum' && (
-          <SField label="Enum options" last>
+          <SField label="Enum options" last htmlFor={enumInputId}>
             <div className="flex flex-col gap-2">
               <div className="flex max-w-[360px] gap-2">
                 <Input
+                  id={enumInputId}
                   className="mono"
                   value={enumInput}
                   placeholder="Type option, press Enter"
@@ -847,29 +1015,19 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
 
       <SCard title="Data contract" description="Quality rules tripl checks on every scan of this field.">
         <SField label="Bad share" hint="Max fraction of values allowed to fail the contract (0–1).">
-          <SInput value={draft.contract_max_bad_rate} onChange={(v) => set('contract_max_bad_rate', v)} mono />
+          {contractInput('contract_max_bad_rate', { decimal: true })}
         </SField>
-        <SField label="Null share" hint="Max fraction allowed to be null (0–1).">
-          <SInput
-            value={draft.contract_required_max_null_rate}
-            onChange={(v) => set('contract_required_max_null_rate', v)}
-            mono
-            placeholder="—"
-          />
+        <SField label="Null share" hint="Max fraction allowed to be null (0–1). Leave empty for no rule.">
+          {contractInput('contract_required_max_null_rate', { decimal: true, placeholder: '—' })}
         </SField>
         <SField label="Regex" hint="Values must match this pattern.">
-          <SInput
-            value={draft.contract_regex}
-            onChange={(v) => set('contract_regex', v)}
-            mono
-            placeholder="^[a-z0-9_]+$"
-          />
+          {contractInput('contract_regex', { placeholder: '^[a-z0-9_]+$' })}
         </SField>
         <SField label="Min">
-          <SInput value={draft.contract_min_value} onChange={(v) => set('contract_min_value', v)} mono placeholder="—" />
+          {contractInput('contract_min_value', { decimal: true, placeholder: '—' })}
         </SField>
         <SField label="Max" last>
-          <SInput value={draft.contract_max_value} onChange={(v) => set('contract_max_value', v)} mono placeholder="—" />
+          {contractInput('contract_max_value', { decimal: true, placeholder: '—' })}
         </SField>
       </SCard>
 
@@ -897,6 +1055,8 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
   const qc = useQueryClient()
   const canWrite = useCanWriteProject()
   const [selectedUserId, setSelectedUserId] = useState('')
+  const { confirm, dialog } = useConfirm()
+  const ownerSelectId = useId()
 
   const { data: owners = [] } = useQuery({
     queryKey: ['eventTypeOwners', slug, eventType.id],
@@ -907,7 +1067,10 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
     queryFn: () => usersApi.list(),
   })
 
+  // Both errors render in the card: an editor hitting the owner-only endpoint
+  // used to get nothing at all (PLAN-42).
   const addMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (userId: string) => eventTypeOwnersApi.add(slug, eventType.id, userId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug, eventType.id] })
@@ -916,12 +1079,33 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
   })
 
   const removeMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (ownerId: string) => eventTypeOwnersApi.remove(slug, eventType.id, ownerId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug, eventType.id] }),
   })
 
+  // Removing an owner changes who has to approve a merge, and the X sits 12px
+  // from the email it belongs to — one mis-hit was enough (PLAN-42).
+  const handleRemove = async (owner: EventTypeOwner) => {
+    addMut.reset()
+    removeMut.reset()
+    const who = owner.user_name || owner.user_email
+    const remaining = owners.length - 1
+    const ok = await confirm({
+      title: 'Remove owner',
+      message:
+        remaining > 0
+          ? `Remove ${who} as an owner of ${eventType.display_name}? Merges touching this type will no longer need their approval.`
+          : `Remove ${who} as an owner of ${eventType.display_name}? It has no other owner, so anyone will be able to merge changes to this type.`,
+      confirmLabel: 'Remove',
+      variant: 'danger',
+    })
+    if (ok) removeMut.mutate(owner.id)
+  }
+
   const ownerUserIds = new Set(owners.map((o: EventTypeOwner) => o.user_id))
   const availableUsers = users.filter((u: UserListItem) => !ownerUserIds.has(u.id))
+  const ownerError = addMut.isError ? addMut.error : removeMut.isError ? removeMut.error : null
 
   return (
     <SCard
@@ -933,6 +1117,7 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
         </Chip>
       }
     >
+      {dialog}
       <div className="flex flex-col gap-3 px-[18px] py-3.5">
         {owners.length === 0 ? (
           <p className="m-0 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
@@ -954,9 +1139,10 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
                 {canWrite && (
                   <IconButton
                     title="Remove owner"
+                    label={`Remove owner ${owner.user_name || owner.user_email}`}
                     danger
                     disabled={removeMut.isPending}
-                    onClick={() => removeMut.mutate(owner.id)}
+                    onClick={() => { void handleRemove(owner) }}
                   >
                     <X className="size-3" />
                   </IconButton>
@@ -966,9 +1152,11 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
           </div>
         )}
         {canWrite && availableUsers.length > 0 && (
-          <div className="flex gap-2">
-            <div className="max-w-[320px] flex-1">
+          <div className="flex flex-wrap gap-2">
+            <div className="max-w-[320px] min-w-0 flex-1">
               <SSelect
+                id={ownerSelectId}
+                ariaLabel="New owner"
                 value={selectedUserId}
                 onChange={setSelectedUserId}
                 options={[
@@ -984,12 +1172,21 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
               variant="outline"
               size="sm"
               disabled={!selectedUserId || addMut.isPending}
-              onClick={() => addMut.mutate(selectedUserId)}
+              onClick={() => {
+                removeMut.reset()
+                addMut.mutate(selectedUserId)
+              }}
             >
               <Plus className="size-3" />
               Add owner
             </Button>
           </div>
+        )}
+        {ownerError && (
+          <p role="alert" className="m-0 text-[12.5px] text-destructive">
+            {addMut.isError ? 'Could not add the owner' : 'Could not remove the owner'}:{' '}
+            {getErrorMessage(ownerError)}
+          </p>
         )}
       </div>
     </SCard>
@@ -1088,10 +1285,16 @@ export function SCard({
 export function SaveFooter({
   onCancel,
   pending,
+  disabled,
+  status,
   submitLabel = 'Save changes',
 }: {
   onCancel?: () => void
   pending?: boolean
+  /** Nothing to save yet (e.g. the form is unchanged). */
+  disabled?: boolean
+  /** A short outcome line beside the button, such as "Saved". */
+  status?: string
   submitLabel?: string
 }) {
   return (
@@ -1099,29 +1302,52 @@ export function SaveFooter({
       className="flex items-center justify-end gap-2.5 border-t px-4 py-3"
       style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
     >
+      <span role="status" className="mr-auto text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+        {status}
+      </span>
       {onCancel && (
         <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
           Cancel
         </Button>
       )}
-      <Button type="submit" size="sm" disabled={pending}>
+      <Button type="submit" size="sm" disabled={pending || disabled}>
         {submitLabel}
       </Button>
     </div>
   )
 }
 
+/**
+ * A labelled row of the event-type forms.
+ *
+ * The caption is a real `<label>` pointing at the row's control, and the hint
+ * describes it. Both used to be plain text beside it, so every input here was
+ * announced as an unlabeled "edit text" and clicking a label focused nothing
+ * (PLAN-36). The id travels the way the settings kit's `Field` sends it: the
+ * S* controls below (and ColorPicker) claim it through `useFieldControlId`, and
+ * a row holding any other control passes `htmlFor` naming that control's id,
+ * or `false` for a row with no single control, which is then named as a group.
+ */
 export function SField({
   label,
   hint,
   last,
+  htmlFor,
   children,
 }: {
   label: string
   hint?: string
   last?: boolean
+  htmlFor?: string | false
   children: ReactNode
 }) {
+  const generatedId = useId()
+  const hintId = useId()
+  const controlId = htmlFor === false ? null : (htmlFor ?? generatedId)
+  // Fresh per render so the id follows the row's current first control; see
+  // field-control-id.ts.
+  const slot = controlId === null ? null : createFieldControlIdSlot(controlId)
+  const captionStyle = { color: 'var(--fg)' }
   return (
     // Stacks below `sm`: the fixed 180px caption left a phone ~125px for every
     // input on the type and field forms (PLAN-35).
@@ -1130,20 +1356,32 @@ export function SField({
       captionClassName="sm:pt-1.5"
       className="px-[18px] py-3.5 sm:gap-4"
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
+      role={controlId === null ? 'group' : undefined}
+      aria-labelledby={controlId === null ? generatedId : undefined}
       caption={
         <>
-          <div className="text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
-            {label}
-          </div>
+          {controlId === null ? (
+            <span id={generatedId} className="block text-[12.5px] font-medium" style={captionStyle}>
+              {label}
+            </span>
+          ) : (
+            <label htmlFor={controlId} className="block text-[12.5px] font-medium" style={captionStyle}>
+              {label}
+            </label>
+          )}
           {hint && (
-            <div className="mt-1 text-[11px] leading-snug" style={{ color: 'var(--fg-subtle)' }}>
+            <div id={hintId} className="mt-1 text-[11px] leading-snug" style={{ color: 'var(--fg-subtle)' }}>
               {hint}
             </div>
           )}
         </>
       }
     >
-      {children}
+      <FieldControlIdContext.Provider value={slot}>
+        <SFieldHintContext.Provider value={hint ? hintId : undefined}>
+          {children}
+        </SFieldHintContext.Provider>
+      </FieldControlIdContext.Provider>
     </FormRow>
   )
 }
@@ -1157,6 +1395,8 @@ export function SInput({
   ariaLabel,
   invalid,
   describedBy,
+  inputMode,
+  id,
 }: {
   value: string
   onChange: (v: string) => void
@@ -1166,16 +1406,43 @@ export function SInput({
   ariaLabel?: string
   invalid?: boolean
   describedBy?: string
+  inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode']
+  id?: string
 }) {
+  const controlId = useFieldControlId(id)
+  const hintId = useSFieldHintId()
   return (
     <Input
+      id={controlId}
       className={mono ? 'mono max-w-[420px]' : 'max-w-[420px]'}
       value={value}
       placeholder={placeholder}
       disabled={disabled}
+      inputMode={inputMode}
       aria-label={ariaLabel}
       aria-invalid={invalid || undefined}
-      aria-describedby={describedBy}
+      aria-describedby={describedByIds(describedBy, hintId)}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  )
+}
+
+/** A two-row textarea that takes its SField's label and hint. */
+export function STextarea({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const controlId = useFieldControlId()
+  const hintId = useSFieldHintId()
+  return (
+    <Textarea
+      id={controlId}
+      value={value}
+      rows={2}
+      aria-describedby={hintId}
       onChange={(e) => onChange(e.target.value)}
     />
   )
@@ -1185,17 +1452,28 @@ export function SSelect({
   value,
   onChange,
   options,
+  id,
+  ariaLabel,
 }: {
   value: string
   onChange: (v: string) => void
   options: { value: string; label: string }[]
+  id?: string
+  ariaLabel?: string
 }) {
+  const controlId = useFieldControlId(id)
+  const hintId = useSFieldHintId()
   return (
     <select
+      id={controlId}
       value={value}
+      aria-label={ariaLabel}
+      aria-describedby={hintId}
       onChange={(e) => onChange(e.target.value)}
-      className="flex h-9 w-full max-w-[420px] rounded-md border bg-transparent px-3 py-1 text-sm"
-      style={{ borderColor: 'var(--border)' }}
+      className="flex h-9 w-full max-w-[420px] rounded-md border px-3 py-1 text-sm"
+      // The page's own surface rather than `bg-transparent`, so the native
+      // popup cannot paint light text on a light list in dark mode.
+      style={{ borderColor: 'var(--border)', background: 'var(--bg)', color: 'var(--fg)' }}
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -1261,28 +1539,15 @@ function Td({
   )
 }
 
-function ListRow({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
-  // No action, no button: a read-only row must not announce itself as one.
-  if (!onClick) {
-    return (
-      <tr className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-        {children}
-      </tr>
-    )
-  }
+// A plain row. It used to be `<tr role="button">` wrapped around its own move,
+// edit and delete buttons, which stripped the row and cell semantics (no column
+// headers read out) and nested interactive content; the way in is now a link or
+// button in the name cell (PLAN-39).
+function ListRow({ children }: { children: ReactNode }) {
   return (
     <tr
-      role="button"
-      tabIndex={0}
-      className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
+      className="border-t transition-colors hover:bg-[var(--surface-hover)]"
       style={{ borderColor: 'var(--border-subtle)' }}
-      onClick={onClick}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onClick()
-        }
-      }}
     >
       {children}
     </tr>
@@ -1292,21 +1557,27 @@ function ListRow({ children, onClick }: { children: ReactNode; onClick?: () => v
 export function IconButton({
   children,
   title,
+  label,
   disabled,
   danger,
   onClick,
+  ref,
 }: {
   children: ReactNode
   title: string
+  /** The accessible name when it should say more than the tooltip (which row). */
+  label?: string
   disabled?: boolean
   danger?: boolean
   onClick: () => void
+  ref?: React.Ref<HTMLButtonElement>
 }) {
   return (
     <button
+      ref={ref}
       type="button"
       title={title}
-      aria-label={title}
+      aria-label={label ?? title}
       disabled={disabled}
       onClick={onClick}
       className="flex items-center justify-center p-1 transition-colors disabled:opacity-40"

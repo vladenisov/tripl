@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { AlertMessageFormat, AlertRule, AlertRuleSimulateResponse, ScanConfig } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
 import { formatIncidentCount, scopeKindLabel } from '@/lib/alertStatus'
@@ -428,22 +429,29 @@ export function RuleReplayDialog({
                   <div role="region" aria-label="Replay firings" tabIndex={0}
                     className="max-h-72 min-w-0 max-w-full overflow-x-auto overflow-y-auto rounded-md border"
                   >
-                    <table className="w-full min-w-[840px] table-fixed text-left text-xs">
-                      <thead className="bg-muted/50 text-muted-foreground">
-                        <tr>
-                          <th className="w-40 px-3 py-2 font-medium">When</th>
-                          <th className="w-64 px-3 py-2 font-medium">Scope</th>
-                          <th className="w-32 px-3 py-2 font-medium">Scan</th>
-                          <th className="w-20 px-3 py-2 font-medium">Dir</th>
-                          <th className="w-20 px-3 py-2 text-right font-medium">Actual</th>
-                          <th className="w-24 px-3 py-2 text-right font-medium">Expected</th>
-                          <th className="w-16 px-3 py-2 text-right font-medium">Δ%</th>
-                        </tr>
-                      </thead>
-                      <tbody>
+                    {/* This region stays the one scroll container (and the
+                        focusable one), so the table's own wrapper does not clip.
+                        Scan and Expected are the first to go on a phone: the
+                        scope names the series and Δ% carries the comparison. */}
+                    <Table
+                      scroll={false}
+                      className="min-w-[560px] table-fixed text-left text-xs md:min-w-[840px]"
+                    >
+                      <TableHeader className="bg-muted/50">
+                        <TableRow className="hover:bg-transparent">
+                          <TableHead scope="col" className="h-auto w-40 py-2">When</TableHead>
+                          <TableHead scope="col" className="h-auto w-64 py-2">Scope</TableHead>
+                          <TableHead scope="col" className="hidden h-auto w-32 py-2 md:table-cell">Scan</TableHead>
+                          <TableHead scope="col" className="h-auto w-20 py-2">Dir</TableHead>
+                          <TableHead scope="col" className="h-auto w-20 py-2 text-right">Actual</TableHead>
+                          <TableHead scope="col" className="hidden h-auto w-24 py-2 text-right md:table-cell">Expected</TableHead>
+                          <TableHead scope="col" className="h-auto w-16 py-2 text-right">Δ%</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
                         {displayResult.firings.map((firing) => (
-                          <tr key={firing.anomaly_id} className="border-t">
-                            <td className="whitespace-nowrap px-3 py-1.5 font-mono">{formatDateTime(firing.bucket)}</td>
+                          <TableRow key={firing.anomaly_id}>
+                            <TableCell className="whitespace-nowrap py-1.5 font-mono">{formatDateTime(firing.bucket)}</TableCell>
                             {/* The kind through the shared `scopeKindLabel`, the
                                 same words the Inbox chips use, rather than the
                                 raw enum. The column shipped printing
@@ -461,8 +469,8 @@ export function RuleReplayDialog({
                                 per-scope sentence a narrow cell cannot hold is
                                 a hover away and is never a second copy of the
                                 wording. */}
-                            <td
-                              className="truncate px-3 py-1.5"
+                            <TableCell
+                              className="truncate py-1.5"
                               title={firing.rendered_item ?? firing.scope_name}
                             >
                               <span className="text-muted-foreground">
@@ -474,42 +482,42 @@ export function RuleReplayDialog({
                                   {firing.drift_type}: {firing.drift_field}
                                 </div>
                               )}
-                            </td>
-                            <td
-                              className="truncate px-3 py-1.5"
+                            </TableCell>
+                            <TableCell
+                              className="hidden truncate py-1.5 md:table-cell"
                               title={firing.scan_config_id ?? 'Project-wide'}
                             >
                               {firing.scan_config_id === null
                                 ? 'Project-wide'
                                 : (scans.find(scan => scan.id === firing.scan_config_id)?.name
                                   ?? `Scan ${firing.scan_config_id.slice(0, 8)}`)}
-                            </td>
-                            <td className="px-3 py-1.5">
+                            </TableCell>
+                            <TableCell className="py-1.5">
                               <Badge
                                 variant={firing.direction === 'spike' ? 'default' : 'secondary'}
                                 className="text-[10px]"
                               >
                                 {firing.direction}
                               </Badge>
-                            </td>
+                            </TableCell>
                             {/* Both columns through the same formatter: rounding
                                 only the baseline would leave "5780" beside
                                 "3,529" in one row, and a `%` catalog metric
                                 stores a fraction, so Math.round prints its
                                 whole replay as "0 vs 0". */}
-                            <td className="px-3 py-1.5 text-right tnum">
+                            <TableCell className="py-1.5 text-right tnum">
                               {formatIncidentCount(firing.actual_count)}
-                            </td>
-                            <td className="px-3 py-1.5 text-right tnum text-muted-foreground">
+                            </TableCell>
+                            <TableCell className="hidden py-1.5 text-right tnum text-muted-foreground md:table-cell">
                               {formatIncidentCount(firing.expected_count)}
-                            </td>
-                            <td className="px-3 py-1.5 text-right tnum">
+                            </TableCell>
+                            <TableCell className="py-1.5 text-right tnum">
                               {formatPercentDelta(firing.percent_delta, firing.expected_count)}
-                            </td>
-                          </tr>
+                            </TableCell>
+                          </TableRow>
                         ))}
-                      </tbody>
-                    </table>
+                      </TableBody>
+                    </Table>
                   </div>
                 )
               )}

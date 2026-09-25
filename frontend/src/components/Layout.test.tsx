@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import { projectsKey } from '@/lib/queryKeys'
-import { fireEvent, render, screen } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { projectsKey, projectsQueryOptions } from '@/lib/queryKeys'
+import { fireEvent, render, screen, within } from '@testing-library/react'
+import { QueryCache, QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { alertingApi } from '@/api/alerting'
@@ -12,6 +12,9 @@ import type { Project } from '@/types'
 import NotFoundPage from '@/pages/NotFoundPage'
 import Layout from './Layout'
 import { expectNoAxeViolations } from '@/test/axe'
+import { toast } from 'sonner'
+import { surfaceQueryError } from '@/lib/errorFeedback'
+import { usePageTitle } from './shell-chrome-context'
 
 vi.mock('@/api/alerting', () => ({
   alertingApi: { listDeliveries: vi.fn() },
@@ -72,8 +75,8 @@ vi.mock('@/demo/DemoScenarioStrip', () => ({
   DemoScenarioStrip: () => <button type="button">Dismiss</button>,
 }))
 
-vi.mock('@/demo/DemoScenarioProvider', () => ({
-  DemoScenarioProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+vi.mock('@/demo/LazyDemoScenarioProvider', () => ({
+  LazyDemoScenarioProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
 
 interface RenderLayoutOptions {
@@ -85,6 +88,8 @@ interface RenderLayoutOptions {
   mocks?: () => void
   /** Seeds the query cache before the first render (e.g. an already-loaded list). */
   seed?: (queryClient: QueryClient) => void
+  /** The app's cache, when a test needs its global error backstop. */
+  queryCache?: QueryCache
 }
 
 function makeProject(isDemo = false): Project {
@@ -131,6 +136,7 @@ function renderLayout(
   options.mocks?.()
 
   const queryClient = new QueryClient({
+    queryCache: options.queryCache,
     defaultOptions: { queries: { retry: false } },
   })
   options.seed?.(queryClient)
@@ -280,6 +286,55 @@ describe('Layout breadcrumbs', () => {
     // … but the page half must not name a real surface the user is not on.
     expect(screen.queryByText('Overview')).toBeNull()
     expect(screen.getByText('Not found')).toBeInTheDocument()
+  })
+})
+
+describe('Layout backend unavailable (fj5g.6)', () => {
+  it('shows the card once and no toast on top of it when the project list fails', async () => {
+    const toastError = vi.spyOn(toast, 'error')
+    // A second reader of the list, as the sidebar and the palette are in the
+    // real shell: every one of them must leave the failure to the card.
+    function ProjectsReader() {
+      const { data } = useQuery(projectsQueryOptions())
+      return <div>Workspace dashboard {data?.length ?? 0}</div>
+    }
+    renderLayout('/workspace', '/workspace', 'Workspace dashboard', {
+      page: <ProjectsReader />,
+      queryCache: new QueryCache({ onError: surfaceQueryError }),
+      mocks: () => {
+        vi.mocked(projectsApi.list).mockRejectedValue(new ApiError('Service unavailable', 503))
+      },
+    })
+
+    expect(await screen.findAllByRole('heading', { name: 'Backend is unavailable' })).toHaveLength(1)
+    expect(toastError).not.toHaveBeenCalled()
+  })
+})
+
+describe('Layout page title (LIVE-34)', () => {
+  function NamedDetail({ name }: { name?: string }) {
+    usePageTitle(name)
+    return <div>Detail body</div>
+  }
+
+  it('names the entity a detail page shows instead of "Detail"', async () => {
+    renderLayout('/p/demo/monitoring/metric/m-1', undefined, undefined, {
+      page: <NamedDetail name="Checkout conversion" />,
+    })
+    await screen.findByText('Detail body')
+
+    const banner = screen.getByRole('banner')
+    expect(within(banner).getByText('Checkout conversion')).toBeInTheDocument()
+    expect(within(banner).queryByText('Detail')).toBeNull()
+  })
+
+  it('keeps the route title until the entity has loaded', async () => {
+    renderLayout('/p/demo/monitoring/metric/m-1', undefined, undefined, {
+      page: <NamedDetail />,
+    })
+    await screen.findByText('Detail body')
+
+    expect(within(screen.getByRole('banner')).getByText('Detail')).toBeInTheDocument()
   })
 })
 

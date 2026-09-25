@@ -138,9 +138,9 @@ describe('EventsToolbar filters that came from a link (EVT-35)', () => {
   it('shows every status in the URL, not "Any status"', () => {
     renderToolbar({ filterStatuses: ['draft', 'live'] })
 
-    const trigger = screen.getByRole('combobox', { name: 'Status filter' })
+    const trigger = screen.getByRole('button', { name: 'Status filter' })
     expect(trigger).toHaveTextContent(/Draft, Live/)
-    expect(trigger).not.toHaveTextContent(/Any status/)
+    expect(trigger).not.toHaveTextContent(/any/)
   })
 
   it('shows a silent-days value no preset names', () => {
@@ -156,5 +156,60 @@ describe('EventsToolbar saved views (EVT-36)', () => {
 
     expect(screen.queryByRole('button', { name: /Views/ })).toBeNull()
     expect(screen.getByRole('button', { name: /Columns/ })).toBeInTheDocument()
+  })
+})
+
+describe('EventsToolbar status multi-select (EVT-35)', () => {
+  function openStatusMenu() {
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Status filter' }), { key: 'Enter' })
+  }
+
+  it('reads "any" with nothing ticked, the default that hides archived', async () => {
+    renderToolbar()
+
+    expect(screen.getByRole('button', { name: 'Status filter' })).toHaveTextContent(/any/)
+    openStatusMenu()
+    expect(await screen.findByRole('menuitemcheckbox', { name: 'Any status' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Archived' })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+  })
+
+  it('adds a second status to the ones already applied, in canonical order', async () => {
+    const onFilterStatusesChange = vi.fn()
+    renderToolbar({ filterStatuses: ['live'], onFilterStatusesChange })
+
+    openStatusMenu()
+    const draft = await screen.findByRole('menuitemcheckbox', { name: 'Draft' })
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Live' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(draft)
+
+    expect(onFilterStatusesChange).toHaveBeenCalledWith(['draft', 'live'])
+    // It stays open, so several statuses can be ticked in one visit.
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+
+  it('unticks one status and leaves the rest', async () => {
+    const onFilterStatusesChange = vi.fn()
+    renderToolbar({ filterStatuses: ['draft', 'live'], onFilterStatusesChange })
+
+    openStatusMenu()
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Draft' }))
+
+    expect(onFilterStatusesChange).toHaveBeenCalledWith(['live'])
+  })
+
+  it('clears back to the default with "Any status"', async () => {
+    const onFilterStatusesChange = vi.fn()
+    renderToolbar({ filterStatuses: ['draft', 'live'], onFilterStatusesChange })
+
+    openStatusMenu()
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Any status' }))
+
+    expect(onFilterStatusesChange).toHaveBeenCalledWith([])
   })
 })

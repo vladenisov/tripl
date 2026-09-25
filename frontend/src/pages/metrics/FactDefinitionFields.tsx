@@ -19,7 +19,7 @@ import {
   type FactOperandState,
   type MetricDraft,
 } from './metricDraft'
-import { toOperandPayload } from './metricPayload'
+import { toOperandPayload, withAggregation } from './metricPayload'
 import type { FactTableDetails, OperandDetailState } from './useFactTableDetails'
 
 const AGGREGATION_LABEL: Record<MetricAggregation, string> = {
@@ -147,7 +147,10 @@ function FactOperandEditor({
         <Select
           id={`${idPrefix}-aggregation`}
           value={operand.aggregation}
-          onChange={value => set('aggregation', value as MetricAggregation)}
+          onChange={value => {
+            checkMut.reset()
+            onChange(withAggregation(operand, value as MetricAggregation))
+          }}
           options={METRIC_AGGREGATIONS.map(a => ({ value: a, label: AGGREGATION_LABEL[a] }))}
         />
       </MetricField>

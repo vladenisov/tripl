@@ -11,22 +11,25 @@
  * and they do nothing.
  */
 
-import { createContext, useContext } from 'react'
-import type { ScanJob } from '@/types'
-import {
-  activeScenarioStep,
-  buildChapterList,
-  buildChapterSteps,
-  initialScenarioState,
-  isScenarioWatching,
-  scenarioMetricArtifact,
-  scenarioScanArtifact,
-  type ChapterId,
-  type ChapterListEntry,
-  type ScenarioState,
-  type ScenarioStep,
-  type ScenarioStepId,
+import { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import type { Project, ScanJob } from '@/types'
+// Types only: this module is on the first load (the palette and every page
+// import it), and the model behind these types loads with the scenario runtime,
+// only for a demo project (tripl-fj5g.15).
+import type {
+  ChapterId,
+  ChapterListEntry,
+  ScenarioState,
+  ScenarioStep,
+  ScenarioStepId,
 } from './scenarioModel'
+
+/** The artifacts the scenario is bound to, or nulls when there is no scenario. */
+export interface ScenarioArtifacts {
+  scanConfigId: string | null
+  scanJobId: string | null
+  metricId: string | null
+}
 
 export interface DemoScenarioValue {
   /**
@@ -53,6 +56,8 @@ export interface DemoScenarioValue {
   isWatching: boolean
   /** The user asked for the on-surface callouts to be quiet, without giving up the scenario. */
   hintsMuted: boolean
+  /** What the running scenario is bound to; all null unless `active`. */
+  artifacts: ScenarioArtifacts
 }
 
 export interface DemoScenarioActions {
@@ -84,20 +89,30 @@ export interface DemoScenarioActions {
   resetScenario: () => void
 }
 
-const INERT_SLUG = ''
-const inertState = initialScenarioState()
+const NO_ARTIFACTS: ScenarioArtifacts = { scanConfigId: null, scanJobId: null, metricId: null }
 
+/**
+ * Written out rather than built by the model, so that the model stays off the
+ * first load. It is what the model's own fresh state resolves to — live-loop's
+ * first step — with the resolved lists left empty: nothing reads them while
+ * `available` is false.
+ */
 export const INERT_SCENARIO: DemoScenarioValue = {
   available: false,
   active: false,
-  state: inertState,
+  state: {
+    v: 3,
+    activeChapter: 'live-loop',
+    chapters: { 'live-loop': { status: 'active', step: 'live-loop/run-scan' } },
+  },
   activeChapter: null,
-  step: activeScenarioStep(INERT_SLUG, inertState),
-  steps: buildChapterSteps(INERT_SLUG, 'live-loop', inertState),
-  chapters: buildChapterList(INERT_SLUG, inertState),
+  step: { id: 'live-loop/run-scan', title: '', instruction: '', to: '', ctaLabel: '' },
+  steps: [],
+  chapters: [],
   nextChapter: null,
-  isWatching: isScenarioWatching(inertState),
+  isWatching: false,
   hintsMuted: false,
+  artifacts: NO_ARTIFACTS,
 }
 
 export const INERT_ACTIONS: DemoScenarioActions = {
@@ -144,26 +159,40 @@ export function useCoachPresence(): CoachPresence {
   return useContext(CoachPresenceContext)
 }
 
-/** The artifacts the scenario is bound to, or nulls when there is no scenario. */
-export interface ScenarioArtifacts {
-  scanConfigId: string | null
-  scanJobId: string | null
-  metricId: string | null
-}
-
 /**
  * The ids a surface needs to point a coach mark at the *right* row: the run the
  * scenario is watching, not any of the runs the demo's tick keeps producing.
  * Deliberately narrow — pages get artifact ids, never the step machine.
  */
 export function useScenarioArtifacts(): ScenarioArtifacts {
-  const { active, state } = useDemoScenario()
-  if (!active) return { scanConfigId: null, scanJobId: null, metricId: null }
-  const scan = scenarioScanArtifact(state)
-  const metric = scenarioMetricArtifact(state)
-  return {
-    scanConfigId: scan?.scanConfigId ?? null,
-    scanJobId: scan?.scanJobId ?? null,
-    metricId: metric?.metricId ?? null,
-  }
+  return useDemoScenario().artifacts
+}
+
+/**
+ * A demo worth coaching: a demo project that has finished seeding. A demo still
+ * seeding has nothing to coach yet; a project that is not a demo never does.
+ * `generation_status` is absent on older payloads, where a listed project is by
+ * definition already built.
+ */
+export function isCoachableDemo(project: Project | undefined): boolean {
+  return Boolean(project?.is_demo) && (project?.generation_status ?? 'ready') === 'ready'
+}
+
+/** The coach-presence set and its reporter, for a provider to hand down. */
+export function useCoachPresenceState(): CoachPresence {
+  // Which steps have a visible coach mark mounted right now. A Set, not a
+  // counter: marks for one step live on one surface and unmount together.
+  const [presentSteps, setPresentSteps] = useState<ReadonlySet<ScenarioStepId>>(() => new Set())
+
+  const report = useCallback((step: ScenarioStepId, mounted: boolean) => {
+    setPresentSteps((prev) => {
+      if (prev.has(step) === mounted) return prev
+      const next = new Set(prev)
+      if (mounted) next.add(step)
+      else next.delete(step)
+      return next
+    })
+  }, [])
+
+  return useMemo(() => ({ present: presentSteps, report }), [presentSteps, report])
 }

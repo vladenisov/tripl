@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { serviceSettingsApi } from '@/api/serviceSettings'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { ServiceSettings } from '@/types'
@@ -188,7 +188,7 @@ describe('Instance settings destructive actions', () => {
   it('confirms before a per-secret Clear deletes the stored key', async () => {
     const update = renderSection('ai')
 
-    const clearButtons = await screen.findAllByRole('button', { name: 'Clear' })
+    const clearButtons = await screen.findAllByRole('button', { name: 'Delete stored key' })
     fireEvent.click(clearButtons[0]!)
 
     const dialog = await screen.findByRole('alertdialog')
@@ -211,12 +211,12 @@ describe('Instance settings write-through vs the unsaved draft', () => {
    * the whole settings response, and the response cannot contain an edit that
    * was never sent.
    */
-  function renderInstanceSettings(section: 'ai' | 'email') {
+  function renderInstanceSettings(section: 'ai' | 'email' | 'security') {
     vi.spyOn(serviceSettingsApi, 'get').mockResolvedValue(SETTINGS)
     const update = vi.spyOn(serviceSettingsApi, 'update').mockResolvedValue(SETTINGS)
     update.mockClear()
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    const tree = (current: 'ai' | 'email') => (
+    const tree = (current: 'ai' | 'email' | 'security') => (
       <QueryClientProvider client={queryClient}>
         <AuthContext.Provider value={ownerAuthValue()}>
           <ServiceSettingsSection section={current} />
@@ -224,7 +224,10 @@ describe('Instance settings write-through vs the unsaved draft', () => {
       </QueryClientProvider>
     )
     const view = render(tree(section))
-    return { update, showSection: (next: 'ai' | 'email') => view.rerender(tree(next)) }
+    return {
+      update,
+      showSection: (next: 'ai' | 'email' | 'security') => view.rerender(tree(next)),
+    }
   }
 
   const PROMPT = 'You answer in German.'
@@ -251,12 +254,33 @@ describe('Instance settings write-through vs the unsaved draft', () => {
 
     fireEvent.change(await screen.findByLabelText('Ask prompt'), { target: { value: PROMPT } })
 
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Clear' }))[0]!)
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Delete stored key' }))[0]!)
     const dialog = await screen.findByRole('alertdialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(update).toHaveBeenCalledWith({ ai: { ai_api_key: null } }))
 
     expect(screen.getByLabelText('Ask prompt')).toHaveValue(PROMPT)
+  })
+
+  // WS-23: Save used to send the whole form, so an edit left behind in another
+  // section went out with this one and nothing on screen said so.
+  it('saves only the section on screen and names the other unsaved sections', async () => {
+    const { update, showSection } = renderInstanceSettings('security')
+
+    fireEvent.change(await screen.findByLabelText('Login limit'), { target: { value: '9' } })
+    showSection('ai')
+    fireEvent.change(await screen.findByLabelText('Ask prompt'), { target: { value: PROMPT } })
+
+    expect(screen.getByText(/Also unsaved: Security & access/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+    expect(update).toHaveBeenCalledWith({ ai: { ask_system_prompt: PROMPT } })
+
+    // The Security edit is still a draft, not saved and not dropped.
+    showSection('security')
+    expect(await screen.findByLabelText('Login limit')).toHaveValue(9)
+    expect(screen.getByRole('button', { name: /Save changes/ })).toBeEnabled()
   })
 
   it('names the unsaved edits a reset of this section does drop', async () => {
@@ -381,5 +405,110 @@ describe('Instance settings save row', () => {
 
     const row = discard.closest('div')?.parentElement
     expect(row?.className).toContain('sticky')
+  })
+})
+
+describe('Instance settings load failure (WS-1)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('shows an error with retry instead of loading forever', async () => {
+    const get = vi
+      .spyOn(serviceSettingsApi, 'get')
+      .mockRejectedValueOnce(new Error('Service unavailable'))
+      .mockResolvedValue(SETTINGS)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <ServiceSettingsSection section="ai" />
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText("Couldn't load instance settings")).toBeInTheDocument()
+    expect(screen.getByText('Service unavailable')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+    expect(await screen.findByLabelText('Ask prompt')).toBeInTheDocument()
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('Instance settings lock-out confirmation (WS-24)', () => {
+  it('confirms a session cookie rename before saving it', async () => {
+    const update = renderSection('security')
+
+    fireEvent.change(await screen.findByLabelText('Session cookie'), {
+      target: { value: 'tripl_sid' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent(/signs everyone out/)
+    expect(update).not.toHaveBeenCalled()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save anyway' }))
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith({ security: { session_cookie_name: 'tripl_sid' } }),
+    )
+  })
+
+  it('saves a harmless security change without asking', async () => {
+    const update = renderSection('security')
+
+    fireEvent.change(await screen.findByLabelText('Login limit'), { target: { value: '9' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith({ security: { rate_limit_login_per_minute: 9 } }),
+    )
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+})
+
+describe('Instance settings numeric fields (WS-25)', () => {
+  it('keeps an emptied number empty and blocks Save until it is valid', async () => {
+    renderSection('ai')
+
+    const timeout = await screen.findByLabelText('Timeout seconds')
+    fireEvent.change(timeout, { target: { value: '' } })
+
+    expect(timeout).toHaveValue(null)
+    expect(timeout).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('button', { name: /Save changes/ })).toBeDisabled()
+
+    fireEvent.change(timeout, { target: { value: '45' } })
+    expect(screen.getByRole('button', { name: /Save changes/ })).toBeEnabled()
+  })
+})
+
+describe('Instance settings AI availability (WS-29)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('refreshes the cached AI status after an AI save', async () => {
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+    const update = renderSection('ai')
+
+    fireEvent.change(await screen.findByLabelText('Ask prompt'), { target: { value: 'Be brief.' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['aiStatus'] }))
+  })
+})
+
+describe('Instance storage backend cards (WS-30)', () => {
+  it('marks the card of the backend that is not selected as inactive', async () => {
+    renderSection('storage')
+
+    expect(
+      await screen.findByText(/Inactive — the backend above is Local filesystem/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Inactive — the backend above is Google Cloud Storage/)).toBeNull()
   })
 })

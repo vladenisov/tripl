@@ -1,23 +1,50 @@
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, FolderOpen, GitBranch, ScrollText, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderOpen, GitBranch, Lock, ScrollText, X } from 'lucide-react'
 
 import { auditApi } from '@/api/audit'
+import { ApiError } from '@/api/client'
+import { EmptyState } from '@/components/empty-state'
+import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { formatTimestamp } from '@/lib/datetime'
+import { useIsOwner } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 
-const ACTION_TONE: Record<string, string> = {
-  create: 'bg-success-soft text-success',
-  update: 'bg-warning-soft text-warning',
-  delete: 'bg-danger-soft text-danger',
-}
+// How long the email box waits after the last keystroke before it filters.
+const EMAIL_DEBOUNCE_MS = 400
+
+/**
+ * Tone by what the verb DOES, matched on its suffix rather than as an exact word.
+ *
+ * Only `create`/`update`/`delete` used to be coloured, so `bulk_delete`,
+ * `remove_owner`, `merge` and `close` all rendered neutral: a destructive bulk
+ * action looked exactly like a snapshot (PLAN-49). Suffix rules mean a future
+ * `bulk_<verb>` lands in the right tone without this list learning it. First
+ * match wins.
+ */
+const ACTION_TONE_RULES: { pattern: RegExp; tone: string }[] = [
+  {
+    pattern: /(delete|remove|remove_owner|remove_reviewer|revoke|cancel|dismiss|close|revert|reset\w*|retire_unused_variables)$/,
+    tone: 'bg-danger-soft text-danger',
+  },
+  {
+    pattern: /(create|add_owner|add_reviewer|invite|merge|approve|accept|override_set)$/,
+    tone: 'bg-success-soft text-success',
+  },
+  {
+    pattern: /(update|apply|submit|request_changes|reopen|mute|unmute|snooze|false_positive|acknowledge|resolve|drift_action|role_update)$/,
+    tone: 'bg-warning-soft text-warning',
+  },
+]
 
 /**
  * Grouped action vocabulary for the filter — every action the backend records
@@ -264,7 +291,10 @@ const PAGE_SIZE = 50
 
 function actionTone(action: string) {
   const verb = action.split('.').pop() ?? ''
-  return ACTION_TONE[verb] ?? 'bg-muted text-muted-foreground'
+  return (
+    ACTION_TONE_RULES.find((rule) => rule.pattern.test(verb))?.tone
+    ?? 'bg-muted text-muted-foreground'
+  )
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -334,8 +364,25 @@ function AuditPayload({ entryId }: { entryId: string }) {
   )
 }
 
-/** The audit log of one project, as its settings tab renders it. */
+/**
+ * The audit log of one project, as its settings tab renders it.
+ *
+ * `/audit` is owner-only. The sidebar hides the link from everyone else, but the
+ * route still renders for a shared link or a typed URL, and an editor landing
+ * here was told "No audit entries yet" — a false statement on a compliance
+ * surface (PLAN-47). So the page says who can read it instead of asking.
+ */
 export function AuditTab({ slug }: { slug: string }) {
+  const isOwner = useIsOwner()
+  if (!isOwner) {
+    return (
+      <EmptyState
+        icon={Lock}
+        title="Only owners can read the audit log"
+        description="Ask a workspace owner if you need to know who changed something here."
+      />
+    )
+  }
   return <AuditLog slug={slug} />
 }
 
@@ -372,6 +419,26 @@ function AuditLog({ slug }: { slug?: string }) {
   // matches". Same reasoning as AlertAuditPanel.tsx.
   const [offset, setOffset] = useState(0)
 
+  // The email box filters as you type, after a pause. It used to wait for Enter
+  // or Apply while the action and dates applied at once, and the count line did
+  // not move until then, which read as "the filter does nothing" (PLAN-49).
+  // Enter and Apply still apply at once. Followed during render, like the page
+  // offset below, so the offset reset lands in the same pass.
+  const debouncedEmail = useDebouncedValue(emailInput.trim(), EMAIL_DEBOUNCE_MS)
+  const [seenDebouncedEmail, setSeenDebouncedEmail] = useState(debouncedEmail)
+  if (seenDebouncedEmail !== debouncedEmail) {
+    setSeenDebouncedEmail(debouncedEmail)
+    if (debouncedEmail !== emailApplied) {
+      setEmailApplied(debouncedEmail)
+      setOffset(0)
+    }
+  }
+
+  // "To" before "From" is a question with no answer, and it used to come back as
+  // "No entries match", indistinguishable from a range nothing happened in.
+  // String comparison is exact for YYYY-MM-DD.
+  const rangeInvalid = !!sinceDate && !!untilDate && sinceDate > untilDate
+
   const queryParams = useMemo(
     () => ({
       projectSlug: slug,
@@ -389,9 +456,12 @@ function AuditLog({ slug }: { slug?: string }) {
     queryKey: ['audit', queryParams],
     queryFn: () => auditApi.list(queryParams),
     // A project view with no slug has nothing to ask about; the workspace view
-    // has no slug BY DESIGN, so the guard has to distinguish the two.
-    enabled: workspace || !!slug,
+    // has no slug BY DESIGN, so the guard has to distinguish the two. Nor is
+    // there anything to ask while the date range is backwards.
+    enabled: (workspace || !!slug) && !rangeInvalid,
     placeholderData: keepPreviousData,
+    // Rendered in the list card, with a retry.
+    meta: SILENT_ERROR_META,
   })
 
   const items = listQuery.data?.items ?? []
@@ -547,6 +617,9 @@ function AuditLog({ slug }: { slug?: string }) {
                 id="audit-since"
                 type="date"
                 value={sinceDate}
+                max={untilDate || undefined}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? 'audit-range-error' : undefined}
                 onChange={(e) => applySince(e.target.value)}
                 className="h-8 text-xs"
               />
@@ -559,15 +632,25 @@ function AuditLog({ slug }: { slug?: string }) {
                 id="audit-until"
                 type="date"
                 value={untilDate}
+                min={sinceDate || undefined}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? 'audit-range-error' : undefined}
                 onChange={(e) => applyUntil(e.target.value)}
                 className="h-8 text-xs"
               />
             </div>
           </div>
+          {rangeInvalid && (
+            <p id="audit-range-error" role="alert" className="text-xs text-destructive">
+              “To” is before “From”. Pick an end date on or after the start date.
+            </p>
+          )}
           {filtersActive && (
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>
-                {total} {total === 1 ? 'entry' : 'entries'} match the filter.
+                {rangeInvalid
+                  ? 'The date range is backwards.'
+                  : `${total} ${total === 1 ? 'entry' : 'entries'} match the filter.`}
               </span>
               <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={clearFilters}>
                 <X className="mr-1 h-3 w-3" />
@@ -580,7 +663,30 @@ function AuditLog({ slug }: { slug?: string }) {
 
       <Card>
         <CardContent className="p-0">
-          {listQuery.isLoading ? (
+          {rangeInvalid ? (
+            <div className="p-4 text-sm text-muted-foreground">
+              Fix the date range to see entries.
+            </div>
+          ) : listQuery.isError ? (
+            // A 403 or a 500 is not "No audit entries yet" (PLAN-47).
+            <div className="p-3">
+              {listQuery.error instanceof ApiError && listQuery.error.status === 403 ? (
+                <ErrorState
+                  compact
+                  title="Only owners can read the audit log"
+                  error={listQuery.error}
+                />
+              ) : (
+                <ErrorState
+                  compact
+                  title="Couldn't load the audit log"
+                  error={listQuery.error}
+                  onRetry={() => { void listQuery.refetch() }}
+                  retryLabel="Retry"
+                />
+              )}
+            </div>
+          ) : listQuery.isLoading ? (
             // Rows, not a bare "Loading…" line: the header and the whole filter
             // card render immediately, so the only thing pending is this card,
             // and a one-line placeholder made a card that is about to be a list
@@ -607,22 +713,34 @@ function AuditLog({ slug }: { slug?: string }) {
             <ul className="divide-y" aria-busy={isPaging}>
               {items.map((entry) => {
                 const isOpen = expanded.has(entry.id)
+                const payloadId = `audit-payload-${entry.id}`
                 return (
                   <li key={entry.id} className="px-3 py-2 text-xs">
+                    {/* Two lines below `sm`: when and who first, then what. As
+                        one non-wrapping line a phone truncated the target, the
+                        field a reader came for, to nothing (PLAN-48). The
+                        zero-height break and the `order` classes do the
+                        stacking; from `sm` up it is the single line it was. */}
                     <button
                       type="button"
                       onClick={() => toggle(entry.id)}
-                      className="flex w-full items-start gap-2 text-left"
+                      aria-expanded={isOpen}
+                      aria-controls={isOpen ? payloadId : undefined}
+                      className="flex w-full flex-wrap items-start gap-x-2 gap-y-1 text-left sm:flex-nowrap"
                     >
                       {isOpen ? (
-                        <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                       ) : (
-                        <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                       )}
-                      <span className="tnum text-[10px] text-muted-foreground w-36 shrink-0">
+                      <span className="tnum text-[10px] text-muted-foreground shrink-0 sm:w-36">
                         {formatTimestamp(entry.created_at, { seconds: true })}
                       </span>
-                      <Badge className={`${actionTone(entry.action)} text-[10px] shrink-0`}>
+                      <span className="order-1 ml-auto min-w-0 truncate text-muted-foreground text-[11px] sm:order-last">
+                        {entry.user_email}
+                      </span>
+                      <span aria-hidden="true" className="order-2 h-0 basis-full sm:hidden" />
+                      <Badge className={`${actionTone(entry.action)} order-3 text-[10px] shrink-0 sm:order-none`}>
                         {entry.action}
                       </Badge>
                       {/* The chip means "this was NOT written on main". An empty
@@ -632,12 +750,12 @@ function AuditLog({ slug }: { slug?: string }) {
                           alert_rule.create — hence a chip or nothing
                           (tripl-wkwv.6). An explicit ?branch=<main id> binds no
                           branch context (api/deps.py), so the chip can never
-                          read "main". Capped and truncated because the row is
-                          one flex line and a fourth item squeezes the target. */}
+                          read "main". Capped and truncated so it never squeezes
+                          the target. */}
                       {entry.branch_name && (
                         <Badge
                           variant="outline"
-                          className="shrink-0 max-w-[9rem] text-[10px]"
+                          className="order-3 shrink-0 max-w-[9rem] text-[10px] sm:order-none"
                           title={entry.branch_name}
                         >
                           <GitBranch />
@@ -653,7 +771,7 @@ function AuditLog({ slug }: { slug?: string }) {
                       {workspace && entry.project_slug && (
                         <Badge
                           variant="outline"
-                          className="shrink-0 max-w-[9rem] text-[10px]"
+                          className="order-3 shrink-0 max-w-[9rem] text-[10px] sm:order-none"
                           title={entry.project_slug}
                         >
                           <FolderOpen />
@@ -661,16 +779,17 @@ function AuditLog({ slug }: { slug?: string }) {
                         </Badge>
                       )}
                       <span
-                        className="font-mono text-[11px] truncate"
+                        className="order-3 min-w-0 flex-1 font-mono text-[11px] truncate sm:order-none sm:flex-initial"
                         title={entry.target_name ?? undefined}
                       >
                         {displayTarget(entry)}
                       </span>
-                      <span className="ml-auto text-muted-foreground text-[11px] truncate">
-                        {entry.user_email}
-                      </span>
                     </button>
-                    {isOpen && <AuditPayload entryId={entry.id} />}
+                    {isOpen && (
+                      <div id={payloadId}>
+                        <AuditPayload entryId={entry.id} />
+                      </div>
+                    )}
                   </li>
                 )
               })}

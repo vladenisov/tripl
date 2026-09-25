@@ -1,5 +1,6 @@
 import uuid
 from collections import defaultdict
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -730,6 +731,47 @@ async def get_project_mutation_scope(session: AsyncSession, slug: str) -> Projec
         created_by_user_id=created_by_user_id,
         creator_is_owner=creator_role == UserRole.owner.value,
     )
+
+
+async def with_can_mutate(
+    session: AsyncSession,
+    projects: Sequence[ProjectResponse],
+    may_mutate: Callable[[ProjectMutationScope], bool],
+) -> list[ProjectResponse]:
+    """Copies of ``projects`` with ``can_mutate`` answered by ``may_mutate``.
+
+    ``may_mutate`` is the caller's own gate over a :class:`ProjectMutationScope`
+    (``api.deps.can_mutate_project``), so the flag is the same predicate the
+    mutation routes enforce, not a restatement of it. The scopes are built from
+    the responses plus ONE query for the creators' roles, so a project list costs
+    a single extra round trip. Applied after ``list_projects``' cache read, never
+    before its write: the flag belongs to the caller, the cache to everyone.
+    """
+    creator_ids = {
+        project.created_by_user_id for project in projects if project.created_by_user_id is not None
+    }
+    creator_roles: dict[uuid.UUID, str] = {}
+    if creator_ids:
+        rows = await session.execute(select(User.id, User.role).where(User.id.in_(creator_ids)))
+        creator_roles = {user_id: str(role) for user_id, role in rows.all()}
+    return [
+        project.model_copy(
+            update={
+                "can_mutate": may_mutate(
+                    ProjectMutationScope(
+                        is_demo=project.is_demo,
+                        created_by_user_id=project.created_by_user_id,
+                        creator_is_owner=(
+                            project.created_by_user_id is not None
+                            and creator_roles.get(project.created_by_user_id)
+                            == UserRole.owner.value
+                        ),
+                    )
+                )
+            }
+        )
+        for project in projects
+    ]
 
 
 # A demo's ``demo_last_accessed_at`` is only rewritten when it is this stale, so a

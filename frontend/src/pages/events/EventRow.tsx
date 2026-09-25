@@ -35,6 +35,12 @@ import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { PINNED_EVENT_CONTENT_MAX_WIDTH, PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
 import {
+  PHONE_DROPPED_CELL,
+  PHONE_NAME_CELL,
+  PHONE_NAME_CONTENT,
+  PHONE_ROW,
+} from './eventsPhoneCard'
+import {
   computeWindowDelta,
   describeWindowDelta,
   formatRelativeTime,
@@ -223,7 +229,7 @@ export const EventRow = memo(function EventRow({
       data-index={virtualIndex}
       style={dragStyle}
       data-state={selected ? 'selected' : undefined}
-      className="group/row"
+      className={`group/row ${PHONE_ROW}`}
     >
       <TableCell className="w-8 px-1">
         {canWrite && reorderable && (
@@ -250,7 +256,7 @@ export const EventRow = memo(function EventRow({
         )}
       </TableCell>
       <TableCell
-        className="tripl-pin-l border-r font-medium"
+        className={`tripl-pin-l border-r font-medium ${PHONE_NAME_CELL}`}
         style={{ ...PINNED_EVENT_CELL_STYLE, borderColor: 'var(--border-subtle)' }}
       >
         {/* Capped, so the name, title and badges truncate. Cells never wrap
@@ -259,7 +265,7 @@ export const EventRow = memo(function EventRow({
             every other column scrolled underneath it (EVT-7). The cap sits on
             this box, not the cell: browsers ignore max-width on table cells. */}
         <div
-          className="flex items-center gap-2 align-middle"
+          className={`flex items-center gap-2 align-middle ${PHONE_NAME_CONTENT}`}
           style={{ maxWidth: PINNED_EVENT_CONTENT_MAX_WIDTH }}
         >
           <Dot tone={statusTone} pulse={false} size={6} />
@@ -358,7 +364,10 @@ export const EventRow = memo(function EventRow({
         </TableCell>
       )}
       {!hideReviewed && (
-        <TableCell className="text-center" aria-label={ev.reviewed ? 'Reviewed' : 'Not reviewed'}>
+        <TableCell
+          className={`text-center ${PHONE_DROPPED_CELL}`}
+          aria-label={ev.reviewed ? 'Reviewed' : 'Not reviewed'}
+        >
           {ev.reviewed ? (
             <Check
               className="mx-auto h-3.5 w-3.5"
@@ -398,7 +407,7 @@ export const EventRow = memo(function EventRow({
         </TableCell>
       )}
       {!hideDelta && (
-        <TableCell className="tnum text-right text-[11px]">
+        <TableCell className={`tnum text-right text-[11px] ${PHONE_DROPPED_CELL}`}>
           {(() => {
             const delta = computeWindowDelta(windowData)
             // One sentence for every outcome, naming what was compared and how
@@ -457,7 +466,7 @@ export const EventRow = memo(function EventRow({
       )}
       {!hideLastSeen && (
         <TableCell
-          className="text-[11px] tnum"
+          className={`text-[11px] tnum ${PHONE_DROPPED_CELL}`}
           style={{ color: ev.last_seen_at ? 'var(--fg-subtle)' : 'var(--fg-faint)' }}
           title={ev.last_seen_at ?? 'Never observed in collected metrics'}
         >
@@ -465,7 +474,7 @@ export const EventRow = memo(function EventRow({
         </TableCell>
       )}
       {!hideOwner && (
-        <TableCell className="text-[11px]">
+        <TableCell className={`text-[11px] ${PHONE_DROPPED_CELL}`}>
           {(() => {
             const u = ev.owner_id ? usersById.get(ev.owner_id) : undefined
             return u ? (
@@ -489,7 +498,7 @@ export const EventRow = memo(function EventRow({
         return (
           <TableCell
             key={f.id}
-            className={`text-xs ${isExpanded ? '' : 'max-w-40'}`}
+            className={`text-xs ${isExpanded ? '' : 'max-w-40'} ${PHONE_DROPPED_CELL}`}
           >
             {isExpanded ? (
               <div className="flex items-start gap-1.5">
@@ -544,7 +553,10 @@ export const EventRow = memo(function EventRow({
         const values = metaValueMap?.get(mf.id) ?? []
         const first = values[0] ?? ''
         return (
-          <TableCell key={mf.id} className="text-muted-foreground max-w-40 truncate text-xs">
+          <TableCell
+            key={mf.id}
+            className={`text-muted-foreground max-w-40 truncate text-xs ${PHONE_DROPPED_CELL}`}
+          >
             {values.length === 0 ? (
               <NoData title="No data" />
             ) : mf.field_type === 'boolean' ? (

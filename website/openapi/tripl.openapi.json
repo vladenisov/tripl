@@ -8059,6 +8059,49 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/scans/activity": {
+      "get": {
+        "tags": [
+          "scans"
+        ],
+        "summary": "Get Scan Activity",
+        "description": "Each scan's latest job, failing streak and rows read in the last 24 hours.\n\nOne request for the whole Scans list, aggregated in SQL, so the streak and\nthe 24h total are exact rather than floors over a capped page of jobs.",
+        "operationId": "get_scan_activity_api_v1_projects__slug__scans_activity_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanActivityResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/scans/preview": {
       "post": {
         "tags": [
@@ -11135,7 +11178,7 @@
           "metrics-catalog"
         ],
         "summary": "Get Metric Generated Sql",
-        "description": "Return a saved fact metric's primary dependency-batch SQL without running it.",
+        "description": "Return a saved fact metric's primary dependency-batch SQL without running it.\n\nSame gate as ``GET /{metric_id}``: anyone who can read the metric. The SQL is\ncompiled from config that read already returns (MET-41) and nothing executes.",
         "operationId": "get_metric_generated_sql_api_v1_projects__slug__metrics__metric_id__generated_sql_get",
         "parameters": [
           {
@@ -29066,6 +29109,11 @@
               }
             ],
             "title": "Created By User Id"
+          },
+          "can_mutate": {
+            "type": "boolean",
+            "title": "Can Mutate",
+            "default": false
           }
         },
         "type": "object",
@@ -29907,6 +29955,71 @@
         },
         "type": "object",
         "title": "RuntimeSettingsUpdate"
+      },
+      "ScanActivityItem": {
+        "properties": {
+          "scan_config_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Scan Config Id"
+          },
+          "latest_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanJobResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failing_streak": {
+            "type": "integer",
+            "title": "Failing Streak"
+          },
+          "rows_read_24h": {
+            "type": "integer",
+            "title": "Rows Read 24H"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scan_config_id",
+          "latest_job",
+          "failing_streak",
+          "rows_read_24h"
+        ],
+        "title": "ScanActivityItem",
+        "description": "One scan config's run activity, as the Scans list shows it."
+      },
+      "ScanActivityResponse": {
+        "properties": {
+          "window_from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window From"
+          },
+          "window_to": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window To"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScanActivityItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "window_from",
+          "window_to",
+          "items"
+        ],
+        "title": "ScanActivityResponse",
+        "description": "Per-scan activity for a project, aggregated in SQL (tripl-fj5g.11)."
       },
       "ScanConfigCreate": {
         "properties": {

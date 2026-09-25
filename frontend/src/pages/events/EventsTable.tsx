@@ -49,6 +49,7 @@ import {
   type EventNameGroup,
 } from './eventNameGroups'
 import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
+import { PHONE_FULL_ROW, PHONE_HEADER_ROW, PHONE_TABLE } from './eventsPhoneCard'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
 import { variablesKey } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
@@ -383,11 +384,12 @@ export function EventsTable({
           >
             <Table
               ref={tableRef}
-              className="tripl-table"
+              // A card per row below md (eventsPhoneCard.ts).
+              className={`tripl-table ${PHONE_TABLE}`}
               aria-label={activeEt ? `${activeEt.display_name} events` : 'Events'}
             >
               <TableHeader>
-                <TableRow>
+                <TableRow className={PHONE_HEADER_ROW}>
                   <TableHead className="w-8 px-1" aria-label="Reorder" />
                   <TableHead className="tripl-pin-l w-10 pl-5">
                     {canWrite && (
@@ -561,7 +563,7 @@ export function EventsTable({
                     </tr>
                   )}
                 {events.length === 0 && (
-                  <TableRow>
+                  <TableRow className={PHONE_FULL_ROW}>
                     <TableCell colSpan={99}>
                       {isLoading || isScanningForMatches ? (
                         // Not the empty state: during the cold load it

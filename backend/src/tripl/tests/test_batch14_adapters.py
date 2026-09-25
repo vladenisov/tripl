@@ -528,4 +528,5 @@ def test_the_parity_page_does_not_claim_a_collection_time_lint() -> None:
     text = _PARITY_DOC.read_text()
     assert "again at collection" not in text
     assert "before it is saved" not in text
-    assert "Dialect pre-flight lint (metric preview only [9])" in text
+    # tripl-0zpq.371 added the save; collection still does not lint.
+    assert "Dialect pre-flight lint (metric preview and metric save [9])" in text

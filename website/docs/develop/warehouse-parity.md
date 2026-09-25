@@ -319,7 +319,7 @@ is a shipping warehouse.
 | Top-N + `Other` folding (ranked once over the caller's whole window, not per chunk) | `values_limit` on breakdown methods, `top_n_ranking_window` | full | full | full | full |
 | SQL metrics (free-text) | `get_preview_rows` | full [9] | full [9] | full [9] | bounded [10] |
 | SQL metric starter templates | frontend `metricTemplates.ts` | full | full | full | n/a |
-| Dialect pre-flight lint (metric preview only [9]) | `lint_dialect_sql` | full | full | full | full |
+| Dialect pre-flight lint (metric preview and metric save [9]) | `lint_dialect_sql` | full | full | full | full |
 | Fact metrics (aggregate) | `get_time_bucketed_aggregate` | full | full | full | full |
 | Fact metric breakdowns | `get_time_bucketed_aggregate_breakdown` | full | full | full | full |
 | Fact ratio metrics (one scan) | `get_time_bucketed_multi_aggregate` | full | full | full | full |
@@ -484,18 +484,24 @@ so it is bounded by `METRIC_QUERY_ROW_LIMIT` (100,000 rows) *per replay chunk* �
 a real bound, but a per-chunk one, and the query is expected to pre-aggregate.
 Portability is the author's responsibility: tripl does not translate the SQL
 between dialects and does not intend to. What tripl *does* do is run
-`lint_dialect_sql` against the selected warehouse's dialect in one place: the
-metric preview, after the read-only gate. A query that provably cannot resolve
-on that warehouse — the `date_trunc('day', ts)` string-first form on BigQuery,
-for instance — gets an actionable message in the preview instead of a driver
-error. The lint can only ever reject more, never admit more.
+`lint_dialect_sql` against the selected warehouse's dialect, after the read-only
+gate, in two places: the metric preview, and the metric save. A query that
+provably cannot resolve on that warehouse — the `date_trunc('day', ts)`
+string-first form on BigQuery, for instance — gets an actionable message instead
+of a driver error. The lint can only ever reject more, never admit more.
 
-The lint helps you in the preview. It does not enforce anything. Saving a metric
-runs only the read-only safety gate, and collection does not run the lint either.
-A metric saved without a preview, which is how the REST API, the CLI and agents
-usually save one, can still fail in a worker with the warehouse's own
-(sanitised) error on every scheduled run. Preview a free-text SQL metric before
-you save it.
+Saving a `sql` metric, or a `fact` metric whose free-text `filter_sql` names a
+function the fact table's warehouse does not have, is refused with `422` and the
+same message the preview shows. That holds for every door, because the web UI,
+the REST API, the CLI and agents all save through the same service. The save
+lints only SQL that is new or changed: a new metric, a changed SELECT or filter,
+or unchanged SQL pointed at a warehouse of another dialect. A rename, a recolour
+or any other edit that leaves the SQL alone still saves a metric stored before
+this check existed, and so does a form that resends its unchanged definition.
+Collection does not run the lint, so such an older metric can still fail in a
+worker with the warehouse's own (sanitised) error until someone edits its SQL.
+The lint catches only the functions it knows about; preview a free-text SQL
+metric before you save it to catch the rest.
 
 **[10] The synthetic adapter is a fixture, not a warehouse.**
 `test_connection` is an honest *local* check — both in-memory tables hold rows —

@@ -24,7 +24,6 @@ import { eventNameLabel } from '@/lib/eventName'
 import { METRIC_INTERVAL_LABEL } from '@/lib/metricFormat'
 import { METRIC_KIND_LABEL } from '@/types'
 import type { MetricDefinitionDetailResponse } from '@/types'
-import { useCanWriteProject } from '@/lib/permissions'
 import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
 
 /** Names are best-effort; when a lookup misses we fall back to a short id. */
@@ -434,14 +433,8 @@ function FactExpression({
 }
 
 function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricId: string }) {
-  // Hidden from viewers for one reason only: the generated-SQL endpoint answers
-  // them 403, and a panel that renders and then fails on expand reads as a
-  // broken page. It is NOT a secrecy boundary — the definition API returns
-  // `config` to viewers, and this card shows them a SQL metric's own query
-  // under "Show SQL", as the read-only metric form does. One policy for both
-  // (either the endpoint admits viewers, or `config` is stripped for them) is
-  // a backend decision (MET-41).
-  const canWrite = useCanWriteProject()
+  // Shown to viewers too: the generated-SQL endpoint has the metric read's gate,
+  // because the SQL is compiled from config that read already returns (MET-41).
   const [open, setOpen] = useState(false)
   const query = useQuery({
     queryKey: ['metric-generated-sql', slug, metricId],
@@ -450,7 +443,6 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
     staleTime: LOOKUP_STALE_TIME_MS,
   })
   const queries = query.data?.queries ?? []
-  if (!canWrite) return null
   return (
     <details
       className="rounded-md border"

@@ -264,6 +264,44 @@ describe('ScenarioCoachMark — emphasizing the click target', () => {
     expect(ring()).toBeNull()
   })
 
+  it('does not scroll towards an anchor with no layout (DEMO-10)', () => {
+    // jsdom's default rect is 0x0: nothing sensible to scroll to.
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+    renderMark(
+      <ScenarioCoachMark step="live-loop/run-scan">
+        <button type="button">Run scan</button>
+      </ScenarioCoachMark>,
+    )
+
+    expect(scrollSpy).not.toHaveBeenCalled()
+  })
+
+  it('stands down for an anchor that is mounted but not rendered (DEMO-10)', () => {
+    // A hidden tab panel keeps its controls mounted with no box; the card used
+    // to open pinned to the page corner, pointing at nothing.
+    stubAnchorRect(IN_VIEWPORT_RECT)
+    const original = Element.prototype.checkVisibility
+    Element.prototype.checkVisibility = function checkVisibility() {
+      return false
+    }
+    try {
+      renderMark(
+        <ScenarioCoachMark step="live-loop/run-scan">
+          <button type="button">Run scan</button>
+        </ScenarioCoachMark>,
+      )
+
+      expect(runButton()).toBeInTheDocument()
+      expect(callout()).toBeNull()
+      expect(ring()).toBeNull()
+      expect(runButton()).not.toHaveAttribute('data-coach-target')
+    } finally {
+      // jsdom has no checkVisibility of its own; leave none behind.
+      if (original) Element.prototype.checkVisibility = original
+      else delete (Element.prototype as { checkVisibility?: unknown }).checkVisibility
+    }
+  })
+
   it('Hide hints removes the ring through the same gate as the card', () => {
     stubAnchorRect(IN_VIEWPORT_RECT)
     renderMark(

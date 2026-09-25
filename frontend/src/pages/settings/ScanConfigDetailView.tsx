@@ -26,6 +26,7 @@ import { deriveScanRunInfo } from './scans/scanUtils'
 import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
 import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { usePageTitle } from '@/components/shell-chrome-context'
 
 type DetailTab = 'overview' | 'configuration'
 
@@ -78,6 +79,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   })
 
   const sc = scanConfigs.find(s => s.id === scanConfigId)
+  usePageTitle(sc?.name)
 
   const jobsRefetchInterval = useAdaptiveRefetchIntervalFn<ScanJob[]>({
     activeMs: 5000,

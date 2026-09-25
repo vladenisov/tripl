@@ -1,6 +1,6 @@
 import type { ServiceSettings } from '@/types'
 import { Field, SCard, Select, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
-import { SourceBadge } from './ServiceSettingsPrimitives'
+import { NumberSettingInput, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -68,6 +68,7 @@ export function SecuritySection({
         <Field
           label="Session cookie"
           labelRight={<SourceBadge source={sourceFor(settings, 'security', 'session_cookie_name')} />}
+          hint="Renaming it signs everyone out after the next restart."
         >
           <TextInput
             value={form.security.session_cookie_name}
@@ -79,12 +80,12 @@ export function SecuritySection({
           label="Session TTL"
           labelRight={<SourceBadge source={sourceFor(settings, 'security', 'session_ttl_hours')} />}
         >
-          <TextInput
-            type="number"
-            value={String(form.security.session_ttl_hours)}
-            onChange={value => setField('security', 'session_ttl_hours', Number(value))}
+          <NumberSettingInput
+            section="security"
+            field="session_ttl_hours"
+            value={form.security.session_ttl_hours}
+            setField={setField}
             suffix="hours"
-            mono
           />
         </Field>
         <ToggleRow
@@ -92,6 +93,7 @@ export function SecuritySection({
           labelRight={
             <SourceBadge source={sourceFor(settings, 'security', 'session_cookie_secure')} />
           }
+          hint="Sent over HTTPS only. On an instance served over plain HTTP, nobody can sign in after the next restart."
           value={form.security.session_cookie_secure}
           onChange={value => setField('security', 'session_cookie_secure', value)}
           last
@@ -102,6 +104,7 @@ export function SecuritySection({
         <Field
           label="CORS allow origins"
           labelRight={<SourceBadge source={sourceFor(settings, 'security', 'cors_allow_origins')} />}
+          hint="Browser clients on an origin missing here are refused after the next restart."
         >
           <TextInput
             value={form.security.cors_allow_origins}
@@ -128,12 +131,12 @@ export function SecuritySection({
           label="HSTS max age"
           labelRight={<SourceBadge source={sourceFor(settings, 'security', 'hsts_max_age_seconds')} />}
         >
-          <TextInput
-            type="number"
-            value={String(form.security.hsts_max_age_seconds)}
-            onChange={value => setField('security', 'hsts_max_age_seconds', Number(value))}
+          <NumberSettingInput
+            section="security"
+            field="hsts_max_age_seconds"
+            value={form.security.hsts_max_age_seconds}
+            setField={setField}
             suffix="seconds"
-            mono
           />
         </Field>
         <Field
@@ -141,6 +144,7 @@ export function SecuritySection({
           labelRight={
             <SourceBadge source={sourceFor(settings, 'security', 'content_security_policy')} />
           }
+          hint="A policy that blocks this app's own scripts or API calls stops the app from loading after the next restart."
           stacked
           last
         >
@@ -164,12 +168,12 @@ export function SecuritySection({
             <SourceBadge source={sourceFor(settings, 'security', 'rate_limit_login_per_minute')} />
           }
         >
-          <TextInput
-            type="number"
-            value={String(form.security.rate_limit_login_per_minute)}
-            onChange={value => setField('security', 'rate_limit_login_per_minute', Number(value))}
+          <NumberSettingInput
+            section="security"
+            field="rate_limit_login_per_minute"
+            value={form.security.rate_limit_login_per_minute}
+            setField={setField}
             suffix="/min"
-            mono
           />
         </Field>
         <Field
@@ -178,12 +182,12 @@ export function SecuritySection({
             <SourceBadge source={sourceFor(settings, 'security', 'rate_limit_register_per_hour')} />
           }
         >
-          <TextInput
-            type="number"
-            value={String(form.security.rate_limit_register_per_hour)}
-            onChange={value => setField('security', 'rate_limit_register_per_hour', Number(value))}
+          <NumberSettingInput
+            section="security"
+            field="rate_limit_register_per_hour"
+            value={form.security.rate_limit_register_per_hour}
+            setField={setField}
             suffix="/hour"
-            mono
           />
         </Field>
         <ToggleRow

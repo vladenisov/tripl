@@ -2,6 +2,7 @@ import { ApiError, api } from './client'
 import type {
   EventGroupRule,
   PlatformPresenceResponse,
+  ScanActivityResponse,
   ScanConfig,
   ScanConfigPreview,
   ScanDryRunJob,
@@ -249,6 +250,11 @@ export const scansApi = {
     api.get<ScanJob[]>(
       `/projects/${slug}/scans/${scanId}/jobs${options.limit ? `?limit=${options.limit}` : ''}`,
     ),
+
+  // Every scan's latest job, exact failing streak and rows read in the last 24h,
+  // in one request (tripl-fj5g.11).
+  activity: (slug: string) =>
+    api.get<ScanActivityResponse>(`/projects/${slug}/scans/activity`),
 
   getJob: (slug: string, scanId: string, jobId: string) =>
     api.get<ScanJob>(`/projects/${slug}/scans/${scanId}/jobs/${jobId}`),

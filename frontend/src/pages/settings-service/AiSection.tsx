@@ -1,10 +1,12 @@
 import { KeyRound } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { serviceSettingsApi } from '@/api/serviceSettings'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { getErrorMessage } from '@/lib/utils'
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Field, SCard, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
-import { SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
+import { NumberSettingInput, SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
 import type {
   EditableSettings,
   SecretDrafts,
@@ -32,6 +34,8 @@ export function AiSection({
 }) {
   const aiTestMut = useMutation({
     mutationFn: () => serviceSettingsApi.testAi(),
+    // A failed request is rendered in the status slot beside the button.
+    meta: SILENT_ERROR_META,
   })
 
   return (
@@ -94,14 +98,23 @@ export function AiSection({
               variant="outline"
               size="sm"
               onClick={() => onClearSecret('ai', 'ai_api_key')}
-              disabled={saving}
+              // Nothing stored, nothing to delete: this opened a red "start
+              // failing at once" confirm for a key that did not exist.
+              disabled={saving || !form.ai.ai_api_key_configured}
             >
-              Clear
+              Delete stored key
             </Button>
           </div>
         </Field>
-        {/* A test button and its status line, not a control to be named. */}
-        <Field label="Connection" last htmlFor={false}>
+        {/* A test button and its status line, not a control to be named. The
+            request carries no draft values, so it checks what is stored — said
+            here the way the Email "Check" card says it. */}
+        <Field
+          label="Connection"
+          last
+          htmlFor={false}
+          hint="Tests the SAVED settings — save first, or you will be testing what is still stored."
+        >
           <div className="flex items-center gap-2">
             <Button
               type="button"
@@ -114,8 +127,12 @@ export function AiSection({
               {aiTestMut.isPending ? 'Testing...' : 'Test AI'}
             </Button>
             <span role="status" aria-live="polite" aria-atomic="true" className="inline-flex">
-              {aiTestMut.data && (
-                <StatusBadge active={aiTestMut.data.ok} label={aiTestMut.data.message} />
+              {aiTestMut.isError ? (
+                <StatusBadge active={false} label={getErrorMessage(aiTestMut.error)} />
+              ) : (
+                aiTestMut.data && (
+                  <StatusBadge active={aiTestMut.data.ok} label={aiTestMut.data.message} />
+                )
               )}
             </span>
           </div>
@@ -127,23 +144,23 @@ export function AiSection({
           label="Timeout seconds"
           labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_timeout_seconds')} />}
         >
-          <TextInput
-            type="number"
-            value={String(form.ai.ai_timeout_seconds)}
-            onChange={value => setField('ai', 'ai_timeout_seconds', Number(value))}
+          <NumberSettingInput
+            section="ai"
+            field="ai_timeout_seconds"
+            value={form.ai.ai_timeout_seconds}
+            setField={setField}
             suffix="seconds"
-            mono
           />
         </Field>
         <Field
           label="Max output tokens"
           labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_max_output_tokens')} />}
         >
-          <TextInput
-            type="number"
-            value={String(form.ai.ai_max_output_tokens)}
-            onChange={value => setField('ai', 'ai_max_output_tokens', Number(value))}
-            mono
+          <NumberSettingInput
+            section="ai"
+            field="ai_max_output_tokens"
+            value={form.ai.ai_max_output_tokens}
+            setField={setField}
           />
         </Field>
         <Field
@@ -275,9 +292,9 @@ export function AiSection({
               variant="outline"
               size="sm"
               onClick={() => onClearSecret('ai', 'search_embedding_api_key')}
-              disabled={saving}
+              disabled={saving || !form.ai.search_embedding_api_key_configured}
             >
-              Clear
+              Delete stored key
             </Button>
           </div>
         </Field>

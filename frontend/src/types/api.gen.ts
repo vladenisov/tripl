@@ -2241,6 +2241,9 @@ export interface paths {
         /**
          * Get Metric Generated Sql
          * @description Return a saved fact metric's primary dependency-batch SQL without running it.
+         *
+         *     Same gate as ``GET /{metric_id}``: anyone who can read the metric. The SQL is
+         *     compiled from config that read already returns (MET-41) and nothing executes.
          */
         get: operations["get_metric_generated_sql_api_v1_projects__slug__metrics__metric_id__generated_sql_get"];
         put?: never;
@@ -2605,6 +2608,29 @@ export interface paths {
         put?: never;
         /** Create Scan Config */
         post: operations["create_scan_config_api_v1_projects__slug__scans_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/scans/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Scan Activity
+         * @description Each scan's latest job, failing streak and rows read in the last 24 hours.
+         *
+         *     One request for the whole Scans list, aggregated in SQL, so the streak and
+         *     the 24h total are exact rather than floors over a capped page of jobs.
+         */
+        get: operations["get_scan_activity_api_v1_projects__slug__scans_activity_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -8783,6 +8809,11 @@ export interface components {
              */
             app_version_keep_releases: number;
             /**
+             * Can Mutate
+             * @default false
+             */
+            can_mutate: boolean;
+            /**
              * Created At
              * Format: date-time
              */
@@ -9204,6 +9235,40 @@ export interface components {
             metrics_row_limit_default?: number | null;
             /** Scan Row Limit Default */
             scan_row_limit_default?: number | null;
+        };
+        /**
+         * ScanActivityItem
+         * @description One scan config's run activity, as the Scans list shows it.
+         */
+        ScanActivityItem: {
+            /** Failing Streak */
+            failing_streak: number;
+            latest_job: components["schemas"]["ScanJobResponse"] | null;
+            /** Rows Read 24H */
+            rows_read_24h: number;
+            /**
+             * Scan Config Id
+             * Format: uuid
+             */
+            scan_config_id: string;
+        };
+        /**
+         * ScanActivityResponse
+         * @description Per-scan activity for a project, aggregated in SQL (tripl-fj5g.11).
+         */
+        ScanActivityResponse: {
+            /** Items */
+            items: components["schemas"]["ScanActivityItem"][];
+            /**
+             * Window From
+             * Format: date-time
+             */
+            window_from: string;
+            /**
+             * Window To
+             * Format: date-time
+             */
+            window_to: string;
         };
         /** ScanConfigCreate */
         ScanConfigCreate: {
@@ -16813,6 +16878,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_scan_activity_api_v1_projects__slug__scans_activity_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanActivityResponse"];
                 };
             };
             /** @description Validation Error */

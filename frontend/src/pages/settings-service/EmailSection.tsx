@@ -1,10 +1,12 @@
 import { MailCheck } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { serviceSettingsApi } from '@/api/serviceSettings'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { getErrorMessage } from '@/lib/utils'
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Field, SCard, Select, TextInput } from '@/components/settings/kit'
-import { SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
+import { NumberSettingInput, SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
 import type {
   EditableSettings,
   SecretDrafts,
@@ -49,6 +51,8 @@ export function EmailSection({
 }) {
   const emailTestMut = useMutation({
     mutationFn: () => serviceSettingsApi.testEmail(),
+    // A failed request is rendered in the status slot beside the button.
+    meta: SILENT_ERROR_META,
   })
 
   return (
@@ -68,11 +72,11 @@ export function EmailSection({
           label="Port"
           labelRight={<SourceBadge source={sourceFor(settings, 'email', 'smtp_port')} />}
         >
-          <TextInput
-            type="number"
-            value={String(form.email.smtp_port)}
-            onChange={value => setField('email', 'smtp_port', Number(value))}
-            mono
+          <NumberSettingInput
+            section="email"
+            field="smtp_port"
+            value={form.email.smtp_port}
+            setField={setField}
           />
         </Field>
         <Field
@@ -109,9 +113,9 @@ export function EmailSection({
               variant="outline"
               size="sm"
               onClick={() => onClearSecret('email', 'smtp_password')}
-              disabled={saving}
+              disabled={saving || !form.email.smtp_password_configured}
             >
-              Clear
+              Delete stored password
             </Button>
           </div>
         </Field>
@@ -173,8 +177,12 @@ export function EmailSection({
               {emailTestMut.isPending ? 'Sending...' : 'Send test email'}
             </Button>
             <span role="status" aria-live="polite" aria-atomic="true" className="inline-flex">
-              {emailTestMut.data && (
-                <StatusBadge active={emailTestMut.data.ok} label={emailTestMut.data.message} />
+              {emailTestMut.isError ? (
+                <StatusBadge active={false} label={getErrorMessage(emailTestMut.error)} />
+              ) : (
+                emailTestMut.data && (
+                  <StatusBadge active={emailTestMut.data.ok} label={emailTestMut.data.message} />
+                )
               )}
             </span>
           </div>

@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { surfaceMutationError } from '@/lib/errorFeedback'
 import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
@@ -164,13 +166,13 @@ function authValue(role: 'owner' | 'editor' | 'viewer'): AuthContextValue {
 function renderDataSourcesPage(
   path = '/settings/data-sources/ds-1',
   role: 'owner' | 'editor' | 'viewer' = 'owner',
-) {
-  const queryClient = new QueryClient({
+  queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
       mutations: { retry: false },
     },
-  })
+  }),
+) {
 
   return render(
     <QueryClientProvider client={queryClient}>
@@ -311,6 +313,45 @@ describe('DataSourcesPage', () => {
     expect(screen.queryByRole('button', { name: 'Add connection' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Test' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+  })
+
+  it('shows a failed delete on the card it failed for, and keeps the app-wide toast quiet', async () => {
+    const OTHER_SOURCE: DataSource = { ...DATA_SOURCE, id: 'ds-2', name: 'Replica' }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/data-sources') && !init?.method) {
+        return Promise.resolve(jsonResponse([DATA_SOURCE, OTHER_SOURCE]))
+      }
+      if (url.endsWith('/api/v1/data-sources/ds-1') && init?.method === 'DELETE') {
+        return Promise.resolve(jsonResponse({ detail: 'Data source is in use' }, 409))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+    // The backstop main.tsx registers, so the test sees what the app does.
+    const queryClient = new QueryClient({
+      mutationCache: new MutationCache({ onError: surfaceMutationError }),
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const toastError = vi.spyOn(toast, 'error')
+
+    renderDataSourcesPage('/settings/data-sources', 'owner', queryClient)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete data source Warehouse' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Delete data source' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Could not delete Warehouse: Data source is in use')
+    // Only the card that failed says so.
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(toastError).not.toHaveBeenCalled()
   })
 
   it('flags an old successful health check as stale instead of confident "healthy"', async () => {

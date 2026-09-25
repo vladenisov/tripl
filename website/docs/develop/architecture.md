@@ -139,7 +139,7 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Dialect awareness** (`core/adapters/measure_validator`) centralizes identifier
   quoting, string/number/timestamp literals and a pre-flight `lint_dialect_sql`
   check per `SqlDialect`, so a query that provably cannot resolve on the selected
-  warehouse is rejected at preview time rather than inside a worker. The lint runs
+  warehouse is rejected at preview and save time rather than inside a worker. The lint runs
   *after* the read-only gate and can only reject more, never admit more.
 - **Analyzers** (`core/analyzers`) hold the scan, anomaly, and drift logic.
   (Both live in the shared `core` kernel — see the Backend section — so the

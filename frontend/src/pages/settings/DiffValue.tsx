@@ -7,9 +7,10 @@
  * test can reach them directly instead of mounting the whole tab behind a
  * router and four mocked APIs.
  *
- * The other half of the reason is size: BranchesTab.tsx is far past this
- * repo's 800-line ceiling, and this block is the largest piece of it that
- * owes the tab nothing (tripl-h2sx.16).
+ * The other half of the reason was size: BranchesTab.tsx was far past this
+ * repo's 800-line ceiling, and this block was the largest piece of it that
+ * owed the tab nothing (tripl-h2sx.16). The rest of the tab has since been
+ * split into ./branches/ (PLAN-22).
  */
 
 import { useMemo, useState } from 'react'

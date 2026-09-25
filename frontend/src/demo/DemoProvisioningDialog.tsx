@@ -41,12 +41,40 @@ interface DemoProvisioningDialogProps {
   onClose: () => void
 }
 
+/**
+ * A create the server refused before seeding anything (DEMO-5): 403 for a
+ * viewer, 409 for a creator already at the demo limit. Neither was rolled back
+ * — nothing started — and asking again gets the same answer, so neither may
+ * claim a rollback or offer "Try again".
+ */
+type Refusal = 'forbidden' | 'limit'
+
+function refusalOf(error: unknown): Refusal | null {
+  if (!(error instanceof ApiError)) return null
+  if (error.status === 403) return 'forbidden'
+  if (error.status === 409) return 'limit'
+  return null
+}
+
 /** Title + description for each state, so no state falls through to in-progress copy. */
 function copyFor(
   status: ProvisioningStatus,
   timedOut: boolean,
   cancelOutcome: CancelOutcome | null,
+  refusal: Refusal | null,
 ): { title: string; description: string } {
+  if (status === 'error' && refusal === 'forbidden') {
+    return {
+      title: 'You cannot create a demo',
+      description: 'Creating a demo workspace needs editor access. Nothing was created.',
+    }
+  }
+  if (status === 'error' && refusal === 'limit') {
+    return {
+      title: 'Demo limit reached',
+      description: 'Nothing was created. Reset or delete one of your demos from its banner first.',
+    }
+  }
   if (status === 'error') {
     return {
       title: 'Demo generation failed',
@@ -107,7 +135,8 @@ export function DemoProvisioningDialog({
   // A support reference the user can quote. The backend echoes the request id on
   // the response header, so ApiError carries it for the demo 500 path.
   const requestId = error instanceof ApiError ? error.requestId : undefined
-  const { title, description } = copyFor(status, timedOut, cancelOutcome)
+  const refusal = isError ? refusalOf(error) : null
+  const { title, description } = copyFor(status, timedOut, cancelOutcome, refusal)
 
   // On failure the role="alert" block below is the single live announcer, so the
   // polite status region stays silent — otherwise a screen reader reads the same
@@ -165,12 +194,14 @@ export function DemoProvisioningDialog({
         <DialogFooter>
           {isError ? (
             <>
-              <Button type="button" variant="outline" onClick={onClose}>
+              <Button type="button" variant={refusal ? 'default' : 'outline'} onClick={onClose}>
                 Close
               </Button>
-              <Button type="button" onClick={onRetry}>
-                Try again
-              </Button>
+              {!refusal && (
+                <Button type="button" onClick={onRetry}>
+                  Try again
+                </Button>
+              )}
             </>
           ) : isProvisioning || status === 'cancelling' ? (
             <Button

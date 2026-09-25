@@ -1,4 +1,4 @@
-import { useId, useState, type ChangeEvent } from "react"
+import { useEffect, useId, useRef, useState, type ChangeEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { anomalySettingsApi } from "@/api/anomalySettings"
 import type { ProjectAnomalySettings } from "@/types"
@@ -10,8 +10,13 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { ReadOnlyNotice } from "@/components/read-only-notice"
+import { useConfirm } from "@/hooks/useConfirm"
+import { SILENT_ERROR_META } from "@/lib/errorFeedback"
 import { useCanWriteProject } from "@/lib/permissions"
 import { getErrorMessage } from '@/lib/utils'
+
+// How long the "Saved" hint stays up after an autosave lands.
+const SAVED_HINT_MS = 2000
 
 /**
  * A numeric detection setting that saves when you finish, not as you type.
@@ -28,6 +33,14 @@ import { getErrorMessage } from '@/lib/utils'
  * Local state is seeded from the server value and re-seeded whenever it changes,
  * so an edit made elsewhere still lands here; empty and non-numeric input is
  * dropped and the field snaps back to the last saved value.
+ *
+ * Three more things an autosave owes the person typing (PLAN-55). A value
+ * outside `min`/`max` is refused here with the bound named, instead of being
+ * sent to earn a 422. A rejected save puts the saved value back: the server
+ * value never changed, so the re-seed above never ran and the input kept the
+ * refused number beside the error — and a reload then brought the old one back.
+ * And a save that lands says so, briefly, because a commit on blur is otherwise
+ * invisible.
  */
 function NumberSetting({
   id,
@@ -42,7 +55,7 @@ function NumberSetting({
   min?: number
   max?: number
   step?: string
-  onCommit: (value: number) => void
+  onCommit: (value: number) => Promise<unknown>
 }) {
   // Re-seed from the server value when it changes, without an effect: this is
   // React's documented "adjust state while rendering" pattern, and it lands the
@@ -53,31 +66,76 @@ function NumberSetting({
     setSeeded(value)
     setDraft(String(value))
   }
+  const [status, setStatus] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const [rangeError, setRangeError] = useState<string | null>(null)
+  const savedTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(savedTimer.current), [])
+  const hintId = useId()
 
   const commit = () => {
     const raw = draft.trim()
     const parsed = Number(raw)
     if (raw === '' || !Number.isFinite(parsed)) {
       setDraft(String(value))
+      setRangeError(null)
       return
     }
-    if (parsed !== value) onCommit(parsed)
+    if ((min !== undefined && parsed < min) || (max !== undefined && parsed > max)) {
+      setRangeError(
+        min !== undefined && max !== undefined
+          ? `Must be between ${min} and ${max}.`
+          : min !== undefined
+            ? `Must be at least ${min}.`
+            : `Must be at most ${max}.`,
+      )
+      setDraft(String(value))
+      return
+    }
+    setRangeError(null)
+    if (parsed === value) return
+    setStatus('saving')
+    onCommit(parsed).then(
+      () => {
+        setStatus('saved')
+        window.clearTimeout(savedTimer.current)
+        savedTimer.current = window.setTimeout(() => setStatus('idle'), SAVED_HINT_MS)
+      },
+      () => {
+        // The refusal itself is rendered once, under the card.
+        setStatus('idle')
+        setDraft(String(value))
+      },
+    )
   }
 
   return (
-    <Input
-      id={id}
-      type="number"
-      min={min}
-      max={max}
-      step={step}
-      value={draft}
-      onChange={(e: ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={e => {
-        if (e.key === 'Enter') e.currentTarget.blur()
-      }}
-    />
+    <div className="grid gap-1">
+      <Input
+        id={id}
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        aria-invalid={rangeError ? true : undefined}
+        aria-describedby={rangeError ? hintId : undefined}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => {
+          setDraft(e.target.value)
+          setRangeError(null)
+        }}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+        }}
+      />
+      {rangeError ? (
+        <p id={hintId} role="alert" className="text-xs text-destructive">{rangeError}</p>
+      ) : (
+        <p role="status" className="min-h-4 text-xs text-muted-foreground">
+          {status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : ''}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -98,12 +156,17 @@ const SCOPE_TYPE_LABELS: Record<string, string> = {
  */
 function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolean }) {
   const qc = useQueryClient()
+  const { confirm, dialog } = useConfirm()
   const { data, isPending, isError, error, refetch } = useQuery({
     queryKey: ['anomalyScopeOverrides', slug],
     queryFn: () => anomalySettingsApi.listScopeOverrides(slug),
+    // Rendered as an ErrorState in the card.
+    meta: SILENT_ERROR_META,
   })
 
   const removeMut = useMutation({
+    // Its error is rendered under the list.
+    meta: SILENT_ERROR_META,
     mutationFn: (overrideId: string) => anomalySettingsApi.deleteScopeOverride(slug, overrideId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['anomalyScopeOverrides', slug] })
@@ -112,8 +175,22 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
 
   const overrides = data?.items ?? []
 
+  // Removing an override is not undoable from here either: the scope drops
+  // straight back to the project settings, and only more false-positive marks
+  // would tighten it again. One click used to do it (PLAN-55).
+  const handleRemove = async (overrideId: string, scopeName: string) => {
+    const ok = await confirm({
+      title: 'Remove scope override',
+      message: `Remove the override for "${scopeName}"? The scope goes back to the project settings above, and its false-positive count is lost.`,
+      confirmLabel: 'Remove',
+      variant: 'danger',
+    })
+    if (ok) removeMut.mutate(overrideId)
+  }
+
   return (
     <Card>
+      {dialog}
       <CardContent className="p-6 space-y-4">
         <div>
           <Label className="text-sm font-medium">Scope overrides</Label>
@@ -169,7 +246,7 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
                     variant="outline"
                     size="sm"
                     disabled={removeMut.isPending}
-                    onClick={() => removeMut.mutate(override.id)}
+                    onClick={() => { void handleRemove(override.id, override.scope_name || override.scope_ref) }}
                     aria-label={`Remove override for ${override.scope_name || override.scope_ref}`}
                   >
                     Remove
@@ -191,12 +268,17 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
 export function MonitoringTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const canWrite = useCanWriteProject()
-  const { data: settings } = useQuery({
+  const settingsQuery = useQuery({
     queryKey: ['projectAnomalySettings', slug],
     queryFn: () => anomalySettingsApi.get(slug),
+    // Rendered as an ErrorState below, with a retry.
+    meta: SILENT_ERROR_META,
   })
+  const settings = settingsQuery.data
 
   const updateMut = useMutation({
+    // Its error is rendered under the card.
+    meta: SILENT_ERROR_META,
     mutationFn: (data: Partial<ProjectAnomalySettings>) => anomalySettingsApi.update(slug, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['projectAnomalySettings', slug] })
@@ -210,8 +292,25 @@ export function MonitoringTab({ slug }: { slug: string }) {
   const recentSignalWindowId = useId()
   const settlingMinutesId = useId()
 
+  // A NumberSetting reads the promise to reset its draft on a refusal and to say
+  // "Saved" on success; the error itself is rendered once, under the card, so
+  // the rejection is handled there rather than left unhandled here.
+  const commit = (data: Partial<ProjectAnomalySettings>) => updateMut.mutateAsync(data)
+
+  if (settingsQuery.isError) {
+    // A failed load used to read "Loading detection settings…" forever (PLAN-41).
+    return (
+      <ErrorState
+        title="Couldn't load detection settings"
+        error={settingsQuery.error}
+        onRetry={() => { void settingsQuery.refetch() }}
+        retryLabel="Retry"
+      />
+    )
+  }
+
   if (!settings) {
-    return <div className="text-sm text-muted-foreground">Loading detection settings…</div>
+    return <div role="status" className="text-sm text-muted-foreground">Loading detection settings…</div>
   }
 
   // The settling allowance and the open signal window constrain each other: a
@@ -348,7 +447,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   id={baselineWindowId}
                   min={1}
                   value={settings.baseline_window_buckets}
-                  onCommit={v => updateMut.mutate({ baseline_window_buckets: v })}
+                  onCommit={v => commit({ baseline_window_buckets: v })}
                 />
               </div>
               <div className="grid content-start gap-2">
@@ -357,7 +456,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   id={minHistoryId}
                   min={1}
                   value={settings.min_history_buckets}
-                  onCommit={v => updateMut.mutate({ min_history_buckets: v })}
+                  onCommit={v => commit({ min_history_buckets: v })}
                 />
               </div>
               {/* One line for the pair. Deliberately says "the series being
@@ -385,7 +484,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   min={0.1}
                   step="0.1"
                   value={settings.sigma_threshold}
-                  onCommit={v => updateMut.mutate({ sigma_threshold: v })}
+                  onCommit={v => commit({ sigma_threshold: v })}
                 />
                 <p className="text-xs text-muted-foreground">
                   How far a bucket has to sit from its baseline before it is flagged, counted in
@@ -399,7 +498,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   id={minExpectedCountId}
                   min={0}
                   value={settings.min_expected_count}
-                  onCommit={v => updateMut.mutate({ min_expected_count: v })}
+                  onCommit={v => commit({ min_expected_count: v })}
                 />
                 <p className="text-xs text-muted-foreground">
                   A floor on the baseline, not on the bucket: any bucket whose baseline expects
@@ -414,7 +513,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   min={windowFloorHours}
                   max={720}
                   value={settings.recent_signal_window_hours}
-                  onCommit={v => updateMut.mutate({ recent_signal_window_hours: v })}
+                  onCommit={v => commit({ recent_signal_window_hours: v })}
                 />
                 <p className="text-xs text-muted-foreground">
                   How long an anomaly keeps counting as an open signal on the Anomalies page
@@ -431,7 +530,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
                   min={0}
                   max={settlingCeilingMinutes}
                   value={settings.anomaly_ingestion_settling_minutes}
-                  onCommit={v => updateMut.mutate({ anomaly_ingestion_settling_minutes: v })}
+                  onCommit={v => commit({ anomaly_ingestion_settling_minutes: v })}
                 />
                 {/* Tightened from seven rendered lines. Every fact the operator
                     needs to set the number is kept — both bounds and why they

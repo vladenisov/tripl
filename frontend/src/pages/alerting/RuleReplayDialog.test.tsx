@@ -138,8 +138,11 @@ describe('RuleReplayDialog responsive results', () => {
 
     const table = scope.closest('table')
     expect(table).not.toBeNull()
-    expect(table).toHaveClass('min-w-[840px]', 'table-fixed')
-    expect(table?.parentElement).toBe(firingRegion)
+    expect(table).toHaveClass('md:min-w-[840px]', 'table-fixed')
+    // The design-system table's wrapper sits between them, but the named region
+    // stays the one element that scrolls.
+    expect(table?.parentElement?.parentElement).toBe(firingRegion)
+    expect(table?.parentElement).not.toHaveClass('overflow-x-auto')
     expect(firingRegion).toHaveClass('min-w-0', 'max-w-full', 'overflow-x-auto')
     expect(within(table as HTMLTableElement).getByText(/Jul 19, 2026/)).toHaveClass(
       'whitespace-nowrap',

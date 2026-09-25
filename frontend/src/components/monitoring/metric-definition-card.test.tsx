@@ -7,7 +7,9 @@ import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
-import type { FactTableListResponse, MetricDefinitionDetailResponse } from '@/types'
+import { AuthContext } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
+import type { FactTableListResponse, MetricDefinitionDetailResponse, Role } from '@/types'
 
 import { MetricDefinitionCard } from './metric-definition-card'
 
@@ -87,7 +89,7 @@ function factDefinition(
   }
 }
 
-function renderCard(definition: MetricDefinitionDetailResponse) {
+function renderCard(definition: MetricDefinitionDetailResponse, role: Role = 'editor') {
   const factTables: FactTableListResponse = {
     items: [
       {
@@ -140,11 +142,13 @@ function renderCard(definition: MetricDefinitionDetailResponse) {
   })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <MetricDefinitionCard slug="demo" definition={definition} />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <AuthContext.Provider value={authAs(role)}>
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <MetricDefinitionCard slug="demo" definition={definition} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </AuthContext.Provider>,
   )
 }
 
@@ -283,6 +287,31 @@ describe('MetricDefinitionCard filters', () => {
     await waitFor(() => {
       expect(metricsCatalogApi.getGeneratedSql).toHaveBeenCalledWith('demo', 'metric-1')
     })
+  })
+
+  it('offers the generated SQL to a viewer, who can read the metric config it is built from', async () => {
+    vi.mocked(metricsCatalogApi.getGeneratedSql).mockResolvedValue({
+      queries: [
+        {
+          role: 'primary',
+          label: 'Orders · 1d',
+          fact_table_id: FACT_TABLE_ID,
+          fact_table_name: 'Orders',
+          interval: '1d',
+          window_from: '2026-07-01T00:00:00Z',
+          window_to: '2026-07-02T00:00:00Z',
+          metric_ids: ['metric-1'],
+          sql: 'SELECT count() FROM orders',
+        },
+      ],
+      breakdown_queries_omitted: true,
+    })
+    renderCard(factDefinition({}), 'viewer')
+
+    fireEvent.click(screen.getByText('Generated batch SQL'))
+
+    const editor = await screen.findByRole('textbox', { name: 'Generated batch SQL' })
+    expect(editor).toHaveValue('SELECT count() FROM orders')
   })
 
   it('shows an explicit next update for active scheduled metrics', () => {

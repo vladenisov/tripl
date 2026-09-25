@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { alertingApi } from '@/api/alerting'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
@@ -9,6 +9,18 @@ import { formatDateTime } from '@/lib/datetime'
 import type { Role } from '@/types'
 
 import ProjectAlertingTab from './ProjectAlertingTab'
+
+// The sections are lazy chunks (tripl-fj5g.15). Load them once up front, so no
+// test's first wait also pays for transforming a section's module graph.
+beforeAll(async () => {
+  await Promise.all([
+    import('./alerting/MonitorsSection'),
+    import('./alerting/DestinationsSection'),
+    import('./alerting/AlertingInbox'),
+    import('./alerting/InboxBulkActionBar'),
+    import('./alerting/AlertAuditPanel'),
+  ])
+}, 30_000)
 
 /**
  * The toaster, stubbed, so a success message can be asserted as the words an

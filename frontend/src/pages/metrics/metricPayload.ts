@@ -31,6 +31,17 @@ export interface OperandColumns {
   denominator?: readonly FactTableColumn[]
 }
 
+/**
+ * The operand as the API takes it.
+ *
+ * A column the aggregation does not read is sent as the draft carries it rather
+ * than nulled. The form hides that field, so the draft only carries one the
+ * stored metric already had — the API accepts, say, a `count` with a
+ * `measure_column` — and nulling it made an untouched save change the stored
+ * definition, which deletes the metric's history (tripl-fj5g.9). Changing the
+ * aggregation in the form clears the column the new one does not read
+ * (`withAggregation`), so a stale choice is not carried along instead.
+ */
 export function toOperandPayload(
   operand: FactOperandState,
   conditionColumns: readonly FactTableColumn[] = [],
@@ -38,9 +49,26 @@ export function toOperandPayload(
   return {
     fact_table_id: operand.factTableId,
     aggregation: operand.aggregation,
-    measure_column: needsMeasure(operand.aggregation) ? operand.measureColumn || null : null,
-    distinct_column: needsDistinct(operand.aggregation) ? operand.distinctColumn || null : null,
+    measure_column: operand.measureColumn || null,
+    distinct_column: operand.distinctColumn || null,
     ...filtersToPayload(operand.filters, conditionColumns),
+  }
+}
+
+/**
+ * `operand` with a new aggregation chosen in the form: the column fields the
+ * new aggregation does not read are cleared, since the form stops showing them.
+ */
+export function withAggregation(
+  operand: FactOperandState,
+  aggregation: FactOperandState['aggregation'],
+): FactOperandState {
+  if (aggregation === operand.aggregation) return operand
+  return {
+    ...operand,
+    aggregation,
+    measureColumn: needsMeasure(aggregation) ? operand.measureColumn : '',
+    distinctColumn: needsDistinct(aggregation) ? operand.distinctColumn : '',
   }
 }
 

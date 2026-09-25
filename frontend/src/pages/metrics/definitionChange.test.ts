@@ -1,9 +1,13 @@
+/// <reference types="node" />
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import type { MetricDefinitionDetailResponse } from '@/types'
+import type { MetricDefinitionConfigUpdate, MetricDefinitionDetailResponse } from '@/types'
 import type { FactTableColumn } from '@/types/factTables'
 import { definitionDiffersFromStored } from './definitionChange'
 import { draftFromMetric, type MetricDraft } from './metricDraft'
-import { buildDefinitionPayload } from './metricPayload'
+import { buildDefinitionPayload, withAggregation } from './metricPayload'
 
 const SQL_METRIC = {
   id: 'm-1',
@@ -169,5 +173,63 @@ describe('fact definition load→save round trip (MET-1)', () => {
     })
     expect(definition).toMatchObject({ conditions: [{ column: 'amount', operator: 'gt', value: 4 }] })
     expect(changed).toBe(true)
+  })
+})
+
+interface DefinitionChangeCase {
+  name: string
+  stored: Partial<MetricDefinitionDetailResponse>
+  submitted: MetricDefinitionConfigUpdate
+  expect_history_reset: boolean
+  form_round_trip: boolean
+}
+
+// The SAME table backend/src/tripl/tests/test_fj5g_batch_a.py runs through the
+// real service comparison, so the warning and the deletion cannot drift
+// (tripl-fj5g.9). Read from disk: a JSON import would need resolveJsonModule.
+const { cases } = JSON.parse(
+  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'definition-change-cases.json'), 'utf8'),
+) as { cases: DefinitionChangeCase[] }
+
+function storedMetric(stored: Partial<MetricDefinitionDetailResponse>): MetricDefinitionDetailResponse {
+  return { ...SQL_METRIC, ...stored } as MetricDefinitionDetailResponse
+}
+
+describe('definitionDiffersFromStored agrees with the backend (shared case table)', () => {
+  it('reads a non-empty table', () => {
+    expect(cases.length).toBeGreaterThan(0)
+  })
+
+  it.each(cases.map(testCase => [testCase.name, testCase] as const))('%s', (_name, testCase) => {
+    expect(definitionDiffersFromStored(storedMetric(testCase.stored), testCase.submitted)).toBe(
+      testCase.expect_history_reset,
+    )
+  })
+
+  const roundTrips = cases.filter(testCase => testCase.form_round_trip)
+  it.each(roundTrips.map(testCase => [testCase.name, testCase] as const))(
+    'an untouched form save does not warn: %s',
+    (_name, testCase) => {
+      expect(loadAndSave(storedMetric(testCase.stored)).changed).toBe(false)
+    },
+  )
+})
+
+describe('columns the form does not show (tripl-fj5g.9)', () => {
+  it('sends back a count metric’s API-only measure column instead of dropping it', () => {
+    const metric = factMetric({ measure_column: 'amount' })
+    const { definition, changed } = loadAndSave(metric)
+    expect(definition).toMatchObject({ aggregation: 'count', measure_column: 'amount' })
+    expect(changed).toBe(false)
+  })
+
+  it('clears the columns a newly chosen aggregation does not read', () => {
+    const draft = draftFromMetric(factMetric({ measure_column: 'amount' }))
+    const summed = withAggregation(draft.numeratorOp, 'sum')
+    // The stored column is the one a sum reads, so it stays.
+    expect(summed).toMatchObject({ aggregation: 'sum', measureColumn: 'amount' })
+    const distinct = withAggregation({ ...summed, distinctColumn: '' }, 'count_distinct')
+    expect(distinct).toMatchObject({ measureColumn: '', distinctColumn: '' })
+    expect(withAggregation(summed, 'sum')).toBe(summed)
   })
 })

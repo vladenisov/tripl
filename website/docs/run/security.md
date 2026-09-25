@@ -118,13 +118,13 @@ Conditional:
 
   ```
   default-src 'self'; script-src 'self';
-  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
-  img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com;
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob:; font-src 'self' data:;
   connect-src 'self'; frame-src https://www.figma.com https://embed.figma.com;
   frame-ancestors 'none'; base-uri 'self'; form-action 'self'
   ```
 
-  With GCS photo storage, `https://storage.googleapis.com` is also added to `img-src`. If you do not serve the SPA from the API and you do not set `CONTENT_SECURITY_POLICY`, **no CSP header is emitted** — set one at your proxy or via the env var.
+  The UI's fonts (Inter and JetBrains Mono) are bundled with the app and served from its own origin, so the policy names no font host. With GCS photo storage, `https://storage.googleapis.com` is also added to `img-src`. If you do not serve the SPA from the API and you do not set `CONTENT_SECURITY_POLICY`, **no CSP header is emitted** — set one at your proxy or via the env var.
 
 - **HSTS** — emitted only when `HSTS_ENABLED=true`, as `Strict-Transport-Security: max-age=<HSTS_MAX_AGE_SECONDS>; includeSubDomains` (default max-age 31536000, one year). HSTS is opt-in by design: enabling it without HTTPS in front would make the site unreachable over HTTP with no way back. Turn it on only once TLS and `SESSION_COOKIE_SECURE=true` are in place.
 
@@ -359,13 +359,18 @@ edit the tracking plan**. If the instance also has registration `open`, anyone
 who can reach the URL can become that editor. Close registration, or keep the
 instance private.
 
+Every project response (`GET /projects`, `GET /projects/{slug}`, and the create,
+update and demo reset responses) carries `can_mutate`: this table, plus the
+caller's role and API-key scope, evaluated for whoever asked. It is the same
+predicate the routes enforce, so a client can hide write controls that would
+only answer `403`. It is a hint for display; the routes still decide.
+
 Some surfaces carry a stricter gate than the role table alone implies:
 
 | Surface | Gate | Why |
 |---|---|---|
 | Scan configs — create / update / delete, `preview`, `preview-jobs`, `dry-run`, `dry-run-jobs` | `get_owner_user` (owner, interactive session) | A scan config is the project's **ingestion contract**: it drives event-type discovery and schema drift, and its `base_query` is recorded in the audit log. Owning that is an owner's decision. This gate is **not** what admits a warehouse into a project — that is decided by ownership, see the row below — but creating one does narrow who *else* may reach a workspace-global data source: scanning it claims it for this project, and every project that does not scan it is refused from then on. Delete the last scan config on that source and it is shared again. |
 | Fact tables and `sql`-kind catalog metrics — create / update / delete, `preview`, `metrics/preview`, `metrics/fact-preview` | `get_editor_user` | These are also free-text `SELECT` statements run against an owner-configured credential, and they are **editor**-authored on purpose: maintaining the metrics catalog is what the editor role is for. The consequence is stated plainly rather than hidden — **an editor is a read-only SQL user on every warehouse their projects already use.** Scoping is by **ownership**, one rule for the save, the preview and the worker that later runs the statement (`services/data_source_scope`): a data source is refused when its `project_id` names a different project, or when it is workspace-global (`project_id IS NULL`) and some *other* project scans it while this one does not. Two consequences are worth reading twice — a workspace-global source that **no** project scans is bindable and previewable from **every** project, which is what the NULL means; and a source **owned** by another project stays refused even when this project scans it. The three preview routes write an audit row, because they are the only ones here that leave no stored object behind. |
-| `GET /metrics/{id}/generated-sql` | `get_editor_user` | The compiled SQL embeds the fact table's own query — warehouse table and column names an editor authored. A `viewer` authors none of it and does not need to read it. |
 | `POST /scans/{id}/metrics/replay` | `get_key_reachable_owner_user` | An owner session or an owner's write key can replay a stored config over a chosen window. The request and resulting job are recorded in the audit log. |
 | `POST /scans/{id}/event-groups/apply` | `get_owner_user` (owner, interactive session) | Applying saved grouping rules to existing events is owner-only. Editors do not see the Apply groups action. |
 | `POST /scans/{id}/run`, cancelling a job | `get_editor_user` | Running a **stored** config executes no new SQL, so it stays with the role that maintains the plan — and with the API keys that automate it. |
@@ -385,6 +390,12 @@ fact metric whose fact table points at a source **owned** by another project now
 fails collection with a message telling the editor to repoint it, where before a
 `ScanConfig` in this project would have let it run. All four doors and the worker
 share one predicate, so save, preview and collect cannot drift apart.
+
+`GET /metrics/{id}/generated-sql` is deliberately **not** a stricter surface: anyone
+who can read the metric can read its generated SQL, `viewer` included. The
+statement is compiled from configuration the metric and fact-table reads already
+return to that viewer — the fact table's query, the metric's filters — and
+compiling it runs nothing, so it discloses no data and no credential.
 
 Every one of those statements — a scan's `base_query`, a fact table's `sql`, a
 metric's `metric_sql` — goes through the same read-only-SELECT gate

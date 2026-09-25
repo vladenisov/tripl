@@ -21,7 +21,7 @@ import { ErrorState } from '@/components/error-state'
 import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import { TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
-import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
+import { LazyDemoScenarioProvider } from '@/demo/LazyDemoScenarioProvider'
 import { NotFoundState } from '@/components/not-found-state'
 import { ShellChromeContext } from '@/components/shell-chrome-context'
 import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
@@ -216,7 +216,12 @@ export default function Layout() {
 
   // A page may ask for the rail to stay out of its way (the 404, LIVE-35).
   const [railSuppressed, setRailSuppressed] = useState(false)
-  const shellChrome = useMemo(() => ({ suppressActivityRail: setRailSuppressed }), [])
+  // A detail page names its entity here (usePageTitle); null keeps the route's.
+  const [pageTitle, setPageTitle] = useState<string | null>(null)
+  const shellChrome = useMemo(
+    () => ({ suppressActivityRail: setRailSuppressed, setPageTitle }),
+    [],
+  )
 
   // Below the inline width the rail would squeeze the content column, so it
   // collapses to an off-canvas drawer with its own open state (mirroring the
@@ -419,8 +424,8 @@ export default function Layout() {
     <ProjectEventStreamProvider slug={slug}>
     {/* Holds the coached demo scenario across navigations: the scan the user
         started keeps being watched while they walk to the metrics catalog.
-        Inert for every non-demo project. */}
-    <DemoScenarioProvider project={project}>
+        Inert for every non-demo project, which never downloads its model. */}
+    <LazyDemoScenarioProvider project={project}>
     <ActiveProjectContext.Provider value={project}>
     <ShellChromeContext.Provider value={shellChrome}>
     <TweaksPanelProvider>
@@ -465,7 +470,7 @@ export default function Layout() {
 
           <div className="flex min-w-0 flex-1 flex-col" inert={drawerActive}>
             <TopBar
-              title={title}
+              title={pageTitle ?? title}
               crumbs={crumbs}
               projectSlug={slug}
               activityOpen={activityVisible}
@@ -582,7 +587,7 @@ export default function Layout() {
     </TweaksPanelProvider>
     </ShellChromeContext.Provider>
     </ActiveProjectContext.Provider>
-    </DemoScenarioProvider>
+    </LazyDemoScenarioProvider>
     </ProjectEventStreamProvider>
     </BranchProvider>
   )

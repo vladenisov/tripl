@@ -69,7 +69,7 @@ export function ScenarioCoachMark({
   const { muteHints } = useDemoScenarioActions()
   const { report } = useCoachPresence()
 
-  const visible = active && !hintsMuted && when && activeStep.id === step
+  const coaching = active && !hintsMuted && when && activeStep.id === step
 
   // The anchor is state, not a ref: the beacon and the scroll effect must
   // re-run when the element appears, and a ref mutation would not tell them.
@@ -78,6 +78,18 @@ export function ScenarioCoachMark({
     ? (children.props as { ref?: Ref<HTMLElement> }).ref
     : undefined
   const anchorRef = useMemo(() => mergeRefs(childRef, setAnchorEl), [childRef])
+
+  // An anchor that is mounted but not rendered — inside a hidden tab panel or a
+  // collapsed section (display:none) — has no box, and Radix pinned the card to
+  // the page's top-left corner, pointing at nothing (DEMO-10). Such a mark
+  // stands down like any other invisible one, so the strip's "not on screen"
+  // notice speaks instead. `checkVisibility` is absent in older engines (and
+  // jsdom); there the anchor is taken as shown, which is the old behaviour.
+  const anchorHidden =
+    anchorEl !== null &&
+    typeof anchorEl.checkVisibility === 'function' &&
+    !anchorEl.checkVisibility()
+  const visible = coaching && !anchorHidden
 
   // Tell the strip a mark for this step is actually on screen, so it can say
   // so when one is not. Keyed on the same gate as the card.
@@ -140,7 +152,14 @@ export function ScenarioCoachMark({
   // is what every mark had before.
   const boundary: Element | Element[] = anchorEl?.closest(`#${MAIN_CONTENT_ID}`) ?? []
 
-  if (!visible) return <>{children}</>
+  if (!coaching) return <>{children}</>
+  // Keep the ref on a hidden anchor, so the render that shows it again (the
+  // tab switch re-renders the page) finds it laid out and coaches it.
+  if (!visible) {
+    return isValidElement(children)
+      ? cloneElement(children as ReactElement<Record<string, unknown>>, { ref: anchorRef })
+      : <>{children}</>
+  }
 
   const position = steps.findIndex((candidate) => candidate.id === activeStep.id) + 1
   // The gate guarantees activeStep.id === step, so this is this step's config.

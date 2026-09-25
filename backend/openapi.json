@@ -14680,6 +14680,11 @@
             "title": "App Version Keep Releases",
             "type": "integer"
           },
+          "can_mutate": {
+            "default": false,
+            "title": "Can Mutate",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -15632,6 +15637,71 @@
           }
         },
         "title": "RuntimeSettingsUpdate",
+        "type": "object"
+      },
+      "ScanActivityItem": {
+        "description": "One scan config's run activity, as the Scans list shows it.",
+        "properties": {
+          "failing_streak": {
+            "title": "Failing Streak",
+            "type": "integer"
+          },
+          "latest_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanJobResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rows_read_24h": {
+            "title": "Rows Read 24H",
+            "type": "integer"
+          },
+          "scan_config_id": {
+            "format": "uuid",
+            "title": "Scan Config Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scan_config_id",
+          "latest_job",
+          "failing_streak",
+          "rows_read_24h"
+        ],
+        "title": "ScanActivityItem",
+        "type": "object"
+      },
+      "ScanActivityResponse": {
+        "description": "Per-scan activity for a project, aggregated in SQL (tripl-fj5g.11).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScanActivityItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "window_from": {
+            "format": "date-time",
+            "title": "Window From",
+            "type": "string"
+          },
+          "window_to": {
+            "format": "date-time",
+            "title": "Window To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window_from",
+          "window_to",
+          "items"
+        ],
+        "title": "ScanActivityResponse",
         "type": "object"
       },
       "ScanConfigCreate": {
@@ -29541,7 +29611,7 @@
     },
     "/api/v1/projects/{slug}/metrics/{metric_id}/generated-sql": {
       "get": {
-        "description": "Return a saved fact metric's primary dependency-batch SQL without running it.",
+        "description": "Return a saved fact metric's primary dependency-batch SQL without running it.\n\nSame gate as ``GET /{metric_id}``: anyone who can read the metric. The SQL is\ncompiled from config that read already returns (MET-41) and nothing executes.",
         "operationId": "get_metric_generated_sql_api_v1_projects__slug__metrics__metric_id__generated_sql_get",
         "parameters": [
           {
@@ -31070,6 +31140,49 @@
           }
         },
         "summary": "Create Scan Config",
+        "tags": [
+          "scans"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/scans/activity": {
+      "get": {
+        "description": "Each scan's latest job, failing streak and rows read in the last 24 hours.\n\nOne request for the whole Scans list, aggregated in SQL, so the streak and\nthe 24h total are exact rather than floors over a capped page of jobs.",
+        "operationId": "get_scan_activity_api_v1_projects__slug__scans_activity_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanActivityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Scan Activity",
         "tags": [
           "scans"
         ]

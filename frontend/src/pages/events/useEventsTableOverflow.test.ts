@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { measurePinnedGeometry } from './useEventsTableOverflow'
+import { measureOverflow, measurePinnedGeometry } from './useEventsTableOverflow'
 
 /**
  * jsdom never lays anything out, so the offsets are stubbed to the real
@@ -50,5 +50,40 @@ describe('measurePinnedGeometry', () => {
     const cells = [makeHeaderCell({ offsetLeft: 0, offsetWidth: 34 })]
 
     expect(measurePinnedGeometry(cells, 0)).toEqual({ pinLeft: 0, pinnedRight: 0 })
+  })
+})
+
+describe('measureOverflow', () => {
+  /** A table in a 300px scroller, header cells stubbed like makeHeaderCell. */
+  function tableWith(cells: HTMLTableCellElement[]): HTMLTableElement {
+    const scroller = document.createElement('div')
+    Object.defineProperty(scroller, 'clientWidth', { value: 300 })
+    Object.defineProperty(scroller, 'scrollLeft', { value: 0 })
+    const table = document.createElement('table')
+    const row = table.createTHead().insertRow()
+    for (const cell of cells) row.appendChild(cell)
+    scroller.appendChild(table)
+    return table
+  }
+
+  it('counts a laid-out column past the right edge', () => {
+    const table = tableWith([
+      ...catalogHeaderCells(),
+      makeHeaderCell({ offsetLeft: 294, offsetWidth: 80, label: 'Status' }),
+    ])
+
+    expect(measureOverflow(table)).toBe(1)
+  })
+
+  it('does not count a header the phone card layout does not show', () => {
+    // `display: none` leaves a cell with no box: offsetLeft and offsetWidth 0,
+    // which read as "under the pinned cluster" and so "off-screen".
+    const table = tableWith([
+      ...catalogHeaderCells(),
+      makeHeaderCell({ offsetLeft: 0, offsetWidth: 0, label: 'Status' }),
+      makeHeaderCell({ offsetLeft: 0, offsetWidth: 0, label: 'Owner' }),
+    ])
+
+    expect(measureOverflow(table)).toBe(0)
   })
 })

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -130,6 +130,23 @@ describe('TabMetricsCard', () => {
 
     expect(await screen.findByRole('button', { name: /Show chart/ })).toBeInTheDocument()
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('picks its range with the shared segmented control (LIVE-26)', async () => {
+    const fetchSpy = installFetch()
+    renderCard(null)
+
+    const group = await screen.findByRole('group', { name: 'Time range' })
+    expect(within(group).getByRole('button', { name: '7d' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText(/Last 7 days/)).toBeInTheDocument()
+
+    fireEvent.click(within(group).getByRole('button', { name: '30d' }))
+
+    expect(within(group).getByRole('button', { name: '30d' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(group).getByRole('button', { name: '7d' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByText(/Last 30 days/)).toBeInTheDocument()
+    // The wider window is a new query.
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
   })
 
   it('names the table filters its series does not apply (EVT-20)', async () => {

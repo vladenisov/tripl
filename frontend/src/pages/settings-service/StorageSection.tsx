@@ -1,6 +1,6 @@
 import type { ServiceSettings } from '@/types'
 import { Field, RadioCards, SCard, TextInput, ToggleRow } from '@/components/settings/kit'
-import { SourceBadge } from './ServiceSettingsPrimitives'
+import { NumberSettingInput, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -18,6 +18,12 @@ export function StorageSection({
   settings: ServiceSettings
   setField: (section: SectionKey, field: string, value: string | number | boolean) => void
 }) {
+  // Both backend cards stay editable (an owner may prepare GCS before
+  // switching), but the one not selected above says so: with both always
+  // looking live it was unclear which fields mattered.
+  const backend = form.storage.photo_storage_backend
+  const inactiveNote = (active: string) =>
+    `Inactive — the backend above is ${active}, so these fields are not used until you switch.`
   return (
     <>
       <SCard title="Backend">
@@ -40,12 +46,12 @@ export function StorageSection({
           label="Photo max size"
           labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'photo_max_size_mb')} />}
         >
-          <TextInput
-            type="number"
-            value={String(form.storage.photo_max_size_mb)}
-            onChange={value => setField('storage', 'photo_max_size_mb', Number(value))}
+          <NumberSettingInput
+            section="storage"
+            field="photo_max_size_mb"
+            value={form.storage.photo_max_size_mb}
+            setField={setField}
             suffix="MB"
-            mono
           />
         </Field>
         <Field
@@ -61,7 +67,10 @@ export function StorageSection({
         </Field>
       </SCard>
 
-      <SCard title="Local filesystem">
+      <SCard
+        title="Local filesystem"
+        description={backend === 'local' ? undefined : inactiveNote('Google Cloud Storage')}
+      >
         <Field
           label="Local photo directory"
           labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'photo_local_dir')} />}
@@ -75,7 +84,10 @@ export function StorageSection({
         </Field>
       </SCard>
 
-      <SCard title="Google Cloud Storage">
+      <SCard
+        title="Google Cloud Storage"
+        description={backend === 'gcs' ? undefined : inactiveNote('Local filesystem')}
+      >
         <Field
           label="GCS bucket"
           labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'gcs_photo_bucket')} />}
@@ -113,14 +125,12 @@ export function StorageSection({
           }
           last
         >
-          <TextInput
-            type="number"
-            value={String(form.storage.gcs_photo_signed_url_ttl_seconds)}
-            onChange={value =>
-              setField('storage', 'gcs_photo_signed_url_ttl_seconds', Number(value))
-            }
+          <NumberSettingInput
+            section="storage"
+            field="gcs_photo_signed_url_ttl_seconds"
+            value={form.storage.gcs_photo_signed_url_ttl_seconds}
+            setField={setField}
             suffix="seconds"
-            mono
           />
         </Field>
       </SCard>

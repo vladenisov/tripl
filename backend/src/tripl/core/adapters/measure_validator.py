@@ -610,11 +610,12 @@ def lint_dialect_sql(sql: str, dialect: SqlDialect) -> str | None:
     query that cannot run on the warehouse you picked" into a sentence the user can
     act on, instead of a driver stack trace.
 
-    It runs in exactly ONE place: ``services/metric_preview_service`` (the metric
-    preview). Neither the save path (``schemas/metric_definition``, which runs the
-    read-only gate only) nor the worker's collection calls it, so it is an
-    affordance for whoever previews, not an enforcement point: a metric saved
-    without a preview can still fail in a worker (tripl-0zpq.355).
+    It runs in two places: ``services/metric_preview_service`` (the metric
+    preview) and the metric save path in ``services/metric_definition_service``,
+    which refuses a new or changed ``sql`` SELECT / fact ``filter_sql`` with this
+    message (tripl-0zpq.371). The worker's collection does not call it, so a
+    metric stored before the save check existed can still fail in a worker
+    (tripl-0zpq.355).
 
     Every rule is a function that provably does NOT resolve on the target dialect,
     checked against live engines so a valid query is never flagged. In particular:

@@ -49,10 +49,11 @@ export function useCanWrite(): boolean {
  * user who created it. This mirrors that half.
  *
  * The same rule also closes a real (non-demo) project created by another
- * EDITOR. The client cannot see that half: `ProjectResponse` carries the
- * creator's id but not the creator's role, so a shared workspace project (made
- * by an owner) and another editor's project look the same here. Those writes
- * stay offered and the API's 403 is the answer.
+ * EDITOR, which the client cannot tell from the creator's id alone (a shared
+ * project made by an owner looks the same). So the server answers it:
+ * `ProjectResponse.can_mutate` is that gate evaluated for the caller, and when
+ * the project carries it, it decides. The role/demo rule below is the fallback
+ * for a project without the field (fixtures, a response from an older API).
  *
  * Missing information degrades to {@link canWrite}'s answer for the same reason
  * given there: no session or no project loaded yet is not evidence of a
@@ -60,9 +61,10 @@ export function useCanWrite(): boolean {
  */
 export function canWriteProject(
   user: Pick<AuthUser, 'id' | 'role'> | null | undefined,
-  project: Pick<Project, 'is_demo' | 'created_by_user_id'> | null | undefined,
+  project: Pick<Project, 'is_demo' | 'created_by_user_id' | 'can_mutate'> | null | undefined,
 ): boolean {
   if (!canWrite(user?.role)) return false
+  if (typeof project?.can_mutate === 'boolean') return project.can_mutate
   if (!user || !project?.is_demo) return true
   if (isOwner(user.role)) return true
   return project.created_by_user_id != null && project.created_by_user_id === user.id

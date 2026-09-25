@@ -1,18 +1,22 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { branchSettingsApi } from '@/api/branchSettings'
 import { ApiError } from '@/api/client'
 import { metaFieldsApi } from '@/api/metaFields'
 import { planBranchesApi } from '@/api/planBranches'
+import { trackerConfigApi } from '@/api/trackerConfig'
 import { usersApi } from '@/api/users'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type {
   ImplementationTicket,
+  PlanBranchConflicts,
   PlanBranchDiffSummary,
   PlanBranchSummary,
   ProjectBranchSettings,
+  ProjectTrackerConfig,
   Role,
   UserListItem,
 } from '@/types'
@@ -36,6 +40,15 @@ vi.mock('@/api/planBranches', () => ({
     saveResolution: vi.fn(),
     revert: vi.fn(),
     listImplementationTickets: vi.fn(),
+    addReviewer: vi.fn(),
+    removeReviewer: vi.fn(),
+  },
+}))
+
+vi.mock('@/api/trackerConfig', () => ({
+  trackerConfigApi: {
+    get: vi.fn(),
+    update: vi.fn(),
   },
 }))
 
@@ -124,6 +137,28 @@ const MERGED = makeBranch({
   merged_at: '2026-02-01T00:00:00Z',
   merged_by: 'u-maya',
 })
+
+function makeTrackerConfig(overrides: Partial<ProjectTrackerConfig> = {}): ProjectTrackerConfig {
+  return {
+    id: null,
+    project_id: 'p-1',
+    enabled: false,
+    tracker_type: 'jira',
+    base_url: '',
+    project_key: '',
+    auth_email: '',
+    issue_type: 'Task',
+    api_token_set: false,
+    created_at: null,
+    updated_at: null,
+    ...overrides,
+  }
+}
+
+/** Every merge now asks first (PLAN-8): the plain case's confirm is "Merge". */
+async function confirmMerge() {
+  fireEvent.click(await screen.findByRole('button', { name: 'Merge' }))
+}
 
 function makeTicket(overrides: Partial<ImplementationTicket> = {}): ImplementationTicket {
   return {
@@ -224,6 +259,7 @@ beforeEach(() => {
   vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
   vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
   vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([])
+  vi.mocked(trackerConfigApi.get).mockResolvedValue(makeTrackerConfig())
 })
 
 afterEach(() => {
@@ -396,7 +432,8 @@ describe('BranchesTab', () => {
     expect(await screen.findByText('+2')).toBeInTheDocument()
     expect(screen.getByText('~1')).toBeInTheDocument()
     expect(screen.getByText('−1')).toBeInTheDocument()
-    expect(screen.getByText(/behind main/i)).toBeInTheDocument()
+    // A yes/no, said as what it means for the merge — not "↓ 1 behind" (PLAN-14).
+    expect(screen.getByText(/Main has moved on since this branch was created/)).toBeInTheDocument()
 
     expect(screen.getByText('checkout_address_autofilled')).toBeInTheDocument()
     expect(screen.getByText('payment_failed')).toBeInTheDocument()
@@ -1007,6 +1044,10 @@ describe('BranchesTab', () => {
     expect(screen.getByText('0 changes')).toBeInTheDocument()
     const mergeBtn = await screen.findByRole('button', { name: /Merge to main/i })
     fireEvent.click(mergeBtn)
+    // Never one click: the confirm names what lands on main (PLAN-8).
+    expect(await screen.findByText(/Merge 0 changes \(\+0 ~0 −0\) into main\?/)).toBeInTheDocument()
+    expect(planBranchesApi.merge).not.toHaveBeenCalled()
+    await confirmMerge()
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
   })
 
@@ -1044,6 +1085,7 @@ describe('BranchesTab', () => {
     expect(active).toHaveTextContent(FEATURE.id)
 
     fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await confirmMerge()
     await waitFor(() => expect(active).toHaveTextContent('main'))
     expect(localStorage.getItem('tripl-branch:demo')).toBeNull()
   })
@@ -1205,6 +1247,7 @@ describe('BranchesTab', () => {
 
     fireEvent.click(await screen.findByText('checkout-v2'))
     fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await confirmMerge()
 
     expect(
       await screen.findByText('Not enough approvals to merge: 1 of 2 required.'),
@@ -1230,6 +1273,7 @@ describe('BranchesTab', () => {
 
     fireEvent.click(await screen.findByText('checkout-v2'))
     fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await confirmMerge()
 
     expect(
       await screen.findByText(/plan entities on main changed.*recreate the branch/i),
@@ -1285,6 +1329,7 @@ describe('BranchesTab', () => {
 
     fireEvent.click(await screen.findByText('checkout-v2'))
     fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await confirmMerge()
 
     expect(await screen.findByText(expected)).toBeInTheDocument()
     // The bare status line is what the reviewer used to be left holding.
@@ -1311,6 +1356,7 @@ describe('BranchesTab', () => {
 
     fireEvent.click(await screen.findByText('checkout-v2'))
     fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await confirmMerge()
 
     expect(
       await screen.findByText(/plan entities on main changed.*recreate the branch/i),
@@ -1455,8 +1501,11 @@ describe('BranchesTab', () => {
     fireEvent.click(await screen.findByText('checkout-v2'))
     fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
 
-    // Merging goes straight through: the paired row keeps its id, and with it
-    // the observed values, overrides and drift history the warning is about.
+    // The plain confirm, not the deletion warning: the paired row keeps its
+    // id, and with it the observed values, overrides and drift history the
+    // warning is about.
+    expect(await screen.findByText(/renamed 1\) into main\?/)).toBeInTheDocument()
+    await confirmMerge()
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
     expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
   })
@@ -1489,6 +1538,7 @@ describe('BranchesTab', () => {
     // Being behind used to force the warning on every removal, because the
     // pairing was inferred from a diff that cannot see main. The backend's
     // pairing already read main, so there is nothing left to be cautious about.
+    await confirmMerge()
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
     expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
   })
@@ -1511,7 +1561,7 @@ describe('BranchesTab', () => {
     // The panel subtitle over the single Renamed row.
     expect(await screen.findByText('1 change')).toBeInTheDocument()
     // The list row's ahead badge: one change ahead, not two.
-    expect(screen.getByText('↑1 ↓0')).toBeInTheDocument()
+    expect(screen.getByText('↑1')).toBeInTheDocument()
     // The header strip: the rename is subtracted from both halves it was split
     // into, and named, so the drop is explained rather than silent.
     expect(screen.getByText('+0')).toBeInTheDocument()
@@ -1522,7 +1572,7 @@ describe('BranchesTab', () => {
     // The counts that made the screen contradict itself.
     expect(screen.queryByText('+1')).not.toBeInTheDocument()
     expect(screen.queryByText('−1')).not.toBeInTheDocument()
-    expect(screen.queryByText('↑2 ↓0')).not.toBeInTheDocument()
+    expect(screen.queryByText('↑2')).not.toBeInTheDocument()
   })
 
   it('leaves the renamed chip off a diff that renamed nothing', async () => {
@@ -1539,7 +1589,7 @@ describe('BranchesTab', () => {
     // Nothing paired: the raw counts stand, and so does the "2 ahead".
     expect(await screen.findByText('+1')).toBeInTheDocument()
     expect(screen.getByText('−1')).toBeInTheDocument()
-    expect(screen.getByText('↑2 ↓0')).toBeInTheDocument()
+    expect(screen.getByText('↑2')).toBeInTheDocument()
     expect(screen.queryByText('renamed')).not.toBeInTheDocument()
   })
 
@@ -1634,7 +1684,7 @@ describe('BranchesTab', () => {
     expect(screen.queryByText(/Undo the rename/)).not.toBeInTheDocument()
   })
 
-  it('says the revert will be refused when two branch rows claim the identity', async () => {
+  it('offers no revert when two branch rows claim the identity, and says why', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
     vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
@@ -1680,14 +1730,17 @@ describe('BranchesTab', () => {
 
     fireEvent.click(await screen.findByText('checkout-v2'))
     fireEvent.click(await screen.findByText('promo_applied'))
-    fireEvent.click(await screen.findByRole('button', { name: /Restore on this branch/i }))
 
-    expect(await screen.findByText('Rename is ambiguous')).toBeInTheDocument()
-    expect(
-      screen.getByText(/promo_banner_applied, promo_code_applied/),
-    ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Try anyway' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument()
+    // No revert to click, and so no dialog offering "Try anyway" for a request
+    // it has just said will be refused (PLAN-18): the row says why, and names
+    // the rows to fix by hand.
+    const note = await screen.findByRole('note')
+    expect(note).toHaveTextContent(/Can’t revert: 2 rows on this branch carry promo_applied’s scan identity/)
+    expect(within(note).getByText('promo_banner_applied')).toBeInTheDocument()
+    expect(within(note).getByText('promo_code_applied')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Restore on this branch/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try anyway' })).not.toBeInTheDocument()
+    expect(planBranchesApi.revert).not.toHaveBeenCalled()
   })
 
   it('scopes the rename check to the parent, like the endpoint scopes its query', async () => {
@@ -1841,9 +1894,12 @@ describe('BranchesTab housekeeping rows (tripl-kjhi.12)', () => {
       name: /2 unused scan variables retired · 1 removal already made on main/,
     })
     expect(fold).toHaveAttribute('aria-expanded', 'false')
+    // No idref to a list that is not rendered (PLAN-20).
+    expect(fold).not.toHaveAttribute('aria-controls')
     expect(screen.queryByText('property.adana')).not.toBeInTheDocument()
 
     fireEvent.click(fold)
+    expect(fold).toHaveAttribute('aria-controls')
     expect(screen.getByText('property.adana')).toBeInTheDocument()
     expect(screen.getByText('property.city')).toBeInTheDocument()
     expect(screen.getAllByText(/unused scan variable retired/)).toHaveLength(2)
@@ -1852,6 +1908,7 @@ describe('BranchesTab housekeeping rows (tripl-kjhi.12)', () => {
     // values, overrides and drift history, none of which these rows have.
     vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
     fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await confirmMerge()
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
     expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
   })
@@ -1901,5 +1958,425 @@ describe('BranchesTab accessibility', () => {
     renderTab('feat-1')
     await screen.findAllByText('checkout-v2')
     await expectNoAxeViolations(document.body)
+  })
+})
+
+describe('BranchesTab review flows (frontend review batch 14)', () => {
+  const CONFLICTED: PlanBranchConflicts = {
+    entities: [
+      {
+        entity_type: 'event_type',
+        name: 'checkout',
+        fields: [
+          { field: 'description', base: 'old', ours: 'main edit', theirs: 'branch edit', choice: null },
+        ],
+      },
+    ],
+    unresolved_count: 1,
+  }
+
+  it('reads the row badges from one counted list, not one diff per branch (PLAN-3)', async () => {
+    const other = {
+      ...makeBranch({ id: 'feat-o', name: 'other-work', kind: 'working', status: 'draft' }),
+      ahead: 4,
+      behind_base: true,
+    }
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE, other], total: 3 })
+
+    renderTab('feat-1')
+
+    await waitFor(() =>
+      expect(planBranchesApi.list).toHaveBeenCalledWith('demo', { include_diff_counts: true }),
+    )
+    expect(await screen.findByText('↑4')).toBeInTheDocument()
+    expect(screen.getByText('4 changes ahead of main')).toBeInTheDocument()
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-1'))
+    expect(planBranchesApi.diff).not.toHaveBeenCalledWith('demo', 'feat-o')
+  })
+
+  it('marks the selected branch row as the current one (PLAN-20)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+
+    renderTab('feat-1')
+
+    const row = await screen.findByRole('button', { name: /checkout-v2/ })
+    expect(row).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByRole('button', { name: /^main/ })).not.toHaveAttribute('aria-current')
+  })
+
+  it("refreshes main's plan caches and the conflicts after a merge (PLAN-2, PLAN-4)", async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await confirmMerge()
+    await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
+    await waitFor(() => {
+      const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey)
+      for (const key of [
+        ['eventTypes', 'demo'],
+        ['variables', 'demo'],
+        ['events', 'demo'],
+        ['metaFields', 'demo'],
+        ['relations', 'demo'],
+        ['planRevisions', 'demo'],
+        ['planBranchConflicts', 'demo', 'feat-1'],
+      ]) {
+        expect(keys).toContainEqual(key)
+      }
+    })
+  })
+
+  it('does not merge when the reviewer cancels the confirm (PLAN-8)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(planBranchesApi.merge).not.toHaveBeenCalled()
+  })
+
+  it('asks before closing a branch (PLAN-8)', async () => {
+    const draft = makeBranch({ id: 'feat-d', name: 'draft-work', kind: 'working', status: 'draft' })
+    mockBranchDetailQueries([MAIN, draft])
+    vi.mocked(planBranchesApi.transition).mockResolvedValue({} as never)
+
+    renderTab('feat-d')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Close' }))
+    expect(planBranchesApi.transition).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Close branch' }))
+    await waitFor(() =>
+      expect(planBranchesApi.transition).toHaveBeenCalledWith('demo', 'feat-d', 'close'),
+    )
+  })
+
+  it('refetches the conflicts a merge was refused over, so "below" has them (PLAN-4)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    // Empty when the panel first loaded; main has since gained a conflicting edit.
+    vi.mocked(planBranchesApi.getConflicts)
+      .mockResolvedValueOnce({ entities: [], unresolved_count: 0 })
+      .mockResolvedValue(CONFLICTED)
+    const error = new ApiError('409 Conflict', 409)
+    error.detail = { unresolved_field_conflicts: [{ entity: 'checkout', field: 'description' }] }
+    vi.mocked(planBranchesApi.merge).mockRejectedValue(error)
+
+    renderTab('feat-1')
+
+    await waitFor(() => expect(planBranchesApi.getConflicts).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText('Conflicts')).not.toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await confirmMerge()
+
+    expect(
+      await screen.findByText('Merge blocked: resolve the field conflicts below first.'),
+    ).toBeInTheDocument()
+    expect(await screen.findByText('Conflicts')).toBeInTheDocument()
+    expect(screen.getByText('1 unresolved')).toBeInTheDocument()
+  })
+
+  it('names the sides of a conflict and says which one is chosen (PLAN-6, PLAN-7)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({
+      ...CONFLICTED,
+      entities: [
+        {
+          ...CONFLICTED.entities[0],
+          fields: [{ ...CONFLICTED.entities[0].fields[0], choice: 'theirs' }],
+        },
+      ],
+      unresolved_count: 0,
+    })
+    vi.mocked(planBranchesApi.saveResolution).mockRejectedValue(new ApiError('Forbidden', 403))
+
+    renderTab('feat-1')
+
+    expect(await screen.findByText('This branch:')).toBeInTheDocument()
+    expect(screen.getByText('Main (now):')).toBeInTheDocument()
+    expect(screen.getByText('Main (base):')).toBeInTheDocument()
+    expect(screen.getByText("Resolved: this branch's value")).toBeInTheDocument()
+    const branchSide = screen.getByRole('button', { name: "Use this branch's value" })
+    const mainSide = screen.getByRole('button', { name: "Use main's value" })
+    expect(branchSide).toHaveAttribute('aria-pressed', 'true')
+    expect(mainSide).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByText(/\bours\b|\btheirs\b/)).not.toBeInTheDocument()
+
+    fireEvent.click(mainSide)
+
+    // The entity's own type, not a hard-coded 'event_type'.
+    await waitFor(() =>
+      expect(planBranchesApi.saveResolution).toHaveBeenCalledWith('demo', 'feat-1', {
+        entity_type: 'event_type',
+        entity_name: 'checkout',
+        field_name: 'description',
+        choice: 'ours',
+      }),
+    )
+    // A failed save used to leave the buttons as they were and say nothing.
+    expect(await screen.findByText('Could not save the choice: Forbidden')).toBeInTheDocument()
+  })
+
+  it('does not compute conflicts for a landed branch (PLAN-5)', async () => {
+    mockBranchDetailQueries([MAIN, MERGED])
+
+    renderTab('feat-merged')
+
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-merged'))
+    expect(planBranchesApi.getConflicts).not.toHaveBeenCalled()
+  })
+
+  it('holds the delete button while it runs and shows a failed delete (PLAN-9)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    let rejectDelete: (error: unknown) => void = () => {}
+    vi.mocked(planBranchesApi.delete).mockImplementation(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          rejectDelete = reject
+        }),
+    )
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete branch' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete branch' })).toBeDisabled())
+    rejectDelete(new ApiError('Branch is protected', 409))
+
+    expect(
+      await screen.findByText('Could not delete the branch: Branch is protected'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete branch' })).toBeEnabled()
+    expect(planBranchesApi.delete).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves a deleted branch for main, and says so (PLAN-9)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.delete).mockResolvedValue(undefined as never)
+    const success = vi.spyOn(toast, 'success')
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete branch' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+
+    expect(await screen.findByText(/every change merges here/i)).toBeInTheDocument()
+    expect(success).toHaveBeenCalledWith(expect.stringContaining('checkout-v2'))
+  })
+
+  it('offers no delete on a merged branch (PLAN-9)', async () => {
+    mockBranchDetailQueries([MAIN, MERGED])
+
+    renderTab('feat-merged')
+
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-merged'))
+    expect(await screen.findByText('Merged')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete branch' })).not.toBeInTheDocument()
+  })
+
+  it('says a branch in the URL is gone instead of showing main (PLAN-9)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+
+    renderTab('feat-gone')
+
+    expect(await screen.findByText('Branch not found')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to main' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/branches',
+    )
+    expect(screen.queryByText(/every change merges here/i)).not.toBeInTheDocument()
+  })
+
+  it('waits for the tracker ticket the merge worker is still creating (PLAN-10)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
+    vi.mocked(trackerConfigApi.get).mockResolvedValue(makeTrackerConfig({ enabled: true }))
+    // The worker has not written the row when the panel first asks.
+    vi.mocked(planBranchesApi.listImplementationTickets)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([makeTicket({ branch_id: 'feat-1' })])
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await confirmMerge()
+
+    expect(
+      await screen.findByText('Creating the tracker ticket for this merge…'),
+    ).toBeInTheDocument()
+    const link = await screen.findByRole('link', { name: /ENG-42/ }, { timeout: 6000 })
+    expect(link).toHaveAttribute('href', 'https://example.atlassian.net/browse/ENG-42')
+  })
+
+  it('does not offer the author a live Approve when self-approval is blocked (PLAN-12)', async () => {
+    const own = makeBranch({
+      id: 'feat-own',
+      name: 'my-work',
+      kind: 'working',
+      status: 'ready_for_review',
+      created_by: 'owner-1',
+    })
+    mockBranchDetailQueries([MAIN, own])
+    vi.mocked(branchSettingsApi.get).mockResolvedValue(makeSettings({ block_self_approval: true }))
+
+    renderTab('feat-own')
+
+    expect(await screen.findByText('No changes in this branch.')).toBeInTheDocument()
+    const approve = await screen.findByRole('button', { name: 'Approve' })
+    await waitFor(() =>
+      expect(approve).toHaveAttribute(
+        'title',
+        'Authors cannot approve their own branch (merge policy)',
+      ),
+    )
+    expect(approve).toBeDisabled()
+  })
+
+  it('keeps expanded rows open when a row above them is reverted (PLAN-15, PLAN-16)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    const beta = {
+      entity_type: 'event' as const,
+      kind: 'changed' as const,
+      name: 'beta_event',
+      parent: 'track',
+      changes: ['owner changed'],
+      field_changes: [{ field: 'owner', before: 'a', after: 'b', items: [] }],
+    }
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 2 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'alpha_event',
+          parent: 'track',
+          changes: ['title changed'],
+          field_changes: [{ field: 'title', before: 'x', after: 'y', items: [] }],
+        },
+        beta,
+      ],
+    })
+    vi.mocked(planBranchesApi.revert).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [beta],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /beta_event/ }))
+    fireEvent.click(screen.getByRole('button', { name: /alpha_event/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Revert title' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Revert' }))
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /alpha_event/ })).not.toBeInTheDocument(),
+    )
+    expect(screen.getByRole('button', { name: /beta_event/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    // The revert answered with the resulting diff; no second diff request.
+    expect(planBranchesApi.diff).toHaveBeenCalledTimes(1)
+  })
+
+  it('labels the before and after of a field change for assistive tech (PLAN-19)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'purchase',
+          parent: 'track',
+          changes: ['currency changed'],
+          field_changes: [{ field: 'currency', before: 'USD', after: 'EUR', items: [] }],
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /purchase/ }))
+    expect(screen.getByText('before:')).toBeInTheDocument()
+    expect(screen.getByText('after:')).toBeInTheDocument()
+    expect(screen.getByText('USD')).toBeInTheDocument()
+    expect(screen.getByText('EUR')).toBeInTheDocument()
+  })
+
+  it('shows what the branch is for, who approved it and who reviews it (PLAN-17)', async () => {
+    const described = { ...FEATURE, description: 'Adds the checkout v2 events.' }
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, described], total: 2 })
+    vi.mocked(planBranchesApi.get).mockResolvedValue({
+      ...described,
+      reviewers: [{ id: 'r-1', user_id: 'u-priya', created_at: '2026-01-01T00:00:00Z' }],
+      approvals: [{ user_id: 'u-maya', approved_at: '2026-01-02T00:00:00Z', stale: true }],
+    })
+    vi.mocked(planBranchesApi.addReviewer).mockResolvedValue({
+      id: 'r-2',
+      user_id: 'u-maya',
+      created_at: '2026-01-03T00:00:00Z',
+    })
+
+    renderTab('feat-1')
+
+    expect(await screen.findByText('Adds the checkout v2 events.')).toBeInTheDocument()
+    expect(await screen.findByText(/Approved by/)).toHaveTextContent('Approved by Maya R. (stale)')
+    expect(screen.getByText('Priya S.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove reviewer Priya S.' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add reviewer' }))
+    fireEvent.change(screen.getByLabelText('Reviewer to add'), { target: { value: 'u-maya' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+
+    await waitFor(() =>
+      expect(planBranchesApi.addReviewer).toHaveBeenCalledWith('demo', 'feat-1', 'u-maya'),
+    )
+  })
+
+  it('shows a failed policy load with a retry, not "Loading policy…" forever (PLAN-21)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN], total: 1 })
+    vi.mocked(branchSettingsApi.get)
+      .mockRejectedValueOnce(new Error('Network down'))
+      .mockResolvedValue(makeSettings({}))
+
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge policy/i }))
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText('Could not load the merge policy')).toBeInTheDocument()
+    expect(within(dialog).getByText('Network down')).toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /Try again/ }))
+    expect(await within(dialog).findByLabelText('Required approvals')).toBeInTheDocument()
+  })
+
+  it('refuses a required-approvals value outside 0-100 (PLAN-21)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN], total: 1 })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge policy/i }))
+    const dialog = await screen.findByRole('dialog')
+    const input = await within(dialog).findByLabelText('Required approvals')
+    await waitFor(() => expect(input).toHaveValue(1))
+
+    fireEvent.change(input, { target: { value: '150' } })
+
+    expect(within(dialog).getByText('Enter a whole number from 0 to 100.')).toBeInTheDocument()
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    const save = within(dialog).getByRole('button', { name: 'Save' })
+    expect(save).toBeDisabled()
+    fireEvent.submit(save.closest('form')!)
+    expect(branchSettingsApi.update).not.toHaveBeenCalled()
   })
 })

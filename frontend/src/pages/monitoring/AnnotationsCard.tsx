@@ -7,6 +7,7 @@ import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -115,14 +116,15 @@ export function AnnotationsCard({
             }}
           >
             <div className="flex flex-col gap-0.5">
-              <Label htmlFor="annotation-bucket" className="sr-only">Date and time</Label>
-              <Input
+              {/* The design-system picker, not the native datetime-local input
+                  whose popup ignored the theme (MON-27, LIVE-21). Same value
+                  format, so the ISO conversion below is unchanged. */}
+              <DateTimePicker
                 id="annotation-bucket"
-                type="datetime-local"
+                label="Date and time"
                 value={bucket}
-                onChange={event => setBucket(event.target.value)}
+                onChange={setBucket}
                 aria-describedby="annotation-bucket-hint"
-                className="h-8 w-[200px] text-[13px] md:text-[13px]"
               />
               <span id="annotation-bucket-hint" className="text-[10px] text-muted-foreground">
                 Your local time ({offset})

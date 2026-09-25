@@ -3,6 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AuditEntry, AuditEntryDetail, AuditListResponse } from '@/types'
+import { ApiError } from '@/api/client'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
 
 // The audit endpoints are stubbed so the tab renders without firing a real
 // request; each test decides what the page it asks for contains, and what the
@@ -21,11 +24,15 @@ beforeEach(() => {
   getMock.mockReset()
 })
 
-function renderTab() {
+// `/audit` is owner-only, and the tab now says so to anyone else instead of
+// asking (PLAN-47), so every render is an owner's unless a test says otherwise.
+function renderTab(auth: AuthContextValue | null = authAs('owner')) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <AuditTab slug="demo" />
+      <AuthContext.Provider value={auth}>
+        <AuditTab slug="demo" />
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -522,5 +529,74 @@ describe('AuditTab — branch chip (tripl-wkwv.6)', () => {
     const help = screen.getByText(/Compliance trail/)
     expect(help.textContent).not.toMatch(/no chip were written on main/i)
     expect(help.textContent).toMatch(/no branch to name/i)
+  })
+})
+
+describe('AuditTab — who may read it, and a failed read (PLAN-47)', () => {
+  it('tells an editor the log is owner-only instead of claiming it is empty', () => {
+    renderTab(authAs('editor'))
+
+    expect(screen.getByText('Only owners can read the audit log')).toBeInTheDocument()
+    expect(screen.queryByText(/No audit entries yet/)).toBeNull()
+    expect(listMock).not.toHaveBeenCalled()
+  })
+
+  it('renders a 403 as owner-only, not as an empty log', async () => {
+    listMock.mockRejectedValue(new ApiError('Owner role required', 403))
+    renderTab()
+
+    expect(await screen.findByText('Only owners can read the audit log')).toBeInTheDocument()
+    expect(screen.queryByText(/No audit entries yet/)).toBeNull()
+  })
+
+  it('renders a 500 as an error with a retry', async () => {
+    listMock.mockRejectedValue(new ApiError('Internal error', 500))
+    renderTab()
+
+    expect(await screen.findByText("Couldn't load the audit log")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText(/No audit entries yet/)).toBeNull()
+  })
+})
+
+describe('AuditTab — rows and filters (PLAN-48 / PLAN-49)', () => {
+  it('says whether a row is expanded', async () => {
+    listMock.mockResolvedValue(auditPage(1, 1))
+    getMock.mockResolvedValue(auditDetail(0, { a: 1 }))
+    renderTab()
+
+    const row = (await screen.findByText('checkout_started_0')).closest('button') as HTMLElement
+    expect(row).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+    const controlled = row.getAttribute('aria-controls')
+    expect(controlled).toBeTruthy()
+    expect(document.getElementById(controlled as string)).not.toBeNull()
+  })
+
+  it('refuses a backwards date range instead of reporting no matches', async () => {
+    renderTab()
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-08-20' } })
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-08-10' } })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/before “From”/)
+    expect(screen.getByLabelText('To')).toHaveAttribute('aria-invalid', 'true')
+    // The From change alone is a valid range and asked once; the backwards one
+    // is never sent.
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
+    expect(listMock.mock.calls.every(([params]) => params.until === undefined)).toBe(true)
+  })
+
+  it('applies the email filter after a pause, without Enter', async () => {
+    renderTab()
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(screen.getByLabelText('User email contains'), { target: { value: 'alice' } })
+
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith(expect.objectContaining({ userEmail: 'alice' })),
+    )
   })
 })

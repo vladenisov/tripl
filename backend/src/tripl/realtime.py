@@ -166,6 +166,36 @@ async def replay_buffered_events(slug: str, after_id: int | None) -> list[dict[s
     return events
 
 
+async def current_sequence(slug: str) -> int | None:
+    """The project's latest published sequence number, for the ``hello`` event.
+
+    ``0`` when nothing has been published yet; ``None`` when it cannot be read
+    (Redis off or failing), which the client must treat as "cannot tell what I
+    missed" and resync.
+    """
+    client = cache.get_async_client()
+    if client is None:
+        return None
+    try:
+        raw = await client.get(_seq_key(slug))
+        return int(raw) if raw is not None else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("realtime sequence read %s failed: %s", slug, exc)
+        return None
+
+
+def hello_payload(slug: str, *, backend: str, seq: int | None) -> dict[str, Any]:
+    """The ``hello`` event body (tripl-fj5g.17).
+
+    ``seq`` is the project's sequence number when the stream opened and
+    ``buffer_size`` how many events the replay ring holds. A reconnecting client
+    compares ``seq`` with the last id it saw: a gap the ring covers arrives as
+    replay after this event, so only a wider gap, a sequence below its cursor (a
+    reset), or ``seq`` null calls for refetching everything.
+    """
+    return {"project_slug": slug, "backend": backend, "seq": seq, "buffer_size": BUFFER_SIZE}
+
+
 async def redis_message_iterator(
     slug: str, *, poll_timeout: float = HEARTBEAT_SECONDS
 ) -> AsyncIterator[dict[str, Any] | None]:
@@ -270,9 +300,12 @@ async def project_response_stream(
     max_messages: int | None,
 ) -> AsyncIterator[str]:
     async with subscribed_messages(slug) as messages:
+        # Read AFTER subscribing and BEFORE the replay: every event past ``seq``
+        # then reaches the client live, by replay, or both (de-duplicated by id).
+        seq = await current_sequence(slug) if messages is not None else None
         replay = await replay_buffered_events(slug, last_event_id) if messages is not None else []
         async for frame in sse_response_stream(
-            hello_payload={"project_slug": slug, "backend": "redis" if messages else "degraded"},
+            hello_payload=hello_payload(slug, backend="redis" if messages else "degraded", seq=seq),
             replay=replay,
             messages=messages,
             is_disconnected=is_disconnected,
@@ -284,7 +317,7 @@ async def project_response_stream(
         # rapid reconnect loop while Redis remains unavailable.
         if messages is not None and max_messages is None and not await is_disconnected():
             async for frame in sse_response_stream(
-                hello_payload={"project_slug": slug, "backend": "degraded"},
+                hello_payload=hello_payload(slug, backend="degraded", seq=None),
                 replay=[],
                 messages=None,
                 is_disconnected=is_disconnected,

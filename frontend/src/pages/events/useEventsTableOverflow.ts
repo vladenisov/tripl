@@ -83,7 +83,7 @@ export function measurePinnedGeometry(
   }
 }
 
-function measureOverflow(table: HTMLTableElement): number {
+export function measureOverflow(table: HTMLTableElement): number {
   const scroller = table.parentElement
   const headerCells = table.tHead?.rows[0]?.cells
   if (!scroller || !headerCells) return 0
@@ -103,6 +103,11 @@ function measureOverflow(table: HTMLTableElement): number {
     // Only headed data columns count. The reorder handle and the select-all
     // checkbox carry no label, and the pinned EVENT column never leaves.
     if (cell.dataset.pinned === 'true' || !cell.textContent?.trim()) continue
+    // A header with no box is not off-screen but not shown at all: the phone
+    // card layout drops the column headers (eventsPhoneCard.ts), and counting
+    // them had the Columns chip claim "11 off-screen" on a table that no
+    // longer scrolls sideways.
+    if (cell.offsetWidth === 0) continue
     const start = cell.offsetLeft - scrollLeft
     if (start < pinnedRight || start + cell.offsetWidth > clientWidth) offscreen += 1
   }

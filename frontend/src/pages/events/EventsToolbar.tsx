@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Download, ListPlus, MoreHorizontal, Plus, Search, X } from 'lucide-react'
+import { ChevronDown, Download, ListPlus, MoreHorizontal, Plus, Search, X } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition } from '@/types'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
@@ -13,8 +13,10 @@ import {
 } from '@/components/ui/select'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ColumnsMenu } from './ColumnsMenu'
@@ -27,8 +29,6 @@ const FILTER_TRIGGER_CLASS =
 
 /** The silent-days values the Activity filter offers as presets. */
 const SILENT_DAY_PRESETS = [1, 7, 30]
-/** The Select value standing for a status combination no single item names. */
-const MULTI_STATUS_VALUE = '__multi__'
 
 /** True when the key press lands in something that takes text. */
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -144,17 +144,9 @@ export function EventsToolbar({
 }) {
   const searchRef = useRef<HTMLInputElement>(null)
   useSlashToFocus(searchRef)
-  // A shared link can hold several statuses (`status=a&status=b`) or a
-  // silent-days value no preset names. The single-value selects used to fall
-  // back to "Any" / an empty trigger while the list was filtered by them, so
-  // each gets an extra item that says what is actually applied (EVT-35).
-  const statusValue =
-    filterStatuses.length === 0
-      ? '__all__'
-      : filterStatuses.length === 1
-        ? filterStatuses[0]
-        : MULTI_STATUS_VALUE
-  const multiStatusLabel = filterStatuses.map(s => EVENT_STATUS_LABELS[s]).join(', ')
+  // A silent-days value from a shared link that no preset names used to leave
+  // the single-value select showing "Any", so it gets an item of its own that
+  // says what is actually applied (EVT-35).
   const customSilentDays =
     filterSilentDays !== undefined && !SILENT_DAY_PRESETS.includes(filterSilentDays)
       ? filterSilentDays
@@ -199,27 +191,7 @@ export function EventsToolbar({
             a 366px phone column, pushing the primary CTA off-screen
             (tripl-jfm3.42). */}
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <Select
-            value={statusValue}
-            onValueChange={value => {
-              if (value === MULTI_STATUS_VALUE) return
-              onFilterStatusesChange(value === '__all__' ? [] : [value as EventStatus])
-            }}
-          >
-            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Status filter">
-              <span style={{ color: 'var(--fg-subtle)' }}>Status</span>
-              <SelectValue placeholder="any" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">Any status</SelectItem>
-              {filterStatuses.length > 1 && (
-                <SelectItem value={MULTI_STATUS_VALUE}>{multiStatusLabel}</SelectItem>
-              )}
-              {EVENT_STATUSES.map(s => (
-                <SelectItem key={s} value={s}>{EVENT_STATUS_LABELS[s]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <StatusFilter value={filterStatuses} onChange={onFilterStatusesChange} />
           <Select
             value={filterSilentDays === undefined ? '__all__' : String(filterSilentDays)}
             onValueChange={value => onFilterSilentDaysChange(value === '__all__' ? undefined : Number(value))}
@@ -380,5 +352,65 @@ export function EventsToolbar({
         )}
       </div>
     </div>
+  )
+}
+
+/**
+ * The status filter as a real multi-select (EVT-35). The list endpoint takes
+ * repeated `?status=` params and a shared link can already carry several, but
+ * a single-value select could only show or pick one. Nothing ticked is the
+ * default — every status but archived, or the tab's own default — which is why
+ * it reads "any" rather than listing all seven.
+ */
+function StatusFilter({
+  value,
+  onChange,
+}: {
+  value: EventStatus[]
+  onChange: (value: EventStatus[]) => void
+}) {
+  const summary =
+    value.length === 0 ? 'any' : value.map(status => EVENT_STATUS_LABELS[status]).join(', ')
+  const toggle = (status: EventStatus, checked: boolean) => {
+    // Kept in the canonical order, so the URL a combination produces does not
+    // depend on the order the boxes were ticked in.
+    onChange(EVENT_STATUSES.filter(s => (s === status ? checked : value.includes(s))))
+  }
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label="Status filter"
+          className={`${FILTER_TRIGGER_CLASS} max-w-[260px] font-normal`}
+        >
+          <span style={{ color: 'var(--fg-subtle)' }}>Status</span>
+          <span className="truncate">{summary}</span>
+          <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 opacity-50" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-[200px]">
+        <DropdownMenuCheckboxItem
+          checked={value.length === 0}
+          // Picking stays open so several statuses can be ticked in one visit.
+          onSelect={event => event.preventDefault()}
+          onCheckedChange={() => onChange([])}
+        >
+          Any status
+        </DropdownMenuCheckboxItem>
+        <DropdownMenuSeparator />
+        {EVENT_STATUSES.map(status => (
+          <DropdownMenuCheckboxItem
+            key={status}
+            checked={value.includes(status)}
+            onSelect={event => event.preventDefault()}
+            onCheckedChange={checked => toggle(status, checked === true)}
+          >
+            {EVENT_STATUS_LABELS[status]}
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

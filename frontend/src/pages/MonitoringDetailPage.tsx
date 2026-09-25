@@ -54,6 +54,7 @@ import { useChartAnnotations } from './monitoring/useChartAnnotations'
 import { useMetricCollect } from './monitoring/useMetricCollect'
 import { useMonitoringDetailSearch, type MonitoringDetailTab } from './monitoring/useMonitoringDetailSearch'
 import { VersionsTab } from './monitoring/VersionsTab'
+import { usePageTitle } from '@/components/shell-chrome-context'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
@@ -314,6 +315,9 @@ export default function MonitoringDetailPage() {
     // matches on then sits beneath it in mono (tripl-kjhi.3).
     return event?.title || (event?.name ?? 'Event')
   })()
+  // The top bar names the entity once it has loaded, not the generic fallback.
+  const titleEntity = scope === 'metric' ? metricDefinition : scope === 'event_type' ? eventType : scope === 'event' ? event : scope
+  usePageTitle(titleEntity ? headerTitle : null)
   const headerIdentity = scope === 'event' && event?.title ? (event.source_name || event.name) : null
   const headerDescription = (() => {
     if (scope === 'metric') return metricDefinition?.description || 'Catalog metric monitoring detail.'

@@ -9,6 +9,7 @@ import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { MetricsChart } from '@/components/ui/chart-lazy'
+import { RangeSegmentedControl } from '@/components/range-segmented-control'
 import {
   Collapsible,
   CollapsibleContent,
@@ -128,20 +129,12 @@ export function TabMetricsCard({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1 rounded-lg border bg-background p-1">
-              {TAB_METRICS_RANGE_OPTIONS.map(option => (
-                <Button
-                  key={option.days}
-                  type="button"
-                  variant={rangeDays === option.days ? 'default' : 'ghost'}
-                  size="sm"
-                  className="h-6 px-2 text-[11px]"
-                  onClick={() => setRangeDays(option.days)}
-                >
-                  {option.label}
-                </Button>
-              ))}
-            </div>
+            {/* The same range control the monitoring drilldown uses (LIVE-26). */}
+            <RangeSegmentedControl
+              value={rangeDays}
+              onChange={setRangeDays}
+              options={TAB_METRICS_RANGE_OPTIONS}
+            />
             <Select
               value={granularity}
               onValueChange={value => setGranularity(value as MetricsGranularity)}

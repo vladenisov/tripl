@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -59,6 +59,9 @@ function Harness({ timeoutMs }: { timeoutMs?: number }) {
       </button>
       <button type="button" onClick={() => provisioning.cancel()}>
         cancel
+      </button>
+      <button type="button" onClick={() => provisioning.reset()}>
+        close
       </button>
     </div>
   )
@@ -144,6 +147,51 @@ describe('useDemoProvisioning — a stalled create is escapable (tripl-2su6.15)'
     fireEvent.click(screen.getByText('cancel'))
 
     await waitFor(() => expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('already-finished'))
+  })
+
+  it('stays closed when the dialog is closed while the cancel is still answering (DEMO-6)', async () => {
+    stallUntilAborted()
+    let answerCancel: (value: { cancelled: boolean; slug: string | null }) => void = () => {}
+    vi.spyOn(projectsApi, 'cancelDemo').mockReturnValue(
+      new Promise<{ cancelled: boolean; slug: string | null }>((resolve) => {
+        answerCancel = resolve
+      }),
+    )
+
+    renderHarness()
+    fireEvent.click(screen.getByText('start'))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('provisioning'))
+    fireEvent.click(screen.getByText('cancel'))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('cancelling'))
+
+    fireEvent.click(screen.getByText('close'))
+    expect(screen.getByTestId('status')).toHaveTextContent('idle')
+
+    // The late answer used to reopen the dialog the user had just closed.
+    await act(async () => {
+      answerCancel({ cancelled: true, slug: 'demo-abc123' })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(screen.getByTestId('status')).toHaveTextContent('idle')
+    expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('none')
+    expect(screen.queryByTestId('error')).not.toBeInTheDocument()
+  })
+
+  it('does not report a closed attempt as failed when its aborted request settles late (DEMO-6)', async () => {
+    stallUntilAborted()
+
+    renderHarness()
+    fireEvent.click(screen.getByText('start'))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('provisioning'))
+
+    // Closing aborts the create; its 408 lands after the reset.
+    fireEvent.click(screen.getByText('close'))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    expect(screen.getByTestId('status')).toHaveTextContent('idle')
+    expect(screen.queryByTestId('error')).not.toBeInTheDocument()
   })
 
   it('aborts a create that hangs past the timeout', async () => {
@@ -272,6 +320,31 @@ describe('useDemoProvisioning', () => {
     // The dialog renders it once; the global toast never sees it.
     expect(screen.getByTestId('error')).toHaveTextContent('boom')
     expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a 409 (demo limit) as an error without navigating (DEMO-5)', async () => {
+    vi.spyOn(projectsApi, 'createDemo').mockRejectedValue(
+      new ApiError('You already have 3 demo workspaces (the limit is 3).', 409),
+    )
+
+    renderHarness()
+    fireEvent.click(screen.getByText('start'))
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('error'))
+    expect(screen.getByTestId('error')).toHaveTextContent('the limit is 3')
+    expect(screen.getByTestId('timed-out')).toHaveTextContent('false')
+    expect(screen.getByTestId('path')).toHaveTextContent('/workspace')
+  })
+
+  it('surfaces a 403 as an error without navigating (DEMO-5)', async () => {
+    vi.spyOn(projectsApi, 'createDemo').mockRejectedValue(new ApiError('Editor role required', 403))
+
+    renderHarness()
+    fireEvent.click(screen.getByText('start'))
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('error'))
+    expect(screen.getByTestId('error')).toHaveTextContent('Editor role required')
+    expect(screen.getByTestId('path')).toHaveTextContent('/workspace')
   })
 
   it('retry runs a fresh create after a failure', async () => {

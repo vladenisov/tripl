@@ -14,8 +14,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyState } from "@/components/empty-state"
+import { ErrorState } from "@/components/error-state"
 import { Panel } from "@/components/settings/kit"
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { META_FIELD_LINK_PLACEHOLDER, MULTI_VALUE_META_FIELD_TYPES } from "@/lib/metaFields"
 import { getErrorMessage } from '@/lib/utils'
 import { useCanWriteProject } from '@/lib/permissions'
@@ -79,10 +82,19 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const canAllowMultiple = MULTI_VALUE_META_FIELD_TYPES.has(fieldType)
   const canEditAllowMultiple = MULTI_VALUE_META_FIELD_TYPES.has(editFieldType)
 
-  const { data: metaFields = [] } = useQuery({
+  const metaFieldsQuery = useQuery({
     queryKey: ['metaFields', slug, branchId],
     queryFn: () => metaFieldsApi.list(slug, branchId),
+    // Rendered in the panel below, with a retry.
+    meta: SILENT_ERROR_META,
   })
+  const metaFields = metaFieldsQuery.data ?? []
+  // The PROJECT prefix, not this branch's key. The branch review reads meta
+  // fields under the shorter ['metaFields', slug] for its ticket link, and an
+  // invalidation of the three-element key never matches it, so a fixed link
+  // template kept rendering the old one there for up to a minute (PLAN-54).
+  // React Query matches by prefix, so this one call refreshes both.
+  const invalidateMetaFields = () => qc.invalidateQueries({ queryKey: ['metaFields', slug] })
 
   const createMut = useMutation({
     mutationFn: () => metaFieldsApi.create(slug, {
@@ -94,7 +106,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       sensitivity,
     }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['metaFields', slug, branchId] })
+      invalidateMetaFields()
       setShowForm(false); setName(''); setDisplayName(''); setFieldType('string')
       setIsRequired(false); setAllowMultiple(false); setEnumOptions([]); setEnumInput(''); setDefaultValue('')
       setDisplayAsLink(false); setLinkTemplate(''); setSensitivity('none')
@@ -111,17 +123,20 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       sensitivity: editSensitivity,
     }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['metaFields', slug, branchId] })
+      invalidateMetaFields()
       setEditingMf(null)
     },
   })
 
   const deleteMut = useMutation({
+    // Its error is rendered under the table.
+    meta: SILENT_ERROR_META,
     mutationFn: (id: string) => metaFieldsApi.del(slug, id, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['metaFields', slug, branchId] }),
+    onSuccess: invalidateMetaFields,
   })
 
   const handleDelete = async (mf: MetaFieldDefinition) => {
+    deleteMut.reset()
     const ok = await confirm({
       title: 'Delete meta field',
       message: `Delete "${mf.display_name}"? Meta values for this field will be removed from all events.`,
@@ -168,11 +183,11 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
           <form onSubmit={e => { e.preventDefault(); createMut.mutate() }}>
             <DialogHeader><DialogTitle>New Meta Field</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="grid gap-2"><Label htmlFor={createNameId}>Name (e.g. jira_link)</Label><Input id={createNameId} value={name} onChange={e => setName(e.target.value)} required /></div>
                 <div className="grid gap-2"><Label htmlFor={createDisplayNameId}>Display Name</Label><Input id={createDisplayNameId} value={displayName} onChange={e => setDisplayName(e.target.value)} required /></div>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="grid gap-2">
                   <Label htmlFor={createTypeId}>Type</Label>
                   <select id={createTypeId} value={fieldType} onChange={e => setFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
@@ -185,7 +200,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                     {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
-                <div className="flex flex-col justify-end gap-2 pb-2">
+                <div className="flex flex-col justify-end gap-2 sm:pb-2">
                   <div className="flex items-center gap-2">
                     <Checkbox id="meta-req" checked={isRequired} onCheckedChange={c => setIsRequired(!!c)} />
                     <Label htmlFor="meta-req" className="cursor-pointer">Required</Label>
@@ -254,7 +269,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
           <form onSubmit={e => { e.preventDefault(); if (editingMf) updateMut.mutate(editingMf.id) }}>
             <DialogHeader><DialogTitle>Edit: {editingMf?.name}</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="grid gap-2"><Label htmlFor={editDisplayNameId}>Display Name</Label><Input id={editDisplayNameId} value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)} /></div>
                 <div className="grid gap-2">
                   <Label htmlFor={editTypeId}>Type</Label>
@@ -263,7 +278,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="grid gap-2"><Label htmlFor={editDefaultValueId}>Default Value</Label><Input id={editDefaultValueId} value={editDefaultValue} onChange={e => setEditDefaultValue(e.target.value)} placeholder="Optional" /></div>
                 <div className="grid gap-2">
                   <Label htmlFor={editSensitivityId}>Sensitivity</Label>
@@ -271,7 +286,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                     {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
-                <div className="flex flex-col justify-end gap-2 pb-2">
+                <div className="flex flex-col justify-end gap-2 sm:pb-2">
                   <div className="flex items-center gap-2">
                     <Checkbox id="edit-meta-req" checked={editIsRequired} onCheckedChange={c => setEditIsRequired(!!c)} />
                     <Label htmlFor="edit-meta-req" className="cursor-pointer">Required</Label>
@@ -341,7 +356,9 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
 
       <Panel
         title="Schema & fields"
-        subtitle={`${metaFields.length} field${metaFields.length === 1 ? '' : 's'}`}
+        subtitle={metaFieldsQuery.isPending
+          ? 'Loading…'
+          : `${metaFields.length} field${metaFields.length === 1 ? '' : 's'}`}
         right={
           canWrite && (
             <Button size="sm" onClick={() => setShowForm(true)}>
@@ -350,7 +367,26 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
           )
         }
       >
-        {metaFields.length > 0 ? (
+        {metaFieldsQuery.isPending ? (
+          // A pending list is not an empty one: "No meta fields" used to flash
+          // on every cold load and stay up on a 500 (PLAN-41).
+          <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading meta fields">
+            {Array.from({ length: 3 }, (_, index) => (
+              <Skeleton key={index} className="h-9 w-full" />
+            ))}
+          </div>
+        ) : metaFieldsQuery.isError ? (
+          <div className="p-4">
+            <ErrorState
+              compact
+              title="Couldn't load meta fields"
+              error={metaFieldsQuery.error}
+              onRetry={() => { void metaFieldsQuery.refetch() }}
+              retryLabel="Retry"
+            />
+          </div>
+        ) : metaFields.length > 0 ? (
+          <>
           <Table>
             <TableHeader>
                 <TableRow>
@@ -391,7 +427,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                     {canWrite && (
                       <div className="flex gap-1 justify-end">
                         <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit ${mf.display_name}`} onClick={() => startEdit(mf)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${mf.display_name}`} onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${mf.display_name}`} disabled={deleteMut.isPending} onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
                       </div>
                     )}
                   </TableCell>
@@ -399,6 +435,12 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
               ))}
             </TableBody>
           </Table>
+          {deleteMut.isError && (
+            <p role="alert" className="px-4 py-2 text-sm text-destructive">
+              Could not delete the meta field: {getErrorMessage(deleteMut.error)}
+            </p>
+          )}
+          </>
         ) : (
           <div className="px-4 py-8">
             <EmptyState icon={List} title="No meta fields" description="Define meta fields to add structured metadata to your events." />

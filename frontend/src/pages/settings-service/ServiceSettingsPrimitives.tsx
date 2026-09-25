@@ -1,9 +1,16 @@
+import { useId } from 'react'
 import { CheckCircle2, RotateCcw, XCircle } from 'lucide-react'
 import type { SettingSource } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { SCard } from '@/components/settings/kit'
-import { SECTION_LABELS, resetCardDescription, type SectionKey } from './serviceSettingsHelpers'
+import { Skeleton } from '@/components/ui/skeleton'
+import { SCard, TextInput } from '@/components/settings/kit'
+import {
+  SECTION_LABELS,
+  numberFieldError,
+  resetCardDescription,
+  type SectionKey,
+} from './serviceSettingsHelpers'
 
 /**
  * Small shared bits for the Instance (service) settings sections. The card
@@ -57,19 +64,89 @@ export function SourceBadge({ source }: { source: SettingSource }) {
   )
 }
 
-/** Pass/fail result chip for the "Test AI" connection check. */
+/**
+ * Pass/fail result chip for the AI and email connection checks. A failure is
+ * the danger tone, not helper-text grey: a failed test is the reason the card
+ * exists, and it used to read weaker than a pass.
+ */
 export function StatusBadge({ active, label }: { active: boolean; label: string }) {
   return (
     <span
       className={
         active
           ? 'inline-flex items-center gap-1 text-xs text-success'
-          : 'inline-flex items-center gap-1 text-xs text-muted-foreground'
+          : 'inline-flex items-center gap-1 text-xs text-destructive'
       }
     >
       {active ? <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> : <XCircle className="h-3 w-3" aria-hidden="true" />}
       {label}
     </span>
+  )
+}
+
+/** Placeholder cards while the instance settings (or their chunk) load. */
+export function InstanceSettingsSkeleton() {
+  return (
+    <div aria-busy="true" aria-label="Loading instance settings">
+      {[3, 2].map((rows, card) => (
+        <SCard key={card}>
+          <div className="px-[18px] py-4">
+            <Skeleton className="h-3.5 w-32" />
+          </div>
+          {Array.from({ length: rows }, (_, row) => (
+            <div
+              key={row}
+              className="flex flex-col gap-2 px-[18px] py-[15px] sm:flex-row sm:items-center sm:gap-6"
+              style={{ borderTop: '1px solid var(--border-subtle)' }}
+            >
+              <Skeleton className="h-3 w-28 shrink-0" />
+              <Skeleton className="h-[34px] w-full" />
+            </div>
+          ))}
+        </SCard>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * A numeric setting's input. The text is handed to `setField` as typed, so an
+ * emptied field stays empty instead of snapping to 0, and a value the backend
+ * would refuse is named under the input (and blocks Save) instead of coming
+ * back as a 422.
+ */
+export function NumberSettingInput({
+  section,
+  field,
+  value,
+  setField,
+  suffix,
+}: {
+  section: SectionKey
+  field: string
+  value: number | string
+  setField: (section: SectionKey, field: string, value: string | number | boolean) => void
+  suffix?: string
+}) {
+  const errorId = useId()
+  const error = numberFieldError(section, field, value)
+  return (
+    <>
+      <TextInput
+        type="number"
+        value={String(value)}
+        onChange={next => setField(section, field, next)}
+        suffix={suffix}
+        mono
+        aria-invalid={error !== null}
+        aria-describedby={error ? errorId : undefined}
+      />
+      {error && (
+        <p id={errorId} className="mt-1 text-[11.5px]" style={{ color: 'var(--danger)' }}>
+          {error}
+        </p>
+      )}
+    </>
   )
 }
 

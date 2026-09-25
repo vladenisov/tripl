@@ -101,17 +101,19 @@ function VariablesTableRowImpl({
         {eventCount === 0 ? (
           <span className="text-muted-foreground">—</span>
         ) : eventNames.length <= MAX_INLINE_EVENTS ? (
+          // Keyed by position: two event types can each hold an event of the
+          // same name, and a duplicate key made React drop one of them (PLAN-33).
           <ul className="space-y-0.5">
-            {eventNames.map(eventName => (
-              <li key={eventName}>{eventName}</li>
+            {eventNames.map((eventName, index) => (
+              <li key={index}>{eventName}</li>
             ))}
           </ul>
         ) : (
           <details>
             <summary className="cursor-pointer text-muted-foreground">{eventCount} events</summary>
             <ul className="mt-1 space-y-0.5">
-              {eventNames.map(eventName => (
-                <li key={eventName}>{eventName}</li>
+              {eventNames.map((eventName, index) => (
+                <li key={index}>{eventName}</li>
               ))}
               {hiddenEvents > 0 && (
                 <li className="text-muted-foreground">+{hiddenEvents} more</li>

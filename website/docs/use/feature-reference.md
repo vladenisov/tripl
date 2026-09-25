@@ -1616,6 +1616,13 @@ both a time column and a schedule, so the dispatcher actually picks them up), an
 **Warehouse rows read · 24h**. The detail page adds **Rows read · last
 run**, **Events written**, and **Metric points**.
 
+The 24h figure, and the **failed last N runs** tag on a scan's collapsed
+failures under **Recent runs**, are exact: the server counts them over each
+scan's whole history (`GET /projects/{slug}/scans/activity`), so a scan that
+runs every few minutes no longer shows them as floors ending in `+`. A run
+counts toward the 24 hours by when it finished, or when it started if it is
+still running.
+
 **Metric points**, not "metric rows": these are points on a metric time series —
 what anomaly detection and alerts are built on — and *Metrics* is the name of a
 different surface (Observe › Metrics, the catalog of user-defined metrics). The

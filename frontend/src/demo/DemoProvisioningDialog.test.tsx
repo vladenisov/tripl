@@ -59,6 +59,28 @@ describe('DemoProvisioningDialog', () => {
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
+  it('says a 409 is the demo limit, claims no rollback and offers no retry (DEMO-5)', () => {
+    const detail =
+      'You already have 3 demo workspaces (the limit is 3). Reset or delete one before generating another.'
+    renderDialog({ status: 'error', error: new ApiError(detail, 409) })
+
+    expect(screen.getByRole('heading', { name: 'Demo limit reached' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(detail)
+    expect(screen.queryByText(/rolled back/i)).not.toBeInTheDocument()
+    // Asking again gets the same answer.
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^close$/i }).length).toBeGreaterThan(0)
+  })
+
+  it('says a 403 is a permission refusal, not a failed seed (DEMO-5)', () => {
+    renderDialog({ status: 'error', error: new ApiError('Editor role required', 403) })
+
+    expect(screen.getByRole('heading', { name: 'You cannot create a demo' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Editor role required')
+    expect(screen.queryByText(/rolled back/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument()
+  })
+
   it('surfaces the backend request id as a support reference on failure (.15)', () => {
     // The 500 carries a request id (echoed on the response header -> ApiError);
     // the dialog shows it so the user can quote it to support.

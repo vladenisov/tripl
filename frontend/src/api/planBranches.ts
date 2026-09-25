@@ -5,7 +5,6 @@ import type {
   PlanBranchConflicts,
   PlanBranchDetail,
   PlanBranchDiffSummary,
-  PlanBranchList,
   PlanBranchMergeResolution,
   PlanBranchReviewer,
   PlanBranchSummary,
@@ -14,9 +13,31 @@ import type {
   ResolutionChoice,
 } from '../types'
 
+/**
+ * A branch row as `GET /branches` returns it. `ahead` / `behind_base` are filled
+ * only when the list is asked for them (`include_diff_counts`), and then only
+ * for open feature branches; merged, closed and main rows keep them null, as
+ * does every row of a plain list. `ahead` is the backend's raw count of
+ * reviewable entries — a rename still counts as its removal plus its addition.
+ */
+export interface PlanBranchListItem extends PlanBranchSummary {
+  ahead?: number | null
+  behind_base?: boolean | null
+}
+
+export interface PlanBranchListResponse {
+  items: PlanBranchListItem[]
+  total: number
+}
+
 export const planBranchesApi = {
-  list: (slug: string) =>
-    api.get<PlanBranchList>(`/projects/${slug}/branches`),
+  /** `include_diff_counts` costs one plan snapshot per open branch plus one
+   * for main, so only the Branches tab's badges ask for it — the switcher and
+   * everything else read the plain list. */
+  list: (slug: string, options: { include_diff_counts?: boolean } = {}) =>
+    api.get<PlanBranchListResponse>(
+      `/projects/${slug}/branches${options.include_diff_counts ? '?include_diff_counts=true' : ''}`,
+    ),
 
   get: (slug: string, branchId: string) =>
     api.get<PlanBranchDetail>(`/projects/${slug}/branches/${branchId}`),

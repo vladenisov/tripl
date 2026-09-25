@@ -22,4 +22,22 @@ describe('Table container', () => {
     expect(scroller!.classList.contains('tripl-scroll-x')).toBe(true)
     expect(scroller!.classList.contains('overflow-x-auto')).toBe(true)
   })
+
+  it('leaves the scrolling to an outer region when asked', () => {
+    const { container } = render(
+      <Table scroll={false}>
+        <TableBody>
+          <TableRow>
+            <TableCell>cell</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>,
+    )
+
+    // A table inside its own focusable scroll region (the alert replay) would
+    // otherwise nest a second scroller the keyboard cannot reach.
+    const wrapper = container.querySelector('[data-slot="table-container"]')
+    expect(wrapper!.classList.contains('tripl-scroll-x')).toBe(false)
+    expect(wrapper!.classList.contains('overflow-x-auto')).toBe(false)
+  })
 })
