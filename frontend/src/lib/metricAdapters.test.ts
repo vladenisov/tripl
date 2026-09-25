@@ -14,6 +14,7 @@ import {
   metricPointToEventPoint,
   metricRollupMode,
 } from './metricAdapters'
+import { at } from '@/test/at'
 
 function seriesPoint(overrides: Partial<MetricSeriesPoint> = {}): MetricSeriesPoint {
   return {
@@ -88,7 +89,7 @@ describe('catalog metric adapters', () => {
     } as unknown as MetricSeriesResponse)
     expect(adapted.forecast).toEqual([])
     expect(adapted.sigma_threshold).toBe(6)
-    expect(adapted.data[0].count).toBe(0.08)
+    expect(at(adapted.data, 0).count).toBe(0.08)
   })
 
   it('reads is_active off the versions catalog so a pre-release stays one', () => {
@@ -103,8 +104,8 @@ describe('catalog metric adapters', () => {
         { version: '2.0.0', is_other: false, is_latest: true, is_active: true, total_value: 0.3, data: [] },
       ],
     } as unknown as MetricVersionSeriesResponse)
-    expect(adapted.series[0].is_active).toBe(false)
-    expect(adapted.series[0].total_count).toBe(0.3)
+    expect(at(adapted.series, 0).is_active).toBe(false)
+    expect(at(adapted.series, 0).total_count).toBe(0.3)
   })
 
   it('carries breakdown totals and no parity anomalies', () => {

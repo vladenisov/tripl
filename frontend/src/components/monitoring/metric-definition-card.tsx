@@ -24,7 +24,14 @@ import { eventNameLabel } from '@/lib/eventName'
 import { METRIC_INTERVAL_LABEL } from '@/lib/metricFormat'
 import { METRIC_KIND_LABEL } from '@/types'
 import type { MetricDefinitionDetailResponse } from '@/types'
-import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
+import {
+  dataSourcesKey,
+  eventKey,
+  eventTypesKey,
+  factTableKey,
+  factTablesKey,
+  metricGeneratedSqlForMetricKey,
+} from '@/lib/queryKeys'
 
 /** Names are best-effort; when a lookup misses we fall back to a short id. */
 const SHORT_ID_LENGTH = 8
@@ -141,7 +148,7 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
   const { kind, config } = definition
 
   const factTablesQuery = useQuery({
-    queryKey: ['fact-tables', slug],
+    queryKey: factTablesKey(slug),
     queryFn: () => factTablesApi.list(slug),
     enabled: kind === 'fact',
     staleTime: LOOKUP_STALE_TIME_MS,
@@ -154,7 +161,7 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
   )
   const eventNameById = useQueries({
     queries: eventIds.map(id => ({
-      queryKey: ['event', slug, null, id],
+      queryKey: eventKey(slug, null, id),
       queryFn: () => eventsApi.get(slug, id),
       staleTime: LOOKUP_STALE_TIME_MS,
     })),
@@ -184,7 +191,7 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
   const factTableIds = useMemo(() => referencedFactTableIds(definition), [definition])
   const factTableDetailQueries = useQueries({
     queries: factTableIds.map(id => ({
-      queryKey: ['fact-table', slug, id],
+      queryKey: factTableKey(slug, id),
       queryFn: () => factTablesApi.get(slug, id),
       staleTime: LOOKUP_STALE_TIME_MS,
     })),
@@ -437,7 +444,7 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
   // because the SQL is compiled from config that read already returns (MET-41).
   const [open, setOpen] = useState(false)
   const query = useQuery({
-    queryKey: ['metric-generated-sql', slug, metricId],
+    queryKey: metricGeneratedSqlForMetricKey(slug, metricId),
     queryFn: () => metricsCatalogApi.getGeneratedSql(slug, metricId),
     enabled: open,
     staleTime: LOOKUP_STALE_TIME_MS,

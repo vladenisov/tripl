@@ -20,6 +20,7 @@ vi.mock('@/api/metrics', () => ({
 }))
 
 import { metricsApi } from '@/api/metrics'
+import { at } from '@/test/at'
 
 let queryClient: QueryClient
 
@@ -74,7 +75,7 @@ describe('useEventRowMetrics (EVT-18)', () => {
     await waitFor(() => expect(metricsApi.getEventsWindowMetrics).toHaveBeenCalledTimes(2))
     // The refetch asks for the NEW window; the key does not carry it, so a
     // query function that captured the old one would refetch stale data.
-    expect(vi.mocked(metricsApi.getEventsWindowMetrics).mock.calls[1][1]).toMatchObject({
+    expect(at(vi.mocked(metricsApi.getEventsWindowMetrics).mock.calls, 1)[1]).toMatchObject({
       time_from: '2026-01-01T00:05:00Z',
       time_to: '2026-01-03T00:05:00Z',
     })

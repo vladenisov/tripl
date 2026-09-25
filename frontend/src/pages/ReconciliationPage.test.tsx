@@ -11,6 +11,7 @@ import type {
 import { DEAD_EVENT_DAYS } from '@/lib/coverage'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ReconciliationPage from './ReconciliationPage'
+import { at } from '@/test/at'
 
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -560,8 +561,8 @@ describe('ReconciliationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Archive 1 selected' }))
 
     await waitFor(() => expect(archiveCalls).toHaveLength(1))
-    expect(archiveCalls[0].url).toContain('/reconciliation/dead-events/archive')
-    expect(archiveCalls[0].body).toEqual({ event_ids: ['d1'], status: 'archived' })
+    expect(at(archiveCalls, 0).url).toContain('/reconciliation/dead-events/archive')
+    expect(at(archiveCalls, 0).body).toEqual({ event_ids: ['d1'], status: 'archived' })
 
     // After invalidation the archived row is gone; the untouched row survives.
     await waitFor(() => {

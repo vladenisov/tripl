@@ -53,7 +53,7 @@ export type RowAction = 'edit'
 
 function renderTemplateValue(value: string, variables?: Variable[]): ReactNode {
   const parts = splitTemplateValue(value, variables)
-  if (parts.length === 1 && !parts[0].token) return value
+  if (parts.length === 1 && !parts[0]?.token) return value
   return parts.map((part, i) =>
     part.token ? (
       part.known === false ? (

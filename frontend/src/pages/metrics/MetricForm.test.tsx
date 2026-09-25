@@ -81,6 +81,7 @@ import { factTablesApi } from '@/api/factTablesApi'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { dataSourcesApi } from '@/api/dataSources'
+import { at } from '@/test/at'
 
 // Radix drives the dropdown through pointer-capture APIs jsdom omits.
 beforeAll(() => {
@@ -320,7 +321,7 @@ describe('MetricForm validation', () => {
     )
     // No `order`: the contract lists it optional and the backend appends a
     // metric that names no position (tripl-cyby).
-    const payload = vi.mocked(metricsCatalogApi.create).mock.calls[0][1]
+    const payload = at(vi.mocked(metricsCatalogApi.create).mock.calls, 0)[1]
     expect(payload).not.toHaveProperty('order')
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
@@ -1386,7 +1387,7 @@ describe('MetricForm history-loss confirm (MET-1)', () => {
     await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
     expect(screen.queryByRole('alertdialog')).toBeNull()
     // Rewriting either (`AND`, `['u-1']`, `3`) would have deleted the history.
-    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+    expect(at(vi.mocked(metricsCatalogApi.update).mock.calls, 0)[2].definition).toMatchObject({
       filter_sql: config.filter_sql,
       conditions: config.conditions,
     })
@@ -1431,7 +1432,7 @@ describe('MetricForm event picker (MET-2, MET-14)', () => {
     submit()
     fireEvent.click(await screen.findByRole('button', { name: 'Save and delete history' }))
     await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+    expect(at(vi.mocked(metricsCatalogApi.update).mock.calls, 0)[2].definition).toMatchObject({
       numerator_event_id: 'ev-245',
       numerator_event_type_id: null,
     })
@@ -1573,7 +1574,7 @@ describe('MetricForm replay chunk (MET-10)', () => {
     submit()
     fireEvent.click(await screen.findByRole('button', { name: 'Save and delete history' }))
     await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+    expect(at(vi.mocked(metricsCatalogApi.update).mock.calls, 0)[2].definition).toMatchObject({
       interval: '1w',
       replay_chunk_interval: null,
     })
@@ -1595,7 +1596,7 @@ describe('MetricForm replay chunk restored', () => {
     submit()
     await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
     expect(screen.queryByRole('alertdialog')).toBeNull()
-    expect(vi.mocked(metricsCatalogApi.update).mock.calls[0][2].definition).toMatchObject({
+    expect(at(vi.mocked(metricsCatalogApi.update).mock.calls, 0)[2].definition).toMatchObject({
       interval: '1h',
       replay_chunk_interval: '1d',
     })

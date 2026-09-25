@@ -5,7 +5,13 @@ import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { metaFieldsApi } from '@/api/metaFields'
 import { variablesApi } from '@/api/variables'
-import { eventTypesKey, variablesKey } from '@/lib/queryKeys'
+import {
+  eventsInReviewCountKey,
+  eventTagsKey,
+  eventTypesKey,
+  metaFieldsKey,
+  variablesKey,
+} from '@/lib/queryKeys'
 
 import {
   EMPTY_EVENT_TYPES,
@@ -27,7 +33,7 @@ export function useEventsPageData({
     enabled: !!slug,
   })
   const metaFieldsQuery = useQuery({
-    queryKey: ['metaFields', slug, branchId],
+    queryKey: metaFieldsKey(slug, branchId),
     queryFn: () => metaFieldsApi.list(slug!, branchId),
     enabled: !!slug,
   })
@@ -37,7 +43,7 @@ export function useEventsPageData({
     enabled: !!slug,
   })
   const allTagsQuery = useQuery({
-    queryKey: ['eventTags', slug, branchId],
+    queryKey: eventTagsKey(slug, branchId),
     queryFn: () => eventsApi.tags(slug!, branchId),
     enabled: !!slug,
   })
@@ -45,7 +51,7 @@ export function useEventsPageData({
   // reports. It is NOT the count of unreviewed events — the `reviewed` flag is
   // an independent axis — and used to be named as if it were (tripl-invv).
   const inReviewCountQuery = useQuery({
-    queryKey: ['events', slug, branchId, 'inReviewCount'],
+    queryKey: eventsInReviewCountKey(slug, branchId),
     queryFn: () => eventsApi.list(slug!, { status: ['in_review'], limit: 1 }, branchId),
     enabled: !!slug,
   })

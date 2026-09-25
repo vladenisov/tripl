@@ -125,7 +125,7 @@ export const SETTINGS_STORAGE_KEY = 'tripl.settings'
 
 /** First section path for a context (used when switching context). */
 export function firstSectionPath(ctx: SettingsContext): string {
-  return SETTINGS_NAV[ctx][0].items[0].path
+  return SETTINGS_NAV[ctx][0]?.items[0]?.path ?? ''
 }
 
 /**

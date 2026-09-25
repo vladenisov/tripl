@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { eventListSearchParams, eventsApi } from './events'
+import { at } from '@/test/at'
 
 // The real client is exercised; only global fetch is stubbed, so the URL
 // asserted here is the one the list request actually sends.
@@ -25,7 +26,7 @@ describe('eventsApi.list', () => {
 
     await eventsApi.list('demo', { has_open_questions: true, reviewed: false }, 'branch-1')
 
-    const url = new URL(String(fetchSpy.mock.calls[0][0]), 'http://localhost')
+    const url = new URL(String(at(fetchSpy.mock.calls, 0)[0]), 'http://localhost')
     expect(url.pathname).toBe('/api/v1/projects/demo/events')
     expect(url.searchParams.get('has_open_questions')).toBe('true')
     expect(url.searchParams.get('reviewed')).toBe('false')

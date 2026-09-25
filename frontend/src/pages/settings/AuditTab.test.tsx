@@ -21,6 +21,7 @@ vi.mock('@/api/audit', () => ({
 }))
 
 import { AuditTab, WorkspaceAuditLog } from './AuditTab'
+import { at } from '@/test/at'
 
 // What GET /audit/actions answers. The vocabulary is the backend's now (PLAN-49):
 // which actions carry a project is decided where they are recorded, so these
@@ -138,7 +139,7 @@ describe('WorkspaceAuditLog — the instance-wide feed (tripl-wkwv.17)', () => {
     // Not an empty string, not the current project: absent. The endpoint treats
     // project_slug as a filter rather than a scope, so omitting it is what makes
     // this the whole instance.
-    expect(listMock.mock.calls[0][0].projectSlug).toBeUndefined()
+    expect(at(listMock.mock.calls, 0)[0].projectSlug).toBeUndefined()
   })
 
   it('names the project each row belongs to, since rows from all of them sit together', async () => {

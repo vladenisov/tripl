@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Lock, Plus } from 'lucide-react'
 import { apiKeysApi } from '@/api/apiKeys'
-import { projectsQueryOptions } from '@/lib/queryKeys'
+import { apiKeysKey, projectsQueryOptions } from '@/lib/queryKeys'
 import { useAuth } from '@/components/auth-context'
 import { ErrorState } from '@/components/error-state'
 import { Chip } from '@/components/primitives/chip'
@@ -59,7 +59,7 @@ export default function ApiKeysSection() {
   const { state: copyState, copy, reset: resetCopy } = useCopyToClipboard(tokenRef)
 
   const listQuery = useQuery({
-    queryKey: ['api-keys'],
+    queryKey: apiKeysKey(),
     queryFn: () => apiKeysApi.list(),
     meta: SILENT_ERROR_META,
   })
@@ -87,7 +87,7 @@ export default function ApiKeysSection() {
       }),
     meta: SILENT_ERROR_META,
     onSuccess: (created) => {
-      qc.invalidateQueries({ queryKey: ['api-keys'] })
+      qc.invalidateQueries({ queryKey: apiKeysKey() })
       setShowForm(false)
       resetCopy()
       setRevealed(created)
@@ -138,7 +138,7 @@ export default function ApiKeysSection() {
         return next
       })
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['api-keys'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: apiKeysKey() }),
   })
 
   const handleRevoke = async (key: ApiKey) => {

@@ -139,7 +139,8 @@ const SETTINGS_PARENT_LABELS: Record<string, string> = {
  */
 export function resolveTitleFromPath(pathname: string): { label: string; slug?: string } {
   const parts = pathname.split('/').filter(Boolean)
-  if (parts.length === 0) return { label: 'All projects' } // "/"
+  const [head, second] = parts
+  if (head === undefined) return { label: 'All projects' } // "/"
   if (parts[0] === 'auth') return { label: 'Sign in' }
   // `/invite/:token` renders outside the app shell and sets no title of its own,
   // so without an entry here the one page a brand-new member ever sees titled
@@ -154,7 +155,7 @@ export function resolveTitleFromPath(pathname: string): { label: string; slug?: 
     // routes collapsed onto three tab titles, which is unusable for the
     // owner-operator who has several of them open at once (tripl-xl9r).
     const sectionPath = parts.slice(1).join('/')
-    if (!sectionPath) return { label: 'Settings' }
+    if (!sectionPath || second === undefined) return { label: 'Settings' }
     // Longest rail prefix wins, then the section parent. A route can be deeper
     // than the rail entry it belongs to — `/settings/data-sources/<id>` is the
     // one in App.tsx, and it is where opening a data-source row lands — and
@@ -163,8 +164,8 @@ export function resolveTitleFromPath(pathname: string): { label: string; slug?: 
     const label =
       SETTINGS_RAIL_LABELS[sectionPath] ??
       SETTINGS_RAIL_LABELS[parts.slice(1, 3).join('/')] ??
-      SETTINGS_RAIL_LABELS[parts[1]] ??
-      SETTINGS_PARENT_LABELS[parts[1]] ??
+      SETTINGS_RAIL_LABELS[second] ??
+      SETTINGS_PARENT_LABELS[second] ??
       'Settings'
     return { label }
   }
@@ -178,7 +179,7 @@ export function resolveTitleFromPath(pathname: string): { label: string; slug?: 
     // naming the project — only the page half becomes "Page not found".
     return { label: label ?? NOT_FOUND_TITLE_LABEL, slug: parts[1] }
   }
-  const legacyTopLevel = LEGACY_TOP_LEVEL_LABELS[parts[0]]
+  const legacyTopLevel = LEGACY_TOP_LEVEL_LABELS[head]
   if (legacyTopLevel) return { label: legacyTopLevel }
   return { label: NOT_FOUND_TITLE_LABEL } // unmatched authed path → the 404 page
 }

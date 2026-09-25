@@ -14,7 +14,21 @@ import { useAuth } from '@/components/auth-context'
 import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/hooks/useConfirm'
 import { LEAVE_CONFIRMED, useUnsavedChanges } from '@/components/settings/unsaved-changes'
-import { projectVariablesKey } from '@/lib/queryKeys'
+import {
+  activeSignalsRootKey,
+  commandPaletteSearchRootKey,
+  distributionDriftsRootKey,
+  eventsRootKey,
+  eventTypeDriftsRootKey,
+  eventTypesRootKey,
+  metricsCatalogRootKey,
+  monitoringSeriesRootKey,
+  overviewRootKey,
+  projectKey,
+  projectRootKey,
+  projectsKey,
+  projectVariablesKey,
+} from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import {
   Field,
@@ -88,20 +102,20 @@ function projectUrlPrefix(): string {
 // everywhere the deleted detections (and their derived signals) surface.
 const ANOMALY_INVALIDATE_KEYS: readonly (readonly string[])[] = [
   ['anomalies'],
-  ['metrics-catalog'],
-  ['overview'],
-  ['activeSignals'],
-  ['monitoringMetrics'],
-  ['project'],
-  ['projects'],
+  metricsCatalogRootKey(),
+  overviewRootKey(),
+  activeSignalsRootKey(),
+  monitoringSeriesRootKey(),
+  projectRootKey(),
+  projectsKey(),
 ]
 const DRIFT_INVALIDATE_KEYS: readonly (readonly string[])[] = [
-  ['eventTypeDrifts'],
-  ['distributionDrifts'],
-  ['eventTypes'],
-  ['events'],
-  ['project'],
-  ['projects'],
+  eventTypeDriftsRootKey(),
+  distributionDriftsRootKey(),
+  eventTypesRootKey(),
+  eventsRootKey(),
+  projectRootKey(),
+  projectsKey(),
 ]
 
 function resetPeriodPayload(value: string): DetectionResetPeriod {
@@ -268,7 +282,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const { user } = useAuth()
   const { confirm, dialog } = useConfirm()
 
-  const projectQuery = useQuery({ queryKey: ['project', slug], queryFn: () => projectsApi.get(slug) })
+  const projectQuery = useQuery({ queryKey: projectKey(slug), queryFn: () => projectsApi.get(slug) })
 
   const [name, setName] = useState('')
   const [slugDraft, setSlugDraft] = useState('')
@@ -290,8 +304,8 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.update(slug, { name, slug: slugDraft, description, timezone }),
     onSuccess: (project) => {
-      qc.invalidateQueries({ queryKey: ['projects'] })
-      qc.invalidateQueries({ queryKey: ['project'] })
+      qc.invalidateQueries({ queryKey: projectsKey() })
+      qc.invalidateQueries({ queryKey: projectRootKey() })
       if (project.slug !== slug) {
         try {
           localStorage.setItem('tripl-last-project-slug', project.slug)
@@ -304,7 +318,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const reindexMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () => searchApi.reindex(slug),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['commandPaletteSearch'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: commandPaletteSearchRootKey() }),
   })
   const versionPolicyMut = useMutation({
     meta: SILENT_ERROR_META,
@@ -313,14 +327,14 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
         app_version_keep_releases: Number(appVersionKeepReleases),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['projects'] })
-      qc.invalidateQueries({ queryKey: ['project'] })
+      qc.invalidateQueries({ queryKey: projectsKey() })
+      qc.invalidateQueries({ queryKey: projectRootKey() })
     },
   })
   const deleteMut = useMutation({
     mutationFn: () => projectsApi.del(slug),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['projects'] })
+      qc.invalidateQueries({ queryKey: projectsKey() })
       // The project is gone, and any draft of its details with it: nothing for
       // the unsaved-changes guard to ask about.
       navigate('/', { replace: true, state: LEAVE_CONFIRMED })

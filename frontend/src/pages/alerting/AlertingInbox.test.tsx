@@ -13,6 +13,7 @@ import {
   earliestReachableDay,
   type InboxFilterState,
 } from './inboxFilters'
+import { at } from '@/test/at'
 
 /**
  * A session at one role.
@@ -233,7 +234,7 @@ describe('AlertingInbox — the undo for a mute is called Unmute (tripl-oxkt.3)'
     // which is the half of the sentence tripl-in45 added.
     fireEvent.click(screen.getByRole('button', { name: `Mute ${TARGET} for 24h` }))
     expect(onAction).toHaveBeenCalledTimes(1)
-    const variables = onAction.mock.calls[0][0]
+    const variables = at(onAction.mock.calls, 0)[0]
     expect(variables.action).toBe('mute')
     // Resolved to an absolute future instant here, so the sentence the confirm
     // shows and the value that is written are the same one.
@@ -280,7 +281,7 @@ describe('AlertingInbox — an incident can be silenced with no end date (tripl-
 
     fireEvent.click(indefinite)
     expect(onAction).toHaveBeenCalledTimes(1)
-    const variables = onAction.mock.calls[0][0]
+    const variables = at(onAction.mock.calls, 0)[0]
     expect(variables.action).toBe('mute')
     // STRICTLY null, and the key present. `undefined` is indistinguishable from
     // "no duration chosen" two hops downstream, where an object spread would

@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { chartAnnotationsApi } from '@/api/chartAnnotations'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { MonitoringScope } from '@/lib/monitoring'
-import { chartAnnotationsKey } from '@/lib/queryKeys'
+import { chartAnnotationsRangeKey } from '@/lib/queryKeys'
 
 /**
  * The annotations of one drilldown, shared by the volume chart (markers) and
@@ -24,7 +24,7 @@ export function useChartAnnotations({
   timeRange: { from: string; to: string }
 }) {
   return useQuery({
-    queryKey: [...chartAnnotationsKey(slug, scope, scopeId), rangeDays],
+    queryKey: chartAnnotationsRangeKey(slug, scope, scopeId, rangeDays),
     queryFn: () =>
       chartAnnotationsApi.list(slug!, {
         scope_type: scope,

@@ -10,6 +10,7 @@ import { formatSignalSeverity } from '@/lib/monitoring'
 import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { cn } from '@/lib/utils'
 import type { TopMoverItem } from '@/types'
+import { breakdownTimelineKey, topMoversKey } from '@/lib/queryKeys'
 
 interface TopMoversPanelProps {
   slug: string
@@ -60,7 +61,7 @@ export function TopMoversPanel({
 }: TopMoversPanelProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['topMovers', slug, scanConfigId, scopeType, scopeRef, bucket, limit],
+    queryKey: topMoversKey(slug, scanConfigId, scopeType, scopeRef, bucket, limit),
     queryFn: () =>
       metricsApi.getTopMovers(slug, scanConfigId, {
         scope_type: scopeType,
@@ -217,8 +218,9 @@ function BreakdownDrilldown({
   timeRange?: { from: string; to: string }
 }) {
   const { data, isLoading } = useQuery({
-    queryKey: [
-      'breakdownTimeline',
+    // The range length, not the live bounds: those step every five minutes,
+    // and a key that moved with them refetched the timeline each time (MON-3).
+    queryKey: breakdownTimelineKey(
       slug,
       scanConfigId,
       scopeType,
@@ -226,10 +228,8 @@ function BreakdownDrilldown({
       breakdownColumn,
       breakdownValue,
       isOther,
-      // The range length, not the live bounds: those step every five minutes,
-      // and a key that moved with them refetched the timeline each time (MON-3).
       rangeDays,
-    ],
+    ),
     queryFn: () =>
       metricsApi.getBreakdownTimeline(slug, scanConfigId, {
         scope_type: scopeType,

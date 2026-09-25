@@ -88,7 +88,7 @@ describe('the scan docs describe the product this branch ships', () => {
         + 'an empty chart lands.',
     ).toBeGreaterThan(-1)
 
-    const answer = doc.slice(at + question.length).split('\n\n')[0].trim()
+    const answer = (doc.slice(at + question.length).split('\n\n')[0] ?? '').trim()
 
     expect(
       answer,
@@ -235,7 +235,7 @@ function stripComments(source: string): string {
   const out: string[] = []
   let mode: 'code' | 'line' | 'block' | "'" | '"' | '`' = 'code'
   for (let i = 0; i < source.length; i += 1) {
-    const c = source[i]
+    const c = source.charAt(i)
     const next = source[i + 1] ?? ''
     if (mode === 'code') {
       if (c === '/' && next === '/') { mode = 'line'; i += 1; out.push(' '); continue }
@@ -279,11 +279,12 @@ function userFacingText(source: string): { text: string, line: number }[] {
   const at = (index: number) => source.slice(0, index).split('\n').length
   const asRendered = (text: string) => text.replace(/\s+/g, ' ')
   for (const m of source.matchAll(/(['"`])((?:\\.|(?!\1)[^\\])*)\1/gs)) {
-    found.push({ text: asRendered(m[2].replace(/\$\{[^{}]*\}/g, ' ')), line: at(m.index) })
+    found.push({ text: asRendered((m[2] ?? '').replace(/\$\{[^{}]*\}/g, ' ')), line: at(m.index) })
   }
   for (const m of source.matchAll(/>([^<>{}]+)</gs)) {
-    if (/[;=()[\]]/.test(m[1])) continue
-    found.push({ text: asRendered(m[1]), line: at(m.index) })
+    const text = m[1] ?? ''
+    if (/[;=()[\]]/.test(text)) continue
+    found.push({ text: asRendered(text), line: at(m.index) })
   }
   return found.filter(({ text }) => / /.test(text) && /[a-z]/.test(text))
 }

@@ -9,6 +9,7 @@ import { formatDateTime } from '@/lib/datetime'
 import type { Role } from '@/types'
 
 import ProjectAlertingTab from './ProjectAlertingTab'
+import { at } from '@/test/at'
 
 // The sections are lazy chunks (tripl-fj5g.15). Load them once up front, so no
 // test's first wait also pays for transforming a section's module graph.
@@ -670,7 +671,7 @@ describe('ProjectAlertingTab — an inbox action reports on its own row (tripl-o
 
     const acks = await screen.findAllByRole('button', { name: /^Acknowledge / })
     expect(acks).toHaveLength(2)
-    fireEvent.click(acks[0])
+    fireEvent.click(at(acks, 0))
 
     // One shared `isActionPending` used to disable all ~80 buttons on the page,
     // so triage was strictly serial and the row you touched showed nothing.
@@ -779,7 +780,7 @@ describe('ProjectAlertingTab — an open-ended mute is confirmed and sent explic
     // about how long the silence lasts.
     await waitFor(() => expect(actionBodies).toHaveLength(1))
     expect(actionBodies[0]).toEqual({ action: 'mute', muted_until: null })
-    expect('muted_until' in actionBodies[0]).toBe(true)
+    expect('muted_until' in at(actionBodies, 0)).toBe(true)
   })
 
   it('still sends a timed mute as an instant', async () => {
@@ -1045,7 +1046,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
       action: 'mute',
       muted_until: null,
     })
-    expect('muted_until' in bulkBodies[0]).toBe(true)
+    expect('muted_until' in at(bulkBodies, 0)).toBe(true)
     expect(toastSuccess).toHaveBeenCalledWith(
       'Muted 2 incidents — no end date. They stay quiet until you unmute them.',
     )
@@ -1283,7 +1284,7 @@ describe('ProjectAlertingTab — a note that is wrong can be taken back (tripl-p
 
     await waitFor(() => expect(actionBodies).toHaveLength(1))
     expect(actionBodies[0]).toEqual({ action: 'note', note: '' })
-    expect('note' in actionBodies[0]).toBe(true)
+    expect('note' in at(actionBodies, 0)).toBe(true)
   })
 
   it('still leaves a stored note alone when some other action is taken', async () => {
@@ -1299,7 +1300,7 @@ describe('ProjectAlertingTab — a note that is wrong can be taken back (tripl-p
 
     await waitFor(() => expect(actionBodies).toHaveLength(1))
     expect(actionBodies[0]).toEqual({ action: 'acknowledge' })
-    expect('note' in actionBodies[0]).toBe(false)
+    expect('note' in at(actionBodies, 0)).toBe(false)
   })
 })
 
@@ -1407,9 +1408,9 @@ describe('ProjectAlertingTab — catalog metric scope (tripl-jfm3.108)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(patches).toHaveLength(1))
-    expect(patches[0].include_metrics).toBe(true)
+    expect(at(patches, 0).include_metrics).toBe(true)
     // The neighbouring scopes ride along unchanged rather than being reset.
-    expect(patches[0].include_events).toBe(false)
+    expect(at(patches, 0).include_events).toBe(false)
   })
 })
 
@@ -1489,7 +1490,7 @@ describe('ProjectAlertingTab — narrowing a rule to one scan', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(patches).toHaveLength(1))
-    expect(patches[0].scan_config_id).toBe('scan-ios')
+    expect(at(patches, 0).scan_config_id).toBe('scan-ios')
   })
 
   it('sends an explicit null for a rule that watches every scan', async () => {

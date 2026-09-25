@@ -8,6 +8,7 @@ import type { EventListItem } from '@/types'
 
 import { visibleBucketRange } from './useEventRowMetrics'
 import { EMPTY_SIGNALS, chunkEventIds, mapLatestSignals, pickLatestSignal } from './utils'
+import { eventRowSignalsKey, eventsTabSignalsKey } from '@/lib/queryKeys'
 
 /**
  * Monitoring signals for the project tabs: the project total and one per
@@ -18,7 +19,7 @@ export function useEventsSignals({ slug }: { slug: string | undefined }) {
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const tabSignalsQuery = useQuery({
-    queryKey: ['activeSignals', slug, 'tabs'],
+    queryKey: eventsTabSignalsKey(slug),
     queryFn: () => metricsApi.getActiveSignals(slug!),
     enabled: !!slug,
     refetchInterval,
@@ -80,7 +81,7 @@ export function useEventRowSignals({
   )
   const rowSignals = useQueries({
     queries: visibleBuckets.map(bucketIds => ({
-      queryKey: ['activeSignals', slug, 'rows', bucketIds.join(',')],
+      queryKey: eventRowSignalsKey(slug, bucketIds),
       queryFn: () => metricsApi.getActiveSignals(slug!, bucketIds),
       enabled: !!slug && bucketIds.length > 0,
       refetchInterval,

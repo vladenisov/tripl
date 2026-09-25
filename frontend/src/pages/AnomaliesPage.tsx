@@ -23,6 +23,7 @@ import {
   unnamedScopeLabel,
 } from '@/lib/signalScope'
 import type { MonitoringSignal } from '@/types'
+import { scansKey } from '@/lib/queryKeys'
 
 const ANOMALY_GRID = 'grid grid-cols-[1.7fr_1fr_72px_96px] items-center gap-3 px-4'
 
@@ -189,7 +190,7 @@ export default function AnomaliesPage() {
   // Scan names for the facet below. Shares the app-wide ['scans', slug] key, so
   // no extra request when the user has already opened a scan settings page.
   const scansQuery = useQuery({
-    queryKey: ['scans', slug],
+    queryKey: scansKey(slug),
     queryFn: () => scansApi.list(slug!),
     enabled: !!slug,
     staleTime: 60_000,

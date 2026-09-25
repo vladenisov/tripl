@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from './auth-context'
 import { CommentThread, type ThreadComment } from './comment-thread'
+import { at } from '@/test/at'
 
 function comment(overrides: Partial<ThreadComment> & { id: string }): ThreadComment {
   return {
@@ -162,7 +163,7 @@ describe('CommentThread', () => {
     ])
     await screen.findByText('second')
     const controls = screen.getAllByRole('button', { name: 'Delete comment' })
-    fireEvent.click(controls[1])
+    fireEvent.click(at(controls, 1))
     await waitFor(() => expect(remove).toHaveBeenCalledWith('c2'))
   })
 })
@@ -223,7 +224,7 @@ describe('CommentThread resolution', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'snooze' }))
     await waitFor(() => expect(onAction).toHaveBeenCalledTimes(2))
-    const [, action, snoozedUntil] = onAction.mock.calls[1]
+    const [, action, snoozedUntil] = at(onAction.mock.calls, 1)
     expect(action).toBe('snooze')
     // The API requires a date on a snooze, so the control has to supply one.
     expect(new Date(snoozedUntil as string).getTime()).toBeGreaterThan(Date.now())

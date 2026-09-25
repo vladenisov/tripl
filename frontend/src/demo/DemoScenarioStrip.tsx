@@ -269,7 +269,7 @@ export function DemoScenarioStrip() {
   // tab, or not rendered at all. Muting hints silences this too: it keys off the
   // same visibility the marks themselves report. Steps without an on-surface
   // anchor (deep-link and explore steps) expect no mark, so they stay quiet.
-  const stepPath = step.to.split('?')[0]
+  const stepPath = step.to.split('?')[0] ?? step.to
   const targetMissing =
     active &&
     !hintsMuted &&

@@ -39,7 +39,13 @@ import { Chip } from '@/components/primitives/chip'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { countOf } from '@/lib/plural'
 import { cn, getErrorMessage } from '@/lib/utils'
-import { eventTypesKey, projectEventTypesKey } from '@/lib/queryKeys'
+import {
+  eventTypeOwnersKey,
+  eventTypesKey,
+  projectEventTypeOwnersKey,
+  projectEventTypesKey,
+  usersKey,
+} from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
@@ -100,7 +106,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
   // each type's own owners key, so an owner change invalidates both.
   const onMain = branchId === null
   const ownersQuery = useQuery({
-    queryKey: ['eventTypeOwners', slug],
+    queryKey: projectEventTypeOwnersKey(slug),
     queryFn: () => eventTypeOwnersApi.listForProject(slug),
     enabled: onMain,
     // An unanswered owners request makes the Status cell say "—" rather than
@@ -252,12 +258,13 @@ export function EventTypesTab({ slug }: { slug: string }) {
                     <Td wideOnly>
                       {(() => {
                         const owners = ownersByType.get(et.id) ?? []
-                        if (owners.length === 0) {
+                        const [firstOwner] = owners
+                        if (!firstOwner) {
                           return <span style={{ color: 'var(--fg-faint)' }}>—</span>
                         }
                         return (
                           <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                            {owners[0].user_name || owners[0].user_email}
+                            {firstOwner.user_name || firstOwner.user_email}
                             {owners.length > 1 ? ` +${owners.length - 1}` : ''}
                           </span>
                         )
@@ -584,6 +591,7 @@ export function FieldsEditor({
     if (newIdx < 0 || newIdx >= sortedFields.length) return
     const reordered = [...sortedFields]
     const [moved] = reordered.splice(idx, 1)
+    if (!moved) return
     reordered.splice(newIdx, 0, moved)
     reorderMut.reset()
     reorderMut.mutate(reordered.map((f) => f.id))
@@ -1074,11 +1082,11 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
   const ownerSelectId = useId()
 
   const { data: owners = [] } = useQuery({
-    queryKey: ['eventTypeOwners', slug, eventType.id],
+    queryKey: eventTypeOwnersKey(slug, eventType.id),
     queryFn: () => eventTypeOwnersApi.list(slug, eventType.id),
   })
   const { data: users = [] } = useQuery({
-    queryKey: ['users'],
+    queryKey: usersKey(),
     queryFn: () => usersApi.list(),
   })
 
@@ -1090,7 +1098,7 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
     onSuccess: () => {
       // The project prefix: this type's owners AND the list's project-wide
       // owners, which the Status column reads.
-      qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug] })
+      qc.invalidateQueries({ queryKey: projectEventTypeOwnersKey(slug) })
       setSelectedUserId('')
     },
   })
@@ -1098,7 +1106,7 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
   const removeMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: (ownerId: string) => eventTypeOwnersApi.remove(slug, eventType.id, ownerId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: projectEventTypeOwnersKey(slug) }),
   })
 
   // Removing an owner changes who has to approve a merge, and the X sits 12px

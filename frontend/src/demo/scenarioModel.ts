@@ -72,7 +72,7 @@ export type ScenarioStepId =
   | 'explore/visit-anomaly'
   | 'explore/use-search'
 
-export const CHAPTER_STEP_IDS: Record<ChapterId, readonly ScenarioStepId[]> = {
+export const CHAPTER_STEP_IDS: Record<ChapterId, readonly [ScenarioStepId, ...ScenarioStepId[]]> = {
   'live-loop': [
     'live-loop/run-scan',
     'live-loop/watch-scan',
@@ -227,7 +227,7 @@ export function nextChapterId(state: ScenarioState): ChapterId | null {
   const from = state.activeChapter ? CHAPTER_IDS.indexOf(state.activeChapter) : -1
   for (let offset = 1; offset <= CHAPTER_IDS.length; offset += 1) {
     const candidate = CHAPTER_IDS[(from + offset) % CHAPTER_IDS.length]
-    if (candidate === state.activeChapter) continue
+    if (candidate === undefined || candidate === state.activeChapter) continue
     if (chapterStatus(state, candidate) !== 'completed') return candidate
   }
   return null
@@ -542,7 +542,7 @@ export function buildChapterSteps(
   slug: string,
   chapterId: ChapterId,
   state: ScenarioState,
-): ScenarioStep[] {
+): [ScenarioStep, ...ScenarioStep[]] {
   const base = `/p/${slug}`
   const scans = `${base}/scans`
   switch (chapterId) {

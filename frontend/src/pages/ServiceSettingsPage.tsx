@@ -49,6 +49,7 @@ import {
   updateHasInvalidNumber,
 } from './settings-service/serviceSettingsHelpers'
 import { isOwner } from '@/lib/permissions'
+import { aiStatusRootKey, serviceSettingsKey } from '@/lib/queryKeys'
 
 const UNSAVED_MESSAGE =
   'Instance settings you edited here have not been saved. Leaving this page drops them — anything typed into a prompt or a field is gone.'
@@ -97,7 +98,7 @@ export default function ServiceSettingsSection({
   const [hydratedSettings, setHydratedSettings] = useState<ServiceSettings | null>(null)
 
   const settingsQuery = useQuery({
-    queryKey: ['serviceSettings'],
+    queryKey: serviceSettingsKey(),
     queryFn: serviceSettingsApi.get,
     enabled: isOwner(user?.role),
     // Rendered below as an ErrorState with a retry.
@@ -115,12 +116,12 @@ export default function ServiceSettingsSection({
     // Shown in the sticky save row.
     meta: SILENT_ERROR_META,
     onSuccess: (data, write) => {
-      qc.setQueryData(['serviceSettings'], data)
+      qc.setQueryData(serviceSettingsKey(), data)
       setHydratedSettings(data)
       // Whether a project shows its AI buttons is cached for five minutes
       // (useAiStatus); without this an owner who just turned AI on went back
       // to a project and still saw it off.
-      if (writesAi(write)) void qc.invalidateQueries({ queryKey: ['aiStatus'] })
+      if (writesAi(write)) void qc.invalidateQueries({ queryKey: aiStatusRootKey() })
       // A write settles only what it wrote. `form` spans all six sections, so
       // replacing it here threw away an unsaved prompt or field in a section
       // this action never touched (tripl-l8v2).

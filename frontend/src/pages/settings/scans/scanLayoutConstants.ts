@@ -60,8 +60,7 @@ const COUNT_UNITS = [
 export function formatCount(value: number | null | undefined): string {
   if (value == null) return '—'
   if (value < 1e3) return String(value)
-  for (let index = 0; index < COUNT_UNITS.length; index += 1) {
-    const { divisor, suffix, digits } = COUNT_UNITS[index]
+  for (const [index, { divisor, suffix, digits }] of COUNT_UNITS.entries()) {
     const isLast = index === COUNT_UNITS.length - 1
     const rounded = (value / divisor).toFixed(digits)
     if (!isLast && Number(rounded) >= 1000) continue

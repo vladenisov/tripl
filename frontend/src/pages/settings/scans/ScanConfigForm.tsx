@@ -20,7 +20,7 @@ import {
   ScanEssentialsSection,
 } from './ScanFormSections'
 import { scanFormBlocker, useScanForm, type ScanFormPayload } from './useScanForm'
-import { eventTypesKey } from '@/lib/queryKeys'
+import { eventTypesKey, platformPresenceKey, scanJobsKey, scansKey } from '@/lib/queryKeys'
 import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -75,7 +75,7 @@ export function ScanConfigurationTab({
     mutationFn: (payload: ScanFormPayload) => scansApi.update(slug, scanConfig.id, payload),
     onSuccess: (_saved, payload) => {
       setSavedSnapshot(JSON.stringify(payload))
-      return qc.invalidateQueries({ queryKey: ['scans', slug] })
+      return qc.invalidateQueries({ queryKey: scansKey(slug) })
     },
   })
 
@@ -87,12 +87,12 @@ export function ScanConfigurationTab({
       // The list mounts from cache (staleTime 60s), so without this the deleted
       // scan was still listed there with a Run now that 404s (DATA-4). Drop it
       // from the cache now, then refetch for anything else that changed.
-      qc.setQueryData<ScanConfig[]>(['scans', slug], current =>
+      qc.setQueryData<ScanConfig[]>(scansKey(slug), current =>
         current?.filter(config => config.id !== scanConfig.id),
       )
-      qc.removeQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
-      qc.removeQueries({ queryKey: ['platformPresence', slug, scanConfig.id] })
-      void qc.invalidateQueries({ queryKey: ['scans', slug] })
+      qc.removeQueries({ queryKey: scanJobsKey(slug, scanConfig.id) })
+      qc.removeQueries({ queryKey: platformPresenceKey(slug, scanConfig.id) })
+      void qc.invalidateQueries({ queryKey: scansKey(slug) })
       onDeleted()
     },
   })
@@ -276,7 +276,7 @@ export function ScanCreatePage({
         ...form.toBackendPayload(),
       }),
     onSuccess: created => {
-      qc.invalidateQueries({ queryKey: ['scans', slug] })
+      qc.invalidateQueries({ queryKey: scansKey(slug) })
       unsaved.release()
       onCreated(created)
     },

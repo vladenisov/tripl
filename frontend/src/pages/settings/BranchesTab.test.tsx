@@ -24,6 +24,7 @@ import { BranchProvider } from '@/components/branch-context'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { BranchesTab } from './BranchesTab'
 import { expectNoAxeViolations } from '@/test/axe'
+import { at } from '@/test/at'
 
 vi.mock('@/api/planBranches', () => ({
   planBranchesApi: {
@@ -2100,8 +2101,8 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
       ...CONFLICTED,
       entities: [
         {
-          ...CONFLICTED.entities[0],
-          fields: [{ ...CONFLICTED.entities[0].fields[0], choice: 'theirs' }],
+          ...at(CONFLICTED.entities, 0),
+          fields: [{ ...at(at(CONFLICTED.entities, 0).fields, 0), choice: 'theirs' }],
         },
       ],
       unresolved_count: 0,

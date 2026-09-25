@@ -17,6 +17,7 @@ import { expectNoAxeViolations } from '@/test/axe'
 import { toast } from 'sonner'
 import { surfaceQueryError } from '@/lib/errorFeedback'
 import { usePageTitle } from './shell-chrome-context'
+import { at } from '@/test/at'
 
 vi.mock('@/api/alerting', () => ({
   alertingApi: { listDeliveries: vi.fn() },
@@ -349,7 +350,7 @@ describe('Layout backend unavailable (fj5g.6)', () => {
     await waitFor(() => expect(document.querySelector('[data-slot="skeleton"]')).toBeNull())
     const alerts = screen.getAllByRole('alert')
     expect(alerts).toHaveLength(1)
-    expect(within(alerts[0]).getAllByRole('button', { name: 'Try again' })).toHaveLength(1)
+    expect(within(at(alerts, 0)).getAllByRole('button', { name: 'Try again' })).toHaveLength(1)
     expect(screen.queryByText('Failed to load projects')).toBeNull()
     expect(toastError).not.toHaveBeenCalledWith(expect.stringContaining('Service unavailable'), expect.anything())
   })

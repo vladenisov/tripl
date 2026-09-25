@@ -46,7 +46,21 @@ import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard, TEXT_INPUT_CLASS } fr
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
 import { branchTicket } from '@/lib/branchTicket'
-import { eventTypesKey, planBranchesKey, variablesKey } from '@/lib/queryKeys'
+import {
+  branchEventsKey,
+  eventCommentsKey,
+  eventIdentityProbeKey,
+  eventKey,
+  eventsPickerKey,
+  eventTagsKey,
+  eventTypesKey,
+  metaFieldsKey,
+  planBranchesKey,
+  projectEventKey,
+  scansKey,
+  usersKey,
+  variablesKey,
+} from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
@@ -451,7 +465,7 @@ export function EventForm({
   const isNew = !event
   const [etId, setEtId] = useState(
     // Preselect the only event type so a fresh form shows its fields at once.
-    event?.event_type_id ?? defaultEventTypeId ?? (eventTypes.length === 1 ? eventTypes[0].id : ''),
+    event?.event_type_id ?? defaultEventTypeId ?? (eventTypes.length === 1 ? (eventTypes[0]?.id ?? '') : ''),
   )
   const [name, setName] = useState(event?.name ?? '')
   const [title, setTitle] = useState(event?.title ?? '')
@@ -505,7 +519,7 @@ export function EventForm({
   // The owner used to be settable only from the list's bulk bar, after the
   // event existed; the form is where the analyst is when they know who it is
   // for (tripl-kjhi.16). GET /users is open to any signed-in user.
-  const usersQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
+  const usersQuery = useQuery({ queryKey: usersKey(), queryFn: () => usersApi.list() })
   const users = usersQuery.data ?? []
 
   // A branch named after a ticket pre-fills the meta field that links to it,
@@ -573,7 +587,7 @@ export function EventForm({
   // config names — so the form offered free text where a scan rule governed
   // (tripl-kjhi.1). The server now resolves the rule onto the type itself.
   const { data: scanConfigs } = useQuery({
-    queryKey: ['scans', slug],
+    queryKey: scansKey(slug),
     queryFn: () => scansApi.list(slug),
   })
   // Scan naming rule: when a scan generates names for this event type, manual
@@ -688,7 +702,7 @@ export function EventForm({
     generatedName && generatedName.missing.length === 0 ? generatedName.name : null
   const probedName = useDebouncedValue(completedName, 350)
   const { data: identityProbe } = useQuery({
-    queryKey: ['eventIdentityProbe', slug, branchId, etId, probedName],
+    queryKey: eventIdentityProbeKey(slug, branchId, etId, probedName),
     queryFn: () =>
       eventsApi.list(slug, { event_type_id: etId, search: probedName!, limit: 100 }, branchId),
     enabled: isNew && !!probedName && !!etId,
@@ -717,7 +731,7 @@ export function EventForm({
   // retired asks nothing of this.
   const debouncedSuccessorSearch = useDebouncedValue(successorSearch, 350)
   const { data: successorRoster } = useQuery({
-    queryKey: ['events', slug, branchId, 'successor-picker', debouncedSuccessorSearch],
+    queryKey: eventsPickerKey(slug, branchId, 'successor-picker', debouncedSuccessorSearch),
     queryFn: () =>
       eventsApi.list(
         slug,
@@ -730,7 +744,7 @@ export function EventForm({
   // Same key shape as the detail page's own event query, so the successor is
   // read from cache when it has already been opened.
   const { data: successorEvent } = useQuery({
-    queryKey: ['event', slug, branchId, supersededBy],
+    queryKey: eventKey(slug, branchId, supersededBy),
     queryFn: () => eventsApi.get(slug, supersededBy, branchId),
     enabled: !isNew && status === 'deprecated' && !!supersededBy,
   })
@@ -865,9 +879,9 @@ export function EventForm({
       // including a caller that navigates to the created event.
       unsaved.release()
       setSavedSnapshot(snapshot)
-      qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
-      qc.invalidateQueries({ queryKey: ['eventTags', slug, branchId] })
-      if (event) qc.invalidateQueries({ queryKey: ['event', slug] })
+      qc.invalidateQueries({ queryKey: branchEventsKey(slug, branchId) })
+      qc.invalidateQueries({ queryKey: eventTagsKey(slug, branchId) })
+      if (event) qc.invalidateQueries({ queryKey: projectEventKey(slug) })
       // Direct scenario completion — inert unless the demo's edit-event chapter
       // is sitting on exactly this step (the reducer drops everything else).
       // A save may be the mutation that lands one of the coached field states;
@@ -1522,7 +1536,7 @@ export default function EventEditPage() {
     enabled: !!slug,
   })
   const metaFieldsQuery = useQuery({
-    queryKey: ['metaFields', slug, branchId],
+    queryKey: metaFieldsKey(slug, branchId),
     queryFn: () => metaFieldsApi.list(slug!, branchId),
     enabled: !!slug,
   })
@@ -1532,7 +1546,7 @@ export default function EventEditPage() {
     enabled: !!slug,
   })
   const eventQuery = useQuery({
-    queryKey: ['event', slug, branchId, eventId],
+    queryKey: eventKey(slug, branchId, eventId),
     queryFn: () => eventsApi.get(slug!, eventId!, branchId),
     enabled: !!slug && !!eventId,
   })
@@ -1620,7 +1634,7 @@ export default function EventEditPage() {
           )}
           <CommentThread
             initialBody={handoff?.commentDraft}
-            queryKey={['eventComments', slug, eventId]}
+            queryKey={eventCommentsKey(slug, eventId)}
             list={() => eventCommentsApi.list(slug, eventId)}
             create={(body, parentId) => eventCommentsApi.create(slug, eventId, body, parentId)}
             remove={commentId => eventCommentsApi.remove(slug, eventId, commentId)}

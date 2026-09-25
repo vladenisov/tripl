@@ -6,6 +6,7 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { eventNameLabel } from '@/lib/eventName'
 import type { EventType } from '@/types'
+import { eventKey, eventsPickerKey } from '@/lib/queryKeys'
 
 // Events offered at once. Small on purpose, for the reason the variables tab
 // spells out (tripl-46am): the search is server-side, so anything outside the
@@ -63,7 +64,7 @@ export function EventRefPicker({
   const debouncedSearch = useDebouncedValue(search.trim())
 
   const rosterQuery = useQuery({
-    queryKey: ['events', slug, null, 'metric-picker', debouncedSearch],
+    queryKey: eventsPickerKey(slug, null, 'metric-picker', debouncedSearch),
     queryFn: () =>
       eventsApi.list(slug, {
         search: debouncedSearch || undefined,
@@ -78,7 +79,7 @@ export function EventRefPicker({
   const selectedInRoster = !!value.eventId && roster.some(event => event.id === value.eventId)
   // Same key shape as the event detail page, so an opened event is read from cache.
   const selectedEventQuery = useQuery({
-    queryKey: ['event', slug, null, value.eventId],
+    queryKey: eventKey(slug, null, value.eventId),
     queryFn: () => eventsApi.get(slug, value.eventId),
     enabled: !!value.eventId && !selectedInRoster,
     meta: SILENT_ERROR_META,

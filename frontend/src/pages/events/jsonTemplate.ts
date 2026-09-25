@@ -40,7 +40,7 @@ const JSON_TEMPLATE_KEY_PATTERN = /"\$\{[^"\\}\x00-\x1f]+\}"\s*:/
 const SENTINEL_BASE = '__TRIPL_VAR_'
 
 export function templateJsonError(text: string): string | null {
-  const tokens = [...text.matchAll(TEMPLATE_TOKEN_PATTERN)].map(match => match[1])
+  const tokens = [...text.matchAll(TEMPLATE_TOKEN_PATTERN)].map(match => match[1] ?? '')
   if (tokens.some(token => !JSON_TEMPLATE_TOKEN_NAME_PATTERN.test(token))) {
     return 'A ${...} token must name a variable and cannot contain a quote, a backslash or a control character.'
   }

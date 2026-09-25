@@ -198,10 +198,10 @@ export function buildChartData(
     }
   })
 
-  if (forecast.length > 0 && points.length > 0) {
-    // Anchor the dashed forecast line to the last actual count so the
-    // preview visibly extends *from* the chart instead of floating.
-    const anchor = points[points.length - 1]
+  // Anchor the dashed forecast line to the last actual count so the
+  // preview visibly extends *from* the chart instead of floating.
+  const anchor = points[points.length - 1]
+  if (forecast.length > 0 && anchor) {
     anchor.forecast_expected = anchor.count ?? undefined
     if (anchor.stddev != null && anchor.count != null) {
       const anchorOffset = k * anchor.stddev
@@ -242,8 +242,8 @@ export function CustomTooltip({
   valueFormatter?: (value: number) => string
   sigmaThreshold?: number
 }) {
-  if (!active || !payload?.length) return null
-  const point = payload[0].payload
+  const point = payload?.[0]?.payload
+  if (!active || !point) return null
   const sigmaLabel = Number.isFinite(sigmaThreshold) && sigmaThreshold > 0
     ? sigmaThreshold
     : DEFAULT_SIGMA_THRESHOLD
@@ -352,26 +352,32 @@ function snapAnnotationsToBuckets(
   // Categorical x-axis only renders ReferenceLine for x values that exist
   // on rendered points, so snap each annotation to the closest bucket in
   // the visible data. Annotations outside the window simply drop.
-  const bucketTimes = data.map(point => new Date(point.bucket).getTime())
+  const buckets = data.map(point => ({
+    bucket: point.bucket,
+    time: new Date(point.bucket).getTime(),
+  }))
+  const first = buckets[0]
+  const last = buckets[buckets.length - 1]
+  if (!first || !last) return []
   return annotations
     .map(annotation => {
       const annotationTime = new Date(annotation.bucket).getTime()
       if (Number.isNaN(annotationTime)) return null
-      if (annotationTime < bucketTimes[0] || annotationTime > bucketTimes[bucketTimes.length - 1]) {
+      if (annotationTime < first.time || annotationTime > last.time) {
         return null
       }
-      let closestIndex = 0
-      let closestDelta = Math.abs(annotationTime - bucketTimes[0])
-      for (let i = 1; i < bucketTimes.length; i++) {
-        const delta = Math.abs(annotationTime - bucketTimes[i])
+      let closest = first
+      let closestDelta = Math.abs(annotationTime - first.time)
+      for (const candidate of buckets) {
+        const delta = Math.abs(annotationTime - candidate.time)
         if (delta < closestDelta) {
           closestDelta = delta
-          closestIndex = i
+          closest = candidate
         }
       }
       return {
         id: annotation.id,
-        bucket: data[closestIndex].bucket,
+        bucket: closest.bucket,
         label: annotation.label,
         color: annotationDisplayColor(annotation.color),
       }

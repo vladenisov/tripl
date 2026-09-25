@@ -15,6 +15,7 @@ import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { invalidateAlertingConfig } from "./alertingCache"
+import { alertDeliveryKey } from "@/lib/queryKeys"
 
 /**
  * Does this stored path point back at the alerting page itself?
@@ -217,7 +218,7 @@ export function AlertDeliveryRow({
   const focusItemRef = useRef<HTMLTableRowElement>(null)
   const qc = useQueryClient()
   const { data: detail } = useQuery({
-    queryKey: ['alertDelivery', slug, delivery.id],
+    queryKey: alertDeliveryKey(slug, delivery.id),
     queryFn: () => alertingApi.getDelivery(slug, delivery.id),
     enabled: open,
   })
@@ -234,7 +235,7 @@ export function AlertDeliveryRow({
       // "Retry failed: Only failed deliveries can be retried" for a retry that
       // had in fact worked (tripl-oxkt.10). This key is also the one this row's
       // own expanded panel reads, so both update from the one write.
-      qc.setQueryData(['alertDelivery', slug, delivery.id], updated)
+      qc.setQueryData(alertDeliveryKey(slug, delivery.id), updated)
       // …and the same shared invalidation every other alerting write uses. The
       // list alone left the Inbox card that groups this delivery counting a
       // status it no longer has (tripl-oxkt.14). The `setQueryData` above
@@ -258,8 +259,9 @@ export function AlertDeliveryRow({
   // column on the page carried zero information (tripl-oxkt.18). The message
   // itself moved into the expanded panel, where there is room to read it.
   const firedAnomalies = snapshotAnomalies(delivery.payload_snapshot)
-  const firedSummary = firedAnomalies.length > 0
-    ? { headline: anomalyLine(firedAnomalies[0]), rest: firedAnomalies.length - 1 }
+  const firstFired = firedAnomalies[0]
+  const firedSummary = firstFired
+    ? { headline: anomalyLine(firstFired), rest: firedAnomalies.length - 1 }
     : null
   const firedTitle = firedAnomalies.map(anomalyLine).join('\n')
   const compactTime = compactDeliveryTime(delivery.created_at)

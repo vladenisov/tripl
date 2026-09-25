@@ -26,6 +26,7 @@ import { formatDateTime } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
 import { ENTITY_LABEL, KIND_META } from './branches/branchMeta'
 import { PlanFieldChangeList } from './PlanFieldChangeList'
+import { planRevisionDiffKey, planRevisionsKey, projectPlanRevisionsKey } from '@/lib/queryKeys'
 
 // One page of revisions. It used to be the ONLY page: the list asked for 50 and
 // ignored `total`, so anything older was unreachable (PLAN-50).
@@ -41,7 +42,7 @@ export function HistoryTab({ slug }: { slug: string }) {
   const listQuery = useQuery({
     // Under the ['planRevisions', slug] prefix, so a new snapshot still
     // refreshes every page.
-    queryKey: ['planRevisions', slug, offset],
+    queryKey: planRevisionsKey(slug, offset),
     // One row past the page: the base the page's LAST revision diffs against.
     // Without it the 50th row found no `idx + 1` and called itself "the oldest
     // revision" whenever older ones existed (PLAN-50).
@@ -75,7 +76,7 @@ export function HistoryTab({ slug }: { slug: string }) {
   }
 
   const diffQuery = useQuery<PlanDiff>({
-    queryKey: ['planRevisionDiff', slug, effectiveSelected, compareTo],
+    queryKey: planRevisionDiffKey(slug, effectiveSelected, compareTo),
     queryFn: () => planRevisionsApi.diff(slug, effectiveSelected!, compareTo!),
     enabled: !!effectiveSelected && !!compareTo,
     // "Failed to load diff." is rendered in the diff card.
@@ -85,7 +86,7 @@ export function HistoryTab({ slug }: { slug: string }) {
   const createMut = useMutation({
     mutationFn: (summary: string) => planRevisionsApi.create(slug, { summary }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['planRevisions', slug] })
+      qc.invalidateQueries({ queryKey: projectPlanRevisionsKey(slug) })
       setSnapshotOpen(false)
       setSummaryText('')
     },

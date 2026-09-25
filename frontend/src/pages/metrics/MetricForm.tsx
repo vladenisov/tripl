@@ -22,6 +22,7 @@ import { isIntervalFinerThan } from '@/lib/metricFormat'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
 import { useCanWriteProject } from '@/lib/permissions'
 import {
+  activeSignalsKey,
   dataSourcesKey,
   metricDefinitionKey,
   metricDrilldownKeys,
@@ -235,7 +236,7 @@ export function MetricForm({
         for (const key of metricDrilldownKeys(slug, metric.id)) {
           void qc.invalidateQueries({ queryKey: key })
         }
-        void qc.invalidateQueries({ queryKey: ['activeSignals', slug] })
+        void qc.invalidateQueries({ queryKey: activeSignalsKey(slug) })
       }
       toast.success(isNew ? 'Metric created.' : 'Metric saved.')
       if (onSaved) onSaved(saved.id, isNew)

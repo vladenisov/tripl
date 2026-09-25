@@ -7,6 +7,7 @@ import {
   isDeepPrefix,
   type NameGroupInput,
 } from './eventNameGroups'
+import { at } from '@/test/at'
 
 function ev(id: string, name: string): NameGroupInput {
   return { id, name }
@@ -125,7 +126,7 @@ describe('groupEventNames', () => {
 
     const { groups } = groupEventNames(events)
 
-    expect(groups[0].eventIds).toEqual(['z', 'm', 'a'])
+    expect(at(groups, 0).eventIds).toEqual(['z', 'm', 'a'])
   })
 
   it('sorts groups by count descending then prefix ascending', () => {
@@ -195,7 +196,7 @@ describe('groupEventNames', () => {
     const { groups } = groupEventNames(events)
 
     expect(groups).toHaveLength(1)
-    expect(groups[0].count).toBe(MIN_GROUP_SIZE)
+    expect(at(groups, 0).count).toBe(MIN_GROUP_SIZE)
   })
 })
 

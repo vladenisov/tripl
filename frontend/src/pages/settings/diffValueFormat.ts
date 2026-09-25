@@ -15,16 +15,21 @@ export const COLUMN_LABEL: Record<string, string> = {
   value: 'Value',
 }
 
+/** Rows of a record table; a table always has at least one. */
+export type RecordRows = [Record<string, unknown>, ...Record<string, unknown>[]]
+
 /** The subset of arrays a table can honestly render: every member a flat record
  * carrying the same keys. Anything else keeps the prose form — a photo member
  * has a nested `comments` list and an override member a nested `values` list,
  * so neither reaches this branch at all. */
-export function uniformRecords(value: unknown): Record<string, unknown>[] | null {
-  if (!Array.isArray(value) || value.length === 0) return null
+export function uniformRecords(value: unknown): RecordRows | null {
+  if (!Array.isArray(value)) return null
   if (!value.every(isFlatRecord)) return null
-  const shape = Object.keys(value[0]).sort().join(' ')
+  const [first] = value
+  if (first === undefined) return null
+  const shape = Object.keys(first).sort().join(' ')
   return value.every((item) => Object.keys(item).sort().join(' ') === shape)
-    ? (value as Record<string, unknown>[])
+    ? (value as RecordRows)
     : null
 }
 

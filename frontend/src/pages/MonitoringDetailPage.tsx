@@ -38,7 +38,15 @@ import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/met
 import { aggregateMetricPoints, clampGranularityToRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveDetailScope } from '@/lib/monitoring'
 import { useCanWriteProject } from '@/lib/permissions'
-import { eventTypesKey, metricDefinitionKey, monitoringSeriesKey } from '@/lib/queryKeys'
+import {
+  eventHistoryKey,
+  eventKey,
+  eventTypesKey,
+  metaFieldsKey,
+  metricDefinitionKey,
+  monitoringSeriesRangeKey,
+  scanConfigKey,
+} from '@/lib/queryKeys'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { EventType, FieldDefinition, MetaFieldDefinition } from '@/types'
 import { AnnotationsCard } from './monitoring/AnnotationsCard'
@@ -122,7 +130,7 @@ export default function MonitoringDetailPage() {
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const eventQuery = useQuery({
-    queryKey: ['event', slug, branchId, scopeId],
+    queryKey: eventKey(slug, branchId, scopeId),
     queryFn: () => eventsApi.get(slug!, scopeId, branchId),
     enabled: scope === 'event' && !!slug && !!scopeId,
     meta: SILENT_ERROR_META,
@@ -130,7 +138,7 @@ export default function MonitoringDetailPage() {
   const event = eventQuery.data
 
   const historyQuery = useQuery({
-    queryKey: ['eventHistory', slug, branchId, scopeId],
+    queryKey: eventHistoryKey(slug, branchId, scopeId),
     queryFn: () => eventsApi.history(slug!, scopeId, branchId),
     enabled: scope === 'event' && !!slug && !!scopeId,
     meta: SILENT_ERROR_META,
@@ -150,7 +158,7 @@ export default function MonitoringDetailPage() {
   // Secondary: a failure only costs the meta-field labels, and the global
   // toast says so — it is not a reason to blank the page (MON-8).
   const metaFieldsQuery = useQuery({
-    queryKey: ['metaFields', slug, branchId],
+    queryKey: metaFieldsKey(slug, branchId),
     queryFn: () => metaFieldsApi.list(slug!, branchId),
     enabled: scope === 'event' && !!slug,
   })
@@ -194,7 +202,7 @@ export default function MonitoringDetailPage() {
   const metricsQuery = useQuery({
     // Keyed on the range length, not the live bounds: the bound steps every five
     // minutes, and the query function reads the current window on each fetch.
-    queryKey: [...monitoringSeriesKey(slug, scope, scopeId), rangeDays],
+    queryKey: monitoringSeriesRangeKey(slug, scope, scopeId, rangeDays),
     queryFn: () => {
       if (scope === 'metric') {
         return metricsCatalogApi.getSeries(slug!, scopeId, timeRange).then(adaptMetricSeries)
@@ -239,7 +247,7 @@ export default function MonitoringDetailPage() {
   // Secondary: without it the By version tab stays hidden, and the global toast
   // names the failure (MON-8).
   const scanConfigQuery = useQuery({
-    queryKey: ['scanConfig', slug, scanConfigId],
+    queryKey: scanConfigKey(slug, scanConfigId),
     queryFn: () => scansApi.get(slug!, scanConfigId!),
     enabled: scope !== 'metric' && !!slug && !!scanConfigId,
   })

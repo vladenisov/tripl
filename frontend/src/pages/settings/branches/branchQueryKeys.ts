@@ -11,10 +11,23 @@
 
 import type { QueryClient } from '@tanstack/react-query'
 import {
+  branchEventHistoryKey,
+  branchEventKey,
+  branchEventsKey,
+  eventTagsKey,
   eventTypesKey,
+  metaFieldsKey,
   planBranchesKey,
+  projectEventHistoryKey,
+  projectEventKey,
+  projectEventsKey,
+  projectEventTagsKey,
   projectEventTypesKey,
+  projectMetaFieldsKey,
+  projectPlanRevisionsKey,
+  projectRelationsKey,
   projectVariablesKey,
+  relationsKey,
   variablesKey,
 } from '@/lib/queryKeys'
 
@@ -81,15 +94,15 @@ export function invalidateMainPlan(qc: QueryClient, slug: string) {
   for (const queryKey of [
     projectEventTypesKey(slug),
     projectVariablesKey(slug),
-    ['events', slug],
+    projectEventsKey(slug),
     // The single-event reader and editor, its tags and its history: an editor
     // opened on pre-merge data saves it straight back over the merge.
-    ['event', slug],
-    ['eventTags', slug],
-    ['eventHistory', slug],
-    ['metaFields', slug],
-    ['relations', slug],
-    ['planRevisions', slug],
+    projectEventKey(slug),
+    projectEventTagsKey(slug),
+    projectEventHistoryKey(slug),
+    projectMetaFieldsKey(slug),
+    projectRelationsKey(slug),
+    projectPlanRevisionsKey(slug),
   ]) {
     void qc.invalidateQueries({ queryKey })
   }
@@ -101,14 +114,14 @@ export function invalidateBranchPlan(qc: QueryClient, slug: string, branchId: st
   for (const queryKey of [
     eventTypesKey(slug, branchId),
     variablesKey(slug, branchId),
-    ['events', slug, branchId],
+    branchEventsKey(slug, branchId),
     // EventForm edits from ['event', slug, branchId, eventId]; a stale copy
     // there would PUT the reverted values back (no version check).
-    ['event', slug, branchId],
-    ['eventTags', slug, branchId],
-    ['eventHistory', slug, branchId],
-    ['metaFields', slug, branchId],
-    ['relations', slug, branchId],
+    branchEventKey(slug, branchId),
+    eventTagsKey(slug, branchId),
+    branchEventHistoryKey(slug, branchId),
+    metaFieldsKey(slug, branchId),
+    relationsKey(slug, branchId),
   ]) {
     void qc.invalidateQueries({ queryKey })
   }

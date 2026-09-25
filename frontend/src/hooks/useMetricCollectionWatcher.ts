@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { ApiError } from '@/api/client'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import type { MetricDefinitionDetailResponse } from '@/types'
+import { metricCollectWatchKey } from '@/lib/queryKeys'
 
 /** How often to re-check the watched metric's persisted collection status. */
 const DEFAULT_POLL_INTERVAL_MS = 3000
@@ -150,7 +151,7 @@ export function useMetricCollectionWatcher<TContext = void>(
     // terminal status never short-circuits a new watch with stale data. The slug
     // comes from the target, not the route, so the poll follows the collect it
     // started rather than the page the user has since walked to.
-    queryKey: ['metric-collect-watch', target?.slug, target?.metricId, target?.startedAt],
+    queryKey: metricCollectWatchKey(target?.slug, target?.metricId, target?.startedAt),
     enabled: Boolean(target),
     refetchInterval: options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     // The one-off watch entry is useless once the run settles.

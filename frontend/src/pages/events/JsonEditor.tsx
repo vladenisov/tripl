@@ -112,9 +112,10 @@ export function JsonEditor({
       e.preventDefault()
       setHighlightIdx(i => Math.max(i - 1, 0))
     } else if (e.key === 'Enter' || e.key === 'Tab') {
-      if (filtered.length > 0) {
+      const choice = filtered[highlightIdx]
+      if (choice) {
         e.preventDefault()
-        insertVar(filtered[highlightIdx].name)
+        insertVar(choice.name)
       }
     } else if (e.key === 'Escape') {
       setShowMenu(false)

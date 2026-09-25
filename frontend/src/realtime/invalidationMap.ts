@@ -15,13 +15,40 @@
 import type { QueryClient, QueryKey } from '@tanstack/react-query'
 import { refreshEventsLists } from '@/lib/eventsListCache'
 import {
+  activeSignalsKey,
+  activityKey,
   alertDeliveriesAnyKey,
+  alertDeliveriesKey,
   alertInboxGroupKey,
   alertInboxKey,
   eventsMetricsKey,
+  metricDefinitionKey,
+  metricsCatalogKey,
+  monitorsSummaryKey,
+  overviewRootKey,
+  projectAppVersionAdoptionKey,
+  projectAppVersionSeriesKey,
+  projectBreakdownTimelineKey,
+  projectChartAnnotationsKey,
+  projectDistributionDriftsKey,
+  projectEventHistoryKey,
+  projectEventKey,
+  projectEventsKey,
   projectEventTypesKey,
+  projectEventWindowMetricsKey,
   projectKey,
+  projectMonitorHistoryKey,
+  projectMonitoringBreakdownsKey,
+  projectMonitoringSeriesKey,
+  projectMonitorKey,
+  projectReleaseRegressionsKey,
+  projectScanJobsKey,
+  projectSeasonalityKey,
   projectsKey,
+  projectTopMoversKey,
+  reconciliationRootKey,
+  scansKey,
+  topbarNotificationsKey,
 } from '@/lib/queryKeys'
 
 export const PROJECT_EVENT_TYPES = [
@@ -50,7 +77,7 @@ function alertInboxKeys(slug: string): QueryKey[] {
 
 /** Activity rail keys — project feed + the workspace ('workspace' fallback) feed. */
 function activityKeys(slug: string): QueryKey[] {
-  return [['activity', slug], ['activity', 'workspace']]
+  return [activityKey(slug), activityKey(undefined)]
 }
 
 /**
@@ -61,75 +88,75 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
   switch (type) {
     case 'scan_job.updated':
       return [
-        ['scans', slug],
-        ['scanJobs', slug],
-        ['events', slug],
+        scansKey(slug),
+        projectScanJobsKey(slug),
+        projectEventsKey(slug),
         projectEventTypesKey(slug),
         // The events-tab dynamics chart does not poll while the stream is live.
         eventsMetricsKey(slug),
-        ['overview'],
+        overviewRootKey(),
         ...activityKeys(slug),
       ]
     case 'metric_collection.updated':
       return [
-        ['scans', slug],
-        ['scanJobs', slug],
-        ['metrics-catalog', slug],
+        scansKey(slug),
+        projectScanJobsKey(slug),
+        metricsCatalogKey(slug),
         eventsMetricsKey(slug),
-        ['monitoringMetrics', slug],
-        ['metricDefinition', slug],
-        ['eventMetricBreakdowns', slug],
-        ['eventHistory', slug],
-        ['event', slug],
-        ['eventWindowMetrics', slug],
+        projectMonitoringSeriesKey(slug),
+        metricDefinitionKey(slug),
+        projectMonitoringBreakdownsKey(slug),
+        projectEventHistoryKey(slug),
+        projectEventKey(slug),
+        projectEventWindowMetricsKey(slug),
         // The By version series sits right above the adoption chart; refreshing
         // only the adoption made the two cards disagree after a collection,
         // since neither polls while the stream is live (MON-4).
-        ['appVersionSeries', slug],
-        ['appVersionAdoption', slug],
-        ['chartAnnotations', slug],
-        ['breakdownTimeline', slug],
-        ['distributionDrifts', slug],
-        ['seasonality', slug],
-        ['topMovers', slug],
-        ['releaseRegressions', slug],
-        ['monitors-summary', slug],
-        ['monitor', slug],
-        ['monitor-history', slug],
-        ['reconciliation'],
+        projectAppVersionSeriesKey(slug),
+        projectAppVersionAdoptionKey(slug),
+        projectChartAnnotationsKey(slug),
+        projectBreakdownTimelineKey(slug),
+        projectDistributionDriftsKey(slug),
+        projectSeasonalityKey(slug),
+        projectTopMoversKey(slug),
+        projectReleaseRegressionsKey(slug),
+        monitorsSummaryKey(slug),
+        projectMonitorKey(slug),
+        projectMonitorHistoryKey(slug),
+        reconciliationRootKey(),
         // Covers the Events tabs/rows signals AND the expanded list shared by
         // the bell, Overview and the Anomalies page (tripl-jfm3.119). The old
         // per-surface prefixes ('anomalies'/'overview'/'topbarNotifications'
         // + signals) are gone — one key now, so a new surface cannot forget to
         // register itself here.
-        ['activeSignals', slug],
-        ['topbarNotifications', slug],
-        ['overview'],
+        activeSignalsKey(slug),
+        topbarNotificationsKey(slug),
+        overviewRootKey(),
         ...activityKeys(slug),
       ]
     case 'signals.updated':
       return [
-        ['activeSignals', slug],
-        ['monitors-summary', slug],
-        ['monitor', slug],
-        ['monitor-history', slug],
-        ['metricDefinition', slug],
-        ['monitoringMetrics', slug],
-        ['appVersionSeries', slug],
-        ['topbarNotifications', slug],
-        ['overview'],
+        activeSignalsKey(slug),
+        monitorsSummaryKey(slug),
+        projectMonitorKey(slug),
+        projectMonitorHistoryKey(slug),
+        metricDefinitionKey(slug),
+        projectMonitoringSeriesKey(slug),
+        projectAppVersionSeriesKey(slug),
+        topbarNotificationsKey(slug),
+        overviewRootKey(),
         ...activityKeys(slug),
         ...alertInboxKeys(slug),
       ]
     case 'activity.created':
       return [
         ...activityKeys(slug),
-        ['topbarNotifications', slug],
-        ['alertDeliveries', slug],
+        topbarNotificationsKey(slug),
+        alertDeliveriesKey(slug),
         ...alertInboxKeys(slug),
       ]
     case 'project_summary.updated':
-      return [projectsKey(), projectKey(slug), ['overview']]
+      return [projectsKey(), projectKey(slug), overviewRootKey()]
   }
 }
 

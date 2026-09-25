@@ -58,7 +58,19 @@ import {
   type DestinationFormState,
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
-import { projectEventTypesKey } from '@/lib/queryKeys'
+import {
+  alertDeliveriesAnyKey,
+  alertDeliveriesKey,
+  alertDeliveriesPageKey,
+  alertDeliveryKey,
+  alertDestinationsKey,
+  alertInboxGroupItemKey,
+  alertInboxKey,
+  alertInboxListKey,
+  projectEventTypesKey,
+  projectKey,
+  scansKey,
+} from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { lazyWithReload } from '@/lib/lazyWithReload'
 
@@ -277,11 +289,11 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   }
 
   const { data: destinations = [], isSuccess: destinationsLoaded } = useQuery({
-    queryKey: ['alertDestinations', slug],
+    queryKey: alertDestinationsKey(slug),
     queryFn: () => alertingApi.listDestinations(slug),
   })
   const { data: project } = useQuery({
-    queryKey: ['project', slug],
+    queryKey: projectKey(slug),
     queryFn: () => projectsApi.get(slug),
   })
   const { data: eventTypes = [] } = useQuery({
@@ -292,7 +304,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     enabled: section === 'monitors',
   })
   const { data: scans = [], isSuccess: scansLoaded } = useQuery({
-    queryKey: ['scans', slug],
+    queryKey: scansKey(slug),
     queryFn: () => scansApi.list(slug),
     // Read by the rule editor's scan binding and by the audit filter bar — and
     // by nothing on the Inbox, which fired this request on every load and never
@@ -314,7 +326,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     isLoading: deliveriesLoading,
     isError: deliveriesFailed,
   } = useQuery({
-    queryKey: ['alertDeliveries', slug, activeDeliveryFilters, deliveryOffset],
+    queryKey: alertDeliveriesPageKey(slug, activeDeliveryFilters, deliveryOffset),
     queryFn: () => alertingApi.listDeliveries(slug, {
       ...activeDeliveryFilters,
       status: activeDeliveryFilters.status || undefined,
@@ -345,7 +357,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // the setup checklist — and the filter bar that caused it went with it, so
   // there was nothing left to undo. One row is enough to answer the question.
   const { data: everDelivered, isSuccess: deliveryProbeAnswered } = useQuery({
-    queryKey: ['alertDeliveriesAny', slug],
+    queryKey: alertDeliveriesAnyKey(slug),
     queryFn: () => alertingApi.listDeliveries(slug, { limit: 1 }),
   })
   // A deep link from an alert message names ONE delivery, and that delivery
@@ -354,7 +366,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // makes the link outlive the list: without this the reader lands on an audit
   // page that does not contain the row the message told them to look at.
   const { data: focusedDelivery } = useQuery({
-    queryKey: ['alertDelivery', slug, focusDeliveryId],
+    queryKey: alertDeliveryKey(slug, focusDeliveryId),
     queryFn: () => alertingApi.getDelivery(slug, focusDeliveryId!),
     // Audit is the only section that renders it, so it is not worth a request
     // while the reader is on another one.
@@ -411,7 +423,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // Spread into the key, not the state object: two states that ask the server
   // the same question must share one cache entry, and only the request says
   // which those are (a blank search box and a whitespace one, for instance).
-  const inboxKey = ['alertInbox', slug, inboxStatus, inboxRequest]
+  const inboxKey = alertInboxListKey(slug, inboxStatus, inboxRequest)
   // The same hook and the same cadence as RoutingRulesPanel, deliberately: the
   // page held open during an incident showed a live CONFIGURATION panel beside a
   // frozen triage queue — a new incident never appeared and a colleague's Ack
@@ -447,7 +459,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   })
   const inbox = useMemo(() => {
     const pages = inboxQuery.data?.pages
-    if (!pages || pages.length === 0) return undefined
+    const firstPage = pages?.[0]
+    if (!pages || !firstPage) return undefined
     // `total` is the FILTERED total the first page reported, which is what
     // "of M" has to mean once a status filter is on.
     //
@@ -457,8 +470,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // disagreement.
     return {
       items: pages.flatMap(page => page.items),
-      total: pages[0].total,
-      window_truncated_at: pages[0].window_truncated_at,
+      total: firstPage.total,
+      window_truncated_at: firstPage.window_truncated_at,
     }
   }, [inboxQuery.data])
   // A Telegram alert names its incident, and `?incident=` only pre-expanded a
@@ -467,7 +480,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // Fetched by id through the route that ignores the 30-day list window, and
   // pinned, exactly as the deep-linked delivery above already is.
   const { data: focusedIncident } = useQuery({
-    queryKey: ['alertInboxGroup', slug, focusIncidentId],
+    queryKey: alertInboxGroupItemKey(slug, focusIncidentId),
     queryFn: () => alertingApi.getInboxGroup(slug, focusIncidentId!),
     enabled: !!focusIncidentId && section === 'inbox',
   })
@@ -799,10 +812,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       )
       // …and the pinned deep-linked copy, which lives under its own key and
       // would otherwise keep rendering the pre-action status beside the list.
-      qc.setQueryData(
-        ['alertInboxGroup', slug, updated.correlation_group_id],
-        updated,
-      )
+      qc.setQueryData(alertInboxGroupItemKey(slug, updated.correlation_group_id), updated)
       toast.success(
         inboxActionSuccessMessage(variables.action, variables.group.status, data),
       )
@@ -816,8 +826,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       // group the server returned is already written above, and refetching
       // every loaded page after a comment is pure cost (tripl-oxkt.20).
       if (variables.action === 'note') return
-      qc.invalidateQueries({ queryKey: ['alertInbox', slug] })
-      qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
+      qc.invalidateQueries({ queryKey: alertInboxKey(slug) })
+      qc.invalidateQueries({ queryKey: alertDeliveriesKey(slug) })
       // No `['scans']` invalidation: an inbox action cannot change a scan
       // config, and a 20-item triage pass refetched that list 20 times for
       // nothing (tripl-oxkt.20).
@@ -928,7 +938,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       // the selected incidents and would otherwise keep rendering the
       // pre-action status beside a list that has moved on.
       for (const group of data.groups) {
-        qc.setQueryData(['alertInboxGroup', slug, group.correlation_group_id], group)
+        qc.setQueryData(alertInboxGroupItemKey(slug, group.correlation_group_id), group)
       }
       // The decision has been spent, so the selection that expressed it is
       // gone. Leaving it ticked invites the same batch being applied twice, and
@@ -966,8 +976,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       // invalidating would refetch every loaded page of an accumulating list to
       // arrive at the cards `onSuccess` has already written.
       if (variables.action === 'note') return
-      qc.invalidateQueries({ queryKey: ['alertInbox', slug] })
-      qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
+      qc.invalidateQueries({ queryKey: alertInboxKey(slug) })
+      qc.invalidateQueries({ queryKey: alertDeliveriesKey(slug) })
     },
   })
 

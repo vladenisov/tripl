@@ -64,7 +64,7 @@ class RelaxedParser {
   }
 
   skipBlank(): void {
-    while (this.i < this.src.length && /\s/.test(this.src[this.i])) this.i += 1
+    while (this.i < this.src.length && /\s/.test(this.src.charAt(this.i))) this.i += 1
   }
 
   /** Skip whitespace and any run of separators, counting the ones that were redundant. */
@@ -112,7 +112,7 @@ class RelaxedParser {
   readBare(stopAtColon: boolean): string {
     const start = this.i
     while (this.i < this.src.length) {
-      const ch = this.src[this.i]
+      const ch = this.src.charAt(this.i)
       // A ${token} closes with the same brace that ends an object, so step
       // over it whole or every bare template would be cut in half.
       if (ch === '$' && this.src[this.i + 1] === '{') {
@@ -133,7 +133,7 @@ class RelaxedParser {
     if (text === 'true' || text === 'false' || text === 'null') return { kind: 'raw', text }
     if (NUMBER_PATTERN.test(text)) return { kind: 'raw', text }
     const template = /^\$\{([^}]*)\}$/.exec(text)
-    if (template) return { kind: 'template', token: template[1] }
+    if (template) return { kind: 'template', token: template[1] ?? '' }
     // Only a dotted path or a name the project already knows is read as a
     // variable. A bare single word stays a string, so `mode: dark` is not
     // silently turned into a reference to something that does not exist.
@@ -154,7 +154,7 @@ class RelaxedParser {
     if (ch === '"' || ch === "'") {
       const value = this.parseQuoted(ch)
       const template = /^\$\{([^}]*)\}$/.exec(value)
-      return template ? { kind: 'template', token: template[1] } : { kind: 'string', value }
+      return template ? { kind: 'template', token: template[1] ?? '' } : { kind: 'string', value }
     }
     const bare = this.readBare(false)
     if (!bare) throw new Error('empty value')

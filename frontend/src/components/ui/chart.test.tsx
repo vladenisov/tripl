@@ -29,6 +29,7 @@ import {
   MultiSeriesTooltip,
   renderCountSeries,
 } from './chart'
+import { at } from '@/test/at'
 
 describe('MetricsChart', () => {
   it('renders anomaly dots for anomalous points', () => {
@@ -413,25 +414,25 @@ describe('buildChartData confidence band', () => {
   }
 
   it('draws the band as expected ± sigmaThreshold * effective_stddev', () => {
-    const [built] = buildChartData([flagged], [], 3)
+    const built = at(buildChartData([flagged], [], 3), 0)
     expect(built.band).toEqual([10 - 3 * 2, 10 + 3 * 2])
   })
 
   it('scales the band width with the served sigma threshold', () => {
-    const [narrow] = buildChartData([flagged], [], 2)
-    const [wide] = buildChartData([flagged], [], 4)
+    const narrow = at(buildChartData([flagged], [], 2), 0)
+    const wide = at(buildChartData([flagged], [], 4), 0)
     expect(narrow.band).toEqual([6, 14])
     expect(wide.band).toEqual([2, 18])
   })
 
   it('keeps a flagged point outside the band and leaves normal buckets bandless', () => {
-    const [built] = buildChartData([flagged], [], 3)
+    const built = at(buildChartData([flagged], [], 3), 0)
     const [lower, upper] = built.band as [number, number]
     // actual 0 sits below the lower band edge -> visually "flagged".
     expect(flagged.count).toBeLessThan(lower)
     expect(upper).toBeGreaterThan(lower)
 
-    const [normalPoint] = buildChartData([normal], [], 3)
+    const normalPoint = at(buildChartData([normal], [], 3), 0)
     expect(normalPoint.band).toBeUndefined()
   })
 
@@ -439,7 +440,7 @@ describe('buildChartData confidence band', () => {
     // 4, not 3: the fallback is the detector's own default sigma threshold
     // (ProjectAnomalySettings.sigma_threshold = 4.0). It used to be 3 under a
     // comment claiming the scan-config default (tripl-0zpq.299).
-    const [built] = buildChartData([flagged], [], Number.NaN)
+    const built = at(buildChartData([flagged], [], Number.NaN), 0)
     expect(built.band).toEqual([10 - 4 * 2, 10 + 4 * 2])
   })
 })
@@ -473,7 +474,7 @@ describe('MetricsChart served sigma threshold', () => {
     rect.mockRestore()
 
     expect(composedChartProps).not.toHaveLength(0)
-    return composedChartProps[composedChartProps.length - 1].data as Array<{ band?: [number, number] }>
+    return at(composedChartProps, -1).data as Array<{ band?: [number, number] }>
   }
 
   it('draws the band at the sigma threshold served on the payload', () => {
@@ -490,7 +491,7 @@ describe('MetricsChart served sigma threshold', () => {
 
     // expected ± 6σ, the multiplier the detector flagged this bucket with — NOT
     // the client's own DEFAULT_SIGMA_THRESHOLD of 4, which would read [2, 18].
-    expect(rows[0].band).toEqual([10 - 6 * 2, 10 + 6 * 2])
+    expect(at(rows, 0).band).toEqual([10 - 6 * 2, 10 + 6 * 2])
   })
 
   it('falls back to the client default when the payload serves no threshold', () => {
@@ -499,7 +500,7 @@ describe('MetricsChart served sigma threshold', () => {
       <MetricsChart granularity="day" data={[flagged]} sigmaThreshold={undefined} />,
     )
 
-    expect(rows[0].band).toEqual([10 - 4 * 2, 10 + 4 * 2])
+    expect(at(rows, 0).band).toEqual([10 - 4 * 2, 10 + 4 * 2])
   })
 })
 

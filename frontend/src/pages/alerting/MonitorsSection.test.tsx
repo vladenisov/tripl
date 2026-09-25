@@ -8,6 +8,7 @@ import { INDEFINITE_MUTE, muteChoiceName } from '@/lib/mutePresets'
 import type { AlertDestination, AlertRule, MonitorsSummaryResponse } from '@/types'
 
 import { MonitorsSection, type RuleWithDestination } from './MonitorsSection'
+import { at } from '@/test/at'
 
 function makeRule(overrides: Partial<RuleWithDestination> = {}): RuleWithDestination {
   return {
@@ -257,8 +258,8 @@ describe('MonitorsSection mute', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Mute Prod drops for 24h' }))
 
     await waitFor(() => expect(mute).toHaveBeenCalled())
-    expect(mute.mock.calls[0][0]).toBe('windy-ios')
-    expect(mute.mock.calls[0][1]).toBe('rule-1')
+    expect(at(mute.mock.calls, 0)[0]).toBe('windy-ios')
+    expect(at(mute.mock.calls, 0)[1]).toBe('rule-1')
   })
 
   it('offers Unmute — not a second Mute — once a rule is muted', async () => {

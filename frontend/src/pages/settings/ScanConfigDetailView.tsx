@@ -23,7 +23,7 @@ import { ScanBadges } from './scans/ScanConfigRow'
 import { BackLink, SrcIcon } from './scans/scanLayout'
 import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
 import { deriveScanRunInfo } from './scans/scanUtils'
-import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
+import { dataSourcesKey, eventTypesKey, scanJobsKey, scansKey } from '@/lib/queryKeys'
 import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { usePageTitle } from '@/components/shell-chrome-context'
@@ -66,7 +66,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
     error: scansErrorObj,
     refetch: refetchScans,
   } = useQuery({
-    queryKey: ['scans', slug],
+    queryKey: scansKey(slug),
     queryFn: () => scansApi.list(slug),
   })
   const { data: dataSources = [] } = useQuery({
@@ -86,7 +86,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
     isActive: scanJobsHaveActiveWork,
   })
   const { data: jobs = [] } = useQuery({
-    queryKey: ['scanJobs', slug, scanConfigId],
+    queryKey: scanJobsKey(slug, scanConfigId),
     queryFn: () => scansApi.listJobs(slug, scanConfigId),
     refetchInterval: jobsRefetchInterval,
     enabled: !!sc,
@@ -100,7 +100,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
       // job *this* POST returned can advance the coached scenario. Inert outside
       // a demo project (tripl-2su6.21.5).
       notifyScanRunStarted(job)
-      qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfigId] })
+      qc.invalidateQueries({ queryKey: scanJobsKey(slug, scanConfigId) })
       // The Scans list's activity row sits under ['scanJobs', slug] but not
       // under this scan's id, so the key above does not reach it.
       qc.invalidateQueries({ queryKey: scanActivityKey(slug) })
@@ -234,10 +234,12 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             onKeyDown={(e) => {
               if (e.key === 'ArrowRight') {
                 const next = arr[(idx + 1) % arr.length]
+                if (!next) return
                 setTab(next)
                 document.getElementById(`scan-tab-${next}`)?.focus()
               } else if (e.key === 'ArrowLeft') {
                 const prev = arr[(idx - 1 + arr.length) % arr.length]
+                if (!prev) return
                 setTab(prev)
                 document.getElementById(`scan-tab-${prev}`)?.focus()
               }

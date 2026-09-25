@@ -217,8 +217,11 @@ export function adoptSectionKeepingEdits(
   settings: ServiceSettings,
   section: SectionKey,
 ): EditableSettings {
-  const merged = { ...settings[section] } as unknown as Record<string, string | number | boolean>
-  const edited = form[section] as unknown as Record<string, string | number | boolean>
+  const merged = { ...settings[section] } as unknown as Record<
+    string,
+    string | number | boolean | undefined
+  >
+  const edited = form[section] as unknown as Record<string, string | number | boolean | undefined>
   for (const field of COMPARE_FIELDS[section]) {
     merged[field] = edited[field]
   }
@@ -303,6 +306,7 @@ export function buildSectionDiff(
   const savedSection = saved[section] as unknown as Record<string, string | number | boolean>
   for (const field of fields) {
     let value = currentSection[field]
+    if (value === undefined) continue
     // A numeric field typed back to its saved value is not a change, and a
     // valid one goes out as a number, not as the input's text.
     if (

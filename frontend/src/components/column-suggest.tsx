@@ -88,7 +88,8 @@ export function ColumnSuggestInput({
     }
     if (e.key === 'Enter') {
       e.preventDefault()
-      pick(filtered[activeIdx])
+      const choice = filtered[activeIdx]
+      if (choice !== undefined) pick(choice)
     } else if (e.key === 'ArrowDown') {
       e.preventDefault()
       setHighlight(Math.min(activeIdx + 1, filtered.length - 1))

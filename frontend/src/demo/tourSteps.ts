@@ -83,7 +83,7 @@ export function buildMetricBuildingBlocks(slug: string): MetricBuildingBlock[] {
   ]
 }
 
-export function buildTourSteps(slug: string): TourStep[] {
+export function buildTourSteps(slug: string): [TourStep, ...TourStep[]] {
   const base = `/p/${slug}`
   return [
     {

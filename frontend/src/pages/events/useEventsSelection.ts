@@ -32,9 +32,7 @@ export function useEventsSelection({
   )
   const visibleIndexById = useMemo(() => {
     const map = new Map<string, number>()
-    for (let i = 0; i < visibleEventIds.length; i += 1) {
-      map.set(visibleEventIds[i], i)
-    }
+    visibleEventIds.forEach((id, i) => map.set(id, i))
     return map
   }, [visibleEventIds])
   const visibleEventIdsSet = useMemo(() => new Set(visibleEventIds), [visibleEventIds])

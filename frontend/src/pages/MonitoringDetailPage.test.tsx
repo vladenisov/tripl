@@ -14,6 +14,7 @@ import {
 import { liveLoopState } from '@/demo/scenarioTestState'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import MonitoringDetailPage from './MonitoringDetailPage'
+import { at } from '@/test/at'
 
 const { toastSuccess, toastError } = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
@@ -2220,7 +2221,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     const SLUG = 'demo'
     const POLL_MS = 10
     const STEPS = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())
-    const COLLECT_INSTRUCTION = STEPS[2].instruction
+    const COLLECT_INSTRUCTION = at(STEPS, 2).instruction
 
     function demoProject(overrides: Partial<Project> = {}): Project {
       return {

@@ -13,6 +13,7 @@ import { liveLoopState } from '@/demo/scenarioTestState'
 import type { Project, ScanConfig } from '@/types'
 import { ScanDetail } from './ScanDetail'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { at } from '@/test/at'
 
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -691,7 +692,7 @@ describe('ScanDetail — streak past the loaded page (tripl-fj5g.11)', () => {
 
 describe('ScanDetail — coached demo scenario', () => {
   const SLUG = 'demo'
-  const WATCH_SCAN_INSTRUCTION = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())[1].instruction
+  const WATCH_SCAN_INSTRUCTION = at(buildChapterSteps(SLUG, 'live-loop', initialScenarioState()), 1).instruction
 
   function demoProject(overrides: Partial<Project> = {}): Project {
     return {

@@ -19,7 +19,12 @@ import { EVENT_STATUSES } from '@/lib/eventStatus'
 import { getErrorMessage } from '@/lib/utils'
 import { describeEventTypeDeletionImpact } from './eventTypeDeletionImpact'
 import EventsPage from '@/pages/EventsPage'
-import { eventTypesKey, projectEventTypesKey } from '@/lib/queryKeys'
+import {
+  eventTypeDeletionImpactKey,
+  eventTypeOwnersKey,
+  eventTypesKey,
+  projectEventTypesKey,
+} from '@/lib/queryKeys'
 import {
   ColorPicker,
   FieldsEditor,
@@ -203,10 +208,12 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
               onKeyDown={(e) => {
                 if (e.key === 'ArrowRight') {
                   const next = TABS[(idx + 1) % TABS.length]
+                  if (!next) return
                   setTab(next.id)
                   document.getElementById(`et-tab-${next.id}`)?.focus()
                 } else if (e.key === 'ArrowLeft') {
                   const prev = TABS[(idx - 1 + TABS.length) % TABS.length]
+                  if (!prev) return
                   setTab(prev.id)
                   document.getElementById(`et-tab-${prev.id}`)?.focus()
                 }
@@ -472,7 +479,7 @@ function DangerZoneCard({
   // events, so the count would omit exactly the rows the cascade still takes —
   // and under-counting in a delete confirm is worse than not counting at all.
   const impactQuery = useQuery({
-    queryKey: ['eventTypeDeletionImpact', slug, branchId, eventType.id],
+    queryKey: eventTypeDeletionImpactKey(slug, branchId, eventType.id),
     queryFn: () =>
       eventsApi.list(
         slug,
@@ -542,7 +549,7 @@ function MergeGateChip({ slug, eventType }: { slug: string; eventType: EventType
   // the request 404s and the chip would then claim "no owners" (tripl-kjhi.11).
   const branchId = useActiveBranchId()
   const { data: owners = [] } = useQuery({
-    queryKey: ['eventTypeOwners', slug, eventType.id],
+    queryKey: eventTypeOwnersKey(slug, eventType.id),
     queryFn: () => eventTypeOwnersApi.list(slug, eventType.id),
     enabled: branchId === null,
   })

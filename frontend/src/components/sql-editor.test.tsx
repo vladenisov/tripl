@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { SqlEditor } from './sql-editor'
+import { at } from '@/test/at'
 
 describe('SqlEditor', () => {
   it('renders a ClickHouse editor with schema-aware SQL extensions', () => {
@@ -97,7 +98,7 @@ describe('SqlEditor', () => {
 
     // The formatter is a lazily imported chunk, so the result lands async.
     await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1))
-    const formatted = onChange.mock.calls[0][0] as string
+    const formatted = at(onChange.mock.calls, 0)[0] as string
     expect(formatted).toMatch(/\n/)
     expect(formatted.toLowerCase()).toContain('from')
   })
@@ -138,7 +139,7 @@ describe('SqlEditor', () => {
 
     const rule = indexCss.match(/\.sql-editor\s+\.cm-editor\s+\.cm-content\s*\{([^}]*)\}/)
     expect(rule).not.toBeNull()
-    const body = rule![1]
+    const body = rule?.[1] ?? ''
 
     const whiteSpace = body.match(/white-space:\s*([a-z-]+)/)?.[1]
     expect(WRAPPING_WHITE_SPACE).toContain(whiteSpace)

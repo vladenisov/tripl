@@ -14,6 +14,7 @@ import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { Project, Role } from '@/types'
 import { ScansTab } from './ScansTab'
 import ProjectScansPage from '../ProjectScansPage'
+import { at } from '@/test/at'
 
 const navigateMock = vi.fn()
 
@@ -501,8 +502,8 @@ describe('ScansTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Run again/i }))
 
     await waitFor(() => expect(runCalls.length).toBeGreaterThanOrEqual(1))
-    expect(runCalls[0].method).toBe('POST')
-    expect(runCalls[0].url).toContain('/projects/demo/scans/scan-1/run')
+    expect(at(runCalls, 0).method).toBe('POST')
+    expect(at(runCalls, 0).url).toContain('/projects/demo/scans/scan-1/run')
   })
 
   it('marks only the pending row busy while its re-run is in flight', async () => {
@@ -530,7 +531,7 @@ describe('ScansTab', () => {
     // scan-2's (Jan 1), so the first Run again belongs to scan-1.
     const runAgainButtons = await screen.findAllByRole('button', { name: /Run again/i })
     expect(runAgainButtons).toHaveLength(2)
-    fireEvent.click(runAgainButtons[0])
+    fireEvent.click(at(runAgainButtons, 0))
 
     // Only the clicked row's button goes busy; the other scan's stays live.
     expect(await screen.findByRole('button', { name: 'Starting…' })).toBeDisabled()
@@ -549,8 +550,8 @@ describe('ScansTab', () => {
     fireEvent.click(runButton)
 
     await waitFor(() => expect(runCalls.length).toBeGreaterThanOrEqual(1))
-    expect(runCalls[0].method).toBe('POST')
-    expect(runCalls[0].url).toContain('/projects/demo/scans/scan-1/run')
+    expect(at(runCalls, 0).method).toBe('POST')
+    expect(at(runCalls, 0).url).toContain('/projects/demo/scans/scan-1/run')
   })
 
   // A schedule with no time column is never dispatched, so it collects no metric
@@ -682,7 +683,7 @@ describe('ScansTab', () => {
 describe('ScansTab — coached demo scenario', () => {
   const SLUG = 'demo'
   const RUN_SCAN_INSTRUCTION = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())[0].instruction
-  const WATCH_SCAN_INSTRUCTION = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())[1].instruction
+  const WATCH_SCAN_INSTRUCTION = at(buildChapterSteps(SLUG, 'live-loop', initialScenarioState()), 1).instruction
 
   function demoProject(overrides: Partial<Project> = {}): Project {
     return {

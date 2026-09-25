@@ -12,6 +12,8 @@ import { postLoginDestination } from '@/lib/authRedirect'
 import { PASSWORD_MIN_LENGTH, PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
 import type { AuthUser } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { authStatusKey, projectsKey } from '@/lib/queryKeys'
+import { AUTH_QUERY_KEY } from '@/components/auth-context'
 
 type AuthMode = 'login' | 'register' | 'forgot' | 'reset'
 
@@ -55,7 +57,7 @@ export default function AuthPage() {
   // Unauthenticated instance probe: drives the "first account becomes owner"
   // note and whether a sign-up form is worth offering at all.
   const statusQuery = useQuery({
-    queryKey: ['auth', 'status'],
+    queryKey: authStatusKey(),
     queryFn: authApi.status,
   })
   const isFreshInstance = statusQuery.data?.has_users === false
@@ -87,8 +89,8 @@ export default function AuthPage() {
             ...(name.trim() ? { name: name.trim() } : {}),
           }),
     onSuccess: async (user: AuthUser) => {
-      queryClient.setQueryData<AuthUser | null>(['auth', 'me'], user)
-      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      queryClient.setQueryData<AuthUser | null>(AUTH_QUERY_KEY, user)
+      await queryClient.invalidateQueries({ queryKey: projectsKey() })
       navigate(destination, { replace: true })
     },
   })

@@ -7,7 +7,7 @@ import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { getErrorMessage } from '@/lib/utils'
-import { projectEventTypesKey } from '@/lib/queryKeys'
+import { eventTypeDriftsKey, projectEventsKey, projectEventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 
@@ -54,7 +54,7 @@ export function EventDriftBadge({
 
   const driftsQuery = useQuery({
     meta: SILENT_ERROR_META,
-    queryKey: ['eventTypeDrifts', slug, eventTypeId],
+    queryKey: eventTypeDriftsKey(slug, eventTypeId),
     queryFn: () => eventTypesApi.listDrifts(slug, eventTypeId),
     enabled: open,
     staleTime: 30_000,
@@ -75,9 +75,9 @@ export function EventDriftBadge({
       })
     },
     onSuccess: (_data, { action }) => {
-      qc.invalidateQueries({ queryKey: ['eventTypeDrifts', slug, eventTypeId] })
+      qc.invalidateQueries({ queryKey: eventTypeDriftsKey(slug, eventTypeId) })
       qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
-      qc.invalidateQueries({ queryKey: ['events', slug] })
+      qc.invalidateQueries({ queryKey: projectEventsKey(slug) })
       // Accepting a schema drift lands the reconcile chapter's last step —
       // inert outside the demo scenario (the reducer drops other steps).
       if (action === 'accept') notifyStepCompleted('reconcile/review-drift')

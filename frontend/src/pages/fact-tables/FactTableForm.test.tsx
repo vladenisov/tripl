@@ -54,6 +54,7 @@ vi.mock('@/hooks/useDataSourceSchema', () => ({
 }))
 
 import { factTablesApi } from '@/api/factTablesApi'
+import { at } from '@/test/at'
 
 const DATA_SOURCES = [{ id: 'ds-1', name: 'Warehouse' }] as unknown as DataSource[]
 
@@ -298,7 +299,7 @@ describe('FactTableForm', () => {
     submit()
 
     await waitFor(() => expect(factTablesApi.update).toHaveBeenCalledTimes(1))
-    const [, , payload] = vi.mocked(factTablesApi.update).mock.calls[0]
+    const [, , payload] = at(vi.mocked(factTablesApi.update).mock.calls, 0)
     const identifiers = (payload as { identifier_columns: string[] }).identifier_columns
     expect(identifiers).toEqual(expect.arrayContaining(['paid', 'android', 'country']))
     expect(identifiers).not.toContain('user_id')
@@ -352,7 +353,7 @@ describe('FactTableForm', () => {
     submit()
 
     await waitFor(() => expect(factTablesApi.update).toHaveBeenCalledTimes(1))
-    const [, factTableId, payload] = vi.mocked(factTablesApi.update).mock.calls[0]
+    const [, factTableId, payload] = at(vi.mocked(factTablesApi.update).mock.calls, 0)
     expect(factTableId).toBe('ft-9')
     expect(payload).not.toHaveProperty('name')
     expect(payload).toMatchObject({ display_name: 'Orders renamed' })

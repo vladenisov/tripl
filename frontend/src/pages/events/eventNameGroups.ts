@@ -66,11 +66,11 @@ const isDelimiter = (ch: string): boolean => ch === '_' || ch === ':' || ch === 
 export function eventNamePrefix(name: string): string | null {
   let i = name.length - 1
   // 1. Skip any trailing delimiter run — it has no suffix segment after it.
-  while (i >= 0 && isDelimiter(name[i])) i -= 1
+  while (i >= 0 && isDelimiter(name.charAt(i))) i -= 1
   // 2. Skip the final (suffix) segment.
-  while (i >= 0 && !isDelimiter(name[i])) i -= 1
+  while (i >= 0 && !isDelimiter(name.charAt(i))) i -= 1
   // 3. Skip the delimiter run separating the prefix from the suffix.
-  while (i >= 0 && isDelimiter(name[i])) i -= 1
+  while (i >= 0 && isDelimiter(name.charAt(i))) i -= 1
 
   const prefixEnd = i + 1
   // A non-positive boundary means no interior delimiter or an empty prefix.

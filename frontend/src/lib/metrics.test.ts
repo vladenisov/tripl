@@ -8,6 +8,7 @@ import {
   getBucketStart,
   granularityFitsRange,
 } from './metrics'
+import { at } from '@/test/at'
 
 function point(overrides: Partial<EventMetricPoint> & { bucket: string }): EventMetricPoint {
   return {
@@ -243,8 +244,8 @@ describe('getBucketStart is timezone-independent', () => {
 
     for (const result of byZone) {
       expect(result).toHaveLength(1)
-      expect(result[0].bucket).toBe('2026-06-08T00:00:00.000Z')
-      expect(result[0].count).toBe(7)
+      expect(at(result, 0).bucket).toBe('2026-06-08T00:00:00.000Z')
+      expect(at(result, 0).count).toBe(7)
     }
   })
 })
@@ -263,8 +264,8 @@ describe('aggregateMetricPoints', () => {
       '2026-06-10T10:00:00.000Z',
       '2026-06-10T11:00:00.000Z',
     ])
-    expect(result[0].count).toBe(5)
-    expect(result[1].count).toBe(5)
+    expect(at(result, 0).count).toBe(5)
+    expect(at(result, 1).count).toBe(5)
   })
 
   it('adds variance across buckets: stddev = sqrt(sum of squares)', () => {
@@ -277,7 +278,7 @@ describe('aggregateMetricPoints', () => {
     )
     // sqrt(3^2 + 4^2) = sqrt(25) = 5
     expect(result).toHaveLength(1)
-    expect(result[0].stddev).toBe(5)
+    expect(at(result, 0).stddev).toBe(5)
   })
 
   it('returns null stddev when every source bucket has null stddev', () => {
@@ -288,7 +289,7 @@ describe('aggregateMetricPoints', () => {
       ],
       'hour',
     )
-    expect(result[0].stddev).toBeNull()
+    expect(at(result, 0).stddev).toBeNull()
   })
 
   it('treats all-zero stddevs as zero, not null', () => {
@@ -299,7 +300,7 @@ describe('aggregateMetricPoints', () => {
       ],
       'hour',
     )
-    expect(result[0].stddev).toBe(0)
+    expect(at(result, 0).stddev).toBe(0)
   })
 
   it('rolls up expected_count only when every source carries a baseline', () => {
@@ -313,7 +314,7 @@ describe('aggregateMetricPoints', () => {
       ],
       'hour',
     )
-    expect(mixed[0].expected_count).toBeNull()
+    expect(at(mixed, 0).expected_count).toBeNull()
 
     const allPresent = aggregateMetricPoints(
       [
@@ -322,7 +323,7 @@ describe('aggregateMetricPoints', () => {
       ],
       'hour',
     )
-    expect(allPresent[0].expected_count).toBe(12)
+    expect(at(allPresent, 0).expected_count).toBe(12)
 
     const allNull = aggregateMetricPoints(
       [
@@ -331,7 +332,7 @@ describe('aggregateMetricPoints', () => {
       ],
       'hour',
     )
-    expect(allNull[0].expected_count).toBeNull()
+    expect(at(allNull, 0).expected_count).toBeNull()
   })
 
   it('does not flag an aggregated day when one anomalous hour leaves the day total unremarkable', () => {
@@ -358,7 +359,7 @@ describe('aggregateMetricPoints', () => {
       }),
     )
 
-    const [day] = aggregateMetricPoints(hourly, 'day')
+    const day = at(aggregateMetricPoints(hourly, 'day'), 0)
 
     expect(day.is_anomaly).toBe(false)
     expect(day.z_score).toBeNull()
@@ -388,7 +389,7 @@ describe('aggregateMetricPoints', () => {
       )
     }
 
-    const [day] = aggregateMetricPoints(hourly, 'day')
+    const day = at(aggregateMetricPoints(hourly, 'day'), 0)
 
     expect(day.is_anomaly).toBe(true)
     expect(day.anomaly_direction).toBe('spike')
@@ -422,9 +423,9 @@ describe('aggregateMetricPoints', () => {
       ],
       'hour',
     )
-    expect(result[0].is_anomaly).toBe(true)
-    expect(result[0].z_score).toBe(5)
-    expect(result[0].anomaly_direction).toBe('spike')
+    expect(at(result, 0).is_anomaly).toBe(true)
+    expect(at(result, 0).z_score).toBe(5)
+    expect(at(result, 0).anomaly_direction).toBe('spike')
   })
 
   it('picks the largest magnitude even when the strongest is negative', () => {
@@ -445,8 +446,8 @@ describe('aggregateMetricPoints', () => {
       ],
       'hour',
     )
-    expect(result[0].z_score).toBe(-8)
-    expect(result[0].anomaly_direction).toBe('drop')
+    expect(at(result, 0).z_score).toBe(-8)
+    expect(at(result, 0).anomaly_direction).toBe('drop')
   })
 
   it('marks a bucket as non-anomalous when no source point is an anomaly', () => {
@@ -454,9 +455,9 @@ describe('aggregateMetricPoints', () => {
       [point({ bucket: '2026-06-10T10:00:00Z', count: 4, is_anomaly: false })],
       'hour',
     )
-    expect(result[0].is_anomaly).toBe(false)
-    expect(result[0].z_score).toBeNull()
-    expect(result[0].anomaly_direction).toBeNull()
+    expect(at(result, 0).is_anomaly).toBe(false)
+    expect(at(result, 0).z_score).toBeNull()
+    expect(at(result, 0).anomaly_direction).toBeNull()
   })
 })
 
@@ -471,7 +472,7 @@ describe('aggregateMetricPoints rollup mode (MON-2 / MET-12)', () => {
     }))
 
   it('averages a non-additive metric instead of summing it', () => {
-    const [day] = aggregateMetricPoints(hourlyRatio, 'day', 'mean')
+    const day = at(aggregateMetricPoints(hourlyRatio, 'day', 'mean'), 0)
     // Summing would plot 1.92 — "192 %" for an 8 % rate.
     expect(day.count).toBeCloseTo(0.08, 10)
   })
@@ -484,6 +485,7 @@ describe('aggregateMetricPoints rollup mode (MON-2 / MET-12)', () => {
       'day',
       'mean',
     )
+    if (!day) throw new Error('expected one day bucket')
     expect(day.expected_count).toBeNull()
     expect(day.stddev).toBeNull()
     // The flagged hour still shows: there is no rolled-up baseline to clear it.
@@ -492,8 +494,9 @@ describe('aggregateMetricPoints rollup mode (MON-2 / MET-12)', () => {
   })
 
   it('passes a single-point bucket through untouched in mean mode', () => {
-    const [only] = aggregateMetricPoints([hourlyRatio[0]], 'day', 'mean')
-    expect(only).toEqual({ ...hourlyRatio[0], bucket: '2026-06-10T00:00:00.000Z' })
+    const first = at(hourlyRatio, 0)
+    const [only] = aggregateMetricPoints([first], 'day', 'mean')
+    expect(only).toEqual({ ...first, bucket: '2026-06-10T00:00:00.000Z' })
   })
 
   it('still sums additive series by default', () => {
@@ -504,7 +507,7 @@ describe('aggregateMetricPoints rollup mode (MON-2 / MET-12)', () => {
       ],
       'day',
     )
-    expect(day.count).toBe(12)
+    expect(day?.count).toBe(12)
   })
 })
 

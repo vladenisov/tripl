@@ -6,6 +6,7 @@ import { formatDateTime } from '@/lib/datetime'
 import { isThreadUnanswered, threadStateLabel } from '@/components/commentThreadState'
 import type { EventCommentAction, EventCommentStatus } from '@/types'
 import { useCanWriteProject } from '@/lib/permissions'
+import { eventsRootKey } from '@/lib/queryKeys'
 
 /**
  * The shape the thread renders. Both anchors — a photo and an event — keep
@@ -98,14 +99,14 @@ export function CommentThread({
   const [body, setBody] = useState(initialBody)
   const [replyTo, setReplyTo] = useState<string | null>(null)
 
-  const commentsQuery = useQuery({ queryKey: [...queryKey], queryFn: list })
+  const commentsQuery = useQuery({ queryKey: queryKey, queryFn: list })
 
   const createMut = useMutation({
     mutationFn: () => create(body.trim(), replyTo),
     onSuccess: () => {
       setBody('')
       setReplyTo(null)
-      void queryClient.invalidateQueries({ queryKey: [...queryKey] })
+      void queryClient.invalidateQueries({ queryKey: queryKey })
       onCreated?.()
     },
   })
@@ -113,7 +114,7 @@ export function CommentThread({
   const deleteMut = useMutation({
     mutationFn: (commentId: string) => remove(commentId),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [...queryKey] })
+      void queryClient.invalidateQueries({ queryKey: queryKey })
     },
   })
 
@@ -128,10 +129,10 @@ export function CommentThread({
       snoozedUntil?: string
     }) => onAction!(commentId, action, snoozedUntil),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [...queryKey] })
+      void queryClient.invalidateQueries({ queryKey: queryKey })
       // The catalog's open-question count and filter read the same threads, so
       // a resolve here has to reach the list the user came from.
-      void queryClient.invalidateQueries({ queryKey: ['events'] })
+      void queryClient.invalidateQueries({ queryKey: eventsRootKey() })
     },
   })
 

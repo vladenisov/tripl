@@ -6,6 +6,7 @@ import { projectsApi } from '@/api/projects'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { Project } from '@/types'
 import SettingsArea from './SettingsArea'
+import { at } from '@/test/at'
 
 const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
 
@@ -236,7 +237,7 @@ describe('SettingsArea project binding', () => {
       .getAllByRole('alert')
       .filter((node) => within(node).queryByRole('heading', { name: 'Projects could not be loaded' }))
     expect(cards).toHaveLength(1)
-    expect(within(cards[0]).getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+    expect(within(at(cards, 0)).getByRole('button', { name: 'Try again' })).toBeInTheDocument()
   })
 
   it('still renders workspace sections with no project bound', async () => {

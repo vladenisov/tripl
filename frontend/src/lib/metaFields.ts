@@ -83,7 +83,7 @@ function hrefScheme(href: string): string | null {
   // eslint-disable-next-line no-control-regex
   const normalized = href.replace(/[\t\n\r]/g, '').replace(/^[\u0000-\u0020]+/, '')
   const match = /^([a-z][a-z0-9+.-]*):/i.exec(normalized)
-  return match ? match[1].toLowerCase() : null
+  return match?.[1]?.toLowerCase() ?? null
 }
 
 /**

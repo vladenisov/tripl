@@ -29,6 +29,7 @@ import {
 } from './scenarioModel'
 import { chapterState, liveLoopState } from './scenarioTestState'
 import { setWelcomeDismissed } from './welcomeDismissal'
+import { at } from '@/test/at'
 
 const SLUG = 'acme'
 
@@ -91,7 +92,7 @@ function renderWithScenario(ui: ReactNode, project: Project | undefined) {
 const path = () => screen.getByTestId('path').textContent
 
 /** The chapter picker rows, scoped so both hosts share the queries. */
-const picker = () => screen.getAllByRole('list', { name: 'Scenario chapters' })[0]
+const picker = () => at(screen.getAllByRole('list', { name: 'Scenario chapters' }), 0)
 const chapterRow = (title: string) =>
   within(picker()).getByRole('button', { name: new RegExp(title) })
 

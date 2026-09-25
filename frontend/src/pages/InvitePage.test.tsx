@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import InvitePage from './InvitePage'
+import { at } from '@/test/at'
 
 
 function jsonResponse(data: unknown, status = 200) {
@@ -122,7 +123,7 @@ describe('InvitePage', () => {
     await waitFor(() => expect(accepted).toHaveBeenCalled())
     // Only a password and a display name are ever submitted — never an address
     // or a role, which the server takes from the invitation.
-    expect(accepted.mock.calls[0][0]).toEqual({ password: 'Password123!', name: 'New Person' })
+    expect(at(accepted.mock.calls, 0)[0]).toEqual({ password: 'Password123!', name: 'New Person' })
     expect(await screen.findByText('Signed in home')).toBeInTheDocument()
     expect(qc.getQueryData(['auth', 'me'])).toEqual({
       id: 'u1',

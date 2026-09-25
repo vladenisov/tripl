@@ -6,6 +6,7 @@ import { ActiveProjectContext } from '@/components/active-project-context'
 import { AuthContext } from '@/components/auth-context'
 import { authAs } from '@/test/auth'
 import { ScanConfigurationTab, ScanCreatePage } from './ScanConfigForm'
+import { at } from '@/test/at'
 
 // CodeMirror needs real layout measurement jsdom can't provide; a plain textarea
 // keeps the SQL field queryable and the suite deterministic.
@@ -300,7 +301,7 @@ describe('ScanFormSections — the mode choice', () => {
 
     await screen.findByText('New scan')
     const emptyOption = () =>
-      (screen.getByLabelText('Time column') as HTMLSelectElement).options[0]
+      at((screen.getByLabelText('Time column') as HTMLSelectElement).options, 0)
 
     expect(emptyOption().disabled).toBe(true)
 

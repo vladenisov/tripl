@@ -36,6 +36,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDelivery, MonitoringSignal } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { alertDeliveriesKey, topbarDeliveriesKey } from '@/lib/queryKeys'
 
 type TopBarProps = {
   title: string
@@ -153,7 +154,7 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
   const signalsQuery = useExpandedSignals(projectSlug)
   const deliveriesQuery = useQuery({
     meta: SILENT_ERROR_META,
-    queryKey: ['topbarNotifications', projectSlug, 'deliveries'],
+    queryKey: topbarDeliveriesKey(projectSlug),
     queryFn: () => alertingApi.listDeliveries(projectSlug!, { limit: 5 }),
     enabled: !!projectSlug,
     refetchInterval,
@@ -385,8 +386,8 @@ function DeliveryNotification({
     meta: SILENT_ERROR_META,
     mutationFn: () => alertingApi.retryDelivery(slug, delivery.id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['topbarNotifications', slug, 'deliveries'] })
-      qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
+      qc.invalidateQueries({ queryKey: topbarDeliveriesKey(slug) })
+      qc.invalidateQueries({ queryKey: alertDeliveriesKey(slug) })
     },
   })
   const StatusIcon = delivery.status === 'sent'

@@ -45,13 +45,14 @@ vi.mock('sonner', () => ({
 }))
 
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { at } from '@/test/at'
 
 const SLUG = 'demo'
 const POLL_MS = 10
 
 const STEPS = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())
-const COLLECT_INSTRUCTION = STEPS[2].instruction
-const SEE_CHART_INSTRUCTION = STEPS[3].instruction
+const COLLECT_INSTRUCTION = at(STEPS, 2).instruction
+const SEE_CHART_INSTRUCTION = at(STEPS, 3).instruction
 
 function demoProject(overrides: Partial<Project> = {}): Project {
   return {

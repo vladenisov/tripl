@@ -10,7 +10,7 @@ import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
 import { ErrorState } from '@/components/error-state'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { eventTypesKey } from '@/lib/queryKeys'
+import { branchEventsKey, bulkIdentitiesKey, eventTypesKey } from '@/lib/queryKeys'
 import { ChevronLeft, Loader2, Plus } from 'lucide-react'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard } from './eventFormLayout'
 import { nameFormatBaseColumns } from './utils'
@@ -117,7 +117,7 @@ export default function EventBulkForm() {
   const unmappedColumns = namingColumns.filter(column => !fieldsByName.has(column))
 
   const identityQuery = useQuery({
-    queryKey: ['bulkIdentities', slug, branchId, etId],
+    queryKey: bulkIdentitiesKey(slug, branchId, etId),
     queryFn: () =>
       eventsApi.list(slug!, { event_type_id: etId, limit: IDENTITY_SCAN_LIMIT }, branchId),
     enabled: !!slug && !!etId && !unsupported,
@@ -164,7 +164,7 @@ export default function EventBulkForm() {
         branchId,
       ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
+      qc.invalidateQueries({ queryKey: branchEventsKey(slug, branchId) })
       unsaved.release()
       goBack()
     },

@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import type { Event, EventType, MetaFieldDefinition } from '@/types'
 import { buildExamplePayload, buildSpecMarkdown } from '@/lib/eventSpec'
 import { EventSpecCard } from './EventSpecCard'
+import { at } from '@/test/at'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
@@ -121,7 +122,7 @@ describe('EventSpecCard (tripl-kjhi.8)', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Copy as JSON' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
-    expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual(payload)
+    expect(JSON.parse(at(writeText.mock.calls, 0)[0] as string)).toEqual(payload)
   })
 
   it('reports a failed copy when there is no clipboard (plain HTTP)', async () => {
@@ -140,7 +141,7 @@ describe('EventSpecCard (tripl-kjhi.8)', () => {
   it('builds a Markdown spec a ticket can carry', () => {
     const rows = [
       {
-        field: EVENT_TYPE.field_definitions[0],
+        field: at(EVENT_TYPE.field_definitions, 0),
         value: 'spot',
         namesTheEvent: true,
         contexts: [],
@@ -164,7 +165,7 @@ describe('EventSpecCard (tripl-kjhi.8)', () => {
   it('keeps an unresolved template token in the payload rather than inventing a value', () => {
     const payload = buildExamplePayload([
       {
-        field: EVENT_TYPE.field_definitions[3],
+        field: at(EVENT_TYPE.field_definitions, 3),
         value: '{"how": "${property.how}"}',
         namesTheEvent: false,
         contexts: [],

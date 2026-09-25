@@ -26,7 +26,16 @@ import { formatRelativeTime } from '@/lib/datetime'
 import { eventNameLabel } from '@/lib/eventName'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { coverageTone, toneVar } from '@/lib/statusLexicon'
-import { eventTypesKey } from '@/lib/queryKeys'
+import {
+  branchEventsKey,
+  deadEventsKey,
+  eventTypesKey,
+  projectDeadEventsKey,
+  projectEventsKey,
+  projectShadowEventsKey,
+  reconciliationCoverageKey,
+  shadowEventsKey,
+} from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
@@ -107,20 +116,20 @@ export default function ReconciliationPage() {
   const [deadError, setDeadError] = useState<string | null>(null)
 
   const coverageQuery = useQuery({
-    queryKey: ['reconciliation', 'coverage', slug, COVERAGE_DAYS],
+    queryKey: reconciliationCoverageKey(slug, COVERAGE_DAYS),
     queryFn: () => reconciliationApi.coverage(slug!, COVERAGE_DAYS),
     enabled: !!slug,
   })
 
   const shadowQuery = useQuery({
-    queryKey: ['reconciliation', 'shadow', slug, branchId, shadowStatus],
+    queryKey: shadowEventsKey(slug, branchId, shadowStatus),
     queryFn: () =>
       reconciliationApi.shadowEvents(slug!, { status: shadowStatus, limit: 100 }, branchId),
     enabled: !!slug,
   })
 
   const deadQuery = useQuery({
-    queryKey: ['reconciliation', 'dead', slug, DEAD_DAYS],
+    queryKey: deadEventsKey(slug, DEAD_DAYS),
     queryFn: () => reconciliationApi.deadEvents(slug!, DEAD_DAYS),
     enabled: !!slug,
   })
@@ -133,9 +142,9 @@ export default function ReconciliationPage() {
   })
 
   const invalidateShadow = () => {
-    void qc.invalidateQueries({ queryKey: ['reconciliation', 'shadow', slug] })
-    void qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
-    void qc.invalidateQueries({ queryKey: ['events', slug] })
+    void qc.invalidateQueries({ queryKey: projectShadowEventsKey(slug) })
+    void qc.invalidateQueries({ queryKey: branchEventsKey(slug, branchId) })
+    void qc.invalidateQueries({ queryKey: projectEventsKey(slug) })
   }
 
   const clearRowError = (id: string) =>
@@ -189,7 +198,7 @@ export default function ReconciliationPage() {
     onSuccess: () => {
       setSelectedDead([])
       setDeadError(null)
-      void qc.invalidateQueries({ queryKey: ['reconciliation', 'dead', slug] })
+      void qc.invalidateQueries({ queryKey: projectDeadEventsKey(slug) })
     },
     onError: (err: unknown) => {
       setDeadError(err instanceof Error ? err.message : 'Archive failed')
@@ -541,20 +550,22 @@ function Panel({
 // Coverage is "steady" when every bucket rounds to the same whole-percent —
 // the per-day histogram then carries no signal worth its visual weight.
 function hasCoverageVariation(items: CoverageBucket[]): boolean {
-  if (items.length < 2) return false
-  const first = Math.round(bucketPct(items[0]))
+  const [head] = items
+  if (items.length < 2 || !head) return false
+  const first = Math.round(bucketPct(head))
   return items.some((bucket) => Math.round(bucketPct(bucket)) !== first)
 }
 
 function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number }) {
-  if (items.length === 0) {
+  const [head] = items
+  if (!head) {
     return (
       <div className="flex-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
         No data-match history yet.
       </div>
     )
   }
-  const steadyPct = Math.round(bucketPct(items[0]))
+  const steadyPct = Math.round(bucketPct(head))
   const isSteady = !hasCoverageVariation(items)
   return (
     <div className="flex-1">
@@ -569,7 +580,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
         >
           <div
             className="h-[2px] w-full rounded-full"
-            style={{ background: coverageColor(bucketPct(items[0])), opacity: 0.85 }}
+            style={{ background: coverageColor(bucketPct(head)), opacity: 0.85 }}
           />
         </div>
       ) : (

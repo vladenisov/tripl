@@ -10,6 +10,8 @@ import { ROLE_OPTIONS, type AuthUser } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { PASSWORD_MIN_LENGTH, PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
+import { invitationPreviewKey } from '@/lib/queryKeys'
+import { AUTH_QUERY_KEY } from '@/components/auth-context'
 
 /**
  * Redeem an invitation into an account.
@@ -32,7 +34,7 @@ export default function InvitePage() {
 
   const previewQuery = useQuery({
     meta: SILENT_ERROR_META,
-    queryKey: ['invitationPreview', token],
+    queryKey: invitationPreviewKey(token),
     queryFn: () => invitationsApi.preview(token),
     retry: false,
   })
@@ -45,7 +47,7 @@ export default function InvitePage() {
       // Writing it straight into the session query is what lands the user in
       // the app: a refetch left the session "anonymous" until /auth/me came
       // back, long enough for the sign-in screen to flash (SHELL-17).
-      queryClient.setQueryData<AuthUser | null>(['auth', 'me'], user)
+      queryClient.setQueryData<AuthUser | null>(AUTH_QUERY_KEY, user)
       void navigate('/', { replace: true })
     },
   })

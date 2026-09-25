@@ -15,6 +15,7 @@ import {
   toDryRunRequest,
   useScanForm,
 } from './useScanForm'
+import { at } from '@/test/at'
 
 function formState(overrides: Partial<ScanFormState> = {}): ScanFormState {
   return {
@@ -177,7 +178,7 @@ describe('loadPreview — the first click on a brand-new scan (tripl-3y7z)', () 
     act(() => result.current.loadPreview())
 
     await waitFor(() => expect(dryRun).toHaveBeenCalledTimes(1))
-    expect(dryRun.mock.calls[0][1].event_type_column).toBe('event_name')
+    expect(at(dryRun.mock.calls, 0)[1].event_type_column).toBe('event_name')
   })
 
   it('answers straight away when an explicit event type already names every row', async () => {

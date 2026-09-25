@@ -11,6 +11,7 @@ import {
   nextDriftSnoozeExpiry,
   useDriftReviewClock,
 } from './variableDrift'
+import { at } from '@/test/at'
 
 const NOW = Date.parse('2026-09-01T12:00:00Z')
 const IN_A_WEEK = '2026-09-08T12:00:00Z'
@@ -133,7 +134,7 @@ describe('useDriftReviewClock (tripl-lh61)', () => {
     const rows = [snoozedFor(MINUTE_MS)]
     const { result } = renderHook(() => useDriftReviewClock(rows))
 
-    expect(driftReviewState(rows[0], result.current)).toBe('snoozed')
+    expect(driftReviewState(at(rows, 0), result.current)).toBe('snoozed')
 
     act(() => {
       vi.advanceTimersByTime(MINUTE_MS)
@@ -145,7 +146,7 @@ describe('useDriftReviewClock (tripl-lh61)', () => {
     // panel stayed open, while the badge the backend recomputes per request had
     // already counted it as open again. Nothing remounted and no new rows
     // arrived here; only the deadline passed.
-    expect(driftReviewState(rows[0], result.current)).toBe('active')
+    expect(driftReviewState(at(rows, 0), result.current)).toBe('active')
   })
 
   it('arms nothing when no snooze is in force', () => {
@@ -190,12 +191,12 @@ describe('useDriftReviewClock (tripl-lh61)', () => {
     act(() => {
       vi.advanceTimersByTime(MAX_DRIFT_TIMER_DELAY_MS)
     })
-    expect(driftReviewState(rows[0], result.current)).toBe('snoozed')
+    expect(driftReviewState(at(rows, 0), result.current)).toBe('snoozed')
 
     act(() => {
       vi.advanceTimersByTime(40 * DAY_MS - MAX_DRIFT_TIMER_DELAY_MS)
     })
-    expect(driftReviewState(rows[0], result.current)).toBe('active')
+    expect(driftReviewState(at(rows, 0), result.current)).toBe('active')
   })
 
   it('clears its timer on unmount', () => {
