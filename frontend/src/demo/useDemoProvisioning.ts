@@ -65,7 +65,19 @@ export const MAX_DEMOS_PER_CREATOR = 3
 type CreateOutcome =
   | { kind: 'created'; project: Project; run: number }
   | { kind: 'cancelled'; run: number }
+  /** Stopped by a cancel this tab did not send (the same user, another tab). */
+  | { kind: 'cancelled-elsewhere'; run: number }
   | { kind: 'failed'; error: unknown; run: number }
+
+/**
+ * The server's answer to a create that a cancel stopped: a 409 like the demo
+ * limit, told apart by its detail (demo_service.create_demo_project). The
+ * cancel is per creator, so one sent from another tab stops this tab's create
+ * too — and this tab must say "cancelled", not "limit reached".
+ */
+function isCancelledElsewhere(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && /provisioning was cancelled/i.test(error.message)
+}
 
 export interface DemoProvisioningController {
   status: ProvisioningStatus
@@ -135,6 +147,7 @@ export function useDemoProvisioning(options?: {
         return { kind: 'created', project: await projectsApi.createDemo(controller.signal), run }
       } catch (caught) {
         if (cancelRequestedRef.current || run !== runRef.current) return { kind: 'cancelled', run }
+        if (isCancelledElsewhere(caught)) return { kind: 'cancelled-elsewhere', run }
         return { kind: 'failed', error: caught, run }
       }
     },
@@ -152,6 +165,11 @@ export function useDemoProvisioning(options?: {
         return
       }
       if (outcome.kind === 'cancelled') return
+      if (outcome.kind === 'cancelled-elsewhere') {
+        setCancelOutcome('stopped')
+        void queryClient.invalidateQueries({ queryKey: ['projects'] })
+        return
+      }
       setProject(outcome.project)
       void queryClient.invalidateQueries({ queryKey: ['projects'] })
       if (onSuccess) {

@@ -241,13 +241,15 @@ async def _diff_counts_for_branches(
 ) -> dict[uuid.UUID, tuple[int, bool]]:
     """ahead/behind for every OPEN feature branch, off ONE main snapshot.
 
-    ``tripl plan branches`` is the only caller that asks for these. The Branches
-    tab does not use this path: it fans out one ``/branches/{id}/diff`` per row,
-    capped at ROW_DIFF_LIMIT (the selected branch plus the most recently updated
-    others), and counts its badge through the paired view, so a rename is one
-    change there. ``ahead`` here is the
-    reviewable total of ``diff_branch``'s ``summary``, where a rename is its
-    removal plus its addition.
+    Two callers ask for these: ``tripl plan branches`` and the Branches tab,
+    whose row badges read them instead of firing one ``/branches/{id}/diff``
+    per row (PLAN-3). ``ahead`` is the reviewable total of ``diff_branch``'s
+    ``summary`` PAIRED the way the Changes list pairs it: each rename the merge
+    will apply (``snapshot_rename_pairs``, the list ``diff_branch`` returns as
+    ``renames``) is ONE change, not its removal plus its addition. Without that,
+    a branch whose only change is a rename read "2 ahead" in the list and one
+    change in the branch's own view (tripl-amnn). A legacy branch with no base
+    snapshot has no pairing, as in ``diff_branch``.
 
     Per-row diffs are what this saves: a diff is two plan snapshots, a snapshot
     is essentially the whole cost of the call (measured 507 ms main + 157 ms
@@ -302,7 +304,11 @@ async def _diff_counts_for_branches(
             base_payload, main_snapshot, origins_complete=True
         )
         mark_housekeeping(ahead_entries, behind_entries=behind_entries, main_payload=main_snapshot)
-        counts[branch.id] = (len(reviewable(ahead_entries)), len(behind_entries) > 0)
+        # Each pair is one added + one removed reviewable entry, so this cannot
+        # go below zero; ``max`` only guards a pairing that ever disagrees.
+        renamed = len(snapshot_rename_pairs(base_payload, main_snapshot, branch_snapshot))
+        ahead = max(len(reviewable(ahead_entries)) - renamed, 0)
+        counts[branch.id] = (ahead, len(behind_entries) > 0)
     return counts
 
 

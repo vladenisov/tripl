@@ -893,13 +893,17 @@ describe('ProjectsPage', () => {
     ).toHaveAttribute('href', '/p/windy-android/events/review')
   })
 
-  it('shows an error instead of the empty state when the backend is unavailable', async () => {
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
+  it('leaves a failed project list to the shell, and does not call it an empty workspace', async () => {
+    // Layout's "Backend is unavailable" card reports this failure (fj5g.6);
+    // the page's own card said it a second time. See Layout.test.tsx for the
+    // two rendered together.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
 
-    renderProjectsPage()
+    const { container } = renderProjectsPage()
 
-    expect(await screen.findByText('Failed to load projects')).toBeInTheDocument()
-    expect(screen.getByText('Backend is unavailable. Check that the API server is running and try again.')).toBeInTheDocument()
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    await waitFor(() => expect(container.querySelector('[data-slot="skeleton"]')).toBeNull())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByText('Keep your product analytics honest')).not.toBeInTheDocument()
   })
 

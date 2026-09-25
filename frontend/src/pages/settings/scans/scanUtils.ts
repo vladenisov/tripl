@@ -28,6 +28,16 @@ export const LOADING_SCAN_RUN_INFO: ScanRunInfo = {
  * adaptive polling fallback: fast polling stops once every job settles, and the
  * live stream (`scan_job.updated`) refreshes the list in the meantime.
  */
+/**
+ * Query key of `GET /scans/activity` (every scan's latest job, exact failing
+ * streak and 24h rows). Under the `['scanJobs', slug]` prefix on purpose, so the
+ * stream's scan-job invalidation reaches it; a mutation on ONE scan invalidates
+ * only `['scanJobs', slug, id]`, so it must invalidate this key too.
+ */
+export function scanActivityKey(slug: string) {
+  return ['scanJobs', slug, 'activity'] as const
+}
+
 export function scanJobsHaveActiveWork(jobs: ScanJob[] | undefined): boolean {
   return (jobs ?? []).some((job) => job.status === 'running' || job.status === 'pending')
 }

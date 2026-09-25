@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseContract, parseDecimal, validateContract, type ContractDraft } from './fieldContract'
+import { parseContract, parseDecimal, regexNotice, validateContract, type ContractDraft } from './fieldContract'
 
 const DRAFT: ContractDraft = {
   contract_max_bad_rate: '0',
@@ -39,9 +39,19 @@ describe('fieldContract (PLAN-38)', () => {
     expect(Object.keys(errors).sort()).toEqual([
       'contract_max_bad_rate',
       'contract_max_value',
-      'contract_regex',
       'contract_required_max_null_rate',
     ])
     expect(errors.contract_max_value).toBe('Max must be at least Min.')
+  })
+})
+
+describe('fieldContract regex (review 204)', () => {
+  it('never blocks a pattern JavaScript cannot compile: Python and RE2 accept these', () => {
+    for (const pattern of ['(?i)^checkout_', '(?P<name>a)', '(']) {
+      expect(validateContract({ ...DRAFT, contract_regex: pattern })).toEqual({})
+    }
+    // A note, not an error.
+    expect(regexNotice('(?i)^checkout_')).toMatch(/server checks it/)
+    expect(regexNotice('^[a-z]+$')).toBeUndefined()
   })
 })

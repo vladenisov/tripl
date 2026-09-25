@@ -46,7 +46,7 @@ import {
   pickSection,
   resetConfirm,
   resetPayload,
-  sectionHasInvalidNumber,
+  updateHasInvalidNumber,
 } from './settings-service/serviceSettingsHelpers'
 import { isOwner } from '@/lib/permissions'
 
@@ -69,8 +69,12 @@ type SettingsWrite =
   | { kind: 'reset'; section: SectionKey }
   | { kind: 'clear-secret'; group: 'ai' | 'email'; field: SecretField }
 
+function writeSection(write: SettingsWrite): SectionKey {
+  return write.kind === 'clear-secret' ? write.group : write.section
+}
+
 function writesAi(write: SettingsWrite): boolean {
-  return write.kind === 'clear-secret' ? write.group === 'ai' : write.section === 'ai'
+  return writeSection(write) === 'ai'
 }
 
 function payloadFor(write: SettingsWrite): ServiceSettingsUpdate {
@@ -141,18 +145,30 @@ export default function ServiceSettingsSection({
     [update, activeSection],
   )
   const sectionDirty = hasUpdate(sectionUpdate)
-  const otherDirty = dirtySections(update).filter(key => key !== activeSection)
-  const sectionInvalid = form !== null && activeSection !== null && sectionHasInvalidNumber(form, activeSection)
+  const dirtyKeys = dirtySections(update)
+  const otherDirty = dirtyKeys.filter(key => key !== activeSection)
+  // Only what this Save would send: an env value the backend itself accepted
+  // (AI_TIMEOUT_SECONDS=0, say) must not block an unrelated edit.
+  const sectionInvalid = activeSection !== null && updateHasInvalidNumber(sectionUpdate, activeSection)
+  // One string so the effect below re-registers only when the set changes.
+  const dirtyPathKey = dirtyKeys.map(key => `instance/${key}`).join('|')
 
   // buildUpdate spans every section, and switching between two instance
   // sections keeps this component mounted, so only leaving the instance group
   // actually loses the draft (tripl-l8v2).
   useEffect(() => {
     registerUnsaved(
-      dirty ? { keptBy: path => path.startsWith('instance/'), message: UNSAVED_MESSAGE } : null,
+      dirty
+        ? {
+            keptBy: path => path.startsWith('instance/'),
+            message: UNSAVED_MESSAGE,
+            // Feeds the rail's per-section "unsaved changes" marker.
+            dirtyPaths: dirtyPathKey.split('|'),
+          }
+        : null,
     )
     return () => registerUnsaved(null)
-  }, [dirty, registerUnsaved])
+  }, [dirty, dirtyPathKey, registerUnsaved])
 
   const setField = (section: SectionKey, field: string, value: string | number | boolean) => {
     setForm(current => {
@@ -268,7 +284,9 @@ export default function ServiceSettingsSection({
             )}
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {saveMut.isError && (
+            {/* The mutation is shared by every section, but its error belongs
+                to the one it wrote: a Security 422 is not an AI failure. */}
+            {saveMut.isError && saveMut.variables && writeSection(saveMut.variables) === activeSection && (
               <span role="alert" className="text-xs text-destructive">
                 {getErrorMessage(saveMut.error)}
               </span>

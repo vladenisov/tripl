@@ -21,6 +21,7 @@ from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.schemas.event_type_owner import EventTypeOwnerResponse
+from tripl.services.project_lookup import get_project_id_by_slug
 
 
 async def _resolve_main_event_type(
@@ -71,6 +72,26 @@ async def list_owners(
         .join(User, EventTypeOwner.user_id == User.id)
         .where(EventTypeOwner.event_type_id == event_type_id)
         .order_by(EventTypeOwner.created_at.asc())
+    )
+    return [await _serialize(owner, user) for owner, user in rows.all()]
+
+
+async def list_project_owners(session: AsyncSession, slug: str) -> list[EventTypeOwnerResponse]:
+    """Every owner of every live event type in the project, in ONE query.
+
+    The event-type list shows each type's owners and derives its merge-gate
+    status from them; asking ``list_owners`` once per type made that page one
+    request per event type (PLAN-42). Grouped by event type, then oldest grant
+    first, the order ``list_owners`` returns one type's owners in.
+    """
+    project_id = await get_project_id_by_slug(session, slug)  # 404 for an unknown project
+    rows = await session.execute(
+        select(EventTypeOwner, User)
+        .join(User, EventTypeOwner.user_id == User.id)
+        .join(EventType, EventTypeOwner.event_type_id == EventType.id)
+        .join(PlanBranch, EventType.branch_id == PlanBranch.id)
+        .where(EventType.project_id == project_id, PlanBranch.kind == BranchKind.main.value)
+        .order_by(EventTypeOwner.event_type_id, EventTypeOwner.created_at.asc())
     )
     return [await _serialize(owner, user) for owner, user in rows.all()]
 

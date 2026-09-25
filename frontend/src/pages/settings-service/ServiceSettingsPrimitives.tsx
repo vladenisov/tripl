@@ -119,17 +119,20 @@ export function NumberSettingInput({
   section,
   field,
   value,
+  saved,
   setField,
   suffix,
 }: {
   section: SectionKey
   field: string
   value: number | string
+  /** The stored value; left as it is, it is not this form's to reject. */
+  saved: number
   setField: (section: SectionKey, field: string, value: string | number | boolean) => void
   suffix?: string
 }) {
   const errorId = useId()
-  const error = numberFieldError(section, field, value)
+  const error = value === saved ? null : numberFieldError(section, field, value)
   return (
     <>
       <TextInput

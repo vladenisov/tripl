@@ -18,11 +18,18 @@ import {
   variablesKey,
 } from '@/lib/queryKeys'
 
-/** The list WITH ahead/behind counts. An extension of `planBranchesKey`, so
- * every invalidation of the plain list refreshes the badges too, while the
- * switcher's cache stays the cheap list it has always been. */
-export const planBranchCountsKey = (slug: string) =>
-  [...planBranchesKey(slug), 'diffCounts'] as const
+/** The list WITH ahead/behind counts. A sibling of `planBranchesKey`, not an
+ * extension: the counted list builds one plan snapshot per open branch plus
+ * one for main, with no cap, and a status change (submit, approve, request
+ * changes) moves no count. So it is refreshed only by what changes a plan —
+ * see `invalidateBranchCounts` — not by every invalidation of the plain list. */
+export const planBranchCountsKey = (slug: string) => ['planBranchCounts', slug] as const
+
+/** After a create, a revert, a merge, a delete or a reopen: the only actions
+ * that change a branch's content or bring a branch back into the counted set. */
+export function invalidateBranchCounts(qc: QueryClient, slug: string) {
+  void qc.invalidateQueries({ queryKey: planBranchCountsKey(slug) })
+}
 
 export const planBranchDiffKey = (slug: string, branchId: string | undefined) =>
   ['planBranchDiff', slug, branchId] as const
@@ -75,6 +82,11 @@ export function invalidateMainPlan(qc: QueryClient, slug: string) {
     projectEventTypesKey(slug),
     projectVariablesKey(slug),
     ['events', slug],
+    // The single-event reader and editor, its tags and its history: an editor
+    // opened on pre-merge data saves it straight back over the merge.
+    ['event', slug],
+    ['eventTags', slug],
+    ['eventHistory', slug],
     ['metaFields', slug],
     ['relations', slug],
     ['planRevisions', slug],
@@ -90,6 +102,11 @@ export function invalidateBranchPlan(qc: QueryClient, slug: string, branchId: st
     eventTypesKey(slug, branchId),
     variablesKey(slug, branchId),
     ['events', slug, branchId],
+    // EventForm edits from ['event', slug, branchId, eventId]; a stale copy
+    // there would PUT the reverted values back (no version check).
+    ['event', slug, branchId],
+    ['eventTags', slug, branchId],
+    ['eventHistory', slug, branchId],
     ['metaFields', slug, branchId],
     ['relations', slug, branchId],
   ]) {

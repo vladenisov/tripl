@@ -76,11 +76,12 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
     requestPageLeave(() => showTab(next))
   }
 
-  const { data: eventTypes = [], isSuccess, isError, error, refetch } = useQuery({
+  const { data, isSuccess, isError, error, refetch } = useQuery({
     queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug, branchId),
     meta: SILENT_ERROR_META,
   })
+  const eventTypes = data ?? []
 
   const et = eventTypes.find((e) => e.id === eventTypeId)
   // Branches deep-copy event types under new ids, so the id in the URL belongs
@@ -104,7 +105,11 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
   const goBack = () => navigate(`/p/${slug}/settings/event-types`)
   const goEvents = () => navigate(`/p/${slug}/events/${et?.name ?? 'all'}`)
 
-  if (isError) {
+  // Only a load that never answered replaces the page. A failed refetch keeps
+  // the cached type on screen with a line saying so: every save on the Settings
+  // tab refetches this list, and unmounting the page on a failed refetch threw
+  // away a field draft without asking (review 204).
+  if (isError && data === undefined) {
     return (
       <div className="space-y-4">
         <BackLink label="Event types" onClick={goBack} />
@@ -137,6 +142,11 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
   return (
     <div className="flex min-w-0 flex-col">
       <BackLink label="Event types" onClick={goBack} />
+      {isError && (
+        <p role="alert" className="mb-2 text-xs text-destructive">
+          Couldn't refresh this event type: {getErrorMessage(error)}
+        </p>
+      )}
 
       {/* Wraps: as one row the swatch, title, name, chip and two buttons left a
           phone's title a few characters wide (PLAN-45). Below `sm` the buttons

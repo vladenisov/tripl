@@ -84,6 +84,7 @@ export function SecuritySection({
             section="security"
             field="session_ttl_hours"
             value={form.security.session_ttl_hours}
+            saved={settings.security.session_ttl_hours}
             setField={setField}
             suffix="hours"
           />
@@ -135,6 +136,7 @@ export function SecuritySection({
             section="security"
             field="hsts_max_age_seconds"
             value={form.security.hsts_max_age_seconds}
+            saved={settings.security.hsts_max_age_seconds}
             setField={setField}
             suffix="seconds"
           />
@@ -172,6 +174,7 @@ export function SecuritySection({
             section="security"
             field="rate_limit_login_per_minute"
             value={form.security.rate_limit_login_per_minute}
+            saved={settings.security.rate_limit_login_per_minute}
             setField={setField}
             suffix="/min"
           />
@@ -186,6 +189,7 @@ export function SecuritySection({
             section="security"
             field="rate_limit_register_per_hour"
             value={form.security.rate_limit_register_per_hour}
+            saved={settings.security.rate_limit_register_per_hour}
             setField={setField}
             suffix="/hour"
           />

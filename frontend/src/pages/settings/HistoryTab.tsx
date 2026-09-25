@@ -121,9 +121,15 @@ export function HistoryTab({ slug }: { slug: string }) {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <Card>
           <CardContent className="p-0">
+            {listQuery.isError && listQuery.data !== undefined && (
+              // A failed refresh keeps the list on screen (review 204).
+              <p role="alert" className="px-3 py-2 text-xs text-destructive">
+                Couldn't refresh plan history: {getErrorMessage(listQuery.error)}
+              </p>
+            )}
             {listQuery.isPending ? (
               <div className="p-4 text-sm text-muted-foreground" role="status">Loading…</div>
-            ) : listQuery.isError ? (
+            ) : listQuery.isError && listQuery.data === undefined ? (
               // A failed load is not "No revisions yet" (PLAN-41).
               <div className="p-3">
                 <ErrorState

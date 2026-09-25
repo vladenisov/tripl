@@ -198,7 +198,7 @@ describe('useProjectEventStream', () => {
     renderHook(() => useProjectEventStream('demo'), { wrapper })
     const first = MockEventSource.instances[0]
     act(() =>
-      first.emit('hello', JSON.stringify({ backend: 'redis', seq: firstSeq, buffer_size: 50 }), '0'),
+      first.emit('hello', JSON.stringify({ backend: 'redis', seq: firstSeq, epoch: 'e1', buffer_size: 50 }), '0'),
     )
     act(() => first.fail())
     act(() => {
@@ -218,7 +218,7 @@ describe('useProjectEventStream', () => {
     const { invalidateSpy, second } = reconnectAfterHello(10)
 
     act(() =>
-      second.emit('hello', JSON.stringify({ backend: 'redis', seq: 12, buffer_size: 50 }), '0'),
+      second.emit('hello', JSON.stringify({ backend: 'redis', seq: 12, epoch: 'e1', buffer_size: 50 }), '0'),
     )
     expect(invalidateCallsFor(invalidateSpy, ['scans', 'demo'])).toBe(0)
     expect(invalidateCallsFor(invalidateSpy, ['activeSignals', 'demo'])).toBe(0)
@@ -230,11 +230,47 @@ describe('useProjectEventStream', () => {
     expect(invalidateCallsFor(invalidateSpy, ['activeSignals', 'demo'])).toBe(1)
   })
 
+  it('resyncs when a promised replay arrives with a hole', () => {
+    const { invalidateSpy, second } = reconnectAfterHello(10)
+
+    act(() =>
+      second.emit('hello', JSON.stringify({ backend: 'redis', seq: 13, epoch: 'e1', buffer_size: 50 }), '0'),
+    )
+    expect(invalidateCallsFor(invalidateSpy, ['alertInbox', 'demo'])).toBe(0)
+    act(() => second.emit('signals.updated', '{}', '11'))
+    // 12 never arrives: the ring never kept it (its buffer write failed).
+    act(() => second.emit('signals.updated', '{}', '13'))
+
+    expect(invalidateCallsFor(invalidateSpy, ['alertInbox', 'demo'])).toBeGreaterThan(0)
+  })
+
+  it('resyncs when a live event overtakes the promised replay', () => {
+    const { invalidateSpy, second } = reconnectAfterHello(10)
+
+    act(() =>
+      second.emit('hello', JSON.stringify({ backend: 'redis', seq: 12, epoch: 'e1', buffer_size: 50 }), '0'),
+    )
+    act(() => second.emit('signals.updated', '{}', '14'))
+
+    expect(invalidateCallsFor(invalidateSpy, ['alertInbox', 'demo'])).toBeGreaterThan(0)
+  })
+
+  it('resyncs when the sequence has a new epoch, even past the cursor', () => {
+    const { invalidateSpy, second } = reconnectAfterHello(10)
+
+    // Redis restarted without persistence and the new sequence reached 20.
+    act(() =>
+      second.emit('hello', JSON.stringify({ backend: 'redis', seq: 20, epoch: 'e2', buffer_size: 50 }), '0'),
+    )
+
+    expect(invalidateCallsFor(invalidateSpy, ['alertInbox', 'demo'])).toBeGreaterThan(0)
+  })
+
   it('resyncs when more was missed than the replay ring holds', () => {
     const { invalidateSpy, second } = reconnectAfterHello(10)
 
     act(() =>
-      second.emit('hello', JSON.stringify({ backend: 'redis', seq: 61, buffer_size: 50 }), '0'),
+      second.emit('hello', JSON.stringify({ backend: 'redis', seq: 61, epoch: 'e1', buffer_size: 50 }), '0'),
     )
 
     expect(invalidateCallsFor(invalidateSpy, ['scans', 'demo'])).toBeGreaterThan(0)
@@ -246,7 +282,7 @@ describe('useProjectEventStream', () => {
 
     // Redis restarted without persistence: the project is back at 3.
     act(() =>
-      second.emit('hello', JSON.stringify({ backend: 'redis', seq: 3, buffer_size: 50 }), '0'),
+      second.emit('hello', JSON.stringify({ backend: 'redis', seq: 3, epoch: 'e1', buffer_size: 50 }), '0'),
     )
     const afterResync = invalidateCallsFor(invalidateSpy, ['activeSignals', 'demo'])
     expect(afterResync).toBeGreaterThan(0)
@@ -282,14 +318,17 @@ describe('useProjectEventStream', () => {
   })
 
   it('says the replay covers a gap only when it can tell', () => {
-    const redis = (seq: number | null) => ({ backend: 'redis', seq, bufferSize: 50 })
-    expect(replayCoversGap(redis(10), '10')).toBe(true)
-    expect(replayCoversGap(redis(60), '10')).toBe(true)
-    expect(replayCoversGap(redis(61), '10')).toBe(false)
-    expect(replayCoversGap(redis(3), '10')).toBe(false)
-    expect(replayCoversGap(redis(null), '10')).toBe(false)
-    expect(replayCoversGap(redis(10), null)).toBe(false)
-    expect(replayCoversGap({ backend: 'degraded', seq: 10, bufferSize: 50 }, '10')).toBe(false)
+    const redis = (seq: number | null) => ({ backend: 'redis', seq, epoch: 'e1', bufferSize: 50 })
+    expect(replayCoversGap(redis(10), '10', 'e1')).toBe(true)
+    expect(replayCoversGap(redis(60), '10', 'e1')).toBe(true)
+    expect(replayCoversGap(redis(61), '10', 'e1')).toBe(false)
+    expect(replayCoversGap(redis(3), '10', 'e1')).toBe(false)
+    expect(replayCoversGap(redis(null), '10', 'e1')).toBe(false)
+    expect(replayCoversGap(redis(10), null, 'e1')).toBe(false)
+    expect(replayCoversGap({ backend: 'degraded', seq: 10, epoch: 'e1', bufferSize: 50 }, '10', 'e1')).toBe(false)
+    // Another epoch: Redis lost the sequence, whatever the numbers say.
+    expect(replayCoversGap(redis(12), '10', 'e0')).toBe(false)
+    expect(replayCoversGap(redis(12), '10', null)).toBe(false)
   })
 
   it('jitters the backoff within ±30% and caps it', () => {

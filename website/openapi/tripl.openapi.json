@@ -800,46 +800,6 @@
             }
           }
         }
-      },
-      "put": {
-        "tags": [
-          "settings"
-        ],
-        "summary": "Put Ai Settings",
-        "description": "Upsert AI overrides (partial: only fields present in the request body are\napplied, via exclude_unset). PUT \u2014 not PATCH \u2014 because the frontend AI\nsettings form calls this endpoint; semantics are upsert, not replace-all.",
-        "operationId": "put_ai_settings_api_v1_settings_ai_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AiSettingsUpdate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AiSettingsResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/v1/settings/ai/test": {
@@ -3879,6 +3839,53 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/event-type-owners": {
+      "get": {
+        "tags": [
+          "event-type-owners"
+        ],
+        "summary": "List Project Owners",
+        "description": "Owners of every live event type in the project; group by ``event_type_id``.",
+        "operationId": "list_project_owners_api_v1_projects__slug__event_type_owners_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventTypeOwnerResponse"
+                  },
+                  "title": "Response List Project Owners Api V1 Projects  Slug  Event Type Owners Get"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -13956,6 +13963,28 @@
         }
       }
     },
+    "/api/v1/audit/actions": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "List Audit Actions",
+        "description": "Every action the log records, grouped for the filter; see audit_actions.",
+        "operationId": "list_audit_actions_api_v1_audit_actions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditActionCatalog"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit/{entry_id}": {
       "get": {
         "tags": [
@@ -18088,6 +18117,53 @@
           "series"
         ],
         "title": "AppVersionSeriesResponse"
+      },
+      "AuditActionCatalog": {
+        "properties": {
+          "project": {
+            "items": {
+              "$ref": "#/components/schemas/AuditActionGroup"
+            },
+            "type": "array",
+            "title": "Project"
+          },
+          "workspace": {
+            "items": {
+              "$ref": "#/components/schemas/AuditActionGroup"
+            },
+            "type": "array",
+            "title": "Workspace"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "workspace"
+        ],
+        "title": "AuditActionCatalog",
+        "description": "Every action the audit log records, grouped for the filter.\n\n``project`` holds the actions recorded WITH a project \u2014 the only ones a\nproject-scoped query can match. ``workspace`` holds those recorded with no\nproject (data sources, users, instance settings, a deleted project), which\nonly the unfiltered workspace feed can match. An action is in exactly one."
+      },
+      "AuditActionGroup": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Actions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "actions"
+        ],
+        "title": "AuditActionGroup",
+        "description": "One labelled group of the audit action filter."
       },
       "AuditEntryDetailResponse": {
         "properties": {

@@ -22,6 +22,7 @@ import {
   cloneElement,
   isValidElement,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -46,6 +47,11 @@ interface ScenarioCoachMarkProps {
   align?: 'start' | 'center' | 'end'
   emphasis?: 'ring' | 'none'
   children: ReactNode
+}
+
+/** Mounted but without a box (display:none on it or an ancestor). */
+function isUnrendered(anchor: HTMLElement | null): boolean {
+  return anchor !== null && typeof anchor.checkVisibility === 'function' && !anchor.checkVisibility()
 }
 
 function mergeRefs(...refs: Array<Ref<HTMLElement> | undefined>): RefCallback<HTMLElement> {
@@ -85,10 +91,23 @@ export function ScenarioCoachMark({
   // stands down like any other invisible one, so the strip's "not on screen"
   // notice speaks instead. `checkVisibility` is absent in older engines (and
   // jsdom); there the anchor is taken as shown, which is the old behaviour.
-  const anchorHidden =
-    anchorEl !== null &&
-    typeof anchorEl.checkVisibility === 'function' &&
-    !anchorEl.checkVisibility()
+  //
+  // Measured after the commit, never during render: a render reads the DOM the
+  // previous commit left, so the render that reveals a panel still saw it
+  // hidden, and the one that collapses a section still saw it laid out. A
+  // layout effect re-measures after every commit, before paint, so neither
+  // shows; the observer catches a box that appears or vanishes with no render.
+  const [anchorHidden, setAnchorHidden] = useState(false)
+  useLayoutEffect(() => {
+    const measure = () => setAnchorHidden(isUnrendered(anchorEl))
+    measure()
+  })
+  useEffect(() => {
+    if (!coaching || !anchorEl || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => setAnchorHidden(isUnrendered(anchorEl)))
+    observer.observe(anchorEl)
+    return () => observer.disconnect()
+  }, [coaching, anchorEl])
   const visible = coaching && !anchorHidden
 
   // Tell the strip a mark for this step is actually on screen, so it can say
@@ -153,8 +172,8 @@ export function ScenarioCoachMark({
   const boundary: Element | Element[] = anchorEl?.closest(`#${MAIN_CONTENT_ID}`) ?? []
 
   if (!coaching) return <>{children}</>
-  // Keep the ref on a hidden anchor, so the render that shows it again (the
-  // tab switch re-renders the page) finds it laid out and coaches it.
+  // Keep the ref on a hidden anchor, so the measurement above can see it come
+  // back.
   if (!visible) {
     return isValidElement(children)
       ? cloneElement(children as ReactElement<Record<string, unknown>>, { ref: anchorRef })

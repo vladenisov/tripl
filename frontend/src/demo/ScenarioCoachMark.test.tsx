@@ -302,6 +302,42 @@ describe('ScenarioCoachMark — emphasizing the click target', () => {
     }
   })
 
+  it('follows the anchor as it is hidden and shown again, measured after each commit (DEMO-10)', () => {
+    stubAnchorRect(IN_VIEWPORT_RECT)
+    const original = Element.prototype.checkVisibility
+    // Answers from the DOM, as the browser does — so a measure taken during
+    // render sees the attribute the PREVIOUS commit left.
+    Element.prototype.checkVisibility = function checkVisibility(this: Element) {
+      return this.closest('[hidden]') === null
+    }
+    const section = (collapsed: boolean) => (
+      <div hidden={collapsed}>
+        <ScenarioCoachMark step="live-loop/run-scan">
+          <button type="button">Run scan</button>
+        </ScenarioCoachMark>
+      </div>
+    )
+    // By text, not role: a button inside a hidden section has no role to find.
+    const anchor = () => screen.getByText('Run scan')
+    try {
+      const view = renderMark(section(false))
+      expect(callout()).not.toBeNull()
+
+      // The render that collapses the section still sees it laid out.
+      view.rerender(section(true))
+      expect(callout()).toBeNull()
+      expect(anchor()).not.toHaveAttribute('data-coach-target')
+
+      // And the render that reveals it again still saw it hidden.
+      view.rerender(section(false))
+      expect(callout()).not.toBeNull()
+      expect(anchor()).toHaveAttribute('data-coach-target', 'live-loop/run-scan')
+    } finally {
+      if (original) Element.prototype.checkVisibility = original
+      else delete (Element.prototype as { checkVisibility?: unknown }).checkVisibility
+    }
+  })
+
   it('Hide hints removes the ring through the same gate as the card', () => {
     stubAnchorRect(IN_VIEWPORT_RECT)
     renderMark(

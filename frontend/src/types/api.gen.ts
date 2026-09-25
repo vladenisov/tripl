@@ -55,6 +55,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/audit/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Audit Actions
+         * @description Every action the log records, grouped for the filter; see audit_actions.
+         */
+        get: operations["list_audit_actions_api_v1_audit_actions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit/{entry_id}": {
         parameters: {
             query?: never;
@@ -1311,6 +1331,26 @@ export interface paths {
         };
         /** Get Distribution Drifts */
         get: operations["get_distribution_drifts_api_v1_projects__slug__distribution_drifts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/event-type-owners": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Project Owners
+         * @description Owners of every live event type in the project; group by ``event_type_id``.
+         */
+        get: operations["list_project_owners_api_v1_projects__slug__event_type_owners_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3231,13 +3271,7 @@ export interface paths {
         };
         /** Get Ai Settings */
         get: operations["get_ai_settings_api_v1_settings_ai_get"];
-        /**
-         * Put Ai Settings
-         * @description Upsert AI overrides (partial: only fields present in the request body are
-         *     applied, via exclude_unset). PUT — not PATCH — because the frontend AI
-         *     settings form calls this endpoint; semantics are upsert, not replace-all.
-         */
-        put: operations["put_ai_settings_api_v1_settings_ai_put"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -4716,6 +4750,31 @@ export interface components {
             sigma_threshold: number;
             /** Versions */
             versions: components["schemas"]["AppVersionInfo"][];
+        };
+        /**
+         * AuditActionCatalog
+         * @description Every action the audit log records, grouped for the filter.
+         *
+         *     ``project`` holds the actions recorded WITH a project — the only ones a
+         *     project-scoped query can match. ``workspace`` holds those recorded with no
+         *     project (data sources, users, instance settings, a deleted project), which
+         *     only the unfiltered workspace feed can match. An action is in exactly one.
+         */
+        AuditActionCatalog: {
+            /** Project */
+            project: components["schemas"]["AuditActionGroup"][];
+            /** Workspace */
+            workspace: components["schemas"]["AuditActionGroup"][];
+        };
+        /**
+         * AuditActionGroup
+         * @description One labelled group of the audit action filter.
+         */
+        AuditActionGroup: {
+            /** Actions */
+            actions: string[];
+            /** Label */
+            label: string;
         };
         /**
          * AuditEntryDetailResponse
@@ -10939,6 +10998,26 @@ export interface operations {
             };
         };
     };
+    list_audit_actions_api_v1_audit_actions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditActionCatalog"];
+                };
+            };
+        };
+    };
     get_audit_entry_api_v1_audit__entry_id__get: {
         parameters: {
             query?: never;
@@ -13591,6 +13670,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DistributionDriftsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_project_owners_api_v1_projects__slug__event_type_owners_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventTypeOwnerResponse"][];
                 };
             };
             /** @description Validation Error */
@@ -18317,39 +18427,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AiSettingsResponse"];
-                };
-            };
-        };
-    };
-    put_ai_settings_api_v1_settings_ai_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AiSettingsUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AiSettingsResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

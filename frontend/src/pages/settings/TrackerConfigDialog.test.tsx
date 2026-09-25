@@ -99,14 +99,10 @@ describe('TrackerConfigDialog', () => {
     fireEvent.change(projectKey, { target: { value: 'PAY' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
+    // Only what changed: the backend validates every field it is sent, so the
+    // untouched ones are left out rather than re-sent.
     await waitFor(() =>
-      expect(trackerConfigApi.update).toHaveBeenCalledWith('demo', {
-        enabled: true,
-        base_url: 'https://acme.atlassian.net',
-        project_key: 'PAY',
-        auth_email: 'ops@acme.com',
-        issue_type: 'Task',
-      }),
+      expect(trackerConfigApi.update).toHaveBeenCalledWith('demo', { project_key: 'PAY' }),
     )
     // The blank token field must not be part of the payload.
     const [, payload] = vi.mocked(trackerConfigApi.update).mock.calls[0]
@@ -174,22 +170,41 @@ describe('TrackerConfigDialog', () => {
     expect(await screen.findByLabelText('Project key')).toHaveValue('ENG')
   })
 
-  it('refuses to save a malformed or incomplete enabled connection (PLAN-21)', async () => {
+  it('refuses what the backend would refuse, beside the field (PLAN-21)', async () => {
     vi.mocked(trackerConfigApi.get).mockResolvedValue(makeConfig())
 
     renderDialog('owner')
 
     const baseUrl = await screen.findByLabelText('Base URL')
-    fireEvent.change(baseUrl, { target: { value: 'acme.atlassian' } })
-    fireEvent.change(screen.getByLabelText('Project key'), { target: { value: '  ' } })
+    // The backend is https-only (`_validate_https_url`).
+    fireEvent.change(baseUrl, { target: { value: 'http://acme.atlassian.net' } })
+    fireEvent.change(screen.getByLabelText('Project key'), { target: { value: '1-bad' } })
+    // A saved value cannot be blanked: the PATCH has no way to clear it.
+    fireEvent.change(screen.getByLabelText('Auth email'), { target: { value: ' ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(
-      await screen.findByText('Enter a full URL, such as https://acme.atlassian.net.'),
+      await screen.findByText('Enter an https URL, such as https://acme.atlassian.net.'),
     ).toBeInTheDocument()
     expect(baseUrl).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByLabelText('Project key')).toHaveAttribute('aria-invalid', 'true')
-    expect(screen.getByText('Required while the tracker is enabled.')).toBeInTheDocument()
+    expect(
+      screen.getByText('A saved value cannot be cleared; enter a new one.'),
+    ).toBeInTheDocument()
+    expect(trackerConfigApi.update).not.toHaveBeenCalled()
+  })
+
+  it('requires the connection fields before a tracker can be enabled (PLAN-21)', async () => {
+    vi.mocked(trackerConfigApi.get).mockResolvedValue(
+      makeConfig({ enabled: false, base_url: '', project_key: '', auth_email: '' }),
+    )
+
+    renderDialog('owner')
+
+    fireEvent.click(await screen.findByLabelText('Enabled'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findAllByText('Required while the tracker is enabled.')).toHaveLength(3)
     expect(trackerConfigApi.update).not.toHaveBeenCalled()
   })
 
@@ -204,11 +219,10 @@ describe('TrackerConfigDialog', () => {
     fireEvent.change(await screen.findByLabelText('Issue type'), { target: { value: 'Story' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
+    // The blank fields are not sent: the backend would answer "Jira base_url
+    // is required" for an empty string, whatever the tracker's state.
     await waitFor(() =>
-      expect(trackerConfigApi.update).toHaveBeenCalledWith(
-        'demo',
-        expect.objectContaining({ enabled: false, issue_type: 'Story' }),
-      ),
+      expect(trackerConfigApi.update).toHaveBeenCalledWith('demo', { issue_type: 'Story' }),
     )
   })
 })

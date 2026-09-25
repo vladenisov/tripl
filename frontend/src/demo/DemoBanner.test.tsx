@@ -283,6 +283,22 @@ describe('DemoBanner — reset and delete failures (DEMO-4, DEMO-23)', () => {
     expect(screen.getByRole('button', { name: /^delete$/i, hidden: true })).toBeDisabled()
   })
 
+  it('keeps a running reset locked when the user opens the limits or the tour', async () => {
+    vi.spyOn(projectsApi, 'resetDemo').mockReturnValue(new Promise<never>(() => {}))
+
+    renderBanner()
+    fireEvent.click(screen.getByRole('button', { name: /^reset$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /reset demo/i }))
+    await screen.findByRole('dialog', { name: /re-seeding demo workspace/i })
+
+    // Neither is gated on the reset, and clearing an error must not detach it.
+    fireEvent.click(screen.getByRole('button', { name: /what’s simulated/i, hidden: true }))
+    fireEvent.click(screen.getByRole('button', { name: /tour & chapters/i, hidden: true }))
+
+    expect(screen.getByRole('button', { name: /resetting/i, hidden: true })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^delete$/i, hidden: true })).toBeDisabled()
+  })
+
   it('clears the error on the next thing the user does (DEMO-23)', async () => {
     vi.spyOn(projectsApi, 'resetDemo').mockRejectedValue(new ApiError('Demo reset failed', 500))
 

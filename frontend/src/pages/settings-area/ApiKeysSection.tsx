@@ -103,11 +103,41 @@ export default function ApiKeysSection() {
     createMut.reset()
   }
 
+  // Per key, not off the mutation: rows other than the one being revoked stay
+  // live, so a second revoke can start while the first is in flight, and
+  // `revokeMut.variables`/`error` then describe only the latest one. A failure
+  // on the first would vanish — on a credentials surface, a leaked key that
+  // looks revoked.
+  const [pendingRevokes, setPendingRevokes] = useState<ReadonlySet<string>>(() => new Set())
+  const [revokeFailures, setRevokeFailures] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  )
+
   const revokeMut = useMutation({
     mutationFn: (keyId: string) => apiKeysApi.revoke(keyId),
     // Rendered below the list: a failed revoke on a credentials surface must
     // not read as a revoke that worked.
     meta: SILENT_ERROR_META,
+    // Mutation-level callbacks run for every call; the ones passed to
+    // mutate() only for the latest.
+    onMutate: (keyId) => {
+      setPendingRevokes((current) => new Set(current).add(keyId))
+      setRevokeFailures((current) => {
+        const next = new Map(current)
+        next.delete(keyId)
+        return next
+      })
+    },
+    onError: (error, keyId) => {
+      setRevokeFailures((current) => new Map(current).set(keyId, getErrorMessage(error)))
+    },
+    onSettled: (_data, _error, keyId) => {
+      setPendingRevokes((current) => {
+        const next = new Set(current)
+        next.delete(keyId)
+        return next
+      })
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['api-keys'] }),
   })
 
@@ -124,9 +154,6 @@ export default function ApiKeysSection() {
   const keys = listQuery.data ?? []
   const canCreateWriteKeys = canWrite(user?.role)
   const expiryProblem = expiryError(expiresInDays)
-  const failedRevokeName = revokeMut.isError
-    ? keys.find((k) => k.id === revokeMut.variables)?.name
-    : undefined
 
   // The card used to headline "Active keys · N keys" off the unfiltered list,
   // so revoked and expired tokens were counted as live ones on a credentials
@@ -306,7 +333,7 @@ export default function ApiKeysSection() {
             // inclusive at the expiry instant, like the backend.
             const revoked = k.revoked_at != null
             const expired = !revoked && isKeyInactive(k)
-            const revoking = revokeMut.isPending && revokeMut.variables === k.id
+            const revoking = pendingRevokes.has(k.id)
             return (
               <div
                 key={k.id}
@@ -394,14 +421,17 @@ export default function ApiKeysSection() {
             )
           })
         )}
-        {revokeMut.isError && (
-          <p role="alert" className="px-[18px] py-3 text-xs text-destructive">
-            {failedRevokeName
-              ? `Couldn't revoke "${failedRevokeName}" — it is still active. `
-              : "Couldn't revoke the key — it is still active. "}
-            {getErrorMessage(revokeMut.error)}
-          </p>
-        )}
+        {[...revokeFailures].map(([keyId, message]) => {
+          const failedName = keys.find((k) => k.id === keyId)?.name
+          return (
+            <p key={keyId} role="alert" className="px-[18px] py-3 text-xs text-destructive">
+              {failedName
+                ? `Couldn't revoke "${failedName}" — it is still active. `
+                : "Couldn't revoke the key — it is still active. "}
+              {message}
+            </p>
+          )
+        })}
       </SCard>
 
       {/* One-time token reveal. Only "Done" closes it: Esc or a stray click

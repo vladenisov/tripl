@@ -173,3 +173,16 @@ describe('EventSpecCard (tripl-kjhi.8)', () => {
     expect(payload).toEqual({ property: { how: '${property.how}' } })
   })
 })
+
+describe('EventSpecCard spec fields table (DS-5)', () => {
+  it('is the design-system table, which scrolls sideways with the edge fade', () => {
+    renderCard()
+
+    const table = screen.getByRole('table', { name: 'Spec fields' })
+    expect(table).toHaveAttribute('data-slot', 'table')
+    expect(table.closest('[data-slot="table-container"]')).not.toBeNull()
+    expect(
+      screen.getAllByRole('columnheader').map(header => header.textContent),
+    ).toEqual(['Field', 'Type', 'Value', 'Documented values'])
+  })
+})

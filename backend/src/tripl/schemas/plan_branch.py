@@ -59,7 +59,8 @@ class PlanBranchResponse(BaseModel):
     # ``GET /branches?include_diff_counts=true``, which computes them for every
     # open (not merged or closed) feature branch off a single main snapshot;
     # ``None`` everywhere else, so a caller can tell "not asked for" from
-    # "nothing to show" (tripl-jfm3.79, tripl-0zpq.152).
+    # "nothing to show" (tripl-jfm3.79, tripl-0zpq.152). ``ahead`` counts a
+    # rename the merge will apply as ONE change, as the branch's diff view does.
     ahead: int | None = None
     behind_base: bool | None = None
 

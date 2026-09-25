@@ -1,11 +1,17 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Settings2, Ticket } from 'lucide-react'
+import { MoreHorizontal, Plus, Settings2, Ticket } from 'lucide-react'
 
 import { planBranchesApi, type PlanBranchListResponse } from '@/api/planBranches'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useUsersById } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -19,7 +25,11 @@ import { BranchList } from './branches/BranchList'
 import { CreateBranchDialog, MergePolicyDialog } from './branches/BranchDialogs'
 import type { DiffLoad } from './branches/branchDiffModel'
 import { BranchDetail } from './branches/FeatureBranchDetail'
-import { planBranchCountsKey, planBranchDiffKey } from './branches/branchQueryKeys'
+import {
+  invalidateBranchCounts,
+  planBranchCountsKey,
+  planBranchDiffKey,
+} from './branches/branchQueryKeys'
 
 /**
  * Plan branches: the list, the selected branch's review, and the merge policy.
@@ -74,6 +84,7 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
         old ? { items: [...old.items, branch], total: old.total + 1 } : old,
       )
       void qc.invalidateQueries({ queryKey: planBranchesKey(slug) })
+      invalidateBranchCounts(qc, slug)
       setCreateOpen(false)
       setCreateName('')
       setCreateDescription('')
@@ -134,14 +145,50 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => setPolicyOpen(true)}>
+            {/* The two settings buttons fold into one menu below `sm`, leaving
+                New branch — the page's primary action — on the row (PLAN-13). */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="hidden sm:inline-flex"
+              onClick={() => setPolicyOpen(true)}
+            >
               <Settings2 className="size-3.5" />
               Merge policy
             </Button>
-            <Button size="sm" variant="outline" onClick={() => setTrackerOpen(true)}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="hidden sm:inline-flex"
+              onClick={() => setTrackerOpen(true)}
+            >
               <Ticket className="size-3.5" />
               Implementation tracker
             </Button>
+            {/* Non-modal: a modal menu would still be tearing down its focus
+                trap when the dialog it opens mounts. */}
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="sm:hidden"
+                  aria-label="Branch settings"
+                >
+                  <MoreHorizontal className="size-3.5" aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setPolicyOpen(true)}>
+                  <Settings2 className="size-3.5" aria-hidden="true" />
+                  Merge policy
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setTrackerOpen(true)}>
+                  <Ticket className="size-3.5" aria-hidden="true" />
+                  Implementation tracker
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             {canWrite && (
               <Button size="sm" onClick={() => setCreateOpen(true)}>
                 <Plus className="size-3.5" />

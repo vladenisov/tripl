@@ -54,3 +54,23 @@ class AuditEntryDetailResponse(AuditEntryResponse):
 class AuditListResponse(BaseModel):
     items: list[AuditEntryResponse]
     total: int
+
+
+class AuditActionGroup(BaseModel):
+    """One labelled group of the audit action filter."""
+
+    label: str
+    actions: list[str]
+
+
+class AuditActionCatalog(BaseModel):
+    """Every action the audit log records, grouped for the filter.
+
+    ``project`` holds the actions recorded WITH a project — the only ones a
+    project-scoped query can match. ``workspace`` holds those recorded with no
+    project (data sources, users, instance settings, a deleted project), which
+    only the unfiltered workspace feed can match. An action is in exactly one.
+    """
+
+    project: list[AuditActionGroup]
+    workspace: list[AuditActionGroup]

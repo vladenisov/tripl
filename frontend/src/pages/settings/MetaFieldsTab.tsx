@@ -367,6 +367,13 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
           )
         }
       >
+        {metaFieldsQuery.isError && metaFieldsQuery.data !== undefined && (
+          // A failed REFRESH keeps the rows on screen: replacing them with an
+          // error would unmount whatever is being edited (review 204).
+          <p role="alert" className="px-4 py-2 text-xs text-destructive">
+            Couldn't refresh meta fields: {getErrorMessage(metaFieldsQuery.error)}
+          </p>
+        )}
         {metaFieldsQuery.isPending ? (
           // A pending list is not an empty one: "No meta fields" used to flash
           // on every cold load and stay up on a 500 (PLAN-41).
@@ -375,7 +382,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
               <Skeleton key={index} className="h-9 w-full" />
             ))}
           </div>
-        ) : metaFieldsQuery.isError ? (
+        ) : metaFieldsQuery.isError && metaFieldsQuery.data === undefined ? (
           <div className="p-4">
             <ErrorState
               compact

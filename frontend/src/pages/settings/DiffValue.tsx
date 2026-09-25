@@ -24,6 +24,7 @@ import {
   isFlatRecord,
   uniformRecords,
 } from './diffValueFormat'
+import { wordDiff, type WordSegment } from './branches/wordDiff'
 
 /**
  * A table cell whose value may itself be a JSON payload.
@@ -217,5 +218,68 @@ export function DiffValue({
     <span className="mono wrap-anywhere text-[11.5px]" style={{ color }}>
       {String(value)}
     </span>
+  )
+}
+
+/** One side of a word-diffed pair: the shared words plain, the others marked
+ * as a real <del>/<ins>, so the difference is not carried by colour alone. */
+function WordDiffText({ segments, side }: { segments: WordSegment[]; side: 'before' | 'after' }) {
+  const tone = side === 'before' ? 'danger' : 'success'
+  const Mark = side === 'before' ? 'del' : 'ins'
+  return (
+    <span
+      className="mono wrap-anywhere whitespace-pre-wrap text-[11.5px]"
+      style={{ color: 'var(--fg)' }}
+    >
+      {segments.map((segment, index) =>
+        segment.changed ? (
+          <Mark
+            key={index}
+            className="rounded-sm px-0.5"
+            style={{
+              color: `var(--${tone})`,
+              background: `color-mix(in oklab, var(--${tone}) 14%, transparent)`,
+              textDecoration: side === 'before' ? 'line-through' : 'none',
+            }}
+          >
+            {segment.text}
+          </Mark>
+        ) : (
+          <span key={index}>{segment.text}</span>
+        ),
+      )}
+    </span>
+  )
+}
+
+/**
+ * A before → after pair, as a reviewer reads it (PLAN-19).
+ *
+ * The two sides used to differ only in colour, so each now carries a visually
+ * hidden "before:" / "after:" for a screen reader. And two long strings — a
+ * rewritten description — are word-diffed, with the words that changed marked
+ * on each side, instead of left to be compared by eye.
+ */
+export function DiffPair({ before, after }: { before: unknown; after: unknown }) {
+  const words =
+    typeof before === 'string' && typeof after === 'string' ? wordDiff(before, after) : null
+  return (
+    <>
+      <span className="sr-only">before:</span>
+      {words ? (
+        <WordDiffText segments={words.before} side="before" />
+      ) : (
+        <DiffValue value={before} tone="danger" />
+      )}
+      <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
+        →
+      </span>
+      <span className="sr-only">after:</span>
+      {words ? (
+        <WordDiffText segments={words.after} side="after" />
+      ) : (
+        <DiffValue value={after} tone="success" />
+      )}
+    </>
   )
 }

@@ -512,3 +512,51 @@ describe('Instance storage backend cards (WS-30)', () => {
     expect(screen.queryByText(/Inactive — the backend above is Google Cloud Storage/)).toBeNull()
   })
 })
+
+describe('Instance settings review 208 follow-ups', () => {
+  it('keeps a failed save error on the section it belongs to', async () => {
+    vi.spyOn(serviceSettingsApi, 'get').mockResolvedValue(SETTINGS)
+    vi.spyOn(serviceSettingsApi, 'update').mockRejectedValue(new Error('Invalid CORS origin'))
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const tree = (current: 'ai' | 'security') => (
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <ServiceSettingsSection section={current} />
+        </AuthContext.Provider>
+      </QueryClientProvider>
+    )
+    const view = render(tree('security'))
+
+    fireEvent.change(await screen.findByLabelText('Login limit'), { target: { value: '9' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Invalid CORS origin')
+
+    view.rerender(tree('ai'))
+    await screen.findByLabelText('Ask prompt')
+    expect(screen.queryByText('Invalid CORS origin')).toBeNull()
+
+    view.rerender(tree('security'))
+    expect(await screen.findByText('Invalid CORS origin')).toBeInTheDocument()
+  })
+
+  it('does not block Save on an out-of-range value the environment delivered', async () => {
+    vi.spyOn(serviceSettingsApi, 'get').mockResolvedValue({
+      ...SETTINGS,
+      ai: { ...SETTINGS.ai, ai_timeout_seconds: 0 },
+    })
+    vi.spyOn(serviceSettingsApi, 'update').mockResolvedValue(SETTINGS)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <ServiceSettingsSection section="ai" />
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.change(await screen.findByLabelText('Ask prompt'), { target: { value: 'Be brief.' } })
+
+    expect(screen.getByLabelText('Timeout seconds')).not.toHaveAttribute('aria-invalid')
+    expect(screen.getByRole('button', { name: /Save changes/ })).toBeEnabled()
+  })
+})

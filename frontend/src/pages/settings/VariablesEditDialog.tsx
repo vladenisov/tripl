@@ -160,6 +160,12 @@ export function VariablesEditDialog({
     queryKey: ['variable-overrides', slug, branchId, variable.id],
     queryFn: () => variableOverridesApi.list(slug, variable.id, branchId),
   })
+  // Overrides are values too, and a type change strands them the same way
+  // (review 204): distinct, in the order the overrides list them.
+  const invalidOverrideValues = [
+    ...new Set(invalidValuesFor(editVarType, overrides.flatMap(override => override.values))),
+  ]
+  const invalidEditedOverrideValues = invalidValuesFor(editVarType, overrideValues)
 
   // Searched SERVER-side, the way the alert-rule event picker already does it
   // (pages/alerting/FilterEditor.tsx useEventOptions): the backend matches name,
@@ -363,6 +369,14 @@ export function VariablesEditDialog({
                     {typeChangeBlocked
                       ? ' Remove them or keep the previous type before saving.'
                       : ' Drift will never match these values.'}
+                  </p>
+                )}
+                {invalidOverrideValues.length > 0 && (
+                  // Overrides are saved on their own, so this warns rather than
+                  // holding Save; it names what a type change leaves stranded.
+                  <p role="alert" className="text-xs text-warning">
+                    Per-event overrides hold values not valid for {TYPE_LABELS[editVarType]}:{' '}
+                    {invalidOverrideValues.join(', ')}. Edit those overrides, or drift will never match them.
                   </p>
                 )}
               </div>
@@ -574,7 +588,16 @@ export function VariablesEditDialog({
                       </p>
                     )}
                   </div>
-                  <ChipListInput values={overrideValues} onChange={setOverrideValues} placeholder="Values for this event" ariaLabel="Add override value" {...valueRule} />
+                  <div className="grid gap-1">
+                    <ChipListInput values={overrideValues} onChange={setOverrideValues} placeholder="Values for this event" ariaLabel="Add override value" {...valueRule} />
+                    {/* The chip input checks only NEW chips, so values loaded by
+                        Edit on an override are checked here (review 204). */}
+                    {invalidEditedOverrideValues.length > 0 && (
+                      <p className="text-[11px] text-warning">
+                        Not valid for {TYPE_LABELS[editVarType]}: {invalidEditedOverrideValues.join(', ')}.
+                      </p>
+                    )}
+                  </div>
                   <Button type="button" size="sm" disabled={!overrideEvent || overrideUpsertMut.isPending} onClick={() => { if (overrideEvent) overrideUpsertMut.mutate({ eventId: overrideEvent.id, values: overrideValues }) }}>
                     Save override
                   </Button>

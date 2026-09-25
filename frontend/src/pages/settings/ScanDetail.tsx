@@ -8,6 +8,7 @@ import type { DataSource, EventType, ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Chip } from "@/components/primitives/chip"
 import { ErrorState } from "@/components/error-state"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getErrorMessage } from '@/lib/utils'
 import { friendlyScanError } from '@/lib/scanError'
 import { formatRelativeTime } from '@/lib/datetime'
@@ -24,7 +25,7 @@ import { JobDetails } from './scans/JobDetails'
 import { ReplayChunkProgress } from './scans/ReplayChunkProgress'
 import { jobRowsReadTitle } from './scans/runReport'
 import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanMode'
-import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
+import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanActivityKey, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import { projectEventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -86,41 +87,41 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
     )
   } else {
     body = (
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse">
-          <thead>
-            <tr style={{ background: 'var(--bg-sunken)' }}>
-              <th className="px-4 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Event</th>
-              {data.platforms.map(platform => (
-                <th key={platform} className="px-4 py-2 text-center text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>
-                  {platform}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {data.items.map(item => (
-              <tr key={item.event_id} className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-                <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--fg)' }}>{item.event_name}</td>
-                {data.platforms.map(platform => {
-                  const present = item.present_platforms.includes(platform)
-                  return (
-                    <td
-                      key={platform}
-                      className="mono px-4 py-2.5 text-center text-[12.5px]"
-                      style={{ color: present ? 'var(--success)' : 'var(--fg-faint)' }}
-                    >
-                      <span aria-label={`${item.event_name} ${present ? 'present' : 'absent'} on ${platform}`}>
-                        {present ? '✓' : '—'}
-                      </span>
-                    </td>
-                  )
-                })}
-              </tr>
+      // Every column here is the data (one per platform value), so none hides
+      // on a phone; the table scrolls sideways instead.
+      <Table>
+        <TableHeader>
+          <TableRow style={{ background: 'var(--bg-sunken)' }}>
+            <TableHead className="px-4">Event</TableHead>
+            {data.platforms.map(platform => (
+              <TableHead key={platform} className="px-4 text-center">
+                {platform}
+              </TableHead>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {data.items.map(item => (
+            <TableRow key={item.event_id}>
+              <TableCell className="px-4 text-xs">{item.event_name}</TableCell>
+              {data.platforms.map(platform => {
+                const present = item.present_platforms.includes(platform)
+                return (
+                  <TableCell
+                    key={platform}
+                    className="mono px-4 text-center text-[12.5px]"
+                    style={{ color: present ? 'var(--success)' : 'var(--fg-faint)' }}
+                  >
+                    <span aria-label={`${item.event_name} ${present ? 'present' : 'absent'} on ${platform}`}>
+                      {present ? '✓' : '—'}
+                    </span>
+                  </TableCell>
+                )
+              })}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     )
   }
 
@@ -174,13 +175,28 @@ export function ScanDetail({
     queryFn: () => scansApi.listJobs(slug, scanConfig.id),
     refetchInterval: jobsRefetchInterval,
   })
+  // The streak's length over the whole history: the page above holds 50 runs,
+  // and the Scans list tags the same streak from this count (tripl-fj5g.11).
+  // Shared with the list's query, so both surfaces read one number.
+  const { data: activity } = useQuery({
+    queryKey: scanActivityKey(slug),
+    queryFn: () => scansApi.activity(slug),
+    staleTime: 0,
+    // The page's own count stands in if this fails; nothing to report inline.
+    meta: SILENT_ERROR_META,
+  })
+  const invalidateRuns = () => {
+    void qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
+    // Not under this scan's prefix: the list's exact streak and 24h rows.
+    void qc.invalidateQueries({ queryKey: scanActivityKey(slug) })
+  }
 
   const applyGroupsMut = useMutation({
     mutationFn: () => scansApi.applyEventGroups(slug, scanConfig.id),
     onMutate: () => setApplyGroupsMessage(''),
     onSuccess: () => {
       setApplyGroupsMessage('Group apply queued.')
-      qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
+      invalidateRuns()
       qc.invalidateQueries({ queryKey: ['scans', slug] })
       qc.invalidateQueries({ queryKey: ['events', slug] })
       qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
@@ -189,7 +205,7 @@ export function ScanDetail({
 
   const cancelMut = useMutation({
     mutationFn: (jobId: string) => scansApi.cancelJob(slug, scanConfig.id, jobId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] }),
+    onSuccess: invalidateRuns,
   })
   // Stop sits one small icon away from Expand, and a stopped run is not
   // resumed — only started again — so it asks first (DATA-24).
@@ -210,7 +226,7 @@ export function ScanDetail({
       // Bind the coached scenario to the job this retry created — the demo tick's
       // own jobs prove nothing about what the user did (tripl-2su6.21.5).
       notifyScanRunStarted(job)
-      qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
+      invalidateRuns()
     },
   })
 
@@ -234,6 +250,10 @@ export function ScanDetail({
   // that into one "failed last N runs" streak banner with the reason and a single
   // "Run again" action, so the failure reads as one ongoing problem (tripl-7l83.4).
   const failingStreak = consecutiveFailedRuns(jobs)
+  // What the banner says: the server's count, which runs past the loaded page,
+  // or the page's own while that is loading, failed, or older than the page.
+  const serverStreak = activity?.items.find(item => item.scan_config_id === scanConfig.id)?.failing_streak ?? 0
+  const failingStreakShown = Math.max(serverStreak, failingStreak)
   const streakError = failingStreak > 0 ? friendlyScanError(lastJob?.error_message) : null
   // When 2+ consecutive runs failed, hide that leading streak behind an expander
   // so the table isn't a wall of identical failed rows; older (non-streak) jobs
@@ -421,7 +441,7 @@ export function ScanDetail({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold" style={{ color: 'var(--danger)' }}>
                 <XCircle className="size-3.5" aria-hidden="true" />
-                Failed last {failingStreak} runs
+                Failed last {failingStreakShown} runs
               </span>
               <Button
                 size="sm"
@@ -460,22 +480,24 @@ export function ScanDetail({
           <p className="px-4 py-3 text-sm text-muted-foreground">No runs yet. Use “Run now” to start.</p>
         )}
         {jobs.length > 0 && (
-          <table className="w-full border-collapse">
-            <thead>
-              <tr style={{ background: 'var(--bg-sunken)' }}>
-                <th className="px-4 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Started</th>
-                <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Duration</th>
-                <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Rows read</th>
-                <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Events</th>
-                <th className="px-4 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Status</th>
-                <th className="w-8" />
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            {/* Duration and Events hide below `md`: a phone keeps when, how
+                much was read, and how it ended, plus the row's controls. */}
+            <TableHeader>
+              <TableRow style={{ background: 'var(--bg-sunken)' }}>
+                <TableHead className="px-4">Started</TableHead>
+                <TableHead className={`px-4 text-right ${LOW_VALUE_COLUMN}`}>Duration</TableHead>
+                <TableHead className="px-4 text-right">Rows read</TableHead>
+                <TableHead className={`px-4 text-right ${LOW_VALUE_COLUMN}`}>Events</TableHead>
+                <TableHead className="px-4">Status</TableHead>
+                <TableHead className="w-8"><span className="sr-only">Actions</span></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {collapseStreak && (
                 <>
-                  <tr>
-                    <td colSpan={6} className="px-4 py-2">
+                  <TableRow>
+                    <TableCell colSpan={6} className="px-4 py-2">
                       <button
                         type="button"
                         onClick={() => setStreakExpanded((v) => !v)}
@@ -485,19 +507,22 @@ export function ScanDetail({
                       >
                         {streakExpanded ? 'Hide' : 'Show'} {failingStreak} repeated failed runs
                       </button>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                   {streakExpanded && streakJobs.map(renderJobRow)}
                 </>
               )}
               {restJobs.map(renderJobRow)}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
       </SurfPanel>
     </div>
   )
 }
+
+// Columns a phone can do without; the row keeps when, rows read and status.
+const LOW_VALUE_COLUMN = 'hidden md:table-cell'
 
 // 24px suits a mouse; a finger gets 32px, since Stop sits right beside Expand
 // (DATA-24).
@@ -548,28 +573,28 @@ function JobRow({
       {/* The mark anchors onto the <tr> itself: the Popover root renders no DOM
           and the content is portalled, so nothing invalid lands in <tbody>. */}
       <ScenarioCoachMark step="live-loop/watch-scan" when={watched}>
-        <tr className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-          <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--fg-muted)' }}>
+        <TableRow>
+          <TableCell className="px-4 text-xs" style={{ color: 'var(--fg-muted)' }}>
             {/* A queued run has no start yet; its queue time says more than a
                 dash, and it is what the scans list shows for it (DATA-23). */}
             {job.started_at
               ? formatRelativeTime(job.started_at)
               : `queued ${formatRelativeTime(job.created_at)}`}
-          </td>
-          <td className="mono px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>{duration}</td>
+          </TableCell>
+          <TableCell className={`mono px-4 text-right text-[11.5px] ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-subtle)' }}>{duration}</TableCell>
           {/* The header says "Rows read" for every row, but a catalog run and a
               metrics run count different populations under different caps. Per
               cell is the only place that distinction fits. */}
-          <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]" title={jobRowsReadTitle(job)}>
+          <TableCell className="mono tnum px-4 text-right text-[11.5px]" title={jobRowsReadTitle(job)}>
             {rows == null ? '—' : rows.toLocaleString()}
-          </td>
-          <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+          </TableCell>
+          <TableCell className={`mono tnum px-4 text-right text-[11.5px] ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-muted)' }}>
             {events == null ? '—' : events.toLocaleString()}
-          </td>
-          <td className="px-4 py-2.5">
+          </TableCell>
+          <TableCell className="px-4">
             <RunStatusPill status={runPillStatus(job.status)} title={failedMessage ?? undefined} />
-          </td>
-          <td className="px-2">
+          </TableCell>
+          <TableCell className="px-2">
             <div className="flex items-center justify-end gap-1 pointer-coarse:gap-2">
               {isActive && onCancel && (
                 <Button
@@ -610,26 +635,26 @@ function JobRow({
                 </Button>
               )}
             </div>
-          </td>
-        </tr>
+          </TableCell>
+        </TableRow>
       </ScenarioCoachMark>
       {/* Only a replay has chunk progress to show; for every other run this row
           was an empty 8px strip under the run (DATA-22). */}
       {job.result_summary?.mode === 'metrics_replay' && (
-        <tr>
-          <td colSpan={6} className="p-0">
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={6} className="p-0">
             <div className="px-4 pb-2">
               <ReplayChunkProgress summary={job.result_summary} compact />
             </div>
-          </td>
-        </tr>
+          </TableCell>
+        </TableRow>
       )}
       {expanded && (
-        <tr>
-          <td colSpan={6} className="p-0">
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={6} className="p-0">
             <JobDetails job={job} slug={slug} scanConfigId={scanConfigId} mode={mode} />
-          </td>
-        </tr>
+          </TableCell>
+        </TableRow>
       )}
     </Fragment>
   )

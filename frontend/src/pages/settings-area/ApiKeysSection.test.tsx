@@ -160,6 +160,42 @@ describe('ApiKeysSection', () => {
     expect(screen.getByRole('button', { name: 'Revoke codex' })).toBeEnabled()
   })
 
+  // Review 208: with only the target row disabled, a second revoke could start
+  // while the first was in flight, and the first one's failure then vanished.
+  it('keeps each concurrent revoke pending and reports the one that failed', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([
+      key({ id: 'k1', name: 'codex' }),
+      key({ id: 'k2', name: 'claude' }),
+    ])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+    const rejects = new Map<string, (reason: unknown) => void>()
+    vi.spyOn(apiKeysApi, 'revoke').mockImplementation(
+      (keyId: string) =>
+        new Promise<never>((_, reject) => {
+          rejects.set(keyId, reject)
+        }),
+    )
+
+    renderSection()
+
+    for (const name of ['codex', 'claude']) {
+      fireEvent.click(await screen.findByRole('button', { name: `Revoke ${name}` }))
+      const confirmDialog = await screen.findByRole('alertdialog')
+      fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Revoke' }))
+      await screen.findByRole('button', { name: `Revoking… ${name}` })
+    }
+    // The first row is still pending after the second revoke started.
+    expect(screen.getByRole('button', { name: 'Revoking… codex' })).toBeDisabled()
+
+    rejects.get('k1')?.(new Error('Forbidden'))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Couldn\'t revoke "codex" — it is still active.',
+    )
+    expect(screen.getByRole('button', { name: 'Revoke codex' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Revoking… claude' })).toBeDisabled()
+  })
+
   // WS-41: Cancel used to keep the abandoned draft and its error.
   it('clears the draft and the error when the form is cancelled', async () => {
     vi.spyOn(apiKeysApi, 'list').mockResolvedValue([])

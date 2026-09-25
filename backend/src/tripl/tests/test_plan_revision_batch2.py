@@ -859,3 +859,8 @@ async def test_renaming_a_scan_minted_variable_on_a_branch_is_not_housekeeping(
         ("adana", "city_adana")
     ]
     assert diff["summary"] == {"added": 1, "removed": 1, "changed": 0, "housekeeping": 0}
+
+    # The list's badge pairs the rename as the diff view does: ONE change, not
+    # the raw "added + removed" two (tripl-amnn, branch-list counts).
+    listed = (await client.get(f"/api/v1/projects/{slug}/branches?include_diff_counts=true")).json()
+    assert next(b for b in listed["items"] if b["id"] == branch_id)["ahead"] == 1

@@ -52,6 +52,15 @@ const scanConfig: ScanConfig = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
+/** GET /scans/activity with this scan's server-side streak (tripl-fj5g.11). */
+function activityFor(failingStreak = 0) {
+  return {
+    window_from: '2026-01-01T00:00:00Z',
+    window_to: '2026-01-02T00:00:00Z',
+    items: [{ scan_config_id: 'scan-1', latest_job: null, failing_streak: failingStreak, rows_read_24h: 0 }],
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
   window.localStorage.clear()
@@ -61,6 +70,7 @@ describe('ScanDetail', () => {
   it('shows Apply groups only to owners', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }
@@ -96,6 +106,7 @@ describe('ScanDetail', () => {
   it('shows replay chunk progress for running jobs', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }
@@ -152,6 +163,7 @@ describe('ScanDetail', () => {
   it('renders the overview panels with real ScanConfig fields', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }
@@ -187,6 +199,7 @@ describe('ScanDetail', () => {
   it('labels a failed job, offers a retry, and never shows raw scan internals', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }
@@ -240,6 +253,7 @@ describe('ScanDetail', () => {
     // numbers for one run. Both now call scanUtils.jobMetricPoints.
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }
@@ -292,6 +306,7 @@ describe('ScanDetail', () => {
     // stat card and the cell carry it as a title.
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }
@@ -338,6 +353,7 @@ describe('ScanDetail', () => {
   async function renderExpandedRun(summary: Record<string, number>) {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }
@@ -405,6 +421,7 @@ describe('ScanDetail', () => {
   it('renders the platform presence grid from a mocked response', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({
           scan_config_id: 'scan-1',
@@ -447,6 +464,7 @@ describe('ScanDetail', () => {
   it('shows an empty state when no platform column is configured', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({
           scan_config_id: 'scan-1',
@@ -477,6 +495,7 @@ describe('ScanDetail', () => {
   it('says the platform presence failed to load instead of claiming no column (DATA-21)', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return new Response(JSON.stringify({ detail: 'boom' }), {
           status: 500,
@@ -504,6 +523,7 @@ describe('ScanDetail', () => {
     const cancel = vi.fn()
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }
@@ -557,6 +577,7 @@ describe('ScanDetail', () => {
     })
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }
@@ -589,6 +610,82 @@ describe('ScanDetail', () => {
     fireEvent.click(expander)
     expect(screen.getByRole('button', { name: /Hide 4 repeated failed runs/ })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Retry scan' })).toHaveLength(4)
+  })
+})
+
+describe('ScanDetail — streak past the loaded page (tripl-fj5g.11)', () => {
+  it("banners the server's count, which agrees with the Scans list", async () => {
+    const failedJob = (id: string, startedAt: string) => ({
+      id,
+      scan_config_id: 'scan-1',
+      status: 'failed',
+      started_at: startedAt,
+      completed_at: startedAt,
+      result_summary: null,
+      error_message: 'Read timed out.',
+      created_at: startedAt,
+      updated_at: startedAt,
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      // 120 straight failures; the page below only holds the newest two.
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor(120))
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          failedJob('j1', '2026-01-04T00:00:00Z'),
+          failedJob('j2', '2026-01-03T00:00:00Z'),
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Failed last 120 runs')).toBeInTheDocument()
+    // The expander counts the rows it hides, which are the loaded ones.
+    expect(screen.getByRole('button', { name: /Show 2 repeated failed runs/ })).toBeInTheDocument()
+  })
+
+  it('renders the runs as a table whose every column is named, the actions column included', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([{
+          id: 'j1',
+          scan_config_id: 'scan-1',
+          status: 'completed',
+          started_at: '2026-01-04T00:00:00Z',
+          completed_at: '2026-01-04T00:00:05Z',
+          result_summary: { events_created: 2 },
+          error_message: null,
+          created_at: '2026-01-04T00:00:00Z',
+          updated_at: '2026-01-04T00:00:05Z',
+        }])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+      </QueryClientProvider>,
+    )
+
+    const headers = await screen.findAllByRole('columnheader')
+    expect(headers.map(header => header.textContent)).toEqual([
+      'Started', 'Duration', 'Rows read', 'Events', 'Status', 'Actions',
+    ])
   })
 })
 
@@ -626,6 +723,7 @@ describe('ScanDetail — coached demo scenario', () => {
   function setupFetch(runCalls: string[] = []) {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
       if (url.endsWith('/platform-presence')) {
         return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
       }

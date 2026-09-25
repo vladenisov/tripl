@@ -226,6 +226,31 @@ export function VariablesTab({
     return true
   }
 
+  // Bulk-added values meet the same per-type check as the dialogs (PLAN-24):
+  // "abc" added to thirty Number variables used to go straight through. The
+  // selection can mix types, so each value is checked against every selected
+  // variable's own type, and a conflict asks before it is written (review 204).
+  const handleBulkAddValues = async (values: string[]): Promise<boolean> => {
+    bulkUpdateMut.reset()
+    bulkDeleteMut.reset()
+    const selected = variables.filter(variable => selectedIds.has(variable.id))
+    const conflicting = selected.filter(
+      variable => invalidValuesFor(variable.variable_type, values).length > 0,
+    )
+    if (conflicting.length > 0) {
+      const types = [...new Set(conflicting.map(variable => TYPE_LABELS[variable.variable_type]))]
+      const ok = await confirm({
+        title: 'Add values that do not fit',
+        message: `${countOf(conflicting.length, 'selected variable is', 'selected variables are')} typed ${types.join(', ')}, and some of ${values.join(', ')} are not valid values of that type. Drift will never match them. Add them anyway?`,
+        confirmLabel: 'Add anyway',
+        variant: 'danger',
+      })
+      if (!ok) return false
+    }
+    await bulkUpdateMut.mutateAsync({ allowed_values_add: values })
+    return true
+  }
+
   const deleteMut = useMutation({
     // Its error is rendered under the table (PLAN-26).
     meta: SILENT_ERROR_META,
@@ -760,10 +785,7 @@ export function VariablesTab({
           bulkDeleteMut.reset()
           return bulkUpdateMut.mutateAsync({ description })
         }}
-        onAddValues={values => {
-          bulkDeleteMut.reset()
-          return bulkUpdateMut.mutateAsync({ allowed_values_add: values })
-        }}
+        onAddValues={handleBulkAddValues}
         onDelete={handleBulkDelete}
         onClear={selection.clear}
       />}

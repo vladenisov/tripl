@@ -213,3 +213,42 @@ describe('EventsToolbar status multi-select (EVT-35)', () => {
     expect(onFilterStatusesChange).toHaveBeenCalledWith([])
   })
 })
+
+describe('EventsToolbar status filter on a narrowing tab (EVT-35)', () => {
+  it('names the archived tab default instead of reading "any"', async () => {
+    renderToolbar({ filterStatuses: [], tabDefaultStatuses: ['archived'] })
+
+    const trigger = screen.getByRole('button', { name: 'Status filter' })
+    expect(trigger).toHaveTextContent(/Archived/)
+    expect(trigger).not.toHaveTextContent(/any/)
+
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect(await screen.findByRole('menuitemcheckbox', { name: 'Archived' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Tab default' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'Any status' })).toBeNull()
+  })
+
+  it('adds to the tab default rather than replacing it', async () => {
+    const onFilterStatusesChange = vi.fn()
+    renderToolbar({ filterStatuses: [], tabDefaultStatuses: ['in_review'], onFilterStatusesChange })
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Status filter' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Draft' }))
+
+    expect(onFilterStatusesChange).toHaveBeenCalledWith(['draft', 'in_review'])
+  })
+
+  it('shows an explicit pick over the tab default', () => {
+    renderToolbar({ filterStatuses: ['draft'], tabDefaultStatuses: ['archived'] })
+
+    const trigger = screen.getByRole('button', { name: 'Status filter' })
+    expect(trigger).toHaveTextContent(/Draft/)
+    expect(trigger).not.toHaveTextContent(/Archived/)
+  })
+})

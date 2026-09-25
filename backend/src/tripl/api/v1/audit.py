@@ -7,9 +7,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from tripl.api.deps import SessionDep, get_owner_user
-from tripl.schemas.audit import AuditEntryDetailResponse, AuditListResponse
+from tripl.schemas.audit import AuditActionCatalog, AuditEntryDetailResponse, AuditListResponse
 from tripl.schemas.text_filters import FreeTextFilter
-from tripl.services import audit_service
+from tripl.services import audit_actions, audit_service
 
 # Owner-only: this feed was the back door around two other owner-only gates.
 #
@@ -55,6 +55,14 @@ async def list_audit(
         limit=limit,
         offset=offset,
     )
+
+
+# Declared before ``/{entry_id}``, which would otherwise claim the segment and
+# answer 422 for a UUID that does not parse. Same owner gate as the log itself.
+@router.get("/actions", response_model=AuditActionCatalog)
+async def list_audit_actions() -> AuditActionCatalog:
+    """Every action the log records, grouped for the filter; see audit_actions."""
+    return audit_actions.action_catalog()
 
 
 # The payload half of an entry, which the list rows no longer carry. Owner-only

@@ -31,8 +31,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from tripl import cache
@@ -88,6 +90,10 @@ def _seq_key(slug: str) -> str:
     return f"{_CHANNEL_PREFIX}{slug}:seq"
 
 
+def _epoch_key(slug: str) -> str:
+    return f"{_CHANNEL_PREFIX}{slug}:epoch"
+
+
 def backend_available() -> bool:
     """Whether the async Redis client is live (pub/sub can actually deliver)."""
     return cache.get_async_client() is not None
@@ -138,22 +144,24 @@ async def async_publish_project_event(slug: str, event_type: str, payload: dict[
         logger.warning("realtime async publish %s/%s failed: %s", slug, event_type, exc)
 
 
-async def replay_buffered_events(slug: str, after_id: int | None) -> list[dict[str, Any]]:
-    """Buffered events with ``id > after_id`` in ascending order (reconnect replay).
+@dataclass(frozen=True)
+class ResumePoint:
+    """Where a (re)connecting stream starts, read in ONE Redis transaction.
 
-    Returns ``[]`` when Redis is off, no cursor was supplied, or nothing is
-    buffered past the cursor.
+    ``seq`` is the project's sequence number and ``epoch`` the identity of the
+    sequence itself: it is created with the counter's first read and lost with
+    it, so a Redis restart without persistence shows up as a new epoch even once
+    the restarted sequence has climbed back past the client's cursor. ``replay``
+    is the buffered events past the cursor, ascending. ``seq`` and ``epoch`` are
+    ``None`` when they could not be read — the client must then resync.
     """
-    if after_id is None:
-        return []
-    client = cache.get_async_client()
-    if client is None:
-        return []
-    try:
-        raw_items = await client.lrange(_buffer_key(slug), 0, BUFFER_SIZE - 1)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("realtime replay %s failed: %s", slug, exc)
-        return []
+
+    seq: int | None
+    epoch: str | None
+    replay: list[dict[str, Any]]
+
+
+def _parse_replay(raw_items: Sequence[Any], after_id: int) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for raw in raw_items:  # newest → oldest (LPUSH order)
         try:
@@ -166,34 +174,70 @@ async def replay_buffered_events(slug: str, after_id: int | None) -> list[dict[s
     return events
 
 
-async def current_sequence(slug: str) -> int | None:
-    """The project's latest published sequence number, for the ``hello`` event.
+def _decode(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.decode() if isinstance(value, bytes) else str(value)
 
-    ``0`` when nothing has been published yet; ``None`` when it cannot be read
-    (Redis off or failing), which the client must treat as "cannot tell what I
-    missed" and resync.
+
+async def read_resume_point(slug: str, after_id: int | None) -> ResumePoint:
+    """The sequence number, its epoch and the replay past ``after_id``, atomically.
+
+    One ``MULTI``: the sequence and the ring are read at the same instant, so no
+    event published in between can trim a missed id out of the ring after the
+    sequence number has promised it (tripl-fj5g.17). A failed read reports
+    ``seq=None`` rather than a sequence number with an empty replay, which the
+    client would take for "nothing missed".
     """
     client = cache.get_async_client()
     if client is None:
-        return None
+        return ResumePoint(seq=None, epoch=None, replay=[])
     try:
-        raw = await client.get(_seq_key(slug))
-        return int(raw) if raw is not None else 0
+        async with client.pipeline(transaction=True) as pipe:
+            pipe.setnx(_epoch_key(slug), uuid.uuid4().hex)
+            pipe.get(_seq_key(slug))
+            pipe.get(_epoch_key(slug))
+            pipe.lrange(_buffer_key(slug), 0, BUFFER_SIZE - 1)
+            _created, raw_seq, raw_epoch, raw_items = await pipe.execute()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("realtime sequence read %s failed: %s", slug, exc)
-        return None
+        logger.warning("realtime resume read %s failed: %s", slug, exc)
+        return ResumePoint(seq=None, epoch=None, replay=[])
+    seq = int(raw_seq) if raw_seq is not None else 0
+    replay = _parse_replay(raw_items or [], after_id) if after_id is not None else []
+    return ResumePoint(seq=seq, epoch=_decode(raw_epoch), replay=replay)
 
 
-def hello_payload(slug: str, *, backend: str, seq: int | None) -> dict[str, Any]:
+async def replay_buffered_events(slug: str, after_id: int | None) -> list[dict[str, Any]]:
+    """Buffered events with ``id > after_id`` in ascending order (reconnect replay).
+
+    Returns ``[]`` when Redis is off, no cursor was supplied, or nothing is
+    buffered past the cursor.
+    """
+    if after_id is None:
+        return []
+    return (await read_resume_point(slug, after_id)).replay
+
+
+def hello_payload(
+    slug: str, *, backend: str, seq: int | None, epoch: str | None = None
+) -> dict[str, Any]:
     """The ``hello`` event body (tripl-fj5g.17).
 
-    ``seq`` is the project's sequence number when the stream opened and
-    ``buffer_size`` how many events the replay ring holds. A reconnecting client
-    compares ``seq`` with the last id it saw: a gap the ring covers arrives as
-    replay after this event, so only a wider gap, a sequence below its cursor (a
-    reset), or ``seq`` null calls for refetching everything.
+    ``seq`` is the project's sequence number when the stream opened, ``epoch``
+    the identity of that sequence, and ``buffer_size`` how many events the
+    replay ring holds. A reconnecting client compares them with what it saw: a
+    gap the ring covers, in the same epoch, arrives as replay right after this
+    event, and the client still checks those ids arrive without a hole. Anything
+    else — a wider gap, a new epoch, a sequence below its cursor, ``seq`` null —
+    calls for refetching everything.
     """
-    return {"project_slug": slug, "backend": backend, "seq": seq, "buffer_size": BUFFER_SIZE}
+    return {
+        "project_slug": slug,
+        "backend": backend,
+        "seq": seq,
+        "epoch": epoch,
+        "buffer_size": BUFFER_SIZE,
+    }
 
 
 async def redis_message_iterator(
@@ -300,13 +344,21 @@ async def project_response_stream(
     max_messages: int | None,
 ) -> AsyncIterator[str]:
     async with subscribed_messages(slug) as messages:
-        # Read AFTER subscribing and BEFORE the replay: every event past ``seq``
-        # then reaches the client live, by replay, or both (de-duplicated by id).
-        seq = await current_sequence(slug) if messages is not None else None
-        replay = await replay_buffered_events(slug, last_event_id) if messages is not None else []
+        # Read AFTER subscribing: every event past ``seq`` then reaches the client
+        # live, by replay, or both (de-duplicated by id).
+        resume = (
+            await read_resume_point(slug, last_event_id)
+            if messages is not None
+            else ResumePoint(seq=None, epoch=None, replay=[])
+        )
         async for frame in sse_response_stream(
-            hello_payload=hello_payload(slug, backend="redis" if messages else "degraded", seq=seq),
-            replay=replay,
+            hello_payload=hello_payload(
+                slug,
+                backend="redis" if messages else "degraded",
+                seq=resume.seq,
+                epoch=resume.epoch,
+            ),
+            replay=resume.replay,
             messages=messages,
             is_disconnected=is_disconnected,
             max_messages=max_messages,

@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button'
 import { FormRow } from '@/components/ui/form-row'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { ErrorState } from '@/components/error-state'
@@ -37,13 +38,14 @@ import {
 import { Chip } from '@/components/primitives/chip'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { countOf } from '@/lib/plural'
-import { getErrorMessage } from '@/lib/utils'
+import { cn, getErrorMessage } from '@/lib/utils'
 import { eventTypesKey, projectEventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import {
   parseContract,
+  regexNotice,
   validateContract,
   type ContractDraft,
   type ContractErrors,
@@ -53,16 +55,6 @@ import { describedByIds, SFieldHintContext, useSFieldHintId } from './sFieldCont
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
 const DEFAULT_COLOR = '#6366f1'
 
-const TH_STYLE: CSSProperties = {
-  textAlign: 'left',
-  padding: '8px 14px',
-  fontSize: 10.5,
-  fontWeight: 600,
-  color: 'var(--fg-subtle)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.04em',
-}
-const TD_STYLE: CSSProperties = { padding: '10px 14px', fontSize: 12.5, verticalAlign: 'middle' }
 
 function fieldContractRuleCount(field: FieldDefinition): number {
   return [
@@ -160,6 +152,13 @@ export function EventTypesTab({ slug }: { slug: string }) {
         title="All types"
         subtitle={typesQuery.isPending ? 'Loading…' : countOf(sorted.length, 'type', 'types')}
       >
+        {typesQuery.isError && typesQuery.data !== undefined && (
+          // A failed REFRESH keeps the rows on screen: replacing them with an
+          // error would unmount whatever is being edited (review 204).
+          <p role="alert" className="px-4 py-2 text-xs text-destructive">
+            Couldn't refresh event types: {getErrorMessage(typesQuery.error)}
+          </p>
+        )}
         {typesQuery.isPending ? (
           // A pending list is not an empty one: "No event types yet" used to
           // flash on every cold load and stay up on a 500 (PLAN-41).
@@ -168,7 +167,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
               <Skeleton key={index} className="h-10 w-full" />
             ))}
           </div>
-        ) : typesQuery.isError ? (
+        ) : typesQuery.isError && typesQuery.data === undefined ? (
           <div className="p-4">
             <ErrorState
               compact
@@ -183,19 +182,23 @@ export function EventTypesTab({ slug }: { slug: string }) {
             No event types yet. Create one to categorize your events.
           </p>
         ) : (
-          <table className="w-full border-collapse" aria-label="Event types">
-            <thead>
-              <tr style={{ background: 'var(--bg-sunken)' }}>
+          // The shared table. `scroll={false}`: the panel body is already the
+          // sideways-scrolling region, and a second one inside it would be a
+          // nested scroller. Required, Sensitive and Owner are the columns a
+          // phone can do without; they come back from `md` up.
+          <Table scroll={false} aria-label="Event types">
+            <TableHeader>
+              <TableRow style={{ background: 'var(--bg-sunken)' }}>
                 <Th>Type</Th>
                 <Th>Fields</Th>
-                <Th align="right">Required</Th>
-                {showSensitive && <Th>Sensitive</Th>}
-                {showOwner && <Th>Owner</Th>}
+                <Th align="right" wideOnly>Required</Th>
+                {showSensitive && <Th wideOnly>Sensitive</Th>}
+                {showOwner && <Th wideOnly>Owner</Th>}
                 {showStatus && <Th>Status</Th>}
-                <Th style={{ width: 40 }} />
-              </tr>
-            </thead>
-            <tbody>
+                <Th style={{ width: 40 }}><span className="sr-only">Open</span></Th>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {sorted.map((et) => (
                 <ListRow key={et.id}>
                   <Td>
@@ -225,13 +228,13 @@ export function EventTypesTab({ slug }: { slug: string }) {
                   <Td>
                     <span className="mono tnum">{et.field_definitions.length}</span>
                   </Td>
-                  <Td align="right">
+                  <Td align="right" wideOnly>
                     <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>
                       {requiredFieldCount(et)}
                     </span>
                   </Td>
                   {showSensitive && (
-                    <Td>
+                    <Td wideOnly>
                       {sensitiveFieldCount(et) > 0 ? (
                         <Chip tone="warning" size="xs">
                           {sensitiveFieldCount(et)}
@@ -242,7 +245,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                     </Td>
                   )}
                   {showOwner && (
-                    <Td>
+                    <Td wideOnly>
                       {(() => {
                         const owners = ownersByType.get(et.id) ?? []
                         if (owners.length === 0) {
@@ -297,8 +300,8 @@ export function EventTypesTab({ slug }: { slug: string }) {
                   </Td>
                 </ListRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
       </SurfPanel>
     </div>
@@ -653,20 +656,23 @@ export function FieldsEditor({
           No fields defined yet.
         </p>
       ) : (
-        <table className="w-full border-collapse">
-          <thead>
-            <tr style={{ background: 'var(--bg-sunken)' }}>
-              <Th style={{ width: 34 }} />
+        // Display, PII and Contract are hidden below `md`: on a phone the
+        // name, type and required flag are what identify a field, and the
+        // row's actions must stay reachable.
+        <Table scroll={false} aria-label={`${eventType.display_name} fields`}>
+          <TableHeader>
+            <TableRow style={{ background: 'var(--bg-sunken)' }}>
+              <Th style={{ width: 34 }}><span className="sr-only">Order</span></Th>
               <Th>Name</Th>
-              <Th>Display</Th>
+              <Th wideOnly>Display</Th>
               <Th>Type</Th>
-              <Th>PII</Th>
+              <Th wideOnly>PII</Th>
               <Th>Required</Th>
-              <Th>Contract</Th>
-              <Th style={{ width: 66 }} />
-            </tr>
-          </thead>
-          <tbody>
+              <Th wideOnly>Contract</Th>
+              <Th style={{ width: 66 }}><span className="sr-only">Actions</span></Th>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {sortedFields.map((f, idx) => (
               <FieldRow
                 key={f.id}
@@ -682,8 +688,8 @@ export function FieldsEditor({
                 onDelete={() => handleDelete(f)}
               />
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
     </SCard>
   )
@@ -756,7 +762,7 @@ function FieldRow({
           <span className="mono text-[12px]">{field.name}</span>
         )}
       </Td>
-      <Td>
+      <Td wideOnly>
         <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
           {field.display_name}
         </span>
@@ -771,7 +777,7 @@ function FieldRow({
           </span>
         )}
       </Td>
-      <Td>
+      <Td wideOnly>
         <SensitivityChip value={field.sensitivity} />
       </Td>
       <Td>
@@ -781,7 +787,7 @@ function FieldRow({
           <span style={{ color: 'var(--fg-faint)' }}>—</span>
         )}
       </Td>
-      <Td>
+      <Td wideOnly>
         {contractCount > 0 ? (
           <Chip variant="outline" size="xs">
             {contractCount}
@@ -1022,6 +1028,11 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
         </SField>
         <SField label="Regex" hint="Values must match this pattern.">
           {contractInput('contract_regex', { placeholder: '^[a-z0-9_]+$' })}
+          {draft.contract_regex !== initialDraft.contract_regex && regexNotice(draft.contract_regex) && (
+            <p className="mt-1 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              {regexNotice(draft.contract_regex)}
+            </p>
+          )}
         </SField>
         <SField label="Min">
           {contractInput('contract_min_value', { decimal: true, placeholder: '—' })}
@@ -1498,22 +1509,31 @@ function BackLink({ label, onClick }: { label: string; onClick: () => void }) {
   )
 }
 
+// The shared table's cells, in this page's denser type. `wideOnly` hides a
+// low-value column below `md`, header and cells alike.
 function Th({
   children,
   align,
   style,
+  wideOnly,
 }: {
   children?: ReactNode
   align?: 'right'
   style?: CSSProperties
+  wideOnly?: boolean
 }) {
   return (
-    <th
+    <TableHead
       scope="col"
-      style={{ ...TH_STYLE, ...(align === 'right' ? { textAlign: 'right' } : {}), ...style }}
+      className={cn(
+        'h-8 px-3.5 text-[10.5px] font-semibold tracking-[0.04em]',
+        align === 'right' && 'text-right',
+        wideOnly && 'hidden md:table-cell',
+      )}
+      style={{ color: 'var(--fg-subtle)', ...style }}
     >
       {children}
-    </th>
+    </TableHead>
   )
 }
 
@@ -1521,21 +1541,24 @@ function Td({
   children,
   align,
   className,
-  onClick,
+  wideOnly,
 }: {
   children?: ReactNode
   align?: 'right'
   className?: string
-  onClick?: (e: React.MouseEvent<HTMLTableCellElement>) => void
+  wideOnly?: boolean
 }) {
   return (
-    <td
-      className={className}
-      style={{ ...TD_STYLE, ...(align === 'right' ? { textAlign: 'right' } : {}) }}
-      onClick={onClick}
+    <TableCell
+      className={cn(
+        'px-3.5 text-[12.5px]',
+        align === 'right' && 'text-right',
+        wideOnly && 'hidden md:table-cell',
+        className,
+      )}
     >
       {children}
-    </td>
+    </TableCell>
   )
 }
 
@@ -1545,12 +1568,12 @@ function Td({
 // button in the name cell (PLAN-39).
 function ListRow({ children }: { children: ReactNode }) {
   return (
-    <tr
-      className="border-t transition-colors hover:bg-[var(--surface-hover)]"
+    <TableRow
+      className="border-t border-b-0 hover:bg-[var(--surface-hover)]"
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       {children}
-    </tr>
+    </TableRow>
   )
 }
 

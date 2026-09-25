@@ -336,6 +336,22 @@ describe('useDemoProvisioning', () => {
     expect(screen.getByTestId('path')).toHaveTextContent('/workspace')
   })
 
+  it('reports a create cancelled from another tab as cancelled, not as the demo limit', async () => {
+    // The cancel is per creator, so the same user's other tab stops this create
+    // and the server answers it with a 409 of its own.
+    vi.spyOn(projectsApi, 'createDemo').mockRejectedValue(
+      new ApiError('Demo provisioning was cancelled', 409),
+    )
+
+    renderHarness()
+    fireEvent.click(screen.getByText('start'))
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('cancelled'))
+    expect(screen.getByTestId('cancel-outcome')).toHaveTextContent('stopped')
+    expect(screen.queryByTestId('error')).not.toBeInTheDocument()
+    expect(screen.getByTestId('path')).toHaveTextContent('/workspace')
+  })
+
   it('surfaces a 403 as an error without navigating (DEMO-5)', async () => {
     vi.spyOn(projectsApi, 'createDemo').mockRejectedValue(new ApiError('Editor role required', 403))
 

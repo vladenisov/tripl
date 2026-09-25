@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { AuditEntryDetail, AuditListResponse } from '../types'
+import type { AuditActionCatalog, AuditEntryDetail, AuditListResponse } from '../types'
 
 export const auditApi = {
   list: (params?: {
@@ -28,4 +28,7 @@ export const auditApi = {
   // The payload of one entry. List rows carry no payload at all, so this is the
   // only way to read one — see `AuditEntry` in types/branches.ts (tripl-5ydt).
   get: (entryId: string) => api.get<AuditEntryDetail>(`/audit/${entryId}`),
+
+  // The action filter's vocabulary, grouped, from the backend that records it.
+  actions: () => api.get<AuditActionCatalog>('/audit/actions'),
 }

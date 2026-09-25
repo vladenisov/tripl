@@ -50,6 +50,7 @@ export function StorageSection({
             section="storage"
             field="photo_max_size_mb"
             value={form.storage.photo_max_size_mb}
+            saved={settings.storage.photo_max_size_mb}
             setField={setField}
             suffix="MB"
           />
@@ -129,6 +130,7 @@ export function StorageSection({
             section="storage"
             field="gcs_photo_signed_url_ttl_seconds"
             value={form.storage.gcs_photo_signed_url_ttl_seconds}
+            saved={settings.storage.gcs_photo_signed_url_ttl_seconds}
             setField={setField}
             suffix="seconds"
           />

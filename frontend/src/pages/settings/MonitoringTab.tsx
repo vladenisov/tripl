@@ -210,7 +210,7 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
             only undo the permanent ratchet has. */}
         {isPending ? (
           <p className="text-sm text-muted-foreground">Loading scope overrides…</p>
-        ) : isError ? (
+        ) : isError && data === undefined ? (
           <ErrorState
             compact
             title="Couldn't load scope overrides"
@@ -297,7 +297,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
   // the rejection is handled there rather than left unhandled here.
   const commit = (data: Partial<ProjectAnomalySettings>) => updateMut.mutateAsync(data)
 
-  if (settingsQuery.isError) {
+  if (settingsQuery.isError && !settings) {
     // A failed load used to read "Loading detection settings…" forever (PLAN-41).
     return (
       <ErrorState
@@ -345,6 +345,13 @@ export function MonitoringTab({ slug }: { slug: string }) {
       </div>
 
       {!canWrite && <ReadOnlyNotice />}
+      {settingsQuery.isError && (
+        // A failed refresh after an autosave keeps the settings on screen
+        // rather than replacing the whole tab (review 204).
+        <p role="alert" className="text-xs text-destructive">
+          Couldn't refresh detection settings: {getErrorMessage(settingsQuery.error)}
+        </p>
+      )}
 
       {/* `disabled` on a fieldset reaches every control inside it, the Switch
           and Checkbox buttons included; `contents` keeps it out of the layout. */}

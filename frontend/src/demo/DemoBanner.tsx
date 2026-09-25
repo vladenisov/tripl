@@ -137,9 +137,13 @@ export function DemoBanner({ project }: { project: Project }) {
   // A failed reset or delete says so until the user does something else here
   // (DEMO-23): the message used to stay pinned under the banner through every
   // later action, and a reset failure went on captioning a delete that worked.
+  //
+  // Only a SETTLED failure is reset: `reset()` detaches the observer from a
+  // mutation still in flight, which read as idle — Reset and Delete came back
+  // enabled mid-reseed, and a later failure of it was shown nowhere.
   const clearMutationError = () => {
-    resetMut.reset()
-    deleteMut.reset()
+    if (resetMut.isError) resetMut.reset()
+    if (deleteMut.isError) deleteMut.reset()
   }
 
   const handleReset = async () => {

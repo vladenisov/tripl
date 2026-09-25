@@ -405,3 +405,35 @@ describe('MonitoringTab — a failed settings load (PLAN-41)', () => {
     expect(screen.queryByText('Loading detection settings…')).not.toBeInTheDocument()
   })
 })
+
+describe('MonitoringTab — a failed refresh after an autosave (review 204)', () => {
+  it('keeps the settings on screen and says the refresh failed', async () => {
+    let getCount = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/anomaly-settings/scope-overrides')) {
+        return jsonResponse({ items: [], total: 0 })
+      }
+      if (url.includes('/anomaly-settings')) {
+        if (init?.method === 'PATCH') return jsonResponse(settingsPayload({ sigma_threshold: 4 }))
+        getCount += 1
+        return getCount === 1
+          ? jsonResponse(settingsPayload())
+          : new Response(JSON.stringify({ detail: 'Bad gateway' }), {
+              status: 502,
+              headers: { 'Content-Type': 'application/json' },
+            })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    const sigma = await screen.findByLabelText('Sigma threshold')
+    fireEvent.change(sigma, { target: { value: '4' } })
+    fireEvent.blur(sigma)
+
+    expect(await screen.findByText(/Couldn't refresh detection settings/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Sigma threshold')).toBeInTheDocument()
+    expect(screen.queryByText("Couldn't load detection settings")).not.toBeInTheDocument()
+  })
+})

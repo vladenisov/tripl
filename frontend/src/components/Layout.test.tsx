@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { projectsKey, projectsQueryOptions } from '@/lib/queryKeys'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryCache, QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,6 +10,8 @@ import { projectsApi } from '@/api/projects'
 import { ApiError } from '@/api/client'
 import type { Project } from '@/types'
 import NotFoundPage from '@/pages/NotFoundPage'
+import ProjectsPage from '@/pages/ProjectsPage'
+import { AuthContext, type AuthContextValue } from './auth-context'
 import Layout from './Layout'
 import { expectNoAxeViolations } from '@/test/axe'
 import { toast } from 'sonner'
@@ -78,6 +80,22 @@ vi.mock('@/demo/DemoScenarioStrip', () => ({
 vi.mock('@/demo/LazyDemoScenarioProvider', () => ({
   LazyDemoScenarioProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
+
+const ownerAuth: AuthContextValue = {
+  user: {
+    id: 'owner-1',
+    email: 'owner@example.com',
+    name: 'owner',
+    role: 'owner',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  status: 'authenticated',
+  error: null,
+  isLoggingOut: false,
+  logout: async () => {},
+  refresh: () => {},
+}
 
 interface RenderLayoutOptions {
   /** Turns on the shell's demo chrome (banner + coach strip). */
@@ -308,6 +326,32 @@ describe('Layout backend unavailable (fj5g.6)', () => {
 
     expect(await screen.findAllByRole('heading', { name: 'Backend is unavailable' })).toHaveLength(1)
     expect(toastError).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed list once on the real workspace page, not once per surface', async () => {
+    // The page used to add its own "Failed to load projects" card under the
+    // shell's, each with its own Try again.
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
+    const toastError = vi.spyOn(toast, 'error')
+    renderLayout('/workspace', '/workspace', 'Workspace dashboard', {
+      page: (
+        <AuthContext.Provider value={ownerAuth}>
+          <ProjectsPage />
+        </AuthContext.Provider>
+      ),
+      queryCache: new QueryCache({ onError: surfaceQueryError }),
+      mocks: () => {
+        vi.mocked(projectsApi.list).mockRejectedValue(new ApiError('Service unavailable', 503))
+      },
+    })
+
+    await screen.findByRole('heading', { name: 'Backend is unavailable' })
+    await waitFor(() => expect(document.querySelector('[data-slot="skeleton"]')).toBeNull())
+    const alerts = screen.getAllByRole('alert')
+    expect(alerts).toHaveLength(1)
+    expect(within(alerts[0]).getAllByRole('button', { name: 'Try again' })).toHaveLength(1)
+    expect(screen.queryByText('Failed to load projects')).toBeNull()
+    expect(toastError).not.toHaveBeenCalledWith(expect.stringContaining('Service unavailable'), expect.anything())
   })
 })
 

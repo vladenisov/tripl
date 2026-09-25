@@ -162,12 +162,15 @@ export function numberFieldError(
   return null
 }
 
-/** True when any numeric field in `section` holds text that cannot be saved. */
-export function sectionHasInvalidNumber(form: EditableSettings, section: SectionKey): boolean {
-  const values = form[section] as unknown as Record<string, unknown>
-  return Object.keys(NUMBER_FIELDS[section]).some(
-    field => numberFieldError(section, field, values[field]) !== null,
-  )
+/**
+ * True when `update` would send a numeric field of `section` that cannot be
+ * saved. Only edited fields count: a value delivered by the environment is
+ * whatever the backend accepted, and blocking an unrelated edit on it would
+ * leave Save dead until the owner overrode a field they never touched.
+ */
+export function updateHasInvalidNumber(update: ServiceSettingsUpdate, section: SectionKey): boolean {
+  const values = (update[section] ?? {}) as Record<string, unknown>
+  return Object.keys(values).some(field => numberFieldError(section, field, values[field]) !== null)
 }
 
 export function editableFromSettings(settings: ServiceSettings): EditableSettings {

@@ -142,11 +142,13 @@ export const projectsKey = () => ['projects'] as const
  * whichever mounted first decided how it behaved. Spread it and override only
  * what a reader genuinely needs (`enabled: false` for a cache-only read).
  *
- * Silent for every reader, because its failure has owners that render it:
- * Layout's "Backend is unavailable" card inside the app shell, and the
- * settings takeover (which mounts outside Layout) its own card. Opting out on
+ * Silent for every reader, because its failure has exactly two owners that
+ * render it: Layout's "Backend is unavailable" card for every page inside the
+ * app shell (the workspace dashboard included — it shows no card of its own),
+ * and the settings takeover's card, which mounts outside Layout. Opting out on
  * one observer was not enough — a query's meta is whichever observer set its
  * options last — so the card used to come with a toast saying the same thing.
+ * A reader that adds its own error card for this query reports it twice.
  */
 export const projectsQueryOptions = () =>
   queryOptions({

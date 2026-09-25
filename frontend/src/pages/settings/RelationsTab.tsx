@@ -161,6 +161,13 @@ export function RelationsTab({ slug }: { slug: string }) {
           )
         }
       >
+        {relationsQuery.isError && relationsQuery.data !== undefined && (
+          // A failed REFRESH keeps the rows on screen: replacing them with an
+          // error would unmount whatever is being edited (review 204).
+          <p role="alert" className="px-4 py-2 text-xs text-destructive">
+            Couldn't refresh relations: {getErrorMessage(relationsQuery.error)}
+          </p>
+        )}
         {relationsQuery.isPending ? (
           // A pending list is not an empty one: "No relations" used to flash on
           // every cold load (PLAN-41).
@@ -169,7 +176,7 @@ export function RelationsTab({ slug }: { slug: string }) {
               <Skeleton key={index} className="h-9 w-full" />
             ))}
           </div>
-        ) : relationsQuery.isError ? (
+        ) : relationsQuery.isError && relationsQuery.data === undefined ? (
           <div className="p-4">
             <ErrorState
               compact

@@ -8,7 +8,7 @@ import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { useBranchLinkProps } from '@/hooks/useBranch'
 import type { PlanDiffEntry, PlanDiffKind, PlanFieldChange, PlanValueChange } from '@/types'
-import { DiffValue } from '../DiffValue'
+import { DiffPair, DiffValue } from '../DiffValue'
 import { diffEntryDetail, housekeepingLine } from './branchDiffModel'
 import {
   ENTITY_LABEL,
@@ -348,23 +348,6 @@ function DetailSection({ title, children }: { title: string; children: ReactNode
   )
 }
 
-/** A before → after pair. The two sides differ only in colour for the eye, so
- * each carries a visually hidden word for a screen reader, which otherwise
- * heard "currency USD EUR" with no before and after in it (PLAN-19). */
-function BeforeAfter({ before, after }: { before: unknown; after: unknown }) {
-  return (
-    <>
-      <span className="sr-only">before:</span>
-      <DiffValue value={before} tone="danger" />
-      <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
-        →
-      </span>
-      <span className="sr-only">after:</span>
-      <DiffValue value={after} tone="success" />
-    </>
-  )
-}
-
 function FieldChangeList({
   changes,
   reverting,
@@ -410,7 +393,7 @@ function FieldChangeList({
             </div>
           ) : (
             <div className="flex flex-wrap items-start gap-1.5">
-              <BeforeAfter before={change.before} after={change.after} />
+              <DiffPair before={change.before} after={change.after} />
             </div>
           )}
         </div>
@@ -443,7 +426,7 @@ function ValueChangeRow({ item }: { item: PlanValueChange }) {
         {item.key}
       </span>
       {item.kind === 'changed' ? (
-        <BeforeAfter before={item.before} after={item.after} />
+        <DiffPair before={item.before} after={item.after} />
       ) : (
         <DiffValue value={item.kind === 'added' ? item.after : item.before} tone={meta.tone} />
       )}

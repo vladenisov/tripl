@@ -466,15 +466,56 @@ async def test_scan_activity_route_is_not_shadowed_by_the_scan_id_route(
 # ── tripl-fj5g.17: the hello carries the sequence number ───────────────────
 
 
+class _FakePipeline:
+    """Records queued commands; ``execute`` answers them in order, or raises."""
+
+    def __init__(self, redis: _FakeAsyncRedis) -> None:
+        self._redis = redis
+        self._queued: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def __aenter__(self) -> _FakePipeline:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    def setnx(self, key: str, value: str) -> None:
+        self._queued.append(("setnx", (key, value)))
+
+    def get(self, key: str) -> None:
+        self._queued.append(("get", (key,)))
+
+    def lrange(self, key: str, start: int, end: int) -> None:
+        self._queued.append(("lrange", (key, start, end)))
+
+    async def execute(self) -> list[Any]:
+        if self._redis.fail:
+            raise ConnectionError("redis went away")
+        results: list[Any] = []
+        for command, args in self._queued:
+            key = args[0]
+            if command == "setnx":
+                created = key not in self._redis.store
+                self._redis.store.setdefault(key, args[1].encode())
+                results.append(created)
+            elif command == "get":
+                results.append(self._redis.store.get(key))
+            else:
+                results.append(list(self._redis.buffer))
+        return results
+
+
 class _FakeAsyncRedis:
-    def __init__(self, seq: bytes | None) -> None:
-        self._seq = seq
+    def __init__(
+        self, seq: bytes | None, *, buffer: list[str] | None = None, fail: bool = False
+    ) -> None:
+        self.store: dict[str, bytes] = {} if seq is None else {"tripl:events:p:seq": seq}
+        self.buffer = buffer or []
+        self.fail = fail
 
-    async def get(self, _key: str) -> bytes | None:
-        return self._seq
-
-    async def lrange(self, _key: str, _start: int, _end: int) -> list[str]:
-        return []
+    def pipeline(self, *, transaction: bool) -> _FakePipeline:
+        assert transaction is True  # seq and ring must be read at one instant
+        return _FakePipeline(self)
 
 
 class _IdlePubSub:
@@ -525,12 +566,53 @@ async def test_hello_carries_the_current_sequence_and_ring_size(
         )
     )
 
+    epoch = hello.pop("epoch")
+    assert isinstance(epoch, str) and epoch
     assert hello == {
         "project_slug": "p",
         "backend": "redis",
         "seq": expected,
         "buffer_size": realtime.BUFFER_SIZE,
     }
+
+
+async def test_the_epoch_is_stable_until_the_sequence_is_lost() -> None:
+    redis = _FakeAsyncRedis(b"7")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(realtime.cache, "get_async_client", lambda: redis)
+        first = await realtime.read_resume_point("p", None)
+        again = await realtime.read_resume_point("p", None)
+        # Redis restarted without persistence: counter and epoch are both gone.
+        redis.store.clear()
+        restarted = await realtime.read_resume_point("p", None)
+
+    assert first.epoch == again.epoch
+    assert restarted.epoch != first.epoch
+    assert restarted.seq == 0
+
+
+async def test_resume_point_replays_past_the_cursor_from_the_same_read() -> None:
+    envelopes = [
+        json.dumps({"id": i, "type": realtime.EVENT_SIGNALS_UPDATED, "data": {}})
+        for i in (9, 8, 7)  # LPUSH order: newest first
+    ]
+    redis = _FakeAsyncRedis(b"9", buffer=envelopes)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(realtime.cache, "get_async_client", lambda: redis)
+        resume = await realtime.read_resume_point("p", 7)
+
+    assert resume.seq == 9
+    assert [event["id"] for event in resume.replay] == [8, 9]
+
+
+async def test_a_failed_resume_read_reports_no_sequence() -> None:
+    """A sequence with an empty replay would read as "nothing missed"."""
+    redis = _FakeAsyncRedis(b"9", fail=True)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(realtime.cache, "get_async_client", lambda: redis)
+        resume = await realtime.read_resume_point("p", 3)
+
+    assert resume == realtime.ResumePoint(seq=None, epoch=None, replay=[])
 
 
 async def test_degraded_hello_has_no_sequence(client: AsyncClient) -> None:
@@ -544,6 +626,7 @@ async def test_degraded_hello_has_no_sequence(client: AsyncClient) -> None:
     # Redis is off in tests: the client cannot tell what it missed, so it resyncs.
     assert hello["backend"] == "degraded"
     assert hello["seq"] is None
+    assert hello["epoch"] is None
     assert hello["buffer_size"] == realtime.BUFFER_SIZE
 
 
@@ -583,3 +666,102 @@ def test_service_agrees_with_the_shared_case_table(case: dict[str, Any]) -> None
     new_values = _DEFINITION.validate_python(case["submitted"]).to_definition_values()
 
     assert _definition_values_changed(metric, new_values) is case["expect_history_reset"]
+
+
+# ── Leftovers: batched event-type owners (PLAN-42) ─────────────────────────
+
+
+async def test_project_owners_come_back_in_one_request(client: AsyncClient) -> None:
+    await _create_project(client, "owners-batch")
+    first = await client.post(
+        "/api/v1/projects/owners-batch/event-types", json={"name": "track", "display_name": "T"}
+    )
+    second = await client.post(
+        "/api/v1/projects/owners-batch/event-types", json={"name": "screen", "display_name": "S"}
+    )
+    assert first.status_code == 201 and second.status_code == 201
+    me = (await client.get("/api/v1/auth/me")).json()
+    added = await client.post(
+        f"/api/v1/projects/owners-batch/event-types/{first.json()['id']}/owners",
+        json={"user_id": me["id"]},
+    )
+    assert added.status_code == 201, added.text
+    other = await _create_project(client, "owners-other")
+    other_type = await client.post(
+        f"/api/v1/projects/{other['slug']}/event-types", json={"name": "x", "display_name": "X"}
+    )
+    await client.post(
+        f"/api/v1/projects/{other['slug']}/event-types/{other_type.json()['id']}/owners",
+        json={"user_id": me["id"]},
+    )
+
+    resp = await client.get("/api/v1/projects/owners-batch/event-type-owners")
+
+    assert resp.status_code == 200, resp.text
+    owners = resp.json()
+    # This project's owners only; the per-type route's rows, unchanged.
+    assert [owner["event_type_id"] for owner in owners] == [first.json()["id"]]
+    per_type = await client.get(
+        f"/api/v1/projects/owners-batch/event-types/{first.json()['id']}/owners"
+    )
+    assert owners == per_type.json()
+
+
+async def test_project_owners_of_an_unknown_project_is_404(client: AsyncClient) -> None:
+    resp = await client.get("/api/v1/projects/nope/event-type-owners")
+
+    assert resp.status_code == 404
+
+
+# ── Leftovers: the audit action vocabulary is the backend's ────────────────
+
+_API_AND_SERVICES = (
+    Path(__file__).resolve().parents[1] / "api",
+    Path(__file__).resolve().parents[1] / "services",
+)
+
+
+def _recorded_actions() -> tuple[set[str], set[str]]:
+    """Every literal ``action="x.y"`` in a record call, split by whether it has a project."""
+    import re
+
+    scoped: set[str] = set()
+    unscoped: set[str] = set()
+    for root in _API_AND_SERVICES:
+        for path in root.rglob("*.py"):
+            if "demo" in path.parts:
+                continue  # the demo seeder writes rows, it records no requests
+            source = path.read_text(encoding="utf-8")
+            for match in re.finditer(r'action="([a-z_]+\.[a-z_.]+)"', source):
+                start = source.rfind("record(", 0, match.start())
+                end = source.find("\n    )", match.end())
+                block = source[start : end if end > 0 else match.end() + 600]
+                has_project = "project=" in block or "project_slug=" in block
+                (scoped if has_project else unscoped).add(match.group(1))
+    return scoped, unscoped
+
+
+async def test_audit_actions_route_serves_every_recorded_action(client: AsyncClient) -> None:
+    from tripl.services import audit_actions
+
+    resp = await client.get("/api/v1/audit/actions")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    project = {a for group in body["project"] for a in group["actions"]}
+    workspace = {a for group in body["workspace"] for a in group["actions"]}
+    assert project | workspace == audit_actions.all_actions()
+    # One action, one place in the select.
+    assert not project & workspace
+
+    scoped, unscoped = _recorded_actions()
+    # api_key.* sit where the Audit tab always put them: create with the project
+    # (when the key is scoped to one), revoke in the workspace list.
+    assert scoped - project <= {"api_key.revoke"}
+    assert unscoped <= workspace
+    # The f-string families come from their literals.
+    assert {"plan_branch.submit", "schema_drift.accept", "alert_inbox.note"} <= project
+    # Workspace-only, including the entry written after its project is gone.
+    assert {"data_source.create", "user.role_update", "project.delete"} <= workspace
+    # _record_lifecycle passes the action positionally.
+    assert {"project.create", "project.update", "project.reset"} <= project

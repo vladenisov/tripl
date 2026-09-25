@@ -26,7 +26,9 @@ export function VariablesBulkBar({
   /** Confirms, then applies; resolves true once the type has changed. */
   onSetType: (variableType: VariableType) => Promise<boolean>
   onSetDescription: (description: string) => Promise<unknown>
-  onAddValues: (values: string[]) => Promise<unknown>
+  /** Checks the values against each selected type first; resolves false when
+   * the operator backed out, so the draft stays. */
+  onAddValues: (values: string[]) => Promise<boolean>
   onDelete: () => void
   onClear: () => void
 }) {
@@ -39,8 +41,10 @@ export function VariablesBulkBar({
   // click, so a 403, a stale-id 404 or a 422 threw away what was typed and
   // said nothing (PLAN-26); a failure now leaves the draft for another try and
   // the reason beside it. A rejection is already rendered, so it is swallowed.
+  // `false` means the operator cancelled a confirm: nothing changed, so the
+  // draft stays too (review 204).
   const clearOnSuccess = (action: Promise<unknown>, clear: () => void) => {
-    action.then(clear, () => undefined)
+    action.then(result => { if (result !== false) clear() }, () => undefined)
   }
 
   const applyType = () => {

@@ -5,8 +5,15 @@
  * Min or Max became `null`, which quietly cleared that rule, and the same typo in
  * Bad share became `0`, the strictest setting there is, so every value failed
  * the contract on the next scan (PLAN-38). Nothing checked the 0–1 range, that
- * Min is not above Max, or that the regex compiles either. Now nothing is
- * dropped or tightened: an input that does not parse is an error the form shows.
+ * Min is not above Max either. Now nothing is dropped or tightened: a number
+ * that does not parse is an error the form shows.
+ *
+ * The regex is NOT validated here. The backend compiles it with Python's `re`
+ * and deliberately screens for no single dialect, and the warehouses that run
+ * it speak RE2 or PostgreSQL; JavaScript's RegExp rejects valid patterns in all
+ * of them (`(?i)`, `(?P<name>…)`), so blocking on it locked fields with a
+ * working rule out of any edit. `regexNotice` says so without blocking, and the
+ * server's 422 is the verdict.
  */
 
 export interface ContractDraft {
@@ -58,14 +65,19 @@ function numberError(raw: string): string | undefined {
   return parseDecimal(raw) === undefined ? 'Enter a number, e.g. 0 or 12.5.' : undefined
 }
 
-function regexError(raw: string): string | undefined {
+/**
+ * A non-blocking note for a pattern this browser cannot compile. Many such
+ * patterns are valid where the rule actually runs, so it is information, never
+ * a reason to refuse the save.
+ */
+export function regexNotice(raw: string): string | undefined {
   const pattern = raw.trim()
   if (!pattern) return undefined
   try {
     new RegExp(pattern)
     return undefined
-  } catch (error) {
-    return `Not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`
+  } catch {
+    return 'This browser cannot check this pattern (Python or RE2 syntax such as (?i) or (?P<name>…) is fine). The server checks it when you save.'
   }
 }
 
@@ -76,8 +88,6 @@ export function validateContract(draft: ContractDraft): ContractErrors {
   if (bad) errors.contract_max_bad_rate = bad
   const nullShare = shareError(draft.contract_required_max_null_rate, false)
   if (nullShare) errors.contract_required_max_null_rate = nullShare
-  const regex = regexError(draft.contract_regex)
-  if (regex) errors.contract_regex = regex
   const min = numberError(draft.contract_min_value)
   if (min) errors.contract_min_value = min
   const max = numberError(draft.contract_max_value)

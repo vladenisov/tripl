@@ -55,6 +55,7 @@ import {
 } from './branchMeta'
 import {
   branchSettingsKey,
+  invalidateBranchCounts,
   invalidateBranchPlan,
   invalidateBranchReview,
   invalidateMainPlan,
@@ -200,6 +201,10 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
       if (action === 'approve') notifyStepCompleted('branches/comment')
       if (action === 'merge' || action === 'close') leaveEndedBranch()
       invalidateBranchReview(qc, slug, branch.id)
+      // A status change moves no count, and the counted list is a snapshot
+      // per open branch: only a merge (main moved, so every "behind" may
+      // change) or a reopen (the branch rejoins the counted set) pays for it.
+      if (action === 'merge' || action === 'reopen') invalidateBranchCounts(qc, slug)
       if (action === 'merge') {
         setMergedAt(Date.now())
         invalidateMainPlan(qc, slug)
@@ -250,6 +255,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
       void qc.invalidateQueries({ queryKey: planBranchDetailKey(slug, branch.id) })
       void qc.invalidateQueries({ queryKey: planBranchConflictsKey(slug, branch.id) })
       invalidateBranchPlan(qc, slug, branch.id)
+      invalidateBranchCounts(qc, slug)
     },
   })
 

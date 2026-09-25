@@ -19,7 +19,7 @@ import {
   type FactOperandState,
   type MetricDraft,
 } from './metricDraft'
-import { toOperandPayload, withAggregation } from './metricPayload'
+import { toOperandPayload, withAggregation, withFactTable } from './metricPayload'
 import type { FactTableDetails, OperandDetailState } from './useFactTableDetails'
 
 const AGGREGATION_LABEL: Record<MetricAggregation, string> = {
@@ -137,7 +137,10 @@ function FactOperandEditor({
         <Select
           id={`${idPrefix}-table`}
           value={operand.factTableId}
-          onChange={value => set('factTableId', value)}
+          onChange={value => {
+            checkMut.reset()
+            onChange(withFactTable(operand, value))
+          }}
           options={factTableOptions}
           aria-required
           {...errorAria(errors, `${idPrefix}-table`)}

@@ -17,6 +17,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { trackerConfigKey } from './branches/branchQueryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import type { ProjectTrackerConfig, ProjectTrackerConfigUpdate } from '@/types'
 import { isOwner } from '@/lib/permissions'
@@ -35,44 +36,103 @@ function describeTrackerError(error: unknown): string {
 
 type TrackerField = 'baseUrl' | 'projectKey' | 'authEmail'
 
-/**
- * What the form would save wrong, per field (PLAN-21). The backend accepts any
- * string, so a typo in the base URL or an enabled tracker with no project key
- * used to save cleanly and only fail later, in the merge worker, where nobody
- * sees it. An empty field is fine while the tracker is off: an owner may park
- * a half-filled connection.
- */
-function trackerConfigErrors(values: {
+interface TrackerFormValues {
   enabled: boolean
   baseUrl: string
   projectKey: string
   authEmail: string
-}): Partial<Record<TrackerField, string>> {
+}
+
+// The backend's own rules (alerting_validation.py): `_validate_https_url` wants
+// an https URL with a host and no whitespace, `_JIRA_PROJECT_KEY_RE` an
+// uppercase key after it upper-cases the input, and `validate_email_address` an
+// address. Checked here so a typo is named beside its field instead of coming
+// back as one 422 line.
+const JIRA_PROJECT_KEY_RE = /^[A-Z][A-Z0-9_]{1,31}$/
+const REQUIRED_WHEN_ENABLED = 'Required while the tracker is enabled.'
+const CANNOT_CLEAR = 'A saved value cannot be cleared; enter a new one.'
+
+/**
+ * What the form would save wrong, per field (PLAN-21).
+ *
+ * The backend validates every field it is SENT and rejects an empty one ("Jira
+ * base_url is required"), but it does not require any of them to exist: a
+ * tracker can be enabled with no project key and only fail later, in the merge
+ * worker, where nobody sees it. So: a field that is filled must be valid; an
+ * enabled tracker needs all three; a disabled one may stay half-filled, because
+ * blank fields are simply not sent (see `trackerPatch`). What cannot be done is
+ * blanking a field that has a saved value — the PATCH has no way to clear it.
+ */
+function trackerConfigErrors(
+  values: TrackerFormValues,
+  saved: ProjectTrackerConfig,
+): Partial<Record<TrackerField, string>> {
   const errors: Partial<Record<TrackerField, string>> = {}
+  const blank = (savedValue: string) =>
+    savedValue.trim() !== '' ? CANNOT_CLEAR : values.enabled ? REQUIRED_WHEN_ENABLED : null
+
   const baseUrl = values.baseUrl.trim()
-  if (baseUrl !== '') {
+  if (baseUrl === '') {
+    const message = blank(saved.base_url)
+    if (message) errors.baseUrl = message
+  } else {
     let parsed: URL | null
     try {
-      parsed = new URL(baseUrl)
+      parsed = /\s/.test(baseUrl) ? null : new URL(baseUrl)
     } catch {
       parsed = null
     }
-    if (!parsed || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) {
-      errors.baseUrl = 'Enter a full URL, such as https://acme.atlassian.net.'
+    if (!parsed || parsed.protocol !== 'https:' || !parsed.hostname) {
+      errors.baseUrl = 'Enter an https URL, such as https://acme.atlassian.net.'
     }
-  } else if (values.enabled) {
-    errors.baseUrl = 'Required while the tracker is enabled.'
   }
-  if (values.enabled && values.projectKey.trim() === '') {
-    errors.projectKey = 'Required while the tracker is enabled.'
+
+  const projectKey = values.projectKey.trim()
+  if (projectKey === '') {
+    const message = blank(saved.project_key)
+    if (message) errors.projectKey = message
+  } else if (!JIRA_PROJECT_KEY_RE.test(projectKey.toUpperCase())) {
+    errors.projectKey = 'Use 2–32 letters, digits or underscores, starting with a letter (e.g. ENG).'
   }
+
   const email = values.authEmail.trim()
-  if (email !== '' && !/^[^\s@]+@[^\s@]+$/.test(email)) {
+  if (email === '') {
+    const message = blank(saved.auth_email)
+    if (message) errors.authEmail = message
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     errors.authEmail = 'Enter an email address.'
-  } else if (email === '' && values.enabled) {
-    errors.authEmail = 'Required while the tracker is enabled.'
   }
   return errors
+}
+
+/**
+ * The PATCH body: only what changed, and never an empty string. The backend
+ * validates every field present and refuses a blank one, so sending the whole
+ * form turned "save the issue type of a parked, half-filled connection" into a
+ * 422 about a base URL nobody touched.
+ */
+function trackerPatch(
+  values: TrackerFormValues & { issueType: string; apiToken: string },
+  saved: ProjectTrackerConfig,
+): ProjectTrackerConfigUpdate {
+  const patch: ProjectTrackerConfigUpdate = {}
+  if (values.enabled !== saved.enabled) patch.enabled = values.enabled
+  const text: Array<['base_url' | 'project_key' | 'auth_email' | 'issue_type', string]> = [
+    ['base_url', values.baseUrl],
+    ['project_key', values.projectKey],
+    ['auth_email', values.authEmail],
+    ['issue_type', values.issueType.trim() || DEFAULT_ISSUE_TYPE],
+  ]
+  for (const [key, raw] of text) {
+    const value = raw.trim()
+    if (value !== '' && value !== saved[key]) {
+      patch[key] = value
+    }
+  }
+  // Only when the user actually typed one — otherwise omitted, so the stored
+  // token is preserved (an empty string would clear it).
+  if (values.apiToken.trim() !== '') patch.api_token = values.apiToken
+  return patch
 }
 
 interface TrackerConfigDialogProps {
@@ -88,7 +148,7 @@ interface TrackerConfigDialogProps {
  */
 export function TrackerConfigDialog({ slug, open, onOpenChange }: TrackerConfigDialogProps) {
   const configQuery = useQuery({
-    queryKey: ['trackerConfig', slug],
+    queryKey: trackerConfigKey(slug),
     queryFn: () => trackerConfigApi.get(slug),
     enabled: open,
     // Rendered in the dialog with a retry, instead of "Loading tracker…"
@@ -150,7 +210,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
   // a blank field means "keep the stored token".
   const [apiToken, setApiToken] = useState('')
 
-  const errors = trackerConfigErrors({ enabled, baseUrl, projectKey, authEmail })
+  const errors = trackerConfigErrors({ enabled, baseUrl, projectKey, authEmail }, config)
   const invalid = Object.keys(errors).length > 0
   // Field errors show once the owner has tried to save, not while typing.
   const [attempted, setAttempted] = useState(false)
@@ -166,23 +226,13 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
   const saveMut = useMutation({
     // Rendered inline below the fields.
     meta: SILENT_ERROR_META,
-    mutationFn: () => {
-      const patch: ProjectTrackerConfigUpdate = {
-        enabled,
-        base_url: baseUrl.trim(),
-        project_key: projectKey.trim(),
-        auth_email: authEmail.trim(),
-        issue_type: issueType.trim() || DEFAULT_ISSUE_TYPE,
-      }
-      // Only send api_token when the user actually typed one — otherwise omit it
-      // so the stored token is preserved (the backend rejects an empty string).
-      if (apiToken.trim() !== '') {
-        patch.api_token = apiToken
-      }
-      return trackerConfigApi.update(slug, patch)
-    },
+    mutationFn: () =>
+      trackerConfigApi.update(
+        slug,
+        trackerPatch({ enabled, baseUrl, projectKey, authEmail, issueType, apiToken }, config),
+      ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['trackerConfig', slug] })
+      qc.invalidateQueries({ queryKey: trackerConfigKey(slug) })
       // Clear the just-saved token so the field returns to its "leave blank to
       // keep" state and the raw value never lingers in the DOM.
       setApiToken('')

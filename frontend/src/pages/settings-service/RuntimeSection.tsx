@@ -40,6 +40,7 @@ export function RuntimeSection({
             section="runtime"
             field="scan_row_limit_default"
             value={form.runtime.scan_row_limit_default}
+            saved={settings.runtime.scan_row_limit_default}
             setField={setField}
             suffix="rows"
           />
@@ -53,6 +54,7 @@ export function RuntimeSection({
             section="runtime"
             field="metrics_row_limit_default"
             value={form.runtime.metrics_row_limit_default}
+            saved={settings.runtime.metrics_row_limit_default}
             setField={setField}
             suffix="rows"
           />

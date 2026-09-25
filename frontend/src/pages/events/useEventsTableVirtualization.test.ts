@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { PHONE_CARD_HEIGHT_ESTIMATE } from './eventsPhoneCard'
 import {
+  ROW_HEIGHT_BY_DENSITY,
   computeVirtualRowCount,
+  estimateRowHeight,
   isFirstPageInView,
   isScanningForMatches,
   shouldFetchNextPage,
@@ -131,5 +134,19 @@ describe('isFirstPageInView', () => {
   it('is trivially in view with one page or nothing rendered', () => {
     expect(isFirstPageInView({ events, firstPage, pageCount: 1, lastRenderedIndex: 3 })).toBe(true)
     expect(isFirstPageInView({ events, firstPage, pageCount: 2, lastRenderedIndex: undefined })).toBe(true)
+  })
+})
+
+describe('estimateRowHeight', () => {
+  it('follows the density on a desktop table', () => {
+    expect(estimateRowHeight('compact', false)).toBe(ROW_HEIGHT_BY_DENSITY.compact)
+    expect(estimateRowHeight('comfy', false)).toBe(ROW_HEIGHT_BY_DENSITY.comfy)
+  })
+
+  it('assumes a card, not a desktop row, below md', () => {
+    // At the desktop estimate the spacer for unloaded pages came out a third of
+    // its real length, so the scroll thumb jumped as each page was measured.
+    expect(estimateRowHeight('compact', true)).toBe(PHONE_CARD_HEIGHT_ESTIMATE)
+    expect(PHONE_CARD_HEIGHT_ESTIMATE).toBeGreaterThan(2 * ROW_HEIGHT_BY_DENSITY.comfy - 20)
   })
 })

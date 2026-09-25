@@ -2029,10 +2029,14 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
         ['eventTypes', 'demo'],
         ['variables', 'demo'],
         ['events', 'demo'],
+        ['event', 'demo'],
+        ['eventTags', 'demo'],
+        ['eventHistory', 'demo'],
         ['metaFields', 'demo'],
         ['relations', 'demo'],
         ['planRevisions', 'demo'],
         ['planBranchConflicts', 'demo', 'feat-1'],
+        ['planBranchCounts', 'demo'],
       ]) {
         expect(keys).toContainEqual(key)
       }
@@ -2387,5 +2391,168 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
     expect(save).toBeDisabled()
     fireEvent.submit(save.closest('form')!)
     expect(branchSettingsApi.update).not.toHaveBeenCalled()
+  })
+
+  it("refreshes the branch's own editor caches after a revert (PLAN-16)", async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'purchase',
+          parent: 'track',
+          entity_id: 'ev-1',
+          changes: ['title changed'],
+          field_changes: [{ field: 'title', before: 'x', after: 'y', items: [] }],
+        },
+      ],
+    })
+    vi.mocked(planBranchesApi.revert).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /purchase/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Revert title' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Revert' }))
+
+    // The event editor fills from ['event', slug, branchId, eventId]; a stale
+    // copy there would save the reverted values straight back.
+    await waitFor(() => {
+      const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey)
+      for (const key of [
+        ['event', 'demo', 'feat-1'],
+        ['eventTags', 'demo', 'feat-1'],
+        ['eventHistory', 'demo', 'feat-1'],
+        ['events', 'demo', 'feat-1'],
+        ['planBranchCounts', 'demo'],
+      ]) {
+        expect(keys).toContainEqual(key)
+      }
+    })
+  })
+
+  it('does not rebuild the counted list for a status change (review 203)', async () => {
+    const ready = makeBranch({
+      id: 'feat-r',
+      name: 'ready-one',
+      kind: 'working',
+      status: 'ready_for_review',
+      created_by: 'u-maya',
+    })
+    mockBranchDetailQueries([MAIN, ready])
+    vi.mocked(planBranchesApi.transition).mockResolvedValue({} as never)
+    const countedCalls = () =>
+      vi
+        .mocked(planBranchesApi.list)
+        .mock.calls.filter(([, options]) => options?.include_diff_counts === true).length
+
+    renderTab('feat-r')
+
+    await waitFor(() => expect(countedCalls()).toBe(1))
+    const approve = await screen.findByRole('button', { name: 'Approve' })
+    await waitFor(() => expect(approve).toBeEnabled())
+    fireEvent.click(approve)
+    await waitFor(() =>
+      expect(planBranchesApi.transition).toHaveBeenCalledWith('demo', 'feat-r', 'approve'),
+    )
+    // The plain list refetches for the new status; the per-branch snapshot
+    // sweep behind the badges does not, because an approval moves no count.
+    await waitFor(() =>
+      expect(
+        vi.mocked(planBranchesApi.list).mock.calls.filter(([, options]) => !options).length,
+      ).toBeGreaterThan(1),
+    )
+    expect(countedCalls()).toBe(1)
+  })
+
+  it('switches the shell back to main when the active branch is deleted (PLAN-58)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.delete).mockResolvedValue(undefined as never)
+    localStorage.setItem('tripl-branch:demo', FEATURE.id)
+
+    function ActiveBranch() {
+      return <output aria-label="active branch">{useActiveBranchId() ?? 'main'}</output>
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authAs('owner')}>
+          <MemoryRouter initialEntries={[`/p/demo/settings/branches/${FEATURE.id}`]}>
+            <BranchProvider slug="demo">
+              <ActiveBranch />
+              <Routes>
+                <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
+                <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+              </Routes>
+            </BranchProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+    const active = screen.getByRole('status', { name: 'active branch' })
+    expect(active).toHaveTextContent(FEATURE.id)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete branch' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(active).toHaveTextContent('main'))
+    expect(localStorage.getItem('tripl-branch:demo')).toBeNull()
+  })
+
+  it('reaches the settings dialogs through the narrow-screen menu (PLAN-13)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN], total: 1 })
+
+    renderTab()
+
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'Branch settings' }), {
+      key: 'Enter',
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Merge policy/ }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Merge policy')).toBeInTheDocument()
+  })
+
+  it('marks the words a long text change touched, on each side (PLAN-19)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'purchase',
+          parent: 'track',
+          changes: ['description changed'],
+          field_changes: [
+            {
+              field: 'description',
+              before: 'Fired when the user completes a purchase on the web checkout',
+              after: 'Fired when the user completes a purchase on the mobile checkout',
+              items: [],
+            },
+          ],
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /purchase/ }))
+    expect(screen.getByText('web').closest('del')).not.toBeNull()
+    expect(screen.getByText('mobile').closest('ins')).not.toBeNull()
+    // The shared words are not marked on either side.
+    for (const shared of screen.getAllByText(/Fired when the user completes/)) {
+      expect(shared.closest('del, ins')).toBeNull()
+    }
   })
 })

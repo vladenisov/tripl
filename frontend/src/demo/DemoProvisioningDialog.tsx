@@ -42,10 +42,14 @@ interface DemoProvisioningDialogProps {
 }
 
 /**
- * A create the server refused before seeding anything (DEMO-5): 403 for a
- * viewer, 409 for a creator already at the demo limit. Neither was rolled back
- * — nothing started — and asking again gets the same answer, so neither may
- * claim a rollback or offer "Try again".
+ * A create the server refused before seeding anything (DEMO-5): a 403 (demo
+ * provisioning switched off on this server, or a role that may not create), or
+ * a 409 for a creator already at the demo limit. Neither was rolled back —
+ * nothing started — and asking again gets the same answer, so neither may
+ * claim a rollback or offer "Try again". The 403 has more than one cause, so
+ * its copy names none and the server's own reason (in the alert) says which.
+ * The other 409, a create cancelled from another tab, never reaches here:
+ * useDemoProvisioning reports it as cancelled.
  */
 type Refusal = 'forbidden' | 'limit'
 
@@ -65,8 +69,8 @@ function copyFor(
 ): { title: string; description: string } {
   if (status === 'error' && refusal === 'forbidden') {
     return {
-      title: 'You cannot create a demo',
-      description: 'Creating a demo workspace needs editor access. Nothing was created.',
+      title: 'Demo workspace not available',
+      description: 'The server refused to create one, for the reason below. Nothing was created.',
     }
   }
   if (status === 'error' && refusal === 'limit') {

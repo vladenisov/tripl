@@ -172,3 +172,41 @@ describe('HistoryTab — a diff says what changed, not only where (PLAN-51)', ()
     expect(screen.queryByText('changed')).not.toBeInTheDocument()
   })
 })
+
+describe('HistoryTab — the diff reads aloud (review 204)', () => {
+  it('names before, after and each member change for a screen reader', async () => {
+    vi.mocked(planRevisionsApi.list).mockResolvedValue({
+      items: [makeRevision({ id: 'rev-2' }), makeRevision({ id: 'rev-1' })],
+      total: 2,
+    })
+    vi.mocked(planRevisionsApi.diff).mockResolvedValue({
+      revision_id: 'rev-2',
+      compare_to: 'rev-1',
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'checkout',
+          parent: null,
+          changes: ['display_name', 'field_values'],
+          field_changes: [
+            { field: 'display_name', before: 'Checkout', after: 'Checkout flow' },
+            {
+              field: 'field_values',
+              before: null,
+              after: null,
+              items: [{ key: 'currency', kind: 'removed', before: 'USD', after: null }],
+            },
+          ],
+        },
+      ],
+    })
+    renderHistory()
+
+    await screen.findByText('Checkout flow')
+    expect(screen.getByText('before:')).toBeInTheDocument()
+    expect(screen.getByText('after:')).toBeInTheDocument()
+    expect(screen.getByText('removed:')).toBeInTheDocument()
+  })
+})

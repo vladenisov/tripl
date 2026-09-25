@@ -170,12 +170,6 @@ export interface ServiceSettingsUpdate {
   ai?: AiSettingsUpdate
 }
 
-export interface AiSettingsResponse {
-  ai: AiServiceSettings
-  overridden_fields: string[]
-  sources: Record<string, SettingSource>
-}
-
 export interface SettingsTestResponse {
   ok: boolean
   message: string

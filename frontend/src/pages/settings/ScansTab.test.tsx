@@ -473,6 +473,24 @@ describe('ScansTab', () => {
     expect(label.parentElement?.textContent).not.toContain('+')
   })
 
+  // The tag used to take its number from the activity endpoint alone, so it
+  // vanished while that loaded, if it failed, or when it lagged a run that
+  // finished since. The page's own count stands in (review A).
+  it("keeps the streak tag when the server's count is behind the loaded page", async () => {
+    setupFetchWithJobs(
+      [
+        failedJob('job-f3', '2026-01-03T00:00:00Z'),
+        failedJob('job-f2', '2026-01-02T00:00:00Z'),
+        failedJob('job-f1', '2026-01-01T00:00:00Z'),
+      ],
+      undefined,
+      { failing_streak: 0 },
+    )
+    renderTab()
+
+    expect(await screen.findByText(/failed last 3 runs/)).toBeInTheDocument()
+  })
+
   it('re-runs a failed scan from the run row via the manual trigger endpoint', async () => {
     const runCalls: { method: string; url: string }[] = []
     setupFetchWithJobs([failedJob('job-f1', '2026-01-01T00:00:00Z')], runCalls)

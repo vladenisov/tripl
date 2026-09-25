@@ -233,15 +233,17 @@ function DistributionDriftPanel({
 
       <Card>
         <CardContent className="p-0">
-          {/* The top contribution is the widest column and the movers card
-              above already names the biggest shifts, so a phone drops it. */}
+          {/* A phone drops the Band column: the PSI beside it carries the same
+              verdict. Top contribution stays — the movers card above covers
+              only the latest bucket, so for every older bucket this column is
+              the one place that says what moved. */}
           <Table aria-label="Drift by bucket">
             <TableHeader className="bg-muted/40">
               <TableRow className="hover:bg-transparent">
                 <TableHead scope="col" className="px-4">Bucket</TableHead>
                 <TableHead scope="col" className="px-4">PSI</TableHead>
-                <TableHead scope="col" className="px-4">Band</TableHead>
-                <TableHead scope="col" className="hidden px-4 md:table-cell">Top contribution</TableHead>
+                <TableHead scope="col" className="hidden px-4 md:table-cell">Band</TableHead>
+                <TableHead scope="col" className="px-4">Top contribution</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -253,12 +255,12 @@ function DistributionDriftPanel({
                       {formatTimestamp(row.bucket)}
                     </TableCell>
                     <TableCell className="px-4 py-3 font-medium">{row.psi.toFixed(3)}</TableCell>
-                    <TableCell className="px-4 py-3">
+                    <TableCell className="hidden px-4 py-3 md:table-cell">
                       <Badge variant="outline" className={driftBandClassName(row.band)}>
                         {row.band}
                       </Badge>
                     </TableCell>
-                    <TableCell className="hidden px-4 py-3 md:table-cell">
+                    <TableCell className="px-4 py-3">
                       {topMover ? (
                         <span className="font-mono text-xs">
                           {topMover.value}: {formatPercent(topMover.baseline_share)} {'->'} {formatPercent(topMover.current_share)}

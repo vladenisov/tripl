@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveQueryStatuses } from './useEventsQuery'
+import { resolveQueryStatuses, tabDefaultStatuses } from './useEventsQuery'
 
 describe('resolveQueryStatuses', () => {
   it('Any status (no explicit filter) includes draft and excludes only archived', () => {
@@ -18,5 +18,14 @@ describe('resolveQueryStatuses', () => {
   it('an explicit dropdown filter beats the tab default', () => {
     expect(resolveQueryStatuses('review', ['draft'])).toEqual(['draft'])
     expect(resolveQueryStatuses('archived', ['draft', 'live'])).toEqual(['draft', 'live'])
+  })
+})
+
+describe('tabDefaultStatuses', () => {
+  it('names what the review and archived tabs narrow to, and nothing elsewhere', () => {
+    expect(tabDefaultStatuses('review')).toEqual(['in_review'])
+    expect(tabDefaultStatuses('archived')).toEqual(['archived'])
+    expect(tabDefaultStatuses('all')).toBeNull()
+    expect(resolveQueryStatuses('archived', [])).toEqual(['archived'])
   })
 })

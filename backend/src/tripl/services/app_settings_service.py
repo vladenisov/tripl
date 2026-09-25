@@ -644,14 +644,6 @@ async def update_service_overrides(
     return await get_service_overrides(session)
 
 
-async def update_ai_overrides(
-    session: AsyncSession,
-    changes: dict[str, Any],
-) -> dict[str, Any]:
-    ai_changes = {key: value for key, value in changes.items() if key in AI_CONFIG_FIELDS}
-    return await update_service_overrides(session, ai_changes)
-
-
 _NO_DEFAULT = object()
 
 # The three system prompts are not ``Settings`` fields at all — env_service_values

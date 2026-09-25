@@ -7,7 +7,7 @@ import type { MetricDefinitionConfigUpdate, MetricDefinitionDetailResponse } fro
 import type { FactTableColumn } from '@/types/factTables'
 import { definitionDiffersFromStored } from './definitionChange'
 import { draftFromMetric, type MetricDraft } from './metricDraft'
-import { buildDefinitionPayload, withAggregation } from './metricPayload'
+import { buildDefinitionPayload, toOperandPayload, withAggregation, withFactTable } from './metricPayload'
 
 const SQL_METRIC = {
   id: 'm-1',
@@ -39,6 +39,7 @@ const COLUMNS: FactTableColumn[] = [
   { name: 'amount', type: 'number' },
   { name: 'country', type: 'string' },
   { name: 'is_trial', type: 'bool' },
+  { name: 'user_id', type: 'string' },
 ]
 
 function factMetric(config: Record<string, unknown>): MetricDefinitionDetailResponse {
@@ -231,5 +232,30 @@ describe('columns the form does not show (tripl-fj5g.9)', () => {
     const distinct = withAggregation({ ...summed, distinctColumn: '' }, 'count_distinct')
     expect(distinct).toMatchObject({ measureColumn: '', distinctColumn: '' })
     expect(withAggregation(summed, 'sum')).toBe(summed)
+  })
+})
+
+describe('a hidden column cannot strand a save (tripl-fj5g.9 review)', () => {
+  it('clears the hidden column when the operand moves to another fact table', () => {
+    const draft = draftFromMetric(factMetric({ measure_column: 'amount' }))
+    const moved = withFactTable(draft.numeratorOp, 'ft-2')
+    expect(moved).toMatchObject({ factTableId: 'ft-2', measureColumn: '', distinctColumn: '' })
+    expect(toOperandPayload(moved, COLUMNS)).toMatchObject({ measure_column: null })
+    // Unchanged table: nothing is cleared.
+    expect(withFactTable(draft.numeratorOp, 'ft-1')).toBe(draft.numeratorOp)
+  })
+
+  it('drops a hidden column the loaded fact table no longer has', () => {
+    const draft = draftFromMetric(factMetric({ measure_column: 'gone' }))
+    // The backend would answer 422 for a column the user cannot see or clear.
+    expect(toOperandPayload(draft.numeratorOp, COLUMNS)).toMatchObject({ measure_column: null })
+    // Still loading: nothing says it is gone, so it is kept.
+    expect(toOperandPayload(draft.numeratorOp, [])).toMatchObject({ measure_column: 'gone' })
+  })
+
+  it('keeps a shown column even when the loaded table lacks it, so validation can name it', () => {
+    const draft = draftFromMetric(factMetric({}))
+    const summed = { ...withAggregation(draft.numeratorOp, 'sum'), measureColumn: 'gone' }
+    expect(toOperandPayload(summed, COLUMNS)).toMatchObject({ measure_column: 'gone' })
   })
 })

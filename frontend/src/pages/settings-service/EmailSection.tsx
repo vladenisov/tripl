@@ -76,6 +76,7 @@ export function EmailSection({
             section="email"
             field="smtp_port"
             value={form.email.smtp_port}
+            saved={settings.email.smtp_port}
             setField={setField}
           />
         </Field>

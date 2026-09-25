@@ -136,15 +136,15 @@ async def test_realtime_subscribes_before_replay(monkeypatch: pytest.MonkeyPatch
 
         yield messages()
 
-    async def replay(_slug: str, _cursor: int | None) -> list[dict[str, Any]]:
+    async def replay(_slug: str, _cursor: int | None) -> realtime.ResumePoint:
         order.append("replay")
-        return []
+        return realtime.ResumePoint(seq=0, epoch="e", replay=[])
 
     async def connected() -> bool:
         return False
 
     monkeypatch.setattr(realtime, "subscribed_messages", subscribed)
-    monkeypatch.setattr(realtime, "replay_buffered_events", replay)
+    monkeypatch.setattr(realtime, "read_resume_point", replay)
     frames = [
         frame
         async for frame in realtime.project_response_stream(

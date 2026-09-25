@@ -148,6 +148,7 @@ export function AiSection({
             section="ai"
             field="ai_timeout_seconds"
             value={form.ai.ai_timeout_seconds}
+            saved={settings.ai.ai_timeout_seconds}
             setField={setField}
             suffix="seconds"
           />
@@ -160,6 +161,7 @@ export function AiSection({
             section="ai"
             field="ai_max_output_tokens"
             value={form.ai.ai_max_output_tokens}
+            saved={settings.ai.ai_max_output_tokens}
             setField={setField}
           />
         </Field>

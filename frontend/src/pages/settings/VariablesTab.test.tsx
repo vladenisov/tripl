@@ -1735,3 +1735,55 @@ describe('VariablesTab — review batch 15 (PLAN-23 … PLAN-33)', () => {
     expect(selectAll).toBeChecked()
   })
 })
+
+describe('VariablesTab — review 204 follow-ups', () => {
+  it('asks before bulk-adding values the selected types cannot hold', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'count', variable_type: 'number' })])
+    vi.mocked(variablesApi.bulkUpdate).mockResolvedValue(undefined)
+    renderVariablesTab()
+    fireEvent.click(await screen.findByLabelText('Select variable count'))
+
+    fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'abc, 2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add values' }))
+
+    const confirm = await screen.findByRole('alertdialog', { name: 'Add values that do not fit' })
+    expect(within(confirm).getByText(/1 selected variable is typed Number/)).toBeInTheDocument()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(variablesApi.bulkUpdate).not.toHaveBeenCalled()
+    // Backing out keeps what was typed.
+    expect(screen.getByLabelText('Bulk add values')).toHaveValue('abc, 2')
+  })
+
+  it('keeps the staged type when the confirm is cancelled', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'one' })])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByLabelText('Select variable one'))
+
+    fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Bulk set type')).toHaveValue('number')
+  })
+
+  it('warns when a type change strands per-event override values', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'variant' })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([
+      { id: 'ovr-1', variable_id: 'var-1', event_id: 'ev-1', event_name: 'Onboarding', values: ['a', 'b'] },
+    ])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByRole('button', { name: 'Edit override for Onboarding' })
+
+    fireEvent.change(within(dialog).getByLabelText('Type'), { target: { value: 'number' } })
+
+    expect(within(dialog).getByText(/Per-event overrides hold values not valid for Number: a, b/)).toBeInTheDocument()
+    // A warning, not a block: overrides are saved on their own.
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+})

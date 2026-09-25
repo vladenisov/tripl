@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -564,17 +564,55 @@ describe('FieldsEditor field form (PLAN-36 / PLAN-38)', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('says Min above Max, and a regex that does not compile', () => {
+  it('says Min above Max, and refuses to save it', () => {
     const { fetchSpy } = openNewField()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
     fireEvent.change(screen.getByLabelText('Min'), { target: { value: '10' } })
     fireEvent.change(screen.getByLabelText('Max'), { target: { value: '2' } })
-    fireEvent.change(screen.getByLabelText('Regex'), { target: { value: '([a-z' } })
 
     expect(screen.getByText('Max must be at least Min.')).toBeInTheDocument()
-    expect(screen.getByText(/Not a valid regular expression/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('saves a Python/RE2 pattern JavaScript cannot compile, with a note (review 204)', async () => {
+    const { fetchSpy } = openNewField()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
+    fireEvent.change(screen.getByLabelText('Regex'), { target: { value: '(?i)^checkout_' } })
+
+    expect(screen.getByText(/The server checks it when you save/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Regex')).not.toHaveAttribute('aria-invalid')
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    const [, init] = fetchSpy.mock.calls[0]
+    expect(JSON.parse(String(init?.body))).toMatchObject({ contract_regex: '(?i)^checkout_' })
+  })
+
+  it('lets a field with a saved RE2 pattern be edited and saved (review 204)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => mockJsonResponse({}))
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const typed = eventType({
+      id: 'type-1',
+      name: 'checkout',
+      field_definitions: [
+        field({ id: 'f-1', name: 'step', contract_regex: '(?P<step>[a-z]+)' }),
+      ],
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FieldsEditor slug="demo" eventType={typed} branchId={null} />
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'step' }))
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Funnel step' } })
+    // An unchanged saved pattern gets no note at all.
+    expect(screen.queryByText(/The server checks it/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save field' }))
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
   })
 
   it('never turns a blank Bad share into the strictest setting', () => {
@@ -809,5 +847,59 @@ describe('FieldsEditor reordering (PLAN-37)', () => {
       expect(screen.getByRole('button', { name: 'Move email down' })).toHaveFocus(),
     )
     expect(screen.getByRole('button', { name: 'Move email up' })).toBeDisabled()
+  })
+})
+
+describe('review 204 follow-ups', () => {
+  it('keeps a field draft on screen when a refetch of the list fails', async () => {
+    let failing = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return failing
+          ? new Response(JSON.stringify({ detail: 'Bad gateway' }), {
+              status: 502,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          : mockJsonResponse([CHECKOUT])
+      }
+      if (url.endsWith('/owners')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1?tab=settings']}>
+          <Routes>
+            <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'coupon' } })
+
+    failing = true
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['eventTypes', 'demo'] })
+    })
+
+    expect(await screen.findByText(/Couldn't refresh this event type: Bad gateway/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Name')).toHaveValue('coupon')
+    expect(screen.queryByText("Couldn't load this event type")).not.toBeInTheDocument()
+  })
+
+  it('renders both tables through the shared table component', async () => {
+    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/owners')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const table = await screen.findByRole('table', { name: 'Event types' })
+    expect(table).toHaveAttribute('data-slot', 'table')
   })
 })

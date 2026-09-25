@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Copy } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
@@ -12,7 +13,7 @@ import type { Event, EventType, MetaFieldDefinition } from '@/types'
 
 const CARD = 'overflow-hidden rounded-[10px] border'
 const CARD_STYLE = { background: 'var(--surface)', borderColor: 'var(--border)' } as const
-const TH = 'px-[14px] py-2 text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
+const TH = 'h-auto px-[14px] py-2 text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
 const TD = 'px-[14px] py-[9px] text-[12.5px] align-top'
 
 /**
@@ -147,26 +148,31 @@ export function EventSpecCard({
       </div>
 
       {rows.length > 0 && (
-        // The Events table's scroller: the edge fade says there is a fourth
-        // column to the right on a phone instead of cutting it off (LIVE-5).
-        // The card is `--surface`, so the fade's cover matches it.
+        // The design-system table scrolls itself, with the edge fade that says
+        // there is more to the right on a phone (LIVE-5); the card is
+        // `--surface`, so the fade's cover is set to match. A phone drops the
+        // field type, the column a reader of the spec needs least.
         <div
-          className="tripl-scroll-x overflow-x-auto border-t"
+          className="border-t"
           style={{ borderColor: 'var(--border-subtle)', '--scroll-x-bg': 'var(--surface)' } as CSSProperties}
         >
-          <table className="w-full border-collapse" aria-label="Spec fields">
-            <thead>
-              <tr style={{ background: 'var(--bg-sunken)' }}>
-                <th scope="col" className={TH}>Field</th>
-                <th scope="col" className={TH}>Type</th>
-                <th scope="col" className={TH}>Value</th>
-                <th scope="col" className={TH}>Documented values</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table aria-label="Spec fields">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent" style={{ background: 'var(--bg-sunken)' }}>
+                <TableHead scope="col" className={TH}>Field</TableHead>
+                <TableHead scope="col" className={`${TH} hidden md:table-cell`}>Type</TableHead>
+                <TableHead scope="col" className={TH}>Value</TableHead>
+                <TableHead scope="col" className={TH}>Documented values</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {rows.map(row => (
-                <tr key={row.field.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                  <td className={TD}>
+                <TableRow
+                  key={row.field.id}
+                  className="hover:bg-transparent"
+                  style={{ borderColor: 'var(--border-subtle)' }}
+                >
+                  <TableCell className={TD}>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="mono text-[12px]">{row.field.name}</span>
                       {(row.field.is_required || row.namesTheEvent) && (
@@ -184,12 +190,17 @@ export function EventSpecCard({
                     {row.field.description && (
                       <div className="mt-[2px] text-[11px]" style={{ color: 'var(--fg-subtle)' }}>{row.field.description}</div>
                     )}
-                  </td>
-                  <td className={`${TD} mono text-[11.5px]`}>{row.field.field_type}</td>
-                  <td className={`${TD} mono break-all text-[11.5px]`} style={{ color: 'var(--fg-muted)' }}>
+                  </TableCell>
+                  <TableCell className={`${TD} mono hidden text-[11.5px] md:table-cell`}>
+                    {row.field.field_type}
+                  </TableCell>
+                  <TableCell
+                    className={`${TD} mono break-all text-[11.5px]`}
+                    style={{ color: 'var(--fg-muted)' }}
+                  >
                     {row.value || '—'}
-                  </td>
-                  <td className={`${TD} text-[11.5px]`}>
+                  </TableCell>
+                  <TableCell className={`${TD} text-[11.5px]`}>
                     {row.contexts.length === 0 ? (
                       <span style={{ color: 'var(--fg-subtle)' }}>—</span>
                     ) : (
@@ -214,11 +225,11 @@ export function EventSpecCard({
                         })}
                       </ul>
                     )}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
 

@@ -61,6 +61,7 @@ export function EventsToolbar({
   onSearchChange,
   isFilterPending,
   filterStatuses,
+  tabDefaultStatuses = null,
   onFilterStatusesChange,
   filterSilentDays,
   onFilterSilentDaysChange,
@@ -99,6 +100,9 @@ export function EventsToolbar({
   onSearchChange: (value: string) => void
   isFilterPending: boolean
   filterStatuses: EventStatus[]
+  /** What the tab narrows to with no status picked (review, archived); `null`
+   *  where nothing picked means everything but archived. */
+  tabDefaultStatuses?: EventStatus[] | null
   onFilterStatusesChange: (value: EventStatus[]) => void
   filterSilentDays: number | undefined
   onFilterSilentDaysChange: (value: number | undefined) => void
@@ -191,7 +195,11 @@ export function EventsToolbar({
             a 366px phone column, pushing the primary CTA off-screen
             (tripl-jfm3.42). */}
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <StatusFilter value={filterStatuses} onChange={onFilterStatusesChange} />
+          <StatusFilter
+            value={filterStatuses}
+            tabDefault={tabDefaultStatuses}
+            onChange={onFilterStatusesChange}
+          />
           <Select
             value={filterSilentDays === undefined ? '__all__' : String(filterSilentDays)}
             onValueChange={value => onFilterSilentDaysChange(value === '__all__' ? undefined : Number(value))}
@@ -364,17 +372,24 @@ export function EventsToolbar({
  */
 function StatusFilter({
   value,
+  tabDefault,
   onChange,
 }: {
   value: EventStatus[]
+  tabDefault: EventStatus[] | null
   onChange: (value: EventStatus[]) => void
 }) {
+  // What the list is actually filtered by. On the review and archived tabs an
+  // empty pick is not "any": it is the tab's own status, and the control says
+  // so instead of reading "any" over a list of archived events.
+  const applied = value.length > 0 ? value : tabDefault ?? []
   const summary =
-    value.length === 0 ? 'any' : value.map(status => EVENT_STATUS_LABELS[status]).join(', ')
+    applied.length === 0 ? 'any' : applied.map(status => EVENT_STATUS_LABELS[status]).join(', ')
   const toggle = (status: EventStatus, checked: boolean) => {
     // Kept in the canonical order, so the URL a combination produces does not
-    // depend on the order the boxes were ticked in.
-    onChange(EVENT_STATUSES.filter(s => (s === status ? checked : value.includes(s))))
+    // depend on the order the boxes were ticked in. Built on what is applied,
+    // so ticking Draft on the review tab means In Review and Draft.
+    onChange(EVENT_STATUSES.filter(s => (s === status ? checked : applied.includes(s))))
   }
   return (
     <DropdownMenu>
@@ -397,13 +412,13 @@ function StatusFilter({
           onSelect={event => event.preventDefault()}
           onCheckedChange={() => onChange([])}
         >
-          Any status
+          {tabDefault ? 'Tab default' : 'Any status'}
         </DropdownMenuCheckboxItem>
         <DropdownMenuSeparator />
         {EVENT_STATUSES.map(status => (
           <DropdownMenuCheckboxItem
             key={status}
-            checked={value.includes(status)}
+            checked={applied.includes(status)}
             onSelect={event => event.preventDefault()}
             onCheckedChange={checked => toggle(status, checked === true)}
           >

@@ -16,9 +16,11 @@
  * persistence starts the per-project sequence again at 1. The `hello` event
  * carries the project's current sequence number (`seq`) and the ring's size, so
  * after a reconnect the client compares `seq` with its cursor: a gap the ring
- * covers arrives as replay and needs nothing more (tripl-fj5g.17). Only when it
- * cannot tell — no `seq`, no cursor — or the gap is wider than the ring, or
- * `seq` fell below the cursor (a reset), does it refresh every project cache the
+ * covers, in the same sequence `epoch`, arrives as replay and needs nothing
+ * more (tripl-fj5g.17) — as long as the replayed ids arrive without a hole,
+ * which is checked as they come in. Only when it cannot tell — no `seq`, no
+ * cursor, a new epoch — or the gap is wider than the ring, or `seq` fell below
+ * the cursor (a reset), or the replay has a hole, does it refresh every project cache the
  * stream feeds, once, and forget the de-dupe high-water mark. An id far below
  * that mark is read as a sequence reset rather than as a stale duplicate.
  * Without this, a reset left every surface silently stale while the status
@@ -63,6 +65,8 @@ interface HelloPayload {
   backend?: string
   /** The project's sequence number when the stream opened; null when unknown. */
   seq?: number | null
+  /** Identity of that sequence: a new one means Redis lost the counter. */
+  epoch?: string | null
   /** How many events the server's replay ring holds. */
   buffer_size?: number
 }
@@ -70,6 +74,7 @@ interface HelloPayload {
 export interface Hello {
   backend: string | undefined
   seq: number | null
+  epoch: string | null
   bufferSize: number
 }
 
@@ -87,16 +92,21 @@ function parseHello(data: string): Hello {
   const bufferSize = typeof payload.buffer_size === 'number' && payload.buffer_size > 0
     ? payload.buffer_size
     : SEQUENCE_RESET_GAP
-  return { backend: payload.backend, seq, bufferSize }
+  const epoch = typeof payload.epoch === 'string' && payload.epoch ? payload.epoch : null
+  return { backend: payload.backend, seq, epoch, bufferSize }
 }
 
 /**
  * After a reconnect, whether the server's replay (events past `cursor`, sent
- * right after `hello`) covers everything the client missed. `false` means the
- * client cannot know, and must refetch.
+ * right after `hello`) can cover everything the client missed. `false` means
+ * the client cannot know, and must refetch. `epoch` is the sequence identity the
+ * cursor belongs to: a Redis restart without persistence starts a new epoch,
+ * and its restarted ids can climb back past the cursor while the client sleeps.
+ * A `true` is still checked as the replay arrives (see the stream hook).
  */
-export function replayCoversGap(hello: Hello, cursor: string | null): boolean {
+export function replayCoversGap(hello: Hello, cursor: string | null, epoch: string | null): boolean {
   if (hello.backend !== 'redis' || hello.seq === null || cursor === null) return false
+  if (epoch === null || hello.epoch !== epoch) return false
   const last = Number(cursor)
   if (!Number.isInteger(last) || last < 0) return false
   // Below the cursor: the sequence restarted, and ids the client has already
@@ -141,6 +151,11 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
   // A `hello` was seen on this slug's stream before, so the next one follows a
   // reconnect and has to resync.
   const helloSeenRef = useRef(false)
+  // The sequence identity the cursor belongs to (the last hello's `epoch`).
+  const epochRef = useRef<string | null>(null)
+  // A replay the last hello promised: ids `next`..`until`, in order, before any
+  // live event. Null when nothing is owed.
+  const pendingReplayRef = useRef<{ next: number; until: number } | null>(null)
 
   useEffect(() => {
     // Redis sequences are scoped per project. Carrying a previous project's
@@ -150,6 +165,8 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
     lastEventIdRef.current = null
     lastProcessedIdRef.current = 0
     helloSeenRef.current = false
+    epochRef.current = null
+    pendingReplayRef.current = null
     if (!slug) return
 
     let disposed = false
@@ -169,11 +186,28 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
       reconnectTimerRef.current = setTimeout(connect, delay)
     }
 
+    const resyncAll = () => {
+      pendingReplayRef.current = null
+      for (const type of PROJECT_EVENT_TYPES) invalidateForEvent(queryClient, type, slug)
+    }
+
     const handleProjectEvent = (event: MessageEvent) => {
       if (disposed) return
       if (event.lastEventId) lastEventIdRef.current = event.lastEventId
       // De-dupe by monotonic id so a reconnect replay never double-invalidates.
       const id = Number(event.lastEventId)
+      const pending = pendingReplayRef.current
+      if (pending && Number.isInteger(id)) {
+        // The replay the hello promised must arrive whole and in order. A hole —
+        // an event the ring never kept (a publish whose buffer write failed) —
+        // or a live event overtaking it means something was missed: refetch.
+        if (id === pending.next) {
+          pending.next += 1
+          if (pending.next > pending.until) pendingReplayRef.current = null
+        } else if (id > pending.next) {
+          resyncAll()
+        }
+      }
       if (Number.isFinite(id) && id > 0) {
         const last = lastProcessedIdRef.current
         const sequenceReset = last - id > SEQUENCE_RESET_GAP
@@ -192,15 +226,26 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
       setStatus(hello.backend === 'redis' ? 'live' : 'degraded')
       const reconnected = helloSeenRef.current
       helloSeenRef.current = true
+      pendingReplayRef.current = null
+      const cursor = lastEventIdRef.current
+      const covered = reconnected && replayCoversGap(hello, cursor, epochRef.current)
+      epochRef.current = hello.seq === null ? null : hello.epoch
       // Back after a disconnect with a gap the replay ring covers: the missed
-      // events follow this one, and the cursor advances with them.
-      if (reconnected && replayCoversGap(hello, lastEventIdRef.current)) return
+      // events follow this one, and the cursor advances with them — provided
+      // they all arrive, which handleProjectEvent checks.
+      if (covered) {
+        const from = Number(cursor) + 1
+        if (hello.seq !== null && from <= hello.seq) {
+          pendingReplayRef.current = { next: from, until: hello.seq }
+        }
+        return
+      }
       if (reconnected) {
         // Cannot tell what was missed, or missed more than the ring holds:
         // refetch everything, and let events numbered from a restarted
         // sequence count again.
         lastProcessedIdRef.current = 0
-        for (const type of PROJECT_EVENT_TYPES) invalidateForEvent(queryClient, type, slug)
+        resyncAll()
       }
       // The page's fetches (or the refetch above) cover everything up to `seq`,
       // so it is where the next reconnect's replay starts.

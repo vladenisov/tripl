@@ -18,7 +18,7 @@ import { runPillStatus } from "./scans/scanRunStatus"
 import { scanModeOf } from "./scans/scanMode"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
-import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
+import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, scanActivityKey, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
@@ -42,9 +42,6 @@ const SCAN_LIST_JOBS_LIMIT = 10
 // Module-level, so `useQueries` keeps one `combine` and hands back a stable
 // result while the underlying data has not changed.
 const jobsData = (results: { data?: ScanJob[] }[]) => results.map(result => result.data)
-
-// Under the `['scanJobs', slug]` prefix on purpose: see the activity query.
-const scanActivityKey = (slug: string) => ['scanJobs', slug, 'activity'] as const
 
 interface RecentRun {
   jobId: string
@@ -145,6 +142,10 @@ export function ScansTab({ slug }: { slug: string }) {
     queryKey: scanActivityKey(slug),
     queryFn: () => scansApi.activity(slug),
     refetchInterval: activityRefetchInterval,
+    // Refetched on every visit: a run started on a scan's own page invalidates
+    // only that scan's keys, and without a live stream the list would otherwise
+    // come back to a minute-old streak.
+    staleTime: 0,
   })
   const failingStreakById = useMemo(
     () => new Map((activity?.items ?? []).map(item => [item.scan_config_id, item.failing_streak])),
@@ -200,7 +201,10 @@ export function ScansTab({ slug }: { slug: string }) {
           durationSec: jobDurationSeconds(job),
           status: job.status,
           errorMessage: job.error_message,
-          failingStreak: job === streakHead ? failingStreakById.get(sc.id) ?? 0 : 0,
+          // The server counts past the loaded page; the page's own count stands
+          // in while the activity loads, if it failed, or if it is older than
+          // the page (a run finished since), so the tag never vanishes.
+          failingStreak: job === streakHead ? Math.max(failingStreakById.get(sc.id) ?? 0, streak) : 0,
           changes: summarizeScanChanges(job),
         })
       })
