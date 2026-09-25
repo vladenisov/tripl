@@ -76,6 +76,9 @@ export interface Event {
   /** Oldest metric bucket with traffic; null until a collection sees the event,
    * and on list responses, which do not compute it (tripl-kjhi.10). */
   first_seen_at?: string | null
+  /** A branch copy's twin on main; null on main, for a branch-only event, and on
+   *  every response but the single-event read (EVT-42). */
+  main_event_id?: string | null
   owner_id: string | null
   reviewed: boolean
   metric_breakdown_columns: string[]
@@ -152,6 +155,20 @@ export interface EventListResponse {
   total: number
 }
 
+/** One looked-up identity an event already holds (GET /events/by-names). */
+export interface EventIdentityHolder {
+  /** The name that was asked about. */
+  identity: string
+  event_id: string
+  /** The holder's own name; differs from `identity` for a renamed scanned event. */
+  name: string
+  source_name: string | null
+}
+
+export interface EventIdentityHoldersResponse {
+  items: EventIdentityHolder[]
+}
+
 export type EventPhotoKind = 'photo' | 'figma'
 
 export interface EventPhoto {
@@ -168,6 +185,11 @@ export interface EventPhoto {
   external_url: string | null
   uploaded_by_user_id: string | null
   created_at: string
+}
+
+/** GET /settings/photo-limits: what the upload endpoint takes. */
+export interface PhotoLimits {
+  photo_max_size_mb: number
 }
 
 export interface EventPhotoComment {

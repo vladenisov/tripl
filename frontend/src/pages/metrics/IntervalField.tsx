@@ -1,7 +1,7 @@
 import { Select } from '@/components/settings/kit'
 import { METRIC_INTERVAL_LABEL } from '@/lib/metricFormat'
 import { METRIC_SCAN_INTERVALS, type MetricScanInterval } from '@/types'
-import { MetricField } from './MetricField'
+import { FormField } from '@/components/settings/form-field'
 
 interface IntervalFieldProps {
   id: string
@@ -32,13 +32,13 @@ export function IntervalField({
       ? `Backfills replay in ${METRIC_INTERVAL_LABEL[replayChunkInterval].toLowerCase()} chunks.`
       : undefined
   return (
-    <MetricField label="Collection interval" htmlFor={id} required last hint={hint}>
+    <FormField label="Collection interval" htmlFor={id} required last hint={hint}>
       <Select
         id={id}
         value={value}
         onChange={next => onChange(next as MetricScanInterval)}
         options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: METRIC_INTERVAL_LABEL[i] }))}
       />
-    </MetricField>
+    </FormField>
   )
 }

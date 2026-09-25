@@ -289,3 +289,100 @@ describe('RuleReplayDialog threshold overrides', () => {
     expect(within(table).queryByText('0')).toBeNull()
   })
 })
+
+describe('RuleReplayDialog cooldown override bounds (ALR-13)', () => {
+  it.each(['1.5', '20000', '-5'])('refuses %s before sending it', (value) => {
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    renderDialog()
+
+    const input = screen.getByLabelText('Cooldown override in minutes')
+    fireEvent.change(input, { target: { value } })
+
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('alert')).toHaveTextContent(/Whole minutes from 0 to 10080/)
+    expect(screen.getByRole('button', { name: 'Replay' })).toBeDisabled()
+    expect(simulate).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['Minimum percent delta override'],
+    ['Minimum expected count override'],
+  ])('refuses a negative %s instead of reading it as blank', (label) => {
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    renderDialog()
+
+    const input = screen.getByLabelText(label)
+    fireEvent.change(input, { target: { value: '-5' } })
+
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('alert')).toHaveTextContent(/0 or more/)
+    expect(screen.getByRole('button', { name: 'Replay' })).toBeDisabled()
+    expect(simulate).not.toHaveBeenCalled()
+  })
+
+  it('accepts a whole number in range', () => {
+    renderDialog()
+
+    fireEvent.change(screen.getByLabelText('Cooldown override in minutes'), { target: { value: '60' } })
+
+    expect(screen.getByRole('button', { name: 'Replay' })).toBeEnabled()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('RuleReplayDialog stale results (ALR-12)', () => {
+  it('says the result no longer matches once an override changes, until replayed again', async () => {
+    vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    renderDialog()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+    await screen.findByText(/Considered/)
+    expect(screen.queryByText(/Settings changed since this replay/)).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Minimum percent delta override'), { target: { value: '300' } })
+    expect(screen.getByText(/Settings changed since this replay/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+    await waitFor(() =>
+      expect(screen.queryByText(/Settings changed since this replay/)).toBeNull(),
+    )
+  })
+})
+
+
+describe('RuleReplayDialog with unsaved edits (ALR-12)', () => {
+  it('sends the draft with every run and says it is replaying the edits', async () => {
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    const draft = { cooldown_minutes: 60, min_percent_delta: 50 }
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RuleReplayDialog
+          open
+          onOpenChange={() => {}}
+          slug="demo"
+          destinationId="destination-1"
+          rule={RULE}
+          scans={[]}
+          draft={draft}
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByRole('heading', { name: /with your unsaved edits/ })).toBeInTheDocument()
+    // The overrides are compared with the EDITED thresholds.
+    expect(screen.getByLabelText('Cooldown override in minutes')).toHaveAttribute('placeholder', 'edited: 60')
+
+    fireEvent.change(screen.getByLabelText('Sigma threshold override'), { target: { value: '4.5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+
+    await waitFor(() => expect(simulate).toHaveBeenCalledTimes(2))
+    expect(simulate).toHaveBeenCalledWith('demo', 'destination-1', 'rule-1', 7, undefined, draft)
+    expect(simulate).toHaveBeenCalledWith(
+      'demo', 'destination-1', 'rule-1', 7, { sigmaThreshold: 4.5 }, draft,
+    )
+    expect(await screen.findByText('Your edits')).toBeInTheDocument()
+  })
+})

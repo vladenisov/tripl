@@ -14,7 +14,7 @@ import type {
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import MetricsPage, { type MetricsTab } from './MetricsPage'
 
-vi.mock('@/api/metricsCatalogApi', () => ({
+vi.mock('@/api/metricsCatalog', () => ({
   metricsCatalogApi: {
     list: vi.fn(),
     get: vi.fn(),
@@ -25,7 +25,7 @@ vi.mock('@/api/metricsCatalogApi', () => ({
     reorder: vi.fn(),
   },
 }))
-vi.mock('@/api/factTablesApi', () => ({
+vi.mock('@/api/factTables', () => ({
   factTablesApi: { list: vi.fn() },
 }))
 vi.mock('@/api/dataSources', () => ({
@@ -37,8 +37,8 @@ vi.mock('sonner', () => ({
 }))
 
 import { toast } from 'sonner'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
-import { factTablesApi } from '@/api/factTablesApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
+import { factTablesApi } from '@/api/factTables'
 import { dataSourcesApi } from '@/api/dataSources'
 
 function makeItem(overrides: Partial<MetricDefinitionListItem>): MetricDefinitionListItem {

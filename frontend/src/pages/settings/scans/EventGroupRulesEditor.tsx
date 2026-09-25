@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label'
 import type { EventGroupRule, ScanConfigPreview } from '@/types'
 import type { UiEventGroupCondition, UiEventGroupRule } from './scanFormTypes'
 import { emptyGroupCondition, emptyGroupRule } from './scanFormTypes'
+import { SELECT_CLASS } from './scanUtils'
 
 export function EventGroupRulesEditor({
   rules,
@@ -89,7 +90,7 @@ export function EventGroupRulesEditor({
                 onChange={event => updateRule(ruleIndex, {
                   condition_logic: event.target.value as EventGroupRule['condition_logic'],
                 })}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                className={SELECT_CLASS}
               >
                 <option value="all">All</option>
                 <option value="any">Any</option>
@@ -117,7 +118,7 @@ export function EventGroupRulesEditor({
                     onChange={event => updateCondition(ruleIndex, conditionIndex, {
                       field: event.target.value,
                     })}
-                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                    className={SELECT_CLASS}
                   >
                     {fieldOptions.map(field => (
                       <option key={field} value={field}>{field}</option>

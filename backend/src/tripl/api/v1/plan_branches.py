@@ -203,7 +203,7 @@ async def delete_comment(
     branch_id: uuid.UUID,
     comment_id: uuid.UUID,
 ) -> None:
-    await plan_branch_service.delete_comment(session, slug, branch_id, comment_id)
+    await plan_branch_service.delete_comment(session, slug, branch_id, comment_id, current_user)
     await audit_service.record(
         session,
         user=current_user,

@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from './auth-context'
 import { CommentThread, type ThreadComment } from './comment-thread'
 import { at } from '@/test/at'
+import { authAs } from '@/test/auth'
 
 function comment(overrides: Partial<ThreadComment> & { id: string }): ThreadComment {
   return {
@@ -164,7 +165,109 @@ describe('CommentThread', () => {
     await screen.findByText('second')
     const controls = screen.getAllByRole('button', { name: 'Delete comment' })
     fireEvent.click(at(controls, 1))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(remove).toHaveBeenCalledWith('c2'))
+  })
+})
+
+function renderAs(
+  role: 'owner' | 'editor',
+  rows: ThreadComment[],
+  extra: Partial<{ onAction: () => Promise<unknown>; create: () => Promise<unknown> }> = {},
+) {
+  const remove = vi.fn().mockResolvedValue(undefined)
+  const create = extra.create ?? vi.fn().mockResolvedValue({})
+  render(
+    createElement(
+      AuthContext.Provider,
+      { value: authAs(role, 'me') },
+      createElement(CommentThread, {
+        queryKey: ['thread', 'demo'],
+        list: () => Promise.resolve(rows),
+        create,
+        remove,
+        onAction: extra.onAction,
+      }),
+    ),
+    { wrapper },
+  )
+  return { remove, create }
+}
+
+describe('CommentThread delete (EVT-29)', () => {
+  it('asks first, and a cancelled delete deletes nothing', async () => {
+    const { remove } = renderThread([comment({ id: 'c1', body: 'first' })])
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete comment' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Delete this comment? This cannot be undone.')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('says a parent takes its replies with it', async () => {
+    renderThread([
+      comment({ id: 'c1', body: 'question' }),
+      comment({ id: 'c2', parent_id: 'c1', body: 'answer one' }),
+      comment({ id: 'c3', parent_id: 'c1', body: 'answer two' }),
+    ])
+    await screen.findByText('answer two')
+    fireEvent.click(at(screen.getAllByRole('button', { name: 'Delete comment' }), 0))
+
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(
+      'Delete this comment and its 2 replies? This cannot be undone.',
+    )
+  })
+
+  it("offers an editor delete on their own comment only", async () => {
+    renderAs('editor', [
+      comment({ id: 'c1', body: 'mine', user_id: 'me' }),
+      comment({ id: 'c2', body: 'theirs', user_id: 'someone-else' }),
+    ])
+    await screen.findByText('theirs')
+    expect(screen.getAllByRole('button', { name: 'Delete comment' })).toHaveLength(1)
+  })
+
+  it('lets the owner delete any comment', async () => {
+    renderAs('owner', [
+      comment({ id: 'c1', body: 'mine', user_id: 'me' }),
+      comment({ id: 'c2', body: 'theirs', user_id: 'someone-else' }),
+      comment({ id: 'c3', body: 'gone', user_id: null }),
+    ])
+    await screen.findByText('gone')
+    expect(screen.getAllByRole('button', { name: 'Delete comment' })).toHaveLength(3)
+  })
+})
+
+describe('CommentThread catalog counts (EVT-29)', () => {
+  it("refreshes the catalog's open-question count when a new question is posted", async () => {
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    renderAs('editor', [], { onAction: vi.fn().mockResolvedValue({}) })
+
+    fireEvent.change(await screen.findByLabelText('Write a comment'), {
+      target: { value: 'does this fire on cancel?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Comment' }))
+
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['events'] }),
+    )
+  })
+
+  it('leaves the catalog alone for a thread with no resolution state', async () => {
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const { create } = renderAs('editor', [])
+
+    fireEvent.change(await screen.findByLabelText('Write a comment'), {
+      target: { value: 'a branch note' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Comment' }))
+
+    await waitFor(() => expect(create).toHaveBeenCalled())
+    await waitFor(() => expect(invalidate).toHaveBeenCalled())
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['events'] })
   })
 })
 

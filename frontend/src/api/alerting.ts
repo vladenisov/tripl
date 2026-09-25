@@ -62,6 +62,37 @@ export const MAX_INBOX_NOTE_LENGTH = 2000
 // Matches AlertRuleCreate/AlertRuleUpdate and the alert_rules.name column.
 export const MAX_ALERT_RULE_NAME_LENGTH = 255
 
+/**
+ * A rule PATCH body. Also what a replay of unsaved edits sends: the simulate
+ * route lays it over the saved rule without writing it (ALR-12).
+ */
+export interface AlertRuleUpdatePayload {
+  name?: string
+  enabled?: boolean
+  scan_config_id?: string | null
+  include_project_total?: boolean
+  include_event_types?: boolean
+  include_events?: boolean
+  include_schema_drifts?: boolean
+  include_distribution_drifts?: boolean
+  include_release_regressions?: boolean
+  include_variable_value_drifts?: boolean
+  // Accepted by the API and carried on AlertRule, but was missing from both
+  // payloads — a form could show the metric toggle and never save it.
+  include_metrics?: boolean
+  notify_on_spike?: boolean
+  notify_on_drop?: boolean
+  ai_explanation_enabled?: boolean
+  min_percent_delta?: number
+  min_absolute_delta?: number
+  min_expected_count?: number
+  cooldown_minutes?: number
+  message_template?: string | null
+  items_template?: string | null
+  message_format?: 'plain' | 'slack_mrkdwn' | 'telegram_html' | 'telegram_markdownv2'
+  filters?: AlertRuleFilterPayload[]
+}
+
 export const alertingApi = {
   listDestinations: (slug: string) =>
     api.get<AlertDestination[]>(`/projects/${slug}/alert-destinations`),
@@ -178,32 +209,7 @@ export const alertingApi = {
     slug: string,
     destinationId: string,
     ruleId: string,
-    data: {
-      name?: string
-      enabled?: boolean
-      scan_config_id?: string | null
-      include_project_total?: boolean
-      include_event_types?: boolean
-      include_events?: boolean
-      include_schema_drifts?: boolean
-      include_distribution_drifts?: boolean
-      include_release_regressions?: boolean
-      include_variable_value_drifts?: boolean
-      // Accepted by the API and carried on AlertRule, but was missing from both
-      // payloads — a form could show the metric toggle and never save it.
-      include_metrics?: boolean
-      notify_on_spike?: boolean
-      notify_on_drop?: boolean
-      ai_explanation_enabled?: boolean
-      min_percent_delta?: number
-      min_absolute_delta?: number
-      min_expected_count?: number
-      cooldown_minutes?: number
-      message_template?: string | null
-      items_template?: string | null
-      message_format?: 'plain' | 'slack_mrkdwn' | 'telegram_html' | 'telegram_markdownv2'
-      filters?: AlertRuleFilterPayload[]
-    },
+    data: AlertRuleUpdatePayload,
   ) => api.patch<AlertRule>(`/projects/${slug}/alert-destinations/${destinationId}/rules/${ruleId}`, data),
 
   deleteRule: (slug: string, destinationId: string, ruleId: string) =>
@@ -225,6 +231,8 @@ export const alertingApi = {
       minExpectedCount?: number
       sigmaThreshold?: number
     },
+    /** Unsaved edits to replay instead of the saved rule; never written (ALR-12). */
+    draft?: AlertRuleUpdatePayload,
   ) => {
     const params = new URLSearchParams({ days: String(days) })
     if (overrides?.cooldownMinutes !== undefined) {
@@ -241,7 +249,7 @@ export const alertingApi = {
     }
     return api.post<AlertRuleSimulateResponse>(
       `/projects/${slug}/alert-destinations/${destinationId}/rules/${ruleId}/simulate?${params}`,
-      undefined,
+      draft,
     )
   },
 

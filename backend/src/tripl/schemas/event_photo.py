@@ -37,6 +37,16 @@ class EventPhotoResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PhotoLimitsResponse(BaseModel):
+    """What the upload endpoint will take, for the browser to say so up front.
+
+    ``photo_max_size_mb`` is an owner setting; every signed-in user may read it,
+    because an editor's upload is what it refuses (EVT-28).
+    """
+
+    photo_max_size_mb: int
+
+
 class EventPhotoReorder(BaseModel):
     photo_ids: list[uuid.UUID]
 

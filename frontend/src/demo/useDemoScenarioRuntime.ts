@@ -13,7 +13,7 @@
  *   components no event payloads — only query invalidation — and a page's job
  *   query dies with the page, so the scenario polls the one job the user's own
  *   action produced, by id. Silent, because both metric surfaces already run
- *   `useMetricCollectionWatcher` and toast the outcome.
+ *   a detached `startMetricCollectionWatch` and toast the outcome.
  * - every other chapter advances on DIRECT notifications: a route visit
  *   (`stepCompletedByPath`, checked here) or a `notifyStepCompleted` fired from
  *   the exact mutation the user performed. No polling for them.
@@ -27,7 +27,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from '@/api/client'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { scansApi } from '@/api/scans'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getMetricMonitoringPath } from '@/lib/monitoring'

@@ -11,6 +11,10 @@ import { Chip } from '@/components/primitives/chip'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { DEAD_EVENT_DAYS, formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { formatRelativeTime } from '@/lib/datetime'
+import { eventNameLabel } from '@/lib/eventName'
+import { getMonitoringPath } from '@/lib/monitoring'
+import { coverageTone } from '@/lib/statusLexicon'
+import { EventName } from '@/components/event-name'
 import type { DeadEvent } from '@/api/reconciliation'
 import { deadEventsKey, projectKey } from '@/lib/queryKeys'
 
@@ -34,12 +38,6 @@ const PLAN_COVERAGE_HELP =
 // events" tile, and explains why the Events page's Silent filter — which spans
 // every non-archived status — reports a bigger number (tripl-jfm3.23).
 const GAP_BASIS_HELP = `Implemented and live events only, excluding any created in the last ${DEAD_DAYS} days. The Events page's "Silent > ${DEAD_DAYS}d" filter spans every non-archived status, so its total is larger.`
-
-function coverageTone(ratio: number): 'success' | 'warning' | 'danger' {
-  if (ratio >= 0.9) return 'success'
-  if (ratio >= 0.7) return 'warning'
-  return 'danger'
-}
 
 export default function CoveragePage() {
   const { slug } = useParams<{ slug: string }>()
@@ -115,7 +113,9 @@ export default function CoveragePage() {
               <MiniStat
                 label="Plan coverage"
                 value={summary ? formatPlanCoverage(implemented, active) : '—'}
-                tone={summary && active > 0 ? coverageTone(coverageRatio) : 'neutral'}
+                // The shared thresholds (they take a percent), so this tile and
+                // Reconciliation cannot drift apart (DATA-45).
+                tone={summary && active > 0 ? coverageTone(coverageRatio * 100) : 'neutral'}
               />
               <Info
                 className="h-3 w-3 shrink-0 self-end"
@@ -151,7 +151,7 @@ export default function CoveragePage() {
             <CoverageBar
               implemented={implemented}
               notImplemented={notImplemented}
-              ratio={coverageRatio}
+              coverageLabel={formatPlanCoverage(implemented, active)}
             />
           )}
         </>
@@ -228,7 +228,7 @@ export default function CoveragePage() {
                 {GAP_BASIS_HELP}
               </p>
               {deadItems.slice(0, GAP_LIMIT).map((item) => (
-                <GapRow key={item.event_id} item={item} />
+                <GapRow key={item.event_id} item={item} slug={slug} />
               ))}
               {deadItems.length > GAP_LIMIT && (
                 <div className="px-4 py-2 text-[11px]" style={{ color: 'var(--fg-faint)' }}>
@@ -246,13 +246,16 @@ export default function CoveragePage() {
 function CoverageBar({
   implemented,
   notImplemented,
-  ratio,
+  coverageLabel,
 }: {
   implemented: number
   notImplemented: number
-  ratio: number
+  /**
+   * The headline's own formatting (`formatPlanCoverage`). `Math.round` here
+   * announced 322 of 323 as "100% of active events are implemented" (DATA-45).
+   */
+  coverageLabel: string
 }) {
-  const pct = Math.round(ratio * 100)
   const total = implemented + notImplemented
   const implementedPct = total > 0 ? (implemented / total) * 100 : 0
   return (
@@ -278,7 +281,7 @@ function CoverageBar({
         className="flex h-2 overflow-hidden rounded-full"
         style={{ background: 'var(--bg-sunken)' }}
         role="img"
-        aria-label={`${pct}% of active events are implemented; ${notImplemented.toLocaleString()} are not implemented yet.`}
+        aria-label={`${coverageLabel} of active events are implemented; ${notImplemented.toLocaleString()} are not implemented yet.`}
       >
         <div style={{ width: `${implementedPct}%`, background: 'var(--success)' }} />
         <div style={{ width: `${100 - implementedPct}%`, background: 'var(--warning)' }} />
@@ -287,20 +290,36 @@ function CoverageBar({
   )
 }
 
-function GapRow({ item }: { item: DeadEvent }) {
+// Same drill-down and name rendering as Reconciliation's dead-event rows
+// (DATA-46): the two lists show the same events one page apart.
+function GapRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
+  const label = eventNameLabel(item.name)
   return (
     <div className="flex items-center gap-3 px-4 py-2.5">
-      <ShieldX className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--warning)' }} />
-      <span
-        className="min-w-0 flex-1 truncate text-[12.5px] font-medium"
-        style={{ color: 'var(--fg)' }}
-        title={item.name}
-      >
-        {item.name}
-      </span>
-      <Chip tone="neutral" size="xs">
-        {item.event_type_name}
-      </Chip>
+      <ShieldX className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--warning)' }} aria-hidden="true" />
+      {slug ? (
+        <Link
+          to={getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id })}
+          className="mono min-w-0 flex-1 truncate text-[12.5px] font-medium hover:underline"
+          style={{ color: 'var(--fg)' }}
+          title={label}
+        >
+          <EventName name={item.name} />
+        </Link>
+      ) : (
+        <span
+          className="mono min-w-0 flex-1 truncate text-[12.5px] font-medium"
+          style={{ color: 'var(--fg)' }}
+          title={label}
+        >
+          <EventName name={item.name} />
+        </span>
+      )}
+      {item.event_type_name && (
+        <Chip tone="neutral" size="xs">
+          {item.event_type_name}
+        </Chip>
+      )}
       <span className="mono w-28 shrink-0 text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
         {item.last_seen_at ? formatRelativeTime(item.last_seen_at) : 'Never seen'}
       </span>

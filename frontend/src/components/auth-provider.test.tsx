@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
+import { ApiError, AUTH_SIGNED_OUT_EVENT, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
 import type { AuthUser } from '@/types'
 import { AuthProvider } from './auth-provider'
 import { useAuth } from './auth-context'
@@ -210,5 +210,25 @@ describe('AuthProvider unauthorized event cycle', () => {
 
     await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('anonymous'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+describe('AuthProvider sign-out', () => {
+  // Detached collect watches are module state; the provider's job is only to
+  // announce the sign-out that ends them (the watcher listens for it).
+  it('announces the sign-out that ends every metric collection watch', async () => {
+    const signedOut = vi.fn()
+    window.addEventListener(AUTH_SIGNED_OUT_EVENT, signedOut)
+    meMock.mockResolvedValueOnce(makeUser()).mockRejectedValue(new ApiError('Unauthorized', 401))
+    logoutMock.mockResolvedValue(undefined)
+    renderProvider()
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('authenticated'))
+    expect(signedOut).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }))
+
+    await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('anonymous'))
+    expect(signedOut).toHaveBeenCalledTimes(1)
+    window.removeEventListener(AUTH_SIGNED_OUT_EVENT, signedOut)
   })
 })

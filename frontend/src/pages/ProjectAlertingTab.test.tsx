@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -2072,3 +2072,391 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     expect(inbox).toHaveAttribute('aria-selected', 'true')
   })
 })
+
+describe('ProjectAlertingTab — the destination dialog (#197)', () => {
+  interface Write { method: string; url: string; body: Record<string, unknown> }
+
+  /**
+   * Destinations that start as given and record every write. `refuse` answers
+   * the next write with a FastAPI 422 carrying one field error.
+   */
+  function mockDestinationWrites(
+    destinations: unknown[],
+    {
+      isDemo = false,
+      refuse = null as null | { loc: (string | number)[]; msg: string },
+      failList = false,
+      // Answer the first N list reads, then fail every later one: a refetch
+      // that fails while the page already shows the list.
+      failListAfter = null as null | number,
+    } = {},
+  ) {
+    const writes: Write[] = []
+    let pendingRefusal = refuse
+    let listReads = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (url.includes('/alert-destinations') && (method === 'POST' || method === 'PATCH')) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        writes.push({ method, url, body })
+        if (pendingRefusal) {
+          const detail = [{ ...pendingRefusal, type: 'value_error' }]
+          pendingRefusal = null
+          return new Response(JSON.stringify({ detail }), {
+            status: 422,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return jsonResponse(makeDestination({ id: 'dest-new', name: body.name, rules: [] }))
+      }
+      if (/\/projects\/[^/]+$/.test(url)) {
+        return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: isDemo, timezone: 'UTC' })
+      }
+      if (url.includes('/alert-destinations')) {
+        listReads += 1
+        if (failList || (failListAfter !== null && listReads > failListAfter)) {
+          return new Response(JSON.stringify({ detail: 'Database unavailable' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return jsonResponse(destinations)
+      }
+      if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
+      if (/\/alert-inbox(\?|$)/.test(url)) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/monitors-summary')) {
+        return jsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.includes('/events')) return jsonResponse({ items: [], total: 0 })
+      if (url.includes('/scans')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    return writes
+  }
+
+  const configured = () => [makeDestination({ rules: [makeRule()] })]
+
+  /** Open "Add another channel" → `label`, name it, fill `fields` by label, and Create. */
+  async function createFromDestinations(label: string, fields: Record<string, string>) {
+    fireEvent.click(await screen.findByRole('button', { name: label }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: `My ${label}` } })
+    for (const [field, value] of Object.entries(fields)) {
+      fireEvent.change(within(dialog).getByLabelText(field), { target: { value } })
+    }
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+  }
+
+  const CHANNELS: [string, string, Record<string, string>, Record<string, unknown>][] = [
+    ['Slack', 'slack', { 'Webhook URL': 'https://hooks.slack.com/services/T/B/X' }, {
+      webhook_url: 'https://hooks.slack.com/services/T/B/X',
+    }],
+    ['Webhook', 'webhook', { 'Target URL': 'https://example.com/hook' }, {
+      target_url: 'https://example.com/hook',
+    }],
+    ['Email', 'email', { Recipients: 'a@example.com' }, { email_recipients: 'a@example.com' }],
+    ['Jira', 'jira', {
+      'Base URL': 'https://acme.atlassian.net',
+      'Auth Email': 'a@example.com',
+      'API Token': 'tok',
+      'Project Key': 'eng',
+    }, {
+      jira_base_url: 'https://acme.atlassian.net',
+      jira_auth_email: 'a@example.com',
+      jira_api_token: 'tok',
+      jira_project_key: 'ENG',
+      jira_issue_type: 'Task',
+    }],
+    ['Linear', 'linear', { 'API Key': 'lin_api_x', 'Team ID': 'TEAM' }, {
+      linear_api_key: 'lin_api_x',
+      linear_team_id: 'TEAM',
+    }],
+  ]
+
+  it.each(CHANNELS)('creates a %s destination with only its own fields — no chat_id (ALR-1)', async (label, type, fields, expected) => {
+    const writes = mockDestinationWrites(configured())
+    renderTab('destinations')
+
+    await createFromDestinations(label, fields)
+
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect(at(writes, 0).body).toEqual({
+      type,
+      name: `My ${label}`,
+      enabled: true,
+      delivery_schedule_cron: null,
+      ...expected,
+    })
+    expect(at(writes, 0).body).not.toHaveProperty('chat_id')
+  })
+
+  it('stays on Destinations and says so when a project that has rules adds a channel (ALR-9)', async () => {
+    mockDestinationWrites(configured())
+    renderTab('destinations')
+
+    await createFromDestinations('Slack', { 'Webhook URL': 'https://hooks.slack.com/services/T/B/X' })
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Destination "My Slack" created'))
+    expect(screen.getByRole('tab', { name: 'Destinations' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByText('New Alert Rule')).toBeNull()
+  })
+
+  it('attaches a server error to the field it names, in words (ALR-8)', async () => {
+    mockDestinationWrites(configured(), {
+      refuse: { loc: ['body', 'webhook_url'], msg: 'Value error, Slack webhook URL must start with https://hooks.slack.com/' },
+    })
+    renderTab('destinations')
+
+    await createFromDestinations('Slack', { 'Webhook URL': 'https://hooks.slack.com/services/T/B/X' })
+
+    const input = await screen.findByLabelText('Webhook URL')
+    await waitFor(() => expect(input).toHaveAttribute('aria-invalid', 'true'))
+    expect(input).toHaveAccessibleDescription('Slack webhook URL must start with https://hooks.slack.com/')
+    expect(screen.queryByText(/Value error/)).toBeNull()
+    expect(screen.queryByText(/webhook_url/)).toBeNull()
+  })
+
+  it('reopens without the previous attempt\'s error (ALR-7)', async () => {
+    mockDestinationWrites(configured(), { refuse: { loc: ['body'], msg: 'Value error, Destination refused' } })
+    renderTab('destinations')
+
+    await createFromDestinations('Email', { Recipients: 'a@example.com' })
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText('Destination refused')).toBeInTheDocument()
+
+    // Discarding the typed form asks first; say yes.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    const confirm = await screen.findByRole('alertdialog')
+    fireEvent.click(within(confirm).getByRole('button', { name: /Discard/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Telegram' }))
+    expect(await screen.findByText('New Telegram Destination')).toBeInTheDocument()
+    expect(screen.queryByText('Destination refused')).toBeNull()
+  })
+
+  it('refuses to save a schedule other than the one on screen (ALR-3)', async () => {
+    const writes = mockDestinationWrites([
+      makeDestination({ delivery_schedule_cron: '0 9 * * *', rules: [makeRule()] }),
+    ])
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit destination Main Slack' }))
+    const dialog = await screen.findByRole('dialog')
+    // Emptied, the time is invalid — and the form still holds `0 9 * * *`, the
+    // last good cadence, which Save used to store under the visible error.
+    fireEvent.change(within(dialog).getByLabelText('Time of day'), { target: { value: '' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/delivery schedule/i)
+    expect(writes).toHaveLength(0)
+  })
+
+  it('masks every credential, and keeps password managers out of it (ALR-25)', async () => {
+    mockDestinationWrites(configured())
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Webhook' }))
+    const dialog = await screen.findByRole('dialog')
+
+    const target = within(dialog).getByLabelText('Target URL')
+    expect(target).toHaveAttribute('type', 'password')
+    expect(target).toHaveAttribute('autocomplete', 'new-password')
+    expect(within(dialog).getByLabelText('Secret Header Value')).toHaveAttribute('autocomplete', 'new-password')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show Target URL' }))
+    expect(target).toHaveAttribute('type', 'text')
+    expect(within(dialog).getByLabelText('Name')).toHaveAttribute('maxLength', '255')
+  })
+
+  it('asks for the header value a new header name needs (ALR-24)', async () => {
+    const writes = mockDestinationWrites(configured())
+    renderTab('destinations')
+
+    await createFromDestinations('Webhook', {
+      'Target URL': 'https://example.com/hook',
+      'Secret Header Name': 'X-Key',
+    })
+
+    const value = await screen.findByLabelText('Secret Header Value')
+    expect(value).toHaveAttribute('aria-invalid', 'true')
+    expect(writes).toHaveLength(0)
+  })
+
+  it('removes a stored webhook header as a pair of nulls (ALR-24)', async () => {
+    const writes = mockDestinationWrites([
+      makeDestination({
+        type: 'webhook',
+        name: 'Hook',
+        webhook_set: false,
+        target_url_set: true,
+        webhook_header_name: 'Authorization',
+        rules: [makeRule()],
+      }),
+    ])
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit destination Hook' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove secret header' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect(at(writes, 0).body).toMatchObject({ webhook_header_name: null, webhook_header_value: null })
+  })
+
+  it('keeps an edited Jira base URL required, so emptying it is not silently ignored (ALR-26)', async () => {
+    mockDestinationWrites([
+      makeDestination({
+        type: 'jira',
+        name: 'Jira',
+        webhook_set: false,
+        jira_base_url: 'https://acme.atlassian.net',
+        jira_auth_email: 'a@example.com',
+        jira_api_token_set: true,
+        jira_project_key: 'ENG',
+        jira_issue_type: 'Task',
+        rules: [makeRule()],
+      }),
+    ])
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit destination Jira' }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(within(dialog).getByLabelText('Base URL')).toBeRequired()
+    expect(within(dialog).getByLabelText('Project Key')).toBeRequired()
+    expect(within(dialog).getByLabelText('API Token')).not.toBeRequired()
+  })
+
+  it('edits a demo local sink as name, switch and schedule, and saves it (ALR-2)', async () => {
+    const writes = mockDestinationWrites(
+      [
+        makeDestination({
+          id: 'dest-sink',
+          type: 'demo_sink',
+          name: 'Local demo sink',
+          is_local: true,
+          webhook_set: false,
+          rules: [makeRule({ destination_id: 'dest-sink' })],
+        }),
+      ],
+      { isDemo: true },
+    )
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit destination Local demo sink' }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(within(dialog).getByRole('combobox', { name: 'Channel' })).toHaveTextContent('Local sink')
+    expect(within(dialog).queryByLabelText('API Key')).toBeNull()
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Sink' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect(at(writes, 0).body).toEqual({ name: 'Sink', enabled: true, delivery_schedule_cron: null })
+  })
+
+  it('lets a demo rename its disabled Slack example, which has no webhook stored (ALR-2)', async () => {
+    mockDestinationWrites(
+      [makeDestination({ enabled: false, name: 'Slack example', webhook_set: false, rules: [] })],
+      { isDemo: true },
+    )
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit destination Slack example' }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(within(dialog).getByLabelText('Webhook URL')).not.toBeRequired()
+  })
+
+  it('shows a failed destinations list as an error, not as "No alert destinations" (ALR-11)', async () => {
+    mockDestinationWrites([], { failList: true })
+    renderTab('destinations')
+
+    expect(await screen.findByText('Could not load alert destinations')).toBeInTheDocument()
+    expect(screen.queryByText('No alert destinations')).toBeNull()
+    expect(screen.getByRole('button', { name: /Try again/ })).toBeInTheDocument()
+  })
+
+  it('does not tell Monitors there are no rules when the list failed (ALR-11)', async () => {
+    mockDestinationWrites([], { failList: true })
+    renderTab('monitors')
+
+    expect(await screen.findByText('Could not load alert destinations')).toBeInTheDocument()
+    expect(screen.queryByText('No rules yet')).toBeNull()
+  })
+
+  it('keeps a loaded list on screen when a refetch of it fails (ALR-11)', async () => {
+    mockDestinationWrites(configured(), { failListAfter: 1 })
+    renderTab('destinations')
+
+    expect(await screen.findByRole('button', { name: 'Edit destination Main Slack' })).toBeInTheDocument()
+
+    // A window refocus refetches the (stale) list, and this one fails. The
+    // query is `isError` now, but it still HAS the list.
+    try {
+      act(() => {
+        focusManager.setFocused(false)
+        focusManager.setFocused(true)
+      })
+      expect(await screen.findByText(/Could not refresh alert destinations/)).toBeInTheDocument()
+    } finally {
+      focusManager.setFocused(undefined)
+    }
+    expect(screen.getByRole('button', { name: 'Edit destination Main Slack' })).toBeInTheDocument()
+    expect(screen.queryByText('Could not load alert destinations')).toBeNull()
+  })
+
+  it('drops the previous channel\'s server error when the channel changes (ALR-7)', async () => {
+    mockDestinationWrites(configured(), {
+      refuse: { loc: ['body', 'webhook_url'], msg: 'Value error, Slack webhook URL must start with https://hooks.slack.com/' },
+    })
+    renderTab('destinations')
+
+    await createFromDestinations('Slack', { 'Webhook URL': 'https://hooks.slack.com/services/T/B/X' })
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText('Webhook URL')).toHaveAttribute('aria-invalid', 'true'),
+    )
+
+    // Radix Select drives selection through pointer capture, which jsdom omits.
+    if (!Element.prototype.hasPointerCapture) Element.prototype.hasPointerCapture = () => false
+    if (!Element.prototype.releasePointerCapture) Element.prototype.releasePointerCapture = () => {}
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Channel' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Telegram' }))
+
+    expect(await within(dialog).findByText('New Telegram Destination')).toBeInTheDocument()
+    expect(within(dialog).queryByText(/must start with https:\/\/hooks\.slack\.com/)).toBeNull()
+    expect(within(dialog).queryByRole('alert')).toBeNull()
+  })
+
+  it('announces a cadence the server refused and points the schedule input at it', async () => {
+    mockDestinationWrites(
+      [makeDestination({ delivery_schedule_cron: '0 9 * * *', rules: [makeRule()] })],
+      { refuse: { loc: ['body', 'delivery_schedule_cron'], msg: 'Value error, Invalid cron expression' } },
+    )
+    renderTab('destinations')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit destination Main Slack' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Check the highlighted fields.')
+    const time = within(dialog).getByLabelText('Time of day')
+    expect(time).toHaveAttribute('aria-invalid', 'true')
+    expect(time).toHaveAccessibleDescription('Invalid cron expression')
+  })
+
+  it('names all six channels in the page description (ALR-44)', async () => {
+    mockDestinationWrites(configured())
+    renderTab('destinations')
+
+    expect(
+      await screen.findByText(/Slack, Telegram, email, webhooks, Jira or Linear/),
+    ).toBeInTheDocument()
+  })
+})
+

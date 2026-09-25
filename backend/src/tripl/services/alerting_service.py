@@ -37,6 +37,7 @@ from tripl.models.project_anomaly_settings import (
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.alerting import (
     AlertRuleSimulateResponse,
+    AlertRuleUpdate,
     SimulatedRuleFiring,
 )
 from tripl.services._alerting_deliveries import (
@@ -61,6 +62,7 @@ from tripl.services._alerting_destinations import (
     delete_destination,
     delete_rule,
     destination_to_response,
+    draft_rule,
     get_destination_response,
     get_rule,
     list_destinations,
@@ -647,8 +649,15 @@ async def simulate_rule(
     min_percent_delta_override: float | None = None,
     min_expected_count_override: float | None = None,
     sigma_threshold_override: float | None = None,
+    draft: AlertRuleUpdate | None = None,
 ) -> AlertRuleSimulateResponse:
     """Replay a rule over the last ``days`` and report what it would have sent.
+
+    ``draft`` is the editor's unsaved PATCH body. When given, the replay runs
+    the stored rule with those changes laid over it (``draft_rule``: validated
+    as Save validates, never written), so a user can see what an edit would
+    have sent before saving it onto a rule that may be live (ALR-12). The
+    ``*_saved`` fields still report the stored rule.
 
     Every override answers a what-if WITHOUT writing anything: the rule under
     test is usually live-routing to a real channel, so "would min_percent_delta
@@ -714,6 +723,11 @@ async def simulate_rule(
         destination_id=destination_id,
         rule_id=rule_id,
     )
+    saved_rule = rule
+    if draft is not None:
+        rule = await draft_rule(
+            session, project=project, destination=destination, rule=saved_rule, data=draft
+        )
 
     window_to = datetime.now(UTC)
     window_from = window_to - timedelta(days=days)
@@ -942,19 +956,19 @@ async def simulate_rule(
         firings=firings,
         noisy=len(firings) > SIMULATE_NOISY_THRESHOLD,
         cooldown_minutes_used=effective_cooldown,
-        cooldown_minutes_saved=rule.cooldown_minutes,
+        cooldown_minutes_saved=saved_rule.cooldown_minutes,
         min_percent_delta_used=(
             rule.min_percent_delta
             if min_percent_delta_override is None
             else min_percent_delta_override
         ),
-        min_percent_delta_saved=rule.min_percent_delta,
+        min_percent_delta_saved=saved_rule.min_percent_delta,
         min_expected_count_used=(
             rule.min_expected_count
             if min_expected_count_override is None
             else min_expected_count_override
         ),
-        min_expected_count_saved=rule.min_expected_count,
+        min_expected_count_saved=saved_rule.min_expected_count,
         sigma_threshold_used=(
             sigma_threshold_saved if sigma_threshold_override is None else sigma_threshold_override
         ),

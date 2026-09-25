@@ -1267,13 +1267,20 @@ async def create_comment(
 
 
 async def delete_comment(
-    session: AsyncSession, slug: str, branch_id: uuid.UUID, comment_id: uuid.UUID
+    session: AsyncSession, slug: str, branch_id: uuid.UUID, comment_id: uuid.UUID, user: User
 ) -> None:
     project_id = await _resolve_project_id(session, slug)
     branch = await _get_branch(session, project_id, branch_id)
     comment = await session.get(PlanBranchComment, comment_id)
     if comment is None or comment.branch_id != branch.id:
         raise HTTPException(status_code=404, detail="Comment not found")
+    # Same rule as the event and photo threads: an editor removes their own
+    # words, an owner moderates, and an orphaned comment is left to owners.
+    if user.role != "owner" and (comment.user_id is None or comment.user_id != user.id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the comment's author or an owner can delete it",
+        )
     await session.delete(comment)
     await session.commit()
 

@@ -4,7 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/api/client'
 
-import { errorToastId, surfaceMutationError, surfaceQueryError } from './errorFeedback'
+import {
+  errorToastId,
+  surfaceError,
+  surfaceMutationError,
+  surfaceQueryError,
+} from './errorFeedback'
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
@@ -67,6 +72,28 @@ describe('surfaceMutationError', () => {
   it('stays quiet for a mutation that shows its error inline', () => {
     surfaceMutationError(new Error('Save failed'), undefined, undefined, mutation({ silent: true }))
     expect(toast.error).not.toHaveBeenCalled()
+  })
+})
+
+describe('surfaceError with a message transform', () => {
+  const stripPrefix = (message: string) => message.replace(/^Value error, /, '')
+
+  it('rewrites the message and keeps the reference and the raw-error dedupe id', () => {
+    surfaceError(apiError(422, 'Value error, bad chat id', 'req-9'), stripPrefix)
+
+    expect(toast.error).toHaveBeenCalledWith('bad chat id\nReference: req-9', {
+      id: 'error:422:Value error, bad chat id',
+    })
+  })
+
+  it('still leaves a 401 to the re-auth flow', () => {
+    surfaceError(apiError(401, 'Value error, Not authenticated'), stripPrefix)
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('toasts the message unchanged without a transform', () => {
+    surfaceError(new Error('Save failed'))
+    expect(toast.error).toHaveBeenCalledWith('Save failed', { id: 'error:client:Save failed' })
   })
 })
 

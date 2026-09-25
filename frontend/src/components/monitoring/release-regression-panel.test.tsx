@@ -3,13 +3,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import type { ReleaseComparabilityItem, ReleaseRegressionItem } from '@/types'
 
 import { ReleaseRegressionPanel } from './release-regression-panel'
 
-vi.mock('@/api/metrics', () => ({
-  metricsApi: { getReleaseRegressions: vi.fn() },
+vi.mock('@/api/eventMetrics', () => ({
+  eventMetricsApi: { getReleaseRegressions: vi.fn() },
 }))
 
 function verdict(overrides: Partial<ReleaseComparabilityItem> = {}): ReleaseComparabilityItem {
@@ -60,7 +60,7 @@ function renderPanel() {
 
 describe('ReleaseRegressionPanel', () => {
   it('lists regressed events with kind and version context', async () => {
-    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+    vi.mocked(eventMetricsApi.getReleaseRegressions).mockResolvedValue({
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: '2.1.0',
@@ -87,7 +87,7 @@ describe('ReleaseRegressionPanel', () => {
   })
 
   it('shows an empty state when nothing regressed', async () => {
-    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+    vi.mocked(eventMetricsApi.getReleaseRegressions).mockResolvedValue({
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: '2.1.0',
@@ -104,7 +104,7 @@ describe('ReleaseRegressionPanel', () => {
   })
 
   it('says a withheld comparison cannot be judged instead of affirming health', async () => {
-    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+    vi.mocked(eventMetricsApi.getReleaseRegressions).mockResolvedValue({
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: '2.1.0',
@@ -123,7 +123,7 @@ describe('ReleaseRegressionPanel', () => {
   })
 
   it('shows the withheld notice alongside the missing rows suppression keeps', async () => {
-    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+    vi.mocked(eventMetricsApi.getReleaseRegressions).mockResolvedValue({
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: '2.1.0',
@@ -138,7 +138,7 @@ describe('ReleaseRegressionPanel', () => {
   })
 
   it('names the reason when no baseline release exists to compare against', async () => {
-    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+    vi.mocked(eventMetricsApi.getReleaseRegressions).mockResolvedValue({
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: null,
@@ -160,7 +160,7 @@ describe('ReleaseRegressionPanel', () => {
   })
 
   it('does not affirm health when detection has never run for the scan', async () => {
-    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+    vi.mocked(eventMetricsApi.getReleaseRegressions).mockResolvedValue({
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: null,
@@ -175,7 +175,7 @@ describe('ReleaseRegressionPanel', () => {
   })
 
   it('says the list is scan-wide, links each row and labels the count (MON-41)', async () => {
-    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+    vi.mocked(eventMetricsApi.getReleaseRegressions).mockResolvedValue({
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: '2.1.0',
@@ -204,7 +204,7 @@ describe('ReleaseRegressionPanel', () => {
   })
 
   it('lists every distinct withheld reason, not only the first', async () => {
-    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+    vi.mocked(eventMetricsApi.getReleaseRegressions).mockResolvedValue({
       scan_config_id: 'scan-1',
       app_version_column: 'app_version',
       latest_version: '2.1.0',

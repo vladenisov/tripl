@@ -13,6 +13,8 @@ from tripl.models.domain_enums import UserRole
 from tripl.models.user import User
 from tripl.schemas.data_source import (
     ConnectionSettingsResponse,
+    DataSourceConnectionTest,
+    DataSourceConnectionTestResponse,
     DataSourceCreate,
     DataSourceResponse,
     DataSourceStatsResponse,
@@ -116,6 +118,23 @@ async def create_data_source(
         payload=data.model_dump(),
     )
     return ds
+
+
+@router.post(
+    "/test",
+    response_model=DataSourceConnectionTestResponse,
+    dependencies=_owner_required,
+)
+async def test_unsaved_data_source_connection(
+    data: DataSourceConnectionTest,
+) -> DataSourceConnectionTestResponse:
+    """Test a connection before it is saved (DATA-30).
+
+    The create gate (owner, browser session) and the create body's validation,
+    host format included; nothing is stored and no stored secret is read. Always
+    200: a refused connection is the answer the caller asked for.
+    """
+    return await datasource_service.test_unsaved_connection(data)
 
 
 @router.get("/{ds_id}", response_model=DataSourceResponse)

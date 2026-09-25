@@ -11,7 +11,7 @@ import {
 import { activityApi } from '@/api/activity'
 import { ApiError } from '@/api/client'
 import { dataSourcesApi } from '@/api/dataSources'
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { projectsApi } from '@/api/projects'
 import NotFoundPage from '@/pages/NotFoundPage'
 import { ErrorState } from '@/components/error-state'
@@ -98,19 +98,19 @@ export default function OverviewPage() {
     // cache entry — and drop the card back to its skeleton — every five
     // minutes. Same split as MonitoringDetailPage's metricsQuery.
     queryKey: overviewVolumeKey(slug, VOLUME_WINDOW_DAYS),
-    queryFn: () => metricsApi.getProjectTotalMetrics(slug!, volumeRange),
+    queryFn: () => eventMetricsApi.getProjectTotalMetrics(slug!, volumeRange),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
   const topEventsQuery = useQuery({
     queryKey: overviewTopEventsKey(slug),
-    queryFn: () => metricsApi.getTopEvents(slug!, { windowHours: 48, limit: 6 }),
+    queryFn: () => eventMetricsApi.getTopEvents(slug!, { windowHours: 48, limit: 6 }),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
   const kpiSeriesQuery = useQuery({
     queryKey: overviewKpiSeriesKey(slug),
-    queryFn: () => metricsApi.getOverviewKpiSeries(slug!, 14),
+    queryFn: () => eventMetricsApi.getOverviewKpiSeries(slug!, 14),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })

@@ -1,8 +1,8 @@
 import { useMemo } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { AlertTriangle, GitBranch } from 'lucide-react'
-import { metricsApi } from '@/api/metrics'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { eventMetricsApi } from '@/api/eventMetrics'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
 import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
 import { Badge } from '@/components/ui/badge'
@@ -83,7 +83,7 @@ export function VersionsTab({
       if (scope === 'metric') {
         return metricsCatalogApi.getVersions(slug, scopeId, timeRange).then(adaptMetricVersions)
       }
-      return metricsApi.getAppVersionSeries(slug, scanConfigId!, {
+      return eventMetricsApi.getAppVersionSeries(slug, scanConfigId!, {
         scope_type: appVersionScope!.scope_type,
         scope_ref: appVersionScope!.scope_ref,
         ...timeRange,
@@ -97,7 +97,7 @@ export function VersionsTab({
 
   const adoptionQuery = useQuery({
     queryKey: appVersionAdoptionKey(slug, scanConfigId, rangeDays),
-    queryFn: () => metricsApi.getAppVersionAdoption(slug, scanConfigId!, timeRange),
+    queryFn: () => eventMetricsApi.getAppVersionAdoption(slug, scanConfigId!, timeRange),
     // No catalog adoption endpoint — the metric scope leaves this card empty.
     enabled: scope !== 'metric' && !!scanConfigId,
     refetchInterval,

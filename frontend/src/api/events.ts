@@ -1,5 +1,11 @@
 import { api, withBranch } from './client'
-import type { Event, EventChange, EventListResponse, EventMutationResponse } from '../types'
+import type {
+  Event,
+  EventChange,
+  EventIdentityHoldersResponse,
+  EventListResponse,
+  EventMutationResponse,
+} from '../types'
 import type { components, operations } from '../types/api.gen'
 import type { ImplementationTicket } from '../types/tracker'
 
@@ -58,10 +64,36 @@ export type EventBulkUpdateBody = Omit<Schemas['EventBulkUpdate'], 'event_ids'>
 type EventMoveBody = Schemas['EventMove']
 
 export const eventsApi = {
-  list: (slug: string, params?: EventListParams, branchId?: string | null) => {
+  /** `signal` cancels the request — pass react-query's from a `queryFn`, or
+   *  an AbortController's when a newer lookup supersedes this one. */
+  list: (
+    slug: string,
+    params?: EventListParams,
+    branchId?: string | null,
+    signal?: AbortSignal,
+  ) => {
     const qs = eventListSearchParams(params).toString()
     const path = `/projects/${slug}/events${qs ? `?${qs}` : ''}`
-    return api.get<EventListResponse>(withBranch(path, branchId))
+    return api.get<EventListResponse>(withBranch(path, branchId), signal)
+  },
+  /**
+   * Which of `names` an event of this type already holds as its scan identity,
+   * by exact match and by the rule create refuses on (EVT-37). One request for
+   * a whole list, where each name used to be a substring search of its own.
+   */
+  byNames: (
+    slug: string,
+    eventTypeId: string,
+    names: readonly string[],
+    branchId?: string | null,
+    signal?: AbortSignal,
+  ) => {
+    const sp = new URLSearchParams({ event_type_id: eventTypeId })
+    for (const name of names) sp.append('names', name)
+    return api.get<EventIdentityHoldersResponse>(
+      withBranch(`/projects/${slug}/events/by-names?${sp}`, branchId),
+      signal,
+    )
   },
   tags: (slug: string, branchId?: string | null) =>
     api.get<string[]>(withBranch(`/projects/${slug}/events/tags`, branchId)),

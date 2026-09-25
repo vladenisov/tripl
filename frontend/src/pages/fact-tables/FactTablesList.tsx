@@ -3,12 +3,15 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Plus, Sheet } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
-import { factTablesApi } from '@/api/factTablesApi'
+import { factTablesApi } from '@/api/factTables'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Panel } from '@/components/settings/kit'
+import { Chip } from '@/components/primitives/chip'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { Skeleton } from '@/components/ui/skeleton'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { formatRelativeTime } from '@/lib/datetime'
 import type { FactTableListItem } from '@/types'
 import { dataSourcesKey, factTablesKey } from '@/lib/queryKeys'
@@ -38,7 +41,14 @@ export function FactTablesList({ slug }: { slug?: string }) {
   const dataSourcesQuery = useQuery({
     queryKey: dataSourcesKey(),
     queryFn: () => dataSourcesApi.list(),
+    // Said inline above the table, with a retry (MET-37).
+    meta: SILENT_ERROR_META,
   })
+  const dataSourceNamesState: DataSourceNamesState = dataSourcesQuery.isError
+    ? 'error'
+    : dataSourcesQuery.isPending
+      ? 'loading'
+      : 'ready'
 
   const data = factTablesQuery.data
   const factTables = useMemo(() => data?.items ?? [], [data])
@@ -130,6 +140,25 @@ export function FactTablesList({ slug }: { slug?: string }) {
               </div>
             ) : (
               <div className="overflow-x-auto">
+                {dataSourceNamesState === 'error' && (
+                  <div
+                    role="status"
+                    className="flex flex-wrap items-center gap-2 border-b px-4 py-2 text-[12px]"
+                    style={{ borderColor: 'var(--border-subtle)', color: 'var(--warning)' }}
+                  >
+                    Data source names could not be loaded.
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11.5px]"
+                      onClick={() => {
+                        void dataSourcesQuery.refetch()
+                      }}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                )}
                 <div role="table" aria-label="Fact tables" className="min-w-[680px]">
                   <div role="rowgroup">
                     <div
@@ -154,6 +183,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
                             ? dataSourceNames.get(table.data_source_id) ?? null
                             : null
                         }
+                        dataSourceNamesState={dataSourceNamesState}
                       />
                     ))}
                   </div>
@@ -166,13 +196,61 @@ export function FactTablesList({ slug }: { slug?: string }) {
   )
 }
 
+/** Where the id → name lookup for the Data source column stands. */
+type DataSourceNamesState = 'loading' | 'error' | 'ready'
+
 interface FactTableRowProps {
   table: FactTableListItem
   slug?: string
   dataSourceName: string | null
+  dataSourceNamesState: DataSourceNamesState
 }
 
-function FactTableRow({ table, slug, dataSourceName }: FactTableRowProps) {
+/**
+ * The Data source cell. It used to print "—" for four different things — no
+ * source, names still loading, names failed to load, and a source that was
+ * deleted — so a broken fact table looked like a slow fetch (MET-37).
+ */
+function DataSourceCell({
+  hasSource,
+  name,
+  state,
+}: {
+  hasSource: boolean
+  name: string | null
+  state: DataSourceNamesState
+}) {
+  // The FK is ON DELETE SET NULL and the editor requires a source, so a null
+  // source means its data source was deleted: that is the main MET-37 case.
+  if (!hasSource) {
+    return (
+      <span title="This fact table has no data source; the one it read was deleted. Pick another in the editor.">
+        <Chip tone="warning" size="xs">
+          Missing source
+        </Chip>
+      </span>
+    )
+  }
+  if (name) return <>{name}</>
+  if (state === 'loading') {
+    return (
+      <>
+        <Skeleton className="h-3 w-24" />
+        <span className="sr-only">Loading data source</span>
+      </>
+    )
+  }
+  if (state === 'error') return <span style={{ color: 'var(--fg-faint)' }}>Unavailable</span>
+  return (
+    <span title="The data source this fact table reads was deleted. Pick another in the editor.">
+      <Chip tone="warning" size="xs">
+        Missing source
+      </Chip>
+    </span>
+  )
+}
+
+function FactTableRow({ table, slug, dataSourceName, dataSourceNamesState }: FactTableRowProps) {
   const href = slug ? `/p/${slug}/metrics/fact-tables/${table.id}/edit` : undefined
 
   return (
@@ -204,7 +282,11 @@ function FactTableRow({ table, slug, dataSourceName }: FactTableRowProps) {
         </span>
       </span>
       <span role="cell" className="truncate text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-        {dataSourceName ?? <span style={{ color: 'var(--fg-faint)' }}>—</span>}
+        <DataSourceCell
+          hasSource={!!table.data_source_id}
+          name={dataSourceName}
+          state={dataSourceNamesState}
+        />
       </span>
       <span role="cell" className="mono truncate text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
         {table.timestamp_column || <span style={{ color: 'var(--fg-faint)' }}>—</span>}

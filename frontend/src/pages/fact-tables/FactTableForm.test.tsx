@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { surfaceMutationError } from '@/lib/errorFeedback'
@@ -9,11 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataSource, FactTable } from '@/types'
 import { FactTableForm } from './FactTableForm'
 
-vi.mock('@/api/factTablesApi', () => ({
+vi.mock('@/api/factTables', () => ({
   factTablesApi: {
     create: vi.fn().mockResolvedValue({ id: 'created' }),
     update: vi.fn().mockResolvedValue({ id: 'updated' }),
     preview: vi.fn(),
+    remove: vi.fn(),
   },
 }))
 
@@ -44,6 +45,23 @@ vi.mock('@uiw/react-codemirror', () => ({
   ),
 }))
 
+// The real SqlEditor, with its props recorded: the CodeMirror stub above has no
+// view, so the aria attributes SqlEditor mirrors onto the contenteditable can
+// only be checked as the props the form hands it.
+const { sqlEditorProps } = vi.hoisted(() => ({
+  sqlEditorProps: vi.fn<(props: Record<string, unknown>) => void>(),
+}))
+vi.mock('@/components/sql-editor', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/components/sql-editor')>()
+  return {
+    ...actual,
+    SqlEditor: (props: Parameters<typeof actual.SqlEditor>[0]) => {
+      sqlEditorProps(props as unknown as Record<string, unknown>)
+      return <actual.SqlEditor {...props} />
+    },
+  }
+})
+
 // The SQL editor fetches the data-source schema for autocomplete; stub it so the
 // form test never reaches the network.
 const { useDataSourceSchemaMock } = vi.hoisted(() => ({
@@ -53,7 +71,8 @@ vi.mock('@/hooks/useDataSourceSchema', () => ({
   useDataSourceSchema: useDataSourceSchemaMock,
 }))
 
-import { factTablesApi } from '@/api/factTablesApi'
+import { factTablesApi } from '@/api/factTables'
+import { ApiError } from '@/api/client'
 import { at } from '@/test/at'
 
 const DATA_SOURCES = [{ id: 'ds-1', name: 'Warehouse' }] as unknown as DataSource[]
@@ -96,11 +115,29 @@ function submit() {
   fireEvent.click(screen.getByRole('button', { name: /Create fact table|Save fact table/ }))
 }
 
+// What `fillRequired()`'s SQL introspects to. A save whose columns do not
+// describe the current SQL previews first (MET-9), so most saves reach this.
+const PREVIEWED = {
+  columns: [
+    { name: 'id', type: 'bigint' },
+    { name: 'user_id', type: 'uuid' },
+    { name: 'created_at', type: 'timestamp' },
+  ],
+  identifier_candidates: ['user_id'],
+}
+
+/** The validation summary at the foot of the form. */
+function summary() {
+  return within(screen.getByRole('alert'))
+}
+
 beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.mocked(factTablesApi.create).mockClear()
   vi.mocked(factTablesApi.update).mockClear()
   vi.mocked(factTablesApi.preview).mockReset()
+  vi.mocked(factTablesApi.preview).mockResolvedValue(PREVIEWED)
+  vi.mocked(factTablesApi.remove).mockReset()
 })
 
 afterEach(() => {
@@ -113,12 +150,14 @@ describe('FactTableForm', () => {
 
     submit()
 
-    expect(await screen.findByText('Display name is required.')).toBeInTheDocument()
-    expect(screen.getByText('Internal name is required.')).toBeInTheDocument()
-    expect(screen.getByText('A data source is required.')).toBeInTheDocument()
-    expect(screen.getByText('The fact table SQL is required.')).toBeInTheDocument()
-    expect(screen.getByText('A timestamp column is required.')).toBeInTheDocument()
+    await screen.findByRole('alert')
+    expect(summary().getByText('Display name is required.')).toBeInTheDocument()
+    expect(summary().getByText('Internal name is required.')).toBeInTheDocument()
+    expect(summary().getByText('A data source is required.')).toBeInTheDocument()
+    expect(summary().getByText('The fact table SQL is required.')).toBeInTheDocument()
+    expect(summary().getByText('A timestamp column is required.')).toBeInTheDocument()
     expect(factTablesApi.create).not.toHaveBeenCalled()
+    expect(factTablesApi.preview).not.toHaveBeenCalled()
   })
 
   it('previews columns and persists them on create', async () => {
@@ -202,9 +241,12 @@ describe('FactTableForm', () => {
 
     submit()
 
+    await screen.findByRole('alert')
     expect(
-      await screen.findByText(/Row filter 1 needs both a name and a SQL condition/),
+      summary().getByText(/Row filter 1 needs both a name and a SQL condition/),
     ).toBeInTheDocument()
+    // Inline too, on the half that is missing.
+    expect(screen.getByLabelText('Row filter 1 SQL condition')).toHaveAttribute('aria-invalid', 'true')
     expect(factTablesApi.create).not.toHaveBeenCalled()
   })
 
@@ -227,7 +269,8 @@ describe('FactTableForm', () => {
 
     submit()
 
-    expect(await screen.findByText(/Two row filters are named "ios_only"/)).toBeInTheDocument()
+    await screen.findByRole('alert')
+    expect(summary().getByText(/Two row filters are named "ios_only"/)).toBeInTheDocument()
     expect(factTablesApi.create).not.toHaveBeenCalled()
   })
 
@@ -334,7 +377,10 @@ describe('FactTableForm', () => {
       order: 0,
       data_source_id: 'ds-1',
       timestamp_column: 'created_at',
-      columns: [{ name: 'id', type: 'bigint' }],
+      columns: [
+        { name: 'id', type: 'bigint' },
+        { name: 'created_at', type: 'timestamp' },
+      ],
       identifier_columns: ['id'],
       row_filters: [],
       sql: 'SELECT id, created_at FROM orders',
@@ -467,5 +513,192 @@ describe('FactTableForm save failure', () => {
     expect(await screen.findByText('Could not save fact table')).toBeInTheDocument()
     expect(toastError).not.toHaveBeenCalled()
     toastError.mockRestore()
+  })
+})
+
+const SAVED_ORDERS = {
+  id: 'ft-7',
+  project_id: 'p-1',
+  name: 'orders',
+  display_name: 'Orders',
+  description: '',
+  color: '#6366f1',
+  order: 0,
+  data_source_id: 'ds-1',
+  timestamp_column: 'created_at',
+  columns: [
+    { name: 'id', type: 'bigint' },
+    { name: 'created_at', type: 'timestamp' },
+  ],
+  identifier_columns: [],
+  row_filters: [],
+  sql: 'SELECT id, created_at FROM orders',
+  created_at: '2026-06-01T00:00:00Z',
+  updated_at: '2026-06-20T00:00:00Z',
+} as unknown as FactTable
+
+describe('FactTableForm columns follow the SQL (MET-9)', () => {
+  it('introspects the columns on a create that was never previewed', async () => {
+    renderForm()
+    fillRequired()
+
+    submit()
+
+    await waitFor(() => expect(factTablesApi.create).toHaveBeenCalledTimes(1))
+    expect(factTablesApi.preview).toHaveBeenCalledTimes(1)
+    expect(factTablesApi.create).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({
+        columns: PREVIEWED.columns,
+        identifier_columns: ['user_id'],
+      }),
+    )
+  })
+
+  it('re-reads the columns when the SQL changed after they were stored', async () => {
+    vi.mocked(factTablesApi.preview).mockResolvedValue({
+      columns: [
+        { name: 'id', type: 'bigint' },
+        { name: 'amount', type: 'numeric' },
+        { name: 'created_at', type: 'timestamp' },
+      ],
+      identifier_candidates: [],
+    })
+    renderForm(SAVED_ORDERS)
+
+    fireEvent.change(screen.getByLabelText('Fact table SQL'), {
+      target: { value: 'SELECT id, amount, created_at FROM orders' },
+    })
+    expect(screen.getByText(/changed since these columns were read/)).toBeInTheDocument()
+    submit()
+
+    await waitFor(() => expect(factTablesApi.update).toHaveBeenCalledTimes(1))
+    const [, , payload] = at(vi.mocked(factTablesApi.update).mock.calls, 0)
+    expect((payload as { columns: { name: string }[] }).columns.map(c => c.name)).toEqual([
+      'id',
+      'amount',
+      'created_at',
+    ])
+  })
+
+  it('does not preview again when the stored columns still describe the SQL', async () => {
+    renderForm(SAVED_ORDERS)
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Orders v2' },
+    })
+
+    submit()
+
+    await waitFor(() => expect(factTablesApi.update).toHaveBeenCalledTimes(1))
+    expect(factTablesApi.preview).not.toHaveBeenCalled()
+  })
+
+  it('refuses a timestamp column the SQL does not return', async () => {
+    renderForm()
+    fillRequired()
+    fireEvent.change(document.getElementById('fact-timestamp')!, { target: { value: 'ts' } })
+
+    submit()
+
+    await waitFor(() => expect(factTablesApi.preview).toHaveBeenCalledTimes(1))
+    // The reason shows twice by design: in the summary (a link to the field)
+    // and under the field, which is also its accessible description.
+    await screen.findByRole('alert')
+    expect(summary().getByText(/"ts" is not a column of this SQL/)).toBeInTheDocument()
+    const timestamp = document.getElementById('fact-timestamp')!
+    expect(timestamp).toHaveAttribute('aria-invalid', 'true')
+    await waitFor(() => expect(timestamp).toHaveFocus())
+    expect(timestamp).toHaveAccessibleDescription(/"ts" is not a column of this SQL/)
+    expect(factTablesApi.create).not.toHaveBeenCalled()
+  })
+
+  it('holds the save when the automatic preview fails', async () => {
+    vi.mocked(factTablesApi.preview).mockRejectedValue(new Error('relation "orders" does not exist'))
+    renderForm()
+    fillRequired()
+
+    submit()
+
+    expect(await screen.findByText('Could not preview columns')).toBeInTheDocument()
+    expect(factTablesApi.create).not.toHaveBeenCalled()
+    // Focus follows to the reason, not left on Save (the Preview button was
+    // still disabled when focus used to be moved).
+    await waitFor(() => expect(document.getElementById('fact-preview-error')).toHaveFocus())
+  })
+})
+
+describe('FactTableForm validation matches the metric form (MET-35)', () => {
+  it('marks the field, says why under it, and moves focus to the first one', async () => {
+    renderForm()
+
+    submit()
+
+    const displayName = screen.getByLabelText('Display name', { exact: false })
+    await waitFor(() => expect(displayName).toHaveFocus())
+    expect(displayName).toHaveAttribute('aria-invalid', 'true')
+    expect(displayName).toHaveAccessibleDescription('Display name is required.')
+  })
+
+  it('marks the SQL editor required, and invalid with its message when empty', async () => {
+    renderForm()
+    const lastSqlProps = () => sqlEditorProps.mock.calls.at(-1)?.[0]
+    expect(lastSqlProps()).toMatchObject({ ariaRequired: true })
+    expect(lastSqlProps()?.ariaInvalid).toBeFalsy()
+
+    submit()
+
+    await waitFor(() =>
+      expect(lastSqlProps()).toMatchObject({
+        ariaRequired: true,
+        ariaInvalid: true,
+        ariaDescribedBy: 'fact-sql-error',
+      }),
+    )
+    expect(document.getElementById('fact-sql-error')).toHaveTextContent(
+      'The fact table SQL is required.',
+    )
+  })
+
+  it('does not point the read-only internal name label at a missing control', () => {
+    renderForm(SAVED_ORDERS)
+
+    // A caption for the static name, not a <label> aimed at an id no control has.
+    expect(screen.getByText('Internal name').closest('label')).toBeNull()
+  })
+})
+
+describe('FactTableForm delete (MET-36)', () => {
+  it('deletes after confirmation and closes the editor', async () => {
+    vi.mocked(factTablesApi.remove).mockResolvedValue(undefined)
+    const { onClose } = renderForm(SAVED_ORDERS)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete fact table' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(factTablesApi.remove).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete fact table' }))
+
+    await waitFor(() => expect(factTablesApi.remove).toHaveBeenCalledWith('demo', 'ft-7'))
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  })
+
+  it('shows which metrics still read the table when the server refuses', async () => {
+    vi.mocked(factTablesApi.remove).mockRejectedValue(
+      new ApiError("Cannot delete this fact table. This fact table is read by 1 metric: 'revenue'.", 409),
+    )
+    const { onClose } = renderForm(SAVED_ORDERS)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete fact table' }))
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete fact table' }),
+    )
+
+    expect(await screen.findByText('Could not delete fact table')).toBeInTheDocument()
+    expect(screen.getByText(/read by 1 metric: 'revenue'/)).toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('is not offered on a new fact table', () => {
+    renderForm()
+    expect(screen.queryByRole('button', { name: 'Delete fact table' })).toBeNull()
   })
 })

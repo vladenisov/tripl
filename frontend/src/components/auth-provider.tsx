@@ -6,7 +6,7 @@ import {
 } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { authApi } from '@/api/auth'
-import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
+import { ApiError, AUTH_SIGNED_OUT_EVENT, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
 import {
   AUTH_QUERY_KEY,
   AuthContext,
@@ -42,6 +42,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     mutationFn: authApi.logout,
     onMutate: () => {
       loggingOutRef.current = true
+      // Collect watches outlive every page, so they end with the session: a
+      // poll still running after sign-out would toast the previous user's
+      // metric to whoever signs in next. An event, not a direct call, so the
+      // watcher module stays off the first load.
+      window.dispatchEvent(new Event(AUTH_SIGNED_OUT_EVENT))
     },
     onSettled: async () => {
       loggingOutRef.current = false

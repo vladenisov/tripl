@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
 import type { VirtualItem } from '@tanstack/react-virtual'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { EventListItem, MonitoringSignal } from '@/types'
@@ -106,7 +106,7 @@ export function useEventRowMetrics({
   const eventWindowMetrics = useQueries({
     queries: visibleBuckets.map(bucketIds => ({
       queryKey: eventWindowMetricsKey(slug, bucketIds),
-      queryFn: () => metricsApi.getEventsWindowMetrics(slug!, {
+      queryFn: () => eventMetricsApi.getEventsWindowMetrics(slug!, {
         event_ids: bucketIds,
         ...rowMetricsRange,
       }),

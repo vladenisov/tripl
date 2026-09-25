@@ -39,6 +39,7 @@ SESSION_ONLY_OWNER_ROUTES = {
     "PATCH /api/v1/data-sources/{ds_id}",
     "DELETE /api/v1/data-sources/{ds_id}",
     "POST /api/v1/data-sources/{ds_id}/test",
+    "POST /api/v1/data-sources/test",
 }
 
 

@@ -1,0 +1,396 @@
+/**
+ * The per-field pieces of the single-event form: the control a field or meta
+ * field renders, and the notes under it. Split out of `EventForm.tsx`, which
+ * had grown to 1,600 lines holding five helpers, the route page and the form
+ * itself (EVT-30).
+ */
+import { Link } from 'react-router-dom'
+import { toast } from 'sonner'
+import type { FieldDefinition, MetaFieldDefinition, Variable } from '@/types'
+import { ChipListInput } from '@/components/chip-list-input'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
+import {
+  META_FIELD_LINK_EXAMPLE_KEY,
+  META_FIELD_LINK_PLACEHOLDER,
+  metaFieldLinkExample,
+  stripLinkTemplate,
+} from '@/lib/metaFields'
+import { JsonEditor } from './JsonEditor'
+import { VariableInput } from './VariableInput'
+import type { VariableSuggestion } from './variableSuggestions'
+import { resolveTemplateTokens } from './utils'
+import { SelectControl } from './eventFormLayout'
+import { isNumberFieldValue } from './eventFormValues'
+
+/**
+ * Says which way a field value is heading. The two things an analyst reaches
+ * for have opposite and permanent effects, and neither announced itself:
+ * typing a correction sets `is_authored`, after which `_upsert_field_values`
+ * skips the field for good, while clearing the box deletes the row and the
+ * next scan fills it in again.
+ */
+export function ScanMaintenanceNotice({
+  stored,
+  current,
+  onHandBack,
+}: {
+  /** The saved row behind this box, or null on a field the event never carried. */
+  stored: { value: string; isAuthored: boolean } | null
+  current: string
+  /**
+   * Absent where clearing the box would 422 on save — a required field, or one
+   * the scan's name format builds the event's identity out of.
+   */
+  onHandBack?: () => void
+}) {
+  if (!stored) return null
+  if (stored.isAuthored) {
+    if (current.trim() === '') {
+      return (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Cleared. Save, and the next scan fills this in again.
+        </p>
+      )
+    }
+    return (
+      <p className="mt-1 text-xs text-muted-foreground">
+        Edited by hand, so scans leave it alone.{' '}
+        {onHandBack && (
+          <button
+            type="button"
+            onClick={onHandBack}
+            className="underline underline-offset-2 hover:text-foreground"
+          >
+            Hand back to scans
+          </button>
+        )}
+      </p>
+    )
+  }
+  if (current === stored.value) return null
+  return (
+    <p className="mt-1 text-xs text-warning">Saving this stops scans from updating the field.</p>
+  )
+}
+
+/**
+ * Points a field at the Breakdowns tab, which already answers "and what else
+ * does this field hold?" — one value per box is all an event can carry, so the
+ * question came up every time a scanned value looked wrong. The tab needed the
+ * column in the breakdown set and a reader who knew the tab existed; this is
+ * both, from where the question is asked.
+ */
+export function FieldBreakdownLink({
+  column,
+  href,
+  state,
+  onSelect,
+}: {
+  column: string
+  href: { to: string; onClick: () => void }
+  /** `collecting` = added in this session and not yet saved, so there is nothing to open. */
+  state: 'collected' | 'collecting' | 'off'
+  onSelect: () => void
+}) {
+  if (state === 'collecting') {
+    return (
+      <p className="mt-1 text-xs text-muted-foreground">
+        Added to metric breakdowns. Save, and collection starts splitting by{' '}
+        <span className="mono">{column}</span>.
+      </p>
+    )
+  }
+  return (
+    <p className="mt-1 text-xs">
+      {state === 'collected' ? (
+        <Link
+          to={href.to}
+          onClick={href.onClick}
+          className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          See every value this field takes
+        </Link>
+      ) : (
+        <button
+          type="button"
+          onClick={onSelect}
+          className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          Split volume by this field
+        </button>
+      )}
+    </p>
+  )
+}
+
+export function FieldTemplateHints({
+  value,
+  variables,
+  namesEvent = false,
+  slug,
+}: {
+  value: string
+  variables: Variable[]
+  /** The governing scan rule builds the event's identity out of this field. */
+  namesEvent?: boolean
+  slug?: string
+}) {
+  // The shared copy hook, reported through a toast as the spec card does: the
+  // bare `writeText` claimed "Copied" on plain HTTP and on a refused
+  // permission, and the label never went away (EVT-49).
+  const { copy } = useCopyToClipboard()
+  const copyValue = async (text: string) => {
+    if (await copy(text)) toast.success(`Copied ${text}`)
+    else toast.error(`Could not copy ${text}`)
+  }
+  const resolved = resolveTemplateTokens(value, variables)
+  if (resolved.length === 0) return null
+  const unknown = resolved.filter(({ variable }) => variable === null)
+  const documented = [
+    ...new Map(
+      resolved
+        .filter(({ variable }) => variable !== null && (variable.allowed_values ?? []).length > 0)
+        .map(({ variable }) => [variable!.id, variable!]),
+    ).values(),
+  ]
+  if (!namesEvent && unknown.length === 0 && documented.length === 0) return null
+  return (
+    <div className="mt-1 space-y-1">
+      {/* Validating the token and offering its documented values reads as a
+          promise that the scanner will expand it. It will not:
+          apply_scan_name_format substitutes {key} only, so the event is stamped
+          with a literal ${…} identity that matches nothing. Say so where the
+          mistake is made, and point at the mechanism that does collapse a
+          family of legacy names onto one event. */}
+      {namesEvent && (
+        <p className="text-xs text-warning">
+          This field names the event, so <span className="font-mono">{'${variable}'}</span> is
+          stored literally and will not match a family of names.{' '}
+          {slug ? (
+            <Link to={`/p/${slug}/settings/scans`} className="underline underline-offset-2">
+              Group them with a scan event rule
+            </Link>
+          ) : (
+            <span>Group them with a scan event rule</span>
+          )}{' '}
+          instead.
+        </p>
+      )}
+      {unknown.map(({ token }) => (
+        <p key={token} className="text-xs text-warning">Unknown variable token: {token}</p>
+      ))}
+      {documented.map(variable => (
+        <div key={variable.id} className="flex flex-wrap items-center gap-1">
+          {variable.allowed_values.map(allowedValue => (
+            <button
+              key={allowedValue}
+              type="button"
+              aria-label={`Copy documented value ${allowedValue}`}
+              className="rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-accent"
+              onClick={() => void copyValue(allowedValue)}
+            >
+              {allowedValue}
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+type FieldValueControlProps = {
+  field: FieldDefinition
+  value: string
+  onChange: (value: string) => void
+  variables: VariableSuggestion[]
+  inputId?: string
+  /**
+   * Whether this row must be filled, when that is not simply `field.is_required`.
+   * A column the event name is built from is required in practice — the form
+   * blocks Create until it has a value — so the control has to say so too, or
+   * the label's mark is a promise the browser never keeps.
+   */
+  requiredOverride?: boolean
+}
+
+export function FieldValueControl({
+  field,
+  value,
+  onChange,
+  variables,
+  inputId,
+  requiredOverride,
+}: FieldValueControlProps) {
+  const required = requiredOverride ?? field.is_required
+  if (field.field_type === 'boolean') {
+    return (
+      <SelectControl id={inputId} value={value} onChange={onChange} required={required}>
+        <option value="">—</option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </SelectControl>
+    )
+  }
+  if (field.field_type === 'enum' && field.enum_options) {
+    return (
+      <SelectControl id={inputId} value={value} onChange={onChange} required={required}>
+        <option value="">—</option>
+        {field.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+      </SelectControl>
+    )
+  }
+  if (field.field_type === 'json') {
+    return (
+      <JsonEditor id={inputId} value={value} onChange={onChange} required={required} variables={variables} />
+    )
+  }
+  if (field.field_type === 'number') {
+    // Text, not a native number input: that one refused `$` and `{`, so the
+    // variable autocomplete could never open, and it showed a stored `${price}`
+    // as an empty box while the form still saved the token (EVT-23). The form
+    // validates "a number or a ${variable}" instead, and blocks Save on
+    // anything else.
+    const invalid = !isNumberFieldValue(value)
+    const errorId = inputId ? `${inputId}-number-error` : undefined
+    return (
+      <div>
+        <VariableInput
+          id={inputId}
+          value={value}
+          onChange={onChange}
+          variables={variables}
+          required={required}
+          type="text"
+          inputMode="decimal"
+          invalid={invalid}
+          describedBy={invalid ? errorId : undefined}
+        />
+        {invalid && (
+          <p id={errorId} className="mt-1 text-xs text-warning">
+            Enter a number or a <span className="font-mono">{'${variable}'}</span> token.
+          </p>
+        )}
+      </div>
+    )
+  }
+  return (
+    <VariableInput
+      id={inputId}
+      value={value}
+      onChange={onChange}
+      variables={variables}
+      required={required}
+      type={field.field_type === 'url' ? 'url' : 'text'}
+    />
+  )
+}
+
+export function MetaFieldControl({
+  metaField,
+  values,
+  onChange,
+  variables,
+  inputId,
+}: {
+  metaField: MetaFieldDefinition
+  /** Always a list: a single-valued field simply holds none or one. */
+  values: string[]
+  onChange: (values: string[]) => void
+  variables: VariableSuggestion[]
+  inputId?: string
+}) {
+  const value = values[0] ?? ''
+  // Announced, not enforced: the label has always marked a required meta field,
+  // and a screen reader heard only "star" (EVT-48). Native `required` would
+  // start blocking saves the form has never blocked.
+  const ariaRequired = metaField.is_required
+  const setOne = (next: string) => onChange(next === '' ? [] : [next])
+  // Several values, the way tags work — the interaction the analyst asked for
+  // when an event picked up in a second task had nowhere to put the second Jira
+  // key. The link template still applies per value: resolveMetaFieldHref is
+  // already per-value, so N chips render N links with no new concept.
+  if (metaField.allow_multiple) {
+    const template = metaField.link_template
+    return (
+      <div>
+        <ChipListInput
+          inputId={inputId}
+          values={values}
+          // A whole address pasted into a chip is the same mistake as one
+          // pasted into the single input, and the server strips per value —
+          // so the chip shows the key that will be stored, not the address.
+          onChange={next => {
+            const keys = next.map(v => stripLinkTemplate(template, v))
+            onChange(keys.filter((v, i) => keys.indexOf(v) === i))
+          }}
+          placeholder={metaFieldLinkExample(template) ? 'Type a key + Enter' : 'Type a value + Enter'}
+          ariaLabel={`Add ${metaField.display_name}`}
+        />
+        {template && (
+          <p className="mt-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span> — each
+            one opens on its own.
+          </p>
+        )}
+      </div>
+    )
+  }
+  if (metaField.field_type === 'boolean') {
+    return (
+      <SelectControl id={inputId} value={value} onChange={setOne} ariaRequired={ariaRequired}>
+        <option value="">—</option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </SelectControl>
+    )
+  }
+  if (metaField.field_type === 'enum' && metaField.enum_options) {
+    return (
+      <SelectControl id={inputId} value={value} onChange={setOne} ariaRequired={ariaRequired}>
+        <option value="">—</option>
+        {metaField.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+      </SelectControl>
+    )
+  }
+  // A pasted address is reduced to the key the template wraps, as the server
+  // will do on write anyway (tripl-kjhi.5): the box then shows what is stored,
+  // and the rendered link is never the template applied to a URL. On change
+  // catches the paste; the blur catches a value that arrived any other way.
+  const template = metaField.link_template
+  const strip = (next: string) => (template ? stripLinkTemplate(template, next) : next)
+  const example = metaFieldLinkExample(template)
+  return (
+    <div
+      onBlur={() => {
+        const settled = strip(value)
+        if (settled !== value) setOne(settled)
+      }}
+    >
+      <VariableInput
+        id={inputId}
+        value={value}
+        onChange={next => setOne(strip(next))}
+        variables={variables}
+        ariaRequired={ariaRequired}
+        type={metaField.field_type === 'url' ? 'url' : metaField.field_type === 'date' ? 'date' : 'text'}
+      />
+      {template && (
+        <p className="mt-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+          {example ? (
+            // Said with the reader's own template: "uses link template with
+            // ${value}" named a mechanism and left the reader to work out that
+            // the box wants the key, not the link (tripl-kjhi.5).
+            <>
+              Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span>
+              {' — opens '}
+              <span className="mono break-all">{example}</span>
+            </>
+          ) : (
+            <>Uses link template with <span className="mono">{META_FIELD_LINK_PLACEHOLDER}</span>.</>
+          )}
+        </p>
+      )}
+    </div>
+  )
+}
+

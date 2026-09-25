@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Loader2, Play } from 'lucide-react'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ColumnSuggestInput } from '@/components/column-suggest'
 import { ErrorState } from '@/components/error-state'
 import { Sparkline } from '@/components/primitives/sparkline'
@@ -17,8 +17,8 @@ import type {
 } from '@/types'
 import type { TableSchema } from '@/types/dataSourceSchema'
 import { IntervalField } from './IntervalField'
-import { MetricField } from './MetricField'
-import { errorAria, fieldErrorId, type FieldErrors } from './fieldErrors'
+import { FormField } from '@/components/settings/form-field'
+import { errorAria, fieldErrorId, type FieldErrors } from '@/lib/fieldErrors'
 import type { MetricDraft } from './metricDraft'
 
 interface SqlPreviewPanelProps {
@@ -195,7 +195,7 @@ export function SqlDefinitionFields({
   return (
     <>
       <SCard title="Source" description="Where the query runs, and how often.">
-        <MetricField
+        <FormField
           label="Data source"
           htmlFor="metric-sql-data-source"
           required
@@ -222,7 +222,7 @@ export function SqlDefinitionFields({
               />
             </div>
           )}
-        </MetricField>
+        </FormField>
         <IntervalField
           id="metric-sql-interval"
           value={draft.interval}
@@ -237,7 +237,7 @@ export function SqlDefinitionFields({
 
       {/* The query itself, below the Source card that says where it runs. */}
       <SCard title="Query" description="A custom query returning one numeric value per bucket.">
-        <MetricField
+        <FormField
           label="Metric SQL"
           htmlFor="metric-sql-query"
           required
@@ -286,8 +286,8 @@ export function SqlDefinitionFields({
             </div>
           )}
           {preview && <SqlPreviewPanel result={preview} color={draft.color} unit={draft.unit} />}
-        </MetricField>
-        <MetricField
+        </FormField>
+        <FormField
           label="Time column"
           htmlFor="metric-sql-time"
           required
@@ -308,8 +308,8 @@ export function SqlDefinitionFields({
               {...errorAria(errors, 'metric-sql-time')}
             />
           </div>
-        </MetricField>
-        <MetricField
+        </FormField>
+        <FormField
           label="Value column"
           htmlFor="metric-sql-value"
           last
@@ -327,7 +327,7 @@ export function SqlDefinitionFields({
               placeholder="value"
             />
           </div>
-        </MetricField>
+        </FormField>
       </SCard>
     </>
   )

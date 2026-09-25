@@ -1,8 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
-import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
+import {
+  startMetricCollectionWatch,
+  useIsMetricCollectionWatched,
+} from '@/hooks/useMetricCollectionWatcher'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import {
   metricDefinitionKey,
@@ -46,36 +50,39 @@ function factCollectMessage(metricCount: number): string {
 /**
  * Manual "collect now": backfill a recent window for a metric so its chart
  * populates without waiting for the scheduler. Collection runs in the worker;
- * the watcher polls the persisted last_collection_status until the run
+ * a detached watch polls the persisted last_collection_status until the run
  * settles, toasts success or the persisted failure reason (tripl-4mju), and
- * refreshes the series/definition once data landed.
+ * refreshes the definition, series and catalog on either outcome.
  *
- * The page calls this unconditionally: the watch state used to live in the
- * header's Collect button, which unmounts when the page swaps to its error
- * state or the write permission flickers — and the in-progress watch (its
- * toast, its refresh, its spinner) went with it.
+ * The watch is detached (owned by the watcher module, as in the catalog), so
+ * leaving the page mid-run no longer drops the "you will be notified" promise:
+ * the toast and the refresh still happen, and coming back to the metric shows
+ * the spinner again while the run is going.
  */
 export function useMetricCollect(scopeId: string): MetricCollect {
   const queryClient = useQueryClient()
+  const { slug = '' } = useParams<{ slug: string }>()
   const { notifyMetricCollectStarted } = useDemoScenarioActions()
-  const collectWatcher = useMetricCollectionWatcher<CollectTarget>((metricId, status, context) => {
-    if (status !== 'success' || !context) return
-    // Invalidate the metric this run was actually collecting — its slug/scope/
-    // scopeId captured at collect-start — not whatever the page navigated to
-    // mid-watch (tripl-0s3d, tripl-htvg).
+  const isWatched = useIsMetricCollectionWatched(slug, scopeId)
+
+  // Refresh what the run just changed — keyed to the target captured at
+  // collect-start, never whatever the page has since navigated to
+  // (tripl-0s3d, tripl-htvg). Runs on success AND error: a failed run still
+  // rewrites the definition's status and the catalog row.
+  const refreshAfterRun = (target: CollectTarget) => {
     void queryClient.invalidateQueries({
-      queryKey: monitoringSeriesKey(context.slug, context.scope, context.scopeId),
+      queryKey: monitoringSeriesKey(target.slug, target.scope, target.scopeId),
     })
-    void queryClient.invalidateQueries({ queryKey: metricDefinitionKey(context.slug, metricId) })
-    if (context.isFactMetric) {
+    void queryClient.invalidateQueries({ queryKey: metricDefinitionKey(target.slug, target.scopeId) })
+    void queryClient.invalidateQueries({ queryKey: metricsCatalogKey(target.slug) })
+    if (target.isFactMetric) {
       // A fact collect refreshes every active dependent metric in the shared
-      // source batch, so every dependent series and catalog row may change.
+      // source batch, so every dependent series may change.
       void queryClient.invalidateQueries({
-        queryKey: monitoringSeriesScopeKey(context.slug, 'metric'),
+        queryKey: monitoringSeriesScopeKey(target.slug, 'metric'),
       })
-      void queryClient.invalidateQueries({ queryKey: metricsCatalogKey(context.slug) })
     }
-  })
+  }
 
   const collectMut = useMutation({
     meta: SILENT_ERROR_META,
@@ -90,12 +97,10 @@ export function useMetricCollect(scopeId: string): MetricCollect {
           ? factCollectMessage(data.metric_count)
           : 'Collection started — you will be notified when it finishes.',
       )
-      collectWatcher.watch({
-        slug: target.slug,
-        metricId: target.scopeId,
-        displayName: target.displayName,
-        context: target,
-      })
+      startMetricCollectionWatch(
+        { slug: target.slug, metricId: target.scopeId, displayName: target.displayName },
+        { onSettled: () => refreshAfterRun(target) },
+      )
       // The scenario binds to the metric the USER collected — the demo's tick
       // runs collections of its own, so only this path counts (tripl-2su6.21).
       // Inert outside a ready demo project.
@@ -114,6 +119,6 @@ export function useMetricCollect(scopeId: string): MetricCollect {
     // (tripl-0s3d, tripl-htvg).
     isCollecting:
       (collectMut.isPending && collectMut.variables?.scopeId === scopeId)
-      || collectWatcher.watchingMetricId === scopeId,
+      || isWatched,
   }
 }

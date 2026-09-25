@@ -781,6 +781,28 @@
         }
       }
     },
+    "/api/v1/settings/photo-limits": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Photo Limits",
+        "description": "The photo upload limit, readable by every signed-in user.\n\nThe rest of this router is owner-only; this one value is not, because it is\nan editor's upload it refuses and the browser should say so before the\nupload rather than after (EVT-28). The router's own dependency still\nrequires a session.",
+        "operationId": "get_photo_limits_api_v1_settings_photo_limits_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhotoLimitsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/settings/ai": {
       "get": {
         "tags": [
@@ -2392,6 +2414,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AlertRuleUpdate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Draft"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -5228,6 +5267,90 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/events/by-names": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Lookup Events By Names",
+        "operationId": "lookup_events_by_names_api_v1_projects__slug__events_by_names_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "event_type_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Event Type Id"
+            }
+          },
+          {
+            "name": "names",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 200,
+              "title": "Names"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            },
+            "description": "Plan branch id (UUID) to read and write instead of the main branch."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventIdentityHoldersResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/events/bulk": {
       "post": {
         "tags": [
@@ -7684,6 +7807,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DataSourceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data-sources/test": {
+      "post": {
+        "tags": [
+          "data-sources"
+        ],
+        "summary": "Test Unsaved Data Source Connection",
+        "description": "Test a connection before it is saved (DATA-30).\n\nThe create gate (owner, browser session) and the create body's validation,\nhost format included; nothing is stored and no stored secret is read. Always\n200: a refused connection is the answer the caller asked for.",
+        "operationId": "test_unsaved_data_source_connection_api_v1_data_sources_test_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DataSourceConnectionTest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataSourceConnectionTestResponse"
                 }
               }
             }
@@ -13455,6 +13620,17 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
           }
         ],
         "responses": {
@@ -13596,6 +13772,77 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ShadowEventDismissResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/reconciliation/shadow-events/batch": {
+      "post": {
+        "tags": [
+          "reconciliation"
+        ],
+        "summary": "Batch Shadow Events",
+        "description": "Accept or dismiss many inbox rows in one request (DATA-39).\n\nEach row is handled and audited exactly as its single route would, and a\nrefused row is reported in ``results`` without stopping the rest.",
+        "operationId": "batch_shadow_events_api_v1_projects__slug__reconciliation_shadow_events_batch_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            },
+            "description": "Plan branch id (UUID) to read and write instead of the main branch."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShadowEventBatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShadowEventBatchResponse"
                 }
               }
             }
@@ -19330,6 +19577,128 @@
         ],
         "title": "DBType"
       },
+      "DataSourceConnectionTest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Name",
+            "default": ""
+          },
+          "db_type": {
+            "$ref": "#/components/schemas/DBType"
+          },
+          "host": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Host"
+          },
+          "port": {
+            "type": "integer",
+            "maximum": 65535.0,
+            "minimum": 1.0,
+            "title": "Port",
+            "default": 8123
+          },
+          "database_name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Database Name"
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Username",
+            "default": ""
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "default": ""
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "json_path_discovery": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "dynamic"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path Discovery"
+          },
+          "connection_settings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClickHouseSettings"
+              },
+              {
+                "$ref": "#/components/schemas/PostgresSettings"
+              },
+              {
+                "$ref": "#/components/schemas/BigQuerySettings"
+              },
+              {
+                "$ref": "#/components/schemas/SyntheticSettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Settings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "db_type",
+          "host",
+          "database_name"
+        ],
+        "title": "DataSourceConnectionTest",
+        "description": "An unsaved data-source config to test a connection with (DATA-30).\n\nThe create body, validated the same way (host format included), so a form\ncan test exactly what Create would store. ``name`` is optional because the\ntest does not store anything. Every secret the probe needs travels in this\nrequest; nothing is read from or written to a stored source."
+      },
+      "DataSourceConnectionTestResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "tested_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Tested At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "message",
+          "tested_at"
+        ],
+        "title": "DataSourceConnectionTestResponse"
+      },
       "DataSourceCreate": {
         "properties": {
           "name": {
@@ -21060,6 +21429,59 @@
         ],
         "title": "EventGroupRule"
       },
+      "EventIdentityHolder": {
+        "properties": {
+          "identity": {
+            "type": "string",
+            "title": "Identity"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "event_id",
+          "name",
+          "source_name"
+        ],
+        "title": "EventIdentityHolder",
+        "description": "An event that already answers to a looked-up identity (EVT-37).\n\n``identity`` is the name that was asked about; ``name`` is the holder's own\nname, which differs when a scanned event has since been renamed."
+      },
+      "EventIdentityHoldersResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EventIdentityHolder"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "EventIdentityHoldersResponse"
+      },
       "EventListItemResponse": {
         "properties": {
           "id": {
@@ -21712,6 +22134,18 @@
             ],
             "title": "First Seen At"
           },
+          "main_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Event Id"
+          },
           "owner_id": {
             "anyOf": [
               {
@@ -22237,6 +22671,18 @@
               }
             ],
             "title": "First Seen At"
+          },
+          "main_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Event Id"
           },
           "owner_id": {
             "anyOf": [
@@ -27631,6 +28077,20 @@
         ],
         "title": "PasswordResetRequestResponse"
       },
+      "PhotoLimitsResponse": {
+        "properties": {
+          "photo_max_size_mb": {
+            "type": "integer",
+            "title": "Photo Max Size Mb"
+          }
+        },
+        "type": "object",
+        "required": [
+          "photo_max_size_mb"
+        ],
+        "title": "PhotoLimitsResponse",
+        "description": "What the upload endpoint will take, for the browser to say so up front.\n\n``photo_max_size_mb`` is an owner setting; every signed-in user may read it,\nbecause an editor's upload is what it refuses (EVT-28)."
+      },
       "PlanBranchCreate": {
         "properties": {
           "name": {
@@ -32624,6 +33084,163 @@
           "status"
         ],
         "title": "ShadowEventAcceptResponse"
+      },
+      "ShadowEventBatchItem": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Candidate Id"
+          },
+          "event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate_id"
+        ],
+        "title": "ShadowEventBatchItem"
+      },
+      "ShadowEventBatchItemResult": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Candidate Id"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShadowEventStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "ok"
+        ],
+        "title": "ShadowEventBatchItemResult",
+        "description": "What happened to one row. A refused row does not stop the rest."
+      },
+      "ShadowEventBatchRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "dismiss"
+            ],
+            "title": "Action"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ShadowEventBatchItem"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action",
+          "items"
+        ],
+        "title": "ShadowEventBatchRequest",
+        "description": "Accept or dismiss many inbox rows in one request (DATA-39)."
+      },
+      "ShadowEventBatchResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ShadowEventBatchItemResult"
+            },
+            "type": "array",
+            "title": "Results"
+          },
+          "succeeded": {
+            "type": "integer",
+            "title": "Succeeded"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "results",
+          "succeeded",
+          "failed"
+        ],
+        "title": "ShadowEventBatchResponse"
       },
       "ShadowEventCandidateResponse": {
         "properties": {

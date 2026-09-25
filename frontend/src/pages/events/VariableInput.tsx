@@ -1,14 +1,10 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { Input } from '@/components/ui/input'
-import { suggestionMatches } from './utils'
+import { cn } from '@/lib/utils'
+import { useEvDescribedBy } from './evFieldContext'
+import { TEXT_INPUT_CLASS } from './eventFormLayout'
+import { filterVariableSuggestions, type VariableSuggestion } from './variableSuggestions'
 
-/** Structural subset of Variable — full Variable objects satisfy it. */
-export interface VariableSuggestion {
-  name: string
-  description?: string
-  bindings?: string[]
-  allowed_values?: string[]
-}
+export type { VariableSuggestion }
 
 export function SuggestionRow({
   suggestion,
@@ -45,20 +41,80 @@ export function SuggestionRow({
   )
 }
 
+/**
+ * The dropdown under a variable-aware input, shared by the single-line input and
+ * the JSON editor so the two cannot drift. Height-limited and scrolling, and the
+ * highlighted option is kept in view as the arrow keys move it (EVT-24).
+ */
+export function SuggestionListbox({
+  id,
+  suggestions,
+  highlightIdx,
+  onPick,
+}: {
+  id: string
+  suggestions: VariableSuggestion[]
+  highlightIdx: number
+  onPick: (name: string) => void
+}) {
+  useEffect(() => {
+    const active = document.getElementById(`${id}-opt-${highlightIdx}`)
+    // Optional call: jsdom does not implement scrollIntoView.
+    active?.scrollIntoView?.({ block: 'nearest' })
+  }, [id, highlightIdx])
+  return (
+    <div
+      id={id}
+      role="listbox"
+      className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-popover p-1 shadow-md"
+    >
+      {suggestions.map((v, i) => (
+        <button
+          key={v.name}
+          id={`${id}-opt-${i}`}
+          type="button"
+          role="option"
+          aria-selected={i === highlightIdx}
+          onMouseDown={e => { e.preventDefault(); onPick(v.name) }}
+          className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
+        >
+          <SuggestionRow suggestion={v} selected={i === highlightIdx} />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// Input types that may carry role="combobox" (ARIA in HTML). A date or number
+// input is a different widget, and the autocomplete means nothing on it.
+const COMBOBOX_TYPES = new Set(['text', 'search', 'url', 'email', 'tel'])
+
 export function VariableInput({
   id,
   value,
   onChange,
   variables,
   required,
-  type,
+  ariaRequired,
+  type = 'text',
+  inputMode,
+  className,
+  invalid,
+  describedBy: ownDescribedBy,
 }: {
   id?: string
   value: string
   onChange: (v: string) => void
   variables: VariableSuggestion[]
   required?: boolean
+  /** Announced as required without the browser enforcing it. */
+  ariaRequired?: boolean
   type?: string
+  inputMode?: 'text' | 'decimal' | 'numeric' | 'url'
+  className?: string
+  invalid?: boolean
+  /** Ids of this control's own messages, merged with its form row's. */
+  describedBy?: string
 }) {
   const uid = useId()
   const listboxId = `variable-listbox-${uid}`
@@ -68,11 +124,14 @@ export function VariableInput({
   const [filter, setFilter] = useState('')
   const [highlightIdx, setHighlightIdx] = useState(0)
   const [insertPos, setInsertPos] = useState(0)
+  const describedBy = useEvDescribedBy(ownDescribedBy)
+  const combobox = COMBOBOX_TYPES.has(type)
 
   const filtered = useMemo(
-    () => variables.filter(v => suggestionMatches(v, filter)),
-    [variables, filter],
+    () => (combobox ? filterVariableSuggestions(variables, filter) : []),
+    [combobox, variables, filter],
   )
+  const open = showMenu && filtered.length > 0
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -137,37 +196,34 @@ export function VariableInput({
 
   return (
     <div ref={wrapperRef} className="relative">
-      <Input
+      <input
         ref={ref}
         id={id}
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
         required={required}
+        aria-required={ariaRequired && !required ? true : undefined}
+        aria-invalid={invalid ? true : undefined}
+        aria-describedby={describedBy}
         type={type}
-        role="combobox"
-        aria-expanded={showMenu && filtered.length > 0}
-        aria-haspopup="listbox"
-        aria-autocomplete="list"
-        aria-controls={listboxId}
-        aria-activedescendant={showMenu && filtered.length > 0 ? `${listboxId}-opt-${highlightIdx}` : undefined}
+        inputMode={inputMode}
+        // The form's own control style, not the shared Input: the two sat side
+        // by side at different heights and borders (LIVE-30).
+        className={cn(TEXT_INPUT_CLASS, className)}
+        {...(combobox
+          ? {
+              role: 'combobox',
+              'aria-expanded': open,
+              'aria-haspopup': 'listbox' as const,
+              'aria-autocomplete': 'list' as const,
+              'aria-controls': listboxId,
+              'aria-activedescendant': open ? `${listboxId}-opt-${highlightIdx}` : undefined,
+            }
+          : {})}
       />
-      {showMenu && filtered.length > 0 && (
-        <div id={listboxId} role="listbox" className="absolute z-50 mt-1 w-full rounded-md border bg-popover p-1 shadow-md">
-          {filtered.map((v, i) => (
-            <button
-              key={v.name}
-              id={`${listboxId}-opt-${i}`}
-              type="button"
-              role="option"
-              aria-selected={i === highlightIdx}
-              onMouseDown={e => { e.preventDefault(); insert(v.name) }}
-              className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
-            >
-              <SuggestionRow suggestion={v} selected={i === highlightIdx} />
-            </button>
-          ))}
-        </div>
+      {open && (
+        <SuggestionListbox id={listboxId} suggestions={filtered} highlightIdx={highlightIdx} onPick={insert} />
       )}
     </div>
   )

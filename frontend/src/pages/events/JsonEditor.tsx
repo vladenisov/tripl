@@ -3,8 +3,14 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { relaxedToJson } from './jsonRelaxed'
 import { formatJsonTemplate, templateJsonError, validateJsonWithVars } from './jsonTemplate'
-import { SuggestionRow, type VariableSuggestion } from './VariableInput'
-import { suggestionMatches } from './utils'
+import { SuggestionListbox } from './VariableInput'
+import { filterVariableSuggestions, type VariableSuggestion } from './variableSuggestions'
+import { useEvDescribedBy } from './evFieldContext'
+
+/** The text the box shows for a stored value: re-indented where it parses. */
+function displayJson(value: string): string {
+  return value ? formatJsonTemplate(value) ?? value : ''
+}
 
 export function JsonEditor({
   id,
@@ -39,12 +45,33 @@ export function JsonEditor({
   // The server stores JSON as a single canonical line, so a stored value —
   // templated or not — arrives unbroken. Re-indent it on the way in, or every
   // edit session starts with the whole payload on line one.
-  const [raw, setRaw] = useState(() => (value ? formatJsonTemplate(value) ?? value : ''))
+  const [raw, setRaw] = useState(() => displayJson(value))
+  // The value this editor last saw from its parent. `raw` used to be read from
+  // `value` once and never again, so a reset from outside — "Hand back to
+  // scans" clearing the field — changed state the box never showed, and the
+  // next keystroke wrote the old payload straight back (EVT-22).
+  // Adjust-during-render with an equality guard, this repo's idiom for state
+  // that follows a prop (see ProjectAlertingTab.tsx). Only a CHANGE of `value`
+  // is considered, and not one that merely echoes what this editor emitted:
+  // every emit is `raw` itself, or '' for a whitespace-only box.
+  const [seenValue, setSeenValue] = useState(value)
+  if (value !== seenValue) {
+    setSeenValue(value)
+    const echo = value === raw || (value === '' && raw.trim() === '')
+    if (!echo) {
+      setRaw(displayJson(value))
+      setError(validateJsonWithVars(value))
+      setRepair(null)
+      setShowMenu(false)
+    }
+  }
 
   const filtered = useMemo(
-    () => variables.filter(v => suggestionMatches(v, filter)),
+    () => filterVariableSuggestions(variables, filter),
     [variables, filter],
   )
+  const menuOpen = showMenu && filtered.length > 0
+  const describedBy = useEvDescribedBy(error ? errorId : undefined)
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -180,29 +207,15 @@ export function JsonEditor({
           spellCheck={false}
           role="combobox"
           aria-invalid={error ? 'true' : 'false'}
-          aria-expanded={showMenu && filtered.length > 0}
+          aria-expanded={menuOpen}
           aria-haspopup="listbox"
           aria-autocomplete="list"
           aria-controls={listboxId}
-          aria-describedby={error ? errorId : undefined}
-          aria-activedescendant={showMenu && filtered.length > 0 ? `${listboxId}-opt-${highlightIdx}` : undefined}
+          aria-describedby={describedBy}
+          aria-activedescendant={menuOpen ? `${listboxId}-opt-${highlightIdx}` : undefined}
         />
-        {showMenu && filtered.length > 0 && (
-          <div id={listboxId} role="listbox" className="absolute z-50 mt-1 w-full rounded-md border bg-popover p-1 shadow-md">
-            {filtered.map((v, i) => (
-              <button
-                key={v.name}
-                id={`${listboxId}-opt-${i}`}
-                type="button"
-                role="option"
-                aria-selected={i === highlightIdx}
-                onMouseDown={e => { e.preventDefault(); insertVar(v.name) }}
-                className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
-              >
-                <SuggestionRow suggestion={v} selected={i === highlightIdx} />
-              </button>
-            ))}
-          </div>
+        {menuOpen && (
+          <SuggestionListbox id={listboxId} suggestions={filtered} highlightIdx={highlightIdx} onPick={insertVar} />
         )}
       </div>
       {/* Format sits under the field, not over it: an overlay button covered the

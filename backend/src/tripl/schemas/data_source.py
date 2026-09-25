@@ -456,6 +456,24 @@ class DataSourceTestResponse(BaseModel):
     data_source: DataSourceResponse
 
 
+class DataSourceConnectionTest(DataSourceCreate):
+    """An unsaved data-source config to test a connection with (DATA-30).
+
+    The create body, validated the same way (host format included), so a form
+    can test exactly what Create would store. ``name`` is optional because the
+    test does not store anything. Every secret the probe needs travels in this
+    request; nothing is read from or written to a stored source.
+    """
+
+    name: str = Field("", max_length=255)
+
+
+class DataSourceConnectionTestResponse(BaseModel):
+    success: bool
+    message: str
+    tested_at: datetime
+
+
 class DataSourceThroughputPoint(BaseModel):
     bucket: datetime
     count: int

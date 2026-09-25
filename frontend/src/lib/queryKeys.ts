@@ -252,7 +252,7 @@ export const projectsQueryOptions = () =>
   })
 
 /**
- * Every events-tab dynamics cache for a project — `metricsApi.getEventsMetrics`.
+ * Every events-tab dynamics cache for a project — `eventMetricsApi.getEventsMetrics`.
  * TabMetricsCard extends it with branch, filters and range; the realtime layer
  * invalidates this prefix because the card does not poll while the stream is
  * live, so a finished scan or collection would otherwise never reach the chart.
@@ -443,6 +443,22 @@ export const eventHistoryKey = (
   eventId: string,
 ) => [...branchEventHistoryKey(slug, branchId), eventId] as const
 
+/** Every identity probe on one branch, whatever the type and name — what a
+ *  create invalidates, since the name it just took is no longer free. */
+export const branchEventIdentityProbesKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+) => ['eventIdentityProbe', slug, branchId] as const
+
+/** Which of a list of names already identify events of that type (one
+ *  exact-name lookup); under the branch's probes, so a create invalidates it. */
+export const eventIdentityLookupKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  eventTypeId: string,
+  names: readonly string[],
+) => [...branchEventIdentityProbesKey(slug, branchId), eventTypeId, 'names', names] as const
+
 /** Whether a typed name already identifies an event of that type. */
 export const eventIdentityProbeKey = (
   slug: string | undefined,
@@ -470,6 +486,8 @@ export const eventPhotosKey = (slug: string, eventId: string) =>
   ['eventPhotos', slug, eventId] as const
 export const eventPhotoCommentsKey = (slug: string, eventId: string, photoId: string) =>
   ['eventPhotoComments', slug, eventId, photoId] as const
+/** The instance-wide photo upload limit; the same for every project and event. */
+export const photoLimitsKey = () => ['photoLimits'] as const
 
 /** Window metrics of the visible event rows, one cache per row bucket. */
 export const projectEventWindowMetricsKey = (slug: string | undefined) =>
@@ -730,3 +748,16 @@ export const shadowEventsKey = (
   branchId: string | null | undefined,
   status: string,
 ) => [...projectShadowEventsKey(slug), branchId, status] as const
+/** A shadow-events list read a page at a time by offset (DATA-39). */
+export const shadowEventsPagesKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  status: string,
+) => [...shadowEventsKey(slug, branchId, status), 'pages'] as const
+/** One page size of a shadow-events list; "Show more" raises `limit`. */
+export const shadowEventsPageKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  status: string,
+  limit: number,
+) => [...shadowEventsKey(slug, branchId, status), limit] as const

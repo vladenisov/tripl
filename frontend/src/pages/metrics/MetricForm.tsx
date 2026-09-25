@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { AlertTriangle, ChevronLeft, Loader2, Plus, Save } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import {
@@ -40,11 +40,11 @@ import {
 } from '@/types'
 import { EventCompositionFields } from './EventCompositionFields'
 import { FactDefinitionFields } from './FactDefinitionFields'
-import { MetricField } from './MetricField'
+import { FormField } from '@/components/settings/form-field'
 import { MonitoringFields } from './MonitoringFields'
 import { SqlDefinitionFields } from './SqlDefinitionFields'
 import { TemplateGallery } from './TemplateGallery'
-import { errorAria, focusField } from './fieldErrors'
+import { errorAria, focusField } from '@/lib/fieldErrors'
 import {
   columnsOfReferencedTables,
   draftFromMetric,
@@ -429,7 +429,7 @@ export function MetricForm({
               gutter from `sm` up, so nothing narrower than the page leaves a
               usable control (tripl-vv2f). */}
           <SCard title="Details">
-            <MetricField
+            <FormField
               label="Display name"
               htmlFor="metric-display-name"
               required
@@ -443,8 +443,8 @@ export function MetricForm({
                 aria-required
                 {...errorAria(fieldErrors, 'metric-display-name')}
               />
-            </MetricField>
-            <MetricField
+            </FormField>
+            <FormField
               label="Internal name"
               // After creation this row holds the name as text, not a control:
               // `false` names it as a group.
@@ -471,8 +471,8 @@ export function MetricForm({
                   {draft.name}
                 </div>
               )}
-            </MetricField>
-            <MetricField label="Description" htmlFor="metric-description">
+            </FormField>
+            <FormField label="Description" htmlFor="metric-description">
               <TextArea
                 id="metric-description"
                 value={draft.description}
@@ -480,11 +480,11 @@ export function MetricForm({
                 rows={2}
                 placeholder="What does this metric measure?"
               />
-            </MetricField>
-            <MetricField label="Unit" htmlFor="metric-unit" hint="Optional display unit (e.g. %, ms). With %, stored fractions render ×100 (0.08 → 8 %).">
+            </FormField>
+            <FormField label="Unit" htmlFor="metric-unit" hint="Optional display unit (e.g. %, ms). With %, stored fractions render ×100 (0.08 → 8 %).">
               <TextInput id="metric-unit" value={draft.unit} onChange={value => patch({ unit: value })} placeholder="%" />
-            </MetricField>
-            <MetricField label="Color" htmlFor="metric-color">
+            </FormField>
+            <FormField label="Color" htmlFor="metric-color">
               <input
                 id="metric-color"
                 type="color"
@@ -493,26 +493,26 @@ export function MetricForm({
                 className="h-8 w-12 cursor-pointer rounded border bg-transparent"
                 style={{ borderColor: 'var(--border)' }}
               />
-            </MetricField>
-            <MetricField label="Status" htmlFor="metric-status" last>
+            </FormField>
+            <FormField label="Status" htmlFor="metric-status" last>
               <Select
                 id="metric-status"
                 value={draft.status}
                 onChange={value => patch({ status: value as MetricStatus })}
                 options={METRIC_STATUSES.map(s => ({ value: s, label: METRIC_STATUS_LABEL[s] }))}
               />
-            </MetricField>
+            </FormField>
           </SCard>
 
           <SCard title="Kind" description="How this metric produces its per-bucket value.">
-            <MetricField label="Metric kind" stacked last>
+            <FormField label="Metric kind" stacked last>
               <RadioCards
                 groupLabel="Metric kind"
                 value={draft.kind}
                 onChange={value => changeKind(value as MetricKind)}
                 options={KIND_OPTIONS}
               />
-            </MetricField>
+            </FormField>
           </SCard>
 
           {definitionChanged && <DefinitionChangeNotice />}

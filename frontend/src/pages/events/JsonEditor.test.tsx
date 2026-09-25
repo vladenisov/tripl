@@ -183,3 +183,32 @@ describe('JsonEditor template authoring', () => {
     expect(screen.getByText(/cannot contain a quote/)).toBeInTheDocument()
   })
 })
+
+describe('JsonEditor outside changes (EVT-22)', () => {
+  it('shows a value the parent resets, as "Hand back to scans" does', () => {
+    const { rerender } = render(<JsonEditor value='{"source":"cta"}' onChange={vi.fn()} />)
+    const editor = screen.getByRole('combobox')
+    expect(editor).toHaveValue('{\n  "source": "cta"\n}')
+
+    rerender(<JsonEditor value="" onChange={vi.fn()} />)
+    expect(editor).toHaveValue('')
+
+    rerender(<JsonEditor value='{"source":"banner"}' onChange={vi.fn()} />)
+    expect(editor).toHaveValue('{\n  "source": "banner"\n}')
+  })
+
+  it('keeps what is being typed when the parent echoes it back', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(<JsonEditor value="" onChange={onChange} />)
+    const editor = screen.getByRole('combobox')
+
+    fireEvent.change(editor, { target: { value: '{"a": 1' } })
+    rerender(<JsonEditor value='{"a": 1' onChange={onChange} />)
+    // Not re-indented or replaced mid-edit: the echo is the editor's own text.
+    expect(editor).toHaveValue('{"a": 1')
+
+    fireEvent.change(editor, { target: { value: '   ' } })
+    rerender(<JsonEditor value="" onChange={onChange} />)
+    expect(editor).toHaveValue('   ')
+  })
+})

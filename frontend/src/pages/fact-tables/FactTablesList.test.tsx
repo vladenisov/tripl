@@ -1,18 +1,18 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataSource, FactTableListItem, FactTableListResponse } from '@/types'
 import { FactTablesList } from './FactTablesList'
 
-vi.mock('@/api/factTablesApi', () => ({
+vi.mock('@/api/factTables', () => ({
   factTablesApi: { list: vi.fn() },
 }))
 vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
 }))
 
-import { factTablesApi } from '@/api/factTablesApi'
+import { factTablesApi } from '@/api/factTables'
 import { dataSourcesApi } from '@/api/dataSources'
 
 function makeItem(overrides: Partial<FactTableListItem>): FactTableListItem {
@@ -133,5 +133,62 @@ describe('FactTablesList', () => {
     expect(await screen.findByText('No fact tables yet')).toBeInTheDocument()
     const links = await screen.findAllByRole('link', { name: /New fact table/ })
     expect(links[0]).toHaveAttribute('href', '/p/demo/metrics/fact-tables/new')
+  })
+})
+
+describe('FactTablesList data source column (MET-37)', () => {
+  it('shows a placeholder, not a dash, while source names load', async () => {
+    vi.mocked(dataSourcesApi.list).mockImplementation(() => new Promise(() => {}))
+    mockList({ items: [makeItem({ id: 'ft-1', display_name: 'Orders' })], total: 1 })
+
+    renderList()
+
+    const row = (await screen.findByText('Orders')).closest('[role="row"]') as HTMLElement
+    expect(within(row).getByText('Loading data source')).toBeInTheDocument()
+    expect(within(row).queryByText('Missing source')).toBeNull()
+  })
+
+  it('flags a fact table whose source was deleted (data_source_id set to null)', async () => {
+    // The FK is ON DELETE SET NULL, so this is what a deleted source looks like.
+    mockList({
+      items: [makeItem({ id: 'ft-1', display_name: 'Orders', data_source_id: null })],
+      total: 1,
+    })
+
+    renderList()
+
+    const row = (await screen.findByText('Orders')).closest('[role="row"]') as HTMLElement
+    expect(await within(row).findByText('Missing source')).toBeInTheDocument()
+    expect(within(row).queryByText('—')).toBeNull()
+  })
+
+  it('flags a fact table whose source id is not in the source list', async () => {
+    mockList({
+      items: [makeItem({ id: 'ft-1', display_name: 'Orders', data_source_id: 'ds-gone' })],
+      total: 1,
+    })
+
+    renderList()
+
+    const row = (await screen.findByText('Orders')).closest('[role="row"]') as HTMLElement
+    expect(await within(row).findByText('Missing source')).toBeInTheDocument()
+  })
+
+  it('says the names failed to load and offers a retry', async () => {
+    vi.mocked(dataSourcesApi.list).mockRejectedValue(new Error('boom'))
+    mockList({ items: [makeItem({ id: 'ft-1', display_name: 'Orders' })], total: 1 })
+
+    renderList()
+
+    expect(await screen.findByText('Data source names could not be loaded.')).toBeInTheDocument()
+    const row = screen.getByText('Orders').closest('[role="row"]') as HTMLElement
+    expect(within(row).getByText('Unavailable')).toBeInTheDocument()
+    expect(within(row).queryByText('Missing source')).toBeNull()
+
+    vi.mocked(dataSourcesApi.list).mockResolvedValue([
+      { id: 'ds-1', name: 'Warehouse' },
+    ] as unknown as DataSource[])
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await within(row).findByText('Warehouse')).toBeInTheDocument()
   })
 })

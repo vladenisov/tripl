@@ -17,15 +17,18 @@ import { DeliveryScheduleField } from './DeliveryScheduleField'
  */
 function Harness({ initial = '' }: { initial?: string }) {
   const [cron, setCron] = useState(initial)
+  const [valid, setValid] = useState(true)
   return (
     <>
       <DeliveryScheduleField
         value={cron}
         onChange={setCron}
+        onValidityChange={setValid}
         projectTimezone="Europe/Moscow"
         nextDigestAt={null}
       />
       <output data-testid="cron">{cron === '' ? '(immediate)' : cron}</output>
+      <output data-testid="valid">{valid ? 'valid' : 'invalid'}</output>
     </>
   )
 }
@@ -86,5 +89,63 @@ describe('DeliveryScheduleField', () => {
     fireEvent.change(screen.getByLabelText('Cron expression'), { target: { value: '@daily' } })
 
     expect(screen.getByText(/5 fields/)).toBeInTheDocument()
+  })
+
+  it('tells the form the draft on screen cannot be saved, and when it can again (ALR-3)', () => {
+    render(<Harness initial="*/5 9-17 * * 1-5" />)
+
+    fireEvent.change(screen.getByLabelText('Cron expression'), { target: { value: '' } })
+
+    // The last good expression is still what the form holds — so the owner
+    // has to be told, or Save would store it under a visible error.
+    expect(screen.getByTestId('cron')).toHaveTextContent('*/5 9-17 * * 1-5')
+    expect(screen.getByTestId('valid')).toHaveTextContent('invalid')
+
+    fireEvent.change(screen.getByLabelText('Cron expression'), { target: { value: '0 8 * * *' } })
+
+    expect(screen.getByTestId('valid')).toHaveTextContent('valid')
+    expect(screen.getByTestId('cron')).toHaveTextContent('0 8 * * *')
+  })
+
+  it('offers the native time picker for a single time, and ties the error to it (ALR-51)', () => {
+    render(<Harness initial="0 9 * * *" />)
+
+    const time = screen.getByLabelText('Time of day')
+    expect(time).toHaveAttribute('type', 'time')
+
+    fireEvent.change(time, { target: { value: '' } })
+
+    expect(time).toHaveAttribute('aria-invalid', 'true')
+    expect(time).toHaveAccessibleDescription(/Enter a time as HH:MM/)
+  })
+
+  it('attaches a server-refused cadence to the input on screen', () => {
+    render(
+      <DeliveryScheduleField
+        value="0 9 * * *"
+        onChange={() => {}}
+        projectTimezone="UTC"
+        serverError="Invalid cron expression"
+      />,
+    )
+
+    const input = screen.getByLabelText('Time of day')
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(input).toHaveAccessibleDescription('Invalid cron expression')
+  })
+
+  it('points the mode picker at a server error when it is the only control', () => {
+    render(
+      <DeliveryScheduleField
+        value=""
+        onChange={() => {}}
+        projectTimezone="UTC"
+        serverError="Invalid cron expression"
+      />,
+    )
+
+    const picker = screen.getByRole('combobox')
+    expect(picker).toHaveAttribute('aria-invalid', 'true')
+    expect(picker).toHaveAccessibleDescription('Invalid cron expression')
   })
 })

@@ -1,11 +1,19 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+
+/** The toaster, stubbed: a failed row write says why in one (ALR-6). */
+const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }))
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: toastError },
+  Toaster: () => null,
+}))
 
 import { alertingApi, MAX_ALERT_RULE_NAME_LENGTH } from '@/api/alerting'
+import { ApiError } from '@/api/client'
 import { INDEFINITE_MUTE, muteChoiceName } from '@/lib/mutePresets'
-import type { AlertDestination, AlertRule, MonitorsSummaryResponse } from '@/types'
+import type { AlertDestination, AlertRule, MonitorsSummaryResponse, ScanConfig } from '@/types'
 
 import { MonitorsSection, type RuleWithDestination } from './MonitorsSection'
 import { at } from '@/test/at'
@@ -124,6 +132,9 @@ function makeSummary(overrides: Partial<MonitorsSummaryResponse> = {}): Monitors
 interface RenderOptions {
   rules?: RuleWithDestination[]
   destinations?: AlertDestination[]
+  scans?: { id: string; name: string }[]
+  scansLoaded?: boolean
+  scansFailed?: boolean
   canWrite?: boolean
   autoOpenRuleForDestinationId?: string | null
   onAutoOpenRuleConsumed?: () => void
@@ -142,7 +153,9 @@ function renderSection(options: RenderOptions = {}) {
           destinations={options.destinations ?? [makeDestination()]}
           rules={options.rules ?? [makeRule()]}
           eventTypes={[]}
-          scans={[]}
+          scans={(options.scans ?? []) as ScanConfig[]}
+          scansLoaded={options.scansLoaded ?? true}
+          scansFailed={options.scansFailed ?? false}
           canWrite={options.canWrite ?? true}
           autoOpenRuleForDestinationId={options.autoOpenRuleForDestinationId ?? null}
           onAutoOpenRuleConsumed={options.onAutoOpenRuleConsumed ?? (() => {})}
@@ -155,6 +168,7 @@ function renderSection(options: RenderOptions = {}) {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  toastError.mockClear()
 })
 
 describe('MonitorsSection live state (tripl-89ps)', () => {
@@ -662,5 +676,244 @@ describe('MonitorsSection inert scope notice', () => {
 
     expect(await screen.findByText('Edit Alert Rule')).toBeInTheDocument()
     expect(screen.queryByText(DISTRIBUTION_SENTENCE)).toBeNull()
+  })
+})
+
+describe('MonitorsSection row writes that fail say why (ALR-6)', () => {
+  it('toasts a refused enable switch, prefix stripped', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    vi.spyOn(alertingApi, 'updateRule').mockRejectedValue(new Error('Value error, Editor role required'))
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Toggle Prod drops' }))
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('Editor role required', expect.anything()))
+  })
+
+  it('toasts a refused delete, and does not send a second one while the first is in flight', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    let reject: (error: Error) => void = () => {}
+    const remove = vi.spyOn(alertingApi, 'deleteRule').mockImplementation(
+      () => new Promise((_, fail) => { reject = fail }),
+    )
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete rule Prod drops' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('button', { name: 'Delete rule Prod drops' })).toBeDisabled()
+
+    reject(new Error('Rule not found'))
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('Rule not found', expect.anything()))
+  })
+
+  it('toasts a refused mute', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    vi.spyOn(alertingApi, 'muteMonitor').mockRejectedValue(new Error('Forbidden'))
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Mute Prod drops$/ }))
+    fireEvent.click(screen.getAllByRole('button', { name: /^Mute Prod drops for / })[0]!)
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('Forbidden', expect.anything()))
+  })
+
+  // Silencing the global backstop to strip the prefix must not also drop what
+  // the backstop did: the support reference, and quiet on a 401.
+  it('quotes the request id of a failed row write for support', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    vi.spyOn(alertingApi, 'updateRule').mockRejectedValue(
+      new ApiError('Internal server error', 500, 'req-123'),
+    )
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Toggle Prod drops' }))
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        'Internal server error\nReference: req-123',
+        expect.objectContaining({ id: expect.any(String) }),
+      ),
+    )
+  })
+
+  it('leaves a 401 to the re-auth flow instead of toasting it', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const update = vi.spyOn(alertingApi, 'updateRule').mockRejectedValue(
+      new ApiError('Not authenticated', 401),
+    )
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Toggle Prod drops' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    // Let the rejection settle before asserting the absence of a toast.
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Toggle Prod drops' })).toBeEnabled())
+    expect(toastError).not.toHaveBeenCalled()
+  })
+})
+
+describe('MonitorsSection rule row details', () => {
+  it('describes the delete cascade with the shared, pluralised sentence (ALR-45)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ rules: [makeRule({ total_deliveries: 1, incident_count: 1 })] })
+
+    const remove = await screen.findByRole('button', { name: 'Delete rule Prod drops' })
+    expect(remove).toHaveAttribute('title', expect.stringContaining('1 delivery and 1 incident'))
+  })
+
+  it('links the settings toggle to the row it opens, which spans the table (ALR-46)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    const toggle = await screen.findByRole('button', { name: 'Show settings for Prod drops' })
+    expect(toggle).not.toHaveAttribute('aria-controls')
+    fireEvent.click(toggle)
+
+    const controls = screen.getByRole('button', { name: 'Hide settings for Prod drops' })
+      .getAttribute('aria-controls')
+    expect(controls).toBeTruthy()
+    const row = document.getElementById(controls!)
+    expect(row).toHaveAttribute('role', 'row')
+    expect(within(row!).getByRole('cell')).toHaveAttribute('aria-colspan', '6')
+  })
+
+  it('says the scan is loading, not unknown, until the scan list answers (ALR-47)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const { unmount } = renderSection({
+      rules: [makeRule({ scan_config_id: 'scan-1' })],
+      scansLoaded: false,
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Show settings for Prod drops' }))
+    expect(screen.getByText('…')).toBeInTheDocument()
+    expect(screen.queryByText('unknown scan')).toBeNull()
+    unmount()
+
+    renderSection({ rules: [makeRule({ scan_config_id: 'scan-1' })], scansLoaded: true })
+    fireEvent.click(await screen.findByRole('button', { name: 'Show settings for Prod drops' }))
+    expect(screen.getByText('unknown scan')).toBeInTheDocument()
+  })
+
+  it('says the scan is unavailable, not loading, when the scan list failed (ALR-47)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({
+      rules: [makeRule({ scan_config_id: 'scan-1' })],
+      scansLoaded: false,
+      scansFailed: true,
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Show settings for Prod drops' }))
+
+    expect(screen.getByText('scan unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('…')).toBeNull()
+  })
+})
+
+describe('MonitorsSection rule form — what is saved is what is shown', () => {
+  // Radix Select drives selection through pointer capture, which jsdom omits.
+  beforeAll(() => {
+    if (!Element.prototype.hasPointerCapture) {
+      Element.prototype.hasPointerCapture = () => false
+    }
+    if (!Element.prototype.releasePointerCapture) {
+      Element.prototype.releasePointerCapture = () => {}
+    }
+  })
+
+  it('drops a format the new destination does not support when the destination changes (ALR-4)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const create = vi.spyOn(alertingApi, 'createRule').mockResolvedValue(makeRule() as AlertRule)
+    renderSection({
+      destinations: [makeDestination(), makeDestination({ id: 'dest-2', name: 'Slack', type: 'slack' })],
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add rule/ }))
+    // No format is offered before a destination is: the choices are per channel.
+    expect(screen.queryByRole('combobox', { name: 'Message format' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Destination' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Slack · slack' }))
+    fireEvent.click(screen.getByRole('combobox', { name: 'Message format' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Slack mrkdwn' }))
+    expect(screen.getByRole('combobox', { name: 'Message format' })).toHaveTextContent('Slack mrkdwn')
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Destination' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'TG · telegram' }))
+
+    expect(screen.getByRole('combobox', { name: 'Message format' })).toHaveTextContent('Plain text')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New rule' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(create).toHaveBeenCalled())
+    expect(create.mock.calls[0]![1]).toBe('dest-1')
+    expect(create.mock.calls[0]![2]).toMatchObject({ message_format: 'plain', message_template: null })
+  })
+
+  it('reopens without the previous attempt\'s error (ALR-7)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    vi.spyOn(alertingApi, 'updateRule').mockRejectedValue(new Error('Rule limit reached'))
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Prod drops' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Rule limit reached')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Prod drops' }))
+
+    expect(await screen.findByText('Edit Alert Rule')).toBeInTheDocument()
+    expect(screen.queryByText('Rule limit reached')).toBeNull()
+  })
+
+  it('offers a replay of the saved rule from inside its editor (ALR-12)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Prod drops' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Replay saved rule' }))
+
+    expect(await screen.findByText(/Replay rule “Prod drops”/)).toBeInTheDocument()
+  })
+
+  it('replays the edits on the form, unsaved, once there are any (ALR-12)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    const update = vi.spyOn(alertingApi, 'updateRule')
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue({
+      rule_id: 'rule-1',
+      rule_name: 'Prod drops',
+      days: 7,
+      window_from: '2026-07-12T10:00:00Z',
+      window_to: '2026-07-19T10:00:00Z',
+      anomalies_considered: 0,
+      matched_before_cooldown: 0,
+      noisy: false,
+      cooldown_minutes_used: 45,
+      cooldown_minutes_saved: 60,
+      min_percent_delta_used: 0,
+      min_percent_delta_saved: 0,
+      min_expected_count_used: 0,
+      min_expected_count_saved: 0,
+      sigma_threshold_used: null,
+      sigma_threshold_saved: null,
+      rendered_message: null,
+      firings: [],
+    })
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Prod drops' }))
+    // No edits yet: only the saved rule can be replayed.
+    expect(screen.queryByRole('button', { name: 'Replay with these edits' })).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Cooldown minutes'), { target: { value: '45' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Replay with these edits' }))
+
+    expect(
+      await screen.findByRole('heading', { name: /Replay rule “Prod drops” with your unsaved edits/ }),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+
+    await waitFor(() => expect(simulate).toHaveBeenCalled())
+    expect(simulate.mock.calls[0]?.[5]).toMatchObject({ cooldown_minutes: 45 })
+    expect(update).not.toHaveBeenCalled()
   })
 })

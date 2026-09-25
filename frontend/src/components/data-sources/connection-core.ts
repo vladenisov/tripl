@@ -135,3 +135,47 @@ export function buildCoreUpdatePayload(
     ...(dbType === 'clickhouse' ? { json_path_discovery: form.jsonPathDiscovery } : {}),
   }
 }
+
+/**
+ * Why `value` is not a usable service-account key file, or null when it is (or
+ * is empty — on edit that means "keep the stored key", and on create the
+ * field's own `required` catches it).
+ *
+ * A partial paste used to be accepted at create time and only fail later, at
+ * connect or test time, in the backend's `json.loads` (DATA-29).
+ */
+export function serviceAccountKeyError(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return 'This is not valid JSON. Paste the whole key file, from the opening { to the closing }.'
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return 'The key file must be a JSON object.'
+  }
+  const record = parsed as Record<string, unknown>
+  if (record.type !== 'service_account') {
+    return 'This is not a service-account key: its "type" must be "service_account".'
+  }
+  return null
+}
+
+/** Inline error for the core secret field, or null. Only BigQuery's is checked. */
+export function connectionCoreSecretError(dbType: DbType, form: ConnectionCoreForm): string | null {
+  return dbType === 'bigquery' ? serviceAccountKeyError(form.secret) : null
+}
+
+/**
+ * Whether saving `form` over `ds` changes how tripl connects, so a fresh
+ * connection test is worth running afterwards (DATA-30). A rename or a timeout
+ * change is not a connection change.
+ */
+export function coreConnectionChanged(ds: DataSource, form: ConnectionCoreForm): boolean {
+  if (form.secret) return true
+  if (form.host !== ds.host || form.databaseName !== ds.database_name) return true
+  if (ds.db_type === 'bigquery') return false
+  return form.port !== ds.port || form.username !== ds.username
+}

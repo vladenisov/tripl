@@ -1,7 +1,16 @@
 import type { DbType, JsonPathDiscovery } from '@/types'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { FIELD_COL_CLASS, HELP_CLASS, SELECT_CLASS, TEXTAREA_CLASS } from './connection-settings'
+import { useId, useState, type ChangeEvent } from 'react'
+import {
+  ERROR_CLASS,
+  FIELD_COL_CLASS,
+  HELP_CLASS,
+  PASSWORD_INPUT_PROPS,
+  SECRET_INPUT_PROPS,
+  SELECT_CLASS,
+  TEXTAREA_CLASS,
+} from './connection-settings'
 import type { ConnectionCoreForm } from './connection-core'
 
 // ClickHouse JSON path discovery options (the preview step that enumerates
@@ -35,6 +44,8 @@ interface ConnectionCoreFieldsProps {
   mode: 'create' | 'edit'
   /** True when the source already stores a password / service-account key. */
   secretSet?: boolean
+  /** Why the typed secret cannot be saved (a malformed key file), shown inline. */
+  secretError?: string | null
 }
 
 /**
@@ -54,8 +65,10 @@ export function ConnectionCoreFields({
   onChange,
   mode,
   secretSet = false,
+  secretError = null,
 }: ConnectionCoreFieldsProps) {
   const isEdit = mode === 'edit'
+  const secretErrorId = useId()
   const secretName = dbType === 'bigquery' ? 'Service account key' : 'Password'
 
   // Three states, three different sentences.
@@ -89,7 +102,7 @@ export function ConnectionCoreFields({
     <>
       {dbType === 'bigquery' ? (
         <>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className={FIELD_COL_CLASS}>
               <Label htmlFor={`${idPrefix}-project-id`}>Project ID</Label>
               <Input
@@ -132,7 +145,19 @@ export function ConnectionCoreFields({
                   : '{"type":"service_account", ...}'
               }
               className={TEXTAREA_CLASS}
+              aria-invalid={secretError ? true : undefined}
+              aria-describedby={secretError ? secretErrorId : undefined}
+              {...SECRET_INPUT_PROPS}
             />
+            <KeyFileInput
+              id={`${idPrefix}-service-account-file`}
+              onLoad={(text) => onChange({ secret: text })}
+            />
+            {secretError && (
+              <p id={secretErrorId} role="alert" className={ERROR_CLASS}>
+                {secretError}
+              </p>
+            )}
             {secretStatus ?? (
               <p className={HELP_CLASS}>
                 The whole key file. Stored encrypted and never shown again.
@@ -142,8 +167,10 @@ export function ConnectionCoreFields({
         </>
       ) : (
         <>
-          <div className="grid grid-cols-5 gap-3">
-            <div className={`col-span-2 ${FIELD_COL_CLASS}`}>
+          {/* One column on phones: in a 375px dialog five columns left Port
+              about 50px wide (DATA-36). */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-5">
+            <div className={`sm:col-span-2 ${FIELD_COL_CLASS}`}>
               <Label htmlFor={`${idPrefix}-host`}>Host</Label>
               <Input
                 id={`${idPrefix}-host`}
@@ -163,7 +190,7 @@ export function ConnectionCoreFields({
                 required
               />
             </div>
-            <div className={`col-span-2 ${FIELD_COL_CLASS}`}>
+            <div className={`sm:col-span-2 ${FIELD_COL_CLASS}`}>
               <Label htmlFor={`${idPrefix}-database`}>Database</Label>
               <Input
                 id={`${idPrefix}-database`}
@@ -174,7 +201,7 @@ export function ConnectionCoreFields({
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className={FIELD_COL_CLASS}>
               <Label htmlFor={`${idPrefix}-username`}>Username</Label>
               <Input
@@ -182,6 +209,7 @@ export function ConnectionCoreFields({
                 value={value.username}
                 onChange={(e) => onChange({ username: e.target.value })}
                 placeholder="default"
+                {...SECRET_INPUT_PROPS}
               />
             </div>
             <div className={FIELD_COL_CLASS}>
@@ -192,6 +220,7 @@ export function ConnectionCoreFields({
                 value={value.secret}
                 onChange={(e) => onChange({ secret: e.target.value })}
                 placeholder={passwordPlaceholder}
+                {...PASSWORD_INPUT_PROPS}
               />
               {secretStatus}
             </div>
@@ -237,5 +266,49 @@ export function ConnectionCoreFields({
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * "Load key file": reads a downloaded service-account JSON into the field, so
+ * the key does not have to travel through the clipboard (DATA-29). The file
+ * never leaves the browser until the form is saved.
+ */
+function KeyFileInput({ id, onLoad }: { id: string; onLoad: (text: string) => void }) {
+  // A read can fail (the file was moved after it was picked, or a permission
+  // or IO error); that used to be an unhandled rejection with no feedback.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const errorId = `${id}-error`
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget
+    const file = input.files?.[0]
+    if (!file) return
+    setLoadError(null)
+    file.text().then(onLoad, () => setLoadError('Could not read that file. Pick it again.'))
+    // Let the same file be picked again after an edit of the textarea.
+    input.value = ''
+  }
+  return (
+    <div className="grid gap-1">
+      <div className="flex items-center gap-2">
+        <Label htmlFor={id} className="text-xs font-normal text-muted-foreground">
+          Or load the key file
+        </Label>
+        <input
+          id={id}
+          type="file"
+          accept="application/json,.json"
+          onChange={handleChange}
+          aria-invalid={loadError ? true : undefined}
+          aria-describedby={loadError ? errorId : undefined}
+          className="text-xs file:mr-2 file:rounded-md file:border file:border-input file:bg-background file:px-2 file:py-0.5 file:text-xs"
+        />
+      </div>
+      {loadError && (
+        <p id={errorId} role="alert" className={ERROR_CLASS}>
+          {loadError}
+        </p>
+      )}
+    </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { EventType } from '@/types'
 import { eventsApi } from '@/api/events'
@@ -10,7 +10,13 @@ import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
 import { ErrorState } from '@/components/error-state'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { branchEventsKey, bulkIdentitiesKey, eventTypesKey } from '@/lib/queryKeys'
+import {
+  branchEventIdentityProbesKey,
+  branchEventsKey,
+  eventIdentityLookupKey,
+  eventTypesKey,
+} from '@/lib/queryKeys'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { ChevronLeft, Loader2, Plus } from 'lucide-react'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard } from './eventFormLayout'
 import { nameFormatBaseColumns } from './utils'
@@ -22,15 +28,28 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 const EMPTY_EVENT_TYPES: EventType[] = []
 
 /**
- * How many existing events are read to decide whether a pasted name is free.
+ * How many distinct pasted names are checked against the catalog.
  *
- * An explicit limit, and the page says when it was not enough rather than
- * reporting a clean preview it could not have verified — a roster that silently
- * truncates is how the variables tab came to offer the first 200 events of a
- * larger project (tripl-46am). The server refuses a taken identity regardless,
- * so a miss here costs a rejected submit, not a duplicate.
+ * All of them in ONE exact-name lookup (`GET /events/by-names`), answered by
+ * the rule create refuses on (EVT-37). It used to read up to 5,000 full event
+ * rows on every type selection, and then one substring search per name. Past
+ * this many names the page says so rather than reporting a preview it could
+ * not have verified; the server refuses a taken identity regardless, so a miss
+ * here costs a rejected submit, not a duplicate. Below the route's own cap.
  */
-const IDENTITY_SCAN_LIMIT = 5000
+const IDENTITY_PROBE_LIMIT = 100
+
+/** What the lookup established about the probed names. */
+interface ProbeSummary {
+  /** Every probed identity an event already holds. */
+  taken: ReadonlySet<string>
+  /** Names the catalog was not really consulted about: the lookup failed. */
+  unchecked: ReadonlySet<string>
+  /** The lookup has not answered yet. */
+  pending: boolean
+}
+
+const EMPTY_NAMES: ReadonlySet<string> = new Set()
 
 const STATUS_LABEL: Record<BulkRow['status'], string> = {
   ready: 'will be created',
@@ -60,6 +79,7 @@ const STATUS_COLOR: Record<BulkRow['status'], string> = {
 export default function EventBulkForm() {
   const { slug, tab } = useParams<{ slug: string; tab?: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const branchId = useActiveBranchId()
   const qc = useQueryClient()
   // Creating events is an editor action; a viewer who lands here by URL is
@@ -76,8 +96,12 @@ export default function EventBulkForm() {
   // click to redo. A viewer's textarea is disabled, so theirs is never dirty.
   const unsaved = useUnsavedChangesGuard(canWrite && draft.trim() !== '')
 
+  // The query string comes along: it is the list's filters and the `?branch=`
+  // EventsPage carries into this page on purpose, and dropping it returned the
+  // reader to an unfiltered list on main (EVT-38).
   const goBack = () => {
-    navigate(!tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`)
+    const base = !tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`
+    navigate(`${base}${location.search}`)
   }
 
   const eventTypesQuery = useQuery({
@@ -116,24 +140,43 @@ export default function EventBulkForm() {
   // so the created event would carry the name and none of what built it.
   const unmappedColumns = namingColumns.filter(column => !fieldsByName.has(column))
 
-  const identityQuery = useQuery({
-    queryKey: bulkIdentitiesKey(slug, branchId, etId),
-    queryFn: () =>
-      eventsApi.list(slug!, { event_type_id: etId, limit: IDENTITY_SCAN_LIMIT }, branchId),
-    enabled: !!slug && !!etId && !unsupported,
-  })
-  const taken = useMemo(() => {
-    const identities = new Set<string>()
-    for (const item of identityQuery.data?.items ?? []) {
-      identities.add(item.source_name ?? item.name)
+  // The names the paste would create, before the catalog is consulted. Debounced
+  // so a paste typed line by line does not probe every half-written name.
+  const debouncedDraft = useDebouncedValue(draft, 350)
+  const candidateNames = useMemo(() => {
+    if (!etId || unsupported) return []
+    const names = new Set<string>()
+    for (const row of parseBulkDraft(debouncedDraft, { columns: namingColumns, nameFormat })) {
+      if (row.status === 'ready') names.add(row.name)
     }
-    return identities
-  }, [identityQuery.data])
-  const uncheckedCount = Math.max(
-    0,
-    (identityQuery.data?.total ?? 0) - (identityQuery.data?.items.length ?? 0),
-  )
+    return [...names]
+  }, [debouncedDraft, etId, unsupported, namingColumns, nameFormat])
+  const probedNames = useMemo(() => candidateNames.slice(0, IDENTITY_PROBE_LIMIT), [candidateNames])
+  const overLimitCount = candidateNames.length - probedNames.length
 
+  const identityQuery = useQuery({
+    queryKey: eventIdentityLookupKey(slug, branchId, etId, probedNames),
+    queryFn: ({ signal }) => eventsApi.byNames(slug!, etId, probedNames, branchId, signal),
+    enabled: !!slug && !!etId && probedNames.length > 0,
+    // Its failure is shown on the preview ("could not be checked"), not toasted.
+    meta: SILENT_ERROR_META,
+  })
+  const probes = useMemo<ProbeSummary>(() => {
+    if (probedNames.length === 0) return { taken: EMPTY_NAMES, unchecked: EMPTY_NAMES, pending: false }
+    // A failed lookup proves nothing; reading it as "not taken" would preview
+    // lines the server then refuses.
+    if (identityQuery.isError) {
+      return { taken: EMPTY_NAMES, unchecked: new Set(probedNames), pending: false }
+    }
+    if (!identityQuery.data) return { taken: EMPTY_NAMES, unchecked: EMPTY_NAMES, pending: true }
+    return {
+      taken: new Set(identityQuery.data.items.map(item => item.identity)),
+      unchecked: EMPTY_NAMES,
+      pending: false,
+    }
+  }, [probedNames, identityQuery.isError, identityQuery.data])
+
+  const taken = probes.taken
   const rows = useMemo(
     () =>
       etId && !unsupported
@@ -142,6 +185,11 @@ export default function EventBulkForm() {
     [draft, etId, unsupported, namingColumns, nameFormat, taken],
   )
   const ready = rows.filter(row => row.status === 'ready')
+  // Until the paste has settled and every probe has answered, "will be created"
+  // would be a guess: an empty `taken` set reads every line as free, and a
+  // Create pressed then sends a batch the server refuses whole (EVT-37).
+  const checking = rows.length > 0 && (draft !== debouncedDraft || probes.pending)
+  const uncheckedCount = overLimitCount + probes.unchecked.size
 
   const createMut = useMutation({
     meta: SILENT_ERROR_META,
@@ -165,6 +213,7 @@ export default function EventBulkForm() {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: branchEventsKey(slug, branchId) })
+      qc.invalidateQueries({ queryKey: branchEventIdentityProbesKey(slug, branchId) })
       unsaved.release()
       goBack()
     },
@@ -180,6 +229,14 @@ export default function EventBulkForm() {
         />
       </div>
     )
+  }
+
+  const rowVerdict = (row: BulkRow): string => {
+    if (row.status === 'incomplete') return `missing ${row.missing.join(', ')}`
+    if (row.status !== 'ready') return STATUS_LABEL[row.status]
+    if (checking) return 'checking…'
+    const probed = probedNames.includes(row.name)
+    return probed && !probes.unchecked.has(row.name) ? STATUS_LABEL.ready : 'will be created, not checked'
   }
 
   const columnHint = nameFormat
@@ -215,7 +272,6 @@ export default function EventBulkForm() {
               value={etId}
               onChange={setEtId}
               required
-              maxWidth={280}
             >
               <option value="">Select type…</option>
               {eventTypes.map(et => (
@@ -234,7 +290,6 @@ export default function EventBulkForm() {
               id="bulk-status"
               value={status}
               onChange={value => setStatus(value as EventStatus)}
-              maxWidth={240}
             >
               {EVENT_STATUSES.map(s => (
                 <option key={s} value={s}>{EVENT_STATUS_LABELS[s]}</option>
@@ -287,12 +342,11 @@ export default function EventBulkForm() {
               <SurfCard
                 title={`${ready.length} of ${rows.length} lines will be created`}
                 subtitle={
-                  uncheckedCount > 0
-                    ? // The count of ROWS READ, not of distinct identities — the set
-                      // dedupes, so reporting its size would understate what was
-                      // checked and read as a smaller sample than it was.
-                      `Checked against the first ${identityQuery.data?.items.length} of ${identityQuery.data?.total} existing events; the rest are checked by the server on submit.`
-                    : undefined
+                  checking
+                    ? 'Checking the names against the catalog…'
+                    : uncheckedCount > 0
+                      ? `${uncheckedCount === 1 ? '1 name' : `${uncheckedCount} names`} could not be checked against the catalog; the server checks ${uncheckedCount === 1 ? 'it' : 'them'} on submit.`
+                      : undefined
                 }
               >
                 <div className="max-h-[360px] overflow-auto">
@@ -332,9 +386,7 @@ export default function EventBulkForm() {
                             className="px-[18px] py-[6px]"
                             style={{ color: STATUS_COLOR[row.status] }}
                           >
-                            {row.status === 'incomplete'
-                              ? `missing ${row.missing.join(', ')}`
-                              : STATUS_LABEL[row.status]}
+                            {rowVerdict(row)}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -364,7 +416,7 @@ export default function EventBulkForm() {
           <button
             type="button"
             onClick={() => createMut.mutate()}
-            disabled={!canWrite || ready.length === 0 || createMut.isPending}
+            disabled={!canWrite || ready.length === 0 || checking || createMut.isPending}
             className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
             style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
           >

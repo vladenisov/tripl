@@ -13,6 +13,7 @@ import {
 } from '@/demo/scenarioModel'
 import { liveLoopState } from '@/demo/scenarioTestState'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { stopAllMetricCollectionWatches } from '@/hooks/useMetricCollectionWatcher'
 import MonitoringDetailPage from './MonitoringDetailPage'
 import { at } from '@/test/at'
 
@@ -233,6 +234,11 @@ function renderMonitoringPage(search = '') {
 }
 
 afterEach(() => {
+  // Collect watches are detached from the page, so one test's run must not
+  // keep polling into the next. Unmount first: stopping a watch notifies every
+  // mounted reader.
+  cleanup()
+  stopAllMetricCollectionWatches()
   vi.restoreAllMocks()
 })
 
@@ -751,6 +757,7 @@ describe('MonitoringDetailPage event detail', () => {
         })
       }
       if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/settings/photo-limits')) return mockJsonResponse({ photo_max_size_mb: 10 })
       if (url.endsWith('/api/v1/projects/demo/events/event-1')) return mockJsonResponse(eventFixture())
       if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
         return mockJsonResponse({ id: 'scan-1', app_version_column: null })
@@ -827,6 +834,7 @@ function installEventDetailFetch(
       })
     }
     if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
+    if (url.endsWith('/api/v1/settings/photo-limits')) return mockJsonResponse({ photo_max_size_mb: 10 })
     if (url.includes('/api/v1/projects/demo/events/event-1/implementation-tickets')) {
       return mockJsonResponse(opts.tickets ?? [])
     }

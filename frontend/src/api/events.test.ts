@@ -32,6 +32,18 @@ describe('eventsApi.list', () => {
     expect(url.searchParams.get('reviewed')).toBe('false')
     expect(url.searchParams.get('branch')).toBe('branch-1')
   })
+
+  it('passes the caller\'s abort signal to the request', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse({ items: [], total: 0 }))
+    const controller = new AbortController()
+
+    await eventsApi.list('demo', { search: 'signup' }, null, controller.signal)
+
+    const init = at(fetchSpy.mock.calls, 0)[1]
+    expect(init?.signal).toBe(controller.signal)
+  })
 })
 
 describe('eventListSearchParams', () => {

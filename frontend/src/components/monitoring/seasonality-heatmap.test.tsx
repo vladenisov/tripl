@@ -2,13 +2,13 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import type { SeasonalityCell, SeasonalityHeatmap } from '@/types/metrics'
 
 import { SeasonalityHeatmap as SeasonalityHeatmapComponent } from './seasonality-heatmap'
 
-vi.mock('@/api/metrics', () => ({
-  metricsApi: { getSeasonalityHeatmap: vi.fn() },
+vi.mock('@/api/eventMetrics', () => ({
+  eventMetricsApi: { getSeasonalityHeatmap: vi.fn() },
 }))
 
 function cell(
@@ -64,7 +64,7 @@ function renderHeatmap() {
 
 describe('SeasonalityHeatmap', () => {
   it('paints very different counts with visibly different fills', async () => {
-    vi.mocked(metricsApi.getSeasonalityHeatmap).mockResolvedValue(
+    vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
       heatmap([
         cell({ weekday: 0, hour: 0, count: 50 }),
         cell({ weekday: 3, hour: 14, count: 800 }),
@@ -87,7 +87,7 @@ describe('SeasonalityHeatmap', () => {
   })
 
   it('renders a legend showing the min and max slot volumes', async () => {
-    vi.mocked(metricsApi.getSeasonalityHeatmap).mockResolvedValue(
+    vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
       heatmap([
         cell({ weekday: 0, hour: 0, count: 50 }),
         cell({ weekday: 3, hour: 14, count: 800 }),
@@ -102,7 +102,7 @@ describe('SeasonalityHeatmap', () => {
   })
 
   it('says the ramp is a rank scale, not a linear count scale (tripl-jfm3.127)', async () => {
-    vi.mocked(metricsApi.getSeasonalityHeatmap).mockResolvedValue(
+    vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
       heatmap([
         cell({ weekday: 0, hour: 0, count: 50 }),
         cell({ weekday: 3, hour: 14, count: 800 }),
@@ -120,7 +120,7 @@ describe('SeasonalityHeatmap', () => {
   it('does not draw a grid a coarse interval can never fill (tripl-jfm3.128)', async () => {
     // A daily scan floors every bucket into hour 0, so 23 of each row's 24
     // cells are structurally empty and the grid reads as missing data.
-    vi.mocked(metricsApi.getSeasonalityHeatmap).mockResolvedValue(
+    vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
       heatmap([cell({ weekday: 0, hour: 0, count: 500 })], {
         interval: '1d',
         hourly_resolution: false,
@@ -135,7 +135,7 @@ describe('SeasonalityHeatmap', () => {
   })
 
   it('keys on the range length, not the live window that steps every few minutes (MON-3)', async () => {
-    const fetchHeatmap = vi.mocked(metricsApi.getSeasonalityHeatmap)
+    const fetchHeatmap = vi.mocked(eventMetricsApi.getSeasonalityHeatmap)
     fetchHeatmap.mockReset()
     fetchHeatmap.mockResolvedValue(heatmap([cell({ weekday: 0, hour: 0, count: 5 })]))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })

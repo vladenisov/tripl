@@ -4,15 +4,20 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Query
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.api.v1.events import bulk_event_audit_payload, event_create_audit_payload
 from tripl.models.domain_enums import ShadowEventStatus
+from tripl.models.user import User
 from tripl.schemas.reconciliation import (
     CoverageResponse,
     DeadEventListResponse,
     ShadowEventAcceptRequest,
     ShadowEventAcceptResponse,
+    ShadowEventBatchRequest,
+    ShadowEventBatchResponse,
     ShadowEventDismissResponse,
     ShadowEventListResponse,
 )
@@ -20,6 +25,8 @@ from tripl.services import audit_service, reconciliation_service
 from tripl.services.reconciliation_service import (
     DeadEventArchiveRequest,
     DeadEventArchiveResponse,
+    ShadowEventAcceptResult,
+    ShadowEventDismissResult,
 )
 
 router = APIRouter(prefix="/projects/{slug}/reconciliation", tags=["reconciliation"])
@@ -31,35 +38,22 @@ async def list_shadow_events(
     slug: str,
     status: Annotated[ShadowEventStatus | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    # True paging for the inbox (DATA-39); rows are ordered busiest first, ties
+    # by id, so consecutive pages neither repeat nor skip a row.
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ShadowEventListResponse:
     return await reconciliation_service.list_shadow_events(
         session,
         slug,
         status=status,
         limit=limit,
+        offset=offset,
     )
 
 
-@router.post(
-    "/shadow-events/{candidate_id}/accept",
-    response_model=ShadowEventAcceptResponse,
-)
-async def accept_shadow_event(
-    session: SessionDep,
-    slug: str,
-    candidate_id: uuid.UUID,
-    payload: ShadowEventAcceptRequest,
-    branch_id: BranchIdDep,
-    current_user: EditorUserDep,
-) -> ShadowEventAcceptResponse:
-    result = await reconciliation_service.accept_shadow_event(
-        session,
-        slug,
-        candidate_id,
-        payload,
-        user_id=current_user.id,
-        branch_id=branch_id,
-    )
+async def _audit_accept(
+    session: AsyncSession, current_user: User, slug: str, result: ShadowEventAcceptResult
+) -> None:
     candidate = result.candidate
     # Filed as ``event.create`` — the action POST /events files — because that is
     # what happened: a catalog event now exists, on this branch, because a person
@@ -100,25 +94,11 @@ async def accept_shadow_event(
             },
         ),
     )
-    return result.response
 
 
-@router.post(
-    "/shadow-events/{candidate_id}/dismiss",
-    response_model=ShadowEventDismissResponse,
-)
-async def dismiss_shadow_event(
-    session: SessionDep,
-    slug: str,
-    candidate_id: uuid.UUID,
-    current_user: EditorUserDep,
-) -> ShadowEventDismissResponse:
-    result = await reconciliation_service.dismiss_shadow_event(
-        session,
-        slug,
-        candidate_id,
-        user_id=current_user.id,
-    )
+async def _audit_dismiss(
+    session: AsyncSession, current_user: User, slug: str, result: ShadowEventDismissResult
+) -> None:
     candidate = result.candidate
     # Its own action, because nothing was created: this records a judgement that
     # observed traffic does not belong in the plan, and it is terminal through the
@@ -160,7 +140,93 @@ async def dismiss_shadow_event(
             "event_type_id": candidate.event_type_id,
         },
     )
+
+
+@router.post(
+    "/shadow-events/{candidate_id}/accept",
+    response_model=ShadowEventAcceptResponse,
+)
+async def accept_shadow_event(
+    session: SessionDep,
+    slug: str,
+    candidate_id: uuid.UUID,
+    payload: ShadowEventAcceptRequest,
+    branch_id: BranchIdDep,
+    current_user: EditorUserDep,
+) -> ShadowEventAcceptResponse:
+    result = await reconciliation_service.accept_shadow_event(
+        session,
+        slug,
+        candidate_id,
+        payload,
+        user_id=current_user.id,
+        branch_id=branch_id,
+    )
+    await _audit_accept(session, current_user, slug, result)
     return result.response
+
+
+@router.post(
+    "/shadow-events/{candidate_id}/dismiss",
+    response_model=ShadowEventDismissResponse,
+)
+async def dismiss_shadow_event(
+    session: SessionDep,
+    slug: str,
+    candidate_id: uuid.UUID,
+    current_user: EditorUserDep,
+) -> ShadowEventDismissResponse:
+    result = await reconciliation_service.dismiss_shadow_event(
+        session,
+        slug,
+        candidate_id,
+        user_id=current_user.id,
+    )
+    await _audit_dismiss(session, current_user, slug, result)
+    return result.response
+
+
+@router.post("/shadow-events/batch", response_model=ShadowEventBatchResponse)
+async def batch_shadow_events(
+    session: SessionDep,
+    slug: str,
+    payload: ShadowEventBatchRequest,
+    branch_id: BranchIdDep,
+    current_user: EditorUserDep,
+) -> ShadowEventBatchResponse:
+    """Accept or dismiss many inbox rows in one request (DATA-39).
+
+    Each row is handled and audited exactly as its single route would, and a
+    refused row is reported in ``results`` without stopping the rest.
+    """
+
+    # A refused row rolls the session back, which expires every loaded object,
+    # the signed-in user included; the audit row reads it, so it is re-read
+    # first rather than lazy-loaded from async code.
+    async def audit_user() -> User:
+        if sa_inspect(current_user).expired_attributes:
+            await session.refresh(current_user)
+        return current_user
+
+    async def on_accepted(result: ShadowEventAcceptResult) -> None:
+        await _audit_accept(session, await audit_user(), slug, result)
+
+    async def on_dismissed(result: ShadowEventDismissResult) -> None:
+        await _audit_dismiss(session, await audit_user(), slug, result)
+
+    results = await reconciliation_service.batch_shadow_events(
+        session,
+        slug,
+        payload,
+        user_id=current_user.id,
+        branch_id=branch_id,
+        on_accepted=on_accepted,
+        on_dismissed=on_dismissed,
+    )
+    succeeded = sum(1 for row in results if row.ok)
+    return ShadowEventBatchResponse(
+        results=results, succeeded=succeeded, failed=len(results) - succeeded
+    )
 
 
 @router.get("/dead-events", response_model=DeadEventListResponse)

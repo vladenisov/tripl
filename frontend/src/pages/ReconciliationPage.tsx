@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Calendar, Inbox, Info } from 'lucide-react'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Inbox, Info } from 'lucide-react'
 import {
+  MAX_SHADOW_BATCH,
   reconciliationApi,
   type CoverageBucket,
   type CoverageSummary,
@@ -21,6 +22,7 @@ import { EventName } from '@/components/event-name'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { useConfirm } from '@/hooks/useConfirm'
 import { DEAD_EVENT_DAYS } from '@/lib/coverage'
 import { formatRelativeTime } from '@/lib/datetime'
 import { eventNameLabel } from '@/lib/eventName'
@@ -31,10 +33,12 @@ import {
   deadEventsKey,
   eventTypesKey,
   projectDeadEventsKey,
+  projectEventTypesKey,
   projectEventsKey,
+  projectKey,
   projectShadowEventsKey,
   reconciliationCoverageKey,
-  shadowEventsKey,
+  shadowEventsPagesKey,
 } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
@@ -51,6 +55,20 @@ const COVERAGE_DAYS = 14 as const
 // the window, so the page never leaves the look-back implicit.
 const DEAD_DAYS = DEAD_EVENT_DAYS
 const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed']
+// The inbox reads one page at a time, and "Show more" asks for the next one by
+// offset (DATA-39), so every row of a large inbox is reachable.
+const SHADOW_PAGE_SIZE = 100
+// Dead events arrive as one unpaginated list. Rendering every row (each with a
+// Radix checkbox) froze large plans, so the panel shows them a page at a time
+// (DATA-47).
+const DEAD_PAGE_SIZE = 200
+
+type BulkAction = 'accept' | 'dismiss'
+interface BulkProgress {
+  action: BulkAction
+  done: number
+  total: number
+}
 
 // One-line clarifier for the headline number. It reads as "coverage" but is a
 // different measure than the Coverage page's plan-coverage KPI, so spell out the
@@ -99,6 +117,24 @@ function bucketPct(bucket: CoverageBucket): number {
   return Math.min(100, (bucket.matched_count / bucket.total_count) * 100)
 }
 
+/**
+ * A day's match as a whole percent for labels. Like the headline, 100 is kept
+ * for a day where every occurrence matched; an imperfect day never rounds up
+ * to it.
+ */
+function bucketLabelPct(bucket: CoverageBucket): number {
+  if (bucket.total_count > 0 && bucket.matched_count >= bucket.total_count) return 100
+  return Math.min(Math.round(bucketPct(bucket)), 99)
+}
+
+function hasBucketData(bucket: CoverageBucket): boolean {
+  return bucket.total_count > 0
+}
+
+function pluralize(count: number, noun: string): string {
+  return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`
+}
+
 export default function ReconciliationPage() {
   const { slug } = useParams<{ slug: string }>()
   const branchId = useActiveBranchId()
@@ -108,12 +144,27 @@ export default function ReconciliationPage() {
   // reconciliation without the checkboxes and buttons that only answer 403.
   const canWrite = useCanWriteProject()
 
+  // Dead events are computed on the main branch only (the endpoint takes no
+  // `?branch`), so on a feature branch archiving them would write straight to
+  // main from a view that reads as branch-scoped. The panel says so and does
+  // not offer the action there (DATA-42).
+  const onFeatureBranch = branchId != null
+  const canArchive = canWrite && !onFeatureBranch
+  const { confirm, dialog } = useConfirm()
+
   const [shadowStatus, setShadowStatus] = useState<ShadowEventStatus>('new')
+  const [selectedShadow, setSelectedShadow] = useState<ReadonlySet<string>>(() => new Set())
+  const [bulkProgress, setBulkProgress] = useState<BulkProgress | null>(null)
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null)
   const [acceptingId, setAcceptingId] = useState<string | null>(null)
   const [selectedEventType, setSelectedEventType] = useState<Record<string, string>>({})
   const [rowError, setRowError] = useState<Record<string, string>>({})
-  const [selectedDead, setSelectedDead] = useState<string[]>([])
+  // A Set, not an array: select-all used `includes` over arrays, O(n²) on a
+  // large plan (DATA-47).
+  const [selectedDead, setSelectedDead] = useState<ReadonlySet<string>>(() => new Set())
+  const [deadShown, setDeadShown] = useState(DEAD_PAGE_SIZE)
   const [deadError, setDeadError] = useState<string | null>(null)
+  const [archiveNotice, setArchiveNotice] = useState<string | null>(null)
 
   const coverageQuery = useQuery({
     queryKey: reconciliationCoverageKey(slug, COVERAGE_DAYS),
@@ -121,10 +172,19 @@ export default function ReconciliationPage() {
     enabled: !!slug,
   })
 
-  const shadowQuery = useQuery({
-    queryKey: shadowEventsKey(slug, branchId, shadowStatus),
-    queryFn: () =>
-      reconciliationApi.shadowEvents(slug!, { status: shadowStatus, limit: 100 }, branchId),
+  const shadowQuery = useInfiniteQuery({
+    queryKey: shadowEventsPagesKey(slug, branchId, shadowStatus),
+    queryFn: ({ pageParam }) =>
+      reconciliationApi.shadowEvents(
+        slug!,
+        { status: shadowStatus, limit: SHADOW_PAGE_SIZE, offset: pageParam },
+        branchId,
+      ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, pages) => {
+      const loaded = pages.reduce((sum, page) => sum + page.items.length, 0)
+      return lastPage.items.length > 0 && loaded < lastPage.total ? loaded : undefined
+    },
     enabled: !!slug,
   })
 
@@ -141,10 +201,24 @@ export default function ReconciliationPage() {
     staleTime: 60_000,
   })
 
-  const invalidateShadow = () => {
-    void qc.invalidateQueries({ queryKey: projectShadowEventsKey(slug) })
+  // Everything a reconciliation write can change outside its own list
+  // (DATA-41). Accept adds a planned event and archive retires some, so the
+  // project summary behind Coverage's counts, the event and event-type lists,
+  // the data match and the dead list all move; before this they sat stale for
+  // up to a minute and Coverage contradicted the action just taken.
+  const invalidatePlan = () => {
+    void qc.invalidateQueries({ queryKey: projectKey(slug) })
     void qc.invalidateQueries({ queryKey: branchEventsKey(slug, branchId) })
     void qc.invalidateQueries({ queryKey: projectEventsKey(slug) })
+    void qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
+    void qc.invalidateQueries({ queryKey: reconciliationCoverageKey(slug, COVERAGE_DAYS) })
+    void qc.invalidateQueries({ queryKey: projectDeadEventsKey(slug) })
+  }
+
+  // Dismiss only flips a candidate's status, so it refreshes the inbox alone;
+  // accept also adds a planned event and refreshes the plan as well.
+  const invalidateShadow = () => {
+    void qc.invalidateQueries({ queryKey: projectShadowEventsKey(slug) })
   }
 
   const clearRowError = (id: string) =>
@@ -167,6 +241,7 @@ export default function ReconciliationPage() {
     onSuccess: (_data, { id }) => {
       clearRowError(id)
       invalidateShadow()
+      invalidatePlan()
       // Accepting a shadow event lands the reconcile chapter's step — inert
       // outside the demo scenario (the reducer drops every other step).
       notifyStepCompleted('reconcile/accept-shadow')
@@ -191,14 +266,16 @@ export default function ReconciliationPage() {
 
   // Dead-events list is resolved on the default branch (the deadEvents query
   // sends no `?branch`), so archive must target the same branch to keep the
-  // selected ids valid — otherwise the atomic endpoint 404s. Intentionally no
-  // branchId here; revisit if dead-events ever becomes branch-aware.
+  // selected ids valid — otherwise the atomic endpoint 404s. It is therefore
+  // only offered on main (`canArchive`); revisit if dead-events ever becomes
+  // branch-aware.
   const archiveMutation = useMutation({
     mutationFn: (eventIds: string[]) => reconciliationApi.archiveDeadEvents(slug!, eventIds),
-    onSuccess: () => {
-      setSelectedDead([])
+    onSuccess: (result) => {
+      setSelectedDead(new Set())
       setDeadError(null)
-      void qc.invalidateQueries({ queryKey: projectDeadEventsKey(slug) })
+      setArchiveNotice(`${pluralize(result.archived_count, 'event')} archived.`)
+      invalidatePlan()
     },
     onError: (err: unknown) => {
       setDeadError(err instanceof Error ? err.message : 'Archive failed')
@@ -217,24 +294,152 @@ export default function ReconciliationPage() {
   }
 
   const coverage = coverageQuery.data
-  const shadow = shadowQuery.data
+  // The pages read as one list. Counts come from the newest page, which is the
+  // most recent answer to "how many are there".
+  const shadowPages = shadowQuery.data?.pages
+  const lastShadowPage = shadowPages?.[shadowPages.length - 1]
+  const shadow = shadowPages && lastShadowPage
+    ? {
+        items: shadowPages.flatMap((page) => page.items),
+        total: lastShadowPage.total,
+        new_count: lastShadowPage.new_count,
+      }
+    : undefined
   const dead = deadQuery.data
   const eventTypes = eventTypesQuery.data ?? []
   const shadowHasItems = (shadow?.items.length ?? 0) > 0
   const shadowIsEmpty = !!shadow && shadow.items.length === 0 && !shadowQuery.isError
 
+  // Bulk triage (DATA-39) works on the "new" rows on screen. The selection is
+  // read through the current rows, so an id that a refetch dropped is never
+  // acted on.
+  const shadowSelectable = canWrite && shadowStatus === 'new'
+  const newShadowItems = (shadow?.items ?? []).filter((item) => item.status === 'new')
+  const selectedShadowItems = newShadowItems.filter((item) => selectedShadow.has(item.id))
+  // Accept needs an event type; an untyped row is accepted on its own, where
+  // the type picker is.
+  const acceptableShadowItems = selectedShadowItems.filter((item) => !!item.event_type_id)
+  const allShadowSelected =
+    newShadowItems.length > 0 && newShadowItems.every((item) => selectedShadow.has(item.id))
+  const bulkRunning = bulkProgress !== null
+
+  const toggleShadowSelection = (id: string) =>
+    setSelectedShadow((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const selectShadowTab = (tab: ShadowEventStatus) => {
+    setShadowStatus(tab)
+    setSelectedShadow(new Set())
+    setBulkNotice(null)
+  }
+
+  // One batch request per MAX_SHADOW_BATCH rows (DATA-39). The server handles
+  // each row on its own, so one refused row does not sink the rest; each
+  // refusal lands on its own row, in the server's words.
+  const runBulk = async (action: BulkAction, items: ShadowEvent[]) => {
+    if (!slug || items.length === 0) return
+    setBulkNotice(null)
+    setAcceptingId(null)
+    let succeeded = 0
+    setBulkProgress({ action, done: 0, total: items.length })
+    const fallback = action === 'accept' ? 'Accept failed' : 'Dismiss failed'
+    for (let start = 0; start < items.length; start += MAX_SHADOW_BATCH) {
+      const chunk = items.slice(start, start + MAX_SHADOW_BATCH)
+      try {
+        const response = await reconciliationApi.batchShadowEvents(
+          slug,
+          {
+            action,
+            items: chunk.map((item) =>
+              action === 'accept'
+                ? { candidate_id: item.id, event_type_id: item.event_type_id ?? undefined }
+                : { candidate_id: item.id },
+            ),
+          },
+          branchId,
+        )
+        for (const result of response.results) {
+          if (result.ok) {
+            succeeded += 1
+            clearRowError(result.candidate_id)
+          } else {
+            const msg = result.error ?? fallback
+            setRowError((prev) => ({ ...prev, [result.candidate_id]: msg }))
+          }
+        }
+      } catch (err) {
+        // The request itself failed: nothing in this chunk is known to have
+        // happened, so every row of it says so.
+        const msg = err instanceof Error ? err.message : fallback
+        setRowError((prev) => {
+          const next = { ...prev }
+          for (const item of chunk) next[item.id] = msg
+          return next
+        })
+      }
+      setBulkProgress({ action, done: Math.min(start + chunk.length, items.length), total: items.length })
+    }
+    setBulkProgress(null)
+    setSelectedShadow(new Set())
+    // Same demo-scenario step a single accept lands; inert outside the demo.
+    if (action === 'accept' && succeeded > 0) notifyStepCompleted('reconcile/accept-shadow')
+    const verb = action === 'accept' ? 'accepted' : 'dismissed'
+    const failed = items.length - succeeded
+    setBulkNotice(
+      `${pluralize(succeeded, 'event')} ${verb}.${failed > 0 ? ` ${failed.toLocaleString()} failed; see the rows below.` : ''}`,
+    )
+    invalidateShadow()
+    if (action === 'accept') invalidatePlan()
+  }
+
   const deadItems = dead?.items ?? []
-  const allDeadIds = deadItems.map((item) => item.event_id)
-  const allDeadSelected = allDeadIds.length > 0 && allDeadIds.every((id) => selectedDead.includes(id))
-  const hasDeadSelection = selectedDead.length > 0
+  const shownDeadItems = deadItems.slice(0, deadShown)
+  const shownDeadIds = shownDeadItems.map((item) => item.event_id)
+  // Read the selection through the current list: an id that dropped out of a
+  // refetch used to stay selected, and the atomic archive endpoint then 404ed
+  // the whole batch (DATA-47).
+  const selectedDeadIds = deadItems
+    .map((item) => item.event_id)
+    .filter((id) => selectedDead.has(id))
+  const allDeadSelected =
+    shownDeadIds.length > 0 && shownDeadIds.every((id) => selectedDead.has(id))
+  const hasDeadSelection = selectedDeadIds.length > 0
+  const hiddenDeadCount = deadItems.length - shownDeadItems.length
 
   const toggleDeadSelection = (id: string) =>
-    setSelectedDead((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+    setSelectedDead((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
 
-  const toggleSelectAllDead = (checked: boolean) => setSelectedDead(checked ? allDeadIds : [])
+  const toggleSelectAllDead = (checked: boolean) =>
+    setSelectedDead(checked ? new Set(shownDeadIds) : new Set())
+
+  // Archive asks first and reports what it did (DATA-40): select-all plus one
+  // click used to retire the whole list silently.
+  const handleArchive = async () => {
+    const ids = selectedDeadIds
+    if (ids.length === 0) return
+    const ok = await confirm({
+      title: 'Archive dead events',
+      message: `Archive ${pluralize(ids.length, 'planned event')}? Archived events leave the active plan and stop counting towards Coverage.`,
+      confirmLabel: 'Archive',
+      variant: 'danger',
+    })
+    if (!ok) return
+    setArchiveNotice(null)
+    archiveMutation.mutate(ids)
+  }
 
   return (
     <div className="min-w-0 space-y-[18px] pb-12">
+      {dialog}
       {/* Header */}
       <div className="flex items-end justify-between gap-4">
         <div>
@@ -249,22 +454,18 @@ export default function ReconciliationPage() {
             Compare what your plan defines against what your data sources actually send.
           </p>
         </div>
-        {/* Scoped to the panels it actually describes. Dead events runs on the
-            shared DEAD_EVENT_DAYS window so it agrees with Coverage's gap count
-            (tripl-jfm3.79), so a bare page-level "Last 14 days" would now
-            misdescribe one of the three panels; that panel names its own window
-            in its subtitle. */}
-        <Button variant="outline" size="sm" disabled>
-          <Calendar className="h-3 w-3" />
-          Data match: last {COVERAGE_DAYS} days
-        </Button>
       </div>
 
       {!canWrite && <ReadOnlyNotice />}
 
       {/* Data match — share of planned events actually seen in data (distinct from plan coverage) */}
+      {/* The window is a static label on the panel it describes, not a disabled
+          button that read as a greyed-out date picker (DATA-44). Dead events
+          runs on the shared DEAD_EVENT_DAYS window and names it itself, so a
+          page-level "Last 14 days" would misdescribe that panel. */}
       <Panel
         title="Data match"
+        right={<Chip size="xs">Last {COVERAGE_DAYS} days</Chip>}
         subtitle={
           coverage
             ? `${coverage.summary.matched_count.toLocaleString()} of ${coverage.summary.total_count.toLocaleString()} tracked event occurrences matched a planned event · ${coverage.days}d`
@@ -333,14 +534,27 @@ export default function ReconciliationPage() {
                   key={tab}
                   type="button"
                   aria-pressed={shadowStatus === tab}
-                  onClick={() => setShadowStatus(tab)}
-                  className="rounded-[5px] px-[9px] py-[3px] text-[11px] font-medium capitalize transition-colors"
+                  // Switching tabs mid-run would clear the selection and land
+                  // the run's result notice in the other tab's panel.
+                  disabled={bulkRunning}
+                  onClick={() => selectShadowTab(tab)}
+                  className="rounded-[5px] px-[9px] py-[3px] text-[11px] font-medium capitalize transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                   style={{
                     background: shadowStatus === tab ? 'var(--surface-active)' : 'transparent',
                     color: shadowStatus === tab ? 'var(--fg)' : 'var(--fg-subtle)',
                   }}
                 >
                   {tab}
+                  {/* The space sits outside the span: inside it, the
+                      accessible name collapsed to "new250". */}
+                  {tab === 'new' && shadow && shadow.new_count > 0 && (
+                    <>
+                      {' '}
+                      <span className="mono tnum" style={{ color: 'var(--fg-subtle)' }}>
+                        {shadow.new_count.toLocaleString()}
+                      </span>
+                    </>
+                  )}
                 </button>
               ))}
             </div>
@@ -383,8 +597,60 @@ export default function ReconciliationPage() {
                 No {shadowStatus} events.
               </div>
             ))}
+          {shadowSelectable && newShadowItems.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2.5 px-4 py-2">
+              <Checkbox
+                checked={allShadowSelected}
+                onCheckedChange={(value) =>
+                  setSelectedShadow(
+                    value === true ? new Set(newShadowItems.map((item) => item.id)) : new Set(),
+                  )
+                }
+                disabled={bulkRunning}
+                aria-label="Select all new shadow events"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={bulkRunning || acceptableShadowItems.length === 0}
+                onClick={() => {
+                  void runBulk('accept', acceptableShadowItems)
+                }}
+                title="Accept the selected events that already have an event type"
+              >
+                {acceptableShadowItems.length > 0
+                  ? `Accept ${acceptableShadowItems.length} selected`
+                  : 'Accept selected'}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={bulkRunning || selectedShadowItems.length === 0}
+                onClick={() => {
+                  void runBulk('dismiss', selectedShadowItems)
+                }}
+              >
+                {selectedShadowItems.length > 0
+                  ? `Dismiss ${selectedShadowItems.length} selected`
+                  : 'Dismiss selected'}
+              </Button>
+              {selectedShadowItems.length > acceptableShadowItems.length && !bulkRunning && (
+                <span className="text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                  Rows without an event type are accepted one at a time.
+                </span>
+              )}
+            </div>
+          )}
+          {(bulkProgress || bulkNotice) && (
+            <div role="status" className="px-4 pb-2 text-[11px]" style={{ color: 'var(--fg-muted)' }}>
+              {bulkProgress
+                ? `${bulkProgress.action === 'accept' ? 'Accepting' : 'Dismissing'} ${bulkProgress.done} of ${bulkProgress.total}…`
+                : bulkNotice}
+            </div>
+          )}
           {shadow?.items.map((item) => {
             const isActing =
+              bulkRunning ||
               (acceptMutation.isPending && acceptMutation.variables?.id === item.id) ||
               (dismissMutation.isPending && dismissMutation.variables === item.id)
             const needsEventTypeSelect = acceptingId === item.id && !item.event_type_name
@@ -413,9 +679,42 @@ export default function ReconciliationPage() {
                 }}
                 onCancel={() => setAcceptingId(null)}
                 confirmDisabled={!selectedEventType[item.id] || acceptMutation.isPending}
+                selected={selectedShadow.has(item.id)}
+                // The checkbox stays mounted but disabled during a bulk run, so
+                // the rows do not shift sideways while it runs.
+                selectDisabled={bulkRunning}
+                onToggleSelect={
+                  shadowSelectable && item.status === 'new'
+                    ? () => toggleShadowSelection(item.id)
+                    : undefined
+                }
               />
             )
           })}
+          {/* The inbox is paged; it used to stop at 100 rows without saying so,
+              and then at 500 with no way past them (DATA-39). */}
+          {shadow && shadow.total > shadow.items.length && (
+            <div
+              className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-[11px]"
+              style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-subtle)' }}
+            >
+              <span>
+                Showing {shadow.items.length.toLocaleString()} of {shadow.total.toLocaleString()}
+              </span>
+              {shadowQuery.hasNextPage && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={bulkRunning || shadowQuery.isFetching}
+                  onClick={() => {
+                    void shadowQuery.fetchNextPage()
+                  }}
+                >
+                  {shadowQuery.isFetchingNextPage ? 'Loading…' : 'Show more'}
+                </Button>
+              )}
+            </div>
+          )}
         </Panel>
 
         {/* Dead events */}
@@ -426,20 +725,24 @@ export default function ReconciliationPage() {
           // made two adjacent surfaces look like they disagreed about the same
           // question (tripl-jfm3.23). Both now compute over DEAD_EVENT_DAYS, so
           // this subtitle and Coverage's report the same number.
-          subtitle={`Implemented events with no data in the last ${DEAD_DAYS} days`}
+          subtitle={`Implemented events with no data in the last ${DEAD_DAYS} days${
+            onFeatureBranch ? ' · main branch' : ''
+          }`}
           right={
-            canWrite && deadItems.length > 0 ? (
+            canArchive && deadItems.length > 0 ? (
               <Button
                 variant="outline"
                 size="sm"
                 disabled={!hasDeadSelection || archiveMutation.isPending}
-                onClick={() => archiveMutation.mutate(selectedDead)}
+                onClick={() => {
+                  void handleArchive()
+                }}
                 title="Archive the selected planned events"
               >
                 {archiveMutation.isPending
                   ? 'Archiving…'
                   : hasDeadSelection
-                    ? `Archive ${selectedDead.length} selected`
+                    ? `Archive ${selectedDeadIds.length} selected`
                     : 'Archive selected'}
               </Button>
             ) : undefined
@@ -447,7 +750,7 @@ export default function ReconciliationPage() {
         >
           {deadItems.length > 0 && (
             <div className="flex items-center gap-2.5 px-4 py-2">
-              {canWrite && (
+              {canArchive && (
                 <Checkbox
                   checked={allDeadSelected}
                   onCheckedChange={(value) => toggleSelectAllDead(value === true)}
@@ -457,6 +760,17 @@ export default function ReconciliationPage() {
               <span className="text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
                 Planned events not seen in your data recently — often expected.
               </span>
+            </div>
+          )}
+          {canWrite && onFeatureBranch && deadItems.length > 0 && (
+            <div className="px-4 pb-2 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              Dead events are checked on the main branch, and archiving them changes main. Switch
+              to main to archive them.
+            </div>
+          )}
+          {archiveNotice && (
+            <div role="status" className="px-4 pb-2 text-[11px]" style={{ color: 'var(--fg-muted)' }}>
+              {archiveNotice}
             </div>
           )}
           {deadError && (
@@ -491,15 +805,33 @@ export default function ReconciliationPage() {
               No dead events in the last {dead.days} days.
             </div>
           )}
-          {dead?.items.map((item) => (
+          {shownDeadItems.map((item) => (
             <DeadRow
               key={item.event_id}
               item={item}
               slug={slug}
-              selected={selectedDead.includes(item.event_id)}
-              onToggle={canWrite ? toggleDeadSelection : undefined}
+              selected={selectedDead.has(item.event_id)}
+              onToggle={canArchive ? toggleDeadSelection : undefined}
             />
           ))}
+          {hiddenDeadCount > 0 && (
+            <div
+              className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-[11px]"
+              style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-subtle)' }}
+            >
+              <span>
+                Showing {shownDeadItems.length.toLocaleString()} of{' '}
+                {deadItems.length.toLocaleString()}
+              </span>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => setDeadShown((shown) => shown + DEAD_PAGE_SIZE)}
+              >
+                Show {Math.min(hiddenDeadCount, DEAD_PAGE_SIZE).toLocaleString()} more
+              </Button>
+            </div>
+          )}
         </Panel>
       </div>
     </div>
@@ -547,14 +879,37 @@ function Panel({
   )
 }
 
-// Coverage is "steady" when every bucket rounds to the same whole-percent —
-// the per-day histogram then carries no signal worth its visual weight.
+// Coverage is "steady" when every day has data and rounds to the same
+// whole percent — the per-day histogram then carries no signal worth its
+// visual weight. A day without data is never steady: the gap is the signal.
 function hasCoverageVariation(items: CoverageBucket[]): boolean {
   const [head] = items
   if (items.length < 2 || !head) return false
-  const first = Math.round(bucketPct(head))
-  return items.some((bucket) => Math.round(bucketPct(bucket)) !== first)
+  const first = bucketLabelPct(head)
+  return items.some((bucket) => !hasBucketData(bucket) || bucketLabelPct(bucket) !== first)
 }
+
+/** Spoken summary of the histogram: the range, the latest day, and the gaps. */
+function describeDataMatch(items: CoverageBucket[]): string {
+  const withData = items.filter(hasBucketData)
+  const parts = [`Data match per day over ${pluralize(items.length, 'day')}`]
+  const latest = withData[withData.length - 1]
+  if (latest) {
+    const pcts = withData.map(bucketLabelPct)
+    parts.push(
+      `lowest ${Math.min(...pcts)}%`,
+      `highest ${Math.max(...pcts)}%`,
+      `latest ${bucketLabelPct(latest)}% on ${latest.bucket}`,
+    )
+  }
+  const noData = items.length - withData.length
+  if (noData > 0) parts.push(`${pluralize(noData, 'day')} without data`)
+  return parts.join('; ')
+}
+
+// Faint reference lines on the fixed 0–100% scale, so a bar's height reads as
+// a value rather than only relative to its neighbours (LIVE-28).
+const GRIDLINES_PCT = [100, 50] as const
 
 function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number }) {
   const [head] = items
@@ -565,32 +920,58 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
       </div>
     )
   }
-  const steadyPct = Math.round(bucketPct(head))
-  const isSteady = !hasCoverageVariation(items)
-  return (
-    <div className="flex-1">
-      {isSteady ? (
-        // Constant coverage carries no per-day signal — a thin steady line keeps
-        // the panel calm and lets the big number do the talking.
+  if (!hasCoverageVariation(items) && hasBucketData(head)) {
+    // Constant coverage carries no per-day signal. A flat line across most of
+    // the card said nothing without a scale (LIVE-28), so say it in words.
+    const steadyPct = bucketLabelPct(head)
+    return (
+      <div className="flex flex-1 items-center">
         <div
-          className="flex h-14 items-center"
           role="img"
           aria-label={`Data match steady at ${steadyPct}% across the window`}
-          title={`Steady at ${steadyPct}% across the window`}
+          className="inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11.5px]"
+          style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-muted)' }}
         >
-          <div
-            className="h-[2px] w-full rounded-full"
-            style={{ background: coverageColor(bucketPct(head)), opacity: 0.85 }}
-          />
+          <Dot tone={coverageTone(steadyPct)} size={6} />
+          Stable: {steadyPct}% on each of the last {pluralize(items.length, 'day')}
         </div>
-      ) : (
-        <div className="flex h-14 items-end gap-0.5">
+      </div>
+    )
+  }
+  return (
+    <div className="flex-1">
+      {/* role="img" with a spoken summary; the per-day values are in the
+          visually hidden table below. The bars' `title`s cannot be reached by
+          touch, keyboard or a screen reader, and their colour alone carried
+          the tone (DATA-43). */}
+      <div className="relative h-14" role="img" aria-label={describeDataMatch(items)}>
+        {GRIDLINES_PCT.map((line) => (
+          <div
+            key={line}
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 border-t border-dashed"
+            style={{ bottom: `${line}%`, borderColor: 'var(--border-subtle)' }}
+          />
+        ))}
+        <div className="relative flex h-full items-end gap-0.5">
           {items.map((bucket) => {
+            if (!hasBucketData(bucket)) {
+              // No occurrences is not "0% matched": a neutral dashed outline,
+              // not the 2%-high danger-red bar it used to be.
+              return (
+                <div
+                  key={bucket.bucket}
+                  title={`${bucket.bucket}: no data`}
+                  className="h-full flex-1 rounded-[2px] border border-dashed"
+                  style={{ borderColor: 'var(--border)' }}
+                />
+              )
+            }
             const pct = bucketPct(bucket)
             return (
               <div
                 key={bucket.bucket}
-                title={`${bucket.bucket}: ${pct.toFixed(0)}%`}
+                title={`${bucket.bucket}: ${bucketLabelPct(bucket)}%`}
                 className="flex-1 rounded-[2px]"
                 style={{
                   height: `${Math.max(pct, 2)}%`,
@@ -601,12 +982,30 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
             )
           })}
         </div>
-      )}
+      </div>
+      <table className="sr-only">
+        <caption>Data match per day</caption>
+        <thead>
+          <tr>
+            <th scope="col">Day</th>
+            <th scope="col">Matched</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((bucket) => (
+            <tr key={bucket.bucket}>
+              <td>{bucket.bucket}</td>
+              <td>{hasBucketData(bucket) ? `${bucketLabelPct(bucket)}%` : 'no data'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
       <div
         className="mono mt-1.5 flex justify-between text-[10px]"
         style={{ color: 'var(--fg-faint)' }}
       >
         <span>−{days}d</span>
+        <span aria-hidden="true">scale 0–100%</span>
         <span>today</span>
       </div>
     </div>
@@ -626,6 +1025,9 @@ function ShadowRow({
   onConfirm,
   onCancel,
   confirmDisabled,
+  selected = false,
+  selectDisabled = false,
+  onToggleSelect,
 }: {
   item: ShadowEvent
   isActing: boolean
@@ -640,6 +1042,10 @@ function ShadowRow({
   onConfirm: () => void
   onCancel: () => void
   confirmDisabled: boolean
+  selected?: boolean
+  selectDisabled?: boolean
+  /** Omitted when the row cannot be bulk-selected (a viewer, a resolved row). */
+  onToggleSelect?: () => void
 }) {
   return (
     <div
@@ -647,6 +1053,14 @@ function ShadowRow({
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       <div className="flex items-center gap-2.5">
+        {onToggleSelect && (
+          <Checkbox
+            checked={selected}
+            onCheckedChange={onToggleSelect}
+            disabled={selectDisabled}
+            aria-label={`Select ${eventNameLabel(item.event_name)}`}
+          />
+        )}
         <div className="min-w-0 flex-1">
           <span className="mono text-[12.5px]" style={{ color: 'var(--fg)' }}>
             <EventName name={item.event_name} />

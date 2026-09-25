@@ -20,10 +20,26 @@ interface DeliveryScheduleFieldProps {
   /** The cron expression currently on the form, '' meaning immediate. */
   value: string
   onChange: (cron: string) => void
+  /**
+   * Whether what is ON SCREEN can be saved. The field only publishes a valid
+   * cadence through `onChange`, so while the draft is invalid the form still
+   * holds the last good expression — and saving then stored a schedule other
+   * than the one shown, under a visible error (ALR-3). The dialog listens here
+   * and refuses the submit until the draft validates again.
+   */
+  onValidityChange?: (valid: boolean) => void
   /** The project's IANA zone, so the copy can say which clock these times are on. */
   projectTimezone: string
   /** When the next digest is due, from the server. Null while immediate. */
   nextDigestAt?: string | null
+  /**
+   * The server's rejection of the saved cadence (a 422 on
+   * `delivery_schedule_cron`), for a cron the client check let through — "0 25
+   * * * *" has five fields but no hour 25. Rendered in the same message slot as
+   * the client error so the inputs point at it; the client error wins while
+   * the draft on screen is itself invalid.
+   */
+  serverError?: string | null
   disabled?: boolean
 }
 
@@ -37,8 +53,10 @@ interface DeliveryScheduleFieldProps {
 export function DeliveryScheduleField({
   value,
   onChange,
+  onValidityChange,
   projectTimezone,
   nextDigestAt,
+  serverError = null,
   disabled = false,
 }: DeliveryScheduleFieldProps) {
   // The draft is held locally rather than derived from `value` on every
@@ -60,14 +78,18 @@ export function DeliveryScheduleField({
     if ((cadenceToCron(draft) ?? "") !== value) setDraft(cronToCadence(value))
   }
 
-  const error = validateCadence(draft)
+  const error = validateCadence(draft) ?? (serverError || null)
 
   const update = (next: CadenceDraft) => {
     setDraft(next)
     // Only a valid cadence is published upwards. An invalid one keeps the last
     // good expression on the form and shows the error below, so the schedule
-    // never changes to something the operator did not choose.
-    if (validateCadence(next) === null) onChange(cadenceToCron(next) ?? "")
+    // never changes to something the operator did not choose — and the owner
+    // is told, so it cannot save that last good expression as if it were what
+    // is on screen.
+    const valid = validateCadence(next) === null
+    if (valid) onChange(cadenceToCron(next) ?? "")
+    onValidityChange?.(valid)
   }
 
   return (
@@ -84,7 +106,13 @@ export function DeliveryScheduleField({
         }}
         disabled={disabled}
       >
-        <SelectTrigger id="destination-cadence">
+        <SelectTrigger
+          id="destination-cadence"
+          // Only the mode picker exists for "immediate" and the presets, so it
+          // carries the error there; with a time or cron box the box does.
+          aria-invalid={error && !hasCadenceInput(draft.mode) ? true : undefined}
+          aria-describedby={error && !hasCadenceInput(draft.mode) ? "destination-cadence-error" : undefined}
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -116,10 +144,17 @@ export function DeliveryScheduleField({
               </SelectContent>
             </Select>
           )}
+          {/* The native time picker, not free text (ALR-51): a phone gets a
+              time wheel instead of a full keyboard, and "9:30am" or "09.30"
+              cannot be typed in the first place. It always yields "HH:MM",
+              the shape `validateCadence` reads. The multi-time box below
+              stays text — a list of times is not one time. */}
           <Input
             id="destination-cadence-time"
+            type="time"
             aria-label="Time of day"
-            placeholder="09:00"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "destination-cadence-error" : undefined}
             value={draft.time}
             onChange={event => update({ ...draft, time: event.target.value })}
             disabled={disabled}
@@ -131,6 +166,8 @@ export function DeliveryScheduleField({
         <Input
           id="destination-cadence-times"
           aria-label="Times of day"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? "destination-cadence-error" : undefined}
           placeholder="09:00, 18:00"
           value={draft.times}
           onChange={event => update({ ...draft, times: event.target.value })}
@@ -142,6 +179,8 @@ export function DeliveryScheduleField({
         <Input
           id="destination-cadence-cron"
           aria-label="Cron expression"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? "destination-cadence-error" : undefined}
           placeholder="0 9,18 * * 1-5"
           value={draft.cron}
           onChange={event => update({ ...draft, cron: event.target.value })}
@@ -150,7 +189,7 @@ export function DeliveryScheduleField({
       )}
 
       {error ? (
-        <p className="text-xs text-destructive">{error}</p>
+        <p id="destination-cadence-error" className="text-xs text-destructive">{error}</p>
       ) : (
         <p className="text-xs text-muted-foreground">
           {draft.mode === "immediate"
@@ -163,4 +202,9 @@ export function DeliveryScheduleField({
       )}
     </div>
   )
+}
+
+/** Whether the mode shows a text or time box of its own beside the picker. */
+function hasCadenceInput(mode: CadenceMode): boolean {
+  return mode === "daily" || mode === "weekly" || mode === "times_of_day" || mode === "custom"
 }

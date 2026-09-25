@@ -1,7 +1,7 @@
 import { ColumnCheckboxPicker } from '@/components/column-checkbox-picker'
 import { ColumnSuggestInput } from '@/components/column-suggest'
 import { SCard, ToggleRow } from '@/components/settings/kit'
-import { MetricField } from './MetricField'
+import { FormField } from '@/components/settings/form-field'
 import type { MetricDraft } from './metricDraft'
 
 interface MonitoringFieldsProps {
@@ -47,7 +47,7 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
         <>
           {/* A grid of individually-labelled checkboxes: nothing a <label> can
               point at, so the row names the group. */}
-          <MetricField label="Breakdown columns" htmlFor={false} hint={breakdownHint}>
+          <FormField label="Breakdown columns" htmlFor={false} hint={breakdownHint}>
             <div className="max-w-[420px]">
               <ColumnCheckboxPicker
                 id="metric-breakdowns"
@@ -63,8 +63,8 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
                 collection will fail for them.
               </p>
             )}
-          </MetricField>
-          <MetricField label="App version column" htmlFor="metric-app-version" hint="Optional column used for by-version series.">
+          </FormField>
+          <FormField label="App version column" htmlFor="metric-app-version" hint="Optional column used for by-version series.">
             <div className="max-w-[280px]">
               <ColumnSuggestInput
                 id="metric-app-version"
@@ -74,8 +74,8 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
                 placeholder="app_version"
               />
             </div>
-          </MetricField>
-          <MetricField label="Platform column" htmlFor="metric-platform" last hint="Optional platform dimension column.">
+          </FormField>
+          <FormField label="Platform column" htmlFor="metric-platform" last hint="Optional platform dimension column.">
             <div className="max-w-[280px]">
               <ColumnSuggestInput
                 id="metric-platform"
@@ -85,7 +85,7 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
                 placeholder="platform"
               />
             </div>
-          </MetricField>
+          </FormField>
         </>
       )}
     </SCard>

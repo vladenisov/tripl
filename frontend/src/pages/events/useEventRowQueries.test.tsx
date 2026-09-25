@@ -12,14 +12,14 @@ vi.mock('@/hooks/useLiveTimeRange', () => ({
   useLiveTimeRange: () => liveRange,
 }))
 
-vi.mock('@/api/metrics', () => ({
-  metricsApi: {
+vi.mock('@/api/eventMetrics', () => ({
+  eventMetricsApi: {
     getEventsWindowMetrics: vi.fn(),
     getActiveSignals: vi.fn(),
   },
 }))
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { at } from '@/test/at'
 
 let queryClient: QueryClient
@@ -58,7 +58,7 @@ afterEach(() => {
 
 describe('useEventRowMetrics (EVT-18)', () => {
   it('keeps the rows filled while the live window steps to its next key', async () => {
-    vi.mocked(metricsApi.getEventsWindowMetrics).mockResolvedValue([metric('e0')])
+    vi.mocked(eventMetricsApi.getEventsWindowMetrics).mockResolvedValue([metric('e0')])
     const rows = events(3)
     const { result, rerender } = renderHook(
       () => useEventRowMetrics({ slug: 'demo', events: rows, eventSignals: new Map(), virtualItems: [] }),
@@ -68,14 +68,14 @@ describe('useEventRowMetrics (EVT-18)', () => {
 
     // The next window's request never answers: the cells must keep the last
     // data rather than blank to "—" until it does.
-    vi.mocked(metricsApi.getEventsWindowMetrics).mockReturnValue(new Promise(() => {}))
+    vi.mocked(eventMetricsApi.getEventsWindowMetrics).mockReturnValue(new Promise(() => {}))
     liveRange = { from: '2026-01-01T00:05:00Z', to: '2026-01-03T00:05:00Z' }
     rerender()
 
-    await waitFor(() => expect(metricsApi.getEventsWindowMetrics).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(eventMetricsApi.getEventsWindowMetrics).toHaveBeenCalledTimes(2))
     // The refetch asks for the NEW window; the key does not carry it, so a
     // query function that captured the old one would refetch stale data.
-    expect(at(vi.mocked(metricsApi.getEventsWindowMetrics).mock.calls, 1)[1]).toMatchObject({
+    expect(at(vi.mocked(eventMetricsApi.getEventsWindowMetrics).mock.calls, 1)[1]).toMatchObject({
       time_from: '2026-01-01T00:05:00Z',
       time_to: '2026-01-03T00:05:00Z',
     })
@@ -85,7 +85,7 @@ describe('useEventRowMetrics (EVT-18)', () => {
 
 describe('useEventRowSignals (EVT-19)', () => {
   it('asks for the signals of the buckets on screen, not every loaded bucket', async () => {
-    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([])
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([])
     const rows = events(450)
 
     renderHook(
@@ -93,8 +93,8 @@ describe('useEventRowSignals (EVT-19)', () => {
       { wrapper },
     )
 
-    await waitFor(() => expect(metricsApi.getActiveSignals).toHaveBeenCalled())
-    const requested = vi.mocked(metricsApi.getActiveSignals).mock.calls.map(([, ids]) => ids?.[0])
+    await waitFor(() => expect(eventMetricsApi.getActiveSignals).toHaveBeenCalled())
+    const requested = vi.mocked(eventMetricsApi.getActiveSignals).mock.calls.map(([, ids]) => ids?.[0])
     expect(requested).toEqual(['e200'])
   })
 })

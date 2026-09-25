@@ -1,16 +1,18 @@
-import { useMemo, useState, type ComponentProps } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Eye, Loader2, Plus, Save, Trash2 } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
-import { factTablesApi } from '@/api/factTablesApi'
+import { factTablesApi } from '@/api/factTables'
+import { toast } from 'sonner'
+import { ColumnSuggestInput } from '@/components/column-suggest'
 import { ErrorState } from '@/components/error-state'
 import { SqlEditor } from '@/components/sql-editor'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
+import { useConfirm } from '@/hooks/useConfirm'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import {
-  Field,
   SCard,
   Select,
   TextArea,
@@ -38,8 +40,21 @@ import { toIdentifier } from '@/lib/identifier'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { uid } from '@/lib/uid'
+// The shared settings field row and error wiring: the metric and fact-table
+// editors report validation the same way — inline under the field, linked from
+// the summary, focus moved to the first one (MET-35).
+import { FormField } from '@/components/settings/form-field'
+import {
+  errorAria,
+  fieldErrorId,
+  focusField,
+  type FieldErrors,
+} from '@/lib/fieldErrors'
 
 const DEFAULT_COLOR = '#6366f1'
+
+/** The inline "Could not preview columns" block; a failed save-time preview focuses it. */
+const PREVIEW_ERROR_ID = 'fact-preview-error'
 
 function toOptions(prefix: string, items: { value: string; label: string }[]): SelectOption[] {
   return [{ value: '', label: prefix }, ...items]
@@ -53,17 +68,6 @@ function typeTone(raw: string): ChipTone {
   if (/(timestamp|date|time)/.test(t)) return 'info'
   if (/(bool)/.test(t)) return 'success'
   return 'neutral'
-}
-
-// kit's Field has no `required` flag; this thin wrapper renders the red marker
-// to the right of the label when a field is required (mirrors MetricForm).
-function FField({ required, ...props }: { required?: boolean } & ComponentProps<typeof Field>) {
-  const labelRight = required ? (
-    <span style={{ color: 'var(--danger)' }}>*</span>
-  ) : (
-    props.labelRight
-  )
-  return <Field {...props} labelRight={labelRight} />
 }
 
 // A row-filter entry with a stable client-side id. The editable list keys by
@@ -108,18 +112,78 @@ interface FactTableFormProps {
   onClose: () => void
 }
 
+/** What a column preview introspects: the source and the SQL. */
+interface PreviewRequest {
+  dataSourceId: string
+  sql: string
+  timestampColumn: string
+}
+
+/** The columns a save persists, with the identifier picks made on them. */
+interface Introspection {
+  columns: FactTableColumn[]
+  identifierColumns: string[]
+}
+
+/**
+ * Identity of the input a column list was introspected from. The columns are
+ * only true for the source + SQL they came from; any change to either makes
+ * them a guess (MET-9).
+ */
+function introspectionKey(dataSourceId: string, sql: string): string {
+  return JSON.stringify([dataSourceId, sql.trim()])
+}
+
+/**
+ * Re-derive the identifier selection from fresh suggestions while preserving
+ * the user's manual picks relative to the previous suggestion set: columns the
+ * user checked beyond the old suggestions stay checked (if they still exist),
+ * columns the user unchecked in this session stay unchecked. On the first
+ * preview of an edit session the previous suggestion set is empty, so every
+ * saved `identifier_column` counts as a manual pick and is UNION-ed with the
+ * new candidates — a preview may ADD newly-suggested columns but never
+ * silently DROPS a saved pick (tripl-4qfr).
+ */
+function mergeIdentifierPicks(
+  current: readonly string[],
+  previousCandidates: readonly string[],
+  res: FactTablePreviewResponse,
+): string[] {
+  const existingNames = new Set(res.columns.map(column => column.name))
+  const manuallyAdded = current.filter(
+    name => !previousCandidates.includes(name) && existingNames.has(name),
+  )
+  const manuallyRemoved = new Set(previousCandidates.filter(name => !current.includes(name)))
+  const next = res.identifier_candidates.filter(name => !manuallyRemoved.has(name))
+  return [...next, ...manuallyAdded.filter(name => !next.includes(name))]
+}
+
+/** The message for a timestamp column the introspected SQL does not return. */
+function timestampColumnError(timestampColumn: string, columns: FactTableColumn[]): string | null {
+  const wanted = timestampColumn.trim()
+  if (!wanted || columns.length === 0) return null
+  if (columns.some(column => column.name === wanted)) return null
+  return `"${wanted}" is not a column of this SQL. Pick one of the previewed columns.`
+}
+
+const rowFilterFieldId = (filterId: string, part: 'name' | 'sql') =>
+  `fact-row-filter-${filterId}-${part}`
+
 /**
  * Create / edit a fact table. `name` is the per-project identity and is
  * immutable after creation (the backend rejects a change), so it is read-only
  * when editing. The SQL is a full read-only SELECT/CTE; "Preview columns"
  * introspects it server-side and populates the persisted `columns` +
- * `identifier_columns`. Server-side 4xx errors surface inline.
+ * `identifier_columns`, and a save whose columns no longer match the SQL runs
+ * that preview itself first. Validation messages sit under their fields, with
+ * a linked summary at the foot, the same way the metric form reports them.
  */
 export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTableFormProps) {
   const qc = useQueryClient()
   // Fact-table writes and previews are editor-only (MET-6).
   const canWrite = useCanWriteProject()
   const isNew = !factTable
+  const { confirm, dialog: confirmDialog } = useConfirm()
 
   const [displayName, setDisplayName] = useState(factTable?.display_name ?? '')
   const [name, setName] = useState(factTable?.name ?? '')
@@ -147,6 +211,14 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   // Persisted introspection: populated by a successful preview, seeded from the
   // existing fact table when editing.
   const [columns, setColumns] = useState<FactTableColumn[]>(factTable?.columns ?? [])
+  // The source + SQL the columns above describe. A saved table's stored columns
+  // describe its stored SQL; a table saved with none describes nothing yet.
+  const [introspectedFor, setIntrospectedFor] = useState<string | null>(() =>
+    factTable && factTable.columns.length > 0
+      ? introspectionKey(factTable.data_source_id ?? '', factTable.sql)
+      : null,
+  )
+  const columnsAreCurrent = introspectedFor === introspectionKey(dataSourceId, sql)
   const [identifierColumns, setIdentifierColumns] = useState<string[]>(
     factTable?.identifier_columns ?? [],
   )
@@ -161,7 +233,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     (factTable?.row_filters ?? []).map(filter => ({ ...filter, id: uid() })),
   )
 
-  const [formErrors, setFormErrors] = useState<string[]>([])
+  // Messages appear once a save was tried, then follow the edits live.
+  const [submitAttempted, setSubmitAttempted] = useState(false)
 
   const dataSourceOptions = useMemo(
     () => toOptions('Select data source…', dataSources.map(ds => ({ value: ds.id, label: ds.name }))),
@@ -178,66 +251,42 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   // for autocomplete they cannot use: skip the request instead.
   const { data: sqlSchemaData } = useDataSourceSchema(canWrite ? dataSourceId || undefined : undefined)
 
+  // Timestamp-typed columns first: they are the only sensible picks.
+  const timestampSuggestions = useMemo(
+    () =>
+      [...columns]
+        .sort((a, b) => Number(typeTone(b.type) === 'info') - Number(typeTone(a.type) === 'info'))
+        .map(column => column.name),
+    [columns],
+  )
+
+  const applyPreview = (res: FactTablePreviewResponse, request: PreviewRequest): Introspection => {
+    // Returned for a save in this same tick; the functional update keeps a
+    // pick the user toggled while the preview was in flight.
+    const nextIdentifiers = mergeIdentifierPicks(identifierColumns, identifierCandidates, res)
+    setColumns(res.columns)
+    setIdentifierColumns(current => mergeIdentifierPicks(current, identifierCandidates, res))
+    setIdentifierCandidates(res.identifier_candidates)
+    setIntrospectedFor(introspectionKey(request.dataSourceId, request.sql))
+    return { columns: res.columns, identifierColumns: nextIdentifiers }
+  }
+
   const previewMut = useMutation({
-    mutationFn: (): Promise<FactTablePreviewResponse> =>
+    // Rendered inline under the button ("Could not preview columns").
+    meta: SILENT_ERROR_META,
+    mutationFn: (request: PreviewRequest): Promise<FactTablePreviewResponse> =>
       factTablesApi.preview(slug, {
-        data_source_id: dataSourceId || null,
-        sql,
-        timestamp_column: timestampColumn.trim() || null,
+        data_source_id: request.dataSourceId || null,
+        sql: request.sql,
+        timestamp_column: request.timestampColumn.trim() || null,
       }),
-    onSuccess: res => {
-      setColumns(res.columns)
-      // Re-derive the selection from the fresh suggestions while preserving the
-      // user's manual picks relative to the previous suggestion set: columns the
-      // user checked beyond the old suggestions stay checked (if they still
-      // exist), columns the user unchecked in this session stay unchecked. On the
-      // first preview of an edit session the previous suggestion set is empty, so
-      // every saved `identifier_column` counts as a manual pick and is UNION-ed
-      // with the new candidates — a preview may ADD newly-suggested columns but
-      // never silently DROPS a saved pick (tripl-4qfr).
-      const existingNames = new Set(res.columns.map(column => column.name))
-      setIdentifierColumns(current => {
-        const manuallyAdded = current.filter(
-          name => !identifierCandidates.includes(name) && existingNames.has(name),
-        )
-        const manuallyRemoved = new Set(
-          identifierCandidates.filter(name => !current.includes(name)),
-        )
-        const next = res.identifier_candidates.filter(name => !manuallyRemoved.has(name))
-        return [...next, ...manuallyAdded.filter(name => !next.includes(name))]
-      })
-      setIdentifierCandidates(res.identifier_candidates)
-    },
   })
 
-  function validate(): string[] {
-    const errs: string[] = []
-    if (!displayName.trim()) errs.push('Display name is required.')
-    if (isNew && !name.trim()) errs.push('Internal name is required.')
-    if (!dataSourceId) errs.push('A data source is required.')
-    if (!sql.trim()) errs.push('The fact table SQL is required.')
-    if (!timestampColumn.trim()) errs.push('A timestamp column is required.')
-    // Last, because the messages render in this order and Row filters is the
-    // bottom card — the reader scans down to the field the first error names.
-    // A half-filled row used to be dropped on save without a word, so a metric
-    // naming that filter lost it (MET-3). Only an entirely blank row is dropped.
-    rowFilters.forEach((filter, index) => {
-      const hasName = !!filter.name.trim()
-      const hasSql = !!filter.sql.trim()
-      if (hasName !== hasSql) {
-        errs.push(
-          `Row filter ${index + 1} needs both a name and a SQL condition — complete it or remove it.`,
-        )
-      }
-    })
-    const repeated = firstRepeatedFilterName(cleanRowFilters())
-    if (repeated !== null) {
-      errs.push(
-        `Two row filters are named "${repeated}". Metrics reference a filter by name, ` +
-          'so each name can only be used once.',
-      )
-    }
-    return errs
+  const currentPreviewRequest = (): PreviewRequest => ({ dataSourceId, sql, timestampColumn })
+
+  const runPreview = () => {
+    const request = currentPreviewRequest()
+    previewMut.mutate(request, { onSuccess: res => applyPreview(res, request) })
   }
 
   function cleanRowFilters(): FactTableRowFilter[] {
@@ -246,14 +295,52 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
       .filter(f => f.name && f.sql)
   }
 
-  function buildCreatePayload(): FactTableCreate {
+  /** Field id → message, in the order the fields appear on the page. */
+  function validate(): Record<string, string> {
+    const errs: Record<string, string> = {}
+    if (!displayName.trim()) errs['fact-display-name'] = 'Display name is required.'
+    if (isNew && !name.trim()) errs['fact-name'] = 'Internal name is required.'
+    if (!dataSourceId) errs['fact-data-source'] = 'A data source is required.'
+    if (!sql.trim()) errs['fact-sql'] = 'The fact table SQL is required.'
+    if (!timestampColumn.trim()) {
+      errs['fact-timestamp'] = 'A timestamp column is required.'
+    } else if (columnsAreCurrent) {
+      const mismatch = timestampColumnError(timestampColumn, columns)
+      if (mismatch) errs['fact-timestamp'] = mismatch
+    }
+    // A half-filled row used to be dropped on save without a word, so a metric
+    // naming that filter lost it (MET-3). Only an entirely blank row is dropped.
+    rowFilters.forEach((filter, index) => {
+      const hasName = !!filter.name.trim()
+      const hasSql = !!filter.sql.trim()
+      if (hasName !== hasSql) {
+        errs[rowFilterFieldId(filter.id, hasName ? 'sql' : 'name')] =
+          `Row filter ${index + 1} needs both a name and a SQL condition — complete it or remove it.`
+      }
+    })
+    const repeated = firstRepeatedFilterName(cleanRowFilters())
+    if (repeated !== null) {
+      const second = rowFilters.filter(filter => filter.name.trim() === repeated)[1]
+      if (second) {
+        errs[rowFilterFieldId(second.id, 'name')] =
+          `Two row filters are named "${repeated}". Metrics reference a filter by name, ` +
+          'so each name can only be used once.'
+      }
+    }
+    return errs
+  }
+
+  const fieldErrors: FieldErrors = submitAttempted ? validate() : {}
+  const errorEntries = Object.entries(fieldErrors)
+
+  function buildCreatePayload(introspection: Introspection): FactTableCreate {
     return {
       color,
-      columns,
+      columns: introspection.columns,
       data_source_id: dataSourceId || null,
       description,
       display_name: displayName.trim(),
-      identifier_columns: identifierColumns,
+      identifier_columns: introspection.identifierColumns,
       name: name.trim(),
       row_filters: cleanRowFilters(),
       sql,
@@ -261,15 +348,15 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     }
   }
 
-  function buildUpdatePayload(): FactTableUpdate {
+  function buildUpdatePayload(introspection: Introspection): FactTableUpdate {
     // `name` is immutable, so it is intentionally excluded from the update.
     return {
       color,
-      columns,
+      columns: introspection.columns,
       data_source_id: dataSourceId || null,
       description,
       display_name: displayName.trim(),
-      identifier_columns: identifierColumns,
+      identifier_columns: introspection.identifierColumns,
       row_filters: cleanRowFilters(),
       sql,
       timestamp_column: timestampColumn.trim(),
@@ -291,10 +378,10 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   const saveMut = useMutation({
     // Rendered inline at the foot of the form ("Could not save …").
     meta: SILENT_ERROR_META,
-    mutationFn: () =>
+    mutationFn: (introspection: Introspection) =>
       factTable
-        ? factTablesApi.update(slug, factTable.id, buildUpdatePayload())
-        : factTablesApi.create(slug, buildCreatePayload()),
+        ? factTablesApi.update(slug, factTable.id, buildUpdatePayload(introspection))
+        : factTablesApi.create(slug, buildCreatePayload(introspection)),
     onSuccess: () => {
       unsaved.release()
       void qc.invalidateQueries({ queryKey: factTablesKey(slug) })
@@ -304,11 +391,78 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     },
   })
 
-  const onSubmit = () => {
-    const errs = validate()
-    setFormErrors(errs)
-    if (errs.length > 0) return
-    saveMut.mutate()
+  const deleteMut = useMutation({
+    // Rendered inline: a 409 names the metrics that still read this table, and
+    // that list is the whole point of the message (MET-36).
+    meta: SILENT_ERROR_META,
+    mutationFn: (id: string) => factTablesApi.remove(slug, id),
+    onSuccess: () => {
+      unsaved.release()
+      void qc.invalidateQueries({ queryKey: factTablesKey(slug) })
+      void qc.invalidateQueries({ queryKey: projectFactTableKey(slug) })
+      toast.success('Fact table deleted.')
+      onClose()
+    },
+  })
+
+  const onDelete = async () => {
+    if (!factTable) return
+    const ok = await confirm({
+      title: 'Delete this fact table?',
+      message:
+        `"${factTable.display_name}" disappears from every fact metric's picker. A fact table ` +
+        'that metrics still read cannot be deleted; the refusal names them.',
+      confirmLabel: 'Delete fact table',
+      variant: 'danger',
+    })
+    if (ok) deleteMut.mutate(factTable.id)
+  }
+
+  // Focus asked for after an awaited preview has to wait for the render that
+  // carries its result. Focusing at once hit a Preview button still disabled by
+  // the pending mutation (TanStack notifies on a later tick), or a timestamp
+  // input whose error and aria-describedby did not exist yet, so focus stayed
+  // on Save. The id waits here until a commit shows a focusable target.
+  const pendingFocusRef = useRef<string | null>(null)
+  useEffect(() => {
+    const fieldId = pendingFocusRef.current
+    if (!fieldId) return
+    const el = document.getElementById(fieldId)
+    if (!el || (el instanceof HTMLButtonElement && el.disabled)) return
+    pendingFocusRef.current = null
+    focusField(fieldId)
+  })
+
+  const onSubmit = async () => {
+    pendingFocusRef.current = null
+    setSubmitAttempted(true)
+    const firstKey = Object.keys(validate())[0]
+    if (firstKey) {
+      focusField(firstKey)
+      return
+    }
+    // Columns are what every fact metric on this table picks its measure,
+    // breakdown and condition columns from. Saving without a preview stored
+    // none, and editing the SQL after one stored the old list (MET-9), so a
+    // save whose columns do not describe this source + SQL introspects first.
+    let introspection: Introspection = { columns, identifierColumns }
+    if (!columnsAreCurrent) {
+      const request = currentPreviewRequest()
+      let res: FactTablePreviewResponse
+      try {
+        res = await previewMut.mutateAsync(request)
+      } catch {
+        // The preview's own inline error says why; the save waits for it.
+        pendingFocusRef.current = PREVIEW_ERROR_ID
+        return
+      }
+      introspection = applyPreview(res, request)
+      if (timestampColumnError(timestampColumn, res.columns)) {
+        pendingFocusRef.current = 'fact-timestamp'
+        return
+      }
+    }
+    saveMut.mutate(introspection)
   }
 
   const toggleIdentifier = (columnName: string) => {
@@ -333,15 +487,20 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     setRowFilters(current => current.filter(filter => filter.id !== id))
   }
 
+  const busy = saveMut.isPending || previewMut.isPending || deleteMut.isPending
+
   return (
     <div className="h-full overflow-y-auto">
       {unsaved.dialog}
+      {confirmDialog}
       <form
         onSubmit={e => {
           e.preventDefault()
-          onSubmit()
+          void onSubmit()
         }}
-        className="mx-auto max-w-[880px] px-6 pb-12 pt-4"
+        // The metric editor's width, gutter and heading, so the two sibling
+        // editors read as one family (MET-35).
+        className="mx-auto max-w-[1100px] px-4 pb-12 pt-4 sm:px-6"
       >
         <button
           type="button"
@@ -351,7 +510,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
         >
           <ChevronLeft size={13} /> Fact tables
         </button>
-        <h1 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">
+        <h1 className="mb-[18px] text-[22px] font-semibold tracking-[-0.01em]">
           {isNew ? 'New fact table' : canWrite ? 'Edit fact table' : 'Fact table'}
         </h1>
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
@@ -361,30 +520,48 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             the layout. */}
         <fieldset disabled={!canWrite} className="contents">
           <SCard title="Details">
-            <FField label="Display name" htmlFor="fact-display-name" required>
+            <FormField
+              label="Display name"
+              htmlFor="fact-display-name"
+              required
+              error={fieldErrors['fact-display-name']}
+            >
               <TextInput
                 id="fact-display-name"
                 value={displayName}
                 onChange={onDisplayNameChange}
                 placeholder="Orders"
                 aria-required
+                {...errorAria(fieldErrors, 'fact-display-name')}
               />
-            </FField>
-            <FField
+            </FormField>
+            <FormField
               label="Internal name"
-              htmlFor={isNew ? 'fact-name' : undefined}
+              // After creation this row holds the name as text, not a control:
+              // `false` names it as a group instead of pointing the label at a
+              // generated id nothing carries (MET-35).
+              htmlFor={isNew ? 'fact-name' : false}
               required={isNew}
               hint={isNew ? 'Stable identifier used by fact metrics.' : "Can't be changed after creation."}
+              error={isNew ? fieldErrors['fact-name'] : undefined}
             >
               {isNew ? (
-                <TextInput id="fact-name" value={name} onChange={onNameChange} mono placeholder="orders" aria-required />
+                <TextInput
+                  id="fact-name"
+                  value={name}
+                  onChange={onNameChange}
+                  mono
+                  placeholder="orders"
+                  aria-required
+                  {...errorAria(fieldErrors, 'fact-name')}
+                />
               ) : (
                 <div className="mono text-[13px]" style={{ color: 'var(--fg)' }}>
                   {name}
                 </div>
               )}
-            </FField>
-            <FField label="Description" htmlFor="fact-description">
+            </FormField>
+            <FormField label="Description" htmlFor="fact-description">
               <TextArea
                 id="fact-description"
                 value={description}
@@ -392,8 +569,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 rows={2}
                 placeholder="What does this fact table represent?"
               />
-            </FField>
-            <FField label="Color" htmlFor="fact-color" last>
+            </FormField>
+            <FormField label="Color" htmlFor="fact-color" last>
               <input
                 id="fact-color"
                 type="color"
@@ -402,20 +579,33 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 className="h-8 w-12 cursor-pointer rounded border bg-transparent"
                 style={{ borderColor: 'var(--border)' }}
               />
-            </FField>
+            </FormField>
           </SCard>
 
           <SCard title="Source" description="A full read-only SELECT or WITH ... SELECT plus the warehouse it runs against.">
-            <FField label="Data source" htmlFor="fact-data-source" required>
+            <FormField
+              label="Data source"
+              htmlFor="fact-data-source"
+              required
+              error={fieldErrors['fact-data-source']}
+            >
               <Select
                 id="fact-data-source"
                 value={dataSourceId}
                 onChange={setDataSourceId}
                 options={dataSourceOptions}
                 aria-required
+                {...errorAria(fieldErrors, 'fact-data-source')}
               />
-            </FField>
-            <FField label="SQL" htmlFor="fact-sql" required stacked hint="A single read-only SELECT or WITH ... SELECT.">
+            </FormField>
+            <FormField
+              label="SQL"
+              htmlFor="fact-sql"
+              required
+              stacked
+              hint="A single read-only SELECT or WITH ... SELECT."
+              error={fieldErrors['fact-sql']}
+            >
               <SqlEditor
                 id="fact-sql"
                 ariaLabel="Fact table SQL"
@@ -426,34 +616,40 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 tables={sqlSchemaData?.tables}
                 minHeight="160px"
                 readOnly={!canWrite}
+                ariaRequired
+                ariaInvalid={errorAria(fieldErrors, 'fact-sql')['aria-invalid']}
+                ariaDescribedBy={errorAria(fieldErrors, 'fact-sql')['aria-describedby']}
               />
-            </FField>
-            <FField
+            </FormField>
+            <FormField
               label="Timestamp column"
               htmlFor="fact-timestamp"
               required
               last
               hint="The column used to bucket facts over time."
+              error={fieldErrors['fact-timestamp']}
             >
-              <TextInput
+              <ColumnSuggestInput
                 id="fact-timestamp"
                 value={timestampColumn}
                 onChange={setTimestampColumn}
-                mono
+                suggestions={timestampSuggestions}
                 placeholder="created_at"
                 aria-required
+                {...errorAria(fieldErrors, 'fact-timestamp')}
               />
-            </FField>
+            </FormField>
           </SCard>
 
           <SCard
             title="Columns"
-            description="Preview introspects the SELECT and records its columns and identifier candidates."
+            description="Preview introspects the SELECT and records its columns and identifier candidates. Saving previews for you when the SQL or data source changed since."
           >
             <div className="px-[18px] py-[15px]">
               <button
+                id="fact-preview-columns"
                 type="button"
-                onClick={() => previewMut.mutate()}
+                onClick={runPreview}
                 disabled={previewMut.isPending || !sql.trim() || !dataSourceId}
                 className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
                 style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
@@ -467,9 +663,17 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               </button>
 
               {previewMut.isError && (
-                <div className="mt-3">
+                <div id={PREVIEW_ERROR_ID} tabIndex={-1} className="mt-3 outline-none">
                   <ErrorState compact title="Could not preview columns" error={previewMut.error} />
                 </div>
+              )}
+
+              {canWrite && !columnsAreCurrent && !previewMut.isPending && (
+                <p className="mt-3 text-[12px]" style={{ color: 'var(--warning)' }}>
+                  {columns.length > 0
+                    ? 'The SQL or data source changed since these columns were read. They refresh when you preview or save.'
+                    : 'No columns yet. They are read from the SQL when you preview or save.'}
+                </p>
               )}
 
               {columns.length > 0 && (
@@ -538,37 +742,60 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                   No row filters yet.
                 </div>
               ) : (
-                <ul className="space-y-2" aria-label="Row filters">
-                  {rowFilters.map((filter, index) => (
-                    <li key={filter.id} className="flex items-start gap-2">
-                      <div className="w-[180px] shrink-0">
-                        <TextInput
-                          value={filter.name}
-                          onChange={value => updateRowFilter(filter.id, { name: value })}
-                          placeholder="mobile_only"
-                          aria-label={`Row filter ${index + 1} name`}
-                        />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <TextInput
-                          value={filter.sql}
-                          onChange={value => updateRowFilter(filter.id, { sql: value })}
-                          mono
-                          placeholder="platform = 'ios'"
-                          aria-label={`Row filter ${index + 1} SQL condition`}
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeRowFilter(filter.id)}
-                        aria-label={`Remove row filter ${index + 1}`}
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border transition-colors hover:bg-[var(--surface-hover)]"
-                        style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </li>
-                  ))}
+                <ul className="space-y-3 sm:space-y-2" aria-label="Row filters">
+                  {rowFilters.map((filter, index) => {
+                    const nameId = rowFilterFieldId(filter.id, 'name')
+                    const sqlId = rowFilterFieldId(filter.id, 'sql')
+                    const rowError = fieldErrors[nameId] ?? fieldErrors[sqlId]
+                    return (
+                      <li key={filter.id}>
+                        {/* A phone gets name + remove on one line and the SQL
+                            condition full width under them: side by side, the
+                            condition was under 80px wide at 375px (MET-20). */}
+                        <div className="grid grid-cols-[minmax(0,1fr)_32px] items-start gap-2 sm:grid-cols-[180px_minmax(0,1fr)_32px]">
+                          <div className="min-w-0">
+                            <TextInput
+                              id={nameId}
+                              value={filter.name}
+                              onChange={value => updateRowFilter(filter.id, { name: value })}
+                              placeholder="mobile_only"
+                              aria-label={`Row filter ${index + 1} name`}
+                              {...errorAria(fieldErrors, nameId)}
+                            />
+                          </div>
+                          <div className="col-span-2 row-start-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
+                            <TextInput
+                              id={sqlId}
+                              value={filter.sql}
+                              onChange={value => updateRowFilter(filter.id, { sql: value })}
+                              mono
+                              placeholder="platform = 'ios'"
+                              aria-label={`Row filter ${index + 1} SQL condition`}
+                              {...errorAria(fieldErrors, sqlId)}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeRowFilter(filter.id)}
+                            aria-label={`Remove row filter ${index + 1}`}
+                            className="col-start-2 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-[7px] border transition-colors hover:bg-[var(--surface-hover)] sm:col-start-3"
+                            style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                        {rowError && (
+                          <p
+                            id={fieldErrorId(fieldErrors[nameId] ? nameId : sqlId)}
+                            className="mt-[6px] text-[12px] leading-[1.45]"
+                            style={{ color: 'var(--danger)' }}
+                          >
+                            {rowError}
+                          </p>
+                        )}
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
               <button
@@ -583,7 +810,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
           </SCard>
         </fieldset>
 
-        {formErrors.length > 0 && (
+        {errorEntries.length > 0 && (
           <div
             role="alert"
             className="mb-[18px] rounded-[10px] border px-4 py-3 text-[12.5px]"
@@ -594,8 +821,16 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             }}
           >
             <ul className="list-disc space-y-1 pl-4">
-              {formErrors.map(error => (
-                <li key={error}>{error}</li>
+              {errorEntries.map(([key, error]) => (
+                <li key={key}>
+                  <button
+                    type="button"
+                    onClick={() => focusField(key)}
+                    className="text-left underline decoration-transparent underline-offset-2 hover:decoration-current focus-visible:decoration-current"
+                  >
+                    {error}
+                  </button>
+                </li>
               ))}
             </ul>
           </div>
@@ -607,7 +842,31 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
           </div>
         )}
 
-        <div className="mt-1 flex justify-end gap-[10px]">
+        {deleteMut.isError && (
+          <div className="mb-[18px]">
+            <ErrorState compact title="Could not delete fact table" error={deleteMut.error} />
+          </div>
+        )}
+
+        <div className="mt-1 flex flex-wrap items-center justify-end gap-[10px]">
+          {canWrite && factTable && (
+            <button
+              type="button"
+              onClick={() => {
+                void onDelete()
+              }}
+              disabled={busy}
+              className="mr-auto inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-60"
+              style={{ borderColor: 'var(--border)', color: 'var(--danger)' }}
+            >
+              {deleteMut.isPending ? (
+                <Loader2 className="animate-spin" size={12} />
+              ) : (
+                <Trash2 size={12} />
+              )}
+              Delete fact table
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}
@@ -619,11 +878,11 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
           {canWrite && (
             <button
               type="submit"
-              disabled={saveMut.isPending}
+              disabled={busy}
               className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
               style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
             >
-              {saveMut.isPending ? (
+              {saveMut.isPending || previewMut.isPending ? (
                 <Loader2 className="animate-spin" size={12} />
               ) : isNew ? (
                 <Plus size={12} />

@@ -1,8 +1,11 @@
 import type { ComponentProps } from 'react'
 import { Field } from '@/components/settings/kit'
-import { fieldErrorId } from './fieldErrors'
+import { fieldErrorId } from '@/lib/fieldErrors'
 
 /**
+ * A kit {@link Field} row with a required marker and an inline error — the
+ * row both the metric and the fact-table editors use (MET-35).
+ *
  * kit's Field has no `required` flag or error slot; this thin wrapper renders
  * the red required marker (kit's `labelRight` slot) and appends an inline error
  * message beneath the control (kit's `hint` sits in the label column, so the
@@ -12,7 +15,7 @@ import { fieldErrorId } from './fieldErrors'
  * `aria-describedby` points at through {@link errorAria}. `errorFor` names the
  * id when the row has no single control (`htmlFor={false}`).
  */
-export function MetricField({
+export function FormField({
   required,
   error,
   errorFor,

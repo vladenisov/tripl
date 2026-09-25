@@ -1,16 +1,5 @@
 import type { EventCommentAction, EventPhotoComment } from '../types'
-
-const BASE = '/api/v1'
-
-async function unwrap<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    const detail = typeof body.detail === 'string' ? body.detail : undefined
-    throw new Error(detail || `${res.status} ${res.statusText}`)
-  }
-  if (res.status === 204) return undefined as T
-  return res.json() as Promise<T>
-}
+import { api } from './client'
 
 /**
  * The discussion on an event itself, as opposed to on one of its attachments.
@@ -18,29 +7,25 @@ async function unwrap<T>(res: Response): Promise<T> {
  * No `branch` argument, deliberately: an event has ONE discussion, and the
  * server resolves a branch copy to its twin on main before reading or writing.
  * Passing a branch here would invite two threads on one conversation.
+ *
+ * On the shared client, not raw `fetch`: that kept a private copy of error
+ * unwrapping and lost the 401 re-auth prompt, the `X-Request-ID` a support
+ * reference needs, and `ApiError` (EVT-28).
  */
 export const eventCommentsApi = {
-  list: async (slug: string, eventId: string): Promise<EventPhotoComment[]> => {
-    const res = await fetch(`${BASE}/projects/${slug}/events/${eventId}/comments`, {
-      credentials: 'include',
-    })
-    return unwrap<EventPhotoComment[]>(res)
-  },
+  list: (slug: string, eventId: string): Promise<EventPhotoComment[]> =>
+    api.get<EventPhotoComment[]>(`/projects/${slug}/events/${eventId}/comments`),
 
-  create: async (
+  create: (
     slug: string,
     eventId: string,
     body: string,
     parentId: string | null = null,
-  ): Promise<EventPhotoComment> => {
-    const res = await fetch(`${BASE}/projects/${slug}/events/${eventId}/comments`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body, parent_id: parentId }),
-    })
-    return unwrap<EventPhotoComment>(res)
-  },
+  ): Promise<EventPhotoComment> =>
+    api.post<EventPhotoComment>(`/projects/${slug}/events/${eventId}/comments`, {
+      body,
+      parent_id: parentId,
+    }),
 
   /**
    * Resolve, snooze or reopen one thread.
@@ -49,32 +34,19 @@ export const eventCommentsApi = {
    * names an intent and the server decides which of the five resolution columns
    * move. Refused on a reply — the thread is the unit that gets answered.
    */
-  action: async (
+  action: (
     slug: string,
     eventId: string,
     commentId: string,
     action: EventCommentAction,
     snoozedUntil?: string,
-  ): Promise<EventPhotoComment> => {
-    const res = await fetch(
-      `${BASE}/projects/${slug}/events/${eventId}/comments/${commentId}/actions`,
-      {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          snoozedUntil ? { action, snoozed_until: snoozedUntil } : { action },
-        ),
-      },
-    )
-    return unwrap<EventPhotoComment>(res)
-  },
+  ): Promise<EventPhotoComment> =>
+    api.post<EventPhotoComment>(
+      `/projects/${slug}/events/${eventId}/comments/${commentId}/actions`,
+      snoozedUntil ? { action, snoozed_until: snoozedUntil } : { action },
+    ),
 
   remove: async (slug: string, eventId: string, commentId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/projects/${slug}/events/${eventId}/comments/${commentId}`, {
-      method: 'DELETE',
-      credentials: 'include',
-    })
-    await unwrap<void>(res)
+    await api.del<void>(`/projects/${slug}/events/${eventId}/comments/${commentId}`)
   },
 }

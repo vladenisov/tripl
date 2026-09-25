@@ -40,8 +40,10 @@ export interface MetricBreakdownParams extends MetricSeriesParams {
 
 /**
  * Catalog metric CRUD + the per-metric series surfaces (volume / breakdowns /
- * versions) that back the monitoring drilldown. Mirrors the thin-wrapper style
- * of `metricsApi` / `eventsApi`: each call builds the query string explicitly
+ * versions) that back the monitoring drilldown. Everything about a user-defined
+ * metric lives here; `eventMetricsApi` (`api/eventMetrics.ts`) is event and scan
+ * monitoring, not the catalog (MET-45). Mirrors the thin-wrapper style
+ * of `eventMetricsApi` / `eventsApi`: each call builds the query string explicitly
  * and is typed off the committed OpenAPI schemas.
  */
 export const metricsCatalogApi = {

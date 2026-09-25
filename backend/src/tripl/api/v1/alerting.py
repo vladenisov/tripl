@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 
 from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.alert_delivery import AlertDeliveryStatus
@@ -265,6 +265,10 @@ async def simulate_alert_rule(
     min_percent_delta_override: float | None = Query(None, ge=0),
     min_expected_count_override: float | None = Query(None, ge=0),
     sigma_threshold_override: float | None = Query(None, gt=0, le=RATCHET_SIGMA_CAP),
+    # The editor's unsaved edits, as the PATCH body Save would send. Omitted,
+    # the replay is of the saved rule; given, of the saved rule with these laid
+    # over it, validated as Save validates them and never written (ALR-12).
+    draft: Annotated[AlertRuleUpdate | None, Body()] = None,
 ) -> AlertRuleSimulateResponse:
     return await alerting_service.simulate_rule(
         session,
@@ -276,6 +280,7 @@ async def simulate_alert_rule(
         min_percent_delta_override=min_percent_delta_override,
         min_expected_count_override=min_expected_count_override,
         sigma_threshold_override=sigma_threshold_override,
+        draft=draft,
     )
 
 

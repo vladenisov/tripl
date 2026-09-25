@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, ChevronDown } from 'lucide-react'
 
-import { metricsApi } from '@/api/metrics'
+import { eventMetricsApi } from '@/api/eventMetrics'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { Button } from '@/components/ui/button'
@@ -82,7 +82,7 @@ export function TabMetricsCard({
   const { data: tabMetrics, isLoading } = useQuery({
     queryKey: eventsMetricsChartKey(slug, branchId ?? null, filters, range),
     queryFn: () =>
-      metricsApi.getEventsMetrics(slug, {
+      eventMetricsApi.getEventsMetrics(slug, {
         event_type_id: filters.filterEtId,
         search: filters.debouncedSearch || undefined,
         status: filters.queryStatuses,
