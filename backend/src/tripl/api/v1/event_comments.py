@@ -10,7 +10,7 @@ from tripl.schemas.event_photo import (
     EventPhotoCommentCreate,
     EventPhotoCommentResponse,
 )
-from tripl.services import event_comment_service
+from tripl.services import audit_service, event_comment_service
 
 # A sibling of the photo threads under the same event prefix, not a nested
 # resource of one: this discussion is about the event, and having to attach a
@@ -48,6 +48,15 @@ async def create_event_comment(
         parent_id=data.parent_id,
         user_id=current_user.id,
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event_comment.create",
+        target_type="event_comment",
+        target_id=comment.id,
+        project_slug=slug,
+        payload={"event_id": str(event_id)},
+    )
     return EventPhotoCommentResponse.model_validate(comment)
 
 
@@ -74,6 +83,15 @@ async def apply_event_comment_action(
         data,
         user_id=current_user.id,
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event_comment.action",
+        target_type="event_comment",
+        target_id=comment_id,
+        project_slug=slug,
+        payload={"event_id": str(event_id), "action": data.action},
+    )
     return EventPhotoCommentResponse.model_validate(comment)
 
 
@@ -85,5 +103,13 @@ async def delete_event_comment(
     comment_id: uuid.UUID,
     current_user: EditorUserDep,
 ) -> None:
-    del current_user
     await event_comment_service.delete_comment(session, slug, event_id, comment_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event_comment.delete",
+        target_type="event_comment",
+        target_id=comment_id,
+        project_slug=slug,
+        payload={"event_id": str(event_id)},
+    )

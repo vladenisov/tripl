@@ -8,6 +8,7 @@ import {
   initialScenarioState,
   readScenarioState,
 } from '@/demo/scenarioModel'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { Project, ScanConfig } from '@/types'
 import { ScanConfigDetail } from './ScanConfigDetailView'
 
@@ -115,18 +116,57 @@ function setupFetch(runCalls: { method: string; url: string }[] = []) {
   })
 }
 
-function renderDetail(project: Project) {
+function renderDetail(project: Project, auth: AuthContextValue | null = null) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1`]}>
-        <DemoScenarioProvider project={project} pollIntervalMs={10}>
-          <ScanConfigDetail slug={SLUG} scanConfigId="scan-1" />
-        </DemoScenarioProvider>
-      </MemoryRouter>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1`]}>
+          <DemoScenarioProvider project={project} pollIntervalMs={10}>
+            <ScanConfigDetail slug={SLUG} scanConfigId="scan-1" />
+          </DemoScenarioProvider>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
+
+describe('ScanConfigDetail — role gating (DATA-6)', () => {
+  it('lets an editor run the scan but shows the configuration read-only', async () => {
+    setupFetch()
+    renderDetail(demoProject({ is_demo: false }), {
+      user: {
+        id: 'editor-1',
+        email: 'editor@example.com',
+        name: 'Editor',
+        role: 'editor',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+    })
+
+    expect(await screen.findByRole('button', { name: /Run now/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }))
+    const panel = await screen.findByRole('tabpanel')
+    expect(within(panel).getByRole('note')).toHaveTextContent(
+      'Only an owner can change, replay or delete a scan.',
+    )
+    expect(within(panel).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: /Delete/ })).not.toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: /Replay/ })).not.toBeInTheDocument()
+    // The schema lookup behind SQL autocomplete is editor-scoped on a route this
+    // user cannot edit through, and read-only SQL has no use for it anyway.
+    const fetched = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => String(input))
+    expect(fetched.some(url => url.includes('/schema'))).toBe(false)
+  })
+})
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -209,5 +249,185 @@ describe('ScanConfigDetail — coached demo scenario', () => {
     await waitFor(() => expect(screen.getByText('Main scan')).toBeInTheDocument())
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
     expect(window.localStorage.getItem(`tripl-demo-scenario:${SLUG}`)).toBeNull()
+  })
+})
+
+describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
+  const owner: AuthContextValue = {
+    user: {
+      id: 'owner-1',
+      email: 'owner@example.com',
+      name: 'Owner',
+      role: 'owner',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+
+  function renderAt(path: string) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={owner}>
+          <MemoryRouter initialEntries={[path]}>
+            <DemoScenarioProvider project={demoProject({ is_demo: false })} pollIntervalMs={10}>
+              <ScanConfigDetail slug={SLUG} scanConfigId="scan-1" />
+            </DemoScenarioProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('opens on the tab the URL names, so a reload keeps the reader on Configuration', async () => {
+    setupFetch()
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    expect(await screen.findByRole('tab', { name: 'Configuration' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByLabelText('Name')).toHaveValue('Main scan')
+  })
+
+  it('asks before a tab switch unmounts edited configuration, and keeps it on Cancel', async () => {
+    setupFetch()
+    renderAt(`/p/${SLUG}/scans/scan-1`)
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Renamed scan' } })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview', hidden: true }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByLabelText('Name')).toHaveValue('Renamed scan')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true'),
+    )
+  })
+
+  it('keeps an edit typed while a save was in flight unsaved', async () => {
+    const saveable = { ...scanConfig, event_type_column: 'event_name' }
+    let answerSave: (response: Response) => void = () => {}
+    let saveSent = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith('/projects/demo/scans/scan-1') && method === 'PATCH') {
+        saveSent = true
+        return new Promise<Response>(resolve => {
+          answerSave = resolve
+        })
+      }
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([saveable])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Sent name' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[0])
+    await waitFor(() => expect(saveSent).toBe(true))
+    // Typed after the request left, before it answered.
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Typed during save' } })
+    answerSave(mockJsonResponse({ ...saveable, name: 'Sent name' }))
+    // The save answered, but the form no longer holds what it sent: "Saved."
+    // would be a claim about text that is not on screen (DATA-14).
+    expect(await screen.findByText('Unsaved changes.')).toBeInTheDocument()
+    expect(screen.queryByText('Saved.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    expect(
+      await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' }),
+    ).toBeInTheDocument()
+  })
+
+  it('has one Save for the whole form, and says Saved. only until the next edit (DATA-14)', async () => {
+    const saveable = { ...scanConfig, event_type_column: 'event_name' }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith('/projects/demo/scans/scan-1') && method === 'PATCH') {
+        return mockJsonResponse({ ...saveable, name: 'Renamed' })
+      }
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([saveable])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    const name = await screen.findByLabelText('Name')
+    // Nothing to save yet.
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+
+    fireEvent.change(name, { target: { value: 'Renamed' } })
+    expect(screen.getAllByRole('button', { name: 'Save' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Saved.')).toBeInTheDocument()
+
+    fireEvent.change(name, { target: { value: 'Renamed again' } })
+    expect(screen.queryByText('Saved.')).not.toBeInTheDocument()
+    expect(screen.getByText('Unsaved changes.')).toBeInTheDocument()
+  })
+
+  it('takes a deleted scan out of the cached list before leaving (DATA-4)', async () => {
+    let deleted = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith('/projects/demo/scans/scan-1') && method === 'DELETE') {
+        deleted = true
+        return new Response(null, { status: 204 })
+      }
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse(deleted ? [] : [scanConfig])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={owner}>
+          <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1?tab=configuration`]}>
+            <DemoScenarioProvider project={demoProject({ is_demo: false })} pollIntervalMs={10}>
+              <ScanConfigDetail slug={SLUG} scanConfigId="scan-1" />
+            </DemoScenarioProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    const confirm = await screen.findByRole('alertdialog')
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(deleted).toBe(true))
+    await waitFor(() =>
+      expect(queryClient.getQueryData<ScanConfig[]>(['scans', SLUG])?.map(sc => sc.id)).toEqual([]),
+    )
+    expect(queryClient.getQueryData(['scanJobs', SLUG, 'scan-1'])).toBeUndefined()
+  })
+
+  it('switches tabs at once while nothing is edited', async () => {
+    setupFetch()
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    await screen.findByLabelText('Name')
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 })

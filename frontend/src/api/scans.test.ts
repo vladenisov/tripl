@@ -75,3 +75,70 @@ describe('scansApi.dryRun — what the user is told when the check does not answ
     expect(message).toBe('Timed out working out what this scan would create.')
   })
 })
+
+function errorResponse(status: number): Response {
+  return {
+    ok: false,
+    status,
+    statusText: 'Bad Gateway',
+    headers: new Headers({ 'Content-Type': 'application/json' }),
+    json: async () => ({}),
+  } as unknown as Response
+}
+
+describe('scansApi polling — a blip is not an answer (DATA-3)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('rides out a transient poll failure and returns the job result', async () => {
+    vi.useFakeTimers()
+    const answer = { events: [] }
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(dryRunJob({ status: 'running' })))
+      .mockResolvedValueOnce(errorResponse(502))
+      .mockResolvedValueOnce(jsonResponse(dryRunJob({ status: 'completed', result_summary: answer })))
+
+    const pending = scansApi.dryRun('demo', DRAFT)
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    await expect(pending).resolves.toEqual(answer)
+  })
+
+  it('gives up once the poll keeps failing', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(dryRunJob({ status: 'running' })))
+      .mockResolvedValue(errorResponse(502))
+
+    const pending = scansApi.dryRun('demo', DRAFT)
+    const settled = expect(pending).rejects.toMatchObject({ status: 502 })
+    await vi.advanceTimersByTimeAsync(60_000)
+    await settled
+  })
+
+  it('does not retry an answer, such as the job being gone', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(dryRunJob({ status: 'running' })))
+      .mockResolvedValue(errorResponse(404))
+    vi.useFakeTimers()
+
+    const pending = scansApi.dryRun('demo', DRAFT)
+    const settled = expect(pending).rejects.toMatchObject({ status: 404 })
+    await vi.advanceTimersByTimeAsync(60_000)
+    await settled
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops waiting as soon as the caller aborts', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(dryRunJob({ status: 'running' })))
+    const controller = new AbortController()
+
+    const pending = scansApi.dryRun('demo', DRAFT, controller.signal)
+    const settled = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(0)
+    controller.abort()
+    await settled
+  })
+})

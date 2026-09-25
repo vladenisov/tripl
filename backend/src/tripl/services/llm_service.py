@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import urllib.error
 import urllib.request
-from typing import Any, cast
+from typing import Any
 
 from tripl.config import settings  # noqa: F401 - kept for test monkeypatching
 from tripl.services.app_settings_service import AiConfig, env_ai_config
@@ -12,7 +13,8 @@ from tripl.services.app_settings_service import AiConfig, env_ai_config
 logger = logging.getLogger(__name__)
 
 _MAX_USER_PROMPT_CHARS = 24_000
-_MAX_PARAM_RETRIES = 3
+# One attempt plus one per parameter _adjust_payload_for_error can drop.
+_MAX_PARAM_RETRIES = 4
 
 
 def is_enabled(config: AiConfig | None = None) -> bool:
@@ -44,7 +46,7 @@ def _post_chat_completions(
     except urllib.error.HTTPError as exc:
         try:
             error_body = exc.read().decode("utf-8", errors="replace")[:2000]
-        except OSError:
+        except OSError, http.client.HTTPException:
             error_body = "<unreadable>"
         logger.warning(
             "AI completion request failed with HTTP %s: %s; model=%s url=%s body=%s",
@@ -62,7 +64,7 @@ def _post_chat_completions(
         except json.JSONDecodeError:
             pass
         return None, error
-    except urllib.error.URLError, TimeoutError:
+    except OSError, http.client.HTTPException, UnicodeError, TimeoutError:
         logger.exception("AI completion request failed")
         return None, None
 
@@ -71,7 +73,8 @@ def _adjust_payload_for_error(payload: dict[str, Any], error: dict[str, Any]) ->
     """Mutate payload to work around an unsupported-parameter error.
 
     Newer OpenAI models (gpt-5.x, o-series) reject ``max_tokens`` in favor of
-    ``max_completion_tokens`` and only allow the default ``temperature``.
+    ``max_completion_tokens`` and only allow the default ``temperature``; some
+    OpenAI-compatible servers do not support ``response_format``.
     Returns True when the payload changed and the request is worth retrying.
     """
     if error.get("code") not in {"unsupported_parameter", "unsupported_value"}:
@@ -83,6 +86,9 @@ def _adjust_payload_for_error(payload: dict[str, Any], error: dict[str, Any]) ->
     if param == "temperature" and "temperature" in payload:
         del payload["temperature"]
         return True
+    if param == "response_format" and "response_format" in payload:
+        del payload["response_format"]
+        return True
     return False
 
 
@@ -92,6 +98,7 @@ def complete(
     *,
     max_tokens: int | None = None,
     temperature: float = 0.2,
+    response_format: dict[str, Any] | None = None,
     config: AiConfig | None = None,
 ) -> str | None:
     cfg = config if config is not None else env_ai_config()
@@ -112,6 +119,8 @@ def complete(
         "max_tokens": max_tokens if max_tokens is not None else cfg.ai_max_output_tokens,
         "temperature": temperature,
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
 
     url = cfg.ai_base_url.rstrip("/") + "/chat/completions"
     body: str | None = None
@@ -126,17 +135,26 @@ def complete(
         return None
 
     try:
-        parsed = cast(dict[str, Any], json.loads(body))
+        parsed = json.loads(body)
+        if not isinstance(parsed, dict):
+            logger.warning("AI completion response is not an object")
+            return None
         choices = parsed.get("choices")
         if not isinstance(choices, list) or not choices:
             logger.warning("AI completion response has no choices")
             return None
-        message = choices[0].get("message", {})
+        if not isinstance(choices[0], dict):
+            logger.warning("AI completion response choice is not an object")
+            return None
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            logger.warning("AI completion response message is not an object")
+            return None
         content = message.get("content")
         if not isinstance(content, str):
             logger.warning("AI completion response content is not a string")
             return None
         return content
-    except json.JSONDecodeError, KeyError, IndexError:
+    except json.JSONDecodeError:
         logger.exception("Failed to parse AI completion response")
         return None

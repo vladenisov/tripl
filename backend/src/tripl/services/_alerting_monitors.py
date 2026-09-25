@@ -21,6 +21,7 @@ from tripl.schemas.alerting import (
     MonitorSummaryItem,
 )
 from tripl.services._alerting_scope_readiness import load_scope_readiness
+from tripl.services._monitor_state_intervals import load_monitor_state_intervals
 from tripl.services.monitoring_utils import summarize_monitor_states
 from tripl.services.project_lookup import get_project_by_slug as _get_project
 
@@ -37,10 +38,7 @@ def is_rule_muted(rule: AlertRule, now: datetime) -> bool:
     muted_until = rule.muted_until
     if muted_until is None:
         return False
-    # SQLite (tests) drops tzinfo on round-trip, so normalize before comparing
-    # to avoid an aware/naive TypeError — same handling as monitoring_utils.
-    if muted_until.tzinfo is None:
-        now = now.replace(tzinfo=None)
+    # AlertRule.muted_until uses UtcDateTime, which restores UTC on SQLite too.
     return muted_until > now
 
 
@@ -89,8 +87,9 @@ async def get_monitors_summary(session: AsyncSession, slug: str) -> MonitorsSumm
 
     states_by_rule: dict[uuid.UUID, list[AlertRuleState]] = defaultdict(list)
     rule_ids = [rule.id for rule, _ in rule_rows]
+    states: list[AlertRuleState] = []
     if rule_ids:
-        states = (
+        states = list(
             (
                 await session.execute(
                     select(AlertRuleState).where(AlertRuleState.rule_id.in_(rule_ids))
@@ -101,11 +100,15 @@ async def get_monitors_summary(session: AsyncSession, slug: str) -> MonitorsSumm
         )
         for state in states:
             states_by_rule[state.rule_id].append(state)
+    # Judge each state on its own grid, as dispatch does (tripl-0zpq.162).
+    interval_of = await load_monitor_state_intervals(session, states)
 
     now = datetime.now(UTC)
     monitors: list[MonitorSummaryItem] = []
     for rule, destination in rule_rows:
-        rollup = summarize_monitor_states(states_by_rule.get(rule.id, []), now=now)
+        rollup = summarize_monitor_states(
+            states_by_rule.get(rule.id, []), now=now, interval_of=interval_of
+        )
         monitors.append(
             MonitorSummaryItem(
                 rule_id=rule.id,
@@ -153,7 +156,9 @@ async def _build_monitor_detail(
         .scalars()
         .all()
     )
-    rollup = summarize_monitor_states(states, now=now)
+    rollup = summarize_monitor_states(
+        states, now=now, interval_of=await load_monitor_state_intervals(session, states)
+    )
 
     total_deliveries = (
         await session.execute(

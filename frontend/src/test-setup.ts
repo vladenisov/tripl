@@ -1,20 +1,30 @@
-import '@testing-library/jest-dom'
-import { configure } from '@testing-library/react'
-import { expect } from 'vitest'
-import * as axeMatchers from 'vitest-axe/matchers'
+import { format } from 'node:util'
+import { afterEach, beforeEach, expect, vi } from 'vitest'
 import type { AxeMatchers } from 'vitest-axe/matchers'
 
-// vitest-axe@0.1.0 ships an empty `extend-expect` entry, so register the
-// axe matchers manually. This makes `expect(...).toHaveNoViolations()` work.
-expect.extend(axeMatchers)
+// This file runs for both projects in vite.config.ts: the `node` one (pure
+// `*.test.ts` logic) and the `jsdom` one (components). The DOM half is loaded
+// only where a DOM exists, so a pure-logic file does not pay for importing
+// Testing Library, jest-dom and axe.
+const hasDom = typeof window !== 'undefined' && typeof document !== 'undefined'
 
-// Testing Library's 1000ms default for `findBy*`/`waitFor` is too tight for the
-// route-level tests: resolving a lazy route chunk and settling its first render
-// can exceed it whenever the machine is busy (a loaded CI runner, or a backend
-// suite competing for CPU locally), which shows up as flakes that never reproduce
-// in isolation. The headroom only costs wall-clock on an assertion that was going
-// to fail anyway.
-configure({ asyncUtilTimeout: 5000 })
+if (hasDom) {
+  await import('@testing-library/jest-dom/vitest')
+  const { configure } = await import('@testing-library/react')
+  const axeMatchers = await import('vitest-axe/matchers')
+
+  // vitest-axe@0.1.0 ships an empty `extend-expect` entry, so register the
+  // axe matchers manually. This makes `expect(...).toHaveNoViolations()` work.
+  expect.extend(axeMatchers)
+
+  // Testing Library's 1000ms default for `findBy*`/`waitFor` is too tight for the
+  // route-level tests: resolving a lazy route chunk and settling its first render
+  // can exceed it whenever the machine is busy (a loaded CI runner, or a backend
+  // suite competing for CPU locally), which shows up as flakes that never reproduce
+  // in isolation. The headroom only costs wall-clock on an assertion that was going
+  // to fail anyway.
+  configure({ asyncUtilTimeout: 5000 })
+}
 
 // The package's `extend-expect` type augmentation has a broken runtime import,
 // so declare the matcher types against vitest's `Assertion` interface here.
@@ -28,11 +38,12 @@ declare module 'vitest' {
 
 // jsdom's `localStorage` varies by version — CI's build omits it entirely, so a
 // test's `localStorage.clear()` throws, which aborts Testing Library's afterEach
-// cleanup and leaks rendered DOM into later tests. Install a fresh in-memory
-// Storage unconditionally so every test file behaves identically everywhere.
-{
+// cleanup and leaks rendered DOM into later tests. Node ships its own Web Storage
+// that warns without `--localstorage-file`. Install a fresh in-memory Storage
+// unconditionally so every test file behaves identically everywhere.
+function memoryStorage(): Storage {
   const store = new Map<string, string>()
-  const localStorageMock = {
+  return {
     get length() {
       return store.size
     },
@@ -46,14 +57,82 @@ declare module 'vitest' {
       store.set(key, String(value))
     },
   }
-  Object.defineProperty(globalThis, 'localStorage', {
-    value: localStorageMock as Storage,
+}
+for (const name of ['localStorage', 'sessionStorage'] as const) {
+  Object.defineProperty(globalThis, name, {
+    value: memoryStorage(),
     configurable: true,
     writable: true,
   })
 }
 
-if (!window.ResizeObserver) {
+// jsdom has no matchMedia. Every query answers "no match" unless a test installs
+// its own, so a component that reads `prefers-reduced-motion` or a breakpoint
+// does not depend on its own feature guard to render under test. Reinstalled
+// before every test because some suites delete or stub it.
+function installMatchMedia() {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: (query: string): MediaQueryList => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  })
+}
+
+// Messages a test run is known to print and does not yet fail on. Each entry is
+// debt with an owner: remove it once the named issue fixes the cause. Anything
+// else printed through console.error / console.warn fails the test that printed
+// it, because those warnings are how React reports invalid DOM nesting, state
+// updates outside act(), and react-query reports a query that resolved to
+// undefined — real defects that used to pass green.
+const KNOWN_CONSOLE_NOISE: RegExp[] = [
+  // The demo coach card renders inside the scan runs table (#209, DEMO-1).
+  /In HTML, <div> cannot be a child of <tbody>/,
+  /<tbody> cannot contain a nested <div>/,
+]
+
+const consoleCalls: string[] = []
+
+beforeEach(() => {
+  if (hasDom) installMatchMedia()
+  for (const level of ['error', 'warn'] as const) {
+    vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+      consoleCalls.push(`console.${level}: ${format(...args)}`)
+    })
+  }
+})
+
+afterEach(() => {
+  // Global state that used to leak from one test into the next: persisted
+  // storage, fake timers left on by a test that failed before restoring them,
+  // and stubbed globals.
+  vi.unstubAllGlobals()
+  localStorage.clear()
+  sessionStorage.clear()
+  vi.useRealTimers()
+
+  const unexpected = consoleCalls.filter(
+    (message) => !KNOWN_CONSOLE_NOISE.some((pattern) => pattern.test(message)),
+  )
+  consoleCalls.length = 0
+  if (unexpected.length > 0) {
+    throw new Error(
+      `The test printed ${unexpected.length} unexpected console message(s). ` +
+        'Fix the cause, or spy on console yourself if the message is the point of the test.\n\n' +
+        unexpected.join('\n\n'),
+    )
+  }
+})
+
+if (hasDom && !window.ResizeObserver) {
   class ResizeObserverMock {
     observe() {}
     unobserve() {}
@@ -64,6 +143,6 @@ if (!window.ResizeObserver) {
   globalThis.ResizeObserver = ResizeObserverMock as typeof ResizeObserver
 }
 
-if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+if (hasDom && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = function () {}
 }

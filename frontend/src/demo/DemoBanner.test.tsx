@@ -189,6 +189,15 @@ describe('DemoBanner', () => {
     expect(screen.queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument()
   })
 
+  it('hides reset/delete from the creator once they are demoted to viewer', () => {
+    // The backend gates both routes on EditorUserDep before it looks at the
+    // creator, so the demoted creator's click could only ever answer 403.
+    renderBanner({ auth: authValue({ id: 'creator-1', role: 'viewer' }) })
+
+    expect(screen.queryByRole('button', { name: /^reset$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument()
+  })
+
   it('shows reset/delete to a workspace owner even if they did not create the demo', () => {
     renderBanner({ auth: authValue({ id: 'owner-9', role: 'owner' }) })
 

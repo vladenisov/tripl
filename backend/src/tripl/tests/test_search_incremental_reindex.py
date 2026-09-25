@@ -24,6 +24,8 @@ from tripl.config import settings
 from tripl.models.search_document import SearchDocument
 from tripl.services import search_service
 from tripl.services._search_documents import DOCUMENT_BUILDER_VERSION
+from tripl.services.app_settings_service import env_ai_config
+from tripl.services.embedding_service import embedding_provenance
 from tripl.tests.conftest import TestSessionLocal
 from tripl.tests.test_search import _create_event_type, _create_fact_metric, _create_fact_table
 
@@ -119,7 +121,7 @@ async def test_reindex_preserves_ready_embedding_and_reinserts_changed_docs(
     await _set_embedding_state(
         before[metric_key].id,
         status="ready",
-        model=settings.search_embedding_model,
+        model=embedding_provenance(env_ai_config()),
         embedding=SENTINEL_EMBEDDING,
     )
 

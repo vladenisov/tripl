@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from tripl.schemas.field_definition import FieldDefinitionCreate, FieldDefinitionResponse
+from tripl.schemas.not_null_update import reject_explicit_nulls
 
 
 class EventTypeCreate(BaseModel):
@@ -15,11 +16,24 @@ class EventTypeCreate(BaseModel):
     field_definitions: list[FieldDefinitionCreate] = Field(default_factory=list)
 
 
+# Every field of EventTypeUpdate maps to a NOT NULL EventType column, and
+# ``update_event_type`` ``setattr``s whatever the dump holds — so an explicit
+# ``null`` is a 422 naming the field rather than a DB-level 500. See
+# ``schemas/not_null_update`` (tripl-0zpq.267). ``name`` is immutable and has no
+# update field at all.
+_EVENT_TYPE_NOT_NULL_UPDATE_FIELDS = frozenset({"display_name", "description", "color", "order"})
+
+
 class EventTypeUpdate(BaseModel):
     display_name: str | None = Field(None, min_length=1, max_length=255)
     description: str | None = None
     color: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
     order: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _EVENT_TYPE_NOT_NULL_UPDATE_FIELDS)
 
 
 class EventTypeResponse(BaseModel):

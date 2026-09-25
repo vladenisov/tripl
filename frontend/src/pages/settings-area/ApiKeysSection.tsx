@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Lock, Plus } from 'lucide-react'
 import { apiKeysApi } from '@/api/apiKeys'
-import { projectsApi } from '@/api/projects'
+import { projectsQueryOptions } from '@/lib/queryKeys'
 import { useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,7 @@ import { getErrorMessage } from '@/lib/utils'
 import { SCard, SHeader } from '@/components/settings/kit'
 import { describeKeyCounts, isKeyInactive } from './apiKeyStatus'
 import type { ApiKey, ApiKeyScope, ApiKeyWithToken } from '@/types'
+import { canWrite } from '@/lib/permissions'
 
 /**
  * Workspace · API keys. Reuses the real apiKeysApi wiring (the same create /
@@ -40,7 +41,7 @@ export default function ApiKeysSection() {
   const [revealed, setRevealed] = useState<ApiKeyWithToken | null>(null)
 
   const listQuery = useQuery({ queryKey: ['api-keys'], queryFn: () => apiKeysApi.list() })
-  const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: () => projectsApi.list() })
+  const projectsQuery = useQuery(projectsQueryOptions())
 
   const projectNameById = (projectsQuery.data ?? []).reduce<Record<string, string>>((acc, p) => {
     acc[p.id] = p.name
@@ -82,7 +83,7 @@ export default function ApiKeysSection() {
   }
 
   const keys = listQuery.data ?? []
-  const canCreateWriteKeys = user?.role === 'owner' || user?.role === 'editor'
+  const canCreateWriteKeys = canWrite(user?.role)
 
   // The card used to headline "Active keys · N keys" off the unfiltered list,
   // so revoked and expired tokens were counted as live ones on a credentials

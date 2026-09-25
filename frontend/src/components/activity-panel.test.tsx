@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -60,6 +60,52 @@ afterEach(() => {
 })
 
 describe('ActivityPanel', () => {
+  it('keeps the loaded feed when a later refresh fails (SHELL-40)', async () => {
+    let fail = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/activity/projects/demo?limit=20')) {
+        if (fail) return new Response(JSON.stringify({ detail: 'boom' }), { status: 500 })
+        return mockJsonResponse([implementedEvent('Signup', new Date().toISOString())])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderActivityPanel('demo')
+    expect(await screen.findByText('Event implemented: Signup')).toBeInTheDocument()
+
+    fail = true
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh activity' }))
+
+    expect(
+      await screen.findByText('Could not refresh; showing the last loaded items.'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Event implemented: Signup')).toBeInTheDocument()
+    expect(screen.queryByText('Activity unavailable')).toBeNull()
+  })
+
+  it('keeps relative times counting without a refetch (SHELL-40)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['Date', 'setInterval', 'clearInterval'] })
+    try {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+        const url = String(input)
+        if (url.endsWith('/api/v1/activity/projects/demo?limit=20')) {
+          return mockJsonResponse([implementedEvent('Signup', new Date().toISOString())])
+        }
+        throw new Error(`Unhandled fetch: ${url}`)
+      })
+      renderActivityPanel('demo')
+      expect(await screen.findByText('just now')).toBeInTheDocument()
+
+      await act(async () => {
+        vi.advanceTimersByTime(5 * 60_000)
+      })
+      expect(screen.queryByText('just now')).toBeNull()
+      expect(screen.getByText('5m ago')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('loads project activity from the backend', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)

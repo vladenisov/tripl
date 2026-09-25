@@ -11,6 +11,11 @@ type SparklineProps = {
   anomalyIdx?: number | null
   className?: string
   style?: CSSProperties
+  /**
+   * Stretch to the container's width: `width`/`height` then only set the
+   * drawing's coordinate space (viewBox) and the rendered height.
+   */
+  responsive?: boolean
 }
 
 function SparklineInner({
@@ -22,9 +27,18 @@ function SparklineInner({
   anomalyIdx = null,
   className,
   style,
+  responsive = false,
 }: SparklineProps) {
   const gradId = useId()
   if (!data?.length) return null
+  const size = responsive
+    ? {
+        width: '100%',
+        height,
+        viewBox: `0 0 ${width} ${height}`,
+        preserveAspectRatio: 'none',
+      }
+    : { width, height }
 
   const min = Math.min(...data)
   const max = Math.max(...data)
@@ -33,7 +47,7 @@ function SparklineInner({
   if (variant === "bar") {
     const barW = Math.max(1.5, width / data.length - 1)
     return (
-      <svg width={width} height={height} aria-hidden="true" className={className} style={{ display: "block", ...style }}>
+      <svg {...size} aria-hidden="true" className={className} style={{ display: "block", ...style }}>
         {data.map((v, i) => {
           const h = Math.max(1, ((v - min) / range) * (height - 2))
           const isAnom = anomalyIdx === i
@@ -66,8 +80,7 @@ function SparklineInner({
 
   return (
     <svg
-      width={width}
-      height={height}
+      {...size}
       aria-hidden="true"
       className={className}
       style={{ display: "block", overflow: "visible", ...style }}

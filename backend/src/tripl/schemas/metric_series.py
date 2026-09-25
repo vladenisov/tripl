@@ -39,6 +39,12 @@ class MetricSeriesResponse(BaseModel):
     scan_config_id: uuid.UUID | None = None
     interval: ScanInterval | None = None
     latest_signal: MetricSignalResponse | None = None
+    # The confidence-band multiplier, resolved per scope the way the detector
+    # scores it: the project setting narrowed by this metric's false-positive
+    # override (``metrics_service._apply_scope_sigma_override``). Required, not
+    # defaulted like ``EventMetricsResponse.sigma_threshold``, so an unfilled
+    # value cannot ship silently at 4.0 (tripl-4cgl).
+    sigma_threshold: float
     data: list[MetricSeriesPoint]
     forecast: list[ForecastPoint] = []
 
@@ -64,8 +70,13 @@ class MetricVersionSeries(BaseModel):
     is_other: bool = False
     is_latest: bool = False
     # True once the release takes a real share of traffic (activation gate),
-    # mirroring ``AppVersionMetricSeries.is_active``. Always False for fractional
-    # metrics, where a value-share gate is meaningless.
+    # mirroring ``AppVersionMetricSeries.is_active``. For a FRACTIONAL metric the
+    # gate is on PROJECT traffic share when project-total maturity rows exist —
+    # a count, so meaningful for any metric shape — and without them every
+    # released version is active, because the metric's own ratio rows cannot
+    # answer "does this release carry real traffic" and refusing to answer would
+    # retire them all at once. Prereleases are never active. See
+    # ``metric_series_service._build_metric_version_series``.
     is_active: bool = False
     total_value: float
     data: list[MetricSeriesPoint]

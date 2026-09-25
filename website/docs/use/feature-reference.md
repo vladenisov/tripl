@@ -17,7 +17,9 @@ For the underlying mental model (events vs. event types, scopes, signals) read
 
 :::note Permissions
 Mutations (create/update/delete) require at least the **editor** role; viewers
-are rejected. Data sources and the workspace/instance settings require the
+are rejected. Inside a project an editor may also need to own it: a demo, or a
+project another editor created, is changed only by its creator or an owner.
+Data sources and the workspace/instance settings require the
 **owner** role. Read surfaces are available to any signed-in member. Owner-only
 command-palette entries (such as **Runtime**) are hidden for non-owners.
 :::
@@ -35,7 +37,11 @@ The project sidebar groups every surface into three job-based areas:
 Above the groups sit the **project switcher**, the **branch switcher** (shown
 only inside a project), and the **Search or jump** button (⌘K). Below the groups
 is a **Project settings** link; the footer adds **Concepts** (the in-app domain
-primer), a **Workspace settings** gear, and **Sign out**. Badge counts come from
+primer), an **Appearance** button (theme, accent, density, chart style), a
+**Workspace settings** gear, and **Sign out**. Collapsed to an icon rail, the
+sidebar keeps the project and branch switchers, Project settings, Concepts and an
+account menu, with each icon named in a tooltip. Below 1024px the sidebar is a
+drawer opened from the top bar, and below 1600px the activity rail is too. Badge counts come from
 the cheap project summary: Events (active events), Event types, Variables,
 Monitors (only when one or more is firing, rendered in red), Anomalies (the count
 of significant open monitoring signals — the same number the Anomalies page shows —
@@ -52,9 +58,13 @@ branches, Coverage, Scans, and Audit log carry no count.
 **Where:** Plan › Events (the default project landing surface).
 
 The catalog is a table of plan **events**, split into one tab per **event type**
-(plus an "all" view). Each row shows the event name, status, tags, recent volume,
-its latest anomaly **signal** state, and a **schema-drift badge** when the event
-type has open drift. Controls include free-text search, status and tag filters, a
+(plus an "all" view). Each row shows the event name, status, tags, recent volume
+and its latest anomaly **signal** state. An event type with open drift gets one
+**schema-drift badge** beside the page heading, once per type rather than on
+every row of it; the events table on an event type's settings page shows that
+type's badge above its toolbar. Under a per-column field or meta filter the
+heading's **Total** becomes **Matching**: the matches among the rows checked so
+far, as the table footer counts them. Controls include free-text search, status and tag filters, a
 "silent since N days" filter, a **Reviewed** filter (Any / Reviewed / Not
 reviewed, carried in the URL as `?reviewed=true|false`), per-column field-value
 and meta-value filters,
@@ -62,6 +72,14 @@ saved views, column visibility, bulk actions, and a per-tab aggregate metrics
 chart. The review queue can sort **Busiest first**, collapse similar-name
 clusters for group selection, and expand the selection from loaded rows to
 **Select all N** matching events before a bulk status/owner/review/delete action.
+Per-column field and meta filters count as part of "matching" too, so under one
+the button reads **Select all matching**. The selection is cleared when you
+switch tab, branch or server filter, but not when you only change the sort; a bulk change that reaches rows off screen,
+covers more than 50 events or archives asks first, and a finished status, owner
+or reviewed change offers **Undo** in its toast when every changed row was
+loaded. Undo restores the values the table showed, and leaves any selection you
+have made since alone. Drag-to-reorder is off while the list is sorted **Busiest first**,
+because the rows are not in catalog order then.
 The **Reviewed** column is hidden by default in the column picker but is forced
 visible on the review tab (`/events/review`).
 
@@ -157,7 +175,9 @@ convenience: the formatted name is also the event's *scan identity*, the key
 collection matches on, so an event authored under a different name would never
 merge with the traffic it describes. The rows the name is built from are marked
 **names the event** and are required, and the form lists any that are still
-empty.
+empty. A placeholder that reads into a JSON field value, such as
+`{payload.is_premium}`, is rendered the way a scan renders it: `true`, `false`
+and `null`, and nested objects as JSON.
 
 The rule follows the type onto a plan branch. A branch carries its own copy of
 every event type while the scan names the `main` copy, so a branch copy
@@ -239,9 +259,21 @@ a flag-only flip as a change.
 Fields are defined on an event type (display name, name, type, required, enum
 options, order); each event carries a value per field. Meta fields are
 project-wide; each event carries a meta value per meta field. Tags are free-form
-labels (lower-cased) used for filtering. Field and meta values accept variable
+labels (lower-cased, trimmed, de-duplicated, and at most 100 characters each).
+That normalisation happens on every door now — the form, the API, MCP and the
+bulk paste — where once it happened only in the web form, so a tag written as
+`Checkout` through an API client used to sit beside `checkout` as a second
+label. Tags already stored keep the spelling they were given; nothing rewrites
+them. The tag filter and the tag list case-fold, so `Checkout` answers to
+`checkout` and the two show as one entry whichever way they were written.
+Field and meta values accept variable
 references (`${variable}`), and `url`/`date`/`json` field types render
-type-appropriate inputs.
+type-appropriate inputs. A **meta** value is capped at 2,000 bytes once stored —
+for a field with a link template, that is only the part the template wraps, not
+the whole address you paste. The value itself is part of the uniqueness key that
+stops one event carrying the same meta value twice, and a database index entry
+has a size limit. A field value has no such key and is capped far higher, at
+100,000 characters.
 
 **Who owns a field value.** A scan fills field values in from what it observes
 and keeps them up to date. The moment you type over one, it is yours: scans stop
@@ -363,20 +395,42 @@ one of those owners before an authorized editor can merge a branch that adds,
 removes, or edits the type itself — its display name, description, color, or
 order; a branch that changes only the type's fields or events does not ask for
 one); a type with no owners has no owner-approval gate.
+The gate is a review convention for the branch workflow, not an access control:
+any editor can add or remove a type's owners, and an editor can still change the
+type directly on `main`, which asks for no approval (see
+[Security](../run/security.md#roles-and-access-control-rbac) on shared-project editing).
+
+**Deleting an event type is refused with a `409 Conflict` while a scan is bound
+to it.** The binding is what tells the scan where to put the events it collects,
+and the database clears it on delete rather than refusing — so without the
+guard the scan kept running, kept listing, and quietly collected nothing. The
+message names every scan involved. Point the scan at another event type, give
+it an **Event type column** so it discovers its types from the data, or delete
+the scan; then delete the type. A branch's copy of a type is bound by nothing
+and deletes as before. Merging a branch that removed the type is refused the
+same way, for the same reason.
 
 ### Schema drift
 
 Drift is detected when incoming data diverges from an event type's declared
-schema and is surfaced as the **schema-drift badge** on event rows in the
+schema and is surfaced as the **schema-drift badge** beside the heading of the
 catalog. Drift kinds are `new_field`, `missing_field`, `type_changed`,
 `enum_violation`, `required_null_violation`, `regex_violation`, and
 `range_violation`. Per drift you can **accept**, **snooze** (defaults to 7 days,
 and the date you pick has to be in the future), mark **false positive**, or
-**reopen**. A resolution note is optional on every one of them, and an action
+**reopen**. Only a snooze takes a `snoozed_until`; sending one with any other
+action is refused with `422` rather than silently ignored. A resolution note is
+optional on every one of them, and an action
 that carries no note **leaves the stored note alone**
 — re-snoozing a drift does not erase the reason somebody recorded last week.
 **Reopen** is the exception and clears the note: a reopened drift has no
 resolution to annotate.
+
+Accepting a `new_field` or `type_changed` drift uses the same complex-type
+classification as detection: BigQuery `RECORD`/`STRUCT` becomes a JSON field,
+while scalar types remain scalar. A snoozed drift becomes active again once its
+deadline passes. **Reset drifts** also removes schema-drift rows left behind by
+a deleted scan, including rows whose scan reference was set to null.
 
 Accepting a `missing_field` drift **deletes the declared field** from the event
 type. tripl refuses that with a `409 Conflict` when a scan on that event
@@ -385,8 +439,11 @@ without it, and deleting the field would fail every subsequent collection with
 *"the event name format references unknown keys"*. The message names the
 column, the scan and its format. Fix it by editing the scan's
 [**Event name format**](#event-detail--editing) so it no longer references the column, then
-accept the drift. A project-wide scan (one with no bound event type)
-counts too, because it can produce events for any event type in the project.
+accept the drift. A **grouped** scan counts too — one with no bound event type
+*and* an **Event type column**, which discovers its event types from the data
+and so can produce events for any event type in the project. A scan with
+neither does not: it discovers nothing and names nothing, so its format governs
+no event type at all.
 
 A placeholder is matched on its **base column**. A format of `{event.category}`
 reads the `category` key out of the JSON `event` column, and that lookup only
@@ -471,7 +528,9 @@ globally or for one event, snoozed, marked false-positive, or reopened; rows
 that are not asking for attention sit in both panels behind a toggle named for
 what it holds — **Show N resolved**, **Show N snoozed**, or **Show N snoozed or
 resolved** — and a scan reopens an accepted row on its own once it observes a
-value outside the accepted set. The event detail repeats the
+value outside the accepted set. An action without a resolution note preserves
+the existing note; send an explicit null to clear it, or reopen the drift.
+The event detail repeats the
 affected event's review panel. Selection enables bulk type/description/value changes and
 delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
 removed scan-owned variable is not recreated. Search matches a variable's
@@ -483,12 +542,13 @@ A catalog run can end by **retiring the scan-created variables nothing refers
 to any more** — no `${token}` in any stored event field or meta value, no
 observed context, no value drift, no per-event override — so a catalog stops
 accumulating rows minted from a JSON column keyed by free text. A scan you start
-by hand always does this, whatever minted the variable. A **scheduled monitoring
+by hand runs this sweep, but scalar-derived variables are deferred if any scan
+config in the project lacks a declared lookback. A **scheduled monitoring
 collection** does it on every run for a variable minted from a path inside a
 JSON column — a key that stopped arriving is exactly what the pass is for, and
 the key's return mints the variable again under a new id — but judges a variable
-minted from a scalar column only when the config sets **Limits → Lookback
-(hours)**: with the field blank the run reads the slice it is collecting, often
+minted from a scalar column only when **every** scan in the project sets
+**Limits → Lookback (hours)**: with the field blank a scheduled run reads the slice it is collecting, often
 a single hour, and a scalar column that looks enumerable for one quiet hour is
 rewritten as literals in every event at once, which is not evidence that its
 variable is dead. A **metrics replay** never does it: it syncs no catalog, so it
@@ -516,12 +576,27 @@ is `all` and an unrecognised value is a `422`. See
 **Where:** Plan › Relations. Declare connections between event types; create and
 delete. Relations are resolved per the active branch.
 
+All four ids a relation names — two event types and two fields — must exist on
+the branch it is created in, and a request naming one that does not is refused.
+A relation that points outside its own branch is not a relation anybody can
+read: the diff, the merge and a branch copy all identify a relation by the names
+behind those ids, so one that cannot be resolved took down whichever of them
+reached it first. If a project stored such a row before the refusal existed,
+creating a branch reports it by id and asks you to delete it.
+
 ### Tracking-plan branches & merges
 
 **Where:** the branch switcher (top of the project sidebar) and Plan › Plan
 branches. `main` is the live plan; feature branches let you stage changes before
 merging. Working surfaces are scoped to the active branch via a `?branch=`
-context. Merging an owned event type re-checks ownership (see
+context. Switching branch writes `?branch=` into the address (or removes it for
+`main`), so a reload and a copied link keep the branch you picked. Going Back
+into an earlier page that named a different branch switches to that branch; if
+the page you are on has unsaved changes, you are asked first. When the branch
+you are working in is merged, closed or deleted, the app switches back to `main`
+and says so. A link that opens a merged or closed branch on purpose (a merged
+branch's diff, **Switch to** on an event from that branch) shows it read-only
+instead. Merging an owned event type re-checks ownership (see
 [Event types](#event-types)).
 
 The list is split into **Active** and **Merged** tabs, each showing its count, so
@@ -548,24 +623,40 @@ gets the route's `403` instead. Reads, and a search reindex, still work on
 either. Photo and Figma spec writes, which address the event by its id rather
 than by `?branch=`, answer the same `409` on such a branch's event; comments,
 on a photo or on the event, are discussion rather than plan content and still
-work there. Catalog rows, diff rows and the command palette carry the
+work there. A write that arrives while the branch is being merged waits for the
+merge to finish and is then refused with the same `409`; a merge that starts
+while a write to its branch is in progress waits for that write, and so merges
+exactly what was approved or refuses the now-stale approval. An edit to main
+made during any merge likewise waits and applies on top of the merged plan, and
+a merge that starts during an edit to main waits and then reports it as a
+conflict where it clashes with the branch, instead of overwriting it. A comment
+posted on a branch's event during its merge waits too, and joins its thread on
+main. Catalog rows, diff rows and the command palette carry the
 branch in the link (`?branch=`), and an entity page opened that way shows a
 banner naming the branch it belongs to, so a link handed to a developer opens
 the right copy. A diff row also carries **warnings** for an event authored on
 the branch without a scan identity — e.g.
 `No scan identity: the naming rule 'track:{name}' needs name.` — so a reviewer
 sees it before the merge lands an event that would never match its traffic.
-Rows that share a name — two events called `purchase:success` under `track`,
-which nothing forbids, or two relations between the same two fields — are
-matched by that name like every other row, by the diff, the merge and a revert
-alike, so the diff shows at most one row for the name and a change to one of
-them can show on, or land on, the other: deleting one of two such events can
-read as an edit to the survivor, or as nothing when the two were identical. A
-diff row for such a name carries a warning to rename one of the events, or
-remove one of the relations, before changing either. A branch copy of an event reads its
-metrics and **last seen** through its `main` twin (the event with the same type
-name and identity), so the branch shows what the live plan collected rather than
-blanks. Removals that are the machine's doing — a scan-minted variable still
+Rows may share a name — two events called `purchase:success` under `track`,
+which nothing forbids, or two relations between the same two fields. Every
+branch copy remembers the `main` row it was made from, so the diff, the conflict
+check, the merge and a revert follow each copy to its own row: deleting one of
+two such events on a branch deletes exactly that one from `main` when the
+branch merges, an edit lands on the row it was made to, and a branch that
+deletes both copies and authors one event in their place leaves `main` with
+just that event. Rows created on the branch are matched to `main` by name, as
+before. A branch opened before this was tracked may still hold namesakes it
+cannot tell apart; its diff row for such a name carries a warning to rename one
+of the events, or remove one of the relations, before changing either. A variable renamed on the branch onto the name of a variable the branch deleted merges as
+that rename: the deleted variable goes, and the renamed one keeps its id, its scan identity
+and its observed values. When the deleted variable has no scan identity, or `main` changed
+it after the branch was cut, the merge cannot tell the rename from an edit of that variable
+and answers `409`; rename one of them and merge again. A branch
+copy of an event reads its metrics, **last seen** and discussion through the
+`main` event it was copied from (for an event created on the branch, the `main`
+event with the same type name and identity), so the branch shows what the live
+plan collected rather than blanks. Removals that are the machine's doing — a scan-minted variable still
 exactly as the scan wrote it being retired (no binding beyond the scan's own, no
 documented values or per-event overrides, not renamed, not excluded from scans,
 not the removed half of a rename, and not named by a `${token}` in any field or
@@ -608,9 +699,14 @@ deleted after the merge commits, unless another attachment, on any branch,
 still uses it; a storage failure there is logged and never fails the merge.
 
 An owner may configure a separate **Implementation tracker** for the project.
+The implementation tracker currently supports Jira only. The API rejects other
+`tracker_type` values instead of accepting a setting that the ticket worker cannot use.
 When enabled, a successful merge best-effort creates one Jira implementation
 ticket for the added/changed events; a scheduled sync promotes covered events to
-`implemented` when Jira reports the ticket done. Collection completes the
+`implemented` when Jira reports the ticket done. If Jira returns a temporary
+transport or server error while creating the ticket, the worker retries up to
+five times with backoff; each retry first searches for the branch marker to
+adopt an issue already created by an earlier attempt. Collection completes the
 lifecycle on its own: the first data an event receives promotes it from
 `ready_for_dev` or `implemented` to `live`, while a `draft` or `in_review` event
 stays where it is. This is branch workflow
@@ -655,7 +751,10 @@ the working naming rule for scan-targeted event types.
 slug, and description; set the project-wide number of app releases retained as
 explicit version series; rebuild its search index; or use owner-only destructive
 resets. Version retention applies to event monitoring and standalone catalog
-metrics alike, with older releases combined into **Other**. **Reset anomalies**
+metrics alike. Renaming the slug refreshes search links for the project's plan
+branches so palette and Ask AI results point at the new route. Deleting a project
+or resetting its demo clears its slug-specific catalog and monitoring caches.
+Older releases are combined into **Other**. **Reset anomalies**
 removes metric and breakdown anomaly records (and
 their derived active signals) across every scan/catalog metric. **Reset drifts**
 removes schema and distribution drift, but not variable-value drift. Both can be
@@ -718,12 +817,17 @@ it charts the scan that *does* have volume for that tab rather than rendering an
 empty card. A project whose event types are split across several scans — one per
 event type is a common shape — would otherwise show nothing on every tab but the
 default scan's own. Either way the chart names the scan it charted, so the two
-surfaces never disagree silently. A new project also shows a **Get started**
+surfaces never disagree silently. On a working branch the Dynamics chart applies
+the page's tag, status and search filters to the branch's own events — the ones
+the table lists — and charts the volume their main-branch counterparts collected,
+so a tag or status changed on the branch selects the same events in the chart as
+in the table. A new project also shows a **Get started**
 checklist (Plan → Observe → Govern) that ticks steps off automatically from real
 project state and hides itself once you are set up. It is role-aware: connecting a
 data source is owner-only, so for an editor that step is shown as **Owner only**
 with an ask-an-owner hint and is excluded from progress — a non-owner's checklist
-can still reach done without it.
+can still reach done without it. Dismissing it offers **Undo**, and the command
+palette's **Show getting started** row brings a dismissed checklist back.
 
 ### Monitors
 
@@ -824,11 +928,36 @@ then reveals kind-specific config:
   up to the top-line ratio.
 - **Event composition** — derived from already-collected event series with no
   warehouse query of its own: a **single** event's count, a **ratio** of one event
-  to another (A / B), or an event **per distinct user**.
+  to another (A / B), or an event **per distinct user**. Each side names one
+  event — searched across the whole catalog — or a whole **event type**, which
+  counts every event of that type.
+
+Every row of a fact metric's filters has to be complete before it saves: a named
+filter with no name picked, a condition with no column or value, or an empty SQL
+fragment is flagged in place rather than dropped. `in` / `not in` conditions take
+one value per chip, so a value may itself contain a comma, and the operators on
+offer follow the column's type. Saved filters reload grouped by type — named
+filters, then conditions, then SQL fragments. Saved SQL the form did not join
+itself (a lowercase `and`, a line break, extra parentheses) reloads as one row,
+exactly as stored, and an untouched condition is saved back exactly as stored.
+
+**Changing what a metric measures deletes its history.** Any edit to the
+definition — the SQL, the data source, the interval, the fact table,
+aggregation, columns or filters, the events, the composition or the kind —
+deletes the metric's collected values, breakdowns and anomalies when saved, and
+collection starts over. The edit form compares what it would save with what is
+stored, says so as soon as they differ and asks before saving. That includes a
+metric saved in a shape the form cannot send back unchanged — for example a
+condition operator it does not know — where the warning shows before anything
+was edited. Edits to the name, description, unit, color, status or dimension
+columns keep the history.
 
 Shared fields are name, display name, description, color, unit, owner/review,
 status, breakdown columns/limit, optional version/platform columns, and the
-anomaly-detection toggle. A metric is monitored only while it is **active** and
+anomaly-detection toggle. With a breakdown limit, the values that stay explicit
+are ranked once over each collection's whole window, so a long replay split into
+chunks keeps the same values in every chunk instead of demoting a value into
+**Other** part-way through the series. A metric is monitored only while it is **active** and
 its anomaly-detection toggle is on. Turning that toggle off — or moving the
 metric out of `active` — stops it being scored and closes its signal on every
 surface at once: the catalog row, the metric's own detail page, the Anomalies
@@ -855,24 +984,45 @@ operands, including operands from different fact tables. Fact tables and metrics
 are indexed by global search and are not copied into plan branches.
 
 A fact table that metrics still read cannot be pulled out from under them.
-**Deleting** it, **unbinding its data source**, and **removing or renaming a named
-row filter a metric uses** are each refused with a conflict naming the metrics in
-the way (up to ten, then a count of the rest). Every metric that references the
-table counts, whatever its status — a `draft` or `archived` metric hits the same
-dangling reference the moment it collects again — and so does a ratio operand,
-whose reference lives inside another metric's config rather than in a column of
-its own. Change or delete those metrics first. Every other edit to the fact
-table, including adding a filter, is unaffected — with one exception, which
-matters if you drive the API directly. The unbind refusal is decided by the
-`data_source_id` **in the request**, not by comparing it with the stored one, so a
-client that resubmits the whole object with `data_source_id: null` is refused even
-when the table already has no data source bound. That is exactly the state a
-*deleted* data source leaves behind — the fact table survives and its
-`data_source_id` is set to `NULL` — so the refusal lands on the edits made to
-repair such a table, and names metrics that are already failing for the unrelated
-reason that there is no source to read. Send a real `data_source_id` in the same
-request to get the edit through. The editor on this page never trips this: it
-refuses to save at all without a data source selected.
+**Deleting** it, **unbinding its data source**, **removing or renaming a named
+row filter a metric uses**, and **removing or renaming an introspected column a
+metric aggregates, breaks down by, or filters on** are each refused with a
+conflict naming the metrics in the way (up to ten, then a count of the rest).
+Every metric that references the table counts, whatever its status — a `draft`
+or `archived` metric hits the same dangling reference the moment it collects
+again — and so does a ratio operand, whose reference lives inside another
+metric's config rather than in a column of its own. Change or delete those
+metrics first.
+
+The column refusal is the one you are most likely to meet by accident: it fires
+on the ordinary re-preview-and-save flow, when you edit the SQL so it stops
+projecting a column and save the freshly previewed column list over the old one.
+A single save that prunes several used filters — or several used columns — is
+refused once, naming every blocked name, so there is no need to iterate one
+round trip per name. Refusals across categories are still reported one category
+at a time: filters first, then columns, then the unbind.
+
+Adding a column or a filter is unaffected. Dropping one is not, and neither is
+the unbind case below — which matters if you drive the API directly. The unbind
+refusal is decided by the `data_source_id` **in the request**, not by comparing
+it with the stored one, so a client that resubmits the whole object with
+`data_source_id: null` is refused even when the table already has no data source
+bound. That is exactly the state a *deleted* data source leaves behind — the
+fact table survives and its `data_source_id` is set to `NULL` — so the refusal
+lands on the edits made to repair such a table, and names metrics that are
+already failing for the unrelated reason that there is no source to read. Send a
+real `data_source_id` in the same request to get the edit through. The editor on
+this page never trips this: it refuses to save at all without a data source
+selected.
+
+**Which data sources a fact table may bind.** The same rule `sql`-kind metrics
+use: a source is available to this project unless it is identifiably another
+project's — that is, its owning project is a different one, or it is a shared
+(unowned) source that some other project scans and this one does not. A shared
+source **no** project scans is available everywhere. Anything else is refused
+with `404 Data source is not available in this project.`, the same sentence on
+the save and on the preview. See
+[Security → Roles and access control](../run/security.md#roles-and-access-control-rbac).
 
 ### Metric detail
 
@@ -1045,7 +1195,14 @@ that it measures data match — not the Coverage page's plan coverage — so the
 governance numbers are not read as contradictory. The **shadow events inbox** (tabs: `new` / `accepted` /
 `dismissed`) lists events seen in data but missing from the plan — **Accept**
 creates the event on the active branch (you pick an event type when none is
-inferred), or **Dismiss** it. In a scan grouped by an event type column one
+inferred), or **Dismiss** it. A scan reads `main`'s plan, so the event type it
+inferred is `main`'s; accepting on a working branch writes the branch's own copy
+of that type, matched by name. If the branch deleted the type, the accept is
+refused and says so — accept on `main`, or pick a type the branch still has.
+An accepted event carries the identity the scan observed and **no field
+values**: nothing in the inbox could have supplied them. Its required fields
+therefore open empty until somebody fills them in, which is the honest state —
+the scan has seen the event, the plan has not been written yet. In a scan grouped by an event type column one
 generated identity can turn up under more than one event type, and such an
 identity is a single inbox row carrying the combined volume across those types,
 attributed to the event type that contributed most of it. That happens because
@@ -1056,8 +1213,8 @@ the name *is* built from coincide. Naming the **Event type column** in the
 [What the scan form asks](#what-the-scan-form-asks)), and it usually separates
 them — but it is not a guarantee, because an event group rule that rewrites both
 names to one folds them back together anyway.
-**Dead events** (in plan, not seen recently over a
-14-day window) can be selected and archived; archiving targets the project's
+**Dead events** (in plan, no data in the last
+30 days) can be selected and archived; archiving targets the project's
 `main` branch.
 
 **Archiving puts an event away for good.** An archived event is inert: scans stop
@@ -1196,6 +1353,12 @@ every non-archived status and therefore reports a larger total.
 legacy `/p/<slug>/settings/scans` path still resolves — it redirects here, so old
 bookmarks and links keep working.
 
+**New scan** opens its own page at `/p/<slug>/scans/new` (owners only), so
+**Back** returns to the list and a reload keeps you on the form; creating the
+scan takes you to its page, where **Run now** is. A scan's page remembers its
+tab in the address (`?tab=configuration`), so a reload stays on the tab you
+were reading.
+
 Every scan surface states the chain a scan feeds, because a scan's output reaches
 you as anomalies and alerts and nothing on these screens used to say so. The list
 says it once for all scans; the form says it under the mode you have selected;
@@ -1251,6 +1414,13 @@ it can ingest an event. **Create scan** and **Save** stay disabled until it is
 answered, and the preview panel says the same thing rather than asking your
 warehouse a question with no answer.
 
+The event-type picker uses the project's main plan even when you are viewing a
+plan branch. A scan writes catalog changes to main, so create, update and dry-run
+reject an event type from a different project or a branch copy. Scan names must
+also be unique for their data source; a duplicate name returns a conflict rather
+than a server error. A malformed pre-release regex is rejected when the scan is
+saved, instead of being ignored during collection.
+
 **Everything else is a collapsed section.** Each carries one line saying what it
 is for and what happens if you leave it alone. Editing a saved config opens any
 section that already holds a non-default value.
@@ -1263,7 +1433,14 @@ section that already holds a non-default value.
 | **Limits** | Caps on how much warehouse data each run reads. Leave them alone unless runs are slow or expensive. | Replay chunk size *(Catalog + monitoring only)* · Lookback (hours) *(needs a time column — with none, the section says each run reads the whole base query instead of offering the field)* · Row cap per run · Row cap per metrics run *(Catalog + monitoring only — a Catalog only scan has no metrics runs to cap; a cap set while monitoring is kept, not cleared, and returns if you switch back)* |
 
 Sections that need your query's columns stay empty until a preview is loaded and
-say so. The shared number of releases to retain lives under **Settings → Project
+say so. Editing the base query (or pressing its Format button) keeps the JSON
+value paths and drift fields you already chose; the next preview drops only the
+ones whose column the new query no longer returns. A numeric limit the backend
+would refuse — zero, a negative or a fraction, or a traffic share outside 0–1 —
+is flagged under its field, and **Save** says which field to fix instead of
+sending it. On a saved scan's **Configuration** tab there is one **Save** for
+the whole form, at the foot of the sections; it is enabled once something has
+changed. The shared number of releases to retain lives under **Settings → Project
 → General**. The platform column powers the platform-presence matrix. Reserved
 role columns (event type, time, version, platform) cannot simultaneously be
 selected as scalar breakdown/drift fields. The **Event name format** is the
@@ -1387,7 +1564,13 @@ directly to **Review events**, or replay metrics over historical chunks (replay
 requires a time column and an interval). Runs expose status, progress, and
 curated failure detail. A run's **details** list flags warehouse
 columns that carried data but had no matching field in the plan — a real
-coverage gap worth fixing. It stays quiet about columns that were empty for
+coverage gap worth fixing. Run, replay, and apply-groups requests refuse to
+start a second live job for the same scan. Reaching a configured scan
+row limit fails that run rather than returning a partial successful result;
+successful summaries therefore do not carry a truncation flag. A stale Celery
+connection-test task is no longer used: the data-source connection test runs
+through the API request path.
+It stays quiet about columns that were empty for
 those rows, and about reserved role columns (event type, time, version,
 platform, and any column an event-group rule matches on), which tripl already
 uses elsewhere and never expects to have a plan field. A rule condition reserves
@@ -1496,6 +1679,11 @@ filterable by action, user, project, and time range. Each entry also records the
 **plan branch** the write was scoped to, so two contradictory edits to the same
 object on two branches are told apart. The rule is exact:
 
+Instance settings changes record the names of changed fields without storing
+their secret values. Scan runs and metrics replays record the resulting job ID;
+branch comments and conflict resolutions, photo and annotation changes, and
+project anomaly settings changes record the acting user as well.
+
 - an entry written through `?branch=<working branch id>` carries that branch's id
   and name, and the row shows a **branch chip**;
 - an entry with **no chip** was written on **main**, *or* is an action with no
@@ -1601,8 +1789,14 @@ Each entry keeps the request payload, which is why it is owner-gated: see
 
 ### Sign-in and password reset
 
-The sign-in screen toggles between **Existing Account** and **Create account**,
-and exposes a **Forgot your password?** flow. Entering your account email
+The sign-in screen toggles between **Existing account** and **Create account**,
+and exposes a **Forgot your password?** flow. After signing in you return to the
+page you were sent from, query string included, so an alert link's incident
+card or a branch link's branch survives the detour. If your session expires
+while the app is open, a sign-in dialog opens over the page instead of
+redirecting, so unsaved input is still there once you sign back in. Opening an
+invitation or a password-reset link while signed in says which account is signed
+in and offers **Sign out and continue**, keeping the link. Entering your account email
 requests a reset; the screen then always shows the same neutral confirmation
 regardless of whether that address is registered, so it can't be used to probe
 for accounts. When the instance has email configured it sends a **single-use
@@ -1647,6 +1841,18 @@ the browser's own prompt rather than ours — reload and closing the tab. A
 destination that keeps the draft, like moving between two Instance sections,
 passes without a word. Opening a rail link in a new tab is not a leave at all:
 the draft stays exactly where it is.
+
+The authoring pages outside the takeover ask the same question. The event,
+bulk-event, metric and fact-table forms, the new-scan page, a scan's
+**Configuration** tab (switching to **Overview** included) and the event-type
+field page (switching to another tab of the event type included) all ask before
+a link, the sidebar, switching branch in the sidebar, **Back**, **Cancel** or
+the back chevron drops edits you have not saved; reload and closing the tab get
+the browser's own prompt. The alert rule, alert destination and data-source
+dialogs ask before **Esc**, a click outside or **Cancel** closes them with your
+changes in them, and the data-source edit dialog, which has an address of its
+own, asks before **Back** too. A form you have not changed, or have changed
+back, never asks.
 
 The two halves of the app-wide palette's list narrow differently, and on purpose.
 
@@ -1694,7 +1900,13 @@ matches.**
 A toggleable live panel (header label "Now") of recent activity for the project,
 or workspace-wide when no project is in scope. It shows up to 20 items of type
 `anomaly`, `scan`, `alert`, or `event`, severity-colored, auto-refreshing roughly
-every 60 seconds, with a manual refresh. A completed `scan` item summarizes what
+every 60 seconds, with a manual refresh. An `anomaly` item, from a scan or a
+catalog metric, is dated by the bucket it describes, not by when detection last
+re-scored it. It stays in the feed while that bucket is within the last 7 days,
+or within 3 intervals of the series' own grid when that is longer. A weekly
+series therefore stays visible: its newest reportable anomaly already starts
+more than a week back, because the current week is still settling.
+A completed `scan` item summarizes what
 the run produced — new events, metric points, **new** signals, and rows scanned;
 every figure on the card is that run's delta, not a project total — and
 reads "no new events discovered" when a run on an established catalog finds

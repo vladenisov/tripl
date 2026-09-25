@@ -5,6 +5,7 @@ import type { EventType } from '@/types'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
 import { ErrorState } from '@/components/error-state'
@@ -13,6 +14,9 @@ import { ChevronLeft, Loader2, Plus } from 'lucide-react'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard } from './eventFormLayout'
 import { nameFormatBaseColumns } from './utils'
 import { bulkUnsupportedReason, parseBulkDraft, type BulkRow } from './bulkEventDraft'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 const EMPTY_EVENT_TYPES: EventType[] = []
 
@@ -57,6 +61,9 @@ export default function EventBulkForm() {
   const navigate = useNavigate()
   const branchId = useActiveBranchId()
   const qc = useQueryClient()
+  // Creating events is an editor action; a viewer who lands here by URL is
+  // told so up front rather than after pasting a list.
+  const canWrite = useCanWriteProject()
 
   // `null` is "not chosen yet": until the reader picks, the type the route names
   // (`/events/se/bulk`) is the choice, as on the single-event form
@@ -64,6 +71,9 @@ export default function EventBulkForm() {
   const [chosenEtId, setEtId] = useState<string | null>(null)
   const [status, setStatus] = useState<EventStatus>('draft')
   const [draft, setDraft] = useState('')
+  // The pasted list is the work at risk; a type or status choice alone is one
+  // click to redo. A viewer's textarea is disabled, so theirs is never dirty.
+  const unsaved = useUnsavedChangesGuard(canWrite && draft.trim() !== '')
 
   const goBack = () => {
     navigate(!tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`)
@@ -133,6 +143,7 @@ export default function EventBulkForm() {
   const ready = rows.filter(row => row.status === 'ready')
 
   const createMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       eventsApi.bulkCreate(
         slug!,
@@ -153,6 +164,7 @@ export default function EventBulkForm() {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
+      unsaved.release()
       goBack()
     },
   })
@@ -182,7 +194,8 @@ export default function EventBulkForm() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-[880px] px-6 pb-12 pt-4">
+      {unsaved.dialog}
+      <div className="mx-auto max-w-[880px] px-4 sm:px-6 pb-12 pt-4">
         <button
           type="button"
           onClick={goBack}
@@ -192,6 +205,7 @@ export default function EventBulkForm() {
           <ChevronLeft size={13} /> Events
         </button>
         <h1 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">Add many events</h1>
+        {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         <SurfCard title="What to create">
           <EvField label="Event type" htmlFor="bulk-event-type" required last={false}>
@@ -344,7 +358,7 @@ export default function EventBulkForm() {
           <button
             type="button"
             onClick={() => createMut.mutate()}
-            disabled={ready.length === 0 || createMut.isPending}
+            disabled={!canWrite || ready.length === 0 || createMut.isPending}
             className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
             style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
           >

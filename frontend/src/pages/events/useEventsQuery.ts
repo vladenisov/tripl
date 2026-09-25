@@ -1,9 +1,10 @@
-import { useCallback, useDeferredValue, useMemo } from 'react'
+import { useCallback, useDeferredValue, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useInfiniteQuery } from '@tanstack/react-query'
 
 import { eventsApi } from '@/api/events'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { FIRST_PAGE_IN_VIEW_META } from '@/lib/eventsListCache'
 import { EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import type { EventListItem, EventType } from '@/types'
 
@@ -29,7 +30,7 @@ const DEFAULT_ACTIVE_STATUSES: EventStatus[] = EVENT_STATUSES.filter(s => s !== 
 export function resolveQueryStatuses(
   activeTab: string,
   filterStatuses: EventStatus[],
-): string[] {
+): EventStatus[] {
   if (filterStatuses.length > 0) return filterStatuses
   if (activeTab === 'review') return ['in_review']
   if (activeTab === 'archived') return ['archived']
@@ -63,7 +64,7 @@ export type EventsQueryFilters = {
   isFilterPending: boolean
   filterEtId: string | undefined
   /** The status values actually sent to the server query (tab-driven) */
-  queryStatuses: string[] | undefined
+  queryStatuses: EventStatus[] | undefined
 }
 
 /**
@@ -75,11 +76,14 @@ export function useEventsQuery({
   slug,
   activeTab,
   eventTypes,
+  eventTypesLoaded,
   branchId,
 }: {
   slug: string | undefined
   activeTab: string
   eventTypes: EventType[]
+  /** The event-type list has resolved (successfully). */
+  eventTypesLoaded: boolean
   branchId: string | null
 }) {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -280,9 +284,17 @@ export function useEventsQuery({
     deferredFieldFilters !== fieldFilters ||
     deferredMetaFilters !== metaFilters
 
-  const filterEtId = SPECIAL_TABS.has(activeTab)
-    ? undefined
-    : eventTypes.find((e) => e.name === activeTab)?.id
+  const isTypeTab = !SPECIAL_TABS.has(activeTab)
+  const filterEtId = isTypeTab
+    ? eventTypes.find((e) => e.name === activeTab)?.id
+    : undefined
+  // A type tab names its type by key, and the id to scope by only exists once
+  // the types have loaded. Until then the list must wait: an undefined id reads
+  // as "every type", so each cold load of /events/se first fetched and rendered
+  // the whole catalog, and a stale link to a deleted or renamed type showed
+  // every event under that type's heading (EVT-13).
+  const isUnknownTab = isTypeTab && eventTypesLoaded && !filterEtId
+  const canQuery = !!slug && (!isTypeTab || !!filterEtId)
 
   const queryStatuses = useMemo(
     () => resolveQueryStatuses(activeTab, filterStatuses),
@@ -315,7 +327,20 @@ export function useEventsQuery({
     ],
   )
 
+  // Whether the table's viewport lies inside the first page, reported by the
+  // virtualizer (`reportFirstPageInView`) and read by `refreshEventsLists`
+  // when a mutation or a realtime event refreshes the list.
+  const firstPageInViewRef = useRef(true)
+  const reportFirstPageInView = useCallback((inView: boolean) => {
+    firstPageInViewRef.current = inView
+  }, [])
+  const listMeta = useMemo(
+    () => ({ [FIRST_PAGE_IN_VIEW_META]: () => firstPageInViewRef.current }),
+    [],
+  )
+
   const eventsQuery = useInfiniteQuery({
+    meta: listMeta,
     queryKey: [
       'events',
       slug,
@@ -340,7 +365,7 @@ export function useEventsQuery({
       const loaded = allPages.reduce((sum, page) => sum + page.items.length, 0)
       return loaded < lastPage.total ? loaded : undefined
     },
-    enabled: !!slug,
+    enabled: canQuery,
     placeholderData: (prev) => prev,
   })
 
@@ -425,8 +450,11 @@ export function useEventsQuery({
     isFilterPending,
     filterEtId,
     queryStatuses,
+    serverFilters,
+    isUnknownTab,
     // query
     eventsQuery,
+    reportFirstPageInView,
     rawEvents,
     total,
     fetchAllMatching,

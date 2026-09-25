@@ -27,7 +27,7 @@ several roles — only the command differs:
 | `redis` | `redis:8.6.2-alpine` (`--maxmemory 256mb --maxmemory-policy allkeys-lru --save ""`) | **Ephemeral** — no volume, no RDB/AOF | `redis-cli ping` |
 | `migrate` | `alembic upgrade head` (one-shot) | — | — |
 | `app` | API + built SPA on `:8000` | **Durable** — named volume `photos` at `/app/var/photos` (uploaded event photos, local photo backend) | **None** (probe externally — see [Health checks](#health-checks)) |
-| `celery-worker` | `celery -A tripl.worker.celery_app worker --loglevel=info` | — | **Disabled** (`healthcheck.disable: true`) |
+| `celery-worker` | `celery -A tripl.worker.celery_app worker --loglevel=info` | Same `photos` volume as `app` (for the daily orphan photo sweep) | **Disabled** (`healthcheck.disable: true`) |
 | `celery-beat` | `celery -A tripl.worker.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule` | — | **Disabled** (`healthcheck.disable: true`) |
 
 `migrate` runs once before `app`, `celery-worker`, and `celery-beat` start: they
@@ -143,17 +143,28 @@ docker run --rm \
   tar czf /backup/photos-$(date +%F).tar.gz -C /data .
 ```
 
-To restore, stop `app`, unpack into the volume, and hand it back to the image's
-`app` user (uid 1000), which must be able to write there:
+To restore, stop `app` and `celery-worker`, unpack into the volume, and hand it
+back to the image's `app` user (uid 1000), which must be able to write there:
 
 ```bash
-docker compose stop app
+docker compose stop app celery-worker
 docker run --rm \
   -v tripl_photos:/data \
   -v "$PWD":/backup alpine \
   sh -c 'tar xzf /backup/photos-2026-06-27.tar.gz -C /data && chown -R 1000:1000 /data'
-docker compose start app
+docker compose start app celery-worker
 ```
+
+:::warning Restore the database first
+`celery-worker` runs a daily sweep that deletes photo files no row in the
+database references, once they are older than `PHOTO_ORPHAN_SWEEP_GRACE_HOURS`
+(default 24; see [Event photo storage](configuration.md#event-photo-storage)).
+Do not let the worker run with the `photos` volume mounted against an empty or
+half-restored database. The sweep would read every file as an orphan. Restore
+PostgreSQL before starting `celery-worker`, as the recovery procedure below
+does. Files that the restored dump does not reference (uploads made after the
+dump) are orphans by design, and the next sweep deletes them.
+:::
 
 As with `pgdata18`, confirm the prefixed volume name with `docker volume ls`.
 With the Google Cloud Storage backend new files go to the bucket instead.
@@ -179,10 +190,12 @@ Recovery hinges on the durable/ephemeral split:
   [`celery_app.py`](https://github.com/vladenisov/tripl/blob/main/backend/src/tripl/worker/celery_app.py)),
   which re-queues a task when a **worker** crashes mid-execution — but that does
   not protect messages already sitting in the broker if **RabbitMQ itself** is
-  lost. Recurring work is self-healing: `celery-beat` re-enqueues scheduled jobs
-  (metric checks every 5 minutes, stranded-delivery requeue every 5 minutes,
-  schema-drift cleanup daily, the deprecated-event sunset notice daily, weekly
-  plan digest), so a missed tick is picked up on the next interval.
+  lost. `celery-beat` resumes recurring work at the next scheduled time:
+  metric checks and stranded-delivery requeue run every 5 minutes, while
+  maintenance runs at 03:00, 04:00, and 05:00 UTC, and the weekly plan digest
+  runs Monday at 08:00 UTC.
+  A missed tick is **not** replayed. If the broker was down during a scheduled
+  run, check the affected work after it recovers.
 - **`celery-beat` schedule file** lives at `/tmp/celerybeat-schedule` inside the
   beat container and is regenerated on start — nothing to back up.
 
@@ -285,7 +298,12 @@ docker compose logs --tail=50 celery-beat
 
 The Prometheus `/metrics` endpoint is only mounted when
 `PROMETHEUS_METRICS_ENABLED=true` (off by default); expose it behind an
-internal-only path.
+internal-only path. The Compose stack shares a Prometheus multiprocess
+directory between the API and Celery worker and clears its old metric files
+before startup, so the endpoint includes worker-side scan, anomaly, drift,
+alert, and Celery task measurements. If you deploy the processes separately,
+provide the same writable `PROMETHEUS_MULTIPROC_DIR` to both and clear stale
+files at deployment startup.
 
 ## Rollback / downgrade
 
@@ -317,6 +335,12 @@ docker compose run --rm migrate alembic downgrade <target_revision>
 Take a fresh backup first (see [Backup & restore](#postgresql-backup--restore))
 — for non-trivial rollbacks, restoring a pre-upgrade dump is often safer than a
 downgrade migration. Validate the rollback in staging where possible.
+
+The `e8b10c257258` migration aligns model and database indexes: it adds the
+search-document branch index, renames two branch-review indexes, and removes
+seven indexes already covered by unique keys or another index. It does not
+delete application rows. On a large database, allow time for its index changes
+before starting the new API and workers.
 :::
 
 ## Post-deploy verification

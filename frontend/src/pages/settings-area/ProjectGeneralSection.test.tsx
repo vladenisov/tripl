@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { searchApi } from '@/api/search'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectGeneralSection from './ProjectGeneralSection'
+import { UnsavedChangesProvider, type UnsavedWork } from '@/components/settings/unsaved-changes'
 
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -224,11 +225,59 @@ describe('ProjectGeneralSection', () => {
 
     renderSection(authValue('editor'))
 
-    // Wait for the project to load (Delete row always renders), then confirm the
-    // owner-only reset actions are absent.
-    await screen.findByRole('button', { name: /Delete project/ })
+    // Wait for the project to load, then confirm the whole owner-only danger
+    // zone is absent rather than a card of buttons the editor can never press.
+    await screen.findByLabelText('Name')
     expect(screen.queryByRole('button', { name: 'Reset anomalies' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reset drifts' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Delete project/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Danger zone')).not.toBeInTheDocument()
+  })
+
+  it('lets the editor who created the project edit it', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) {
+        return jsonResponse({ ...PROJECT, created_by_user_id: 'editor-1' })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection(authValue('editor'))
+
+    expect(await screen.findByLabelText('Name')).toBeEnabled()
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  })
+
+  it("renders another editor's project read-only and says who can edit it", async () => {
+    // `_require_project_manager`: only the creator or an owner may PATCH, so
+    // live fields here were a form whose Save could only answer 403.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) {
+        return jsonResponse({ ...PROJECT, created_by_user_id: 'someone-else' })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection(authValue('editor'))
+
+    expect(await screen.findByLabelText('Name')).toBeDisabled()
+    expect(screen.getByLabelText('Releases to keep')).toBeDisabled()
+    expect(screen.getByRole('note')).toHaveTextContent(/creator or an owner/)
+    // Reindex is a plain project mutation, which shared projects allow editors.
+    expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeEnabled()
+  })
+
+  it('tells a viewer once why the form is read-only', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection(authValue('viewer'))
+
+    expect(await screen.findByLabelText('Name')).toBeDisabled()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeDisabled()
   })
 
   it('resets anomalies with the chosen period after confirmation', async () => {
@@ -270,5 +319,93 @@ describe('ProjectGeneralSection', () => {
     // The cutoff must be ~7 days ago (the chosen window), not the 30-day default.
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
     expect(Math.abs(Date.now() - Date.parse(body.before) - sevenDaysMs)).toBeLessThan(60_000)
+  })
+})
+
+describe('ProjectGeneralSection — retire unused variables', () => {
+  it('shows a failed preview after an earlier retire, instead of the stale retire result', async () => {
+    const counts = {
+      scanned: 10, retirable: 4, retired: 0, kept_referenced: 0, kept_observed: 0,
+      kept_documented: 0, kept_user_edited: 0, kept_excluded: 0,
+    }
+    let calls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo') && (init?.method ?? 'GET') === 'GET') {
+        return jsonResponse(PROJECT)
+      }
+      if (url.endsWith('/danger/retire-unused-variables') && init?.method === 'POST') {
+        calls += 1
+        const { dry_run: dryRun } = JSON.parse(String(init.body)) as { dry_run: boolean }
+        if (calls === 3) {
+          return new Response(JSON.stringify({ detail: 'Preview unavailable' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return jsonResponse(dryRun ? counts : { ...counts, retirable: 0, retired: 4 })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }))
+    expect(await screen.findByText('4 of 10 variables can be retired.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Retire$/ }))
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Retire variables' }),
+    )
+    expect(await screen.findByText('Retired 4 of 10 variables.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    expect(await screen.findByText('Preview unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('Retired 4 of 10 variables.')).not.toBeInTheDocument()
+  })
+})
+
+describe('ProjectGeneralSection unsaved-changes guard (WS-13)', () => {
+  function renderWithShell(auth: AuthContextValue) {
+    const registered: (UnsavedWork | null)[] = []
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={auth}>
+          <MemoryRouter initialEntries={['/settings/project/general']}>
+            <UnsavedChangesProvider value={{ registerUnsaved: work => registered.push(work) }}>
+              <ProjectGeneralSection slug="demo" />
+            </UnsavedChangesProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+    return { lastRegistered: () => registered.at(-1) ?? null }
+  }
+
+  function mockProject() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  it('registers the draft with the settings shell while either card is edited', async () => {
+    mockProject()
+    const { lastRegistered } = renderWithShell(ownerAuthValue())
+
+    const nameInput = await screen.findByLabelText('Name')
+    await waitFor(() => expect(nameInput).toHaveValue('Demo'))
+    expect(lastRegistered()).toBeNull()
+
+    fireEvent.change(nameInput, { target: { value: 'Demo 2' } })
+    await waitFor(() => expect(lastRegistered()).not.toBeNull())
+    // No other settings page renders this draft, so every destination loses it.
+    expect(lastRegistered()!.keptBy('project/general')).toBe(false)
+
+    fireEvent.change(nameInput, { target: { value: 'Demo' } })
+    await waitFor(() => expect(lastRegistered()).toBeNull())
+
+    fireEvent.change(screen.getByLabelText('Releases to keep'), { target: { value: '5' } })
+    await waitFor(() => expect(lastRegistered()).not.toBeNull())
   })
 })

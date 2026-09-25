@@ -606,29 +606,39 @@ async def create_destination(
         await _assert_public_destination_host(data.target_url, field="Webhook target_url")
     elif data.type == AlertDestinationType.jira:
         await _assert_public_destination_host(data.jira_base_url, field="Jira base_url")
+    # Validate and persist the same channel's fields. Other channel values may
+    # be present on the request, but must not become unvalidated stored state.
+    slack = data.type == AlertDestinationType.slack
+    telegram = data.type == AlertDestinationType.telegram
+    webhook = data.type == AlertDestinationType.webhook
+    email = data.type == AlertDestinationType.email
+    jira = data.type == AlertDestinationType.jira
+    linear = data.type == AlertDestinationType.linear
     destination = AlertDestination(
         project_id=project.id,
         type=data.type,
         name=data.name,
         enabled=data.enabled,
-        webhook_url_encrypted=_encrypt_secret(data.webhook_url),
-        bot_token_encrypted=_encrypt_secret(data.bot_token),
-        chat_id=data.chat_id,
-        target_url_encrypted=_encrypt_secret(data.target_url),
-        webhook_header_name=data.webhook_header_name,
-        webhook_header_value_encrypted=_encrypt_secret(data.webhook_header_value),
-        email_recipients=data.email_recipients,
-        email_from_address=data.email_from_address,
-        email_subject_template=data.email_subject_template,
-        jira_base_url=data.jira_base_url,
-        jira_auth_email=data.jira_auth_email,
-        jira_api_token_encrypted=_encrypt_secret(data.jira_api_token),
-        jira_project_key=data.jira_project_key,
-        jira_issue_type=data.jira_issue_type,
-        linear_api_key_encrypted=_encrypt_secret(data.linear_api_key),
-        linear_team_id=data.linear_team_id,
-        linear_state_id=data.linear_state_id,
-        linear_label_ids=data.linear_label_ids,
+        webhook_url_encrypted=_encrypt_secret(data.webhook_url) if slack else None,
+        bot_token_encrypted=_encrypt_secret(data.bot_token) if telegram else None,
+        chat_id=data.chat_id if telegram else None,
+        target_url_encrypted=_encrypt_secret(data.target_url) if webhook else None,
+        webhook_header_name=data.webhook_header_name if webhook else None,
+        webhook_header_value_encrypted=(
+            _encrypt_secret(data.webhook_header_value) if webhook else None
+        ),
+        email_recipients=data.email_recipients if email else None,
+        email_from_address=data.email_from_address if email else None,
+        email_subject_template=data.email_subject_template if email else None,
+        jira_base_url=data.jira_base_url if jira else None,
+        jira_auth_email=data.jira_auth_email if jira else None,
+        jira_api_token_encrypted=_encrypt_secret(data.jira_api_token) if jira else None,
+        jira_project_key=data.jira_project_key if jira else None,
+        jira_issue_type=data.jira_issue_type if jira else None,
+        linear_api_key_encrypted=_encrypt_secret(data.linear_api_key) if linear else None,
+        linear_team_id=data.linear_team_id if linear else None,
+        linear_state_id=data.linear_state_id if linear else None,
+        linear_label_ids=data.linear_label_ids if linear else None,
         delivery_schedule_cron=data.delivery_schedule_cron,
         # A destination born with a cadence adopts the clock immediately, so
         # its first digest is the next real fire rather than a backlog dump.

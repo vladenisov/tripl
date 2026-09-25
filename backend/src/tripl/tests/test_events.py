@@ -1120,6 +1120,48 @@ async def test_reorder_events_assigns_new_sequence(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_reorder_events_rejects_a_duplicated_id(client: AsyncClient):
+    """tripl-0zpq.239: a repeated id must be a 400, not a crash.
+
+    A duplicate survives the ownership check above it — ``Event.id.in_()``
+    collapses it, and so does the ``set()`` it is compared against — and then
+    walks off the end of ``sorted_orders``, which has one slot per DISTINCT
+    event. The twin route, ``POST /metrics/reorder``, grew the same guard and
+    got ``test_reorder_rejects_a_duplicated_id``; this one is its mirror.
+
+    RED on a revert: remove the duplicate check from
+    ``event_service.reorder_events`` and the slot loop raises ``IndexError`` on
+    its second iteration, so this request answers 500 (or the exception escapes
+    the transport) instead of 400.
+    """
+    et_id, field_id, _ = await _setup_events(client, "ev-reorder-dup")
+    created_ids: list[str] = []
+    for name in ("Event A", "Event B"):
+        create = await client.post(
+            "/api/v1/projects/ev-reorder-dup/events",
+            json={
+                "event_type_id": et_id,
+                "name": name,
+                "field_values": [{"field_definition_id": field_id, "value": name}],
+            },
+        )
+        created_ids.append(create.json()["id"])
+
+    resp = await client.patch(
+        "/api/v1/projects/ev-reorder-dup/events/reorder",
+        json={"event_ids": [created_ids[0], created_ids[0]]},
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "Duplicate event ids in the requested order"
+
+    # And the refusal left the order untouched — the guard runs before any
+    # assignment, so a rejected request is not a half-applied one.
+    list_resp = await client.get("/api/v1/projects/ev-reorder-dup/events")
+    assert [item["name"] for item in list_resp.json()["items"]] == ["Event A", "Event B"]
+
+
+@pytest.mark.asyncio
 async def test_event_response_carries_null_last_seen_initially(client: AsyncClient):
     et_id, field_id, _ = await _setup_events(client, "ev-lastseen")
     create = await client.post(

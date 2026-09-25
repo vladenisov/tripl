@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -56,7 +56,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.worker.tasks._errors import ScanError
 from tripl.worker.tasks.metrics import metric_collect
 
-BASE = datetime(2026, 1, 1, 0)
+BASE = datetime(2026, 1, 1, 0, tzinfo=UTC)
 HOUR = timedelta(hours=1)
 
 

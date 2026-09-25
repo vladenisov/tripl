@@ -25,6 +25,7 @@ import {
 import type { MetricsGranularity } from '@/lib/metrics'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
 import type { ChartAnnotation, EventMetricPoint, ForecastPoint } from '@/types'
+import { annotationDisplayColor, truncateAnnotationLabel } from '@/lib/chartAnnotations'
 
 interface MetricsChartProps {
   data: EventMetricPoint[]
@@ -44,10 +45,12 @@ interface MetricsChartProps {
    */
   valueFormatter?: (value: number) => string
   /**
-   * The scan's anomaly sigma threshold (served on the metrics response as
-   * `sigma_threshold`). The confidence band is drawn as
-   * `expected ± sigmaThreshold * stddev` using the STORED effective stddev, so
-   * a flagged point sits outside the band. Defaults to 3.0 when omitted.
+   * The sigma threshold the detector actually scored this scope with, served on
+   * the metrics response as `sigma_threshold`: the PROJECT setting, narrowed by
+   * any false-positive scope override (`metrics_service._apply_scope_sigma_override`).
+   * The confidence band is drawn as `expected ± sigmaThreshold * stddev` using
+   * the STORED effective stddev, so a flagged point sits outside the band.
+   * Falls back to `DEFAULT_SIGMA_THRESHOLD` when the payload carries none.
    */
   sigmaThreshold?: number
 }
@@ -65,6 +68,12 @@ interface MetricsMultiSeriesChartProps {
     label: string
     data: EventMetricPoint[]
     color?: string
+    /**
+     * SVG dash pattern. The palette has eight hues, so a ninth series reuses
+     * the first one's colour and needs a second cue to stay distinguishable
+     * (MON-29).
+     */
+    dash?: string
     isHighlighted?: boolean
   }>
   className?: string
@@ -139,8 +148,18 @@ function useChartContainerReady() {
 // `sigma_threshold` (e.g. older payloads). The band is drawn as
 // `expected ± sigma_threshold * effective_stddev` using the STORED effective
 // stddev the backend serves in `stddev`, so "outside the band" == "flagged".
-// 3.0 matches the scan-config default sigma threshold.
-const DEFAULT_SIGMA_THRESHOLD = 3
+// 4.0 is the detector's own default, `ProjectAnomalySettings.sigma_threshold`
+// (models/project_anomaly_settings.py). It is a PROJECT setting, not a
+// scan-config one — the scan-config copy has no reader left in the backend.
+// This was 3.0 with a comment claiming the scan-config default, wrong on both
+// counts, so a payload without a threshold drew a band a quarter too narrow and
+// made unflagged buckets look flagged (tripl-0zpq.299).
+//
+// Every scope now serves a real per-scope sigma (event, event-type and
+// project-total since tripl-0zpq.299; events-total since tripl-e443; the catalog
+// metric since tripl-4cgl, threaded through `adaptMetricSeries`), so this
+// constant only covers a payload that predates the field.
+const DEFAULT_SIGMA_THRESHOLD = 4
 
 interface ChartDataPoint {
   bucket: string
@@ -354,7 +373,7 @@ function snapAnnotationsToBuckets(
         id: annotation.id,
         bucket: data[closestIndex].bucket,
         label: annotation.label,
-        color: annotation.color || 'var(--destructive)',
+        color: annotationDisplayColor(annotation.color),
       }
     })
     .filter((value): value is { id: string; bucket: string; label: string; color: string } => value !== null)
@@ -530,7 +549,7 @@ export function MetricsChart({
               strokeDasharray="2 3"
               strokeWidth={1.5}
               label={{
-                value: annotation.label,
+                value: truncateAnnotationLabel(annotation.label),
                 position: 'top',
                 fill: annotation.color,
                 fontSize: 10,
@@ -572,6 +591,7 @@ export function MetricsMultiSeriesChart({
         ...item,
         key: `series_${index}`,
         color: item.color ?? MULTI_SERIES_COLORS[index % MULTI_SERIES_COLORS.length],
+        hasAnomaly: item.data.some(point => point.is_anomaly),
       })),
     [series],
   )
@@ -664,7 +684,14 @@ export function MetricsMultiSeriesChart({
               stroke={item.color}
               strokeWidth={item.isHighlighted ? 3 : 2}
               strokeOpacity={item.isHighlighted ? 1 : 0.82}
-              dot={(props: { cx?: number; cy?: number; payload?: Record<string, unknown> }) => {
+              strokeDasharray={item.dash}
+              // Static, like the main volume series: animating up to eight
+              // lines of a few hundred points each janked every range change
+              // (MON-23).
+              isAnimationActive={false}
+              // The dot renderer runs once per point, so a series with nothing
+              // flagged skips it entirely instead of drawing empty fragments.
+              dot={!item.hasAnomaly ? false : (props: { cx?: number; cy?: number; payload?: Record<string, unknown> }) => {
                 if (!props.payload?.[`${item.key}__anomaly`]) return <></>
                 return (
                   <circle

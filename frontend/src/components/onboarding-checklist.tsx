@@ -1,12 +1,15 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, Check, ChevronDown, Lock, X } from 'lucide-react'
+import { ArrowRight, Check, ChevronDown, ChevronUp, Lock, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Panel } from '@/components/settings/kit'
 import { hasExecutedScanJob } from '@/components/onboarding-utils'
 import { useAuth } from '@/components/auth-context'
 import type { ProjectSummary } from '@/types'
+import { canWrite, isOwner as isOwnerRole } from '@/lib/permissions'
+import { isOnboardingDismissed, setOnboardingDismissed } from '@/lib/onboardingDismissal'
 
 /**
  * Guided first-run checklist (UX-24). A newcomer lands on the Overview with no
@@ -17,9 +20,10 @@ import type { ProjectSummary } from '@/types'
  * nothing is stored as a manual "I did this" flag.
  *
  * It is deliberately compact and self-effacing: the X is a *persistent*
- * dismiss, remembered per user+project in localStorage (keyed by slug, mirroring
- * the app's `tripl-branch:<slug>` / `tripl-activity-open` convention), so once
- * dismissed it stays dismissed across remounts and later visits. The card also
+ * dismiss, remembered per project in localStorage (lib/onboardingDismissal.ts),
+ * so once dismissed it stays dismissed across remounts and later visits. It is
+ * not a one-way door: the dismissal offers Undo, and the command palette's
+ * "Show getting started" brings it back (WS-35). The card also
  * auto-hides on its own in two cases so it never becomes permanent chrome
  * (tripl-7l83.12): once every step is complete, and — crucially for a mature
  * project — once the core loop is set up and coverage is high but the only
@@ -37,10 +41,6 @@ import type { ProjectSummary } from '@/types'
  * "Owner only" with an ask-an-owner hint AND excluded from progress: it never
  * blocks completion, letting an editor's checklist actually reach done.
  */
-
-// Per-slug dismiss key. Hyphen/colon form matches the app's other per-project
-// keys (`tripl-branch:<slug>`) and the activity rail's `tripl-activity-open`.
-const STORAGE_PREFIX = 'tripl-onboarding-dismissed:'
 
 // Steps a mature owner can legitimately leave undone forever. Alerting is opt-in:
 // a high-coverage project that never wires up a destination should not be nagged
@@ -71,6 +71,8 @@ interface OnboardingStep {
 
 interface OnboardingChecklistProps {
   slug: string
+  /** Keys the dismissal, so it survives a slug rename (WS-35). */
+  projectId?: string
   summary: ProjectSummary | undefined
   /** Number of connected data sources (the Overview already lists these). */
   sourceCount: number
@@ -81,18 +83,6 @@ interface OnboardingChecklistProps {
    * be stuck at "4 of 5" forever. Hide the checklist entirely for demos.
    */
   isDemo?: boolean
-}
-
-function storageKey(slug: string): string {
-  return `${STORAGE_PREFIX}${slug}`
-}
-
-function readDismissed(slug: string): boolean {
-  try {
-    return localStorage.getItem(storageKey(slug)) === '1'
-  } catch {
-    return false
-  }
 }
 
 /**
@@ -171,8 +161,15 @@ function coverageRatio(summary: ProjectSummary): number {
   return summary.implemented_event_count / summary.active_event_count
 }
 
-export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: OnboardingChecklistProps) {
+export function OnboardingChecklist({
+  slug,
+  projectId,
+  summary,
+  sourceCount,
+  isDemo,
+}: OnboardingChecklistProps) {
   const { user } = useAuth()
+  const stepsId = useId()
   // A tick to force a re-render (and thus a re-read of localStorage) after
   // dismissal. Reading dismissal on render also means a slug change is picked up
   // automatically, with no stale per-project state.
@@ -189,9 +186,16 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
   // "incomplete" steps that would flip to done a moment later.
   if (!summary) return null
 
-  if (readDismissed(slug)) return null
+  if (isOnboardingDismissed(slug, projectId)) return null
 
-  const isOwner = user?.role === 'owner'
+  // Every step but "Review reconciliation" is an editor's job (plan, scans and
+  // alerting are editor-gated, sources owner-only), and that one ticks on data
+  // arriving, not on anything the reader does. For a viewer this card was a
+  // to-do list they could never work through and never finish, pinned until
+  // dismissed — so it is simply not theirs.
+  if (!canWrite(user?.role)) return null
+
+  const isOwner = isOwnerRole(user?.role)
   const steps = buildSteps(slug, summary, sourceCount)
   // Owner-only steps don't count toward a non-owner's progress: an editor can't
   // action them, so counting them would leave the checklist permanently short of
@@ -215,13 +219,18 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
   const isEstablished = onlyOptionalRemains && coverageRatio(summary) >= MATURE_COVERAGE_RATIO
   if (completed >= total || isEstablished) return null
 
-  function handleDismiss(): void {
-    try {
-      localStorage.setItem(storageKey(slug), '1')
-    } catch {
-      // Private-mode / storage-disabled: dismissal just won't persist.
-    }
+  function setDismissed(dismissed: boolean): void {
+    setOnboardingDismissed(slug, projectId, dismissed)
     setDismissTick((n) => n + 1)
+  }
+
+  function handleDismiss(): void {
+    setDismissed(true)
+    toast('Getting started hidden', {
+      id: `onboarding-dismissed:${projectId ?? slug}`,
+      description: 'Bring it back any time with "Show getting started" in search.',
+      action: { label: 'Undo', onClick: () => setDismissed(false) },
+    })
   }
 
   // Mostly onboarded (every step bar the last) → swap the tall card for a slim
@@ -247,7 +256,8 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          aria-expanded={false}
+          aria-expanded={expanded}
+          aria-controls={stepsId}
           className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--accent)' }}
         >
@@ -280,6 +290,20 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
       right={
         <div className="flex items-center gap-2">
           <Chip tone="info" size="sm">{`${completed} of ${total}`}</Chip>
+          {/* Expanded from the slim bar: the way back to it (WS-35). */}
+          {isMostlyDone && (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              aria-expanded={expanded}
+              aria-controls={stepsId}
+              className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ color: 'var(--accent)' }}
+            >
+              Hide steps
+              <ChevronUp className="h-3 w-3" aria-hidden="true" />
+            </button>
+          )}
           <button
             type="button"
             onClick={handleDismiss}
@@ -292,7 +316,7 @@ export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: Onbo
         </div>
       }
     >
-      <ol aria-label="Setup steps" className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+      <ol id={stepsId} aria-label="Setup steps" className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
         {steps.map((step, index) => (
           <StepRow
             key={step.id}
@@ -331,13 +355,19 @@ function StepRow({ step, state }: { step: OnboardingStep; state: StepState }) {
       >
         <StepIndicator state={state} />
         <div className="min-w-0 flex-1">
+          {/* Wrapped to two lines on a phone rather than cut to a few words:
+              the hint is the only guidance the step gives (WS-36). */}
           <div
-            className="truncate text-[12.5px] font-medium"
+            className="line-clamp-2 text-[12.5px] font-medium sm:truncate"
             style={{ color: state === 'done' ? 'var(--fg-subtle)' : 'var(--fg)' }}
           >
             {step.title}
           </div>
-          <div className="truncate text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+          <div
+            className="line-clamp-2 text-[11px] sm:truncate"
+            title={hint}
+            style={{ color: 'var(--fg-faint)' }}
+          >
             {hint}
           </div>
         </div>

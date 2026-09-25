@@ -12,6 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql.asyncpg import PGDialect_asyncpg
 
+from tripl.config import settings
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.search_document import SearchDocument
@@ -150,10 +151,10 @@ async def test_retrieval_window_does_not_vary_with_the_page_size(
             await search_service.search_project(session, "search-window", "spot", limit=page_size)
         assert windows == [CANDIDATE_WINDOW + 1] * len(page_sizes)
 
-        # A bulk caller still gets the bigger window it asked for: the fixed
-        # value is a floor, not a ceiling.
+        # An internal caller can still request a larger window: the fixed value
+        # is a floor, not a ceiling.
         windows.clear()
-        await search_service.search_event_ids(session, "search-window", "spot")
+        await search_service.search_project(session, "search-window", "spot", limit=10000)
         assert windows == [10001]
 
 
@@ -257,9 +258,9 @@ async def test_the_query_embedding_is_fetched_while_the_lexical_leg_runs(
             await asyncio.sleep(_EMBED_START_POLL_SECONDS)
         return []
 
-    def fake_embed(_query: str, *, config: AiConfig) -> list[float]:
+    def fake_embed(_query: str, *, config: AiConfig, timeout: float) -> list[float]:
         embed_started.set()
-        return [0.5]
+        return [0.5] * settings.search_embedding_dimensions
 
     async def fake_semantic(_session: object, **_kwargs: object) -> list[SearchResult]:
         return []
@@ -358,15 +359,13 @@ def _semantic_result(
     return item
 
 
-def test_a_strong_semantic_only_hit_is_not_served_as_a_weak_answer() -> None:
-    """tripl-txcz: both legs must be able to say "certain".
+def test_a_strong_semantic_only_hit_respects_identity_ceiling() -> None:
+    """Semantic relevance cannot claim the hit is the named entity.
 
     ``merge_results`` scores a vector-only hit ``cosine * 2.5``, so its score can
     never exceed 2.5. Dividing that by ``_FULL_CONFIDENCE_SCORE`` reported a
-    PERFECT cosine of 1.0 at 0.357 — the semantic leg de-weighted where the user
-    can see it, on exactly the misspelling rescues ('пейволл', 'forcast') the leg
-    exists for. Confidence is now the max of the score certainty and the leg's
-    own cosine, which is already a [0, 1] certainty.
+    PERFECT cosine of 1.0 at 0.357. Its cosine contributes to confidence, then
+    the identity ceiling prevents a semantic-only hit from claiming certainty.
 
     The RANKING weight is deliberately unchanged, and the first assertion pins
     that: this is a presentation fix, not a re-weighting.
@@ -375,8 +374,7 @@ def test_a_strong_semantic_only_hit_is_not_served_as_a_weak_answer() -> None:
     assert merged[0].score == pytest.approx(_SEMANTIC_SCORE_WEIGHT)
 
     finalized = _finalize_results(merged, limit=10)
-    assert finalized[0].confidence == 1.0
-    # The old rule, spelled out so the regression is unmistakable.
+    assert finalized[0].confidence == _PARTIAL_CONFIDENCE_CEILING
     assert finalized[0].confidence > _SEMANTIC_SCORE_WEIGHT / _FULL_CONFIDENCE_SCORE
 
 
@@ -490,8 +488,8 @@ async def test_the_envelope_and_the_row_may_disagree_about_the_semantic_leg(
     async def fake_semantic(_session: object, **_kwargs: object) -> list[SearchResult]:
         return [_semantic_result(title="local_push_scheduled", cosine=0.9, result_id=document_id)]
 
-    def fake_embed(_query: str, *, config: AiConfig) -> list[float]:
-        return [0.5]
+    def fake_embed(_query: str, *, config: AiConfig, timeout: float) -> list[float]:
+        return [0.5] * settings.search_embedding_dimensions
 
     enabled = replace(env_ai_config(), search_embeddings_enabled=True)
 

@@ -51,17 +51,19 @@ running API process enforces the checks.
 
 | Variable | Default | Required in prod? | Purpose |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | `postgresql+asyncpg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Async** SQLAlchemy URL used by the FastAPI app (asyncpg driver). |
-| `SYNC_DATABASE_URL` | `postgresql+psycopg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Sync** SQLAlchemy URL used by Alembic migrations and the Celery worker (psycopg driver). |
+| `DATABASE_URL` | `postgresql+asyncpg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Async** SQLAlchemy URL used by the FastAPI app and Alembic migrations (asyncpg driver). |
+| `SYNC_DATABASE_URL` | `postgresql+psycopg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Sync** SQLAlchemy URL used by the Celery worker (psycopg driver). |
 | `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672//` | Yes (must not keep dev creds) | Celery broker AMQP URL. |
 | `REDIS_URL` | `""` (empty) | No | Cache backend. **Empty disables caching entirely** — every read falls through to PostgreSQL. |
 
 :::danger Async vs sync URLs are not interchangeable
 tripl maintains **two** PostgreSQL URLs pointing at the same database:
 `DATABASE_URL` uses the async `asyncpg` driver for the web app, while
-`SYNC_DATABASE_URL` uses the synchronous `psycopg` driver for Alembic and
+Alembic, while `SYNC_DATABASE_URL` uses the synchronous `psycopg` driver for
 Celery. Keep host, port, database, and credentials identical between them; only
-the `+asyncpg` / `+psycopg` driver suffix differs.
+the `+asyncpg` / `+psycopg` driver suffix differs. Percent-encode reserved
+characters in URL credentials (for example, `@` as `%40`); Alembic preserves
+the encoded URL when loading its configuration.
 :::
 
 In the production [`compose.yaml`](https://github.com/vladenisov/tripl/blob/main/compose.yaml)
@@ -183,12 +185,18 @@ with a shared limiter or LB.
 | `LOG_LEVEL` | `INFO` | No | Log level (uppercased and trimmed). |
 | `LOG_JSON` | `false` | No | Emit one-line JSON logs instead of plain text. Compose/k8s should enable this. |
 | `PROMETHEUS_METRICS_ENABLED` | `false` | No | Exposes the `/metrics` endpoint and Celery task instrumentation. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `""` | No | Setting a non-empty value opts the API and worker into FastAPI/SQLAlchemy/Celery auto-instrumentation via an OTLP exporter. No-op when blank or when the `opentelemetry-*` packages are absent. |
+| `PROMETHEUS_MULTIPROC_DIR` | unset outside Compose | No | Shared writable directory for Prometheus metrics from all API and Celery worker processes. Compose sets `/app/var/prometheus` and mounts it in both services. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `""` | No | Setting a non-empty value opts the API and worker into FastAPI/SQLAlchemy/Celery auto-instrumentation via an OTLP exporter. The production image includes the optional tracing dependencies; a blank endpoint disables export. |
 | `OTEL_SERVICE_NAME` | `tripl` | No | Service name reported by the OTLP exporter. |
 
 :::tip
-`compose.yaml` defaults `LOG_JSON` to `true` (overridable). Expose `/metrics`
-only on an internal-only ingress path or scrape via a sidecar.
+`compose.yaml` defaults `LOG_JSON` to `true` (overridable); the API, Celery
+worker, and beat use the configured log level and format. Expose `/metrics`
+only on an internal-only ingress path or scrape via a sidecar. Compose shares
+the Prometheus multiprocess directory between the API and worker and clears old
+metric files before those processes start. When running without Compose, create
+a writable shared directory and clear stale files before each deployment. Each
+failed Celery task contributes one failure count to `tripl_celery_tasks_total`.
 :::
 
 ---
@@ -201,7 +209,7 @@ Two independent switches control the generated demo project. Both default to
 | Variable | Default | Required in prod? | Purpose |
 | --- | --- | --- | --- |
 | `DEMO_ENABLED` | `true` | No | Master kill switch for demo **provisioning**. When `false`, `POST /projects/demo` **and** demo reset are refused with `403 Demo provisioning is disabled`. |
-| `DEMO_RUNTIME_ENABLED` | `true` | No | Gates the `advance_demos` beat task that keeps an existing demo fresh (new buckets, jobs, and signals). When `false` that task is a no-op and existing demos keep the data they already have. |
+| `DEMO_RUNTIME_ENABLED` | `true` | No | Gates the `advance_demos` beat task that keeps an existing demo fresh (new buckets, jobs, and signals). When `false` that task is a no-op and existing demos keep the data they already have; the scheduled scan collection of a demo in use still runs on its 6-hour demo cadence and appends new buckets itself. |
 
 :::note A demo's two refresh paths run at different rates
 `advance_demos` runs **hourly**: it appends the newest bucket, re-runs the real
@@ -281,7 +289,7 @@ destinations.
 | `SMTP_PASSWORD` | `""` | SMTP auth password. |
 | `SMTP_SECURITY` | derived | `starttls`, `implicit_tls` or `none`. See below. |
 | `SMTP_USE_TLS` | `true` | **Deprecated.** Only supplies `SMTP_SECURITY`'s default when that is unset. |
-| `SMTP_FROM_ADDRESS` | `""` | Default `From:` address; may carry a display name (`Tripl Alerts <no-reply@example.com>`). Required — password reset mail is dropped without one. Set here it is never checked until a send fails; the same value set in Settings → Email is checked as you save it. |
+| `SMTP_FROM_ADDRESS` | `""` | Default `From:` address; may carry a display name (`Tripl Alerts <no-reply@example.com>`). Required for password-reset mail. Invalid values fail startup or the Settings save, before an alert is sent. |
 
 `SMTP_SECURITY` names the transport, and the transport has to match the port:
 
@@ -312,11 +320,27 @@ who asked for the link, so this is the only place the failure surfaces.
 | `PHOTO_STORAGE_BACKEND` | `local` | `local` (filesystem, served via authenticated API endpoint) or `gcs` (Google Cloud Storage). |
 | `PHOTO_LOCAL_DIR` | `./var/photos` | Directory for the `local` backend. In the shipped image this resolves to `/app/var/photos`, which is writable by the image's `app` user and mounted as the `photos` volume by `compose.yaml`. Point it elsewhere only at another mounted, writable volume, or uploads are lost when the container is recreated. |
 | `PHOTO_MAX_SIZE_MB` | `10` | Max upload size in MB. A request to the photo routes whose body is larger than this plus 1 MiB of multipart framing is refused with `413` without being read past that limit. |
+| `MAX_REQUEST_BODY_MB` | `2` | App-wide JSON/body limit in MiB. The photo upload route uses `PHOTO_MAX_SIZE_MB` plus multipart framing instead. Oversized requests return `413` before parsing or authentication. |
 | `PHOTO_ALLOWED_MIME` | `image/jpeg,image/png,image/gif,image/webp` | Allowed MIME types (comma-separated). |
 | `GCS_PHOTO_BUCKET` | `""` | GCS bucket for the `gcs` backend. |
 | `GCS_PHOTO_CREDENTIALS_PATH` | `""` | Service-account JSON path. Empty falls back to Application Default Credentials. Credentials that cannot sign URLs (Application Default Credentials on Compute Engine or workload identity, `gcloud` user credentials) make photos fall back to the authenticated `/file` endpoint instead of signed URLs. |
 | `GCS_PHOTO_PUBLIC` | `false` | Return public URLs instead of time-limited signed URLs. |
 | `GCS_PHOTO_SIGNED_URL_TTL_SECONDS` | `3600` | Signed-URL lifetime when not public. |
+| `PHOTO_ORPHAN_SWEEP_GRACE_HOURS` | `24` | Minimum age, in hours, of a photo file the daily orphan sweep may delete. See below. |
+
+**Orphan photo sweep.** Deleting an event, an event type, a project or a plan
+branch removes the photo rows attached to it but not their files. Every day at
+05:30 UTC a Celery task deletes photo files that no photo row references any
+more and that are older than `PHOTO_ORPHAN_SWEEP_GRACE_HOURS`. Newer files are
+never touched, because an upload writes its file before it saves the row. When
+no photo row at all references a backend, the sweep skips that backend and logs
+a warning instead of deleting: that is what an empty or half-restored database
+looks like, not a directory of orphans. Only
+keys under `events/` are considered, so other files in the directory or bucket
+are left alone. The sweep covers the `local` backend and, when `GCS_PHOTO_BUCKET`
+is set, the `gcs` backend, including rows written before a backend switch. It
+runs on `celery-worker`, which therefore mounts the same `photos` volume as
+`app`. A worker without that mount sees an empty directory and deletes nothing.
 
 **Switching `PHOTO_STORAGE_BACKEND` does not move anything.** Every photo row
 records the backend its file was written to, and that is the backend it is read
@@ -334,6 +358,21 @@ command — copy the objects across yourself before retiring a backend.
 | --- | --- | --- |
 | `SCAN_ROW_LIMIT_DEFAULT` | `50000` | Default row cap for scan/replay when no scan-config override is set. |
 | `METRICS_ROW_LIMIT_DEFAULT` | `100000` | Default row cap for metrics queries when no override is set. |
+
+### Operational history retention
+
+The daily maintenance task prunes old completed scan jobs and distribution
+drift records in every project. Scan-job age starts at `completed_at`, so a
+long-running job retains its full configured history after it finishes. Active
+scan jobs remain available. Distribution drift in the `stable` or `minor` band
+has a shorter horizon than significant drift; set the shorter horizon no higher
+than the general one.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SCAN_JOB_RETENTION_DAYS` | `90` | Age limit for completed scan jobs, measured from `completed_at`. |
+| `DISTRIBUTION_DRIFT_RETENTION_DAYS` | `90` | Age limit for significant distribution drift. |
+| `DISTRIBUTION_DRIFT_MINOR_RETENTION_DAYS` | `30` | Age limit for stable and minor distribution drift. |
 
 ---
 

@@ -1,28 +1,33 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Suspense, useEffect, useState } from 'react'
+import { lazyWithReload } from '@/lib/lazyWithReload'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { projectsApi } from '@/api/projects'
+import { projectsQueryOptions } from '@/lib/queryKeys'
 import { useAuth } from '@/components/auth-context'
 import { SCard } from '@/components/settings/kit'
 import { SettingsLayout } from '@/components/settings/SettingsLayout'
 import { SETTINGS_STORAGE_KEY } from '@/components/settings/nav'
 import type { Project } from '@/types'
+import { isOwner as isOwnerRole } from '@/lib/permissions'
 
-const ProjectGeneralSection = lazy(() => import('./ProjectGeneralSection'))
-const PlanRulesSection = lazy(() => import('./PlanRulesSection'))
-const MembersSection = lazy(() => import('./MembersSection'))
-const DataSourcesSection = lazy(() => import('./DataSourcesSection'))
-const ApiKeysSection = lazy(() => import('./ApiKeysSection'))
-const ProfileSection = lazy(() => import('./ProfileSection'))
-const SecuritySection = lazy(() => import('./SecuritySection'))
-const InstanceSection = lazy(() => import('./InstanceSection'))
-const WorkspaceAuditSection = lazy(() => import('./WorkspaceAuditSection'))
+const ProjectGeneralSection = lazyWithReload(() => import('./ProjectGeneralSection'))
+const PlanRulesSection = lazyWithReload(() => import('./PlanRulesSection'))
+const MembersSection = lazyWithReload(() => import('./MembersSection'))
+const DataSourcesSection = lazyWithReload(() => import('./DataSourcesSection'))
+const ApiKeysSection = lazyWithReload(() => import('./ApiKeysSection'))
+const ProfileSection = lazyWithReload(() => import('./ProfileSection'))
+const SecuritySection = lazyWithReload(() => import('./SecuritySection'))
+const InstanceSection = lazyWithReload(() => import('./InstanceSection'))
+const WorkspaceAuditSection = lazyWithReload(() => import('./WorkspaceAuditSection'))
 
 const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
 
 /**
  * Resolve the project the Project-scoped settings target. Prefer the slug in the
- * URL (when a section route carries one), otherwise the last project visited.
+ * URL — a route param, or the `?project=` every in-app link to these sections
+ * carries — otherwise the last project visited. The last-visited key is shared
+ * by every tab, so it is only the fallback for a bare address: reading it first
+ * opened the OTHER tab's project, danger zone included (SHELL-20).
  * The sidebar's usePersistLastSlug writes the last-visited slug to this same
  * localStorage key on every project route; we only read it here.
  *
@@ -34,9 +39,12 @@ const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
  */
 function useSettingsSlug(pickedSlug: string | null): string | undefined {
   const { slug: urlSlug } = useParams<{ slug?: string }>()
-  const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: projectsApi.list })
+  const [searchParams] = useSearchParams()
+  const queryProject = searchParams.get('project')
+  const projectsQuery = useQuery(projectsQueryOptions())
   const projects = projectsQuery.data ?? []
   if (urlSlug) return urlSlug
+  if (queryProject) return queryProject
   if (pickedSlug) return pickedSlug
   let last: string | null = null
   try {
@@ -60,10 +68,10 @@ function SectionFallback() {
  */
 export default function SettingsArea({ section }: { section: string }) {
   const auth = useAuth()
-  const isOwner = auth.user?.role === 'owner'
+  const isOwner = isOwnerRole(auth.user?.role)
   const [pickedSlug, setPickedSlug] = useState<string | null>(null)
   const slug = useSettingsSlug(pickedSlug)
-  const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: projectsApi.list })
+  const projectsQuery = useQuery(projectsQueryOptions())
   const projects = projectsQuery.data ?? []
   const projectName = projects.find((p) => p.slug === slug)?.name
 
@@ -96,6 +104,7 @@ export default function SettingsArea({ section }: { section: string }) {
       activePath={section}
       backHref={backHref}
       projectName={projectName}
+      projectSlug={slug}
       projects={projects}
     >
       <Suspense fallback={<SectionFallback />}>

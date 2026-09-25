@@ -123,7 +123,7 @@ If you put a trusted reverse proxy or load balancer in front that overwrites `X-
 | `redis` | `redis:8.6.2-alpine` | Cache only — 256 MB cap, `allkeys-lru`, no persistence. Health-checked with `redis-cli ping`. |
 | `migrate` | tripl image | One-shot. Runs `alembic upgrade head`, then exits. App and workers wait for it to complete successfully. |
 | `app` | tripl image | The single API + SPA process on port `8000`. Runs uvicorn with `UVICORN_WORKERS` (default 4). Mounts the `photos` volume at `/app/var/photos`, where the local photo backend keeps uploaded event photos. |
-| `celery-worker` | tripl image | Runs `celery -A tripl.worker.celery_app worker`. Executes scans, warehouse queries, monitor evaluation, and alert delivery. Its container healthcheck is disabled. |
+| `celery-worker` | tripl image | Runs `celery -A tripl.worker.celery_app worker`. Executes scans, warehouse queries, monitor evaluation, and alert delivery, plus the daily sweep of orphan photo files. It mounts the same `photos` volume as `app` for that sweep. Its container healthcheck is disabled. |
 | `celery-beat` | tripl image | Runs `celery -A tripl.worker.celery_app beat` with the schedule at `/tmp/celerybeat-schedule`. Enqueues periodic jobs. Its container healthcheck is disabled. |
 | `mcp` | `${TRIPL_MCP_IMAGE:-ghcr.io/vladenisov/tripl-mcp}:${TRIPL_VERSION}` | **Not started by default** — it is behind `profiles: [mcp]`, so it needs `docker compose --profile mcp up -d`. Serves the [MCP server](../integrate/mcp-server.md) over streamable HTTP for agents. |
 

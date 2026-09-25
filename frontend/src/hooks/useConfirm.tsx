@@ -1,14 +1,15 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import ConfirmDialog from '../components/ConfirmDialog'
 
 export function useConfirm() {
   const [state, setState] = useState<{ title: string; message: string; variant?: 'danger' | 'primary'; confirmLabel?: string; resolve?: (v: boolean) => void } | null>(null)
 
-  const confirm = (opts: { title: string; message: string; variant?: 'danger' | 'primary'; confirmLabel?: string }) => {
+  // Stable, so a hook that wraps it (useUnsavedChangesGuard) can memoise on it.
+  const confirm = useCallback((opts: { title: string; message: string; variant?: 'danger' | 'primary'; confirmLabel?: string }) => {
     return new Promise<boolean>(resolve => {
       setState({ ...opts, resolve })
     })
-  }
+  }, [])
 
   const dialog = state ? (
     <ConfirmDialog

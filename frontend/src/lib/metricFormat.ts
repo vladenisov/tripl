@@ -7,6 +7,41 @@
  * exactly.
  */
 
+import type { MetricScanInterval } from '@/types'
+
+/**
+ * Human-readable collection cadence, one spelling for every metric surface —
+ * the form's interval selects, the catalog's Latest-cell tooltip and the
+ * drilldown's definition card used to carry three copies (two of them in
+ * different case, the card the raw `1h` token). The option VALUES stay the raw
+ * tokens the backend expects; only what is painted goes through this map.
+ */
+export const METRIC_INTERVAL_LABEL: Record<MetricScanInterval, string> = {
+  '15m': 'Every 15 min',
+  '1h': 'Hourly',
+  '6h': 'Every 6 h',
+  '1d': 'Daily',
+  '1w': 'Weekly',
+}
+
+const INTERVAL_MINUTES: Record<MetricScanInterval, number> = {
+  '15m': 15,
+  '1h': 60,
+  '6h': 6 * 60,
+  '1d': 24 * 60,
+  '1w': 7 * 24 * 60,
+}
+
+/**
+ * True when `a` is a strictly shorter span than `b`. The backend refuses a
+ * `replay_chunk_interval` finer than the collection interval
+ * (`check_replay_chunk_against_interval`), so the form uses this to drop a
+ * stored chunk the moment a coarser interval would make the save a 422.
+ */
+export function isIntervalFinerThan(a: MetricScanInterval, b: MetricScanInterval): boolean {
+  return INTERVAL_MINUTES[a] < INTERVAL_MINUTES[b]
+}
+
 // Precision rule shared with the metrics catalog: whole numbers at >= 100,
 // two decimals below.
 function roundForDisplay(value: number): number {

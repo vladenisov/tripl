@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -83,13 +84,21 @@ def _demo_clock() -> datetime:
     return datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
 
 
-def _demo_project_name(existing_count: int) -> str:
+def _demo_project_name(taken: Collection[str]) -> str:
     """Distinguishable name per demo, so N demos are not N identical cards.
 
-    The first demo keeps the plain product name; later ones are numbered by how
-    many the creator already holds (tripl-jfm3.14).
+    The first demo keeps the plain product name; later ones are numbered
+    (tripl-jfm3.14). The number is the lowest one not already used by the
+    creator's live demos, NOT their count: after deleting ``Demo Project`` from
+    a pair, a count of one would mint a second ``Demo Project 2`` next to the
+    survivor (tripl-0zpq.250). Reusing the freed low number is deliberate.
     """
-    return "Demo Project" if existing_count <= 0 else f"Demo Project {existing_count + 1}"
+    if "Demo Project" not in taken:
+        return "Demo Project"
+    number = 2
+    while f"Demo Project {number}" in taken:
+        number += 1
+    return f"Demo Project {number}"
 
 
 def _new_demo_project(
@@ -137,7 +146,8 @@ async def create_demo_project(
     # sweep them — no extra scheduled job to keep alive (tripl-jfm3.17/.76).
     await _sweep_failed_demo_shells(session)
 
-    live = await _count_live_demos(session, created_by)
+    live_names = await _live_demo_names(session, created_by)
+    live = len(live_names)
     if created_by is not None and live >= MAX_DEMOS_PER_CREATOR:
         raise HTTPException(
             status_code=409,
@@ -148,7 +158,9 @@ async def create_demo_project(
         )
 
     # Phase 1: durable hidden shell, committed first as the provisioning marker.
-    project = _new_demo_project(slug=slug, created_by=created_by, name=_demo_project_name(live))
+    project = _new_demo_project(
+        slug=slug, created_by=created_by, name=_demo_project_name(live_names)
+    )
     session.add(project)
     await session.flush()
     project_id = project.id
@@ -191,13 +203,17 @@ async def create_demo_project(
         raise HTTPException(status_code=500, detail="Demo provisioning failed") from exc
 
     # Cancellation is decided here, at the one atomic decision point: everything
-    # seeded above is still uncommitted, so abandoning it costs a rollback and
-    # the shell delete. The client has long since aborted its read, so the status
-    # below is for logs and API clients, not for a human.
+    # seeded above is still uncommitted (the search builder reindexes with
+    # ``commit=False`` for exactly this, tripl-0zpq.243), so abandoning it costs
+    # a rollback and the shell delete. The trail purge is belt and braces: a
+    # cancelled demo never existed, so nothing it wrote may outlive it in the
+    # workspace-wide audit view. The client has long since aborted its read, so
+    # the status below is for logs and API clients, not for a human.
     if await _cancel_requested(session, project_id):
         await session.rollback()
         shell = await session.get(Project, project_id)
         if shell is not None:
+            await _purge_audit_trail(session, shell)
             await project_service.purge_project_rows(session, shell)
             await session.commit()
         await cache.delete_prefix(cache.prefix_projects())
@@ -265,8 +281,11 @@ async def _cancel_requested(session: AsyncSession, project_id: uuid.UUID) -> boo
     return stage == DEMO_CANCEL_REQUESTED_STAGE
 
 
-async def _count_live_demos(session: AsyncSession, created_by: uuid.UUID | None) -> int:
-    """Demos this creator currently holds against their cap.
+async def _live_demo_names(session: AsyncSession, created_by: uuid.UUID | None) -> list[str]:
+    """Names of the demos this creator currently holds against their cap.
+
+    One row per demo, so ``len`` is the cap count and the names feed
+    :func:`_demo_project_name`.
 
     Failed shells are residue, not demos. A shell abandoned mid-seed (the process
     died between the phase-1 commit and either promotion or the failure marker)
@@ -274,10 +293,10 @@ async def _count_live_demos(session: AsyncSession, created_by: uuid.UUID | None)
     user cannot see, let alone free.
     """
     if created_by is None:
-        return 0
+        return []
     stall_cutoff = datetime.now(tz=UTC) - timedelta(hours=STALLED_SEEDING_HOURS)
     rows = await session.scalars(
-        select(Project.id).where(
+        select(Project.name).where(
             Project.is_demo.is_(True),
             Project.created_by_user_id == created_by,
             Project.generation_status != ProjectGenerationStatus.failed.value,
@@ -285,7 +304,7 @@ async def _count_live_demos(session: AsyncSession, created_by: uuid.UUID | None)
             | (Project.created_at >= stall_cutoff),
         )
     )
-    return len(rows.all())
+    return list(rows.all())
 
 
 async def _sweep_failed_demo_shells(session: AsyncSession) -> int:
@@ -321,6 +340,10 @@ async def _sweep_failed_demo_shells(session: AsyncSession) -> int:
     if not stale:
         return 0
     for shell in stale:
+        # A shell that never became a workspace keeps no trail either: a seed
+        # that got as far as writing audit rows must not leave them orphaned
+        # (tripl-0zpq.243).
+        await _purge_audit_trail(session, shell)
         await project_service.purge_project_rows(session, shell)
     await session.commit()
     logger.info(
@@ -399,6 +422,7 @@ async def reset_demo_project(
 
     await cache.delete_prefix(cache.prefix_projects())
     await cache.delete_prefix(cache.prefix_data_sources())
+    await project_service._invalidate_slug_caches(slug)
     return await project_service.get_project(session, slug)
 
 

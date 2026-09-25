@@ -17,17 +17,27 @@ ANOMALY-SCOPE (ticket tripl-dxhp.6): catalog-metric anomalies are stored in
 filters on BOTH ``scope_type == MetricScopeType.metric`` and the scope_ref so it
 can never pick up an unrelated row whose scope_ref happens to equal a metric
 definition UUID.
+
+GRID-POPULATION (ticket tripl-0zpq.115): one chart must describe ONE population.
+An anomaly row carries no ``scan_config_id``, so the band it draws is whatever
+the detector scored; the value line therefore has to be read the way the
+detector reads it — SUMMED per bucket over every source config on the metric's
+resolved grid interval (:func:`tripl.metric_grid.grid_population_filter`, shared with
+``detect._metric_grid_population``). Reading a single config plots one addend of
+the band around it; reading every config mixes intervals that are not addable.
 """
 
 from __future__ import annotations
 
+import asyncio
+import math
 import re
 import uuid
 from datetime import datetime, timedelta
 from typing import cast
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import ColumnExpressionArgument, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.analyzers.anomaly_detector import (
@@ -37,7 +47,7 @@ from tripl.core.analyzers.anomaly_detector import (
     forecast_next_buckets,
 )
 from tripl.core.intervals import get_interval
-from tripl.metric_grid import metric_grid_stmt, metric_grids
+from tripl.metric_grid import grid_population_filter, metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import is_metric_monitored
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.fact_table import FactTable
@@ -61,9 +71,13 @@ from tripl.semver import (
     order_versions,
 )
 from tripl.services.metrics_service import (
+    _FORECAST_MAX_POINTS,
+    _apply_scope_sigma_override,
     _get_project_recent_signal_window,
+    _get_project_sigma_threshold,
     _resolve_project,
     _retained_versions,
+    _served_stddev,
     _signal_from_anomaly,
 )
 from tripl.services.monitoring_utils import classify_signal_state, scan_interval_to_timedelta
@@ -106,16 +120,43 @@ async def _resolve_metric_interval(
     return grid.interval, grid.scan_config_id
 
 
+def _grid_population_filter(
+    *,
+    interval: str | None,
+    scan_config_id: uuid.UUID | None,
+) -> ColumnExpressionArgument[bool]:
+    """``MetricValue`` rows on the metric's grid population.
+
+    The rule and its reasoning live in :func:`tripl.metric_grid.grid_population_filter`,
+    shared with the detector (tripl-67he).
+    """
+    return grid_population_filter(
+        MetricValue.scan_config_id, interval=interval, scan_config_id=scan_config_id
+    )
+
+
 async def _load_metric_values(
     session: AsyncSession,
     metric_id: uuid.UUID,
     *,
     time_from: datetime | None,
     time_to: datetime | None,
+    interval: str | None,
+    scan_config_id: uuid.UUID | None,
 ) -> list[tuple[datetime, float]]:
+    """The metric's value series: SUMMED per bucket over its grid population.
+
+    ``func.sum`` with the grid population, not a bare read of one config's rows,
+    for the reason :func:`_grid_population_filter` spells out — this is the
+    reduction the anomalies overlaid on the result were scored from.
+    """
     query = (
-        select(MetricValue.bucket, MetricValue.value)
-        .where(MetricValue.metric_definition_id == metric_id)
+        select(MetricValue.bucket, func.sum(MetricValue.value))
+        .where(
+            MetricValue.metric_definition_id == metric_id,
+            _grid_population_filter(interval=interval, scan_config_id=scan_config_id),
+        )
+        .group_by(MetricValue.bucket)
         .order_by(MetricValue.bucket)
     )
     if time_from is not None:
@@ -156,15 +197,24 @@ async def _latest_metric_value_bucket(
     *,
     since: datetime,
     time_to: datetime | None,
+    interval: str | None,
+    scan_config_id: uuid.UUID | None,
 ) -> datetime | None:
-    """Newest stored value bucket at or after ``since``.
+    """Newest stored value bucket at or after ``since``, on the grid population.
 
     ``since`` bounds the read and costs no accuracy for its one caller, which
     only asks whether the metric stored anything NEWER than a candidate anchor —
     rows older than that anchor cannot change the answer.
+
+    Population-filtered for the same reason as :func:`_load_metric_values`: this
+    probe decides whether an anomaly still classifies open, so it must measure
+    against the same series the chart will plot, not against a retired grid's
+    leftovers. ``max`` needs no per-bucket sum — the newest bucket of a sum over
+    a set is the newest bucket in the set.
     """
     query = select(func.max(MetricValue.bucket)).where(
         MetricValue.metric_definition_id == metric_id,
+        _grid_population_filter(interval=interval, scan_config_id=scan_config_id),
         MetricValue.bucket >= since,
     )
     if time_to is not None:
@@ -180,6 +230,7 @@ async def _load_anomalies_reaching_open_anchor(
     time_to: datetime | None,
     interval: str | None,
     recent_window: timedelta | None,
+    scan_config_id: uuid.UUID | None,
 ) -> tuple[list[MetricAnomaly], datetime | None]:
     """The metric's anomalies for the requested range, reaching back to an open anchor.
 
@@ -233,7 +284,12 @@ async def _load_anomalies_reaching_open_anchor(
     # backfilled from ``actual_count``, so the densified series ends at the
     # newest of the metric's value buckets and its anomaly buckets.
     stored_latest = await _latest_metric_value_bucket(
-        session, metric_id, since=anchor.bucket, time_to=time_to
+        session,
+        metric_id,
+        since=anchor.bucket,
+        time_to=time_to,
+        interval=interval,
+        scan_config_id=scan_config_id,
     )
     latest_metric_bucket = (
         max(anchor.bucket, stored_latest) if stored_latest is not None else anchor.bucket
@@ -263,20 +319,40 @@ def _densify_value_rows(
     """Place values on the interval grid, preserving float precision.
 
     For COUNT-shaped metrics ``expand_series`` produces the densified bucket grid
-    (off a rounded copy) and gap buckets are filled as ``0.0`` — a missing count
-    genuinely means zero. For FRACTIONAL metrics (ratios/averages/sql) a missing
-    bucket means "no data", not zero, so gaps are NOT filled: only present
-    buckets are returned and the chart renders the gaps as null breaks.
+    and gap buckets are filled as ``0.0`` — a missing count genuinely means zero.
+    For FRACTIONAL metrics (ratios/averages/sql) a missing bucket means "no
+    data", not zero, so gaps are NOT filled: only present buckets are returned
+    and the chart renders the gaps as null breaks.
+
+    NON-FINITE values are dropped here, at the single chokepoint every series
+    read (plain, breakdown, version) passes through. ``MetricValue.value`` is a
+    plain Float column, and the collector USED to coerce warehouse cells with a
+    bare ``float()``, so a ClickHouse ``countIf(a)/countIf(b)`` that divided by
+    zero stored a literal NaN/Infinity. The write side now refuses them
+    (``metric_rows._drop_non_finite_values``, on both upsert helpers), so what
+    this read-side drop still covers is rows stored BEFORE that guard plus any
+    future write path that bypasses those helpers — which is why it stays even
+    though no current collector can produce one. Carrying one further used to
+    raise ``ValueError``/``OverflowError`` out of the forecast's ``round()`` — a 500 on
+    the whole metric detail page until retention dropped the row — and would in
+    any case serialize as a JSON literal no client can parse. A poisoned bucket
+    is treated exactly like an absent one: zero-filled for counts, a null break
+    for fractionals.
     """
-    values_by_bucket: dict[datetime, float] = dict(value_rows)
+    values_by_bucket: dict[datetime, float] = {
+        bucket: value for bucket, value in value_rows if math.isfinite(value)
+    }
     for anomaly in anomalies:
-        values_by_bucket.setdefault(anomaly.bucket, float(anomaly.actual_count))
+        actual = float(anomaly.actual_count)
+        if math.isfinite(actual):
+            values_by_bucket.setdefault(anomaly.bucket, actual)
 
     if interval and values_by_bucket and count_shaped:
         delta = get_interval(interval).delta
+        # ``SeriesPoint.count`` is a float and ``expand_series`` only reads the
+        # buckets off these points, so the values ride through unrounded.
         grid_points = [
-            SeriesPoint(bucket=bucket, count=round(value))
-            for bucket, value in values_by_bucket.items()
+            SeriesPoint(bucket=bucket, count=value) for bucket, value in values_by_bucket.items()
         ]
         expanded = expand_series(
             grid_points,
@@ -309,7 +385,12 @@ def _build_metric_series_points(
                 bucket=bucket,
                 value=value,
                 expected_count=anomaly.expected_count if anomaly else None,
-                stddev=anomaly.stddev if anomaly else None,
+                # ``_served_stddev``, the SAME floored effective stddev the
+                # event-scope points serve (``metrics_service._build_metric_points``):
+                # the band is drawn as ``expected ± k × stddev`` and the detector
+                # flagged with the floored denominator, so serving the raw column
+                # here drew a narrower band than the rule that produced the dot.
+                stddev=_served_stddev(anomaly) if anomaly else None,
                 is_anomaly=anomaly is not None,
                 anomaly_direction=anomaly.direction if anomaly else None,
                 z_score=anomaly.z_score if anomaly else None,
@@ -323,10 +404,38 @@ def _forecast_from_series(
     data: list[MetricSeriesPoint],
     interval: str | None,
 ) -> list[ForecastPoint]:
-    if not data or not interval:
+    """One-step-ahead forecast off the densified catalog-metric series.
+
+    Bounded by the shared ``_FORECAST_MAX_POINTS`` cap for the COST half of the
+    reason spelled out where it is defined: ``forecast_next_buckets`` fits its
+    own robust STL/MSTL, and an hourly metric at the default 30d range is 720
+    points — a 1.75 s fit.
+
+    The roll-up half of that rationale does NOT apply here. A catalog-metric
+    drilldown never rolls up: ``MonitoringDetailPage`` picks the metric scope's
+    granularity from the collection interval regardless of range. The tail is
+    invisible for a blunter reason — ``adaptMetricSeries`` returns
+    ``forecast: []`` unconditionally for this scope, because a dashed tail
+    trending toward 0 is misleading on a fractional metric. So the cap bounds a
+    fit nothing currently reads; a future frontend that starts showing the tail
+    inherits the cost argument above and nothing else.
+
+    CPU-bound, so callers on the request path go through
+    ``_forecast_off_event_loop`` rather than calling this directly.
+    """
+    if not data or not interval or len(data) > _FORECAST_MAX_POINTS:
         return []
     delta = get_interval(interval).delta
-    series_points = [SeriesPoint(bucket=point.bucket, count=round(point.value)) for point in data]
+    # Floats, not ``round()``: ``SeriesPoint.count`` is float and the forecast is
+    # scale-aware (tripl-68bc), so a ratio series no longer collapses to all
+    # zeros before it is fitted. The ``isfinite`` guard is belt-and-braces —
+    # ``_densify_value_rows`` already drops non-finite buckets — because
+    # ``round()`` on a NaN/inf raised out of this line and 500'd the page.
+    series_points = [
+        SeriesPoint(bucket=point.bucket, count=point.value)
+        for point in data
+        if math.isfinite(point.value)
+    ]
     return [
         ForecastPoint(
             bucket=point.bucket,
@@ -335,6 +444,19 @@ def _forecast_from_series(
         )
         for point in forecast_next_buckets(series_points, interval=delta, horizon=1)
     ]
+
+
+async def _forecast_off_event_loop(
+    *,
+    data: list[MetricSeriesPoint],
+    interval: str | None,
+) -> list[ForecastPoint]:
+    """``_forecast_from_series`` on a worker thread — see the event-scope twin
+    ``metrics_service._forecast_off_event_loop``. The cheap exits are taken here
+    so only a real fit pays for the hop."""
+    if not data or not interval or len(data) > _FORECAST_MAX_POINTS:
+        return []
+    return await asyncio.to_thread(_forecast_from_series, data=data, interval=interval)
 
 
 def _latest_signal(
@@ -393,6 +515,7 @@ async def get_metric_series(
             time_to=time_to,
             interval=interval,
             recent_window=recent_window,
+            scan_config_id=scan_config_id,
         )
     else:
         anomalies = await _load_metric_anomalies(
@@ -401,8 +524,17 @@ async def get_metric_series(
 
     # ``series_from``, not ``time_from``: the chart and the signal must describe
     # ONE range, so a reach-back that widened the anomaly load widens this too.
+    # The grid keeps the read on ONE POPULATION — the configs on the interval
+    # that densifies the series just below, summed per bucket exactly as the
+    # detector summed them to produce the ``anomalies`` above (see
+    # ``_grid_population_filter``).
     value_rows = await _load_metric_values(
-        session, metric.id, time_from=series_from, time_to=time_to
+        session,
+        metric.id,
+        time_from=series_from,
+        time_to=time_to,
+        interval=interval,
+        scan_config_id=scan_config_id,
     )
     data = _build_metric_series_points(
         interval=interval,
@@ -425,8 +557,19 @@ async def get_metric_series(
             if monitored
             else None
         ),
+        # Override first, project setting behind it — the detector's two-step
+        # for a ``metric`` scope, whose overrides are stored with no
+        # ``scan_config_id`` (tripl-4cgl).
+        sigma_threshold=await _apply_scope_sigma_override(
+            session,
+            project_id=project.id,
+            scan_config_id=None,
+            scope_type=SCOPE_METRIC,
+            scope_ref=str(metric.id),
+            fallback=await _get_project_sigma_threshold(session, project.id),
+        ),
         data=data,
-        forecast=_forecast_from_series(data=data, interval=interval),
+        forecast=await _forecast_off_event_loop(data=data, interval=interval),
     )
 
 
@@ -437,7 +580,16 @@ async def _load_breakdown_value_rows(
     breakdown_column: str,
     time_from: datetime | None,
     time_to: datetime | None,
+    interval: str | None,
+    scan_config_id: uuid.UUID | None,
 ) -> dict[tuple[str, bool], list[tuple[datetime, float]]]:
+    """Per-segment value rows, SUMMED per bucket over the metric's grid population.
+
+    The same population as the Series tab's line (tripl-kom5): without the grid
+    filter a metric collected on two intervals summed the retired grid's
+    segments in, so the Breakdowns and version tabs disagreed with the series
+    line beside them. See :func:`tripl.metric_grid.grid_population_filter`.
+    """
     query = (
         select(
             MetricValueBreakdown.breakdown_value,
@@ -448,6 +600,11 @@ async def _load_breakdown_value_rows(
         .where(
             MetricValueBreakdown.metric_definition_id == metric_id,
             MetricValueBreakdown.breakdown_column == breakdown_column,
+            grid_population_filter(
+                MetricValueBreakdown.scan_config_id,
+                interval=interval,
+                scan_config_id=scan_config_id,
+            ),
         )
         .group_by(
             MetricValueBreakdown.breakdown_value,
@@ -511,10 +668,24 @@ async def get_metric_breakdowns(
         breakdown_column=selected_column,
         time_from=time_from,
         time_to=time_to,
+        interval=interval,
+        scan_config_id=scan_config_id,
     )
     series: list[MetricBreakdownSeries] = []
+    # ``count_shaped``, like the series and version reads: a fractional metric's
+    # missing breakdown bucket means "no data", not zero. The ratio collector
+    # skips zero-denominator buckets outright
+    # (``metric_collect._append_ratio_breakdown_rows``), so zero-filling them
+    # here plotted a conversion rate as a hard drop to 0% wherever a segment
+    # simply had no traffic.
+    count_shaped = is_count_shaped(metric)
     for (value, is_other), value_rows in rows_by_series.items():
-        points = _build_metric_series_points(interval=interval, value_rows=value_rows, anomalies=[])
+        points = _build_metric_series_points(
+            interval=interval,
+            value_rows=value_rows,
+            anomalies=[],
+            count_shaped=count_shaped,
+        )
         series.append(
             MetricBreakdownSeries(
                 breakdown_value=value,
@@ -604,6 +775,15 @@ def _build_metric_version_series(
         for version, by_bucket in per_version_totals.items()
         if version in maturity_released
     }
+    # ``is_active`` for a FRACTIONAL metric is NOT "always False" — a share gate
+    # on a ratio is meaningless, so the rule is:
+    #   * project-total maturity rows available -> gate on PROJECT traffic share,
+    #     which is a count and so is meaningful for every metric shape;
+    #   * none available -> every released version counts as active, because the
+    #     metric's own ratio rows cannot answer "does this release carry real
+    #     traffic" and refusing to answer would retire every version at once.
+    # Count-shaped metrics always take the share gate: their own rows are a
+    # volume and can stand in for the project total.
     active_versions = (
         released
         if not maturity_rows_by_series and not count_shaped
@@ -616,12 +796,33 @@ def _build_metric_version_series(
             return (version, False)
         return (APP_VERSION_OTHER_LABEL, True)
 
-    folded: dict[tuple[str, bool], dict[datetime, float]] = {}
+    def _fold_bucket(values: list[float]) -> float:
+        """Combine the versions folded into one display line for one bucket.
+
+        Folding is a SUM only for count-shaped metrics. A ratio / average / sql
+        metric stores a LEVEL per version and levels do not add: three versions
+        sitting near 0.30, plus the warehouse's own stored "Other" tail row,
+        used to plot "Other" at 0.85 on a metric that cannot exceed 1.0. The
+        per-version numerator and denominator are not stored, so the pooled
+        level cannot be recomputed here; the MEAN is used instead. It always
+        lands inside ``[min, max]`` of the folded levels — and so does the true
+        pooled level — which keeps "Other" on the same scale as the lines it
+        summarises. A kept version is alone under its own display key, so this
+        is the identity for every non-folded series either way.
+        """
+        if count_shaped:
+            return sum(values)
+        return sum(values) / len(values)
+
+    folded: dict[tuple[str, bool], dict[datetime, list[float]]] = {}
     for (version, is_other), rows in value_rows_by_series.items():
         bucket_values = folded.setdefault(_display_key(version, is_other), {})
         for bucket, value in rows:
-            bucket_values[bucket] = bucket_values.get(bucket, 0.0) + value
-    rows_by_display = {key: sorted(values.items()) for key, values in folded.items()}
+            bucket_values.setdefault(bucket, []).append(value)
+    rows_by_display = {
+        key: sorted((bucket, _fold_bucket(values)) for bucket, values in buckets.items())
+        for key, buckets in folded.items()
+    }
 
     ordered_keys, semver_latest = _order_version_keys(set(rows_by_display), released=released)
     # Prefer the SemVer-max mature release from the shared project total; fall
@@ -671,9 +872,14 @@ async def _resolve_version_gate(
 ) -> tuple[int, re.Pattern[str] | None, float]:
     """Resolve the shared retention plus source-specific version gates.
 
-    Retention is project-wide. Prerelease and activation-share gates remain
-    per scan when the metric is aligned to one; standalone SQL/fact metrics use
-    their existing defaults for those two gates.
+    Retention is project-wide. The prerelease pattern and the activation-share
+    floor come from the MATURITY scan — the one
+    ``_resolve_maturity_scan_config_id`` picked, which is the metric's own scan
+    when it is aligned to one and otherwise the source's highest-volume
+    project-total scan. So a standalone SQL/fact metric is gated by that scan's
+    settings too; it falls back to the module defaults only when no maturity
+    scan could be resolved at all (``scan_config_id is None``, or the row has
+    since been deleted).
     """
     if scan_config_id is not None:
         row = (
@@ -850,6 +1056,8 @@ async def get_metric_version_series(
         breakdown_column=metric.app_version_column,
         time_from=time_from,
         time_to=time_to,
+        interval=interval,
+        scan_config_id=scan_config_id,
     )
     maturity_scan_config_id = await _resolve_maturity_scan_config_id(
         session,

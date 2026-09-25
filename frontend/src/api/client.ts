@@ -1,3 +1,5 @@
+import { uid } from '@/lib/uid'
+
 const BASE = '/api/v1'
 const BACKEND_UNAVAILABLE_MESSAGE = 'Backend is unavailable. Check that the API server is running and try again.'
 export const AUTH_UNAUTHORIZED_EVENT = 'tripl:unauthorized'
@@ -71,7 +73,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Correlate this request with backend logs/traces. The backend echoes the id
   // back on the response and 500 bodies (see RequestIDMiddleware).
   if (!headers.has('X-Request-ID')) {
-    headers.set('X-Request-ID', crypto.randomUUID())
+    headers.set('X-Request-ID', uid())
   }
 
   try {
@@ -124,7 +126,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  // `signal` is TanStack Query's per-query AbortSignal: pass it from a
+  // `queryFn: ({ signal }) => …` so a superseded or unmounted query cancels its
+  // request instead of queueing behind the browser's per-host connection limit.
+  get: <T>(path: string, signal?: AbortSignal) =>
+    request<T>(path, signal === undefined ? undefined : { signal }),
   // `signal` lets a caller time out or cancel a long POST (demo provisioning).
   // An aborted fetch surfaces as ApiError(408) — see the AbortError branch in
   // request().

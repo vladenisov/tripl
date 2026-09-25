@@ -5,8 +5,8 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import ColumnExpressionArgument, delete, select
 from sqlalchemy import and_ as sa_and
-from sqlalchemy import delete, select
 from sqlalchemy import func as sa_func
 from sqlalchemy import not_ as sa_not
 from sqlalchemy import or_ as sa_or
@@ -30,7 +30,7 @@ from tripl.core.analyzers.anomaly_detector import (
 )
 from tripl.core.bucketing import to_utc
 from tripl.core.intervals import get_interval
-from tripl.metric_grid import MetricGrid, metric_grid_stmt, metric_grids
+from tripl.metric_grid import MetricGrid, grid_population_filter, metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.anomaly_scope_override import AnomalyScopeOverride
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricKind
@@ -741,6 +741,7 @@ def _collect_scope_ids(
                     EventMetric.bucket < evaluation_end,
                     Event.status != "archived",
                 )
+                .distinct()
             ).scalars()
             if value is not None
         }
@@ -757,6 +758,7 @@ def _collect_scope_ids(
                     MetricAnomaly.bucket < evaluation_end,
                     Event.status != "archived",
                 )
+                .distinct()
             ).scalars()
             if value is not None
         )
@@ -764,25 +766,29 @@ def _collect_scope_ids(
         ids = {
             value
             for value in session.execute(
-                select(metric_column).where(
+                select(metric_column)
+                .where(
                     EventMetric.scan_config_id == scan_config_id,
                     metric_column.is_not(None),
                     EventMetric.bucket >= history_from,
                     EventMetric.bucket < evaluation_end,
                 )
+                .distinct()
             ).scalars()
             if value is not None
         }
         ids.update(
             value
             for value in session.execute(
-                select(anomaly_column).where(
+                select(anomaly_column)
+                .where(
                     MetricAnomaly.scan_config_id == scan_config_id,
                     MetricAnomaly.scope_type == scope_type,
                     anomaly_column.is_not(None),
                     MetricAnomaly.bucket >= evaluation_start,
                     MetricAnomaly.bucket < evaluation_end,
                 )
+                .distinct()
             ).scalars()
             if value is not None
         )
@@ -799,7 +805,15 @@ def _collect_breakdown_scope_keys(
     scope_type: str,
     app_version_column: str | None = None,
     kind: MetricBreakdownAnomalyKind = MetricBreakdownAnomalyKind.volume,
+    breakdown_column: str | None = None,
 ) -> set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]]:
+    """Every breakdown scope with history or a stored anomaly in the window.
+
+    DISTINCT in SQL and narrowed in SQL (``breakdown_column`` keeps only that
+    column, ``app_version_column`` drops that one), so a scan with a few thousand
+    events no longer materialises one row per stored BUCKET — up to 534 per key
+    — just to build a set (tripl-0zpq.9).
+    """
     metric_id_column = (
         EventMetricBreakdown.event_type_id
         if scope_type == SCOPE_EVENT_TYPE
@@ -836,6 +850,25 @@ def _collect_breakdown_scope_keys(
         MetricBreakdownAnomaly.bucket < evaluation_end,
     )
 
+    if breakdown_column is not None:
+        metric_query = metric_query.where(EventMetricBreakdown.breakdown_column == breakdown_column)
+        anomaly_query = anomaly_query.where(
+            MetricBreakdownAnomaly.breakdown_column == breakdown_column
+        )
+    if app_version_column:
+        # App-version series describe rollout adoption rather than a stable
+        # cohort: each release naturally ramps up and then declines as the next
+        # one ships, and running the generic per-breakdown detector on those
+        # lifecycle curves creates noise. Dedicated release-regression detection
+        # handles version correctness; every other breakdown column stays
+        # monitored here.
+        metric_query = metric_query.where(
+            EventMetricBreakdown.breakdown_column != app_version_column
+        )
+        anomaly_query = anomaly_query.where(
+            MetricBreakdownAnomaly.breakdown_column != app_version_column
+        )
+
     if scope_type == SCOPE_PROJECT_TOTAL:
         metric_query = metric_query.where(
             EventMetricBreakdown.event_id.is_(None),
@@ -858,26 +891,30 @@ def _collect_breakdown_scope_keys(
         anomaly_query = anomaly_query.where(anomaly_id_column.is_not(None))
 
     keys: set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]] = set()
-    for event_id, event_type_id, column, value, is_other in session.execute(metric_query).all():
-        if scope_type == SCOPE_PROJECT_TOTAL:
-            keys.add((None, None, column, value, bool(is_other)))
-        else:
-            keys.add((event_id, event_type_id, column, value, bool(is_other)))
-    for event_id, event_type_id, column, value, is_other in session.execute(anomaly_query).all():
-        if scope_type == SCOPE_PROJECT_TOTAL:
-            keys.add((None, None, column, value, bool(is_other)))
-        else:
-            keys.add((event_id, event_type_id, column, value, bool(is_other)))
+    for query in (metric_query.distinct(), anomaly_query.distinct()):
+        for event_id, event_type_id, column, value, is_other in session.execute(query).all():
+            if scope_type == SCOPE_PROJECT_TOTAL:
+                keys.add((None, None, column, value, bool(is_other)))
+            else:
+                keys.add((event_id, event_type_id, column, value, bool(is_other)))
+    return keys
 
-    if not app_version_column:
-        return keys
 
-    # App-version series describe rollout adoption rather than a stable cohort:
-    # each release naturally ramps up and then declines as the next one ships.
-    # Running the generic per-breakdown detector on those lifecycle curves
-    # creates noise. Dedicated release-regression detection handles version
-    # correctness; every other breakdown column stays monitored here.
-    return {key for key in keys if key[2] != app_version_column}
+def _metric_grid_population(grid: MetricGrid | None) -> ColumnExpressionArgument[bool]:
+    """The ``MetricValue`` rows that ARE this metric's series.
+
+    What :func:`_load_metric_value_points` sums, what
+    :func:`_metric_source_config_ids` reads coverage back for, and what the
+    series read plots. The rule lives in
+    :func:`tripl.metric_grid.grid_population_filter`, shared with the read path
+    (tripl-67he). A ``None`` grid (the metric row vanished mid-run) takes the
+    IS NULL branch and matches nothing, which is the safe answer.
+    """
+    return grid_population_filter(
+        MetricValue.scan_config_id,
+        interval=None if grid is None else grid.interval,
+        scan_config_id=None if grid is None else grid.scan_config_id,
+    )
 
 
 def _load_metric_value_points(
@@ -886,18 +923,27 @@ def _load_metric_value_points(
     metric_definition_id: uuid.UUID,
     history_from: datetime,
     time_to: datetime,
+    grid: MetricGrid | None = None,
 ) -> list[SeriesPoint]:
     """Load a catalog metric's stored value series as ``SeriesPoint``s.
 
-    Values are summed per bucket (an ``event_composition`` metric may have been
-    collected across more than one source grid) and kept as floats — the
-    detector is scale-aware, so sub-unit ratio/average movements survive
-    instead of rounding toward 0 (tripl-68bc).
+    Values are summed per bucket over the metric's grid population — see
+    :func:`_metric_grid_population` for which configs that is and why — and kept
+    as floats, because the detector is scale-aware, so sub-unit ratio/average
+    movements survive instead of rounding toward 0 (tripl-68bc).
+
+    ``grid`` is optional only to save the resolving query for the detection loop,
+    which has already resolved it; omitting it resolves the same grid here rather
+    than widening the population, so no caller can accidentally score a series
+    the series read would not draw.
     """
+    if grid is None:
+        grid = _metric_grid_by_id(session, metric_definition_id)
     rows = session.execute(
         select(MetricValue.bucket, sa_func.sum(MetricValue.value))
         .where(
             MetricValue.metric_definition_id == metric_definition_id,
+            _metric_grid_population(grid),
             MetricValue.bucket >= history_from,
             MetricValue.bucket < time_to,
         )
@@ -907,6 +953,13 @@ def _load_metric_value_points(
     return [SeriesPoint(bucket=to_utc(bucket), count=float(value)) for bucket, value in rows]
 
 
+def _metric_grid_by_id(session: Session, metric_definition_id: uuid.UUID) -> MetricGrid | None:
+    """:func:`_resolve_metric_grid` for callers holding only the id."""
+    return metric_grids(
+        session.execute(metric_grid_stmt(MetricDefinition.id == metric_definition_id)).all()
+    ).get(metric_definition_id)
+
+
 def _resolve_metric_grid(session: Session, metric: MetricDefinition) -> MetricGrid | None:
     """Grid of a metric — the shared rule in :mod:`tripl.metric_grid`.
 
@@ -914,35 +967,38 @@ def _resolve_metric_grid(session: Session, metric: MetricDefinition) -> MetricGr
     ``event_composition`` leaves it NULL and inherits the grid of the
     most-recent value's ``scan_config_id``.
 
-    The whole entry is returned rather than just the interval because
+    The whole entry is returned rather than just the interval because the
+    interval SELECTS the series (:func:`_metric_grid_population`) and
     :func:`_metric_covered_buckets` also has to know whether the RUNNING scan's
-    grid is one of the metric's grids, which is an (interval, config) pair. It
-    does NOT decide whose coverage describes the series: that is the union over
-    every source config the values were summed from, read separately.
+    grid is one of the metric's grids, which is an (interval, config) pair. The
+    config id alone does NOT decide whose coverage describes the series: that is
+    the union over every source config the values were summed from, read
+    separately.
     """
-    return metric_grids(
-        session.execute(metric_grid_stmt(MetricDefinition.id == metric.id)).all()
-    ).get(metric.id)
+    return _metric_grid_by_id(session, metric.id)
 
 
 def _metric_source_config_ids(
     session: Session,
     *,
     metric_definition_id: uuid.UUID,
+    grid: MetricGrid | None,
     history_from: datetime,
     time_to: datetime,
 ) -> list[uuid.UUID]:
     """Every scan config that contributed a value to the series being scored.
 
-    The population :func:`_load_metric_value_points` SUMS over, read back over
-    the same window and the same metric so the two cannot describe different
-    things. Ordered so the coverage union below is byte-stable run to run.
+    The population :func:`_load_metric_value_points` SUMS over — the same
+    ``grid``, the same predicate, the same window and the same metric, so the two
+    cannot describe different things. Ordered so the coverage union below is
+    byte-stable run to run.
     """
     rows = session.execute(
         select(MetricValue.scan_config_id)
         .where(
             MetricValue.metric_definition_id == metric_definition_id,
             MetricValue.scan_config_id.is_not(None),
+            _metric_grid_population(grid),
             MetricValue.bucket >= history_from,
             MetricValue.bucket < time_to,
         )
@@ -972,26 +1028,30 @@ def _metric_covered_buckets(
       schedule, and store ``scan_config_id = NULL``. No scan job ever recorded a
       window for them, so no scan's coverage describes them at all; ``None``
       keeps the documented unconditional zero-fill.
-    * an ``event_composition`` metric gets the UNION of its source configs'
-      coverage, each re-enumerated on the metric's own delta. The source reading
-      THIS scan on THIS scan's grid contributes the running scan's set verbatim:
-      it is already on the right delta, and it uniquely carries the window this
-      run just wrote. Every other source is read from its own completed jobs and
-      stored buckets.
+    * an ``event_composition`` metric gets the UNION of ITS GRID POPULATION's
+      configs' coverage, each re-enumerated on the metric's own delta. The source
+      reading THIS scan on THIS scan's grid contributes the running scan's set
+      verbatim: it is already on the right delta, and it uniquely carries the
+      window this run just wrote. Every other source is read from its own
+      completed jobs and stored buckets.
 
     The union — rather than the newest value's single ``scan_config_id`` — is
     what keeps coverage describing the SAME population the series is summed
-    from. ``_load_metric_value_points`` sums across every source grid with no
-    config filter, because one event type can legitimately be collected by two
-    live scans (``EventMetric`` is keyed on (scan_config_id, event_id, bucket)
-    and ``_collect_event_composition`` writes one ``MetricValue`` row per source
-    grid). Masking that summed series with ONE source's coverage drops every
-    bucket only the other source contributed — ``expand_series`` EXCLUDES an
-    uncovered bucket rather than zero-filling it, even when a real value is
-    sitting there — and which source that was is an arbitrary
-    ``ORDER BY bucket DESC`` tie-break between two equally-current configs
-    (:func:`tripl.metric_grid.metric_grid_stmt`), so the truncation could also
-    flap between runs. A union has no tie to break.
+    from. ``_load_metric_value_points`` sums across every config on the metric's
+    grid interval (:func:`_metric_grid_population`), because one event type can
+    legitimately be collected by two live scans (``EventMetric`` is keyed on
+    (scan_config_id, event_id, bucket) and ``_collect_event_composition`` writes
+    one ``MetricValue`` row per source grid). Masking that summed series with ONE
+    source's coverage drops every bucket only the other source contributed —
+    ``expand_series`` EXCLUDES an uncovered bucket rather than zero-filling it,
+    even when a real value is sitting there — and which source that was is an
+    arbitrary ``ORDER BY bucket DESC`` tie-break between two equally-current
+    configs (:func:`tripl.metric_grid.metric_grid_stmt`), so the truncation could
+    also flap between runs. A union has no tie to break.
+
+    ``grid`` bounds the union to the same configs the values came from, so a
+    RETIRED grid on another interval — whose rows are no longer part of the
+    series — cannot vouch for buckets of it either.
 
     ``None`` still means "no coverage gating, zero-fill unconditionally", and a
     source whose set is unknown forces it: the running scan contributing a
@@ -1007,6 +1067,7 @@ def _metric_covered_buckets(
     source_ids = _metric_source_config_ids(
         session,
         metric_definition_id=metric.id,
+        grid=grid,
         history_from=history_from,
         time_to=evaluation_end,
     )
@@ -1208,8 +1269,21 @@ def _recalculate_project_metric_anomalies(
     # memoized so a project whose metrics share a source pays one pair of
     # queries rather than one per metric.
     source_coverage: dict[tuple[uuid.UUID, timedelta], set[datetime]] = {}
+    # Every monitored metric's grid in ONE window-function query — the batch
+    # ``metric_grid_stmt`` exists for — rather than one per metric
+    # (tripl-0zpq.9). Same population as ``metrics`` above, so every metric
+    # finds its entry; a metric that vanished between the two reads gets None,
+    # exactly what the per-metric lookup answered.
+    grids = metric_grids(
+        session.execute(
+            metric_grid_stmt(
+                MetricDefinition.project_id == config.project_id,
+                *monitored_metric_criteria(),
+            )
+        ).all()
+    )
     for metric in metrics:
-        grid = _resolve_metric_grid(session, metric)
+        grid = grids.get(metric.id)
         if grid is None or grid.interval is None:
             continue
         interval_spec = get_interval(grid.interval)
@@ -1234,6 +1308,9 @@ def _recalculate_project_metric_anomalies(
         points = _load_metric_value_points(
             session,
             metric_definition_id=metric.id,
+            # The grid this loop already resolved, so the population predicate
+            # costs no second query here.
+            grid=grid,
             history_from=history_from,
             time_to=evaluation_end,
         )
@@ -1694,6 +1771,7 @@ def _recalculate_platform_parity_anomalies(
             evaluation_end=evaluation_end,
             scope_type=scope_type,
             kind=MetricBreakdownAnomalyKind.parity,
+            breakdown_column=platform_column,
         )
         # One scope's total series is shared by all of its platform values.
         totals_by_scope: dict[str, list[SeriesPoint]] = {}

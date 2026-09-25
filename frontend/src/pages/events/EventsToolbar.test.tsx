@@ -110,3 +110,51 @@ describe('EventsToolbar More menu (tripl-evbw)', () => {
     expect(onExportCsv).not.toHaveBeenCalled()
   })
 })
+
+describe('EventsToolbar search shortcut (EVT-34)', () => {
+  it('focuses the search box on "/" pressed outside a text field', () => {
+    renderToolbar()
+    const search = screen.getByRole('textbox', { name: 'Filter events by name, tag, or field' })
+
+    fireEvent.keyDown(document.body, { key: '/' })
+
+    expect(search).toHaveFocus()
+  })
+
+  it('leaves "/" alone while another field is being typed in', () => {
+    renderToolbar()
+    const other = document.createElement('input')
+    document.body.appendChild(other)
+    other.focus()
+
+    fireEvent.keyDown(other, { key: '/' })
+
+    expect(other).toHaveFocus()
+    other.remove()
+  })
+})
+
+describe('EventsToolbar filters that came from a link (EVT-35)', () => {
+  it('shows every status in the URL, not "Any status"', () => {
+    renderToolbar({ filterStatuses: ['draft', 'live'] })
+
+    const trigger = screen.getByRole('combobox', { name: 'Status filter' })
+    expect(trigger).toHaveTextContent(/Draft, Live/)
+    expect(trigger).not.toHaveTextContent(/Any status/)
+  })
+
+  it('shows a silent-days value no preset names', () => {
+    renderToolbar({ filterSilentDays: 3 })
+
+    expect(screen.getByRole('combobox', { name: 'Activity filter' })).toHaveTextContent(/Silent > 3d/)
+  })
+})
+
+describe('EventsToolbar saved views (EVT-36)', () => {
+  it('offers no saved views where the table is embedded in another page', () => {
+    renderToolbar({ showSavedViews: false })
+
+    expect(screen.queryByRole('button', { name: /Views/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /Columns/ })).toBeInTheDocument()
+  })
+})

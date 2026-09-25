@@ -1639,7 +1639,7 @@
           "branch-settings"
         ],
         "summary": "Update Project Branch Settings",
-        "description": "Owner-only: min_approvals/block_self_approval govern what editors may\nmerge, so editors must not be able to loosen the policy on themselves.",
+        "description": "Owner-only: min_approvals/block_self_approval govern what editors may\nmerge, so editors must not be able to loosen the policy on themselves.\n\nThis protects the merge POLICY, not the plan: editors can still manage\nevent-type owners and write ``main`` directly, so the owner-approval gate\nis a branch-review convention rather than an access control\n(tripl-0zpq.233).",
         "operationId": "update_project_branch_settings_api_v1_projects__slug__branch_settings_patch",
         "parameters": [
           {
@@ -9151,6 +9151,24 @@
               ],
               "title": "To"
             }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            },
+            "description": "Plan branch id (UUID) to read and write instead of the main branch."
           }
         ],
         "responses": {
@@ -10800,7 +10818,7 @@
           "metrics-catalog"
         ],
         "summary": "Preview Metric Sql",
-        "description": "Stateless dry-run of a sql-kind metric SELECT (editor-gated).\n\nValidates the SQL with the same safety gate the worker uses and executes it\nagainst the data source over the last 50 buckets of the requested interval\n(hard-capped at 200 rows); nothing is persisted. Expected user mistakes \u2014\nbad SQL, missing time/value columns, warehouse errors \u2014 return 200 with\n``error`` set so the editor can render them inline; unknown data source is\na 404.",
+        "description": "Stateless dry-run of a sql-kind metric SELECT (editor-gated).\n\nValidates the SQL with the same safety gate the worker uses and executes it\nagainst the data source over the last 50 buckets of the requested interval\n(hard-capped at 200 rows); nothing is persisted. Expected user mistakes \u2014\nbad SQL, missing time/value columns, warehouse errors \u2014 return 200 with\n``error`` set so the editor can render them inline. A data source this\nproject may not use is a 404, whether the id is unknown or belongs to\nanother project \u2014 the same status and sentence the fact-table doors answer.",
         "operationId": "preview_metric_sql_api_v1_projects__slug__metrics_preview_post",
         "parameters": [
           {
@@ -15280,7 +15298,8 @@
           "delivery_schedule_cron": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 120
               },
               {
                 "type": "null"
@@ -15382,7 +15401,8 @@
           "email_subject_template": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               {
                 "type": "null"
@@ -15405,7 +15425,8 @@
           "jira_auth_email": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255
               },
               {
                 "type": "null"
@@ -15427,7 +15448,8 @@
           "jira_project_key": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -15438,7 +15460,8 @@
           "jira_issue_type": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -15460,7 +15483,8 @@
           "linear_team_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -15471,7 +15495,8 @@
           "linear_state_id": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -18567,6 +18592,18 @@
               }
             ],
             "title": "Field"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
           }
         },
         "type": "object",
@@ -18575,7 +18612,7 @@
           "name"
         ],
         "title": "BranchRevertRequest",
-        "description": "Undo one entry of the branch's diff.\n\nThe entry is addressed the way the diff names it \u2014 entity type, natural name\nand parent \u2014 rather than by id, so the request describes a *change* rather\nthan a row. ``field`` narrows the revert to one changed field; omitted, the\nwhole entity goes back to its base state."
+        "description": "Undo one entry of the branch's diff.\n\nThe entry is addressed the way the diff names it \u2014 entity type, natural name\nand parent \u2014 so the request describes a *change* rather than a row, plus\nthe entry's own ``entity_id`` where a name may be shared (events and\nrelations). ``field`` narrows the revert to one changed field; omitted, the\nwhole entity goes back to its base state."
       },
       "BranchReviewerCreate": {
         "properties": {
@@ -20453,9 +20490,15 @@
             "default": "#6366f1"
           },
           "order": {
-            "type": "integer",
-            "title": "Order",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
           },
           "unit": {
             "anyOf": [
@@ -21102,6 +21145,7 @@
           },
           "value": {
             "type": "string",
+            "maxLength": 8000,
             "title": "Value"
           }
         },
@@ -22957,9 +23001,15 @@
             "default": "#6366f1"
           },
           "order": {
-            "type": "integer",
-            "title": "Order",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
           },
           "unit": {
             "anyOf": [
@@ -26235,7 +26285,7 @@
         },
         "type": "object",
         "title": "MetricDefinitionUpdate",
-        "description": "Partial update of presentation, lifecycle, dimension and monitoring fields,\nplus an optional ``definition`` block that re-defines the metric's kind +\ncollection config.\n\nThe internal ``name`` is the stable query identifier and stays IMMUTABLE: it\nhas no update field and is ignored if supplied. The optional ``definition``\nblock mirrors the create discriminated union (minus ``name`` and the other\npresentation fields, which keep their own update fields here); when present it\nis re-validated EXACTLY like creation and the service overwrites the metric's\n``kind`` / ``config`` / collection binding from it. A ``kind`` change clears\nthe metric's previously collected values (see the service)."
+        "description": "Partial update of presentation, lifecycle, dimension and monitoring fields,\nplus an optional ``definition`` block that re-defines the metric's kind +\ncollection config.\n\nThe internal ``name`` is the stable query identifier and stays IMMUTABLE: it\nhas no update field and is ignored if supplied. The optional ``definition``\nblock mirrors the create discriminated union (minus ``name`` and the other\npresentation fields, which keep their own update fields here); when present it\nis re-validated EXACTLY like creation and the service overwrites the metric's\n``kind`` / ``config`` / collection binding from it.\n\nANY definition change that means something different \u2014 not just a ``kind``\nchange \u2014 deletes the metric's previously collected values, breakdowns and\nanomalies, because they were produced under the old definition. The\ncomparison is on meaning, so resending an unchanged ``definition`` (which the\ncatalog form always does) keeps the history. Such a change is refused with\n409 while a collection for the metric is already in flight; retry it once the\nrun finishes."
       },
       "MetricGeneratedSqlQuery": {
         "properties": {
@@ -26563,6 +26613,10 @@
               }
             ]
           },
+          "sigma_threshold": {
+            "type": "number",
+            "title": "Sigma Threshold"
+          },
           "data": {
             "items": {
               "$ref": "#/components/schemas/MetricSeriesPoint"
@@ -26582,6 +26636,7 @@
         "type": "object",
         "required": [
           "metric_id",
+          "sigma_threshold",
           "data"
         ],
         "title": "MetricSeriesResponse"
@@ -27305,8 +27360,13 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 20,
-                "minLength": 1
+                "enum": [
+                  "CRITICAL",
+                  "ERROR",
+                  "WARNING",
+                  "INFO",
+                  "DEBUG"
+                ]
               },
               {
                 "type": "null"
@@ -29217,7 +29277,8 @@
           "tracker_type": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "const": "jira"
               },
               {
                 "type": "null"
@@ -32524,6 +32585,18 @@
             "format": "uuid",
             "title": "Anomaly Id"
           },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
           "scope_type": {
             "$ref": "#/components/schemas/MetricScopeType"
           },
@@ -32753,9 +32826,15 @@
             "default": "#6366f1"
           },
           "order": {
-            "type": "integer",
-            "title": "Order",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
           },
           "unit": {
             "anyOf": [
@@ -33733,8 +33812,7 @@
               {
                 "type": "string",
                 "maxLength": 100,
-                "minLength": 1,
-                "pattern": "^[a-z][a-z0-9_.]*$"
+                "minLength": 1
               },
               {
                 "type": "null"

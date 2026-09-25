@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Download, ListPlus, MoreHorizontal, Plus, Search, X } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition } from '@/types'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
@@ -23,6 +24,37 @@ import type { EventsSortOrder } from './useEventsQuery'
 
 const FILTER_TRIGGER_CLASS =
   'h-8 w-auto gap-1.5 border-dashed bg-transparent text-[11.5px] text-[var(--fg-muted)]'
+
+/** The silent-days values the Activity filter offers as presets. */
+const SILENT_DAY_PRESETS = [1, 7, 30]
+/** The Select value standing for a status combination no single item names. */
+const MULTI_STATUS_VALUE = '__multi__'
+
+/** True when the key press lands in something that takes text. */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+/**
+ * Focuses `input` when "/" is pressed outside a text field — the shortcut the
+ * search box's "/" hint has always advertised and nothing implemented (EVT-34).
+ */
+function useSlashToFocus(input: React.RefObject<HTMLInputElement | null>) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return
+      if (event.defaultPrevented || isTypingTarget(event.target)) return
+      if (!input.current) return
+      event.preventDefault()
+      input.current.focus()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [input])
+}
 
 export function EventsToolbar({
   search,
@@ -61,6 +93,7 @@ export function EventsToolbar({
   isExporting,
   onNewEvent,
   onBulkNew,
+  showSavedViews = true,
 }: {
   search: string
   onSearchChange: (value: string) => void
@@ -102,142 +135,181 @@ export function EventsToolbar({
    *  file that reads like "nothing matched". */
   canExport: boolean
   isExporting: boolean
-  onNewEvent: () => void
-  onBulkNew: () => void
+  /** Omitted for a viewer: creating events is an editor's job (EVT-9). */
+  onNewEvent?: () => void
+  onBulkNew?: () => void
+  /** Off where the table is embedded in another page: a saved view navigates
+   *  to the events route, away from the host. */
+  showSavedViews?: boolean
 }) {
-  const singleStatus = filterStatuses.length === 1 ? filterStatuses[0] : undefined
+  const searchRef = useRef<HTMLInputElement>(null)
+  useSlashToFocus(searchRef)
+  // A shared link can hold several statuses (`status=a&status=b`) or a
+  // silent-days value no preset names. The single-value selects used to fall
+  // back to "Any" / an empty trigger while the list was filtered by them, so
+  // each gets an extra item that says what is actually applied (EVT-35).
+  const statusValue =
+    filterStatuses.length === 0
+      ? '__all__'
+      : filterStatuses.length === 1
+        ? filterStatuses[0]
+        : MULTI_STATUS_VALUE
+  const multiStatusLabel = filterStatuses.map(s => EVENT_STATUS_LABELS[s]).join(', ')
+  const customSilentDays =
+    filterSilentDays !== undefined && !SILENT_DAY_PRESETS.includes(filterSilentDays)
+      ? filterSilentDays
+      : undefined
   return (
+    // Two groups, not one wrapping row of dividers: find/refine on the left,
+    // wrapping as it must; the actions on the right, which never wrap. One flat
+    // row left a divider after the search box with nothing beside it and "New
+    // Event" or "More" stranded alone on a line on tablets and phones (LIVE-25).
     <div className="mb-3 flex flex-wrap items-center gap-2">
-      {/* Primary — find: full-text filter */}
-      <div className="relative min-w-[200px] max-w-[320px] flex-1">
-        <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-        <Input
-          aria-label="Filter events by name, tag, or field"
-          placeholder="Filter by name, tag, field…"
-          value={search}
-          onChange={event => onSearchChange(event.target.value)}
-          className="h-8 w-full pl-8 pr-7 text-xs"
-        />
-        {isFilterPending ? (
-          <span
-            aria-hidden="true"
-            className="pulse-dot pointer-events-none absolute right-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full"
-            style={{ background: 'var(--accent)' }}
-            title="Updating results"
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+        {/* Primary — find: full-text filter */}
+        <div className="relative min-w-[200px] max-w-[320px] flex-1">
+          <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+          <Input
+            ref={searchRef}
+            aria-label="Filter events by name, tag, or field"
+            placeholder="Filter by name, tag, field…"
+            value={search}
+            onChange={event => onSearchChange(event.target.value)}
+            className="h-8 w-full pl-8 pr-7 text-xs"
           />
-        ) : (
-          <span className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">/</span>
-        )}
-      </div>
+          {isFilterPending ? (
+            <span
+              aria-hidden="true"
+              className="pulse-dot pointer-events-none absolute right-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full"
+              style={{ background: 'var(--accent)' }}
+              title="Updating results"
+            />
+          ) : (
+            <span
+              className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2"
+              title="Press / to search"
+            >
+              /
+            </span>
+          )}
+        </div>
 
-      <ToolbarDivider />
-
-      {/* Secondary — refine: status / activity filters.
-          The group wraps internally: as a `shrink-0` row it needed ~460px inside
-          a 366px phone column, pushing the primary CTA off-screen
-          (tripl-jfm3.42). */}
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <Select
-          value={singleStatus ?? '__all__'}
-          onValueChange={value => onFilterStatusesChange(value === '__all__' ? [] : [value as EventStatus])}
-        >
-          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Status filter">
-            <span style={{ color: 'var(--fg-subtle)' }}>Status</span>
-            <SelectValue placeholder="any" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">Any status</SelectItem>
-            {EVENT_STATUSES.map(s => (
-              <SelectItem key={s} value={s}>{EVENT_STATUS_LABELS[s]}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select
-          value={filterSilentDays === undefined ? '__all__' : String(filterSilentDays)}
-          onValueChange={value => onFilterSilentDaysChange(value === '__all__' ? undefined : Number(value))}
-        >
-          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Activity filter">
-            <span style={{ color: 'var(--fg-subtle)' }}>Activity</span>
-            <SelectValue placeholder="any" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">Any activity</SelectItem>
-            <SelectItem value="1">Silent &gt; 1d</SelectItem>
-            <SelectItem value="7">Silent &gt; 7d</SelectItem>
-            <SelectItem value="30">Silent &gt; 30d</SelectItem>
-          </SelectContent>
-        </Select>
-        {/* Reviewed is a separate axis from status (an event can be reviewed
-            and still in_review), and until now it had no readable surface at
-            all: no filter, no counter, and a column hidden by default. Without
-            this control "Mark reviewed" wrote a flag the operator could never
-            see or isolate (tripl-invv). */}
-        <Select
-          value={filterReviewed === undefined ? '__all__' : String(filterReviewed)}
-          onValueChange={value =>
-            onFilterReviewedChange(value === '__all__' ? undefined : value === 'true')
-          }
-        >
-          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Reviewed filter">
-            <span style={{ color: 'var(--fg-subtle)' }}>Reviewed</span>
-            <SelectValue placeholder="any" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">Any</SelectItem>
-            <SelectItem value="true">Reviewed</SelectItem>
-            <SelectItem value="false">Not reviewed</SelectItem>
-          </SelectContent>
-        </Select>
-        {/* The discussion (tripl-h2sx.25) gave events a place to raise a
-            question; until threads could be resolved there was no way to ask
-            which events are still waiting on one (tripl-h2sx.26). Server-side,
-            like every filter here, so it sees the whole catalog and not one
-            loaded page — and twin-aware, so it answers on a branch too. */}
-        <Select
-          value={filterOpenQuestions === undefined ? '__all__' : String(filterOpenQuestions)}
-          onValueChange={value =>
-            onFilterOpenQuestionsChange(value === '__all__' ? undefined : value === 'true')
-          }
-        >
-          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Open questions filter">
-            <span style={{ color: 'var(--fg-subtle)' }}>Questions</span>
-            <SelectValue placeholder="any" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">Any</SelectItem>
-            <SelectItem value="true">Open questions</SelectItem>
-            <SelectItem value="false">Nothing open</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select
-          value={sortOrder}
-          onValueChange={value => onSortOrderChange(value as EventsSortOrder)}
-        >
-          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Sort order">
-            <span style={{ color: 'var(--fg-subtle)' }}>Sort</span>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="catalog">Catalog order</SelectItem>
-            <SelectItem value="volume">Busiest first</SelectItem>
-          </SelectContent>
-        </Select>
-        {hasActiveFilters && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClearFilters}
-            className="h-8 shrink-0 text-xs text-muted-foreground"
+        {/* Secondary — refine: status / activity filters.
+            The group wraps internally: as a `shrink-0` row it needed ~460px inside
+            a 366px phone column, pushing the primary CTA off-screen
+            (tripl-jfm3.42). */}
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <Select
+            value={statusValue}
+            onValueChange={value => {
+              if (value === MULTI_STATUS_VALUE) return
+              onFilterStatusesChange(value === '__all__' ? [] : [value as EventStatus])
+            }}
           >
-            <X className="mr-1 h-3 w-3" />
-            Clear
-          </Button>
-        )}
+            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Status filter">
+              <span style={{ color: 'var(--fg-subtle)' }}>Status</span>
+              <SelectValue placeholder="any" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">Any status</SelectItem>
+              {filterStatuses.length > 1 && (
+                <SelectItem value={MULTI_STATUS_VALUE}>{multiStatusLabel}</SelectItem>
+              )}
+              {EVENT_STATUSES.map(s => (
+                <SelectItem key={s} value={s}>{EVENT_STATUS_LABELS[s]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={filterSilentDays === undefined ? '__all__' : String(filterSilentDays)}
+            onValueChange={value => onFilterSilentDaysChange(value === '__all__' ? undefined : Number(value))}
+          >
+            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Activity filter">
+              <span style={{ color: 'var(--fg-subtle)' }}>Activity</span>
+              <SelectValue placeholder="any" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">Any activity</SelectItem>
+              {SILENT_DAY_PRESETS.map(days => (
+                <SelectItem key={days} value={String(days)}>Silent &gt; {days}d</SelectItem>
+              ))}
+              {customSilentDays !== undefined && (
+                <SelectItem value={String(customSilentDays)}>Silent &gt; {customSilentDays}d</SelectItem>
+              )}
+            </SelectContent>
+          </Select>
+          {/* Reviewed is a separate axis from status (an event can be reviewed
+              and still in_review), and until now it had no readable surface at
+              all: no filter, no counter, and a column hidden by default. Without
+              this control "Mark reviewed" wrote a flag the operator could never
+              see or isolate (tripl-invv). */}
+          <Select
+            value={filterReviewed === undefined ? '__all__' : String(filterReviewed)}
+            onValueChange={value =>
+              onFilterReviewedChange(value === '__all__' ? undefined : value === 'true')
+            }
+          >
+            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Reviewed filter">
+              <span style={{ color: 'var(--fg-subtle)' }}>Reviewed</span>
+              <SelectValue placeholder="any" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">Any</SelectItem>
+              <SelectItem value="true">Reviewed</SelectItem>
+              <SelectItem value="false">Not reviewed</SelectItem>
+            </SelectContent>
+          </Select>
+          {/* The discussion (tripl-h2sx.25) gave events a place to raise a
+              question; until threads could be resolved there was no way to ask
+              which events are still waiting on one (tripl-h2sx.26). Server-side,
+              like every filter here, so it sees the whole catalog and not one
+              loaded page — and twin-aware, so it answers on a branch too. */}
+          <Select
+            value={filterOpenQuestions === undefined ? '__all__' : String(filterOpenQuestions)}
+            onValueChange={value =>
+              onFilterOpenQuestionsChange(value === '__all__' ? undefined : value === 'true')
+            }
+          >
+            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Open questions filter">
+              <span style={{ color: 'var(--fg-subtle)' }}>Questions</span>
+              <SelectValue placeholder="any" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">Any</SelectItem>
+              <SelectItem value="true">Open questions</SelectItem>
+              <SelectItem value="false">Nothing open</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={sortOrder}
+            onValueChange={value => onSortOrderChange(value as EventsSortOrder)}
+          >
+            <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Sort order">
+              <span style={{ color: 'var(--fg-subtle)' }}>Sort</span>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="catalog">Catalog order</SelectItem>
+              <SelectItem value="volume">Busiest first</SelectItem>
+            </SelectContent>
+          </Select>
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClearFilters}
+              className="h-8 shrink-0 text-xs text-muted-foreground"
+            >
+              <X className="mr-1 h-3 w-3" />
+              Clear
+            </Button>
+          )}
+        </div>
       </div>
 
-      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         {/* Secondary — shape the table: saved views + columns */}
-        <div className="flex flex-wrap items-center gap-2">
+        {showSavedViews && (
           <SavedViewsMenu
             views={savedViews}
             activeViewName={activeSavedViewName}
@@ -247,21 +319,19 @@ export function EventsToolbar({
             onApply={onApplySavedView}
             onDelete={onDeleteSavedView}
           />
-          <ColumnsMenu
-            open={columnsMenuOpen}
-            onOpenChange={onColumnsMenuOpenChange}
-            tagsHidden={hiddenColumns.has('tags')}
-            lastSeenHidden={hideLastSeen}
-            fieldColumns={fieldColumns}
-            metaFields={metaFields}
-            hiddenColumns={hiddenColumns}
-            offscreenColumnCount={offscreenColumnCount}
-            reviewedPinned={reviewedPinned}
-            onToggle={onToggleColumn}
-          />
-        </div>
-
-        <ToolbarDivider />
+        )}
+        <ColumnsMenu
+          open={columnsMenuOpen}
+          onOpenChange={onColumnsMenuOpenChange}
+          tagsHidden={hiddenColumns.has('tags')}
+          lastSeenHidden={hideLastSeen}
+          fieldColumns={fieldColumns}
+          metaFields={metaFields}
+          hiddenColumns={hiddenColumns}
+          offscreenColumnCount={offscreenColumnCount}
+          reviewedPinned={reviewedPinned}
+          onToggle={onToggleColumn}
+        />
 
         {/* Utility — export, collapsed into an overflow menu so the toolbar
             never needs a horizontal scrollbar. The unbuilt "Ask AI" entry is
@@ -271,7 +341,7 @@ export function EventsToolbar({
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm" className="h-8 text-xs" aria-label="More actions">
               <MoreHorizontal className="h-3.5 w-3.5" />
-              More
+              <span className="max-sm:sr-only">More</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sideOffset={6} className="w-[212px]">
@@ -288,35 +358,27 @@ export function EventsToolbar({
               <Download className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
               {isExporting ? 'Exporting…' : 'Export CSV'}
             </DropdownMenuItem>
-            <DropdownMenuItem
-              className="text-[12.5px]"
-              onSelect={onBulkNew}
-              title="Create a run of events from a pasted list"
-            >
-              <ListPlus className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-              Add many events…
-            </DropdownMenuItem>
+            {onBulkNew && (
+              <DropdownMenuItem
+                className="text-[12.5px]"
+                onSelect={onBulkNew}
+                title="Create a run of events from a pasted list"
+              >
+                <ListPlus className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+                Add many events…
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <ToolbarDivider />
-
-        {/* Primary — create */}
-        <Button onClick={onNewEvent} size="sm" className="h-8 text-xs">
-          <Plus className="h-3.5 w-3.5" />
-          New Event
-        </Button>
+        {onNewEvent && (
+          // Primary — create
+          <Button onClick={onNewEvent} size="sm" className="h-8 text-xs">
+            <Plus className="h-3.5 w-3.5" />
+            New Event
+          </Button>
+        )}
       </div>
     </div>
-  )
-}
-
-function ToolbarDivider() {
-  return (
-    <div
-      aria-hidden="true"
-      className="hidden h-5 w-px shrink-0 sm:block"
-      style={{ background: 'var(--border)' }}
-    />
   )
 }

@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
 
 from tripl.api.deps import CurrentUserDep, OwnerUserDep, SessionDep
 from tripl.models.user import User
@@ -98,8 +97,7 @@ async def list_users(
     offset: int = Query(0, ge=0),
 ) -> list[User]:
     del current_user  # any authenticated user can see the roster
-    rows = await session.scalars(select(User).order_by(User.created_at).limit(limit).offset(offset))
-    return list(rows)
+    return await user_service.list_users(session, limit=limit, offset=offset)
 
 
 @router.patch("/{user_id}", response_model=UserListItem)
@@ -120,8 +118,6 @@ async def update_user_role(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot demote the last remaining owner",
         ) from None
-    await session.commit()
-    await session.refresh(target)
     await audit_service.record(
         session,
         user=current_user,
@@ -131,4 +127,5 @@ async def update_user_role(
         target_name=target.email,
         payload={"old_role": old_role, "new_role": data.role},
     )
+    await session.refresh(target)
     return target

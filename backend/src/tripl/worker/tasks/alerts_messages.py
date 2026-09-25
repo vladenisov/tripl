@@ -52,6 +52,7 @@ from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.domain_enums import DistributionDriftBand
 from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -1281,7 +1282,7 @@ def _build_plan_digest_message(
     metric_anomalies = session.execute(
         select(func.count(MetricAnomaly.id))
         .outerjoin(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
-        .where(anomaly_project_scope, MetricAnomaly.created_at >= window_from)
+        .where(anomaly_project_scope, MetricAnomaly.bucket >= window_from)
     ).scalar_one()
     distribution_drifts = session.execute(
         select(func.count(DistributionDrift.id))
@@ -1289,7 +1290,7 @@ def _build_plan_digest_message(
         .where(
             ScanConfig.project_id == project.id,
             DistributionDrift.bucket >= window_from,
-            DistributionDrift.band == "significant",
+            DistributionDrift.band == DistributionDriftBand.significant.value,
         )
     ).scalar_one()
     total_events = session.execute(
@@ -1331,7 +1332,7 @@ def _build_plan_digest_message(
     top_rows = session.execute(
         select(MetricAnomaly, ScanConfig.name)
         .outerjoin(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
-        .where(anomaly_project_scope, MetricAnomaly.created_at >= window_from)
+        .where(anomaly_project_scope, MetricAnomaly.bucket >= window_from)
         .order_by(MetricAnomaly.bucket.desc(), func.abs(MetricAnomaly.z_score).desc())
         .limit(5)
     ).all()

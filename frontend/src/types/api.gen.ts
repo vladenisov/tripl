@@ -958,6 +958,11 @@ export interface paths {
          * Update Project Branch Settings
          * @description Owner-only: min_approvals/block_self_approval govern what editors may
          *     merge, so editors must not be able to loosen the policy on themselves.
+         *
+         *     This protects the merge POLICY, not the plan: editors can still manage
+         *     event-type owners and write ``main`` directly, so the owner-approval gate
+         *     is a branch-review convention rather than an access control
+         *     (tripl-0zpq.233).
          */
         patch: operations["update_project_branch_settings_api_v1_projects__slug__branch_settings_patch"];
         trace?: never;
@@ -2119,8 +2124,9 @@ export interface paths {
          *     against the data source over the last 50 buckets of the requested interval
          *     (hard-capped at 200 rows); nothing is persisted. Expected user mistakes —
          *     bad SQL, missing time/value columns, warehouse errors — return 200 with
-         *     ``error`` set so the editor can render them inline; unknown data source is
-         *     a 404.
+         *     ``error`` set so the editor can render them inline. A data source this
+         *     project may not use is a 404, whether the id is unknown or belongs to
+         *     another project — the same status and sentence the fact-table doors answer.
          */
         post: operations["preview_metric_sql_api_v1_projects__slug__metrics_preview_post"];
         delete?: never;
@@ -4900,11 +4906,14 @@ export interface components {
          * @description Undo one entry of the branch's diff.
          *
          *     The entry is addressed the way the diff names it — entity type, natural name
-         *     and parent — rather than by id, so the request describes a *change* rather
-         *     than a row. ``field`` narrows the revert to one changed field; omitted, the
+         *     and parent — so the request describes a *change* rather than a row, plus
+         *     the entry's own ``entity_id`` where a name may be shared (events and
+         *     relations). ``field`` narrows the revert to one changed field; omitted, the
          *     whole entity goes back to its base state.
          */
         BranchRevertRequest: {
+            /** Entity Id */
+            entity_id?: string | null;
             /**
              * Entity Type
              * @enum {string}
@@ -5608,11 +5617,8 @@ export interface components {
             numerator_event_id?: string | null;
             /** Numerator Event Type Id */
             numerator_event_type_id?: string | null;
-            /**
-             * Order
-             * @default 0
-             */
-            order: number;
+            /** Order */
+            order?: number | null;
             /** Owner Id */
             owner_id?: string | null;
             /** Platform Column */
@@ -6568,11 +6574,8 @@ export interface components {
             /** Name */
             name: string;
             numerator?: components["schemas"]["FactOperand"] | null;
-            /**
-             * Order
-             * @default 0
-             */
-            order: number;
+            /** Order */
+            order?: number | null;
             /** Owner Id */
             owner_id?: string | null;
             /** Platform Column */
@@ -7669,8 +7672,15 @@ export interface components {
          *     block mirrors the create discriminated union (minus ``name`` and the other
          *     presentation fields, which keep their own update fields here); when present it
          *     is re-validated EXACTLY like creation and the service overwrites the metric's
-         *     ``kind`` / ``config`` / collection binding from it. A ``kind`` change clears
-         *     the metric's previously collected values (see the service).
+         *     ``kind`` / ``config`` / collection binding from it.
+         *
+         *     ANY definition change that means something different — not just a ``kind``
+         *     change — deletes the metric's previously collected values, breakdowns and
+         *     anomalies, because they were produced under the old definition. The
+         *     comparison is on meaning, so resending an unchanged ``definition`` (which the
+         *     catalog form always does) keeps the history. Such a change is refused with
+         *     409 while a collection for the metric is already in flight; retry it once the
+         *     run finishes.
          */
         MetricDefinitionUpdate: {
             /** Anomaly Detection Enabled */
@@ -7876,6 +7886,8 @@ export interface components {
              * @default metric
              */
             scope: string;
+            /** Sigma Threshold */
+            sigma_threshold: number;
         };
         /** MetricSignalResponse */
         MetricSignalResponse: {
@@ -8137,7 +8149,7 @@ export interface components {
             /** Log Json */
             log_json?: boolean | null;
             /** Log Level */
-            log_level?: string | null;
+            log_level?: ("CRITICAL" | "ERROR" | "WARNING" | "INFO" | "DEBUG") | null;
             /** Otel Exporter Otlp Endpoint */
             otel_exporter_otlp_endpoint?: string | null;
             /** Otel Service Name */
@@ -8945,7 +8957,7 @@ export interface components {
             /** Project Key */
             project_key?: string | null;
             /** Tracker Type */
-            tracker_type?: string | null;
+            tracker_type?: "jira" | null;
         };
         /** ProjectUpdate */
         ProjectUpdate: {
@@ -10151,6 +10163,8 @@ export interface components {
             rendered_item?: string | null;
             /** Sample Value */
             sample_value?: string | null;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
             /** Scope Name */
             scope_name: string;
             /** Scope Ref */
@@ -10210,11 +10224,8 @@ export interface components {
             kind: "sql";
             /** Name */
             name: string;
-            /**
-             * Order
-             * @default 0
-             */
-            order: number;
+            /** Order */
+            order?: number | null;
             /** Owner Id */
             owner_id?: string | null;
             /** Platform Column */
@@ -14228,6 +14239,8 @@ export interface operations {
                 status?: components["schemas"]["EventStatus"][] | null;
                 from?: string | null;
                 to?: string | null;
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
             };
             header?: never;
             path: {

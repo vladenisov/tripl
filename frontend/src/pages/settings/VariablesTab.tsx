@@ -26,6 +26,8 @@ import { bindingExample, type BindingExample } from "./bindingExample"
 import { VariablesBulkBar } from "./VariablesBulkBar"
 import { VariablesTableRow } from "./VariablesTableRow"
 import { getErrorMessage } from '@/lib/utils'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { eventNameLabel } from '@/lib/eventName'
 import { countOf, pluralize } from '@/lib/plural'
 import { variablesKey, variablesPageKey } from '@/lib/queryKeys'
@@ -141,6 +143,7 @@ export function VariablesTab({
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
+  const canWrite = useCanWriteProject()
   const focusRef = useRef<HTMLTableRowElement | null>(null)
   // The excluded panel renders <li>s, not table rows, so the focused variable
   // there needs its own ref — see the scroll effect below (tripl-acp2).
@@ -756,6 +759,7 @@ export function VariablesTab({
     <div className="space-y-4">
       {dialog}
       <p className="text-xs text-muted-foreground">Define template placeholders. Use <code className="bg-muted px-1 rounded">{'${var_name}'}</code> in event field values.</p>
+      {!canWrite && <ReadOnlyNotice />}
 
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -806,8 +810,12 @@ export function VariablesTab({
       {/* Edit dialog */}
       <Dialog open={!!editingVar} onOpenChange={v => { if (!v) setEditingVar(null) }}>
         <DialogContent className="max-w-4xl">
-          <form onSubmit={e => { e.preventDefault(); if (editingVar) updateMut.mutate(editingVar.id) }}>
-            <DialogHeader><DialogTitle>Edit: {editingVar?.name}</DialogTitle></DialogHeader>
+          <form onSubmit={e => { e.preventDefault(); if (editingVar && canWrite) updateMut.mutate(editingVar.id) }}>
+            <DialogHeader><DialogTitle>{canWrite ? 'Edit' : 'Variable'}: {editingVar?.name}</DialogTitle></DialogHeader>
+            {/* A viewer opens the same dialog to read the drift, overrides and
+                observed values; `disabled` on the fieldset reaches every
+                control inside it, and `contents` keeps it out of the layout. */}
+            <fieldset disabled={!canWrite} className="contents">
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
                 <Label htmlFor={editNameId}>Name</Label>
@@ -1106,9 +1114,10 @@ export function VariablesTab({
               )}
               {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
             </div>
+            </fieldset>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setEditingVar(null)}>Cancel</Button>
-              <Button type="submit" disabled={updateMut.isPending}>Save</Button>
+              <Button type="button" variant="outline" onClick={() => setEditingVar(null)}>{canWrite ? 'Cancel' : 'Close'}</Button>
+              {canWrite && <Button type="submit" disabled={updateMut.isPending}>Save</Button>}
             </DialogFooter>
           </form>
         </DialogContent>
@@ -1120,9 +1129,11 @@ export function VariablesTab({
           ? 'Loading…'
           : `${activeVariables.length} variable${activeVariables.length === 1 ? '' : 's'}`}
         right={
-          <Button size="sm" onClick={() => setShowForm(true)}>
-            <Plus className="mr-2 h-4 w-4" />Add variable
-          </Button>
+          canWrite && (
+            <Button size="sm" onClick={() => setShowForm(true)}>
+              <Plus className="mr-2 h-4 w-4" />Add variable
+            </Button>
+          )
         }
       >
         {variablesPending ? (
@@ -1175,12 +1186,14 @@ export function VariablesTab({
                     {/* Selection spans every variable matching the filter, not
                         just the page on screen — bulk edits are why a project
                         with a thousand variables opens this table at all. */}
-                    <input
-                      type="checkbox"
-                      aria-label="Select all variables"
-                      checked={matchingVariables.length > 0 && matchingVariables.every(v => selectedIds.has(v.id))}
-                      onChange={e => setSelectedIds(e.target.checked ? new Set(matchingVariables.map(v => v.id)) : new Set())}
-                    />
+                    {canWrite && (
+                      <input
+                        type="checkbox"
+                        aria-label="Select all variables"
+                        checked={matchingVariables.length > 0 && matchingVariables.every(v => selectedIds.has(v.id))}
+                        onChange={e => setSelectedIds(e.target.checked ? new Set(matchingVariables.map(v => v.id)) : new Set())}
+                      />
+                    )}
                   </TableHead>
                   {/* Width hints, not fixed widths: `table-layout: auto` left
                       Description ~110px, so a 45-character sentence ran five
@@ -1205,6 +1218,7 @@ export function VariablesTab({
                     selected={selectedIds.has(variable.id)}
                     focused={variable.id === focusId}
                     rowRef={variable.id === focusId ? focusRef : undefined}
+                    canWrite={canWrite}
                     onToggleSelect={toggleSelected}
                     onEdit={startEdit}
                     onExclude={handleExclude}
@@ -1292,21 +1306,21 @@ export function VariablesTab({
                     <span className="ml-2 truncate font-mono text-[10px] text-muted-foreground">{(v.bindings ?? []).join(' · ')}</span>
                   )}
                 </div>
-                <div className="flex shrink-0 gap-1">
+                {canWrite && <div className="flex shrink-0 gap-1">
                   <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" aria-label={`Restore variable ${v.name}`} onClick={() => excludeMut.mutate({ id: v.id, excluded: false })}>
                     <RotateCcw className="mr-1 h-3 w-3" aria-hidden="true" />Restore
                   </Button>
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}>
                     <Trash2 className="h-3 w-3" aria-hidden="true" />
                   </Button>
-                </div>
+                </div>}
               </li>
             ))}
           </ul>
         </Panel>
       )}
 
-      <VariablesBulkBar
+      {canWrite && <VariablesBulkBar
         selectedCount={selectedIds.size}
         isPending={bulkUpdateMut.isPending || bulkDeleteMut.isPending}
         typeLabels={typeLabels}
@@ -1315,7 +1329,7 @@ export function VariablesTab({
         onAddValues={values => bulkUpdateMut.mutate({ allowed_values_add: values })}
         onDelete={handleBulkDelete}
         onClear={() => setSelectedIds(new Set())}
-      />
+      />}
     </div>
   )
 }

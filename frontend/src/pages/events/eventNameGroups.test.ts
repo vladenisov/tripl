@@ -4,6 +4,7 @@ import {
   MIN_GROUP_SIZE,
   eventNamePrefix,
   groupEventNames,
+  isDeepPrefix,
   type NameGroupInput,
 } from './eventNameGroups'
 
@@ -195,5 +196,14 @@ describe('groupEventNames', () => {
 
     expect(groups).toHaveLength(1)
     expect(groups[0].count).toBe(MIN_GROUP_SIZE)
+  })
+})
+
+describe('isDeepPrefix (EVT-40)', () => {
+  it('accepts prefixes of two or more segments only', () => {
+    expect(isDeepPrefix('checkout')).toBe(false)
+    expect(isDeepPrefix('checkout_step')).toBe(true)
+    expect(isDeepPrefix('page:view')).toBe(true)
+    expect(isDeepPrefix('a/b')).toBe(true)
   })
 })

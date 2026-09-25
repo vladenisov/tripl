@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from celery import Task
 from celery.exceptions import MaxRetriesExceededError, Retry
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.orm import Session
 
 from tripl.models.search_document import SearchDocument
@@ -17,7 +17,7 @@ from tripl.services._search_documents import (
     embed_text_for,
 )
 from tripl.services.app_settings_service import AiConfig
-from tripl.services.embedding_service import embed_texts
+from tripl.services.embedding_service import embed_texts, embedding_provenance
 from tripl.services.search_service import sanitize_embedding
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
@@ -91,7 +91,7 @@ def _embed_documents(
             ),
             {
                 "embedding": vector,
-                "embedding_model": ai_config.search_embedding_model,
+                "embedding_model": embedding_provenance(ai_config),
                 "document_id": doc.id,
             },
         )
@@ -198,7 +198,7 @@ STALE_REINDEX_BRANCHES_PER_RUN = 2
     name="tripl.worker.tasks.search.reindex_stale_search_documents",
 )
 def reindex_stale_search_documents() -> dict[str, int]:
-    """Rebuild branches whose documents predate the current document builders.
+    """Rebuild branches with stale builders or embedding provenance.
 
     WHY THIS EXISTS (tripl-uji9)
     ----------------------------
@@ -215,16 +215,26 @@ def reindex_stale_search_documents() -> dict[str, int]:
 
     WHAT IT COSTS, AND WHAT IT DOES NOT
     -----------------------------------
-    The rebuild is the ordinary incremental one, so a document whose text is
-    unchanged is KEPT with its vector and its embedding — it only gets its stamp
-    corrected, at no provider cost. Only documents whose text genuinely moved are
-    re-inserted and re-embedded, which is the work the builder change asked for.
+    Unchanged documents keep their vectors when their provenance matches.
+    Switching the model or endpoint invalidates old vectors and schedules fresh
+    embedding on every branch, including working branches.
     """
     session = _get_sync_session()
     try:
+        ai_config = app_settings_service.get_ai_config_sync(session)
+        stale_embedding = and_(
+            SearchDocument.embedding_status == "ready",
+            or_(
+                SearchDocument.embedding_model.is_(None),
+                SearchDocument.embedding_model != embedding_provenance(ai_config),
+            ),
+        )
+        stale = SearchDocument.builder_version < DOCUMENT_BUILDER_VERSION
+        if ai_config.search_embeddings_enabled:
+            stale = or_(stale, stale_embedding)
         pairs = session.execute(
             select(SearchDocument.project_id, SearchDocument.branch_id)
-            .where(SearchDocument.builder_version < DOCUMENT_BUILDER_VERSION)
+            .where(stale)
             .distinct()
             .limit(STALE_REINDEX_BRANCHES_PER_RUN)
         ).all()

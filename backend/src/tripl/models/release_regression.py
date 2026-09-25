@@ -47,12 +47,6 @@ class ReleaseRegression(UUIDMixin, Base):
             "version",
             name="uq_release_regression_scope_version",
         ),
-        Index(
-            "ix_release_regression_scan_scope",
-            "scan_config_id",
-            "scope_type",
-            "scope_ref",
-        ),
         Index("ix_release_regression_event", "event_id"),
         Index("ix_release_regression_event_type", "event_type_id"),
     )

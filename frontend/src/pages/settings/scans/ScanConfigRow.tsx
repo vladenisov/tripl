@@ -186,15 +186,19 @@ export function ScanListRow({
     // inside one (nested-interactive). onClick stays because a plain <tr> with a
     // click handler is not in the accessibility tree at all — it is a mouse
     // shortcut layered over the name link, not the way in (tripl-np3p).
+    // Below `sm` the row is a stacked card: the name cell takes the first line
+    // and the last run and the actions share the second, instead of a table
+    // whose status and Run now sat off-screen to the right (LIVE-15). Same
+    // cells, only their display changes, so nothing is rendered twice.
     <tr
-      className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
+      className="flex cursor-pointer flex-wrap items-center border-t transition-colors hover:bg-[var(--surface-hover)] sm:table-row"
       style={{ borderColor: 'var(--border-subtle)' }}
       onClick={onNavigate}
     >
       {/* Lead with a human summary — name over "source · cadence". The raw SQL is
           demoted to a faint secondary line (full query on hover) rather than its
           own prominent column. */}
-      <td className="px-3.5 py-2.5 align-middle">
+      <td className="block w-full px-3.5 pb-1 pt-2.5 align-middle sm:table-cell sm:w-auto sm:py-2.5">
         <div className="flex items-center gap-2.5">
           <SrcIcon dbType={dataSource?.db_type ?? null} size={28} />
           <div className="min-w-0">
@@ -218,8 +222,9 @@ export function ScanListRow({
             <div className="truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
               {dataSource?.name ?? 'Unknown source'} · {cadenceLabel}
             </div>
+            {/* Secondary: dropped on phones, where it pushed the name to a few letters. */}
             <div
-              className="mono max-w-[280px] truncate text-[10.5px]"
+              className="mono hidden max-w-[280px] truncate text-[10.5px] sm:block"
               style={{ color: 'var(--fg-faint)' }}
               title={sc.base_query}
             >
@@ -228,7 +233,7 @@ export function ScanListRow({
           </div>
         </div>
       </td>
-      <td className="px-3.5 py-2.5 align-middle">
+      <td className="block px-3.5 pb-2.5 pt-1 align-middle sm:table-cell sm:py-2.5">
         {isRunInfoPending ? (
           <Skeleton className="h-[18px] w-[132px]" aria-label={`Loading last run for ${sc.name}`} />
         ) : (
@@ -249,7 +254,7 @@ export function ScanListRow({
         </div>
         )}
       </td>
-      <td className="px-3.5 py-2.5 align-middle text-right">
+      <td className="ml-auto block px-3.5 pb-2.5 pt-1 align-middle text-right sm:table-cell sm:py-2.5">
         <div className="flex items-center justify-end gap-2">
           {runButton && (runCoachMark ? (
             <ScenarioCoachMark step="live-loop/run-scan">

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -57,6 +58,7 @@ _PASSWORD_RESET_INVALID_MESSAGE = "This password reset link is invalid or has ex
 # across releases and unlikely to collide with the per-project locks (which
 # derive their keys from UUID bytes, see demo_runtime._acquire_project_xact_lock).
 OWNER_SET_LOCK_KEY = int.from_bytes(b"trplown1", "big", signed=True)
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
 
 
 def _normalize_name(value: str | None) -> str | None:
@@ -180,7 +182,7 @@ async def register_user(session: AsyncSession, data: RegisterRequest) -> tuple[U
     user = User(
         email=email,
         name=_normalize_name(data.name),
-        password_hash=hash_password(data.password),
+        password_hash=await asyncio.to_thread(hash_password, data.password),
         role=role,
     )
     session.add(user)
@@ -195,7 +197,10 @@ async def register_user(session: AsyncSession, data: RegisterRequest) -> tuple[U
 async def authenticate_user(session: AsyncSession, data: LoginRequest) -> tuple[User, str]:
     email = normalize_email(data.email)
     user = await _get_user_by_email(session, email)
-    if user is None or not verify_password(data.password, user.password_hash):
+    valid_password = await asyncio.to_thread(
+        verify_password, data.password, user.password_hash if user else _DUMMY_PASSWORD_HASH
+    )
+    if user is None or not valid_password:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -204,7 +209,7 @@ async def authenticate_user(session: AsyncSession, data: LoginRequest) -> tuple[
     # Opportunistic rehash: if the stored hash predates a scrypt-cost bump, we
     # have the plaintext in hand, so upgrade it to the current parameters now.
     if password_hash_needs_rehash(user.password_hash):
-        user.password_hash = hash_password(data.password)
+        user.password_hash = await asyncio.to_thread(hash_password, data.password)
 
     await session.execute(
         delete(UserSession)
@@ -337,7 +342,7 @@ async def confirm_password_reset(session: AsyncSession, raw_token: str, new_pass
             detail=_PASSWORD_RESET_INVALID_MESSAGE,
         )
 
-    user.password_hash = hash_password(new_password)
+    user.password_hash = await asyncio.to_thread(hash_password, new_password)
     row.used_at = now
     await _delete_reset_tokens_for_user(session, user.id, exclude_id=row.id)
     # A password reset invalidates existing sessions: whoever reset the password

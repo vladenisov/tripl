@@ -1,12 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, RotateCcw, Trash2 } from 'lucide-react'
-import { dataSourcesApi } from '@/api/dataSources'
 import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
-import type { DataSource, EventType, ScanConfig } from '@/types'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
+import { useProjectDataSources } from '@/hooks/useProjectDataSources'
+import type { EventType, ScanConfig } from '@/types'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
 import { ReplayDialog } from './ReplayDialog'
@@ -18,42 +19,82 @@ import {
   MetricsDriftSection,
   ScanEssentialsSection,
 } from './ScanFormSections'
-import { scanFormBlocker, useScanForm } from './useScanForm'
-import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
+import { scanFormBlocker, useScanForm, type ScanFormPayload } from './useScanForm'
+import { eventTypesKey } from '@/lib/queryKeys'
+import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
-// ─── Configuration tab (page-style edit, each SCard has its own Save footer) ───
+// ─── Configuration tab (page-style edit, one Save for the whole form) ───
 export function ScanConfigurationTab({
   slug,
   scanConfig,
   onDeleted,
+  onDirtyChange,
 }: {
   slug: string
   scanConfig: ScanConfig
   onDeleted: () => void
+  /**
+   * Told whether the form holds unsaved edits, and `false` once it unmounts.
+   * The page owns the leave guard: it also has to ask before its own tab strip
+   * unmounts this form (DATA-12), which no guard in here can see.
+   */
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const { confirm, dialog } = useConfirm()
   const [replayOpen, setReplayOpen] = useState(false)
   const form = useScanForm(slug, scanConfig)
+  // Update, preview, replay and delete are all OwnerUserDep: anyone else reads
+  // the configuration with every control disabled and no Save (DATA-6).
+  const canEdit = useIsOwner()
 
-  const { data: dataSources = [] } = useQuery({
-    queryKey: dataSourcesKey(),
-    queryFn: () => dataSourcesApi.list(),
-  })
+  const { data: dataSources = [] } = useProjectDataSources()
   const { data: eventTypes = [] } = useQuery({
-    queryKey: eventTypesKey(slug, branchId),
-    queryFn: () => eventTypesApi.list(slug, branchId),
+    queryKey: eventTypesKey(slug, null),
+    queryFn: () => eventTypesApi.list(slug, null),
   })
 
+  // What a Save would send, against what the last save (or the page load) sent.
+  const payloadSnapshot = JSON.stringify(form.toBackendPayload())
+  const [savedSnapshot, setSavedSnapshot] = useState(payloadSnapshot)
+  // A non-owner's form is disabled and so never dirty.
+  const dirty = canEdit && payloadSnapshot !== savedSnapshot
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
+
+  // The payload travels as the mutation's variables so the saved snapshot is
+  // the one this request SENT, not whatever the form holds when it answers
+  // (an edit typed while the save was in flight must stay dirty).
   const updateMut = useMutation({
-    mutationFn: () => scansApi.update(slug, scanConfig.id, form.toBackendPayload()),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['scans', slug] }),
+    meta: SILENT_ERROR_META,
+    mutationFn: (payload: ScanFormPayload) => scansApi.update(slug, scanConfig.id, payload),
+    onSuccess: (_saved, payload) => {
+      setSavedSnapshot(JSON.stringify(payload))
+      return qc.invalidateQueries({ queryKey: ['scans', slug] })
+    },
   })
 
   const deleteMut = useMutation({
+    // Rendered inline in the Danger zone, next to the button that failed.
+    meta: SILENT_ERROR_META,
     mutationFn: () => scansApi.del(slug, scanConfig.id),
-    onSuccess: onDeleted,
+    onSuccess: () => {
+      // The list mounts from cache (staleTime 60s), so without this the deleted
+      // scan was still listed there with a Run now that 404s (DATA-4). Drop it
+      // from the cache now, then refetch for anything else that changed.
+      qc.setQueryData<ScanConfig[]>(['scans', slug], current =>
+        current?.filter(config => config.id !== scanConfig.id),
+      )
+      qc.removeQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
+      qc.removeQueries({ queryKey: ['platformPresence', slug, scanConfig.id] })
+      void qc.invalidateQueries({ queryKey: ['scans', slug] })
+      onDeleted()
+    },
   })
 
   const handleDelete = async () => {
@@ -72,31 +113,24 @@ export function ScanConfigurationTab({
   // user ends up believing the form is broken.
   const saveBlocker = scanFormBlocker(form.state)
 
-  const footerFor = () => (
-    <>
-      <span role="status" className="flex-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-        {updateMut.isError ? '' : updateMut.isSuccess ? 'Saved.' : ''}
-      </span>
-      <Button
-        type="button"
-        size="sm"
-        onClick={() => updateMut.mutate()}
-        disabled={updateMut.isPending || saveBlocker !== null}
-        title={saveBlocker ?? undefined}
-      >
-        {updateMut.isPending ? 'Saving…' : 'Save'}
-      </Button>
-    </>
-  )
+  // "Saved." only while the form still holds what was saved: it used to stay up
+  // after further edits, under every card at once (DATA-14).
+  const saveStatus = updateMut.isPending
+    ? ''
+    : dirty
+      ? 'Unsaved changes.'
+      : updateMut.isSuccess
+        ? 'Saved.'
+        : ''
 
   const sectionProps = {
     form,
     slug,
     branchId,
-    dataSources: dataSources as DataSource[],
+    dataSources,
     eventTypes: eventTypes as EventType[],
     sourceLocked: true,
-    footerFor,
+    readOnly: !canEdit,
   }
 
   return (
@@ -107,91 +141,144 @@ export function ScanConfigurationTab({
           <ErrorState compact title="Could not save scan" error={updateMut.error} />
         </div>
       )}
-      <ScanEssentialsSection {...sectionProps} />
-      <EventNamingSection {...sectionProps} />
-      <AppVersionSection {...sectionProps} />
-      <MetricsDriftSection {...sectionProps} />
-      <LimitsSection {...sectionProps} />
+      {!canEdit && (
+        <ReadOnlyNotice className="mb-5">
+          {ownerOnlyReason('change, replay or delete a scan')}
+        </ReadOnlyNotice>
+      )}
+      {/* `disabled` on a fieldset reaches every native control inside it;
+          `contents` keeps it out of the layout. */}
+      <fieldset disabled={!canEdit} className="contents">
+        <ScanEssentialsSection {...sectionProps} />
+        <EventNamingSection {...sectionProps} />
+        <AppVersionSection {...sectionProps} />
+        <MetricsDriftSection {...sectionProps} />
+        <LimitsSection {...sectionProps} />
+      </fieldset>
 
-      <SCard title="Danger zone" tone="danger">
+      {/* One Save for the whole form. Every card used to carry its own, which
+          read as "save this card" while each one sent the entire form — so
+          Save under Limits also committed a half-edited query two cards up
+          (DATA-14). Sticky, so it is in reach from whichever card was edited. */}
+      {canEdit && (
         <div
-          className="flex items-center gap-[18px] border-b px-[18px] py-3.5"
-          style={{ borderColor: 'var(--border-subtle)' }}
+          className="sticky bottom-0 z-10 mb-5 flex items-center gap-2.5 rounded-xl border px-[18px] py-3"
+          style={{ borderColor: 'var(--border)', background: 'var(--bg-sunken)' }}
         >
-          <div className="flex-1">
-            <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              Run a one-off replay
-            </div>
-            <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              Re-scan a historical time range into events and metrics.
-            </div>
-          </div>
+          <span role="status" className="flex-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+            {saveStatus}
+          </span>
           <Button
             type="button"
-            variant={replayOpen ? 'default' : 'outline'}
             size="sm"
-            disabled={!canReplay}
-            title={canReplay ? 'Replay metrics for a past period' : 'Requires time column and interval'}
-            onClick={() => setReplayOpen((o) => !o)}
+            onClick={() => updateMut.mutate(form.toBackendPayload())}
+            disabled={updateMut.isPending || !dirty || saveBlocker !== null}
+            title={saveBlocker ?? undefined}
           >
-            <RotateCcw className="size-3" />
-            Replay…
+            {updateMut.isPending ? 'Saving…' : 'Save'}
           </Button>
         </div>
-        {replayOpen && (
-          <div className="border-b px-[18px] py-3.5" style={{ borderColor: 'var(--border-subtle)' }}>
-            <ReplayDialog slug={slug} scanConfig={scanConfig} open={replayOpen} onOpenChange={setReplayOpen} />
-          </div>
-        )}
-        <div className="flex items-center gap-[18px] px-[18px] py-3.5">
-          <div className="flex-1">
-            <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              Delete scan
-            </div>
-            <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              Stops adding events from this query. Events already in your plan are kept.
-            </div>
-          </div>
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            disabled={deleteMut.isPending}
-            onClick={handleDelete}
+      )}
+
+      {canEdit && (
+        <SCard title="Danger zone" tone="danger">
+          <div
+            className="flex items-center gap-[18px] border-b px-[18px] py-3.5"
+            style={{ borderColor: 'var(--border-subtle)' }}
           >
-            <Trash2 className="size-3" />
-            Delete
-          </Button>
-        </div>
-      </SCard>
+            <div className="flex-1">
+              <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+                Run a one-off replay
+              </div>
+              <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                Re-scan a historical time range into events and metrics.
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant={replayOpen ? 'default' : 'outline'}
+              size="sm"
+              disabled={!canReplay}
+              title={canReplay ? 'Replay metrics for a past period' : 'Requires time column and interval'}
+              onClick={() => setReplayOpen((o) => !o)}
+            >
+              <RotateCcw className="size-3" />
+              Replay…
+            </Button>
+          </div>
+          {replayOpen && (
+            <div className="border-b px-[18px] py-3.5" style={{ borderColor: 'var(--border-subtle)' }}>
+              <ReplayDialog slug={slug} scanConfig={scanConfig} open={replayOpen} onOpenChange={setReplayOpen} />
+            </div>
+          )}
+          <div className="flex items-center gap-[18px] px-[18px] py-3.5">
+            <div className="flex-1">
+              <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+                Delete scan
+              </div>
+              <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                Stops adding events from this query. Events already in your plan are kept.
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleteMut.isPending}
+              onClick={handleDelete}
+            >
+              <Trash2 className="size-3" />
+              {deleteMut.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </div>
+          {deleteMut.isError && (
+            <div className="px-[18px] pb-3.5">
+              <ErrorState compact title="Could not delete scan" error={deleteMut.error} />
+            </div>
+          )}
+        </SCard>
+      )}
     </div>
   )
 }
 
-// ─── New scan — full page (in-place view state, no route, no dialog) ───
-export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => void }) {
+// ─── New scan — full page at /p/:slug/scans/new (no dialog) ───
+export function ScanCreatePage({
+  slug,
+  onBack,
+  onCreated,
+}: {
+  slug: string
+  onBack: () => void
+  /** Where to go once the scan exists: its own page, where Run now lives. */
+  onCreated: (created: ScanConfig) => void
+}) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const form = useScanForm(slug, null)
+  // A typed SQL query and its group rules used to vanish on Back or a reload,
+  // with no route to come back to and nothing asking first (DATA-13).
+  const [initialSnapshot] = useState(() => JSON.stringify(form.state))
+  const unsaved = useUnsavedChangesGuard(JSON.stringify(form.state) !== initialSnapshot)
 
-  const { data: dataSources = [] } = useQuery({
-    queryKey: dataSourcesKey(),
-    queryFn: () => dataSourcesApi.list(),
-  })
+  const { data: dataSources = [] } = useProjectDataSources()
   const { data: eventTypes = [] } = useQuery({
-    queryKey: eventTypesKey(slug, branchId),
-    queryFn: () => eventTypesApi.list(slug, branchId),
+    queryKey: eventTypesKey(slug, null),
+    queryFn: () => eventTypesApi.list(slug, null),
   })
 
   const createMut = useMutation({
+    // Rendered inline below as "Could not create scan".
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       scansApi.create(slug, {
         data_source_id: form.state.dataSourceId,
         ...form.toBackendPayload(),
       }),
-    onSuccess: () => {
+    onSuccess: created => {
       qc.invalidateQueries({ queryKey: ['scans', slug] })
-      onBack()
+      unsaved.release()
+      onCreated(created)
     },
   })
 
@@ -202,14 +289,14 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
     form,
     slug,
     branchId,
-    dataSources: dataSources as DataSource[],
+    dataSources,
     eventTypes: eventTypes as EventType[],
     sourceLocked: false,
-    footerFor: undefined,
   }
 
   return (
     <div className="max-w-[880px] pb-12">
+      {unsaved.dialog}
       <div className="mb-3.5">
         <button
           type="button"

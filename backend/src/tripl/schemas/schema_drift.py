@@ -68,6 +68,12 @@ class SchemaDriftActionRequest(BaseModel):
             self.snoozed_until = require_future_instant(
                 self.snoozed_until, field_name="snoozed_until"
             )
+        elif self.snoozed_until is not None:
+            # A snooze date on an accept, a false positive or a reopen is a
+            # client that meant to snooze; accepting and discarding it would
+            # hide the mistake. Same rule as ``EventCommentActionRequest``
+            # (tripl-0zpq.325).
+            raise ValueError("snoozed_until is only meaningful when action is snooze")
         if self.force and self.action != "accept":
             # `force` overrides exactly one guard, and that guard only fires on
             # the accept path. Accepting it elsewhere would make the contract

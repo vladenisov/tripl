@@ -102,6 +102,11 @@ instance
 anyone who can reach the URL can sign up, join as **editor**, and immediately
 read the whole tracking plan and this member roster — and **edit any shared
 project**. Data source connection details (host, port, username) are owner-only.
+Warehouse table and column names are available to editors authoring scans and
+metrics. For a source owned by a project, the editor must also be allowed to
+edit that project; workspace-global sources remain shared. A failed connection
+test distinguishes an authentication failure from a network failure, and
+renaming a source to an existing name returns a conflict error.
 Decide the policy before you expose the instance; see
 [Security & access](#security--access) and
 [Security & Hardening](../run/security.md#self-service-registration).
@@ -180,7 +185,8 @@ have them log out. Sessions also expire automatically after the configured TTL
 
 API keys are long-lived bearer tokens for non-browser clients — LLM agents and
 CLI scripts. They are managed **per user** at **Settings → API keys** (backed by
-`/api/v1/me/api-keys`). A user only ever sees and revokes **their own** keys;
+`/api/v1/me/api-keys`). Creation and revocation require an interactive session;
+a Bearer API key cannot manage keys. A user only ever sees and revokes **their own** keys;
 there is no cross-user key administration, even for owners.
 
 ### Creating a key
@@ -301,8 +307,10 @@ Sections apply at one of two times, and each section says which above its fields
 
 **Use-time (no restart).** The **Runtime** (query limits, app base URL),
 **Email**, and **AI** sections are resolved override → env value on each call, so
-edits apply immediately. The worker falls back to env-only config if it can't
-read the settings table, so background jobs never fail on a settings read.
+edits apply immediately. If the worker cannot read the settings table, it falls
+back to environment values and increments `tripl_settings_read_failures_total`
+with `section=ai`, `email`, or `runtime`. Alert on this metric so a degraded
+delivery does not go unnoticed.
 
 **Restart-time (next deploy).** The **Security & access** (except
 **Registration**, which applies immediately), **Storage**, and
@@ -494,7 +502,8 @@ How tripl reports its own health.
 - **Metrics & tracing:** Prometheus metrics (`prometheus_metrics_enabled` —
   exposes `/metrics`), OTLP endpoint (`otel_exporter_otlp_endpoint` — setting a
   non-empty value opts the API and worker into OpenTelemetry auto-
-  instrumentation), OTEL service name (`otel_service_name`, default `tripl`).
+  instrumentation; the production image includes the required packages), OTEL
+  service name (`otel_service_name`, default `tripl`).
 
 ### System (read-only)
 
@@ -503,6 +512,10 @@ mode, Database URL, Sync database URL, RabbitMQ URL, Redis URL, Encryption key,
 and the OpenAI fallback key. One further tile, **Schema revision**, reports the
 Alembic revision this instance's database is actually stamped with — the
 `version_num` in its `alembic_version` table — in one of four states:
+
+The first request in each API process loads the shipped migration head in a
+background thread, so reading the migration files does not block other API
+requests on the event loop.
 
 - **the revision string**, in a success tone, when it equals the migration head
   this build ships. The database is at the newest migration the running image

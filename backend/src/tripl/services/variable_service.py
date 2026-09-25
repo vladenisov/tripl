@@ -14,6 +14,7 @@ from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.variable import (
+    BINDING_PATTERN,
     VariableBulkDelete,
     VariableBulkUpdate,
     VariableCreate,
@@ -42,14 +43,23 @@ async def _check_binding_conflicts(
     branch_id: uuid.UUID | None,
     bindings: list[str],
     exclude_variable_id: uuid.UUID | None = None,
+    name: str | None = None,
 ) -> None:
-    """409 when a binding is already claimed by another variable in the branch.
+    """409 when a token is already claimed by another variable in the branch.
 
-    A binding conflicts when another variable carries it in ``bindings`` or as
-    its scan identity (``source_name``): scan adoption matches on both, so a
-    shared path would make attribution ambiguous.
+    A binding conflicts when another variable carries it as its ``name``, in
+    ``bindings`` or as its scan identity (``source_name``): scan adoption matches
+    on all three, and the index hands a contested token to whichever variable
+    sorts first, so a shared token makes attribution ambiguous (tripl-0zpq.228).
+
+    ``name``, when given, is a name being created or renamed to, and conflicts
+    with another variable's ``bindings`` or ``source_name`` for the same reason.
+    Its clash with another NAME is the caller's plain duplicate check. A
+    variable renamed away keeps its ``source_name``, so without this a new
+    variable could take that token and the scan's ``source_name`` backfill would
+    then violate the unique key on every run (tripl-0zpq.81).
     """
-    if not bindings:
+    if not bindings and name is None:
         return
     # ``lazyload`` because ``Variable.value_contexts`` is ``lazy="selectin"`` and
     # each context then selectin-loads its FieldDefinition: hydrating the
@@ -72,14 +82,19 @@ async def _check_binding_conflicts(
     for other in result.scalars().all():
         if exclude_variable_id is not None and other.id == exclude_variable_id:
             continue
-        taken = set(other.bindings or [])
+        claimed = set(other.bindings or [])
         if other.source_name:
-            taken.add(other.source_name)
-        clash = wanted & taken
+            claimed.add(other.source_name)
+        clash = wanted & (claimed | {other.name})
         if clash:
             raise HTTPException(
                 status_code=409,
                 detail=f"Binding '{sorted(clash)[0]}' is already used by variable '{other.name}'",
+            )
+        if name is not None and name in claimed:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Name '{name}' is already bound to variable '{other.name}'",
             )
 
 
@@ -177,7 +192,11 @@ async def create_variable(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Variable with this name already exists")
     await _check_binding_conflicts(
-        session, project_id=project_id, branch_id=branch_id, bindings=data.bindings
+        session,
+        project_id=project_id,
+        branch_id=branch_id,
+        bindings=data.bindings,
+        name=data.name,
     )
     var = Variable(**data.model_dump(), project_id=project_id, branch_id=branch_id)
     session.add(var)
@@ -263,7 +282,15 @@ async def update_variable(
     variable_id: uuid.UUID,
     data: VariableUpdate,
     branch_id: uuid.UUID | None = None,
-) -> Variable:
+) -> tuple[Variable, str]:
+    """Patch one variable, returning it and the name it had BEFORE the patch.
+
+    The previous name is returned for the audit trail. A rename is not confined
+    to this row — it rewrites ``${old}`` to ``${new}`` in every event field value
+    on the branch — and the record carried only the new name, so the token that
+    was replaced was not recoverable from the trail (tripl-0zpq.241). Unchanged
+    when the patch is not a rename, which is how the route tells the two apart.
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
     result = await session.execute(
@@ -276,14 +303,29 @@ async def update_variable(
     var = result.scalar_one_or_none()
     if not var:
         raise HTTPException(status_code=404, detail="Variable not found")
+    previous_name = var.name
     update_data = data.model_dump(exclude_unset=True)
+    # Only what the update ADDS is judged: the edit form resends the stored
+    # bindings, which the scan may have written in a grammar the strict pattern
+    # refuses, or which may predate a conflict rule (tripl-0zpq.265).
+    added_bindings: list[str] = []
     if "bindings" in update_data and update_data["bindings"] is not None:
+        stored = set(var.bindings or [])
+        added_bindings = [b for b in update_data["bindings"] if b not in stored]
+        for binding in added_bindings:
+            if not BINDING_PATTERN.match(binding):
+                raise HTTPException(status_code=422, detail=f"Invalid binding path: {binding!r}")
+    renamed_to = (
+        update_data["name"] if "name" in update_data and update_data["name"] != var.name else None
+    )
+    if added_bindings or renamed_to is not None:
         await _check_binding_conflicts(
             session,
             project_id=project_id,
             branch_id=branch_id,
-            bindings=update_data["bindings"],
+            bindings=added_bindings,
             exclude_variable_id=var.id,
+            name=renamed_to,
         )
     if "name" in update_data and update_data["name"] != var.name:
         if not _STRICT_NAME_PATTERN.match(update_data["name"]):
@@ -335,7 +377,7 @@ async def update_variable(
     await session.commit()
     await session.refresh(var)
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
-    return var
+    return var, previous_name
 
 
 async def delete_variable(
@@ -471,14 +513,23 @@ async def bulk_delete_variables(
     slug: str,
     data: VariableBulkDelete,
     branch_id: uuid.UUID | None = None,
-) -> None:
+) -> list[tuple[uuid.UUID, str]]:
+    """Delete the named variables, returning the (id, name) of each one deleted.
+
+    The return value is for the audit trail, and it is what the REQUEST said only
+    by coincidence: ids that name no variable on this branch are silently skipped
+    by ``_load_variables_by_ids``, so recording the request body would file a
+    delete of rows that were never there (tripl-0zpq.241).
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
     variables = await _load_variables_by_ids(session, project_id, branch_id, data.variable_ids)
+    deleted = [(variable.id, variable.name) for variable in variables]
     for variable in variables:
         await session.delete(variable)
     await session.commit()
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
+    return deleted
 
 
 async def _get_variable_in_branch(
@@ -528,10 +579,17 @@ async def upsert_event_override(
     event_id: uuid.UUID,
     data: VariableEventOverrideUpsert,
     branch_id: uuid.UUID | None = None,
-) -> VariableEventValueOverride:
+) -> tuple[VariableEventValueOverride, str]:
+    """Upsert one event override, returning it and the VARIABLE's own name.
+
+    The name is returned because the audit row this feeds has
+    ``target_type="variable"``: it used to file the EVENT's name against a
+    variable target, so a reader could not tell which variable was overridden
+    (tripl-0zpq.241). The event name belongs in the payload, not the target.
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
-    await _get_variable_in_branch(session, project_id, branch_id, variable_id)
+    variable = await _get_variable_in_branch(session, project_id, branch_id, variable_id)
     event = await session.execute(
         select(Event).where(
             Event.id == event_id,
@@ -561,7 +619,7 @@ async def upsert_event_override(
         override.values = list(data.values)
     await session.commit()
     await session.refresh(override)
-    return override
+    return override, variable.name
 
 
 async def delete_event_override(
@@ -570,10 +628,17 @@ async def delete_event_override(
     variable_id: uuid.UUID,
     event_id: uuid.UUID,
     branch_id: uuid.UUID | None = None,
-) -> None:
+) -> tuple[str, str]:
+    """Delete one event override, returning the (variable name, event name).
+
+    Both are read BEFORE the delete: after the commit the row is expired and its
+    ``event`` relationship is no longer loadable on an async session. The audit
+    row this feeds had an EMPTY ``target_name`` and named neither
+    (tripl-0zpq.241).
+    """
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
-    await _get_variable_in_branch(session, project_id, branch_id, variable_id)
+    variable = await _get_variable_in_branch(session, project_id, branch_id, variable_id)
     result = await session.execute(
         select(VariableEventValueOverride).where(
             VariableEventValueOverride.variable_id == variable_id,
@@ -583,5 +648,7 @@ async def delete_event_override(
     override = result.scalar_one_or_none()
     if not override:
         raise HTTPException(status_code=404, detail="Override not found")
+    names = (variable.name, override.event_name)
     await session.delete(override)
     await session.commit()
+    return names

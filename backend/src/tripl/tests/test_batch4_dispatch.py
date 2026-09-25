@@ -104,7 +104,7 @@ import inspect
 import re
 import uuid
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -122,6 +122,7 @@ from tripl.alerting_matching import (
 from tripl.core.analyzers import _event_generator_merge, _event_generator_merge_refs
 from tripl.core.analyzers._event_generator_merge_refs import move_dangling_event_references
 from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+from tripl.core.bucketing import to_utc
 from tripl.models import Base
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import SCOPE_NAME_MAX_LEN, AlertDeliveryItem, trim_scope_name
@@ -153,8 +154,8 @@ GIVEN = "https://given.example"
 STALE = "https://stale.example"
 SLUG = "windy-ios"
 
-# Hour-aligned and tz-naive, matching the sync sqlite fixtures elsewhere.
-_BUCKET = datetime(2026, 9, 14, 9, 0)
+# Hour-aligned UTC bucket matching persisted values.
+_BUCKET = datetime(2026, 9, 14, 9, 0, tzinfo=UTC)
 
 
 class _ConfigReads:
@@ -514,7 +515,7 @@ _LONG_EVENT_NAME = "Checkout: " + "a very long descriptive segment / " * 12
 # field name overflows a column neither of them could overflow alone.
 _LONG_EVENT_TYPE_NAME = "Screen " + "x" * 243
 
-_NOW = datetime(2026, 9, 14, 9, 30)
+_NOW = datetime(2026, 9, 14, 9, 30, tzinfo=UTC)
 
 
 def _seed_long_named_event(session: Session, *, project_id: uuid.UUID) -> tuple[EventType, Event]:
@@ -1209,11 +1210,8 @@ def test_the_inbox_query_reads_scan_config_columns_and_no_scan_history(
     hand-rolled copy would go on passing after someone changed the real one.
 
     The exact table set is asserted rather than just the absence of
-    ``scan_jobs``, because the standing hazard is a NEW eager collection on any
-    of the five selected entities, not this one collection coming back. The
-    three that remain are bounded fan-outs the alerting genuinely wants
-    (``AlertDelivery.items``, ``AlertDestination.rules``, ``AlertRule.filters``);
-    ``scan_jobs`` was the only one with no ceiling.
+    ``scan_jobs``. Inbox cards read selected entity columns and do not need
+    their relationships; a new eager collection would add SQL here.
     """
     monkeypatch.setattr(app_settings_service, "get_runtime_config_sync", _ConfigReads())
 
@@ -1235,16 +1233,8 @@ def test_the_inbox_query_reads_scan_config_columns_and_no_scan_history(
     assert len(rows) == 1
     assert rendered == ("Main Slack", "Everything", "Scan")
     assert "scan_jobs" not in " ".join(statements)
-    assert _tables_read(statements) == {
-        # The query itself, and AlertDelivery.items.
-        "alert_delivery_items",
-        # AlertDestination.rules.
-        "alert_rules",
-        # AlertRule.filters, once for the rule column and once for that
-        # collection's rules.
-        "alert_rule_filters",
-    }
-    assert len(statements) == 5, statements
+    assert _tables_read(statements) == {"alert_delivery_items"}
+    assert len(statements) == 1, statements
 
 
 def test_deleting_a_scan_config_still_removes_its_jobs(
@@ -1378,11 +1368,9 @@ def fk_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
         engine.dispose()
 
 
-def _naive_now() -> datetime:
-    """A tz-naive "now", matching what these sqlite fixtures store elsewhere."""
-    from datetime import UTC
-
-    return datetime.now(UTC).replace(microsecond=0, tzinfo=None)
+def _utc_now() -> datetime:
+    """Current UTC time for persisted alert state fixtures."""
+    return datetime.now(UTC).replace(microsecond=0)
 
 
 def _metric_states(session: Session) -> list[Any]:
@@ -1539,7 +1527,7 @@ def test_creating_a_scan_config_cannot_move_the_metric_cooldown_anchor(
 
         # The send path stamps this on a successful delivery; do it by hand so
         # the cooldown below is live rather than NULL ("never told them").
-        notified_at = _naive_now()
+        notified_at = _utc_now()
         state.last_notified_at = notified_at
         session.commit()
 
@@ -1591,7 +1579,7 @@ def test_deleting_a_scan_config_no_longer_destroys_the_shared_metric_state(
             len(metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)) == 1
         )
         state = _metric_states(session)[0]
-        notified_at = _naive_now()
+        notified_at = _utc_now()
         state.last_notified_at = notified_at
         session.commit()
 
@@ -1851,7 +1839,7 @@ def test_the_send_stamp_finds_the_project_global_state_and_only_that_one(
         session.add_all([shared, straggler])
         session.commit()
 
-        sent_at = _naive_now()
+        sent_at = _utc_now()
         delivery = AlertDelivery(
             id=uuid.uuid4(),
             project_id=config.project_id,
@@ -1889,7 +1877,7 @@ def test_the_send_stamp_finds_the_project_global_state_and_only_that_one(
         alerts_task._stamp_rule_state(session, stored)
         session.commit()
 
-        assert session.get(AlertRuleState, shared.id).last_notified_at == sent_at
+        assert to_utc(session.get(AlertRuleState, shared.id).last_notified_at) == sent_at
         assert session.get(AlertRuleState, straggler.id).last_notified_at is None
 
 
@@ -1942,7 +1930,7 @@ def test_the_send_stamp_stamps_duplicates_instead_of_raising_after_the_send(
         session.add_all([first, second])
         session.commit()
 
-        sent_at = _naive_now()
+        sent_at = _utc_now()
         delivery = AlertDelivery(
             id=uuid.uuid4(),
             project_id=config.project_id,
@@ -1982,7 +1970,7 @@ def test_the_send_stamp_stamps_duplicates_instead_of_raising_after_the_send(
 
         for state_id in (first.id, second.id):
             stamped = session.get(AlertRuleState, state_id)
-            assert stamped.last_notified_at == sent_at
+            assert to_utc(stamped.last_notified_at) == sent_at
             assert stamped.last_notified_delivery_id == delivery.id
 
 
@@ -2018,7 +2006,7 @@ def test_dispatch_retires_a_metric_state_an_old_worker_anchored_on_a_config(
     with fk_session_factory() as session:
         config, _destination, rule = _seed(session)
         scope_ref = str(uuid.uuid4())
-        opened_at = _naive_now()
+        opened_at = _utc_now()
 
         def _state(scan_config_id: uuid.UUID | None, scope_type: str) -> Any:
             return AlertRuleState(
@@ -2058,7 +2046,7 @@ def test_dispatch_retires_a_metric_state_an_old_worker_anchored_on_a_config(
             "dispatch has to retire it — and it must retire nothing else"
         )
 
-        rollup = summarize_monitor_states(states, now=_naive_now())
+        rollup = summarize_monitor_states(states, now=_utc_now())
         assert rollup.active_scope_count == 0
         assert rollup.status == "healthy", (
             "one unreachable state left open pins this monitor to 'warning' for "
@@ -2139,7 +2127,7 @@ def test_the_migration_folds_metric_states_onto_one_project_global_row(
         session.delete(config)  # leave exactly the three constructed configs
         session.commit()
 
-        now = _naive_now()
+        now = _utc_now()
         scope_ref = str(uuid.uuid4())
         delivery = AlertDelivery(
             id=uuid.uuid4(),
@@ -2208,11 +2196,11 @@ def test_the_migration_folds_metric_states_onto_one_project_global_row(
         ).scalar_one()
         assert survivor.scan_config_id is None
         assert survivor.is_active is False, "the stale open flags must not be OR'd in"
-        assert survivor.last_notified_at == newest_notified
+        assert to_utc(survivor.last_notified_at) == newest_notified
         assert survivor.last_notified_delivery_id == delivery.id, (
             "the stamp and the delivery it names have to come from the same row"
         )
-        assert survivor.last_anomaly_bucket == now
+        assert to_utc(survivor.last_anomaly_bucket) == now
 
 
 def test_the_migration_folds_buffered_metric_rows_and_sums_their_counts(
@@ -2264,7 +2252,7 @@ def test_the_migration_folds_buffered_metric_rows_and_sums_their_counts(
         assert removed == 1
         survivor = session.execute(select(AlertPendingItem)).scalars().one()
         assert survivor.scan_config_id is None
-        assert survivor.bucket == newest_bucket
+        assert to_utc(survivor.bucket) == newest_bucket
         assert survivor.observation_count == 7
 
 
@@ -2687,8 +2675,8 @@ def test_the_rekey_migration_computes_exactly_the_handle_dispatch_computes() -> 
 
 # 03:00 drops, 11:00 spikes: the filed scenario's two collections, inside one
 # daily window.
-_FLIP_DROP_BUCKET = datetime(2026, 9, 14, 3, 0)
-_FLIP_SPIKE_BUCKET = datetime(2026, 9, 14, 11, 0)
+_FLIP_DROP_BUCKET = datetime(2026, 9, 14, 3, 0, tzinfo=UTC)
+_FLIP_SPIKE_BUCKET = datetime(2026, 9, 14, 11, 0, tzinfo=UTC)
 
 
 def _buffer_scope(
@@ -2801,7 +2789,7 @@ def test_a_scope_that_flips_direction_buffers_a_line_for_each_incident(
             "two buffered lines; folding them loses one of them"
         )
         assert [row.actual_count for row in rows] == [20.0, 400.0]
-        assert [row.bucket for row in rows] == [_FLIP_DROP_BUCKET, _FLIP_SPIKE_BUCKET], (
+        assert [to_utc(row.bucket) for row in rows] == [_FLIP_DROP_BUCKET, _FLIP_SPIKE_BUCKET], (
             "the later collection must not rewrite the earlier incident's row"
         )
         assert [row.observation_count for row in rows] == [1, 1], (
@@ -2979,7 +2967,7 @@ def test_a_scope_that_keeps_firing_the_same_way_still_collapses_onto_one_line(
         rows = _buffered(session)
         assert len(rows) == 1, "a scope re-firing the SAME way still occupies one line"
         assert rows[0].actual_count == 5.0
-        assert rows[0].bucket == _FLIP_SPIKE_BUCKET
+        assert to_utc(rows[0].bucket) == _FLIP_SPIKE_BUCKET
         assert rows[0].observation_count == 2
 
 

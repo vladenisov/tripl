@@ -430,7 +430,7 @@ def _send_digest_to_destination(
         validate_email_recipients(destination.email_recipients)
         from_address = destination.email_from_address or email_config.smtp_from_address
         if not from_address:
-            raise ValueError("Email from address is required for weekly digest")
+            raise ValueError(f"Email destination {destination.name!r} requires a From address")
         # The same helper the per-delivery path resolves with
         # (``alerts._resolve_email_context``) and the same one both test sends
         # check with, so all four agree on which senders are usable: a display

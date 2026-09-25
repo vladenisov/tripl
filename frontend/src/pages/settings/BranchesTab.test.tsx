@@ -7,14 +7,19 @@ import { ApiError } from '@/api/client'
 import { metaFieldsApi } from '@/api/metaFields'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type {
   ImplementationTicket,
   PlanBranchDiffSummary,
   PlanBranchSummary,
   ProjectBranchSettings,
+  Role,
   UserListItem,
 } from '@/types'
+import { BranchProvider } from '@/components/branch-context'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { BranchesTab } from './BranchesTab'
+import { expectNoAxeViolations } from '@/test/axe'
 
 vi.mock('@/api/planBranches', () => ({
   planBranchesApi: {
@@ -160,17 +165,39 @@ function BranchesTabRoute() {
   return <BranchesTab slug="demo" branchId={branchId} />
 }
 
-function renderTab(branchId?: string) {
+function authAs(role: Role): AuthContextValue {
+  return {
+    user: {
+      id: `${role}-1`,
+      email: `${role}@example.com`,
+      name: role,
+      role,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+/** Rendered as an owner unless a test says otherwise: the merge policy form is
+ * owner-only, and most tests here exercise the full set of actions. */
+function renderTab(branchId?: string, role: Role = 'owner') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const path = `/p/demo/settings/branches${branchId ? `/${branchId}` : ''}`
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
-          <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
-        </Routes>
-      </MemoryRouter>
+      <AuthContext.Provider value={authAs(role)}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
+            <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -178,6 +205,25 @@ function renderTab(branchId?: string) {
 beforeEach(() => {
   vi.mocked(usersApi.list).mockResolvedValue(USERS)
   vi.mocked(metaFieldsApi.list).mockResolvedValue([])
+  // Every query the tab can issue answers with a valid, empty payload unless a
+  // test says otherwise. A bare vi.fn() resolves to undefined, which react-query
+  // turns into an error — so the panels a test does not look at used to run in
+  // their error state, and a regression there could not show.
+  vi.mocked(branchSettingsApi.get).mockResolvedValue(makeSettings({}))
+  vi.mocked(planBranchesApi.get).mockImplementation(async (_slug, branchId) => ({
+    ...([MAIN, FEATURE, MERGED].find((branch) => branch.id === branchId) ??
+      makeBranch({ id: branchId, name: branchId, kind: 'working', status: 'draft' })),
+    reviewers: [],
+    approvals: [],
+  }))
+  vi.mocked(planBranchesApi.diff).mockResolvedValue({
+    entries: [],
+    summary: { added: 0, removed: 0, changed: 0 },
+    behind_base: false,
+  })
+  vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+  vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+  vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -578,6 +624,7 @@ describe('BranchesTab', () => {
         name: 'purchase',
         parent: 'track',
         field: 'description',
+        entity_id: 'ev-1',
       }),
     )
   })
@@ -629,6 +676,7 @@ describe('BranchesTab', () => {
         name: 'legacy_event',
         parent: 'track',
         field: null,
+        entity_id: 'ev-old',
       }),
     )
   })
@@ -962,6 +1010,44 @@ describe('BranchesTab', () => {
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
   })
 
+  it('switches the shell back to main when the active branch is merged (SHELL-18)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+    vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
+    localStorage.setItem('tripl-branch:demo', FEATURE.id)
+
+    function ActiveBranch() {
+      return <output aria-label="active branch">{useActiveBranchId() ?? 'main'}</output>
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authAs('owner')}>
+          <MemoryRouter initialEntries={[`/p/demo/settings/branches/${FEATURE.id}`]}>
+            <BranchProvider slug="demo">
+              <ActiveBranch />
+              <Routes>
+                <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+              </Routes>
+            </BranchProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+    const active = screen.getByRole('status', { name: 'active branch' })
+    expect(active).toHaveTextContent(FEATURE.id)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await waitFor(() => expect(active).toHaveTextContent('main'))
+    expect(localStorage.getItem('tripl-branch:demo')).toBeNull()
+  })
+
   it('preserves the transition workflow for non-approved statuses', async () => {
     const draftFeature = makeBranch({
       id: 'feat-2',
@@ -1028,6 +1114,29 @@ describe('BranchesTab', () => {
         block_self_approval: true,
       }),
     )
+  })
+
+  it('shows an editor the merge policy read-only, as the owner-only PATCH requires', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN], total: 1 })
+    renderTab(undefined, 'editor')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge policy/i }))
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByLabelText('Required approvals')).toBeDisabled()
+    expect(within(dialog).getByText('Only an owner can change the merge policy.')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+  })
+
+  it('offers a viewer no branch actions (PLAN-11)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    renderTab(FEATURE.id, 'viewer')
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/viewer role/)
+    await screen.findByRole('link', { name: 'Events on this branch' })
+    expect(screen.queryByRole('button', { name: /New branch/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'New event on this branch' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete branch' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Approve|Request changes|Merge to main/ })).not.toBeInTheDocument()
   })
 
   it('shows the approvals chip against the required quota', async () => {
@@ -1333,6 +1442,7 @@ describe('BranchesTab', () => {
         name: 'variant',
         parent: null,
         field: null,
+        entity_id: null,
       }),
     )
   })
@@ -1476,6 +1586,7 @@ describe('BranchesTab', () => {
         name: 'variant',
         parent: null,
         field: null,
+        entity_id: null,
       }),
     )
   })
@@ -1781,5 +1892,14 @@ describe('BranchesTab ticket link (tripl-kjhi.14)', () => {
     await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-wnd'))
     await waitFor(() => expect(metaFieldsApi.list).toHaveBeenCalledWith('demo'))
     expect(screen.queryByRole('link', { name: /WND-4770/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('BranchesTab accessibility', () => {
+  it('has no axe violations on the branch list and an open branch', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    renderTab('feat-1')
+    await screen.findAllByText('checkout-v2')
+    await expectNoAxeViolations(document.body)
   })
 })

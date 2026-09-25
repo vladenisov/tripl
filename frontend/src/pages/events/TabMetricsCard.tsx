@@ -26,6 +26,7 @@ import { cn } from '@/lib/utils'
 import type { EventType, MonitoringSignal } from '@/types'
 
 import { getMonitoringPath } from '@/lib/monitoring'
+import { eventsMetricsKey } from '@/lib/queryKeys'
 import {
   TAB_METRICS_GRANULARITY_OPTIONS,
   TAB_METRICS_RANGE_DAYS_DEFAULT,
@@ -54,6 +55,8 @@ export function TabMetricsCard({
   isOpen,
   onOpenChange,
   filters,
+  unappliedFilters = [],
+  branchId,
 }: {
   slug: string
   activeEt: EventType | null
@@ -62,6 +65,11 @@ export function TabMetricsCard({
   isOpen: boolean
   onOpenChange: (open: boolean) => void
   filters: TabMetricsFilters
+  /** Active table filters this chart does not apply — see `unappliedChartFilters`. */
+  unappliedFilters?: string[]
+  // The active plan branch: the tag / status filter must select the events the
+  // table beside it lists, not main's (tripl-vk1p).
+  branchId?: string | null
 }) {
   const [rangeDays, setRangeDays] = useState(TAB_METRICS_RANGE_DAYS_DEFAULT)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
@@ -72,8 +80,8 @@ export function TabMetricsCard({
 
   const { data: tabMetrics, isLoading } = useQuery({
     queryKey: [
-      'eventsMetrics',
-      slug,
+      ...eventsMetricsKey(slug),
+      branchId ?? null,
       filters.filterEtId,
       filters.debouncedSearch,
       filters.queryStatuses,
@@ -89,8 +97,9 @@ export function TabMetricsCard({
         tag: filters.filterTag || undefined,
         from: range.from,
         to: range.to,
-      }),
-    enabled: !!slug,
+      }, branchId),
+    // Collapsed, the card shows no chart, so it neither fetches nor polls.
+    enabled: !!slug && isOpen,
     refetchInterval,
     placeholderData: (prev) => prev,
   })
@@ -115,6 +124,7 @@ export function TabMetricsCard({
             <p className="text-[11px] leading-tight text-muted-foreground">
               Last {rangeDays} days, grouped by {granularity}
               {tabMetrics?.scan_config_name ? ` · scan: ${tabMetrics.scan_config_name}` : ''}.
+              {unappliedFilters.length > 0 && ` Not narrowed by ${unappliedFilters.join(', ')}.`}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -176,12 +186,21 @@ export function TabMetricsCard({
               </div>
             ) : hasChartData ? (
               <>
+                {/* The served band multiplier rather than the chart's own
+                    constant, so this card can never disagree with the drilldown
+                    it links to (tripl-0zpq.299). Inert while the events-total
+                    series stays count-only — metrics_service.get_events_metrics
+                    emits bare `EventMetricPoint(bucket, count)`, so no point
+                    carries the expected_count/stddev a band needs — but the
+                    prop is what keeps the two charts on one source the day it
+                    does. */}
                 <MetricsChart
                   data={tabMetricsData}
                   forecast={tabMetrics?.forecast}
                   height={160}
                   color={activeEt?.color || 'var(--chart-3)'}
                   granularity={granularity}
+                  sigmaThreshold={tabMetrics?.sigma_threshold}
                 />
                 {tabMetrics?.interval && (
                   <p className="mt-2 text-xs text-muted-foreground">

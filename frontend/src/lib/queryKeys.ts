@@ -18,6 +18,9 @@
  * is read in more than one file.
  */
 
+import { queryOptions } from '@tanstack/react-query'
+import { projectsApi } from '@/api/projects'
+
 /** Workspace data sources — `GET /data-sources`, one list for the whole app. */
 export const dataSourcesKey = () => ['dataSources'] as const
 
@@ -85,3 +88,86 @@ export const projectEventTypesKey = (slug: string | undefined) => ['eventTypes',
 /** Event types for one project on one branch — `eventTypesApi.list(slug, branchId)`. */
 export const eventTypesKey = (slug: string | undefined, branchId?: string | null) =>
   [...projectEventTypesKey(slug), branchId] as const
+
+/** Every metrics-catalog list cache for a project (filters extend the key). */
+export const metricsCatalogKey = (slug: string | undefined) => ['metrics-catalog', slug] as const
+
+/** One catalog metric's definition — or, without `metricId`, all of them. */
+export const metricDefinitionKey = (slug: string | undefined, metricId?: string) =>
+  metricId === undefined
+    ? (['metricDefinition', slug] as const)
+    : (['metricDefinition', slug, metricId] as const)
+
+/** The generated batch SQL of every metric in a project. */
+export const metricGeneratedSqlKey = (slug: string | undefined) =>
+  ['metric-generated-sql', slug] as const
+
+/**
+ * The drilldown caches MonitoringDetailPage fills for one entity, by scope
+ * (`event`, `event_type`, `project_total`, `metric`). The page extends each with
+ * its range and filters; these prefixes are what a save, a collect or the
+ * realtime layer invalidates.
+ */
+export const monitoringSeriesKey = (slug: string | undefined, scope: string, scopeId: string) =>
+  ['monitoringMetrics', slug, scope, scopeId] as const
+export const monitoringBreakdownsKey = (slug: string | undefined, scope: string, scopeId: string) =>
+  ['eventMetricBreakdowns', slug, scope, scopeId] as const
+export const appVersionSeriesKey = (slug: string | undefined, scope: string, scopeId: string) =>
+  ['appVersionSeries', slug, scope, scopeId] as const
+/** Chart annotations shown on one entity's drilldown. */
+export const chartAnnotationsKey = (slug: string | undefined, scope: string, scopeId: string) =>
+  ['chartAnnotations', slug, scope, scopeId] as const
+
+/**
+ * Prefixes of every drilldown cache one catalog metric fills: its series, its
+ * breakdowns and its app-version series (MonitoringDetailPage keys them all
+ * `[family, slug, 'metric', metricId, …]`). A save that redefines the metric
+ * makes the backend delete what those hold, so they must be refetched rather
+ * than served stale for the minute of `staleTime` (MET-27).
+ */
+export const metricDrilldownKeys = (slug: string | undefined, metricId: string) =>
+  [
+    monitoringSeriesKey(slug, 'metric', metricId),
+    monitoringBreakdownsKey(slug, 'metric', metricId),
+    appVersionSeriesKey(slug, 'metric', metricId),
+  ] as const
+
+/** Every project the viewer can see — `GET /projects`, one list for the app. */
+export const projectsKey = () => ['projects'] as const
+
+/**
+ * The one definition of the projects-list query. Six components read this
+ * cache; each used to redeclare it with slightly different options, so
+ * whichever mounted first decided how it behaved. Spread it and override only
+ * what a reader genuinely needs (`enabled: false` for a cache-only read).
+ */
+export const projectsQueryOptions = () =>
+  queryOptions({ queryKey: projectsKey(), queryFn: ({ signal }) => projectsApi.list(signal) })
+
+/**
+ * Every events-tab dynamics cache for a project — `metricsApi.getEventsMetrics`.
+ * TabMetricsCard extends it with branch, filters and range; the realtime layer
+ * invalidates this prefix because the card does not poll while the stream is
+ * live, so a finished scan or collection would otherwise never reach the chart.
+ */
+export const eventsMetricsKey = (slug: string | undefined) => ['eventsMetrics', slug] as const
+
+/** One project — `GET /projects/{slug}`. */
+export const projectKey = (slug: string | undefined) => ['project', slug] as const
+
+/** The one definition of the single-project query; spread it to add `enabled`. */
+export const projectQueryOptions = (slug: string | undefined) =>
+  queryOptions({
+    queryKey: projectKey(slug),
+    queryFn: ({ signal }) => projectsApi.get(slug as string, signal),
+  })
+
+/**
+ * The alert inbox caches for a project: the grouped inbox list, one group's
+ * deliveries, and the "has this project ever delivered" probe. The realtime
+ * layer invalidates all three when a delivery lands.
+ */
+export const alertInboxKey = (slug: string | undefined) => ['alertInbox', slug] as const
+export const alertInboxGroupKey = (slug: string | undefined) => ['alertInboxGroup', slug] as const
+export const alertDeliveriesAnyKey = (slug: string | undefined) =>
+  ['alertDeliveriesAny', slug] as const

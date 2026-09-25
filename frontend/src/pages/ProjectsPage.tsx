@@ -60,7 +60,8 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
-import { dataSourcesKey } from '@/lib/queryKeys'
+import { dataSourcesKey, projectsKey, projectsQueryOptions } from '@/lib/queryKeys'
+import { canWrite, isOwner as isOwnerRole } from '@/lib/permissions'
 
 export default function MainPage() {
   const queryClient = useQueryClient()
@@ -73,10 +74,7 @@ export default function MainPage() {
   const [description, setDescription] = useState('')
   const { confirm, dialog } = useConfirm()
 
-  const projectsQuery = useQuery({
-    queryKey: ['projects'],
-    queryFn: projectsApi.list,
-  })
+  const projectsQuery = useQuery(projectsQueryOptions())
   const dataSourcesQuery = useQuery({
     queryKey: dataSourcesKey(),
     queryFn: dataSourcesApi.list,
@@ -142,7 +140,7 @@ export default function MainPage() {
   const createMut = useMutation({
     mutationFn: () => projectsApi.create({ name, slug, description }),
     onSuccess: (created) => {
-      void queryClient.invalidateQueries({ queryKey: ['projects'] })
+      void queryClient.invalidateQueries({ queryKey: projectsKey() })
       setShowForm(false)
       setName('')
       setSlug('')
@@ -156,7 +154,7 @@ export default function MainPage() {
 
   const deleteMut = useMutation({
     mutationFn: (projectSlug: string) => projectsApi.del(projectSlug),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectsKey() }),
   })
 
   // Demo provisioning: a blocking create with staged progress, a duplicate-click
@@ -196,8 +194,8 @@ export default function MainPage() {
     : dataSourcesQuery.isLoading
       ? '...'
       : String(dataSourceCount)
-  const isOwner = user?.role === 'owner'
-  const canCreateProject = user?.role === 'owner' || user?.role === 'editor'
+  const isOwner = isOwnerRole(user?.role)
+  const canCreateProject = canWrite(user?.role)
   const canDeleteProject = isOwner
   // Loaded-and-empty workspace: the welcome hero replaces the header CTA pair,
   // the all-zero stat band, and the old EmptyState until the first project
@@ -224,8 +222,10 @@ export default function MainPage() {
           the header no longer doubles as a stat strip (UX-10). */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 space-y-2">
+          {/* One name for this page wherever it is named — the sidebar, the
+              top bar, the tab and the palette all say "All projects" (LIVE-34). */}
           <h1 className="m-0 text-[20px] font-semibold tracking-[-0.01em]">
-            Analytics workspace
+            All projects
           </h1>
           <p className="max-w-2xl text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             See which tracking plans are filling out, which projects still need review, and how much
@@ -905,7 +905,6 @@ function LatestScanJobSummary({
   // the scan page for the same run.
   const rowsRead =
     job.result_summary?.query_rows_scanned ?? job.result_summary?.scan_rows_processed ?? null
-  const rowsTruncated = job.result_summary?.scan_truncated === true
   // Zero deltas are suppressed, all three alike. A green "+0 events" announced
   // in the success colour that nothing happened, while its zero siblings were
   // correctly silent — the card then read as a positive result at a glance
@@ -933,8 +932,8 @@ function LatestScanJobSummary({
             className="mono tnum"
             title="Warehouse rows this run read from the data source. Not an event count."
           >
-            {rowsRead.toLocaleString()}
-            {rowsTruncated ? '+' : ''} warehouse rows read
+            {rowsRead.toLocaleString()}{' '}
+            warehouse rows read
           </p>
         )}
         {scanError && (

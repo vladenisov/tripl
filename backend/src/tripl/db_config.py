@@ -21,6 +21,19 @@ driven by where they run:
 
 from __future__ import annotations
 
+from sqlalchemy.engine import make_url
+
+
+def postgres_connect_args(url: str) -> dict[str, object]:
+    """Pin application PostgreSQL sessions to UTC across async and sync drivers."""
+    driver = make_url(url).drivername
+    if driver == "postgresql+asyncpg":
+        return {"server_settings": {"TimeZone": "UTC"}}
+    if driver in {"postgresql+psycopg", "postgresql+psycopg2"}:
+        return {"options": "-c TimeZone=UTC"}
+    return {}
+
+
 # Base size of the connection pool kept open per engine.
 POOL_SIZE = 5
 

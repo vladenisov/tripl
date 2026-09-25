@@ -19,9 +19,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from datetime import timedelta
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from tripl.config import settings
 
@@ -29,8 +30,28 @@ if TYPE_CHECKING:
     from google.cloud.storage import Bucket, Client
 
 
+class StoredObject(NamedTuple):
+    """One blob as the orphan sweep sees it: its key and when it was written."""
+
+    key: str
+    written_at: datetime
+
+
 class PhotoStorage(ABC):
     backend_name: str
+
+    def list_objects(self, prefix: str) -> Iterator[StoredObject]:
+        """Every object whose key starts with *prefix*, for the orphan sweep.
+
+        Synchronous on purpose: the only caller is a Celery task, which runs
+        outside an event loop. A backend without a listing API leaves this
+        unimplemented and the sweep skips it (tripl-0zpq.291).
+        """
+        raise NotImplementedError(f"{self.backend_name} backend cannot list its objects")
+
+    def delete_blocking(self, key: str) -> None:
+        """:meth:`delete` for a caller with no event loop (the orphan sweep)."""
+        raise NotImplementedError(f"{self.backend_name} backend has no blocking delete")
 
     @abstractmethod
     async def save(self, key: str, data: bytes, content_type: str) -> None: ...
@@ -84,6 +105,27 @@ class LocalPhotoStorage(PhotoStorage):
     def _unlink(path: Path) -> None:
         with contextlib.suppress(FileNotFoundError):
             path.unlink()
+
+    def list_objects(self, prefix: str) -> Iterator[StoredObject]:
+        # Only regular files, and only under the prefix: the root is an
+        # operator-chosen directory and may hold things tripl did not write.
+        top = self._path_for(prefix) if prefix else self._root
+        if not top.is_dir():
+            return
+        for path in top.rglob("*"):
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            yield StoredObject(
+                key=path.relative_to(self._root).as_posix(),
+                written_at=datetime.fromtimestamp(mtime, tz=UTC),
+            )
+
+    def delete_blocking(self, key: str) -> None:
+        self._unlink(self._path_for(key))
 
     async def read(self, key: str) -> bytes:
         path = self._path_for(key)
@@ -154,6 +196,18 @@ class GCSPhotoStorage(PhotoStorage):
             # (tripl-jfm3.118). The local backend narrows to FileNotFoundError
             # for the same reason.
             return
+
+    def list_objects(self, prefix: str) -> Iterator[StoredObject]:
+        for blob in self._client.list_blobs(self._bucket, prefix=prefix):
+            written_at = blob.time_created or blob.updated
+            if written_at is None:
+                # No timestamp means no age, and an object of unknown age is
+                # never old enough to delete.
+                continue
+            yield StoredObject(key=blob.name, written_at=written_at)
+
+    def delete_blocking(self, key: str) -> None:
+        self._delete(key)
 
     async def read(self, key: str) -> bytes:
         # The GCS backend does not stream through our API by default — the

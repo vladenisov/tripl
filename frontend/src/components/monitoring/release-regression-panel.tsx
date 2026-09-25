@@ -1,9 +1,11 @@
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { PackageX, TrendingDown } from 'lucide-react'
 
 import { metricsApi } from '@/api/metrics'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
+import { getScopeNavigationTarget } from '@/lib/monitoring'
 import type { ReleaseComparabilityItem, ReleaseRegressionItem } from '@/types'
 
 interface ReleaseRegressionPanelProps {
@@ -51,16 +53,32 @@ function withheldReason(verdict: ReleaseComparabilityItem): string {
   }
 }
 
-function RegressionRow({ item }: { item: ReleaseRegressionItem }) {
+function RegressionRow({ slug, item }: { slug: string; item: ReleaseRegressionItem }) {
   const isMissing = item.kind === 'missing'
   const Icon = isMissing ? PackageX : TrendingDown
   const dropPct = Math.max(0, Math.round((1 - item.ratio) * 100))
+  // The row names another event (or event type) than the page it sits on, so
+  // it links there instead of being dead text (MON-41). Through the
+  // release-regression navigation rule: a place to LOOK at the entity, never
+  // offered as evidence for the regression (tripl-wkwv.12). It reads the event
+  // page off `event_id` and the event-type page off `scope_ref`.
+  const target = getScopeNavigationTarget(slug, {
+    scope_type: 'release_regression',
+    scope_ref: item.scope_ref,
+    event_id: item.event_id,
+  })
   return (
     <div className="flex items-start justify-between gap-3 py-2">
       <div className="flex min-w-0 flex-1 items-start gap-2">
         <Icon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{item.scope_name}</p>
+          <p className="truncate text-sm font-medium">
+            {target ? (
+              <Link to={target.path} className="underline-offset-2 hover:underline">
+                {item.scope_name}
+              </Link>
+            ) : item.scope_name}
+          </p>
           <p className="text-xs text-muted-foreground">
             {isMissing ? 'Disappeared in' : 'Dropped in'}{' '}
             <span className="font-mono">{item.version}</span>
@@ -86,6 +104,10 @@ function RegressionRow({ item }: { item: ReleaseRegressionItem }) {
  * Events (and event types) that disappeared or dropped in the latest active
  * release, from the release-regression summary endpoint. Rendered inside the
  * "By version" tab, so it only appears for scans with an app version column.
+ *
+ * The list covers the WHOLE scan, not the entity whose page it sits on, and
+ * says so in its title: on one event's tab it read as that event's
+ * regressions (MON-41).
  */
 export function ReleaseRegressionPanel({
   slug,
@@ -104,6 +126,7 @@ export function ReleaseRegressionPanel({
   // a clean bill of health. Suppression keeps `missing` rows, so a withheld
   // verdict and a non-empty list coexist and both have to be shown.
   const withheld = comparability.filter(verdict => !verdict.comparable)
+  const withheldReasons = [...new Set(withheld.map(withheldReason))]
   const judged = comparability.length > 0
 
   return (
@@ -111,7 +134,9 @@ export function ReleaseRegressionPanel({
       <CardContent className="p-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold">Release regressions</h2>
+            <h2 className="text-lg font-semibold">
+              Release regressions <span className="font-normal text-muted-foreground">· whole scan</span>
+            </h2>
             {query.data?.latest_version && (
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-muted-foreground">latest active release</span>
@@ -121,7 +146,14 @@ export function ReleaseRegressionPanel({
               </div>
             )}
           </div>
-          {items.length > 0 && <Badge variant="destructive">{items.length}</Badge>}
+          {items.length > 0 && (
+            <Badge
+              variant="destructive"
+              aria-label={`${items.length} ${items.length === 1 ? 'regression' : 'regressions'}`}
+            >
+              {items.length}
+            </Badge>
+          )}
         </div>
         {query.isLoading ? (
           <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
@@ -132,15 +164,19 @@ export function ReleaseRegressionPanel({
             {withheld.length > 0 && (
               <div className="mb-4 rounded-md border border-dashed p-3">
                 <p className="text-sm font-medium">Cannot be judged yet</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {withheldReason(withheld[0])}
-                </p>
+                {/* Every distinct reason, not only the first scope's: two
+                    partitions can be withheld for different reasons. */}
+                {withheldReasons.map(reason => (
+                  <p key={reason} className="mt-1 text-xs text-muted-foreground">
+                    {reason}
+                  </p>
+                ))}
               </div>
             )}
             {items.length > 0 ? (
               <div className="divide-y">
                 {items.map(item => (
-                  <RegressionRow key={`${item.scope_type}:${item.scope_ref}`} item={item} />
+                  <RegressionRow key={`${item.scope_type}:${item.scope_ref}`} slug={slug} item={item} />
                 ))}
               </div>
             ) : withheld.length > 0 ? null : judged ? (

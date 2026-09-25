@@ -938,7 +938,7 @@ def test_manual_grouped_scan_creates_its_missing_event_types(
             lambda *a, **k: (["home"], {"home": analysis}),
         )
 
-        result, per_group, _rows, _truncated = scan_tasks._scan_with_grouping(
+        result, per_group, _rows = scan_tasks._scan_with_grouping(
             session,
             project_id,
             config,
@@ -1010,7 +1010,7 @@ def test_manual_grouped_scan_declares_a_new_warehouse_column(
             lambda *a, **k: (["home"], {"home": analysis}),
         )
 
-        result, _per_group, _rows, _truncated = scan_tasks._scan_with_grouping(
+        result, _per_group, _rows = scan_tasks._scan_with_grouping(
             session,
             project_id,
             config,

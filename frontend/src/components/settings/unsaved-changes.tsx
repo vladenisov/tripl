@@ -27,6 +27,14 @@ export type UnsavedChangesValue = {
   registerUnsaved: (work: UnsavedWork | null) => void
 }
 
+/**
+ * Carried in the navigation's own `state` by an exit that has already asked,
+ * or that has nothing left to lose (a deleted project). Scoped to that single
+ * navigation, so unlike a ref or a piece of component state it cannot survive
+ * to wave a later one through.
+ */
+export const LEAVE_CONFIRMED = { leaveConfirmed: true } as const
+
 /** No-op by default so a section renders fine outside the takeover shell. */
 const UnsavedChangesContext = createContext<UnsavedChangesValue>({
   registerUnsaved: () => {},

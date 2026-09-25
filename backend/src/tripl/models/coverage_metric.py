@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, UniqueConstraint, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
@@ -24,7 +24,6 @@ class CoverageMetric(UUIDMixin, Base):
             "bucket",
             name="uq_coverage_metric_config_bucket",
         ),
-        Index("ix_coverage_metric_config_bucket", "scan_config_id", "bucket"),
     )
 
     scan_config_id: Mapped[uuid.UUID] = mapped_column(

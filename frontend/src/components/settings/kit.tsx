@@ -10,6 +10,7 @@ import {
   useFieldControlId,
 } from '@/components/settings/field-control-id'
 import { INPUT_BASE, INPUT_DISABLED } from '@/components/settings/input-style'
+import { FormRow } from '@/components/ui/form-row'
 
 /**
  * Settings control kit — the shared form primitives for the full-takeover
@@ -155,52 +156,54 @@ export function Field({
   // Fresh per render so the id follows the row's current first control; the
   // slot itself refuses to hand it to a second one (see field-control-id.ts).
   const slot = controlId === null ? null : createFieldControlIdSlot(controlId)
-  return (
-    <div
-      // A row with no control is named as a group instead, so the two buttons
-      // or the chip inside it are still announced under "Avatar" / "Role".
-      role={controlId === null ? 'group' : undefined}
-      aria-labelledby={controlId === null ? generatedId : undefined}
-      // Side-by-side label + control only from `sm` up. The 232px label gutter
-      // plus its 24px gap left a phone's control column ~100px wide, so the
-      // Name/Slug inputs measured 22px and ran off-screen (tripl-jfm3.40).
-      className={
-        stacked
-          ? 'block px-[18px] py-[15px]'
-          : 'flex flex-col gap-2 px-[18px] py-[15px] sm:flex-row sm:items-start sm:gap-6'
-      }
-      style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
-    >
-      <div
-        className={stacked ? undefined : 'w-full sm:w-[232px] sm:shrink-0 sm:pt-1.5'}
-        style={stacked ? { marginBottom: 9 } : undefined}
-      >
-        <div className="flex items-center gap-2">
-          {controlId === null ? (
-            <span id={generatedId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              {label}
-            </span>
-          ) : (
-            <label htmlFor={controlId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-              {label}
-            </label>
-          )}
-          {labelRight}
-        </div>
-        {hint && (
-          <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-            {hint}
-          </div>
-        )}
-      </div>
-      <div className="min-w-0 flex-1">
-        {slot ? (
-          <FieldControlIdContext.Provider value={slot}>{children}</FieldControlIdContext.Provider>
+  const caption = (
+    <>
+      <div className="flex items-center gap-2">
+        {controlId === null ? (
+          <span id={generatedId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+            {label}
+          </span>
         ) : (
-          children
+          <label htmlFor={controlId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+            {label}
+          </label>
         )}
+        {labelRight}
       </div>
-    </div>
+      {hint && (
+        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+          {hint}
+        </div>
+      )}
+    </>
+  )
+  const control = slot ? (
+    <FieldControlIdContext.Provider value={slot}>{children}</FieldControlIdContext.Provider>
+  ) : (
+    children
+  )
+  // A row with no control is named as a group instead, so the two buttons or
+  // the chip inside it are still announced under "Avatar" / "Role".
+  const rowProps = {
+    role: controlId === null ? 'group' : undefined,
+    'aria-labelledby': controlId === null ? generatedId : undefined,
+    style: { borderBottom: last ? 'none' : '1px solid var(--border-subtle)' },
+  }
+  if (stacked) {
+    return (
+      <div {...rowProps} className="block px-[18px] py-[15px]">
+        <div style={{ marginBottom: 9 }}>{caption}</div>
+        <div className="min-w-0 flex-1">{control}</div>
+      </div>
+    )
+  }
+  // Side-by-side label + control only from `sm` up. The 232px label gutter plus
+  // its 24px gap left a phone's control column ~100px wide, so the Name/Slug
+  // inputs measured 22px and ran off-screen (tripl-jfm3.40).
+  return (
+    <FormRow {...rowProps} caption={caption} captionClassName="sm:pt-1.5" className="px-[18px] py-[15px]">
+      {control}
+    </FormRow>
   )
 }
 
@@ -258,20 +261,27 @@ export function InfoRow({
   last?: boolean
 }) {
   return (
-    <div
-      className="flex items-center gap-4 px-[18px] py-[11px]"
+    // Stacks below `sm` like `Field`: a fixed 200px caption left a phone
+    // ~100px for the value, so scan and destination names truncated to a few
+    // letters (MON-32). A string value that still truncates carries a `title`.
+    <FormRow
+      labelWidth={200}
+      caption={
+        <span className="text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          {label}
+        </span>
+      }
+      className="gap-1 px-[18px] py-[11px] sm:items-center sm:gap-4"
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
     >
-      <span className="shrink-0 text-[12.5px]" style={{ width: 200, color: 'var(--fg-subtle)' }}>
-        {label}
-      </span>
       <span
-        className={mono ? 'mono min-w-0 flex-1 truncate text-[12.5px]' : 'min-w-0 flex-1 truncate text-[12.5px]'}
+        className={mono ? 'mono block truncate text-[12.5px]' : 'block truncate text-[12.5px]'}
         style={{ color: 'var(--fg)' }}
+        title={typeof value === 'string' || typeof value === 'number' ? String(value) : undefined}
       >
         {value}
       </span>
-    </div>
+    </FormRow>
   )
 }
 
@@ -326,6 +336,8 @@ export function TextInput({
   id,
   'aria-label': ariaLabel,
   'aria-required': ariaRequired,
+  'aria-invalid': ariaInvalid,
+  'aria-describedby': ariaDescribedBy,
 }: {
   value: string
   onChange?: (value: string) => void
@@ -338,6 +350,9 @@ export function TextInput({
   id?: string
   'aria-label'?: string
   'aria-required'?: boolean
+  /** Set by a form row that shows a validation message for this control. */
+  'aria-invalid'?: boolean
+  'aria-describedby'?: string
 }) {
   const controlId = useFieldControlId(id)
   const input = (
@@ -349,6 +364,8 @@ export function TextInput({
       disabled={disabled}
       aria-label={ariaLabel}
       aria-required={ariaRequired}
+      aria-invalid={ariaInvalid || undefined}
+      aria-describedby={ariaDescribedBy}
       onChange={(e) => onChange?.(e.target.value)}
       className={mono ? 'mono' : undefined}
       style={{
@@ -474,6 +491,8 @@ export function Select({
   id,
   'aria-required': ariaRequired,
   'aria-label': ariaLabel,
+  'aria-invalid': ariaInvalid,
+  'aria-describedby': ariaDescribedBy,
 }: {
   value: string
   onChange?: (value: string) => void
@@ -482,6 +501,9 @@ export function Select({
   id?: string
   'aria-required'?: boolean
   'aria-label'?: string
+  /** Set by a form row that shows a validation message for this control. */
+  'aria-invalid'?: boolean
+  'aria-describedby'?: string
 }) {
   const controlId = useFieldControlId(id)
   return (
@@ -492,6 +514,8 @@ export function Select({
         disabled={disabled}
         aria-required={ariaRequired}
         aria-label={ariaLabel}
+        aria-invalid={ariaInvalid || undefined}
+        aria-describedby={ariaDescribedBy}
         onChange={(e) => onChange?.(e.target.value)}
         className="w-full appearance-none"
         style={{
@@ -732,7 +756,9 @@ export function Panel({
           </div>
         )}
       </header>
-      {children}
+      {/* Scrolls sideways so a wide table is never clipped by the rounded card
+          (see .tripl-panel-body in index.css). */}
+      <div data-slot="panel-body" className="tripl-scroll-x tripl-panel-body">{children}</div>
     </section>
   )
 }

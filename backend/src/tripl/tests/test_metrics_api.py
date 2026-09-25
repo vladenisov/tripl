@@ -449,8 +449,8 @@ async def test_get_events_metrics_aggregates_matching_events(client: AsyncClient
     body = resp.json()
     assert body["interval"] == "1h"
     assert body["data"] == [
-        _plain_point("2026-01-01T10:00:00", 35),
-        _plain_point("2026-01-01T11:00:00", 52),
+        _plain_point("2026-01-01T10:00:00Z", 35),
+        _plain_point("2026-01-01T11:00:00Z", 52),
     ]
 
 
@@ -503,8 +503,8 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
     )
     assert reviewed_resp.status_code == 200
     assert reviewed_resp.json()["data"] == [
-        _plain_point("2026-01-01T10:00:00", 5),
-        _plain_point("2026-01-01T11:00:00", 7),
+        _plain_point("2026-01-01T10:00:00Z", 5),
+        _plain_point("2026-01-01T11:00:00Z", 7),
     ]
 
     archived_resp = await client.get(
@@ -512,8 +512,8 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
     )
     assert archived_resp.status_code == 200
     assert archived_resp.json()["data"] == [
-        _plain_point("2026-01-01T10:00:00", 20),
-        _plain_point("2026-01-01T11:00:00", 30),
+        _plain_point("2026-01-01T10:00:00Z", 20),
+        _plain_point("2026-01-01T11:00:00Z", 30),
     ]
 
     type_resp = await client.get(
@@ -521,8 +521,8 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
     )
     assert type_resp.status_code == 200
     assert type_resp.json()["data"] == [
-        _plain_point("2026-01-01T10:00:00", 15),
-        _plain_point("2026-01-01T11:00:00", 22),
+        _plain_point("2026-01-01T10:00:00Z", 15),
+        _plain_point("2026-01-01T11:00:00Z", 22),
     ]
 
 
@@ -572,8 +572,8 @@ async def test_get_events_metrics_scopes_to_default_scan_config(client: AsyncCli
     assert body["interval"] == "1h"
     # Only the default scan's counts — NOT the cross-scan sum (500_010 / 600_015).
     assert body["data"] == [
-        _plain_point("2026-01-01T10:00:00", 10),
-        _plain_point("2026-01-01T11:00:00", 15),
+        _plain_point("2026-01-01T10:00:00Z", 10),
+        _plain_point("2026-01-01T11:00:00Z", 15),
     ]
     # …and the response names the scan so the chart title can stop claiming to
     # cover the whole project (tripl-jfm3.20).
@@ -645,8 +645,8 @@ async def test_events_metrics_charts_the_scan_that_owns_the_tab(client: AsyncCli
     assert tab.status_code == 200
     body = tab.json()
     assert body["data"] == [
-        _plain_point("2026-01-01T10:00:00", 7),
-        _plain_point("2026-01-01T11:00:00", 9),
+        _plain_point("2026-01-01T10:00:00Z", 7),
+        _plain_point("2026-01-01T11:00:00Z", 9),
     ]
     # …and it names the scan it charted, which is NOT the project default.
     assert body["scan_config_name"] == "Snowplow Events"
@@ -661,8 +661,8 @@ async def test_events_metrics_charts_the_scan_that_owns_the_tab(client: AsyncCli
     assert control.status_code == 200
     assert control.json()["scan_config_name"] == "Snowplow Pageviews"
     assert control.json()["data"] == [
-        _plain_point("2026-01-01T10:00:00", 10),
-        _plain_point("2026-01-01T11:00:00", 15),
+        _plain_point("2026-01-01T10:00:00Z", 10),
+        _plain_point("2026-01-01T11:00:00Z", 15),
     ]
 
 
@@ -782,8 +782,8 @@ async def test_get_events_window_metrics_returns_last_day_counts_per_event(
         (event_2.json()["id"], 12),
     ]
     assert body[0]["data"] == [
-        _plain_point("2026-01-01T10:00:00", 10),
-        _plain_point("2026-01-01T11:00:00", 15),
+        _plain_point("2026-01-01T10:00:00Z", 10),
+        _plain_point("2026-01-01T11:00:00Z", 15),
     ]
 
 
@@ -897,8 +897,8 @@ async def test_get_events_window_metrics_uses_the_scan_with_the_newest_bucket(
     assert body[0]["scan_config_id"] == str(newest_scan_id)
     assert body[0]["total_count"] == 300
     assert body[0]["data"] == [
-        _plain_point("2026-01-02T10:00:00", 100),
-        _plain_point("2026-01-02T11:00:00", 200),
+        _plain_point("2026-01-02T10:00:00Z", 100),
+        _plain_point("2026-01-02T11:00:00Z", 200),
     ]
 
     unbounded = [
@@ -941,7 +941,7 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
     assert body["latest_signal"]["state"] == "latest_scan"
     assert body["data"] == [
         {
-            "bucket": _MONITORING_STABLE_BUCKET.replace(tzinfo=None).isoformat(),
+            "bucket": _MONITORING_STABLE_BUCKET.isoformat().replace("+00:00", "Z"),
             "count": 10,
             "expected_count": None,
             "stddev": None,
@@ -951,7 +951,7 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
             "z_score": None,
         },
         {
-            "bucket": _MONITORING_ANOMALY_BUCKET.replace(tzinfo=None).isoformat(),
+            "bucket": _MONITORING_ANOMALY_BUCKET.isoformat().replace("+00:00", "Z"),
             "count": 0,
             "expected_count": 10.0,
             "stddev": 0.0,
@@ -1090,7 +1090,7 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
     assert body["series"][0]["data"][0]["is_anomaly"] is False
     assert body["series"][0]["parity_anomalies"] == [
         {
-            "bucket": "2026-01-01T10:00:00",
+            "bucket": "2026-01-01T10:00:00Z",
             "actual_share": 0.25,
             "expected_share": 0.5,
             "stddev": 0.02,
@@ -1389,8 +1389,8 @@ async def test_get_app_version_adoption_returns_project_totals(client: AsyncClie
     assert body["latest_version"] == "2.10.0"
     assert [series["version"] for series in body["series"]] == ["2.10.0", "2.9.0", "Other"]
     assert body["totals"] == [
-        {"bucket": "2026-01-01T10:00:00", "count": 23},
-        {"bucket": "2026-01-01T11:00:00", "count": 28},
+        {"bucket": "2026-01-01T10:00:00Z", "count": 23},
+        {"bucket": "2026-01-01T11:00:00Z", "count": 28},
     ]
 
 
@@ -2360,6 +2360,19 @@ async def test_data_source_stats_aggregates_recent_metrics(client: AsyncClient):
                     bucket=recent,
                     count=50,
                 ),
+                # The type-level row every real chunk writes alongside the
+                # event-level ones: same bucket, same total, ``event_id`` NULL.
+                # The stats query used to sum BOTH levels and reported 300 for
+                # 150 events; it now counts only this one (tripl-0zpq.118), so
+                # without this row the window would be empty.
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=None,
+                    event_type_id=uuid.UUID(ctx["page_type_id"]),
+                    bucket=recent,
+                    count=150,
+                ),
                 # Outside the window — excluded.
                 EventMetric(
                     id=uuid.uuid4(),
@@ -2624,8 +2637,8 @@ async def test_events_metrics_status_rejects_unknown_enum_member(client: AsyncCl
     accepted = await client.get(path, params={"status": ["live", "draft"]})
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["data"] == [
-        _plain_point("2026-01-01T10:00:00", 4),
-        _plain_point("2026-01-01T11:00:00", 6),
+        _plain_point("2026-01-01T10:00:00Z", 4),
+        _plain_point("2026-01-01T11:00:00Z", 6),
     ]
 
     # Filtering still narrows: the event is `live`, so `draft` alone matches nothing.

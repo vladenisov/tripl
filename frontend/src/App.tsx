@@ -1,128 +1,105 @@
-import { lazy, Suspense, type ComponentType, type ReactNode } from 'react'
-import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
+import { Suspense, useState, type ReactNode } from 'react'
+import { Link, Navigate, Route, Routes, useLocation, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { projectsApi } from './api/projects'
 import { AuthProvider } from './components/auth-provider'
 import { useAuth } from './components/auth-context'
 import { ErrorState } from './components/error-state'
+import { RouteErrorBoundary } from './components/error-boundary'
+import { KeyedRoute } from './components/keyed-route'
 import Layout from './components/Layout'
 import { ThemeProvider } from './components/theme-provider'
+import { Button } from './components/ui/button'
 import { Toaster } from './components/ui/sonner'
 import {
   NOT_FOUND_TITLE_LABEL,
   resolveTitleFromPath,
   useDocumentTitle,
 } from './hooks/useDocumentTitle'
+import { postLoginDestination } from './lib/authRedirect'
+import { lazyWithReload } from './lib/lazyWithReload'
+import { projectHomePath } from './lib/navigation'
+import { projectsQueryOptions } from './lib/queryKeys'
+// Static on purpose: the page is a few hundred bytes and the shell already
+// renders its NotFoundState, so a lazy split bought nothing but a warning.
+import NotFoundPage from './pages/NotFoundPage'
 
-// One reload is allowed to recover from a chunk that no longer exists; the flag
-// makes sure a genuinely broken build cannot put the tab in a reload loop.
-const CHUNK_RELOAD_KEY = 'tripl:chunk-reload'
+const AuthPage = lazyWithReload(() => import('./pages/AuthPage'))
+const InvitePage = lazyWithReload(() => import('./pages/InvitePage'))
+const MainPage = lazyWithReload(() => import('./pages/ProjectsPage'))
+const EventsPage = lazyWithReload(() => import('./pages/EventsPage'))
+const EventEditPage = lazyWithReload(() => import('./pages/events/EventForm'))
+const EventBulkPage = lazyWithReload(() => import('./pages/events/EventBulkForm'))
+const OverviewPage = lazyWithReload(() => import('./pages/OverviewPage'))
+const MonitorDetailPage = lazyWithReload(() => import('./pages/MonitorDetailPage'))
+const MonitoringDetailPage = lazyWithReload(() => import('./pages/MonitoringDetailPage'))
+const ProjectSettingsPage = lazyWithReload(() => import('./pages/ProjectSettingsPage'))
+const ProjectScansPage = lazyWithReload(() => import('./pages/ProjectScansPage'))
+const ReconciliationPage = lazyWithReload(() => import('./pages/ReconciliationPage'))
+const AnomaliesPage = lazyWithReload(() => import('./pages/AnomaliesPage'))
+const MetricsPage = lazyWithReload(() => import('./pages/metrics/MetricsPage'))
+const MetricEditPage = lazyWithReload(() => import('./pages/metrics/MetricForm'))
+const FactTableEditPage = lazyWithReload(() => import('./pages/fact-tables/FactTableForm'))
+const CoveragePage = lazyWithReload(() => import('./pages/CoveragePage'))
+const ConceptsPage = lazyWithReload(() => import('./pages/ConceptsPage'))
+const SettingsArea = lazyWithReload(() => import('./pages/settings-area/SettingsArea'))
 
-/**
- * `React.lazy` that survives a deploy happening under an open tab.
- *
- * Every chunk filename carries a content hash, so a release replaces the whole
- * set. A tab loaded before the deploy still holds the OLD module graph and asks
- * for filenames the server no longer has — the request 404s and React surfaces
- * "Failed to fetch dynamically imported module", which is what a user hits the
- * first time they navigate to a code-split route after a release.
- *
- * Server-side `Cache-Control` (backend/src/tripl/middleware/static_cache.py,
- * which sets `no-cache` on the shell) stops NEW page
- * loads from booting a stale shell, but it cannot help a document that is
- * already running. Reloading once re-fetches index.html and with it the current
- * graph. A successful import re-arms the guard, so the next deploy is covered
- * too.
- */
-// Mirrors React.lazy's own constraint. Narrowing it (e.g. ComponentType<unknown>)
-// erases each page's props, so routes that pass `section`/`tab` stop
-// typechecking — the wrapper must stay as permissive as what it wraps.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function lazyRoute<T extends ComponentType<any>>(factory: () => Promise<{ default: T }>) {
-  return lazy(() =>
-    factory()
-      .then(module => {
-        sessionStorage.removeItem(CHUNK_RELOAD_KEY)
-        return module
-      })
-      .catch((error: unknown) => {
-        if (sessionStorage.getItem(CHUNK_RELOAD_KEY)) throw error
-        sessionStorage.setItem(CHUNK_RELOAD_KEY, '1')
-        window.location.reload()
-        // The reload replaces the document, so this promise intentionally never
-        // settles — resolving would flash an error UI on the way out.
-        return new Promise<never>(() => {})
-      }),
+function PageFallback({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex min-h-[240px] items-center justify-center text-sm text-muted-foreground"
+    >
+      {label}
+    </div>
   )
 }
-
-const AuthPage = lazyRoute(() => import('./pages/AuthPage'))
-const InvitePage = lazyRoute(() => import('./pages/InvitePage'))
-const MainPage = lazyRoute(() => import('./pages/ProjectsPage'))
-const EventsPage = lazyRoute(() => import('./pages/EventsPage'))
-const EventEditPage = lazyRoute(() => import('./pages/events/EventForm'))
-const EventBulkPage = lazyRoute(() => import('./pages/events/EventBulkForm'))
-const OverviewPage = lazyRoute(() => import('./pages/OverviewPage'))
-const MonitorDetailPage = lazyRoute(() => import('./pages/MonitorDetailPage'))
-const MonitoringDetailPage = lazyRoute(() => import('./pages/MonitoringDetailPage'))
-const ProjectSettingsPage = lazyRoute(() => import('./pages/ProjectSettingsPage'))
-const ProjectScansPage = lazyRoute(() => import('./pages/ProjectScansPage'))
-const ReconciliationPage = lazyRoute(() => import('./pages/ReconciliationPage'))
-const AnomaliesPage = lazyRoute(() => import('./pages/AnomaliesPage'))
-const MetricsPage = lazyRoute(() => import('./pages/metrics/MetricsPage'))
-const MetricEditPage = lazyRoute(() => import('./pages/metrics/MetricForm'))
-const FactTableEditPage = lazyRoute(() => import('./pages/fact-tables/FactTableForm'))
-const CoveragePage = lazyRoute(() => import('./pages/CoveragePage'))
-const ConceptsPage = lazyRoute(() => import('./pages/ConceptsPage'))
-const SettingsArea = lazyRoute(() => import('./pages/settings-area/SettingsArea'))
-const NotFoundPage = lazyRoute(() => import('./pages/NotFoundPage'))
 
 function RouteFallback() {
-  return (
-    <div className="flex min-h-[240px] items-center justify-center text-sm text-muted-foreground">
-      Loading page…
-    </div>
-  )
-}
-
-function withSuspense(element: React.ReactNode) {
-  return (
-    <Suspense fallback={<RouteFallback />}>
-      {element}
-    </Suspense>
-  )
-}
-
-function MetricRouteFallback() {
-  return (
-    <div className="flex min-h-[240px] items-center justify-center text-sm text-muted-foreground">
-      Loading metrics…
-    </div>
-  )
+  return <PageFallback label="Loading page…" />
 }
 
 /**
- * Keyed Suspense for the lazy metric routes. The shared {@link withSuspense}
- * reuses a single boundary instance across navigations, so React keeps the
- * previous (already-resolved) page on screen while the metric chunk loads — a
- * brief flash of stale content. Keying the boundary by route forces a fresh
- * mount that shows the fallback immediately. Scoped to metric routes so other
- * routes keep their existing behavior.
+ * Suspense for one lazy page, keyed by the PAGE it renders.
+ *
+ * One policy for every route. An unkeyed boundary is reused across
+ * navigations, and because router navigations run in a transition React keeps
+ * the previous, already-resolved page on screen while the next chunk downloads
+ * — with nothing saying anything is happening, so on a slow network a nav
+ * click reads as ignored and gets clicked again. A boundary keyed by page
+ * mounts fresh when the page changes and shows its fallback at once.
+ *
+ * The key names the page, not the route pattern: the events list and an
+ * event's detail are two patterns serving ONE EventsPage, and a per-pattern key
+ * would remount it (losing filters and scroll) on every row click. Metric
+ * routes keep one key per form or tab, as before.
  */
-function withMetricSuspense(routeKey: string, element: ReactNode) {
+function withSuspense(pageKey: string, element: ReactNode, label = 'Loading page…') {
   return (
-    <Suspense key={routeKey} fallback={<MetricRouteFallback />}>
+    <Suspense key={pageKey} fallback={<PageFallback label={label} />}>
       {element}
     </Suspense>
+  )
+}
+
+function withMetricSuspense(routeKey: string, element: ReactNode) {
+  return withSuspense(routeKey, element, 'Loading metrics…')
+}
+
+function FullScreenFallback({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground"
+    >
+      {label}
+    </div>
   )
 }
 
 function SessionFallback() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground">
-      Checking session…
-    </div>
-  )
+  return <FullScreenFallback label="Checking session…" />
 }
 
 function SessionError() {
@@ -159,9 +136,58 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-function AnonymousOnly({ children }: { children: ReactNode }) {
+/**
+ * A signed-in visitor on a link meant for someone without a session — an
+ * invitation, a password reset. Bouncing them to `/` dropped the token and read
+ * as a broken link (SHELL-16); this says who they are signed in as and lets
+ * them sign out without leaving the URL.
+ */
+function SignedInInterstitial({ purpose }: { purpose: string }) {
+  const auth = useAuth()
+  const who = auth.user?.email ?? auth.user?.name ?? 'another account'
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-6">
+      <div
+        className="w-full max-w-md space-y-4 rounded-xl border p-6"
+        style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+      >
+        <h1 className="text-lg font-semibold">You are already signed in</h1>
+        <p className="text-sm" style={{ color: 'var(--fg-muted)' }}>
+          You are signed in as <strong>{who}</strong>. Sign out to {purpose}.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            onClick={() => void auth.logout()}
+            disabled={auth.isLoggingOut}
+          >
+            {auth.isLoggingOut ? 'Signing out…' : 'Sign out and continue'}
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/">Back to the app</Link>
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AnonymousOnly({
+  children,
+  signedInPurpose,
+}: {
+  children: ReactNode
+  /** Set for links that must not silently redirect a signed-in visitor. */
+  signedInPurpose?: string
+}) {
   const auth = useAuth()
   const location = useLocation()
+  // Only someone who ARRIVED signed in gets the interstitial. Signing in on the
+  // page itself — accepting the invitation, or logging in after a reset — is
+  // the page doing its job, and goes on to the destination as before.
+  const [arrivedSignedIn, setArrivedSignedIn] = useState<boolean | null>(null)
+  if (auth.status === 'anonymous' && arrivedSignedIn !== false) setArrivedSignedIn(false)
+  if (auth.status === 'authenticated' && arrivedSignedIn === null) setArrivedSignedIn(true)
 
   if (auth.status === 'loading') {
     return <SessionFallback />
@@ -170,12 +196,23 @@ function AnonymousOnly({ children }: { children: ReactNode }) {
     return <SessionError />
   }
   if (auth.status === 'authenticated') {
-    const destination = (
-      location.state as { from?: { pathname?: string } } | null
-    )?.from?.pathname ?? '/'
-    return <Navigate to={destination} replace />
+    if (signedInPurpose && arrivedSignedIn !== false) {
+      return <SignedInInterstitial purpose={signedInPurpose} />
+    }
+    return <Navigate to={postLoginDestination(location.state)} replace />
   }
   return <>{children}</>
+}
+
+/** /auth — a password-reset link keeps its token when someone is signed in. */
+function AuthRoute() {
+  const [searchParams] = useSearchParams()
+  const resetting = searchParams.has('reset_token')
+  return (
+    <AnonymousOnly signedInPurpose={resetting ? 'reset the password' : undefined}>
+      {withSuspense('auth', <AuthPage />)}
+    </AnonymousOnly>
+  )
 }
 
 function ProjectSettingsRedirect({ tab }: { tab: string }) {
@@ -274,9 +311,13 @@ function SettingsIndexRedirect() {
 function Takeover({ section }: { section: string }) {
   return (
     <RequireAuth>
-      <Suspense fallback={<SessionFallback />}>
-        <SettingsArea section={section} />
-      </Suspense>
+      {/* Its own boundary: a section that throws keeps the takeover (and a way
+          out of it) instead of blanking the whole app. Reset on navigation. */}
+      <RouteErrorBoundary>
+        <Suspense fallback={<FullScreenFallback label="Loading settings…" />}>
+          <SettingsArea section={section} />
+        </Suspense>
+      </RouteErrorBoundary>
     </RequireAuth>
   )
 }
@@ -298,10 +339,7 @@ function TakeoverInstance() {
  * shared (not refetched) with the sidebar and dashboard.
  */
 function HomeRoute() {
-  const projectsQuery = useQuery({
-    queryKey: ['projects'],
-    queryFn: projectsApi.list,
-  })
+  const projectsQuery = useQuery(projectsQueryOptions())
 
   // While the project list is still loading, show the in-Layout page fallback
   // so single-project users never flash the dashboard before redirecting.
@@ -310,11 +348,12 @@ function HomeRoute() {
   }
 
   const projects = projectsQuery.data ?? []
-  if (projects.length === 1) {
-    return <Navigate to={`/p/${projects[0].slug}/overview`} replace />
+  const [only] = projects
+  if (projects.length === 1 && only) {
+    return <Navigate to={projectHomePath(only.slug)} replace />
   }
 
-  return withSuspense(<MainPage />)
+  return withSuspense('workspace', <MainPage />)
 }
 
 /**
@@ -332,11 +371,7 @@ function DocumentTitle() {
   // mounted on `/auth` where there is no session. Until the cache fills, an
   // unknown slug is indistinguishable from a not-yet-loaded one and the
   // path-derived title stands.
-  const { data: projects } = useQuery({
-    queryKey: ['projects'],
-    queryFn: projectsApi.list,
-    enabled: false,
-  })
+  const { data: projects } = useQuery({ ...projectsQueryOptions(), enabled: false })
   const slugIsUnknown = !!slug && !!projects && !projects.some((p) => p.slug === slug)
 
   // An invented slug must not be echoed back as if it named a real workspace —
@@ -354,16 +389,17 @@ export default function App() {
       <AuthProvider>
         <DocumentTitle />
         <Routes>
-          <Route
-            path="/auth"
-            element={<AnonymousOnly>{withSuspense(<AuthPage />)}</AnonymousOnly>}
-          />
-          {/* Redeeming an invitation. AnonymousOnly like /auth: someone already
-              signed in has no use for it, and following a link while logged in
-              as a different user would be confusing rather than helpful. */}
+          <Route path="/auth" element={<AuthRoute />} />
+          {/* Redeeming an invitation needs a signed-out browser. Someone signed
+              in is told so and offered a sign-out that keeps the link, rather
+              than being bounced to / with the token dropped. */}
           <Route
             path="/invite/:token"
-            element={<AnonymousOnly>{withSuspense(<InvitePage />)}</AnonymousOnly>}
+            element={
+              <AnonymousOnly signedInPurpose="accept this invitation">
+                {withSuspense('invite', <InvitePage />)}
+              </AnonymousOnly>
+            }
           />
           {/* Full-takeover Settings area — its own viewport shell, so each route
               mounts OUTSIDE the app Layout (no app sidebar) but requires auth. */}
@@ -393,7 +429,7 @@ export default function App() {
             <Route path="/" element={<HomeRoute />} />
             {/* Stable escape: single-project users land in their project from
                 "/", but the portfolio view stays reachable here (never bounced). */}
-            <Route path="/workspace" element={withSuspense(<MainPage />)} />
+            <Route path="/workspace" element={withSuspense('workspace', <MainPage />)} />
             <Route path="/projects" element={<Navigate to="/workspace" replace />} />
             <Route path="/data-sources" element={<Navigate to="/settings/data-sources" replace />} />
             <Route path="/data-sources/:dsId" element={<DataSourceRedirect />} />
@@ -402,19 +438,28 @@ export default function App() {
             <Route path="/p/:slug/monitoring" element={<ProjectSettingsRedirect tab="monitoring" />} />
             <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />
             <Route path="/p/:slug/events/detail/:eventId" element={<EventDetailRedirect />} />
-            <Route path="/p/:slug/monitoring/:scope/:id" element={withSuspense(<MonitoringDetailPage />)} />
-            <Route path="/p/:slug/events/:tab/new" element={withSuspense(<EventEditPage />)} />
+            {/* Keyed per entity: the page is reached from itself (successor links, the
+                bell, Back), and a reused instance kept the previous entity's chart,
+                filters and tab under the new header. */}
+            <Route
+              path="/p/:slug/monitoring/:scope/:id"
+              element={withSuspense(
+                'monitoring-detail',
+                <KeyedRoute params={['slug', 'scope', 'id']}><MonitoringDetailPage /></KeyedRoute>,
+              )}
+            />
+            <Route path="/p/:slug/events/:tab/new" element={withSuspense('event-edit', <EventEditPage />)} />
             {/* Before /events/:tab/:eventId, or "bulk" resolves as an event id. */}
-            <Route path="/p/:slug/events/:tab/bulk" element={withSuspense(<EventBulkPage />)} />
-            <Route path="/p/:slug/events/:tab/:eventId/edit" element={withSuspense(<EventEditPage />)} />
-            <Route path="/p/:slug/events/:tab/:eventId" element={withSuspense(<EventsPage />)} />
-            <Route path="/p/:slug/events/:tab" element={withSuspense(<EventsPage />)} />
-            <Route path="/p/:slug/events" element={withSuspense(<EventsPage />)} />
-            <Route path="/p/:slug/overview" element={withSuspense(<OverviewPage />)} />
+            <Route path="/p/:slug/events/:tab/bulk" element={withSuspense('event-bulk', <EventBulkPage />)} />
+            <Route path="/p/:slug/events/:tab/:eventId/edit" element={withSuspense('event-edit', <EventEditPage />)} />
+            <Route path="/p/:slug/events/:tab/:eventId" element={withSuspense('events', <EventsPage />)} />
+            <Route path="/p/:slug/events/:tab" element={withSuspense('events', <EventsPage />)} />
+            <Route path="/p/:slug/events" element={withSuspense('events', <EventsPage />)} />
+            <Route path="/p/:slug/overview" element={withSuspense('overview', <OverviewPage />)} />
             <Route path="/p/:slug/monitors" element={<MonitorsRedirect />} />
-            <Route path="/p/:slug/monitors/:monitorId" element={withSuspense(<MonitorDetailPage />)} />
-            <Route path="/p/:slug/reconciliation" element={withSuspense(<ReconciliationPage />)} />
-            <Route path="/p/:slug/anomalies" element={withSuspense(<AnomaliesPage />)} />
+            <Route path="/p/:slug/monitors/:monitorId" element={withSuspense('monitor-detail', <MonitorDetailPage />)} />
+            <Route path="/p/:slug/reconciliation" element={withSuspense('reconciliation', <ReconciliationPage />)} />
+            <Route path="/p/:slug/anomalies" element={withSuspense('anomalies', <AnomaliesPage />)} />
             <Route path="/p/:slug/metrics/new" element={withMetricSuspense('metrics-new', <MetricEditPage />)} />
             <Route path="/p/:slug/metrics/:metricId/edit" element={withMetricSuspense('metrics-edit', <MetricEditPage />)} />
             {/* Fact tables live as a tab inside Metrics — create/edit forms first,
@@ -427,11 +472,11 @@ export default function App() {
             <Route path="/p/:slug/fact-tables/new" element={<FactTablesNewRedirect />} />
             <Route path="/p/:slug/fact-tables/:factTableId/edit" element={<FactTableEditRedirect />} />
             <Route path="/p/:slug/fact-tables" element={<FactTablesRedirect />} />
-            <Route path="/p/:slug/coverage" element={withSuspense(<CoveragePage />)} />
-            <Route path="/p/:slug/concepts" element={withSuspense(<ConceptsPage />)} />
+            <Route path="/p/:slug/coverage" element={withSuspense('coverage', <CoveragePage />)} />
+            <Route path="/p/:slug/concepts" element={withSuspense('concepts', <ConceptsPage />)} />
             {/* Govern › Scans — a top-level operational surface, not a settings tab. */}
-            <Route path="/p/:slug/scans/:scanId" element={withSuspense(<ProjectScansPage />)} />
-            <Route path="/p/:slug/scans" element={withSuspense(<ProjectScansPage />)} />
+            <Route path="/p/:slug/scans/:scanId" element={withSuspense('scans', <ProjectScansPage />)} />
+            <Route path="/p/:slug/scans" element={withSuspense('scans', <ProjectScansPage />)} />
             {/* Legacy Govern › Scans paths. Declared before /p/:slug/settings/:tab
                 so the pair reads in precedence order; the router ranks the static
                 `scans` segment above `:tab` regardless, so DELETING these lines —
@@ -440,19 +485,19 @@ export default function App() {
                 /p/:slug/events (App.test.tsx pins this). */}
             <Route path="/p/:slug/settings/scans/:itemId" element={<ScansRedirect />} />
             <Route path="/p/:slug/settings/scans" element={<ScansRedirect />} />
-            <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense(<ProjectSettingsPage />)} />
-            <Route path="/p/:slug/settings/:tab" element={withSuspense(<ProjectSettingsPage />)} />
-            <Route path="/p/:slug/settings" element={withSuspense(<ProjectSettingsPage />)} />
-            <Route path="/p/:slug" element={withSuspense(<EventsPage />)} />
+            <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
+            <Route path="/p/:slug/settings/:tab" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
+            <Route path="/p/:slug/settings" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
+            <Route path="/p/:slug" element={withSuspense('events', <EventsPage />)} />
             {/* Project-scoped catch-all. It has to exist separately from the
                 global one below: only a route that declares `:slug` puts the
                 param in scope for Layout, so an unmatched path under a real
                 project keeps THAT project's sidebar and breadcrumb instead of
                 collapsing to the workspace shell (tripl-jfm3.3). */}
-            <Route path="/p/:slug/*" element={withSuspense(<NotFoundPage />)} />
+            <Route path="/p/:slug/*" element={<NotFoundPage />} />
             {/* Catch-all: render the app shell + not-found state for any
                 unmatched authed path instead of a blank screen. */}
-            <Route path="*" element={withSuspense(<NotFoundPage />)} />
+            <Route path="*" element={<NotFoundPage />} />
           </Route>
         </Routes>
       </AuthProvider>

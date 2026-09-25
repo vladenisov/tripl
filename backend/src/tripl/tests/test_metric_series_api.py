@@ -91,7 +91,7 @@ async def _create_sql_metric(
         "display_name": name.upper(),
         "data_source_id": data_source_id,
         "interval": "1h",
-        "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+        "config": {"metric_sql": "SELECT 1 AS value, now() AS t", "time_column": "t"},
         # ACTIVE, because these tests seed values and anomalies and then assert a
         # SIGNAL. ``MetricDefinitionCreate.status`` defaults to ``draft``, and a
         # draft metric is neither collected (``check_metric_definitions_due``
@@ -674,7 +674,12 @@ class TestMetricVersionSeries:
         assert [item["version"] for item in body["versions"]] == ["2.0.0", "Other"]
         series_by_version = {item["version"]: item for item in body["series"]}
         assert set(series_by_version) == {"2.0.0", "Other"}
-        assert series_by_version["Other"]["total_value"] == 5.0
+        # The MEAN of the folded versions (2.0 and 3.0), not their sum. This is a
+        # sql metric, so its values are fractional and adding them together makes
+        # a number nothing in the product means — the "Other" line has to stay on
+        # the same scale as the named ones (tripl-0zpq.114). Reverting the fold
+        # to a sum puts 5.0 back here.
+        assert series_by_version["Other"]["total_value"] == pytest.approx(2.5)
 
     async def test_version_series_empty_when_no_column(
         self, client: AsyncClient, project: dict, data_source: dict

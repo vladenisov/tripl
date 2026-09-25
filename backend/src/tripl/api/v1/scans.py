@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query
 
 from tripl.api.deps import (
     EditorUserDep,
+    KeyReachableOwnerUserDep,
     OwnerUserDep,
     SessionDep,
     get_editor_user,
@@ -211,8 +212,20 @@ async def delete_scan_config(
     # where the free-text SQL actually comes from — remain owner-only above.
     dependencies=_editor_required,
 )
-async def run_scan(session: SessionDep, slug: str, scan_id: uuid.UUID) -> ScanJob:
-    return await scan_service.trigger_scan(session, slug, scan_id)
+async def run_scan(
+    session: SessionDep, slug: str, scan_id: uuid.UUID, current_user: EditorUserDep
+) -> ScanJob:
+    job = await scan_service.trigger_scan(session, slug, scan_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="scan_config.run",
+        target_type="scan_config",
+        target_id=scan_id,
+        project_slug=slug,
+        payload={"scan_job_id": str(job.id)},
+    )
+    return job
 
 
 @router.post(
@@ -252,8 +265,19 @@ async def replay_scan_metrics(
     slug: str,
     scan_id: uuid.UUID,
     data: ScanMetricsReplayRequest,
+    current_user: KeyReachableOwnerUserDep,
 ) -> ScanJob:
-    return await scan_service.trigger_metrics_replay(session, slug, scan_id, data)
+    job = await scan_service.trigger_metrics_replay(session, slug, scan_id, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="scan_config.metrics_replay",
+        target_type="scan_config",
+        target_id=scan_id,
+        project_slug=slug,
+        payload={"scan_job_id": str(job.id), **data.model_dump(mode="json")},
+    )
+    return job
 
 
 @router.get("/{scan_id}/jobs", response_model=list[ScanJobResponse])

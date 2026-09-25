@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import {
@@ -10,8 +10,10 @@ import {
   writeScenarioState,
 } from '@/demo/scenarioModel'
 import { liveLoopState } from '@/demo/scenarioTestState'
-import type { Project } from '@/types'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import type { Project, Role } from '@/types'
 import { ScansTab } from './ScansTab'
+import ProjectScansPage from '../ProjectScansPage'
 
 const navigateMock = vi.fn()
 
@@ -171,13 +173,51 @@ function setupFetchWithJobs(jobs: unknown[], runCalls?: { method: string; url: s
 // The scan rows now carry a real <Link> to the detail page, so the tab needs a
 // router. useNavigate is still the mock above — Link resolves its href through
 // react-router's own internals, which the mock does not intercept.
-function renderTab() {
+function authAs(role: Role): AuthContextValue {
+  return {
+    user: {
+      id: `${role}-1`,
+      email: `${role}@example.com`,
+      name: role,
+      role,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+/** As an owner unless a test says otherwise: authoring a scan is owner-only. */
+function renderTab(role: Role = 'owner') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/scans']}>
-        <ScansTab slug="demo" />
-      </MemoryRouter>
+      <AuthContext.Provider value={authAs(role)}>
+        <MemoryRouter initialEntries={['/p/demo/scans']}>
+          <ScansTab slug="demo" />
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+}
+
+/** The routed page, for the paths ScansTab alone cannot answer (`/scans/new`). */
+function renderRoute(path: string, role: Role = 'owner') {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <AuthContext.Provider value={authAs(role)}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -189,6 +229,25 @@ afterEach(() => {
 })
 
 describe('ScansTab', () => {
+  it('offers an editor Run now but no scan authoring (DATA-6)', async () => {
+    setupFetch()
+    renderTab('editor')
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/done by an owner/)
+    expect(await screen.findByRole('button', { name: 'Run Main events scan now' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New scan/ })).not.toBeInTheDocument()
+  })
+
+  it('offers a viewer neither authoring nor runs (DATA-6)', async () => {
+    setupFetchWithJobs([failedJob('job-f1', '2026-01-01T00:00:00Z')])
+    renderTab('viewer')
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/viewer role/)
+    await screen.findByText('Recent runs')
+    expect(screen.queryByRole('button', { name: /Run .* now|Run again/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New scan/ })).not.toBeInTheDocument()
+  })
+
   it('renders the scan list with KPIs and config rows', async () => {
     setupFetch()
     renderTab()
@@ -339,6 +398,17 @@ describe('ScansTab', () => {
     expect(screen.getAllByRole('button', { name: /Run again/i })).toHaveLength(1)
   })
 
+  it('marks the streak as a floor when every run in the loaded page failed', async () => {
+    setupFetchWithJobs(
+      Array.from({ length: 10 }, (_, i) =>
+        failedJob(`job-f${i}`, `2026-01-${String(20 - i).padStart(2, '0')}T00:00:00Z`),
+      ),
+    )
+    renderTab()
+
+    expect(await screen.findByText(/failed last 10\+ runs/)).toBeInTheDocument()
+  })
+
   it('re-runs a failed scan from the run row via the manual trigger endpoint', async () => {
     const runCalls: { method: string; url: string }[] = []
     setupFetchWithJobs([failedJob('job-f1', '2026-01-01T00:00:00Z')], runCalls)
@@ -447,7 +517,7 @@ describe('ScansTab', () => {
     expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/scan-1')
   })
 
-  it('opens the create page in place and gates column mapping behind preview', async () => {
+  it('opens the create page on its own route, so Back and reload keep it (DATA-13)', async () => {
     setupFetch()
     renderTab()
 
@@ -458,10 +528,15 @@ describe('ScansTab', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /New scan/i }))
 
-    // In-place page view — no router navigation occurred.
-    expect(navigateMock).not.toHaveBeenCalled()
-    // Scoped to the heading: the list's own "New scan" BUTTON now carries the
-    // same words, so a bare text query would match it and pass either way.
+    expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/new')
+  })
+
+  it('renders the create page at /scans/new and gates column mapping behind preview', async () => {
+    setupFetch()
+    renderRoute('/p/demo/scans/new')
+
+    // Scoped to the heading: the list's own "New scan" BUTTON carries the same
+    // words, so a bare text query would match it and pass either way.
     expect(await screen.findByRole('heading', { name: 'New scan' })).toBeInTheDocument()
     // The essentials block is always visible; everything else is a collapsed
     // section whose fields are not mounted until it is opened.
@@ -470,11 +545,51 @@ describe('ScansTab', () => {
     expect(screen.getByRole('button', { name: /Limits/ })).toBeInTheDocument()
     expect(screen.queryByLabelText('Row cap per run')).toBeNull()
 
-    // Cancel returns to the list without navigation.
+    // Cancel on an untouched form goes back to the list without asking.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.getByText('Main events scan')).toBeInTheDocument())
+    expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans')
+  })
+
+  it('replaces /scans/new with the created scan, so Back returns to the list', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans') && method === 'POST') {
+        return mockJsonResponse({ ...scanConfig, id: 'scan-new' })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/data-sources/') && url.includes('/schema')) return mockJsonResponse({ tables: [] })
+      if (url.includes('/event-types')) {
+        return mockJsonResponse([{ id: 'et-1', name: 'click', display_name: 'Click', fields: [] }])
+      }
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    renderRoute('/p/demo/scans/new')
+
+    await screen.findByRole('heading', { name: 'New scan' })
+    fireEvent.click(screen.getByLabelText('Catalog only'))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
+    fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
+    // The SQL editor is a lazy chunk.
+    fireEvent.change(await screen.findByPlaceholderText('SELECT * FROM analytics.events'), {
+      target: { value: 'SELECT * FROM analytics.events' },
+    })
+    await screen.findByRole('option', { name: 'Click' })
+    fireEvent.change(screen.getByLabelText('Event type'), { target: { value: 'et-1' } })
+    fireEvent.click(screen.getByRole('button', { name: /Create scan/ }))
+
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/scan-new', { replace: true }),
+    )
+  })
+
+  it('sends a non-owner who opens /scans/new to the list', async () => {
+    setupFetch()
+    renderRoute('/p/demo/scans/new', 'editor')
+
+    expect(await screen.findByText('Main events scan')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'New scan' })).not.toBeInTheDocument()
-    expect(navigateMock).not.toHaveBeenCalled()
   })
 })
 
@@ -532,11 +647,13 @@ describe('ScansTab — coached demo scenario', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/p/${SLUG}/scans`]}>
-          <DemoScenarioProvider project={project} pollIntervalMs={10}>
-            <ScansTab slug={SLUG} />
-          </DemoScenarioProvider>
-        </MemoryRouter>
+        <AuthContext.Provider value={authAs('owner')}>
+          <MemoryRouter initialEntries={[`/p/${SLUG}/scans`]}>
+            <DemoScenarioProvider project={project} pollIntervalMs={10}>
+              <ScansTab slug={SLUG} />
+            </DemoScenarioProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
   }
@@ -615,5 +732,78 @@ describe('ScansTab — coached demo scenario', () => {
     await waitFor(() => expect(screen.getByText('Recent runs')).toBeInTheDocument())
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
     expect(window.localStorage.getItem(`tripl-demo-scenario:${SLUG}`)).toBeNull()
+  })
+})
+
+describe('ScansTab — data layer and feedback (batch 4)', () => {
+  it('asks each scan for the head of its history, not 50 full jobs (DATA-17)', async () => {
+    setupFetch()
+    renderTab()
+
+    await screen.findByText('Main events scan')
+    await waitFor(() =>
+      expect(vi.mocked(globalThis.fetch).mock.calls.map(([input]) => String(input))).toContainEqual(
+        expect.stringContaining('/scans/scan-1/jobs?limit=10'),
+      ),
+    )
+  })
+
+  it('keeps counting a failing streak while a retry is queued (DATA-18)', async () => {
+    setupFetchWithJobs([
+      {
+        ...failedJob('job-p', '2026-01-05T00:00:00Z'),
+        status: 'pending',
+        started_at: null,
+        completed_at: null,
+        error_message: null,
+      },
+      failedJob('job-f3', '2026-01-03T00:00:00Z'),
+      failedJob('job-f2', '2026-01-02T00:00:00Z'),
+      failedJob('job-f1', '2026-01-01T00:00:00Z'),
+    ])
+    renderTab()
+
+    expect(await screen.findByText(/failed last 3 runs/)).toBeInTheDocument()
+  })
+
+  it('says a Run now failed, and for which scan (DATA-5)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/scans/scan-1/run')) {
+        return new Response(JSON.stringify({ detail: 'Not allowed for this project' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run Main events scan now' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not start Main events scan: Not allowed for this project',
+    )
+  })
+
+  it('does not claim "No data sources" before the list has loaded (DATA-16)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      // The data-source list never answers: a cold load.
+      if (url.endsWith('/api/v1/data-sources')) return new Promise<Response>(() => {})
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    await screen.findByText('Main events scan')
+    expect(screen.queryByText('No data sources')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /New scan/ })).not.toBeDisabled()
   })
 })

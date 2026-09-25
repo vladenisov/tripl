@@ -1,12 +1,17 @@
 import type { ReactNode } from 'react'
+import { projectsKey } from '@/lib/queryKeys'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { alertingApi } from '@/api/alerting'
 import { metricsApi } from '@/api/metrics'
 import { projectsApi } from '@/api/projects'
+import { ApiError } from '@/api/client'
+import type { Project } from '@/types'
+import NotFoundPage from '@/pages/NotFoundPage'
 import Layout from './Layout'
+import { expectNoAxeViolations } from '@/test/axe'
 
 vi.mock('@/api/alerting', () => ({
   alertingApi: { listDeliveries: vi.fn() },
@@ -28,7 +33,11 @@ vi.mock('@/components/activity-panel', () => ({
 }))
 
 vi.mock('@/components/app-sidebar', () => ({
-  AppSidebar: () => <nav aria-label="sidebar" />,
+  AppSidebar: () => (
+    <nav aria-label="sidebar">
+      <Link to="/p/demo/other">Other page</Link>
+    </nav>
+  ),
 }))
 
 vi.mock('@/components/command-palette', () => ({
@@ -42,13 +51,21 @@ vi.mock('@/components/tweaks-panel', () => ({
 // The demo chrome, stood in for by the controls that matter to the bypass block:
 // the real components need mutations, a tour dialog and scenario polling, none of
 // which decides where in the DOM the shell puts them.
+// Lets a test make the demo chrome fail the way a missing chunk does.
+const demoChrome = vi.hoisted(() => ({ fail: false }))
+
 vi.mock('@/demo/DemoBanner', () => ({
-  DemoBanner: () => (
+  DemoBanner: () => {
+    if (demoChrome.fail) {
+      throw new TypeError('Failed to fetch dynamically imported module: /assets/DemoBanner-abc.js')
+    }
+    return (
     <div>
       <button type="button">What’s simulated</button>
       <button type="button">Delete</button>
     </div>
-  ),
+    )
+  },
 }))
 
 vi.mock('@/demo/DemoScenarioStrip', () => ({
@@ -64,6 +81,41 @@ interface RenderLayoutOptions {
   isDemo?: boolean
   /** Route element, when the test needs the page to own a control. */
   page?: ReactNode
+  /** Overrides the default API mocks, applied before the first render. */
+  mocks?: () => void
+  /** Seeds the query cache before the first render (e.g. an already-loaded list). */
+  seed?: (queryClient: QueryClient) => void
+}
+
+function makeProject(isDemo = false): Project {
+  return {
+    id: 'project-1',
+    name: 'Demo',
+    slug: 'demo',
+    is_demo: isDemo,
+    description: '',
+    app_version_keep_releases: 5,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    summary: {
+      event_type_count: 0,
+      event_count: 0,
+      active_event_count: 0,
+      implemented_event_count: 0,
+      review_pending_event_count: 0,
+      archived_event_count: 0,
+      variable_count: 0,
+      scan_count: 0,
+      firing_monitor_count: 0,
+      open_incident_count: 0,
+      alert_destination_count: 0,
+      alert_rule_count: 0,
+      monitoring_signal_count: 0,
+      failing_scan_config_count: 0,
+      latest_scan_job: null,
+      latest_signal: null,
+    },
+  }
 }
 
 function renderLayout(
@@ -72,43 +124,16 @@ function renderLayout(
   pageLabel = 'Monitoring detail',
   options: RenderLayoutOptions = {},
 ) {
-  vi.mocked(projectsApi.list).mockResolvedValue([
-    {
-      id: 'project-1',
-      name: 'Demo',
-      slug: 'demo',
-      is_demo: options.isDemo ?? false,
-      description: '',
-      app_version_keep_releases: 5,
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
-      summary: {
-        event_type_count: 0,
-        event_count: 0,
-        active_event_count: 0,
-        implemented_event_count: 0,
-        review_pending_event_count: 0,
-        archived_event_count: 0,
-        variable_count: 0,
-        scan_count: 0,
-        firing_monitor_count: 0,
-        open_incident_count: 0,
-        alert_destination_count: 0,
-        alert_rule_count: 0,
-        monitoring_signal_count: 0,
-        failing_scan_config_count: 0,
-        latest_scan_job: null,
-        latest_signal: null,
-      },
-    },
-  ])
-  vi.mocked(projectsApi.get).mockRejectedValue(new Error('Not found'))
+  vi.mocked(projectsApi.list).mockResolvedValue([makeProject(options.isDemo)])
+  vi.mocked(projectsApi.get).mockRejectedValue(new ApiError('Not found', 404))
   vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([])
   vi.mocked(alertingApi.listDeliveries).mockResolvedValue({ items: [], total: 0 })
+  options.mocks?.()
 
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  options.seed?.(queryClient)
   const page = options.page ?? <div>{pageLabel}</div>
   return render(
     <QueryClientProvider client={queryClient}>
@@ -165,6 +190,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  demoChrome.fail = false
   vi.restoreAllMocks()
   // defineProperty isn't undone by restoreAllMocks — drop the matchMedia stub so
   // it can't leak into other suites under full-suite concurrency.
@@ -208,8 +234,9 @@ describe('Layout bypass block', () => {
     // the page, but INSIDE the skip target they made the user Tab through the
     // demo's own controls — the DESTRUCTIVE Delete among them — before reaching
     // the page they had asked to be taken to.
-    const deleteButton = screen.getByRole('button', { name: 'Delete' })
-    const dismissButton = screen.getByRole('button', { name: 'Dismiss' })
+    // The demo chrome is a lazy chunk, so it can land after the page.
+    const deleteButton = await screen.findByRole('button', { name: 'Delete' })
+    const dismissButton = await screen.findByRole('button', { name: 'Dismiss' })
     expect(target.contains(deleteButton)).toBe(false)
     expect(target.contains(dismissButton)).toBe(false)
 
@@ -227,7 +254,8 @@ describe('Layout breadcrumbs', () => {
     // The placeholder the crumb resolver used to emit when no project was in
     // scope. It read as an untranslated template leaking into production.
     expect(screen.queryByText('project')).toBeNull()
-    expect(screen.getByText('Overview')).toBeInTheDocument()
+    // Named as the sidebar and the page's own heading name it (LIVE-34).
+    expect(screen.getByRole('banner')).toHaveTextContent('All projects')
   })
 
   it('names the Concepts surface instead of claiming to be Overview (tripl-jfm3.35)', async () => {
@@ -266,6 +294,60 @@ describe('Layout unknown project (tripl-jfm3.2)', () => {
     expect(screen.queryByRole('button', { name: 'Toggle activity panel' })).toBeNull()
     // The invented slug is not echoed back as if it named a workspace.
     expect(screen.getByText(/no project with the address/i)).toBeInTheDocument()
+  })
+
+  it('offers a retry, not a 404, when the server cannot confirm the slug (SHELL-46)', async () => {
+    renderLayout('/p/seeding-demo/overview', '/p/:slug/overview', 'Live activity body', {
+      // A 503 says nothing about whether the project exists.
+      mocks: () =>
+        vi.mocked(projectsApi.get).mockRejectedValue(new ApiError('Backend is unavailable.', 503)),
+    })
+
+    expect(
+      await screen.findByRole('heading', { name: 'Could not open this project' }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Project not found')).toBeNull()
+
+    vi.mocked(projectsApi.get).mockResolvedValue({ ...makeProject(), slug: 'seeding-demo' })
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+    expect(await screen.findByText('Live activity body')).toBeInTheDocument()
+  })
+
+  it('renders the shell from the project endpoint without waiting for the list (SHELL-41)', async () => {
+    renderLayout('/p/demo/overview', '/p/:slug/overview', 'Live activity body', {
+      mocks: () => {
+        // The list (with its summaries) never answers; the project endpoint does.
+        vi.mocked(projectsApi.list).mockReturnValue(new Promise(() => {}))
+        vi.mocked(projectsApi.get).mockResolvedValue(makeProject())
+      },
+    })
+
+    expect(await screen.findByText('Live activity body')).toBeInTheDocument()
+  })
+
+  it('takes the demo chrome from the project endpoint when the list has not answered', async () => {
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body', {
+      mocks: () => {
+        vi.mocked(projectsApi.list).mockReturnValue(new Promise(() => {}))
+        vi.mocked(projectsApi.get).mockResolvedValue(makeProject(true))
+      },
+    })
+
+    expect(await screen.findByText('Events body')).toBeInTheDocument()
+    // The same project ActiveProjectContext hands the page — not the list row
+    // alone, which a deep link does not have yet.
+    expect(await screen.findByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+  })
+
+  it('does not re-confirm a project the loaded list already names', async () => {
+    vi.mocked(projectsApi.get).mockClear()
+    renderLayout('/p/demo/overview', '/p/:slug/overview', 'Live activity body', {
+      seed: (queryClient) => queryClient.setQueryData(projectsKey(), [makeProject()]),
+    })
+
+    expect(await screen.findByText('Live activity body')).toBeInTheDocument()
+    expect(projectsApi.get).not.toHaveBeenCalled()
   })
 
   it('renders the full shell once the slug is confirmed to exist', async () => {
@@ -329,4 +411,114 @@ describe("Layout after a demo is deleted (tripl-jfm3.74)", () => {
       expect(screen.queryByRole('navigation', { name: 'sidebar' })).toBeNull()
     },
   )
+})
+
+describe('Layout demo chrome failure', () => {
+  it('keeps the page when the demo chrome cannot load', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    demoChrome.fail = true
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body', { isDemo: true })
+
+    // Outside the route boundary, a failing banner chunk used to reach the
+    // app-level boundary and take the sidebar, top bar and page with it.
+    expect(await screen.findByText('Events body')).toBeInTheDocument()
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalled())
+    expect(screen.getByText('Events body')).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'sidebar' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull()
+  })
+})
+
+describe('Layout mobile navigation drawer (SHELL-21)', () => {
+  it('keeps the off-canvas sidebar out of the tab order until it is opened', async () => {
+    mockMatchMedia(false)
+    const { container } = renderLayout('/p/demo/events', '/p/:slug/events', 'Events body')
+    await screen.findByText('Events body')
+
+    const drawer = container.querySelector('#app-sidebar')
+    expect(drawer).toHaveAttribute('inert')
+
+    const trigger = screen.getByRole('button', { name: 'Open navigation' })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    trigger.focus()
+    fireEvent.click(trigger)
+
+    expect(drawer).not.toHaveAttribute('inert')
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    // Focus moves into the drawer, and the page behind it goes inert.
+    expect(screen.getByRole('link', { name: 'Other page' })).toHaveFocus()
+    expect(screen.getByRole('main').closest('[inert]')).not.toBeNull()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(drawer).toHaveAttribute('inert')
+    expect(screen.getByRole('main').closest('[inert]')).toBeNull()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('leaves the pinned sidebar alone on wide viewports', async () => {
+    mockMatchMedia(true)
+    const { container } = renderLayout('/p/demo/events', '/p/:slug/events', 'Events body')
+    await screen.findByText('Events body')
+
+    expect(container.querySelector('#app-sidebar')).not.toHaveAttribute('inert')
+  })
+
+  it('closes the activity drawer on Escape and hands focus back', async () => {
+    mockMatchMedia(false)
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body')
+    await screen.findByText('Events body')
+
+    const toggle = screen.getByRole('button', { name: 'Toggle activity panel' })
+    toggle.focus()
+    fireEvent.click(toggle)
+    expect(await screen.findByTestId('activity-panel')).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByTestId('activity-panel')).toBeNull()
+    expect(toggle).toHaveFocus()
+  })
+})
+
+describe('Layout landmarks and route changes', () => {
+  it('puts the top bar in a banner outside <main> (SHELL-47)', async () => {
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body')
+    await screen.findByText('Events body')
+
+    const main = screen.getByRole('main')
+    expect(main).toHaveAttribute('id', 'main-content')
+    expect(main).toHaveTextContent('Events body')
+    expect(main.contains(screen.getByRole('banner'))).toBe(false)
+  })
+
+  it('moves focus to the content after navigating from the sidebar (SHELL-25)', async () => {
+    mockMatchMedia(true)
+    renderLayout('/p/demo/events', '/p/:slug/*', 'Page body')
+    await screen.findByText('Page body')
+
+    const link = screen.getByRole('link', { name: 'Other page' })
+    link.focus()
+    fireEvent.click(link)
+
+    await vi.waitFor(() => expect(screen.getByRole('main')).toHaveFocus())
+  })
+
+  it('hides the activity rail on the not-found page (LIVE-35)', async () => {
+    mockMatchMedia(true)
+    localStorage.setItem('tripl-activity-open', '1')
+    renderLayout('/p/demo/nowhere', '/p/:slug/*', '', { page: <NotFoundPage /> })
+    await screen.findByText('Page not found')
+
+    expect(screen.queryByTestId('activity-panel')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Toggle activity panel' })).toBeNull()
+  })
+})
+
+describe('Layout accessibility', () => {
+  it('has no axe violations with the demo banner and scenario strip', async () => {
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body', { isDemo: true })
+    await screen.findByText('Events body')
+    // The axe pass is "with the demo chrome": wait for its lazy chunk.
+    await screen.findByRole('button', { name: 'Dismiss' })
+    await expectNoAxeViolations(document.body, { page: true })
+  })
 })

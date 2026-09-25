@@ -1,20 +1,23 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { useState } from 'react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { planBranchesApi } from '@/api/planBranches'
 import type { PlanBranchSummary } from '@/types'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { BranchSwitcher } from './branch-switcher'
 
 const setBranchId = vi.fn()
+const branchState: { id: string | null } = { id: null }
 
 vi.mock('@/api/planBranches', () => ({
   planBranchesApi: { list: vi.fn() },
 }))
 
 vi.mock('@/hooks/useBranch', () => ({
-  useBranchContext: () => ({ branchId: null, setBranchId, slug: 'demo' }),
-  useActiveBranchId: () => null,
+  useBranchContext: () => ({ branchId: branchState.id, setBranchId, slug: 'demo' }),
+  useActiveBranchId: () => branchState.id,
 }))
 
 function makeBranch(overrides: Partial<PlanBranchSummary>): PlanBranchSummary {
@@ -43,12 +46,28 @@ const FEATURE = makeBranch({
   status: 'approved',
 })
 
-function renderSwitcher() {
+/** A page form holding the page guard, the way EventForm does. */
+function GuardedForm() {
+  const [value, setValue] = useState('')
+  const guard = useUnsavedChangesGuard(value !== '')
+  return (
+    <>
+      {guard.dialog}
+      <label>
+        Draft
+        <input value={value} onChange={e => setValue(e.target.value)} />
+      </label>
+    </>
+  )
+}
+
+function renderSwitcher({ withForm = false } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <BranchSwitcher slug="demo" />
+        {withForm && <GuardedForm />}
       </QueryClientProvider>
     </MemoryRouter>,
   )
@@ -56,6 +75,7 @@ function renderSwitcher() {
 
 afterEach(() => {
   vi.clearAllMocks()
+  branchState.id = null
 })
 
 describe('BranchSwitcher', () => {
@@ -66,6 +86,21 @@ describe('BranchSwitcher', () => {
 
     const trigger = await screen.findByTitle('Switch branch')
     expect(within(trigger).getByText('main')).toBeInTheDocument()
+  })
+
+  it('reads "loading" rather than "main" while a selected branch is resolving', async () => {
+    branchState.id = FEATURE.id
+    let resolve: (value: { items: PlanBranchSummary[]; total: number }) => void = () => {}
+    vi.mocked(planBranchesApi.list).mockReturnValue(new Promise((r) => { resolve = r }))
+
+    renderSwitcher()
+
+    const trigger = await screen.findByTitle('Switch branch')
+    expect(within(trigger).getByText('loading…')).toBeInTheDocument()
+    expect(within(trigger).queryByText('main')).not.toBeInTheDocument()
+
+    resolve({ items: [MAIN, FEATURE], total: 2 })
+    await waitFor(() => expect(within(trigger).getByText('checkout-v2')).toBeInTheDocument())
   })
 
   it('opens a Plan branches dropdown listing main and feature branches with a New branch action', async () => {
@@ -107,5 +142,37 @@ describe('BranchSwitcher', () => {
     expect(screen.getByText('checkout-v2')).toBeInTheDocument()
     expect(screen.queryByText('merged-branch')).not.toBeInTheDocument()
     expect(screen.queryByText('closed-branch')).not.toBeInTheDocument()
+  })
+
+  it('asks the page guard before switching away from a dirty form', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+
+    renderSwitcher({ withForm: true })
+    fireEvent.change(screen.getByLabelText('Draft'), { target: { value: 'draft' } })
+
+    fireEvent.click(await screen.findByTitle('Switch branch'))
+    fireEvent.click(await screen.findByText('checkout-v2'))
+
+    await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    expect(setBranchId).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(setBranchId).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTitle('Switch branch'))
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    await waitFor(() => expect(setBranchId).toHaveBeenCalledWith('feat-1'))
+  })
+
+  it('switches at once when the guarded form is clean', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+
+    renderSwitcher({ withForm: true })
+    fireEvent.click(await screen.findByTitle('Switch branch'))
+    fireEvent.click(await screen.findByText('checkout-v2'))
+
+    expect(setBranchId).toHaveBeenCalledWith('feat-1')
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 })

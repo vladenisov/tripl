@@ -231,7 +231,7 @@ The reply is `{ "ok": …, "error": …, "sent_at": … }`, and:
 - **A demo project refuses it**, with `ok: false` and an explanation: a demo is
   zero-egress. The exception is the local demo sink, which answers `ok: true`,
   because rendering and recording locally is exactly what a real delivery through
-  it does.
+  it does. Test sends use the same demo egress guard as queued deliveries.
 
 Whoever reads that channel did not ask for the message, so it says on its own
 line that nothing is wrong and that someone pressed Test. Use rule replay to
@@ -412,6 +412,13 @@ sunset date the plan gave them. A demo project's destinations receive neither,
 because a demo project is zero-egress — the worker leaves it out for the same
 reason the API refuses it a real destination.
 
+The weekly digest counts metric anomalies by their **observation bucket** in
+the reporting week, the same window definition used by rule replay. A backfill
+written this week for an older bucket does not raise this week's count. This
+changes the former digest behavior, which counted metric anomalies by when
+their rows were written (`created_at`); totals around backfills may therefore
+differ from earlier weekly digests.
+
 The sunset notice is the digest's "deprecated events still receiving data"
 count expanded into named events, each with its sunset date and the day it was
 last seen. Both read the **main** plan branch only, so the count and the list
@@ -427,6 +434,9 @@ the destination if it should receive neither alerts nor either of them.
 ## Rules — what fires an alert
 
 A rule decides which signals reach its destination. The controls:
+
+Rule names can be up to 255 characters long; the editor enforces the same limit
+as the API and database.
 
 **Scan — which scan's signals to act on.** Defaults to **All scans**: the rule
 reacts to every scan in the project. Pick a single scan to narrow it — see
@@ -698,6 +708,10 @@ Each comes back as a `*_used` / `*_saved` pair (`min_percent_delta_used`,
 `min_percent_delta_saved`, and so on), so the result can show *tried* beside
 *stored* without a second request. Omit an override and `used` equals `saved`.
 
+Each firing also reports its scan. The preview table shows that scan's name,
+or **Project-wide** when the anomaly has no scan, so similarly named scopes
+from different scans remain distinguishable.
+
 **Every scope a rule can fire on is replayed**, the opt-in ones included: volume
 anomalies, catalog metrics, schema drift, distribution drift, **variable-value
 drift** and **release regressions**. If you had switched those last two on and a
@@ -866,12 +880,21 @@ never retried automatically either: fix the cause and press **Retry** in the
 UI, which also resets the attempt budget, so a delivery you retry by hand
 starts with a fresh set of attempts.
 
+If a digest worker is interrupted, the reaper requeues stranded Slack and email
+members through the digest sender, grouped by their original flush. Other
+channels retain their normal per-delivery sender.
+
 **The toggle is read when the message goes out, not when the alert was
 decided.** A delivery created while a destination was enabled and sent after you
 switched it off is marked **failed**, naming the destination, rather than
 delivered — nothing is routed to a channel you have turned off, and nothing is
 quietly dropped either. Switch the destination back on and press **Retry** if you
 still want it.
+
+The rule switch and mute are also checked just before a queued message leaves.
+Disabling or muting a rule stops its pending delivery and records the reason as
+**failed**. A manual **Retry** on a disabled destination returns 409; enable
+the destination first.
 
 A Telegram delivery carrying more than **8 matched items** is split into several
 deliveries, because Telegram rejects a message over 4,096 characters outright.
@@ -974,6 +997,11 @@ it, but you no longer have to change an incident's status to write one down:
 saying why something was a false positive used to mean first undoing the false
 positive.
 
+The row counts matched **items**, including repeat firings of the same scope.
+Its scope names are distinct and show at most eight names; the adjacent
+“distinct scope names shown” count describes that displayed list. For example,
+eight items beside four names means some scopes fired more than once.
+
 ### Silencing an incident: acknowledge, mute, resolve, false positive {#silencing-an-incident}
 
 **Four of the six actions stop further deliveries** for that incident:
@@ -1022,7 +1050,12 @@ does, but the API takes the instant you send it, and an instant already behind
 the clock is now refused rather than stored — the same refusal muting a **rule**
 has always given, so the two Mute buttons no longer disagree about it. A silence
 that ended before it began would have left the incident reading `open` the
-moment it was written: accepted, recorded, and silencing nothing.
+moment it was written: accepted, recorded, and silencing nothing. The reverse
+mismatch is refused too: a `muted_until` sent with any action other than
+**mute** (acknowledge, resolve, reopen, …) returns `422` instead of being
+silently dropped, on the single-incident and the bulk routes alike. The same
+rule applies to `snoozed_until` on schema-drift, variable-value-drift and
+comment-thread actions: it is accepted only with **snooze**.
 
 **A rule has 1h / 24h / 7d and no indefinite option**, on purpose. Muting a rule
 silences every scope it watches, not one, and a rule you never want to hear from
@@ -1038,7 +1071,7 @@ Which lever fits which intent:
 | This is over | **Resolve** | Until this incident ends | Same suppression; a different statement to whoever reads the row next |
 | Do not tell me before *T*, whatever the signal does | **Mute 1h / 24h / 7d** | Exactly that long | The only decision that outlives the incident |
 | Do not tell me until I say so | **Mute indefinitely** (Inbox only) | Until you press **Reopen** | Outlives everything except Reopen |
-| The detector is wrong about this scope | **False positive** | Until this incident ends | **Permanently** raises that scope's `sigma_threshold` (+0.5, capped at 10) and `min_expected_count` (+5, capped at 1000), compounding on repeat clicks. It never decays; it is listed and removable under **Settings → Monitoring → Scope overrides**. Volume scopes only — on a schema drift, distribution drift or release regression it suppresses like an acknowledge and tunes nothing, because those are not scored by these two knobs, and the confirmation says how many scopes it actually tightened |
+| The detector is wrong about this scope | **False positive** | Until this incident ends | **Permanently** raises that scope's `sigma_threshold` (+0.5, capped at 10) and `min_expected_count` (+5, capped at 1000), compounding on repeat clicks. It never decays; it is listed and removable under **Settings → Monitoring → Scope overrides**. Volume scopes only — on a schema drift, distribution drift or release regression it suppresses like an acknowledge and tunes nothing, because those are not scored by these per-scope knobs (a release regression does read the project-wide `sigma_threshold`, but never a scope override), and the confirmation says how many scopes it actually tightened |
 | This event must never reach this channel again | A rule **filter**, `event` `not_in` […] | Permanent, per rule, no expiry | Excludes that event's *own* signals only. The project-total and event-type rollups it feeds carry no `event_id`, and a filter on a field a signal does not carry passes through — so those keep alerting. An `event_type` filter reaches the same rows from the other side: an event-anchored signal is narrowed by its event's type, resolved at match time, even though the stored row's own `event_type_id` is NULL |
 | This event should not be monitored at all | **Archive** the event | Until you un-archive it | Takes it out of detection entirely: no metric points scored, no signals raised, so there is nothing left to alert on |
 

@@ -119,8 +119,9 @@ def reserved_catalog_columns(config: ScanConfig) -> set[str]:
     ``{action}``, so tripl-jfm3.90 reserved away the one column the event's
     identity was built from.
 
-    A DOTTED placeholder is subtracted by its BASE column, which is why this
-    subtracts ``name_format_base_columns`` and not the full placeholder keys.
+    A DOTTED placeholder is subtracted by its BASE column as well as by its full
+    key, which is why this subtracts ``name_format_base_columns`` and not just
+    the placeholder keys.
     ``{event.category}`` is walked out of the ``event`` column's JSON, and
     ``generate_events`` assembles ``col.path`` keys only for columns that reached
     ``col_meta`` — i.e. that have a FieldDefinition. Subtracting the full key

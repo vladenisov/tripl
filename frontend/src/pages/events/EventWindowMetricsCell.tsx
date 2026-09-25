@@ -39,8 +39,12 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button
-          type="button"
+        {/* Not a button: it does nothing when pressed, and as one it was an
+            extra dead tab stop on every row (EVT-46). The count it shows is
+            in the label, so a screen reader loses nothing; the chart in the
+            tooltip is a pointer-only enlargement of the sparkline. */}
+        <span
+          role="img"
           aria-label={ariaLabel}
           className="tnum mono grid w-[106px] grid-cols-[60px_38px] items-center gap-2 text-[11.5px] font-medium hover:text-foreground"
           style={{
@@ -62,8 +66,8 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
           ) : (
             <span className="block h-4 w-[60px]" aria-hidden="true" />
           )}
-          <span className="block w-[38px] text-right">{label}</span>
-        </button>
+          <span className="block w-[38px] text-right" aria-hidden="true">{label}</span>
+        </span>
       </TooltipTrigger>
       <TooltipContent
         className="w-[22rem] max-w-[calc(100vw-2rem)] border bg-background p-0 text-foreground shadow-md"

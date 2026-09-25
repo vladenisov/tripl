@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -8,7 +8,7 @@ import type { TopMoverItem } from '@/types'
 import { TopMoversPanel } from './top-movers-panel'
 
 vi.mock('@/api/metrics', () => ({
-  metricsApi: { getTopMovers: vi.fn(), getBreakdownSeries: vi.fn() },
+  metricsApi: { getTopMovers: vi.fn(), getBreakdownSeries: vi.fn(), getBreakdownTimeline: vi.fn() },
 }))
 
 function mover(overrides: Partial<TopMoverItem> = {}): TopMoverItem {
@@ -78,5 +78,49 @@ describe('TopMoversPanel', () => {
     expect(await screen.findByText('+1')).toBeInTheDocument()
     expect(screen.queryByText('no baseline')).not.toBeInTheDocument()
     expect(screen.queryByText(/%$/)).not.toBeInTheDocument()
+  })
+
+  it('keys the row timeline on the range length, not the moving live window (MON-3)', async () => {
+    vi.mocked(metricsApi.getTopMovers).mockResolvedValue([mover()])
+    const fetchTimeline = vi.mocked(metricsApi.getBreakdownTimeline)
+    fetchTimeline.mockReset()
+    fetchTimeline.mockResolvedValue({
+      scan_config_id: 'scan-1',
+      scope_type: 'event',
+      scope_ref: 'event-1',
+      breakdown_column: 'platform',
+      breakdown_value: 'ios',
+      is_other: false,
+      interval: '1h',
+      data: [],
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const tree = (timeRange: { from: string; to: string }) => (
+      <QueryClientProvider client={client}>
+        <TopMoversPanel
+          slug="demo"
+          scanConfigId="scan-1"
+          scopeType="event"
+          scopeRef="event-1"
+          bucket="2026-01-02T00:00:00Z"
+          rangeDays={7}
+          timeRange={timeRange}
+        />
+      </QueryClientProvider>
+    )
+    const { rerender } = render(tree({ from: '2026-01-01T00:00:00Z', to: '2026-01-08T00:00:00Z' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /platform=ios/ }))
+    expect(await screen.findByText(/No timeline data/)).toBeInTheDocument()
+    expect(fetchTimeline).toHaveBeenCalledTimes(1)
+    expect(fetchTimeline).toHaveBeenCalledWith('demo', 'scan-1', expect.objectContaining({
+      from: '2026-01-01T00:00:00Z',
+      to: '2026-01-08T00:00:00Z',
+    }))
+
+    // The live bound stepped five minutes: the same range, so no refetch.
+    rerender(tree({ from: '2026-01-01T00:05:00Z', to: '2026-01-08T00:05:00Z' }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await waitFor(() => expect(fetchTimeline).toHaveBeenCalledTimes(1))
   })
 })

@@ -6,9 +6,18 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from tripl.models.data_source import DBType, TestStatus
+from tripl.schemas.not_null_update import reject_explicit_nulls
 
 # ClickHouse JSON path *discovery* (preview) mode. "dynamic" enumerates only the
 # important typed subcolumn paths (JSONDynamicPaths, fast); "all" enumerates every
@@ -372,6 +381,19 @@ class DataSourceCreate(BaseModel):
         return validated
 
 
+# The update fields whose DataSource column is NOT NULL, so an explicit ``null``
+# is a 422 naming the field and not a DB-level 500 out of
+# ``update_data_source``'s generic ``setattr`` loop — see
+# ``schemas/not_null_update`` (tripl-0zpq.267). ``password`` and
+# ``connection_settings`` are handled before that loop and each reads a null as
+# "leave the stored secret / clear the blob"; ``timeout_seconds`` and
+# ``json_path_discovery`` are nullable columns where a null means "the
+# connection default".
+_DATA_SOURCE_NOT_NULL_UPDATE_FIELDS = frozenset(
+    {"name", "db_type", "host", "port", "database_name", "username"}
+)
+
+
 class DataSourceUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     db_type: DBType | None = None
@@ -387,6 +409,11 @@ class DataSourceUpdate(BaseModel):
     # one exception: an omitted ``sslkey`` keeps the stored key, exactly like an
     # omitted password. Send ``"sslkey": ""`` to clear it.
     connection_settings: ConnectionSettings | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _DATA_SOURCE_NOT_NULL_UPDATE_FIELDS)
 
     @field_validator("host")
     @classmethod

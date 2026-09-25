@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Play, Sliders } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
@@ -7,7 +7,6 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
-import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import { scanJobsHaveActiveWork } from './scans/scanUtils'
 import type { DataSource, ScanConfig, ScanJob } from '@/types'
@@ -16,6 +15,7 @@ import { Dot } from '@/components/primitives/dot'
 import { ErrorState } from '@/components/error-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getErrorMessage } from '@/lib/utils'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { ScanDetail } from './ScanDetail'
 import { ScanCausalNote } from './scans/ScanCausalNote'
 import { ScanConfigurationTab } from './scans/ScanConfigForm'
@@ -24,15 +24,39 @@ import { BackLink, SrcIcon } from './scans/scanLayout'
 import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
 import { deriveScanRunInfo } from './scans/scanUtils'
 import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
+import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 type DetailTab = 'overview' | 'configuration'
 
 export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanConfigId: string }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const branchId = useActiveBranchId()
   const { notifyScanRunStarted } = useDemoScenarioActions()
-  const [tab, setTab] = useState<DetailTab>('overview')
+  const canRun = useCanWriteProject()
+  const isOwner = useIsOwner()
+  // The tab lives in `?tab=` so a reload lands where the reader was, instead of
+  // always on Overview (DATA-12). `replace`: flipping tabs is not history.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab: DetailTab = searchParams.get('tab') === 'configuration' ? 'configuration' : 'overview'
+  const showTab = (next: DetailTab) =>
+    setSearchParams(
+      prev => {
+        const params = new URLSearchParams(prev)
+        if (next === 'overview') params.delete('tab')
+        else params.set('tab', next)
+        return params
+      },
+      { replace: true },
+    )
+  // The Configuration panel is unmounted by the tab switch, so its unsaved
+  // edits are guarded here: on leaving the page, and on leaving the tab.
+  const [configDirty, setConfigDirty] = useState(false)
+  const unsaved = useUnsavedChangesGuard(configDirty)
+  const setTab = (next: DetailTab) => {
+    if (next === tab) return
+    unsaved.requestLeave(() => showTab(next))
+  }
 
   const {
     data: scanConfigs = [],
@@ -49,8 +73,8 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
     queryFn: () => dataSourcesApi.list(),
   })
   const { data: eventTypes = [] } = useQuery({
-    queryKey: eventTypesKey(slug, branchId),
-    queryFn: () => eventTypesApi.list(slug, branchId),
+    queryKey: eventTypesKey(slug, null),
+    queryFn: () => eventTypesApi.list(slug, null),
   })
 
   const sc = scanConfigs.find(s => s.id === scanConfigId)
@@ -67,6 +91,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   })
 
   const runMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => scansApi.run(slug, scanConfigId),
     onSuccess: (job) => {
       // The demo's runtime tick manufactures scan jobs continuously, so only the
@@ -121,49 +146,67 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
 
   return (
     <div className="flex flex-col gap-4">
+      {unsaved.dialog}
       <BackLink onClick={goBack} />
 
-      <div className="flex items-start gap-3">
-        <SrcIcon dbType={dataSource?.db_type ?? null} size={36} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2.5">
-            <h1 className="m-0 text-[21px] font-semibold tracking-tight">{sc.name}</h1>
-            <span className="inline-flex items-center gap-1.5">
-              <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
-              <span className="text-xs" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
-                {SCAN_STATUS_LABEL[runInfo.status]}
+      {/* Stacks below `sm`: one row of icon, title block, Run now and Edit left
+          the title a ~70px column at 375px, one word per line (DATA-11). */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <SrcIcon dbType={dataSource?.db_type ?? null} size={36} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <h1 className="m-0 text-[21px] font-semibold tracking-tight">{sc.name}</h1>
+              <span className="inline-flex items-center gap-1.5">
+                <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
+                <span className="text-xs" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
+                  {SCAN_STATUS_LABEL[runInfo.status]}
+                </span>
               </span>
-            </span>
-          </div>
-          <p className="mt-1 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            {/* "Reads from", not "Ingests from": the causal note directly below
-                says what a run DOES ("adds events to your tracking plan"), and
-                two verbs for one act, one line apart, is the vocabulary drift
-                this epic opened with. "Reads" is what concepts.md already uses
-                for the warehouse side. */}
-            Reads from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
-          </p>
-          {/* One line under the header saying what this scan produces and what
-              reads it. Mounted here rather than inside ScanDetail so it sits
-              above the tab strip and holds for both tabs (tripl-3y7z.2). */}
-          <div className="mt-1">
-            <ScanCausalNote variant="config" config={sc} />
+            </div>
+            <p className="mt-1 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              {/* "Reads from", not "Ingests from": the causal note directly below
+                  says what a run DOES ("adds events to your tracking plan"), and
+                  two verbs for one act, one line apart, is the vocabulary drift
+                  this epic opened with. "Reads" is what concepts.md already uses
+                  for the warehouse side. */}
+              Reads from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
+            </p>
+            {/* One line under the header saying what this scan produces and what
+                reads it. Mounted here rather than inside ScanDetail so it sits
+                above the tab strip and holds for both tabs (tripl-3y7z.2). */}
+            <div className="mt-1">
+              <ScanCausalNote variant="config" config={sc} />
+            </div>
           </div>
         </div>
-        <ScenarioCoachMark step="live-loop/run-scan">
-          <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
-            <Play className="size-3" />
-            {runMut.isPending ? 'Starting…' : 'Run now'}
-          </Button>
-        </ScenarioCoachMark>
-        <Button
-          variant={tab === 'configuration' ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setTab('configuration')}
-        >
-          <Sliders className="size-3.5" />
-          Edit
-        </Button>
+        {/* Run is an editor's action, editing the configuration an owner's
+            (DATA-6); the Configuration tab itself stays open to read. */}
+        {(canRun || isOwner) && (
+          <div className="flex shrink-0 items-center gap-2">
+            {canRun && (
+              <ScenarioCoachMark step="live-loop/run-scan">
+                <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
+                  <Play className="size-3" />
+                  {runMut.isPending ? 'Starting…' : 'Run now'}
+                </Button>
+              </ScenarioCoachMark>
+            )}
+            {isOwner && (
+              <Button
+                variant={tab === 'configuration' ? 'default' : 'outline'}
+                size="sm"
+                // A phone has the Configuration tab a few pixels below; a second
+                // way there only costs the title its width.
+                className="hidden sm:inline-flex"
+                onClick={() => setTab('configuration')}
+              >
+                <Sliders className="size-3.5" />
+                Edit
+              </Button>
+            )}
+          </div>
+        )}
       </div>
 
       {runMut.isError && (
@@ -216,7 +259,16 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
         </div>
       ) : (
         <div id="scan-tabpanel-configuration" role="tabpanel" aria-labelledby="scan-tab-configuration">
-          <ScanConfigurationTab slug={slug} scanConfig={sc as ScanConfig} onDeleted={goBack} />
+          <ScanConfigurationTab
+            slug={slug}
+            scanConfig={sc as ScanConfig}
+            onDeleted={() => {
+              // Deleted: nothing left to lose.
+              unsaved.release()
+              goBack()
+            }}
+            onDirtyChange={setConfigDirty}
+          />
         </div>
       )}
     </div>

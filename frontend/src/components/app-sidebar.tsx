@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties, type ReactElement } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -11,16 +11,18 @@ import {
   Folder,
   LayoutDashboard,
   LogOut,
+  Palette,
   Search,
   Settings,
   SlidersHorizontal,
+  type LucideIcon,
 } from 'lucide-react'
 import { eventTypesApi } from '@/api/eventTypes'
-import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { BranchSwitcher } from '@/components/branch-switcher'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
+import { useTweaksPanel } from '@/components/tweaks-panel-context'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,11 +31,20 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useActiveBranchId } from '@/hooks/useBranch'
-import { buildNavGroups, type NavGroup, type NavItem, type NavTone } from '@/lib/navigation'
+import {
+  buildNavGroups,
+  switchProjectPath,
+  type NavGroup,
+  type NavItem,
+  type NavTone,
+} from '@/lib/navigation'
+import { cn } from '@/lib/utils'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
 import type { EventType, Project } from '@/types'
-import { eventTypesKey } from '@/lib/queryKeys'
+import { eventTypesKey, projectsQueryOptions } from '@/lib/queryKeys'
+import { isOwner as isOwnerRole } from '@/lib/permissions'
 
 const SIDEBAR_STORAGE_KEY = 'tripl-sidebar-collapsed'
 const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
@@ -86,6 +97,35 @@ function toneColor(tone: NavTone | undefined, active: boolean): string {
     default:
       return 'var(--fg-subtle)'
   }
+}
+
+/**
+ * One look for every sidebar link: hover and keyboard focus come from CSS (the
+ * old inline `style.background` writes had no keyboard twin and could stick
+ * after the active item changed), and the current page carries a bar on its
+ * left edge, so "you are here" is not told by a tint alone (SHELL-24).
+ */
+const NAV_LINK_CLASS =
+  'relative flex items-center gap-2 rounded-[5px] px-2 py-1.5 font-medium no-underline transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
+const ACTIVE_MARKER_CLASS =
+  "before:absolute before:inset-y-1.5 before:left-0 before:w-[2px] before:rounded-full before:bg-[var(--accent)] before:content-['']"
+
+function navLinkClass(active: boolean, extra?: string): string {
+  return cn(NAV_LINK_CLASS, active && ACTIVE_MARKER_CLASS, extra)
+}
+
+function navLinkStyle(active: boolean): CSSProperties {
+  return active
+    ? { background: 'var(--surface-hover)', color: 'var(--fg)' }
+    : { color: 'var(--fg-muted)' }
+}
+
+const ICON_BUTTON_CLASS =
+  'relative flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
+
+/** Project settings, bound to THIS project by the address (SHELL-20). */
+function projectSettingsHref(slug: string): string {
+  return `/settings/project/general?project=${encodeURIComponent(slug)}`
 }
 
 /**
@@ -152,13 +192,11 @@ export function AppSidebar() {
   const navigate = useNavigate()
   const auth = useAuth()
   const palette = useCommandPalette()
+  const tweaks = useTweaksPanel()
   const branchId = useActiveBranchId()
   const [collapsed, setCollapsed] = useSidebarCollapsed()
 
-  const projectsQuery = useQuery({
-    queryKey: ['projects'],
-    queryFn: projectsApi.list,
-  })
+  const projectsQuery = useQuery(projectsQueryOptions())
   const projects = projectsQuery.data ?? []
 
   // Keep the persisted last-slug fresh, but render the nav from the REAL route
@@ -170,7 +208,7 @@ export function AppSidebar() {
   // Owner-only items are dropped rather than shown-and-denied: the routes behind
   // them 403 for everyone else, and a nav entry that always fails reads as a
   // broken app rather than a permission boundary (tripl-jfm3.110).
-  const isOwner = auth.user?.role === 'owner'
+  const isOwner = isOwnerRole(auth.user?.role)
   const navGroups: NavGroup[] = slug
     ? buildNavGroups(slug, project?.summary).map((group) => ({
         ...group,
@@ -185,11 +223,14 @@ export function AppSidebar() {
   const eventTypes = eventTypesQuery.data ?? []
   const currentPath = location.pathname
   const userInitials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
-  const projectSettingsActive =
-    !!slug
-    && (currentPath === `/p/${slug}/settings`
-      || currentPath === `/p/${slug}/settings/general`)
   const conceptsActive = !!slug && currentPath === `/p/${slug}/concepts`
+  // Switching project keeps the surface being compared when the new project
+  // has it, and otherwise lands on the project's one home (SHELL-44).
+  const pickProject = (picked: Project) =>
+    navigate(switchProjectPath(currentPath, slug, picked.slug))
+  const signOut = () => {
+    void auth.logout()
+  }
 
   if (collapsed) {
     return (
@@ -197,7 +238,17 @@ export function AppSidebar() {
         onExpand={() => setCollapsed(false)}
         navGroups={navGroups}
         currentPath={currentPath}
+        slug={slug}
+        activeProject={project}
+        projects={projects}
+        projectsLoading={projectsQuery.isLoading}
+        onPickProject={pickProject}
+        conceptsActive={conceptsActive}
         userInitials={userInitials}
+        userLabel={auth.user?.name ?? auth.user?.email ?? 'Signed in'}
+        isLoggingOut={auth.isLoggingOut}
+        onSignOut={signOut}
+        onOpenTweaks={() => tweaks.setOpen(true)}
         onOpenPalette={() => palette.setOpen(true)}
       />
     )
@@ -206,7 +257,7 @@ export function AppSidebar() {
   return (
     <nav
       aria-label="Main navigation"
-      className="flex h-screen w-[240px] flex-col border-r flex-shrink-0"
+      className="flex h-full w-[calc(240px+env(safe-area-inset-left))] flex-shrink-0 flex-col border-r pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
     >
       {/* Service logo — the triangle is the Tripl brand, so it lives here (not
@@ -245,7 +296,7 @@ export function AppSidebar() {
           activeProject={project}
           projects={projects}
           loading={projectsQuery.isLoading}
-          onPick={(project) => navigate(`/p/${project.slug}/events`)}
+          onPick={pickProject}
         />
       </div>
 
@@ -293,22 +344,16 @@ export function AppSidebar() {
         {slug && (
           <div className="mt-1 border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
             <Link
-              to="/settings/project/general"
-              className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12.5px] font-medium no-underline transition-colors"
-              style={{
-                background: projectSettingsActive ? 'var(--surface-hover)' : 'transparent',
-                color: projectSettingsActive ? 'var(--fg)' : 'var(--fg-muted)',
-              }}
-              onMouseEnter={(e) => {
-                if (!projectSettingsActive) e.currentTarget.style.background = 'var(--surface-hover)'
-              }}
-              onMouseLeave={(e) => {
-                if (!projectSettingsActive) e.currentTarget.style.background = 'transparent'
-              }}
+              to={projectSettingsHref(slug)}
+              // Never "active": project settings open in the full-screen
+              // takeover, which does not render this sidebar.
+              className={navLinkClass(false, 'text-[12.5px]')}
+              style={navLinkStyle(false)}
             >
               <SlidersHorizontal
                 className="h-3.5 w-3.5 shrink-0"
-                style={{ color: projectSettingsActive ? 'var(--accent)' : 'var(--fg-subtle)' }}
+                style={{ color: 'var(--fg-subtle)' }}
+                aria-hidden="true"
               />
               <span className="flex-1 truncate text-left">Project settings</span>
             </Link>
@@ -323,17 +368,9 @@ export function AppSidebar() {
         {slug && (
           <Link
             to={`/p/${slug}/concepts`}
-            className="mb-2 flex items-center gap-2 rounded-[5px] px-1.5 py-1.5 text-[12px] font-medium no-underline transition-colors"
-            style={{
-              background: conceptsActive ? 'var(--surface-hover)' : 'transparent',
-              color: conceptsActive ? 'var(--fg)' : 'var(--fg-muted)',
-            }}
-            onMouseEnter={(e) => {
-              if (!conceptsActive) e.currentTarget.style.background = 'var(--surface-hover)'
-            }}
-            onMouseLeave={(e) => {
-              if (!conceptsActive) e.currentTarget.style.background = 'transparent'
-            }}
+            aria-current={conceptsActive ? 'page' : undefined}
+            className={navLinkClass(conceptsActive, 'mb-2 px-1.5 text-[12px]')}
+            style={navLinkStyle(conceptsActive)}
           >
             <BookOpen
               className="h-3.5 w-3.5 shrink-0"
@@ -345,6 +382,7 @@ export function AppSidebar() {
         )}
         <div className="flex items-center gap-1.5">
           <div
+            aria-hidden="true"
             className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[11px] font-semibold text-white"
             style={{ background: 'var(--avatar-bg)' }}
           >
@@ -361,11 +399,24 @@ export function AppSidebar() {
               {auth.user?.role ? capitalize(auth.user.role) : 'Signed in'}
             </div>
           </div>
+          {/* Appearance lives with the account controls. It used to be a disc
+              fixed over the bottom-right corner of every page, on top of table
+              rows and form actions (SHELL-35). */}
+          <button
+            type="button"
+            title="Appearance"
+            aria-label="Appearance"
+            onClick={() => tweaks.setOpen(true)}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            style={{ color: 'var(--fg-subtle)' }}
+          >
+            <Palette className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
           <Link
             to="/settings"
             title="Workspace settings"
             aria-label="Workspace settings"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)]"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             style={{
               color: currentPath.startsWith('/settings') ? 'var(--fg)' : 'var(--fg-subtle)',
             }}
@@ -376,11 +427,9 @@ export function AppSidebar() {
             type="button"
             title={auth.isLoggingOut ? 'Signing out…' : 'Sign out'}
             aria-label="Sign out"
-            onClick={() => {
-              void auth.logout()
-            }}
+            onClick={signOut}
             disabled={auth.isLoggingOut}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:opacity-50"
             style={{ color: 'var(--fg-subtle)' }}
           >
             <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
@@ -389,6 +438,13 @@ export function AppSidebar() {
       </div>
     </nav>
   )
+}
+
+function eventTypeChildActive(eventTypes: EventType[], navSlug: string, currentPath: string): boolean {
+  return eventTypes.some((eventType) => {
+    const href = eventTypeEventsHref(navSlug, eventType.name)
+    return currentPath === href || currentPath.startsWith(`${href}/`)
+  })
 }
 
 function NavGroupSection({
@@ -402,6 +458,9 @@ function NavGroupSection({
   eventTypes: EventType[]
   navSlug: string | undefined
 }) {
+  // On /events/<type> the event-type child is the page; Events matching the
+  // same prefix used to light up alongside it (SHELL-45).
+  const childActive = !!navSlug && eventTypeChildActive(eventTypes, navSlug, currentPath)
   return (
     <div className="mb-3">
       <div
@@ -420,10 +479,12 @@ function NavGroupSection({
                 eventTypes={eventTypes}
                 navSlug={navSlug}
                 currentPath={currentPath}
+                childActive={childActive}
               />
             )
           }
-          return <NavRow key={item.id} item={item} active={item.match(currentPath)} />
+          const active = item.match(currentPath) && !(item.id === 'events' && childActive)
+          return <NavRow key={item.id} item={item} active={active} />
         })}
       </div>
     </div>
@@ -435,19 +496,15 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
   return (
     <Link
       to={item.href}
-      className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12.5px] font-medium no-underline transition-colors"
-      style={{
-        background: active ? 'var(--surface-hover)' : 'transparent',
-        color: active ? 'var(--fg)' : 'var(--fg-muted)',
-      }}
-      onMouseEnter={(e) => {
-        if (!active) e.currentTarget.style.background = 'var(--surface-hover)'
-      }}
-      onMouseLeave={(e) => {
-        if (!active) e.currentTarget.style.background = 'transparent'
-      }}
+      aria-current={active ? 'page' : undefined}
+      className={navLinkClass(active, 'text-[12.5px]')}
+      style={navLinkStyle(active)}
     >
-      <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: toneColor(item.tone, active) }} />
+      <Icon
+        className="h-3.5 w-3.5 shrink-0"
+        style={{ color: toneColor(item.tone, active) }}
+        aria-hidden="true"
+      />
       <span className="flex-1 truncate text-left">{item.label}</span>
       {item.count !== undefined && (
         <span
@@ -473,46 +530,50 @@ function EventTypesNavCategory({
   eventTypes,
   navSlug,
   currentPath,
+  childActive,
 }: {
   item: NavItem
   eventTypes: EventType[]
   navSlug: string
   currentPath: string
+  childActive: boolean
 }) {
   const Icon = item.icon
   const settingsActive = item.match(currentPath)
-  const childActive = eventTypes.some((eventType) => {
-    const href = eventTypeEventsHref(navSlug, eventType.name)
-    return currentPath === href || currentPath.startsWith(`${href}/`)
-  })
-  const active = settingsActive || childActive
 
   return (
     <div>
-      <div
-        className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12.5px] font-medium"
-        style={{
-          background: active ? 'var(--surface-hover)' : 'transparent',
-          color: active ? 'var(--fg)' : 'var(--fg-muted)',
-        }}
+      {/* The whole row is the link: only a 20px gear used to navigate, so the
+          label looked clickable and did nothing (SHELL-45). A child event type
+          being open marks the section (text, icon) but not the row as the
+          current page. */}
+      <Link
+        to={item.href}
+        aria-current={settingsActive ? 'page' : undefined}
+        className={navLinkClass(settingsActive, 'text-[12.5px]')}
+        style={
+          settingsActive
+            ? navLinkStyle(true)
+            : { color: childActive ? 'var(--fg)' : 'var(--fg-muted)' }
+        }
       >
-        <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: toneColor(item.tone, active) }} />
+        <Icon
+          className="h-3.5 w-3.5 shrink-0"
+          style={{ color: toneColor(item.tone, settingsActive || childActive) }}
+          aria-hidden="true"
+        />
         <span className="flex-1 truncate text-left">{item.label}</span>
         {item.count !== undefined && (
           <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
             {item.count}
           </span>
         )}
-        <Link
-          to={item.href}
-          title="Event type settings"
-          aria-label="Event type settings"
-          className="hit-target-24 flex h-5 w-5 shrink-0 items-center justify-center rounded-[4px] no-underline transition-colors hover:bg-[var(--surface)]"
-          style={{ color: settingsActive ? 'var(--accent)' : 'var(--fg-subtle)' }}
-        >
-          <Settings className="h-3.5 w-3.5" aria-hidden="true" />
-        </Link>
-      </div>
+        <Settings
+          className="h-3 w-3 shrink-0"
+          style={{ color: settingsActive ? 'var(--accent)' : 'var(--fg-faint)' }}
+          aria-hidden="true"
+        />
+      </Link>
       {eventTypes.length > 0 && (
         <div
           className="mt-px ml-[15px] flex flex-col gap-px border-l pl-2"
@@ -546,19 +607,12 @@ function EventTypeNavRow({
   return (
     <Link
       to={href}
-      className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12px] font-medium no-underline transition-colors"
-      style={{
-        background: active ? 'var(--surface-hover)' : 'transparent',
-        color: active ? 'var(--fg)' : 'var(--fg-muted)',
-      }}
-      onMouseEnter={(e) => {
-        if (!active) e.currentTarget.style.background = 'var(--surface-hover)'
-      }}
-      onMouseLeave={(e) => {
-        if (!active) e.currentTarget.style.background = 'transparent'
-      }}
+      aria-current={active ? 'page' : undefined}
+      className={navLinkClass(active, 'text-[12px]')}
+      style={navLinkStyle(active)}
     >
       <span
+        aria-hidden="true"
         className="h-2 w-2 shrink-0 rounded-full"
         style={{ backgroundColor: eventType.color || 'var(--fg-faint)' }}
       />
@@ -579,101 +633,213 @@ function EmptyNav({ loading }: { loading: boolean }) {
   )
 }
 
+/** An icon-only rail entry with its name in a visible tooltip (SHELL-23). */
+function RailTip({ label, children }: { label: string; children: ReactElement }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function RailLink({
+  to,
+  label,
+  icon: Icon,
+  active,
+  dot,
+}: {
+  to: string
+  label: string
+  icon: LucideIcon
+  active: boolean
+  dot?: NavTone
+}) {
+  return (
+    <RailTip label={label}>
+      <Link
+        to={to}
+        aria-label={label}
+        aria-current={active ? 'page' : undefined}
+        className={cn(ICON_BUTTON_CLASS, active && ACTIVE_MARKER_CLASS)}
+        style={navLinkStyle(active)}
+      >
+        <Icon className="h-[15px] w-[15px]" aria-hidden="true" />
+        {(dot === 'danger' || dot === 'warning') && (
+          <span
+            aria-hidden="true"
+            className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
+            style={{ background: dot === 'danger' ? 'var(--danger)' : 'var(--warning)' }}
+          />
+        )}
+      </Link>
+    </RailTip>
+  )
+}
+
+/**
+ * The icon rail. It keeps every control the full sidebar has — project and
+ * branch switchers, Project settings, Concepts, the account menu — because a
+ * persisted collapse used to leave no way to switch project or branch, see
+ * which branch the pages read, or sign out without expanding it (SHELL-23).
+ */
 function CollapsedSidebar({
   onExpand,
   navGroups,
   currentPath,
+  slug,
+  activeProject,
+  projects,
+  projectsLoading,
+  onPickProject,
+  conceptsActive,
   userInitials,
+  userLabel,
+  isLoggingOut,
+  onSignOut,
+  onOpenTweaks,
   onOpenPalette,
 }: {
   onExpand: () => void
   navGroups: NavGroup[]
   currentPath: string
+  slug: string | undefined
+  activeProject: Project | undefined
+  projects: Project[]
+  projectsLoading: boolean
+  onPickProject: (project: Project) => void
+  conceptsActive: boolean
   userInitials: string
+  userLabel: string
+  isLoggingOut: boolean
+  onSignOut: () => void
+  onOpenTweaks: () => void
   onOpenPalette: () => void
 }) {
   return (
-    <nav
-      aria-label="Main navigation"
-      className="flex h-screen w-[52px] flex-shrink-0 flex-col items-center border-r py-2.5"
-      style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
-    >
-      <Link
-        to="/workspace"
-        title="Tripl — home"
-        aria-label="Tripl — home"
-        className="mb-2.5 flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)]"
+    <TooltipProvider delayDuration={200}>
+      <nav
+        aria-label="Main navigation"
+        className="flex h-full w-[calc(52px+env(safe-area-inset-left))] flex-shrink-0 flex-col items-center border-r pt-2.5 pb-[calc(0.625rem+env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)]"
+        style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
       >
-        <TrifoldMark size={22} />
-      </Link>
-      <button
-        type="button"
-        aria-label={`Search or jump — ${commandPaletteShortcutLabel()}`}
-        onClick={onOpenPalette}
-        className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
-        style={{ color: 'var(--fg-muted)' }}
-      >
-        <Search className="h-3.5 w-3.5" aria-hidden="true" />
-      </button>
-      <div className="mt-1 flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto">
-        {navGroups.map((group, gi) => (
-          <div key={group.label} className="flex flex-col items-center gap-0.5">
-            {gi > 0 && (
-              <div
-                className="my-1 h-px w-5"
-                style={{ background: 'var(--border-subtle)' }}
-              />
-            )}
-            {group.items.map((item) => {
-              const Icon = item.icon
-              const active = item.match(currentPath)
-              return (
-                <Link
+        <RailTip label="Tripl — home">
+          <Link
+            to="/workspace"
+            aria-label="Tripl — home"
+            className="mb-1.5 flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)]"
+          >
+            <TrifoldMark size={22} />
+          </Link>
+        </RailTip>
+        <ProjectSwitcher
+          compact
+          activeProject={activeProject}
+          projects={projects}
+          loading={projectsLoading}
+          onPick={onPickProject}
+        />
+        {slug && <BranchSwitcher slug={slug} compact />}
+        <RailTip label={`Search or jump — ${commandPaletteShortcutLabel()}`}>
+          <button
+            type="button"
+            aria-label={`Search or jump — ${commandPaletteShortcutLabel()}`}
+            onClick={onOpenPalette}
+            className={ICON_BUTTON_CLASS}
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            <Search className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </RailTip>
+        <div className="mt-1 flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto">
+          {navGroups.map((group, gi) => (
+            <div key={group.label} className="flex flex-col items-center gap-0.5">
+              {gi > 0 && (
+                <div
+                  className="my-1 h-px w-5"
+                  style={{ background: 'var(--border-subtle)' }}
+                />
+              )}
+              {group.items.map((item) => (
+                <RailLink
                   key={item.id}
                   to={item.href}
-                  aria-label={item.label}
-                  className="relative flex h-8 w-8 items-center justify-center rounded-md no-underline"
-                  style={{
-                    background: active ? 'var(--surface-hover)' : 'transparent',
-                    color: active ? 'var(--fg)' : 'var(--fg-muted)',
-                  }}
-                >
-                  <Icon className="h-[15px] w-[15px]" aria-hidden="true" />
-                  {item.tone === 'danger' && (
-                    <span
-                      className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
-                      style={{ background: 'var(--danger)' }}
-                    />
-                  )}
-                  {item.tone === 'warning' && (
-                    <span
-                      className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
-                      style={{ background: 'var(--warning)' }}
-                    />
-                  )}
-                </Link>
-              )
-            })}
-          </div>
-        ))}
-      </div>
-      <button
-        type="button"
-        onClick={onExpand}
-        title="Expand sidebar"
-        aria-label="Expand sidebar"
-        className="mb-1.5 flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
-        style={{ color: 'var(--fg-subtle)' }}
-      >
-        <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
-      </button>
-      <div
-        className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[10px] font-semibold text-white"
-        style={{ background: 'var(--avatar-bg)' }}
-      >
-        {userInitials}
-      </div>
-    </nav>
+                  label={item.label}
+                  icon={item.icon}
+                  active={item.match(currentPath)}
+                  dot={item.tone}
+                />
+              ))}
+            </div>
+          ))}
+          {slug && (
+            <>
+              <div className="my-1 h-px w-5" style={{ background: 'var(--border-subtle)' }} />
+              <RailLink
+                to={projectSettingsHref(slug)}
+                label="Project settings"
+                icon={SlidersHorizontal}
+                active={false}
+              />
+              <RailLink
+                to={`/p/${slug}/concepts`}
+                label="Concepts"
+                icon={BookOpen}
+                active={conceptsActive}
+              />
+            </>
+          )}
+        </div>
+        <RailTip label="Expand sidebar">
+          <button
+            type="button"
+            onClick={onExpand}
+            aria-label="Expand sidebar"
+            className={cn(ICON_BUTTON_CLASS, 'mb-1.5')}
+            style={{ color: 'var(--fg-subtle)' }}
+          >
+            <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </RailTip>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label={`Account menu — ${userLabel}`}
+              title={userLabel}
+              className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[10px] font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+              style={{ background: 'var(--avatar-bg)' }}
+            >
+              {userInitials}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="right" align="end" sideOffset={8} className="w-[200px]">
+            <DropdownMenuLabel className="truncate text-[12px]">{userLabel}</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+              <Link to="/settings" className="flex items-center gap-2 text-[12.5px] no-underline">
+                <Settings className="h-3.5 w-3.5" aria-hidden="true" />
+                Workspace settings
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onOpenTweaks} className="flex items-center gap-2 text-[12.5px]">
+              <Palette className="h-3.5 w-3.5" aria-hidden="true" />
+              Appearance
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={onSignOut}
+              disabled={isLoggingOut}
+              className="flex items-center gap-2 text-[12.5px]"
+            >
+              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+              {isLoggingOut ? 'Signing out…' : 'Sign out'}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </nav>
+    </TooltipProvider>
   )
 }
 
@@ -682,11 +848,13 @@ function ProjectSwitcher({
   projects,
   loading,
   onPick,
+  compact = false,
 }: {
   activeProject: Project | undefined
   projects: Project[]
   loading: boolean
   onPick: (project: Project) => void
+  compact?: boolean
 }) {
   // On a workspace route no project is active. Fall back to a neutral hint —
   // NOT projects[0], which showed a real project's slug under the "Select
@@ -698,36 +866,54 @@ function ProjectSwitcher({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ background: 'var(--surface)', borderColor: 'var(--border-subtle)' }}
-        >
-          <div
-            className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-[11px] font-bold"
-            style={{ background: 'var(--surface-active)', color: 'var(--fg-muted)' }}
+        {compact ? (
+          <button
+            type="button"
+            aria-label={`Switch project (current: ${displayName})`}
+            title={displayName}
+            className={cn(ICON_BUTTON_CLASS, 'mb-1')}
           >
-            {monogram}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[12.5px] font-semibold leading-[1.1]">
-              {displayName}
-            </div>
-            <div
-              className="mt-px text-[10.5px] leading-[1.1] truncate"
-              style={{ color: 'var(--fg-subtle)' }}
+            <span
+              aria-hidden="true"
+              className="flex h-[22px] w-[22px] items-center justify-center rounded text-[11px] font-bold"
+              style={{ background: 'var(--surface-active)', color: 'var(--fg-muted)' }}
             >
-              {subtitle}
+              {monogram}
+            </span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
+            style={{ background: 'var(--surface)', borderColor: 'var(--border-subtle)' }}
+          >
+            <div
+              className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-[11px] font-bold"
+              style={{ background: 'var(--surface-active)', color: 'var(--fg-muted)' }}
+            >
+              {monogram}
             </div>
-          </div>
-          <ChevronsUpDown
-            className="h-3 w-3 shrink-0"
-            style={{ color: 'var(--fg-subtle)' }}
-          />
-        </button>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[12.5px] font-semibold leading-[1.1]">
+                {displayName}
+              </div>
+              <div
+                className="mt-px text-[10.5px] leading-[1.1] truncate"
+                style={{ color: 'var(--fg-subtle)' }}
+              >
+                {subtitle}
+              </div>
+            </div>
+            <ChevronsUpDown
+              className="h-3 w-3 shrink-0"
+              style={{ color: 'var(--fg-subtle)' }}
+            />
+          </button>
+        )}
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
+        side={compact ? 'right' : 'bottom'}
         sideOffset={6}
         className="w-[260px]"
       >

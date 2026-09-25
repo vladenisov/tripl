@@ -10,6 +10,7 @@ from tripl.core.intervals import get_interval
 from tripl.json_paths import normalize_json_value_paths
 from tripl.models.domain_enums import ScanInterval
 from tripl.models.scan_job import ScanJobStatus
+from tripl.schemas.not_null_update import reject_explicit_nulls
 
 
 class EventGroupCondition(BaseModel):
@@ -108,6 +109,15 @@ def check_replay_chunk_against_interval(
         raise ValueError("replay_chunk_interval must be greater than or equal to interval")
 
 
+def validate_prerelease_pattern(value: str | None) -> str | None:
+    if value is not None:
+        try:
+            re.compile(value)
+        except re.error as exc:
+            raise ValueError(f"invalid prerelease pattern: {exc}") from exc
+    return value
+
+
 class ScanConfigCreate(BaseModel):
     data_source_id: uuid.UUID
     event_type_id: uuid.UUID | None = None
@@ -145,6 +155,10 @@ class ScanConfigCreate(BaseModel):
     app_version_prerelease_pattern: str | None = Field(default=None, min_length=1, max_length=255)
     app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, min_length=1, max_length=255)
+
+    _validate_prerelease_pattern = field_validator("app_version_prerelease_pattern")(
+        validate_prerelease_pattern
+    )
 
     @field_validator("base_query")
     @classmethod
@@ -208,6 +222,26 @@ def _normalize_scalar_columns(value: list[str], *, field_name: str) -> list[str]
     return normalized
 
 
+# The update fields whose ScanConfig column is NOT NULL, so an explicit ``null``
+# is a 422 naming the field and not a DB-level 500 out of
+# ``update_scan_config``'s generic ``setattr`` loop — see
+# ``schemas/not_null_update`` (tripl-0zpq.267). The four JSON list columns are in
+# the set because they are NOT NULL with a ``[]`` server default: "no columns" is
+# spelled ``[]``, never ``null``. ``event_type_id`` and every other field here is
+# nullable, where a null unbinds or clears the setting.
+_SCAN_CONFIG_NOT_NULL_UPDATE_FIELDS = frozenset(
+    {
+        "name",
+        "base_query",
+        "json_value_paths",
+        "event_group_rules",
+        "metric_breakdown_columns",
+        "distribution_drift_fields",
+        "cardinality_threshold",
+    }
+)
+
+
 class ScanConfigUpdate(BaseModel):
     event_type_id: uuid.UUID | None = None
     name: str | None = Field(None, min_length=1, max_length=255)
@@ -240,6 +274,15 @@ class ScanConfigUpdate(BaseModel):
     app_version_prerelease_pattern: str | None = Field(default=None, max_length=255)
     app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, max_length=255)
+
+    _validate_prerelease_pattern = field_validator("app_version_prerelease_pattern")(
+        validate_prerelease_pattern
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _SCAN_CONFIG_NOT_NULL_UPDATE_FIELDS)
 
     @field_validator("base_query")
     @classmethod

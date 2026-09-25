@@ -29,6 +29,7 @@ from tripl.middleware import (  # noqa: E402
     SecurityHeadersMiddleware,
     StaticCacheMiddleware,
 )
+from tripl.middleware.body_limit import BodyLimitMiddleware  # noqa: E402
 from tripl.middleware.request_id import bound_request_id, request_id_from_scope  # noqa: E402
 from tripl.middleware.security_headers import build_security_headers  # noqa: E402
 from tripl.observability.metrics import render_metrics  # noqa: E402
@@ -127,14 +128,15 @@ from tripl.observability.tracing import setup_api_tracing  # noqa: E402
 
 setup_api_tracing(app)
 
-# Order matters: outermost runs first on requests, last on responses.
-# - RequestID assigns/propagates the id before any other middleware logs.
-# - SecurityHeaders wraps everything the router raises, so HTTPException and
-#   validation responses carry the headers too. Unhandled 500s are the one gap:
+# The last add_middleware call is outermost. The effective user-middleware order
+# is CORS -> BodyLimit -> Brotli -> RequestID -> StaticCache -> SecurityHeaders.
+# - RequestID assigns/propagates the id for requests that reach the router.
+# - SecurityHeaders wraps router responses, including HTTPException and
+#   validation errors. CORS preflights and early body-limit 413s skip it.
+#   Unhandled 500s are another gap:
 #   Starlette writes those above this entire stack, so unhandled_exception_handler
 #   re-attaches the same headers itself from build_security_headers (tripl-qu9m).
-# - CORS is innermost so preflight short-circuits don't need to traverse the
-#   above middleware on every options request.
+# - CORS is outermost so preflight requests skip the other middleware.
 # - Brotli compresses the final response body (≥1KB), except the project SSE
 #   stream where compression adds buffering risk to latency-sensitive chunks.
 if settings.security_headers_enabled:
@@ -151,6 +153,7 @@ app.add_middleware(
     minimum_size=1024,
     excluded_handlers=[r"^/api/v1/projects/[^/]+/events/stream$"],
 )
+app.add_middleware(BodyLimitMiddleware)
 
 _cors_origins = settings.cors_origins()
 # allow_credentials=True with "*" is rejected by browsers; fall back to no
@@ -158,7 +161,7 @@ _cors_origins = settings.cors_origins()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=_cors_origins != ["*"],
+    allow_credentials="*" not in _cors_origins,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", settings.request_id_header],
     expose_headers=[settings.request_id_header],

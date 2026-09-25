@@ -7,6 +7,7 @@ import { factTablesApi } from '@/api/factTablesApi'
 import { ErrorState } from '@/components/error-state'
 import { SqlEditor } from '@/components/sql-editor'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import {
   Field,
@@ -26,6 +27,10 @@ import type {
   FactTableUpdate,
 } from '@/types'
 import { dataSourcesKey } from '@/lib/queryKeys'
+import { useCanWriteProject } from '@/lib/permissions'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { uid } from '@/lib/uid'
 
 const DEFAULT_COLOR = '#6366f1'
 
@@ -105,6 +110,8 @@ interface FactTableFormProps {
  */
 export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTableFormProps) {
   const qc = useQueryClient()
+  // Fact-table writes and previews are editor-only (MET-6).
+  const canWrite = useCanWriteProject()
   const isNew = !factTable
 
   const [displayName, setDisplayName] = useState(factTable?.display_name ?? '')
@@ -129,7 +136,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   // uncheck the ones the tightened count_distinct heuristic no longer returns.
   const [identifierCandidates, setIdentifierCandidates] = useState<string[]>([])
   const [rowFilters, setRowFilters] = useState<RowFilterDraft[]>(() =>
-    (factTable?.row_filters ?? []).map(filter => ({ ...filter, id: crypto.randomUUID() })),
+    (factTable?.row_filters ?? []).map(filter => ({ ...filter, id: uid() })),
   )
 
   const [formErrors, setFormErrors] = useState<string[]>([])
@@ -145,7 +152,9 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     () => dataSources.find(ds => ds.id === dataSourceId),
     [dataSources, dataSourceId],
   )
-  const { data: sqlSchemaData } = useDataSourceSchema(dataSourceId || undefined)
+  // The schema route is editor-only, so a read-only visitor would get a 403
+  // for autocomplete they cannot use: skip the request instead.
+  const { data: sqlSchemaData } = useDataSourceSchema(canWrite ? dataSourceId || undefined : undefined)
 
   const previewMut = useMutation({
     mutationFn: (): Promise<FactTablePreviewResponse> =>
@@ -188,6 +197,17 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     if (!timestampColumn.trim()) errs.push('A timestamp column is required.')
     // Last, because the messages render in this order and Row filters is the
     // bottom card — the reader scans down to the field the first error names.
+    // A half-filled row used to be dropped on save without a word, so a metric
+    // naming that filter lost it (MET-3). Only an entirely blank row is dropped.
+    rowFilters.forEach((filter, index) => {
+      const hasName = !!filter.name.trim()
+      const hasSql = !!filter.sql.trim()
+      if (hasName !== hasSql) {
+        errs.push(
+          `Row filter ${index + 1} needs both a name and a SQL condition — complete it or remove it.`,
+        )
+      }
+    })
     const repeated = firstRepeatedFilterName(cleanRowFilters())
     if (repeated !== null) {
       errs.push(
@@ -234,12 +254,27 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     }
   }
 
+  // Every input a save would send, as one comparable string; the first render's
+  // value is the baseline (MET-5). Row filters drop their client-side ids,
+  // which are fresh on every mount.
+  const draftSnapshot = JSON.stringify({
+    displayName, name, description, color, dataSourceId, sql, timestampColumn,
+    columns, identifierColumns,
+    rowFilters: rowFilters.map(filter => [filter.name, filter.sql]),
+  })
+  const [initialSnapshot] = useState(draftSnapshot)
+  // A viewer's form is disabled and so never dirty.
+  const unsaved = useUnsavedChangesGuard(canWrite && draftSnapshot !== initialSnapshot)
+
   const saveMut = useMutation({
+    // Rendered inline at the foot of the form ("Could not save …").
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       factTable
         ? factTablesApi.update(slug, factTable.id, buildUpdatePayload())
         : factTablesApi.create(slug, buildCreatePayload()),
     onSuccess: () => {
+      unsaved.release()
       void qc.invalidateQueries({ queryKey: ['fact-tables', slug] })
       if (factTable) void qc.invalidateQueries({ queryKey: ['fact-table', slug] })
       void qc.invalidateQueries({ queryKey: ['metric-generated-sql', slug] })
@@ -263,7 +298,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   }
 
   const addRowFilter = () => {
-    setRowFilters(current => [...current, { id: crypto.randomUUID(), name: '', sql: '' }])
+    setRowFilters(current => [...current, { id: uid(), name: '', sql: '' }])
   }
 
   const updateRowFilter = (id: string, patch: Partial<FactTableRowFilter>) => {
@@ -278,6 +313,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
 
   return (
     <div className="h-full overflow-y-auto">
+      {unsaved.dialog}
       <form
         onSubmit={e => {
           e.preventDefault()
@@ -294,229 +330,236 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
           <ChevronLeft size={13} /> Fact tables
         </button>
         <h1 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">
-          {isNew ? 'New fact table' : 'Edit fact table'}
+          {isNew ? 'New fact table' : canWrite ? 'Edit fact table' : 'Fact table'}
         </h1>
+        {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
-        <SCard title="Details">
-          <FField label="Display name" htmlFor="fact-display-name" required>
-            <TextInput
-              id="fact-display-name"
-              value={displayName}
-              onChange={setDisplayName}
-              placeholder="Orders"
-              aria-required
-            />
-          </FField>
-          <FField
-            label="Internal name"
-            htmlFor={isNew ? 'fact-name' : undefined}
-            required={isNew}
-            hint={isNew ? 'Stable identifier used by fact metrics.' : "Can't be changed after creation."}
-          >
-            {isNew ? (
-              <TextInput id="fact-name" value={name} onChange={setName} mono placeholder="orders" aria-required />
-            ) : (
-              <div className="mono text-[13px]" style={{ color: 'var(--fg)' }}>
-                {name}
-              </div>
-            )}
-          </FField>
-          <FField label="Description" htmlFor="fact-description">
-            <TextArea
-              id="fact-description"
-              value={description}
-              onChange={setDescription}
-              rows={2}
-              placeholder="What does this fact table represent?"
-            />
-          </FField>
-          <FField label="Color" htmlFor="fact-color" last>
-            <input
-              id="fact-color"
-              type="color"
-              value={color}
-              onChange={e => setColor(e.target.value)}
-              className="h-8 w-12 cursor-pointer rounded border bg-transparent"
-              style={{ borderColor: 'var(--border)' }}
-            />
-          </FField>
-        </SCard>
-
-        <SCard title="Source" description="A full read-only SELECT or WITH ... SELECT plus the warehouse it runs against.">
-          <FField label="Data source" htmlFor="fact-data-source" required>
-            <Select
-              id="fact-data-source"
-              value={dataSourceId}
-              onChange={setDataSourceId}
-              options={dataSourceOptions}
-              aria-required
-            />
-          </FField>
-          <FField label="SQL" htmlFor="fact-sql" required stacked hint="A single read-only SELECT or WITH ... SELECT.">
-            <SqlEditor
-              id="fact-sql"
-              ariaLabel="Fact table SQL"
-              value={sql}
-              onChange={setSql}
-              placeholder="SELECT id, user_id, amount, created_at FROM orders"
-              dialect={selectedDataSource?.db_type}
-              tables={sqlSchemaData?.tables}
-              minHeight="160px"
-            />
-          </FField>
-          <FField
-            label="Timestamp column"
-            htmlFor="fact-timestamp"
-            required
-            last
-            hint="The column used to bucket facts over time."
-          >
-            <TextInput
-              id="fact-timestamp"
-              value={timestampColumn}
-              onChange={setTimestampColumn}
-              mono
-              placeholder="created_at"
-              aria-required
-            />
-          </FField>
-        </SCard>
-
-        <SCard
-          title="Columns"
-          description="Preview introspects the SELECT and records its columns and identifier candidates."
-        >
-          <div className="px-[18px] py-[15px]">
-            <button
-              type="button"
-              onClick={() => previewMut.mutate()}
-              disabled={previewMut.isPending || !sql.trim() || !dataSourceId}
-              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
-              style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+        {/* A viewer gets the definition read-only: `disabled` on a fieldset
+            reaches every native control inside it. `contents` keeps it out of
+            the layout. */}
+        <fieldset disabled={!canWrite} className="contents">
+          <SCard title="Details">
+            <FField label="Display name" htmlFor="fact-display-name" required>
+              <TextInput
+                id="fact-display-name"
+                value={displayName}
+                onChange={setDisplayName}
+                placeholder="Orders"
+                aria-required
+              />
+            </FField>
+            <FField
+              label="Internal name"
+              htmlFor={isNew ? 'fact-name' : undefined}
+              required={isNew}
+              hint={isNew ? 'Stable identifier used by fact metrics.' : "Can't be changed after creation."}
             >
-              {previewMut.isPending ? (
-                <Loader2 className="animate-spin" size={12} />
+              {isNew ? (
+                <TextInput id="fact-name" value={name} onChange={setName} mono placeholder="orders" aria-required />
               ) : (
-                <Eye size={12} />
-              )}
-              Preview columns
-            </button>
-
-            {previewMut.isError && (
-              <div className="mt-3">
-                <ErrorState compact title="Could not preview columns" error={previewMut.error} />
-              </div>
-            )}
-
-            {columns.length > 0 && (
-              <div className="mt-4">
-                <div
-                  className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]"
-                  style={{ color: 'var(--fg-faint)' }}
-                >
-                  Columns
+                <div className="mono text-[13px]" style={{ color: 'var(--fg)' }}>
+                  {name}
                 </div>
-                <ul className="space-y-1.5" aria-label="Fact table columns">
-                  {columns.map(column => {
-                    const isIdentifier = identifierColumns.includes(column.name)
-                    return (
-                      <li
-                        key={column.name}
-                        className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                        style={{ borderColor: 'var(--border-subtle)' }}
-                      >
-                        <span className="flex min-w-0 items-center gap-2">
-                          <label className="flex items-center gap-2 text-[12.5px]">
-                            <input
-                              type="checkbox"
-                              checked={isIdentifier}
-                              onChange={() => toggleIdentifier(column.name)}
-                              aria-label={`Use ${column.name} as an identifier column`}
-                            />
-                            <span className="mono truncate" style={{ color: 'var(--fg)' }}>
-                              {column.name}
-                            </span>
-                          </label>
-                          {isIdentifier && (
-                            <Chip tone="accent" size="xs">
-                              identifier
-                            </Chip>
-                          )}
-                        </span>
-                        <Chip tone={typeTone(column.type)} size="xs">
-                          {column.type}
-                        </Chip>
-                      </li>
-                    )
-                  })}
-                </ul>
-              </div>
-            )}
+              )}
+            </FField>
+            <FField label="Description" htmlFor="fact-description">
+              <TextArea
+                id="fact-description"
+                value={description}
+                onChange={setDescription}
+                rows={2}
+                placeholder="What does this fact table represent?"
+              />
+            </FField>
+            <FField label="Color" htmlFor="fact-color" last>
+              <input
+                id="fact-color"
+                type="color"
+                value={color}
+                onChange={e => setColor(e.target.value)}
+                className="h-8 w-12 cursor-pointer rounded border bg-transparent"
+                style={{ borderColor: 'var(--border)' }}
+              />
+            </FField>
+          </SCard>
 
-            {identifierCandidates.length > 0 && (
-              <div className="mt-3 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                Suggested identifiers:{' '}
-                <span className="mono" style={{ color: 'var(--fg)' }}>
-                  {identifierCandidates.join(', ')}
-                </span>
-              </div>
-            )}
-          </div>
-        </SCard>
-
-        <SCard
-          title="Row filters"
-          description="Reusable named WHERE fragments fact metrics can apply."
-        >
-          <div className="px-[18px] py-[15px]">
-            {rowFilters.length === 0 ? (
-              <div className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                No row filters yet.
-              </div>
-            ) : (
-              <ul className="space-y-2" aria-label="Row filters">
-                {rowFilters.map((filter, index) => (
-                  <li key={filter.id} className="flex items-start gap-2">
-                    <div className="w-[180px] shrink-0">
-                      <TextInput
-                        value={filter.name}
-                        onChange={value => updateRowFilter(filter.id, { name: value })}
-                        placeholder="mobile_only"
-                        aria-label={`Row filter ${index + 1} name`}
-                      />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <TextInput
-                        value={filter.sql}
-                        onChange={value => updateRowFilter(filter.id, { sql: value })}
-                        mono
-                        placeholder="platform = 'ios'"
-                        aria-label={`Row filter ${index + 1} SQL condition`}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeRowFilter(filter.id)}
-                      aria-label={`Remove row filter ${index + 1}`}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border transition-colors hover:bg-[var(--surface-hover)]"
-                      style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <button
-              type="button"
-              onClick={addRowFilter}
-              className="mt-3 inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+          <SCard title="Source" description="A full read-only SELECT or WITH ... SELECT plus the warehouse it runs against.">
+            <FField label="Data source" htmlFor="fact-data-source" required>
+              <Select
+                id="fact-data-source"
+                value={dataSourceId}
+                onChange={setDataSourceId}
+                options={dataSourceOptions}
+                aria-required
+              />
+            </FField>
+            <FField label="SQL" htmlFor="fact-sql" required stacked hint="A single read-only SELECT or WITH ... SELECT.">
+              <SqlEditor
+                id="fact-sql"
+                ariaLabel="Fact table SQL"
+                value={sql}
+                onChange={setSql}
+                placeholder="SELECT id, user_id, amount, created_at FROM orders"
+                dialect={selectedDataSource?.db_type}
+                tables={sqlSchemaData?.tables}
+                minHeight="160px"
+                readOnly={!canWrite}
+              />
+            </FField>
+            <FField
+              label="Timestamp column"
+              htmlFor="fact-timestamp"
+              required
+              last
+              hint="The column used to bucket facts over time."
             >
-              <Plus size={12} /> Add row filter
-            </button>
-          </div>
-        </SCard>
+              <TextInput
+                id="fact-timestamp"
+                value={timestampColumn}
+                onChange={setTimestampColumn}
+                mono
+                placeholder="created_at"
+                aria-required
+              />
+            </FField>
+          </SCard>
+
+          <SCard
+            title="Columns"
+            description="Preview introspects the SELECT and records its columns and identifier candidates."
+          >
+            <div className="px-[18px] py-[15px]">
+              <button
+                type="button"
+                onClick={() => previewMut.mutate()}
+                disabled={previewMut.isPending || !sql.trim() || !dataSourceId}
+                className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+                style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+              >
+                {previewMut.isPending ? (
+                  <Loader2 className="animate-spin" size={12} />
+                ) : (
+                  <Eye size={12} />
+                )}
+                Preview columns
+              </button>
+
+              {previewMut.isError && (
+                <div className="mt-3">
+                  <ErrorState compact title="Could not preview columns" error={previewMut.error} />
+                </div>
+              )}
+
+              {columns.length > 0 && (
+                <div className="mt-4">
+                  <div
+                    className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]"
+                    style={{ color: 'var(--fg-faint)' }}
+                  >
+                    Columns
+                  </div>
+                  <ul className="space-y-1.5" aria-label="Fact table columns">
+                    {columns.map(column => {
+                      const isIdentifier = identifierColumns.includes(column.name)
+                      return (
+                        <li
+                          key={column.name}
+                          className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+                          style={{ borderColor: 'var(--border-subtle)' }}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <label className="flex items-center gap-2 text-[12.5px]">
+                              <input
+                                type="checkbox"
+                                checked={isIdentifier}
+                                onChange={() => toggleIdentifier(column.name)}
+                                aria-label={`Use ${column.name} as an identifier column`}
+                              />
+                              <span className="mono truncate" style={{ color: 'var(--fg)' }}>
+                                {column.name}
+                              </span>
+                            </label>
+                            {isIdentifier && (
+                              <Chip tone="accent" size="xs">
+                                identifier
+                              </Chip>
+                            )}
+                          </span>
+                          <Chip tone={typeTone(column.type)} size="xs">
+                            {column.type}
+                          </Chip>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {identifierCandidates.length > 0 && (
+                <div className="mt-3 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                  Suggested identifiers:{' '}
+                  <span className="mono" style={{ color: 'var(--fg)' }}>
+                    {identifierCandidates.join(', ')}
+                  </span>
+                </div>
+              )}
+            </div>
+          </SCard>
+
+          <SCard
+            title="Row filters"
+            description="Reusable named WHERE fragments fact metrics can apply."
+          >
+            <div className="px-[18px] py-[15px]">
+              {rowFilters.length === 0 ? (
+                <div className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                  No row filters yet.
+                </div>
+              ) : (
+                <ul className="space-y-2" aria-label="Row filters">
+                  {rowFilters.map((filter, index) => (
+                    <li key={filter.id} className="flex items-start gap-2">
+                      <div className="w-[180px] shrink-0">
+                        <TextInput
+                          value={filter.name}
+                          onChange={value => updateRowFilter(filter.id, { name: value })}
+                          placeholder="mobile_only"
+                          aria-label={`Row filter ${index + 1} name`}
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <TextInput
+                          value={filter.sql}
+                          onChange={value => updateRowFilter(filter.id, { sql: value })}
+                          mono
+                          placeholder="platform = 'ios'"
+                          aria-label={`Row filter ${index + 1} SQL condition`}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeRowFilter(filter.id)}
+                        aria-label={`Remove row filter ${index + 1}`}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border transition-colors hover:bg-[var(--surface-hover)]"
+                        style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <button
+                type="button"
+                onClick={addRowFilter}
+                className="mt-3 inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+                style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+              >
+                <Plus size={12} /> Add row filter
+              </button>
+            </div>
+          </SCard>
+        </fieldset>
 
         {formErrors.length > 0 && (
           <div
@@ -549,23 +592,25 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             className="inline-flex h-8 items-center rounded-[7px] px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
-            Cancel
+            {canWrite ? 'Cancel' : 'Close'}
           </button>
-          <button
-            type="submit"
-            disabled={saveMut.isPending}
-            className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
-            style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-          >
-            {saveMut.isPending ? (
-              <Loader2 className="animate-spin" size={12} />
-            ) : isNew ? (
-              <Plus size={12} />
-            ) : (
-              <Save size={12} />
-            )}
-            {isNew ? 'Create fact table' : 'Save fact table'}
-          </button>
+          {canWrite && (
+            <button
+              type="submit"
+              disabled={saveMut.isPending}
+              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
+              style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+            >
+              {saveMut.isPending ? (
+                <Loader2 className="animate-spin" size={12} />
+              ) : isNew ? (
+                <Plus size={12} />
+              ) : (
+                <Save size={12} />
+              )}
+              {isNew ? 'Create fact table' : 'Save fact table'}
+            </button>
+          )}
         </div>
       </form>
     </div>

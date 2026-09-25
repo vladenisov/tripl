@@ -9,12 +9,15 @@ from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.event_type import EventTypeCreate, EventTypeResponse, EventTypeUpdate
+from tripl.services._branch_event_threads import rescue_branch_event_threads
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.scan_config_lookup import (
+    event_type_binding_conflict_detail,
     governing_name_format,
     load_governing_scan_configs_by_type,
+    scan_configs_binding_event_types,
 )
 from tripl.services.search_service import reindex_project_branch
 
@@ -187,6 +190,33 @@ async def delete_event_type(
     et = await get_event_type(session, slug, event_type_id, branch_id)
     project_id = et.project_id
     resolved_branch_id = et.branch_id
+    # Refused rather than repaired: the FK is ON DELETE SET NULL, so this delete
+    # would succeed and leave every scan that named the type bound to nothing —
+    # a scan that still lists and still runs and collects no events at all
+    # (tripl-0zpq.254). ScanConfig has no disabled flag to set the way
+    # ``delete_scan_config`` disables its rules, and only the operator knows
+    # whether the scan should be rebound, made grouped, or deleted.
+    #
+    # In practice this fires on a MAIN type, because the scan settings form only
+    # offers main's types — but that is a fact about the form, not an invariant:
+    # ``scan_configs.event_type_id`` is a plain FK with no branch or project
+    # term, so a config pointed at a branch copy's id refuses that copy's delete
+    # too. Correctly, for the same reason: the binding would be emptied either
+    # way. Scoped to THIS project (see the helper's docstring) so the 409 can
+    # never name a scan the reader cannot see, let alone edit.
+    binding = await scan_configs_binding_event_types(
+        session, project_id=project_id, event_type_ids=[et.id]
+    )
+    bound = binding.get(et.id, [])
+    if bound:
+        raise HTTPException(
+            status_code=409,
+            detail=event_type_binding_conflict_detail(
+                configs=bound,
+                lead="This event type cannot be deleted.",
+                then="delete the event type",
+            ),
+        )
     # The most common door, and the least visible one: EventType maps no
     # ``events`` relationship, so its events go purely through the database FK
     # cascade and no service ever sees them being deleted. Their dangling
@@ -197,6 +227,9 @@ async def delete_event_type(
         .all()
     )
     await drop_dangling_event_references(session, project_id=project_id, event_ids=doomed_event_ids)
+    # Same door for the events' discussions: on a branch, a row whose main twin
+    # shows its thread hands it over before the cascade (tripl-0zpq.289).
+    await rescue_branch_event_threads(session, project_id=project_id, event_ids=doomed_event_ids)
     await session.delete(et)
     await session.commit()
     await reindex_project_branch(

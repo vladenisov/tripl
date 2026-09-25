@@ -39,7 +39,9 @@ export function ColumnFilter({
             'tripl-col-filter inline-flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity',
             active
               ? 'opacity-100 text-[color:var(--accent)]'
-              : 'opacity-0 text-muted-foreground hover:text-foreground',
+              // Hover-revealed only where there is hover: on a touch screen
+              // an invisible control cannot be found at all (EVT-21).
+              : 'opacity-0 pointer-coarse:opacity-100 text-muted-foreground hover:text-foreground',
             open && 'opacity-100',
           )}
           onClick={(e) => e.stopPropagation()}

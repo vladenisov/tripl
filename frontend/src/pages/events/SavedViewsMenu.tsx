@@ -26,9 +26,9 @@ export function SavedViewsMenu({
       <PopoverTrigger asChild>
         <Button variant="outline" size="sm" className="h-8 text-xs">
           <Bookmark className="h-3 w-3" />
-          Views
+          <span className="max-sm:sr-only">Views</span>
           {activeViewName && (
-            <span className="max-w-24 truncate text-[10.5px] text-muted-foreground">
+            <span className="max-w-24 truncate text-[10.5px] text-muted-foreground max-sm:hidden">
               {activeViewName}
             </span>
           )}

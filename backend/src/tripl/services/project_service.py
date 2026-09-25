@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import String, case, cast, delete, func, literal, or_, select, union_all, update
+from sqlalchemy import case, delete, func, literal, or_, select, union_all, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
@@ -17,11 +17,12 @@ from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.data_source import DataSource
-from tripl.models.domain_enums import ProjectGenerationStatus, UserRole
+from tripl.models.domain_enums import MetricScopeType, ProjectGenerationStatus, UserRole
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_definition import MetricDefinition
 from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
@@ -37,6 +38,7 @@ from tripl.schemas.project import (
     ProjectUpdate,
 )
 from tripl.services import alerting_service, plan_branch_service
+from tripl.services._monitor_state_intervals import load_monitor_state_intervals
 from tripl.services.metrics_insights_service import (
     _count_active_metric_signals_by_project,
     is_significant_signal,
@@ -280,9 +282,13 @@ async def _populate_firing_monitor_counts(
     for state in states:
         states_by_rule[state.rule_id].append(state)
 
+    # Same per-grid horizon as the Monitors screen and dispatch (tripl-0zpq.162).
+    interval_of = await load_monitor_state_intervals(session, states)
     now = datetime.now(UTC)
     for project_id, rule_id in rule_rows:
-        rollup = summarize_monitor_states(states_by_rule.get(rule_id, []), now=now)
+        rollup = summarize_monitor_states(
+            states_by_rule.get(rule_id, []), now=now, interval_of=interval_of
+        )
         if rollup.status == "firing":
             summaries[project_id].firing_monitor_count += 1
 
@@ -472,7 +478,7 @@ async def _populate_monitoring_signals(
             ScanConfig.project_id.label("project_id"),
             EventMetric.scan_config_id.label("scan_config_id"),
             literal(SCOPE_PROJECT_TOTAL).label("scope_type"),
-            cast(EventMetric.scan_config_id, String).label("scope_ref"),
+            EventMetric.scan_config_id.label("scope_ref_uuid"),
             func.max(EventMetric.bucket).label("latest_metric_bucket"),
         )
         .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
@@ -488,7 +494,7 @@ async def _populate_monitoring_signals(
             ScanConfig.project_id.label("project_id"),
             EventMetric.scan_config_id.label("scan_config_id"),
             literal(SCOPE_EVENT_TYPE).label("scope_type"),
-            cast(EventMetric.event_type_id, String).label("scope_ref"),
+            EventMetric.event_type_id.label("scope_ref_uuid"),
             func.max(EventMetric.bucket).label("latest_metric_bucket"),
         )
         .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
@@ -508,7 +514,7 @@ async def _populate_monitoring_signals(
             ScanConfig.project_id.label("project_id"),
             EventMetric.scan_config_id.label("scan_config_id"),
             literal(SCOPE_EVENT).label("scope_type"),
-            cast(EventMetric.event_id, String).label("scope_ref"),
+            EventMetric.event_id.label("scope_ref_uuid"),
             func.max(EventMetric.bucket).label("latest_metric_bucket"),
         )
         .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
@@ -528,25 +534,24 @@ async def _populate_monitoring_signals(
             latest_metric_union.c.project_id,
             latest_metric_union.c.scan_config_id,
             latest_metric_union.c.scope_type,
-            latest_metric_union.c.scope_ref,
+            latest_metric_union.c.scope_ref_uuid,
             latest_metric_union.c.latest_metric_bucket,
         )
     )
     latest_metric_buckets = {
-        (project_id, scan_config_id, scope_type, scope_ref): latest_metric_bucket
+        (project_id, scan_config_id, scope_type, str(scope_ref_uuid)): latest_metric_bucket
         for (
             project_id,
             scan_config_id,
             scope_type,
-            scope_ref,
+            scope_ref_uuid,
             latest_metric_bucket,
         ) in latest_metric_rows.all()
     }
 
     # Scan liveness, off the rows already loaded: an outage anchor stays open only
     # while its scan is still collecting SOMETHING. Keyed on the scan config id
-    # itself, never on the stringified scope_ref, so the dialect-dependent
-    # cast(uuid, String) above cannot reach it. Same helper as the AnomaliesPage.
+    # itself, never on the stringified scope_ref. Same helper as the AnomaliesPage.
     scan_latest_buckets = latest_bucket_by_scan(
         (scan_config_id, bucket)
         for (_project_id, scan_config_id, _scope_type, _scope_ref), bucket in (
@@ -706,10 +711,9 @@ async def get_project_mutation_scope(session: AsyncSession, slug: str) -> Projec
     """Resolve a slug to its mutation scope in one round trip.
 
     Deliberately column-scoped rather than ``get_project_by_slug``: this runs on
-    every project mutation and ``Project`` eager-loads the whole plan
-    (``lazy="selectin"`` on event types / variables / relations / meta fields),
-    which would make an authorization check the most expensive query in the
-    request (tripl-jfm3.54).
+    every project mutation and only needs authorization fields. Project's plan
+    collections have been lazily loaded since tripl-jfm3.54; this projection
+    still avoids constructing an ORM object for a simple permission check.
     """
     row = (
         await session.execute(
@@ -819,9 +823,22 @@ async def update_project(session: AsyncSession, slug: str, data: ProjectUpdate) 
             )
             .values(app_version_keep_releases=keep_releases)
         )
+    slug_changed = new_slug is not None and new_slug != slug
     await session.commit()
     await session.refresh(project)
     await cache.delete_prefix(cache.prefix_projects())
+    if slug_changed:
+        await _invalidate_slug_caches(slug)
+        await _invalidate_slug_caches(project.slug)
+        from tripl.services.search_service import reindex_project_branch
+
+        branch_ids = (
+            await session.scalars(select(PlanBranch.id).where(PlanBranch.project_id == project.id))
+        ).all()
+        for branch_id in branch_ids:
+            await reindex_project_branch(
+                session, project_id=project.id, branch_id=branch_id, slug=project.slug
+            )
     return await _serialize_project(session, project)
 
 
@@ -837,9 +854,10 @@ async def purge_project_rows(session: AsyncSession, project: Project) -> None:
     seed its replacement inside a single transaction: if seeding fails, the
     rollback puts the old demo back untouched (tripl-2su6.13).
 
-    Data sources OWNED by this project (a demo's synthetic warehouse) go first,
-    so nothing leaks a workspace-wide orphan. Real, workspace-global sources carry
-    project_id IS NULL and are untouched. The FK is ``ondelete="CASCADE"``, so
+    Data sources OWNED by this project (a demo's synthetic warehouse) are deleted
+    explicitly, ahead of the project row, so nothing leaks a workspace-wide
+    orphan. Real, workspace-global sources carry project_id IS NULL and are
+    untouched. The FK is ``ondelete="CASCADE"``, so
     both databases would remove them anyway — this used to claim otherwise, that
     SQLite has cascades off, which stopped being true when the suite began
     setting ``PRAGMA foreign_keys=ON`` on every connection (tests/_sqlite.py).
@@ -847,11 +865,33 @@ async def purge_project_rows(session: AsyncSession, project: Project) -> None:
     reader of this function can see it, rather than resting on a schema detail
     two files away.
 
+    The metric-scope anomalies go first, and they are the one thing here that a
+    cascade genuinely cannot reach: ``MetricAnomaly`` has no ``project_id`` and
+    no FK to the metric it describes — a catalog-metric anomaly is addressed by
+    ``scope_type='metric'`` plus a ``scope_ref`` holding the metric's UUID as
+    TEXT, with a NULL ``scan_config_id``. Dropping the project cascades the
+    ``metric_definitions`` rows away and leaves those anomalies behind forever,
+    pointing at ids nothing resolves (tripl-0zpq.179). Scan-scope anomalies are
+    not in this sweep: they hang off ``scan_config_id``, which the cascade does
+    reach.
+
     The flush matters: it forces the DELETE out before any later INSERT, so a
     caller re-creating a project under the same (unique) slug within this same
     transaction cannot trip the unique constraint on SQLAlchemy's insert-before-
     delete unit-of-work ordering.
     """
+    metric_ids = (
+        await session.scalars(
+            select(MetricDefinition.id).where(MetricDefinition.project_id == project.id)
+        )
+    ).all()
+    if metric_ids:
+        await session.execute(
+            delete(MetricAnomaly).where(
+                MetricAnomaly.scope_type == MetricScopeType.metric.value,
+                MetricAnomaly.scope_ref.in_([str(metric_id) for metric_id in metric_ids]),
+            )
+        )
     await session.execute(delete(DataSource).where(DataSource.project_id == project.id))
     await session.delete(project)
     await session.flush()
@@ -863,6 +903,13 @@ async def delete_project(session: AsyncSession, slug: str) -> None:
     await session.commit()
     await cache.delete_prefix(cache.prefix_projects())
     await cache.delete_prefix(cache.prefix_data_sources())
+    await _invalidate_slug_caches(slug)
+
+
+async def _invalidate_slug_caches(slug: str) -> None:
+    await cache.delete_prefix(cache.prefix_event_types(slug))
+    await cache.delete_prefix(cache.prefix_meta_fields(slug))
+    await cache.delete_prefix(cache.prefix_signals(slug))
 
 
 async def get_project_id_by_slug(session: AsyncSession, slug: str) -> uuid.UUID:

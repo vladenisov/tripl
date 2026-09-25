@@ -260,8 +260,8 @@ def prefix_projects() -> str:
     return "tripl:projects:"
 
 
-def prefix_signals() -> str:
-    return "tripl:signals:"
+def prefix_signals(slug: str | None = None) -> str:
+    return f"tripl:signals:{slug}:" if slug else "tripl:signals:"
 
 
 def prefix_data_sources() -> str:

@@ -2,6 +2,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { AuthContext } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
 import { MonitoringTab } from './MonitoringTab'
 
 function jsonResponse(body: unknown) {
@@ -325,5 +327,25 @@ describe('MonitoringTab — false-positive scope overrides', () => {
     await waitFor(() =>
       expect(screen.getByText(/No scope has been tightened/i)).toBeInTheDocument(),
     )
+  })
+})
+
+describe('MonitoringTab — a viewer reads the settings without changing them', () => {
+  it('disables every setting, hides Remove, and says why once', async () => {
+    mockSettingsFetch({}, [scopeOverridePayload()])
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authAs('viewer')}>
+          <MonitoringTab slug="demo" />
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByRole('switch', { name: 'Toggle signal detection' })).toBeDisabled()
+    expect(screen.getByRole('checkbox', { name: 'Metrics' })).toBeDisabled()
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expect(await screen.findByText('checkout_started')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Remove override/ })).not.toBeInTheDocument()
   })
 })

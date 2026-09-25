@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
 import { metricsApi } from '@/api/metrics'
 import { Card, CardContent } from '@/components/ui/card'
@@ -11,8 +11,10 @@ interface SeasonalityHeatmapProps {
   scanConfigId: string
   scopeType: string
   scopeRef: string
-  from: string
-  to: string
+  /** Keys the query: the window's length, not its moving bounds. */
+  rangeDays: number
+  /** The live window, read by each fetch. */
+  timeRange: { from: string; to: string }
   color?: string
 }
 
@@ -87,20 +89,27 @@ export function SeasonalityHeatmap({
   scanConfigId,
   scopeType,
   scopeRef,
-  from,
-  to,
+  rangeDays,
+  timeRange,
   color = 'var(--chart-1)',
 }: SeasonalityHeatmapProps) {
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['seasonality', slug, scanConfigId, scopeType, scopeRef, from, to],
+    // Keyed on the range length, not the live bounds: those step every five
+    // minutes, and a key that moved with them refetched the grid each time
+    // (MON-3). The query function reads the current window on each fetch, as
+    // the By version and Breakdowns tabs do.
+    queryKey: ['seasonality', slug, scanConfigId, scopeType, scopeRef, rangeDays],
     queryFn: () =>
       metricsApi.getSeasonalityHeatmap(slug, scanConfigId, {
         scope_type: scopeType,
         scope_ref: scopeRef,
-        from,
-        to,
+        from: timeRange.from,
+        to: timeRange.to,
       }),
     enabled: Boolean(slug && scanConfigId && scopeRef),
+    // Keep the grid on screen while a new range loads instead of flashing
+    // "Loading…".
+    placeholderData: keepPreviousData,
   })
 
   const cellsByKey = useMemo(() => {
@@ -136,9 +145,10 @@ export function SeasonalityHeatmap({
     )
   }
 
-  // A daily or weekly scan floors every bucket into hour 0, so 23 of each row's
-  // 24 cells can never hold anything. Drawing the grid anyway reads as missing
-  // data — say what is actually true instead (tripl-jfm3.128).
+  // A daily or weekly scan floors every bucket into hour 0, and a 6h scan fills
+  // only 4 of 24 columns (tripl-0zpq.199), so most cells can never hold
+  // anything. Drawing the grid anyway reads as missing data — say what is
+  // actually true instead (tripl-jfm3.128).
   if (data.hourly_resolution === false) {
     return (
       <Card>
@@ -146,7 +156,7 @@ export function SeasonalityHeatmap({
           <h2 className="text-sm font-semibold">Hour × weekday heatmap</h2>
           <p className="text-sm text-muted-foreground">
             This scan collects every <span className="font-medium">{data.interval}</span>, so
-            there is no hour-of-day detail to plot — every bucket falls on one hour.
+            there is no hour-of-day detail to plot — every bucket falls on a few fixed hours.
             Set the scan to an hourly (or finer) interval to see this heatmap.
           </p>
         </CardContent>

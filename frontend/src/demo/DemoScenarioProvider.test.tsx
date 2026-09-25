@@ -132,16 +132,20 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
   it('synchronizes the completed watched job into the same-tab scan list cache', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     client.setQueryData(['scanJobs', SLUG, 'sc-1'], [scanJob('running')])
+    // The Scans list's capped history, cached under the same prefix.
+    client.setQueryData(['scanJobs', SLUG, 'sc-1', { limit: 10 }], [scanJob('running')])
     vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
     renderProvider(demoProject(), `/p/${SLUG}/scans`, client)
 
     fireEvent.click(screen.getByText('run'))
     await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
 
-    expect(client.getQueryData<ScanJob[]>(['scanJobs', SLUG, 'sc-1'])?.[0]).toMatchObject({
-      id: 'job-1',
-      status: 'completed',
-    })
+    for (const key of [['scanJobs', SLUG, 'sc-1'], ['scanJobs', SLUG, 'sc-1', { limit: 10 }]]) {
+      expect(client.getQueryData<ScanJob[]>(key)?.[0]).toMatchObject({
+        id: 'job-1',
+        status: 'completed',
+      })
+    }
   })
 
   it('seeds and invalidates an initially absent scan list cache on completion', async () => {
@@ -158,7 +162,6 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
     ])
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['scanJobs', SLUG, 'sc-1'],
-      exact: true,
     })
   })
 
@@ -368,16 +371,22 @@ describe('DemoScenarioProvider — eligibility and controls', () => {
     expect(metricsCatalogApi.get).not.toHaveBeenCalled()
   })
 
-  it('does not poll live-loop artifacts while another chapter is active', async () => {
+  it('polls the live-loop scan only while its chapter is active', async () => {
+    vi.useFakeTimers()
     renderProvider(demoProject())
     fireEvent.click(screen.getByText('run'))
+
+    // Positive control: with its chapter active, the watch polls on every
+    // interval, so the negative half below can only pass for the right reason.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS * 3)
+    })
+    expect(scansApi.getJob).toHaveBeenCalled()
+
     fireEvent.click(screen.getByText('start edit-event'))
     vi.mocked(scansApi.getJob).mockClear()
-
-    // Let several poll intervals elapse: a scan watch that survived the
-    // chapter switch would have fired again inside this window.
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, POLL_MS * 3))
+      await vi.advanceTimersByTimeAsync(POLL_MS * 3)
     })
 
     expect(scansApi.getJob).not.toHaveBeenCalled()

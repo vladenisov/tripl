@@ -19,6 +19,7 @@ import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { variablesApi } from '@/api/variables'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { ChipListInput } from '@/components/chip-list-input'
 import { CommentThread } from '@/components/comment-thread'
@@ -47,6 +48,9 @@ import { ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
 import { branchTicket } from '@/lib/branchTicket'
 import { eventTypesKey, planBranchesKey, variablesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
 
 // Replacement candidates offered at once. Deliberately small, for the reason
 // the variables tab spells out (tripl-46am): the search below is server-side,
@@ -416,6 +420,7 @@ export function EventForm({
   defaultEventTypeId,
   onClose,
   onCreated,
+  hasOtherUnsavedInput = false,
 }: {
   slug: string
   eventTypes: EventType[]
@@ -429,10 +434,16 @@ export function EventForm({
    *  over the navigation. Never called on an update: the event already existed,
    *  so there is nothing here that a save makes possible. */
   onCreated?: (created: EventMutationResponse) => Promise<boolean | void> | boolean | void
+  /** Input the page holds outside the form (the draft discussion note) that
+   *  leaving would also lose. */
+  hasOtherUnsavedInput?: boolean
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const branchLink = useBranchLinkProps()
+  // A viewer reaching this page (a shared link, Back) gets the event read-only:
+  // every control disabled and no Save, instead of a form whose Save is a 403.
+  const canWrite = useCanWriteProject()
   const aiEnabled = useAiStatus(slug)
   const { step: scenarioStep } = useDemoScenario()
   const { notifyStepCompleted } = useDemoScenarioActions()
@@ -512,12 +523,16 @@ export function EventForm({
     return branchTicket(branch?.name, metaFields)
   }, [branchesQuery.data, branchId, metaFields])
   const ticketPrefilled = useRef(false)
+  // What the prefill wrote, so the unsaved-changes check below does not count
+  // the form's own suggestion as the author's input.
+  const [prefilledTicket, setPrefilledTicket] = useState<{ fieldId: string; key: string } | null>(null)
   useEffect(() => {
     if (!isNew || !ticket || ticketPrefilled.current) return
     ticketPrefilled.current = true
     setMetaValues(prev =>
       ticket.field.id in prev ? prev : { ...prev, [ticket.field.id]: [ticket.key] },
     )
+    setPrefilledTicket({ fieldId: ticket.field.id, key: ticket.key })
   }, [isNew, ticket])
 
   const selectedEt = eventTypes.find(e => e.id === etId)
@@ -745,6 +760,36 @@ export function EventForm({
   const composedName = generatedName ? generatedName.name : name
   if (justCreated !== null && composedName !== justCreated) setJustCreated(null)
 
+  // Everything a save would send, as one comparable string. Empty values are
+  // dropped the way the payload drops them, so clearing a box you typed into
+  // is not a change, and the branch-ticket prefill counts as the starting point.
+  const draftSnapshot = JSON.stringify({
+    etId,
+    name,
+    title,
+    description,
+    status,
+    ownerId,
+    sunsetAt,
+    supersededBy,
+    metricBreakdownColumns,
+    tags,
+    fieldValues: Object.entries(fieldValues).filter(([, v]) => v !== '').sort(),
+    metaValues: Object.entries(metaValues)
+      .map(([k, values]) => [k, values.filter(v => v !== '')] as const)
+      .filter(([k, values]) =>
+        values.length > 0
+        && !(prefilledTicket?.fieldId === k && values.length === 1 && values[0] === prefilledTicket.key))
+      .sort(),
+  })
+  // The draft as it was when the form opened, or as the last "Save and add
+  // another" wrote it.
+  const [savedSnapshot, setSavedSnapshot] = useState(draftSnapshot)
+  // A viewer's form is disabled and so never dirty.
+  const unsaved = useUnsavedChangesGuard(
+    canWrite && (draftSnapshot !== savedSnapshot || hasOtherUnsavedInput),
+  )
+
   const toggleBreakdown = (column: string) => {
     setMetricBreakdownColumns(current =>
       current.includes(column)
@@ -759,11 +804,20 @@ export function EventForm({
   }
 
   const aiDescribeMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => aiApi.describeEvent(slug, event!.id, branchId),
     onSuccess: data => setDescription(data.description),
   })
 
-  const saveMut = useMutation<EventMutationResponse, unknown, boolean>({
+  // `snapshot` is the draft as this save SENT it, carried in the variables: the
+  // form may have been edited while the request was in flight, and storing the
+  // snapshot of whatever render answers would mark those edits as saved.
+  const saveMut = useMutation<
+    EventMutationResponse,
+    unknown,
+    { closeAfterSave: boolean; snapshot: string }
+  >({
+    meta: SILENT_ERROR_META,
     mutationFn: () => {
       const payload = {
         event_type_id: etId,
@@ -806,7 +860,11 @@ export function EventForm({
           )
         : eventsApi.create(slug, payload, branchId)
     },
-    onSuccess: async (_data, closeAfterSave: boolean) => {
+    onSuccess: async (_data, { closeAfterSave, snapshot }) => {
+      // The draft is saved: nothing below may be stopped by the leave guard,
+      // including a caller that navigates to the created event.
+      unsaved.release()
+      setSavedSnapshot(snapshot)
       qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
       qc.invalidateQueries({ queryKey: ['eventTags', slug, branchId] })
       if (event) qc.invalidateQueries({ queryKey: ['event', slug] })
@@ -866,17 +924,18 @@ export function EventForm({
 
   const saveAndAddAnother = () => {
     if (cannotSave || !formRef.current?.reportValidity()) return
-    saveMut.mutate(false)
+    saveMut.mutate({ closeAfterSave: false, snapshot: draftSnapshot })
   }
 
   const typeLabel = selectedEt?.display_name ?? etId
 
   return (
     <div className="h-full overflow-y-auto">
+      {unsaved.dialog}
       <form
         ref={formRef}
-        onSubmit={e => { e.preventDefault(); if (cannotSave) return; saveMut.mutate(true) }}
-        className="mx-auto max-w-[880px] px-6 pb-12 pt-4"
+        onSubmit={e => { e.preventDefault(); if (cannotSave) return; saveMut.mutate({ closeAfterSave: true, snapshot: draftSnapshot }) }}
+        className="mx-auto max-w-[880px] px-4 sm:px-6 pb-12 pt-4"
       >
         <button
           type="button"
@@ -887,445 +946,452 @@ export function EventForm({
           <ChevronLeft size={13} /> {isNew ? 'Events' : event!.name}
         </button>
         <h1 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">
-          {isNew ? 'New event' : 'Edit event'}
+          {isNew ? 'New event' : canWrite ? 'Edit event' : 'Event'}
         </h1>
+        {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
-        <SurfCard title="Details">
-          <EvField
-            label="Event type"
-            // A select with nothing to select is not a control, so the caption
-            // names no control either (the `Field` escape hatch this repo uses
-            // elsewhere for rows that hold prose).
-            htmlFor={eventTypes.length === 0 ? undefined : 'form-event-type'}
-            required
-            hint={isNew ? undefined : "Can't be changed after creation."}
-            last={false}
-          >
-            {eventTypes.length === 0 ? (
-              // An empty project offered "Select type…" and no way forward: the
-              // field card stayed hidden, Create stayed blocked, and nothing said
-              // a type has to exist first. This is the first thing a new project
-              // does (tripl-u2h9.3).
-              <p className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
-                This project has no event types yet, and an event belongs to one.{' '}
-                <Link
-                  to={`/p/${slug}/settings/event-types`}
-                  className="underline underline-offset-2"
-                  style={{ color: 'var(--accent)' }}
-                >
-                  Create an event type
-                </Link>{' '}
-                first, then come back here.
-              </p>
-            ) : (
-              <SelectControl
-                id="form-event-type"
-                value={etId}
-                onChange={value => { setEtId(value); setFieldValues({}) }}
-                disabled={!isNew}
-                required
-                maxWidth={280}
-              >
-                <option value="">Select type…</option>
-                {eventTypes.map(et => <option key={et.id} value={et.id}>{et.display_name}</option>)}
-              </SelectControl>
-            )}
-          </EvField>
+        {/* `disabled` on a fieldset reaches every native control inside it, so
+            the read-only view needs no per-field flag. `contents` keeps it out
+            of the layout. */}
+        <fieldset disabled={!canWrite} className="contents">
 
-          <EvField
-            label="Name"
-            htmlFor="form-name"
-            required
-            hint={
-              generatedName ? (
-                <>
-                  <span className="mono">generated by scan rule: {nameFormat}</span>
-                  {/* The rule owns this box, so the analyst's wording has to go
-                      somewhere the scan never reads (tripl-kjhi.3). */}
-                  <span className="mt-[2px] block">Your own wording goes in Title.</span>
-                </>
-              ) : undefined
-            }
-          >
-            {/* readOnly, not disabled: a disabled input cannot be focused,
-                selected or copied — so the name you are about to create could
-                not be lifted into a ticket — and it is skipped by constraint
-                validation, which made the `required` mark a promise the browser
-                never kept. readOnly keeps both, and agrees with the ARIA
-                already declared here (tripl-u2h9.5). */}
-            <input
-              id="form-name"
-              className={`${TEXT_INPUT_CLASS} mono max-w-[360px] read-only:opacity-70`}
-              value={generatedName ? generatedName.name : name}
-              onChange={e => setName(e.target.value)}
-              // No example to offer once the rule writes this box (tripl-u2h9.9).
-              placeholder={generatedName ? undefined : 'e.g. checkout:completed'}
-              required
-              readOnly={!!generatedName}
-              aria-readonly={generatedName ? 'true' : undefined}
-            />
-            {generatedName && generatedName.missing.length > 0 && (
-              <p className="mt-1 text-xs text-warning">
-                Fill field values for: {missingFieldLabels.join(', ')}
-              </p>
-            )}
-            {generatedName && name.trim() !== '' && (
-              // The typed name is kept in state (switching to a type with no
-              // rule brings it back), so say plainly that it is not being used
-              // rather than letting it vanish and reappear (tripl-u2h9.7).
-              <p className="mt-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-                This event type names its events from the scan rule, so “{name.trim()}” is not used.
-              </p>
-            )}
-            {identityTaken && (
-              <p className="mt-1 text-xs text-warning" role="alert">
-                An event already answers to this name and would take every scan update:{' '}
-                <Link
-                  to={`/p/${slug}/monitoring/event/${identityTaken.id}`}
-                  className="underline underline-offset-2"
-                >
-                  open it instead
-                </Link>
-                .
-              </p>
-            )}
-          </EvField>
-
-          {/* The name is the scan identity and, under a rule, not the author's
-              to write; the title is the human label, and the event has room for
-              exactly this split now — production had analysts' wording jammed
-              into names that could never match a scan (tripl-kjhi.3). */}
-          <EvField
-            label="Title"
-            htmlFor="form-title"
-            hint="Shown beside the identity in lists and the diff. Never part of the name a scan matches on."
-          >
-            <input
-              id="form-title"
-              className={`${TEXT_INPUT_CLASS} max-w-[360px]`}
-              value={title}
-              onChange={e => setTitle(e.target.value)}
-              maxLength={500}
-              placeholder="Human-readable label, e.g. Tap on a model card"
-            />
-          </EvField>
-
-          <EvField label="Description" htmlFor="form-description">
-            <textarea
-              id="form-description"
-              className={`${EV_INPUT_CLASS} min-h-[60px] py-2 leading-[1.5]`}
-              rows={2}
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-              placeholder="What does this event represent?"
-            />
-            {!isNew && aiEnabled && (
-              <button
-                type="button"
-                onClick={() => aiDescribeMut.mutate()}
-                disabled={aiDescribeMut.isPending}
-                className="mt-[6px] inline-flex items-center gap-[5px] text-[11.5px] transition-colors hover:text-[var(--accent)]"
-                style={{ color: 'var(--fg-subtle)' }}
-              >
-                {aiDescribeMut.isPending ? <Loader2 className="animate-spin" size={12} /> : <Sparkles size={12} />}
-                Suggest with AI
-              </button>
-            )}
-            {aiDescribeMut.isError && (
-              <p className="mt-1 text-[11px]" style={{ color: 'var(--danger)' }}>
-                {aiDescribeMut.error instanceof Error ? aiDescribeMut.error.message : 'AI unavailable'}
-              </p>
-            )}
-          </EvField>
-
-          <EvField label="Status" htmlFor="form-status">
-            <SelectControl id="form-status" value={status} onChange={v => setStatus(v as EventStatus)} maxWidth={240}>
-              {EVENT_STATUSES.map(s => <option key={s} value={s}>{EVENT_STATUS_LABELS[s]}</option>)}
-            </SelectControl>
-          </EvField>
-
-          <EvField
-            label="Owner"
-            htmlFor="form-owner"
-            hint="Who answers for this event."
-            last={status !== 'deprecated'}
-          >
-            <SelectControl id="form-owner" value={ownerId} onChange={setOwnerId} maxWidth={240}>
-              <option value="">No owner</option>
-              {users.map(u => (
-                <option key={u.id} value={u.id}>{u.name || u.email}</option>
-              ))}
-            </SelectControl>
-          </EvField>
-
-          {status === 'deprecated' && (
+          <SurfCard title="Details">
             <EvField
-              label="Sunset date"
-              htmlFor="form-sunset"
-              hint="When this event stops being supported."
-              last={isNew}
+              label="Event type"
+              // A select with nothing to select is not a control, so the caption
+              // names no control either (the `Field` escape hatch this repo uses
+              // elsewhere for rows that hold prose).
+              htmlFor={eventTypes.length === 0 ? undefined : 'form-event-type'}
+              required
+              hint={isNew ? undefined : "Can't be changed after creation."}
+              last={false}
+            >
+              {eventTypes.length === 0 ? (
+                // An empty project offered "Select type…" and no way forward: the
+                // field card stayed hidden, Create stayed blocked, and nothing said
+                // a type has to exist first. This is the first thing a new project
+                // does (tripl-u2h9.3).
+                <p className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+                  This project has no event types yet, and an event belongs to one.{' '}
+                  <Link
+                    to={`/p/${slug}/settings/event-types`}
+                    className="underline underline-offset-2"
+                    style={{ color: 'var(--accent)' }}
+                  >
+                    Create an event type
+                  </Link>{' '}
+                  first, then come back here.
+                </p>
+              ) : (
+                <SelectControl
+                  id="form-event-type"
+                  value={etId}
+                  onChange={value => { setEtId(value); setFieldValues({}) }}
+                  disabled={!isNew}
+                  required
+                  maxWidth={280}
+                >
+                  <option value="">Select type…</option>
+                  {eventTypes.map(et => <option key={et.id} value={et.id}>{et.display_name}</option>)}
+                </SelectControl>
+              )}
+            </EvField>
+
+            <EvField
+              label="Name"
+              htmlFor="form-name"
+              required
+              hint={
+                generatedName ? (
+                  <>
+                    <span className="mono">generated by scan rule: {nameFormat}</span>
+                    {/* The rule owns this box, so the analyst's wording has to go
+                        somewhere the scan never reads (tripl-kjhi.3). */}
+                    <span className="mt-[2px] block">Your own wording goes in Title.</span>
+                  </>
+                ) : undefined
+              }
+            >
+              {/* readOnly, not disabled: a disabled input cannot be focused,
+                  selected or copied — so the name you are about to create could
+                  not be lifted into a ticket — and it is skipped by constraint
+                  validation, which made the `required` mark a promise the browser
+                  never kept. readOnly keeps both, and agrees with the ARIA
+                  already declared here (tripl-u2h9.5). */}
+              <input
+                id="form-name"
+                className={`${TEXT_INPUT_CLASS} mono max-w-[360px] read-only:opacity-70`}
+                value={generatedName ? generatedName.name : name}
+                onChange={e => setName(e.target.value)}
+                // No example to offer once the rule writes this box (tripl-u2h9.9).
+                placeholder={generatedName ? undefined : 'e.g. checkout:completed'}
+                required
+                readOnly={!!generatedName}
+                aria-readonly={generatedName ? 'true' : undefined}
+              />
+              {generatedName && generatedName.missing.length > 0 && (
+                <p className="mt-1 text-xs text-warning">
+                  Fill field values for: {missingFieldLabels.join(', ')}
+                </p>
+              )}
+              {generatedName && name.trim() !== '' && (
+                // The typed name is kept in state (switching to a type with no
+                // rule brings it back), so say plainly that it is not being used
+                // rather than letting it vanish and reappear (tripl-u2h9.7).
+                <p className="mt-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                  This event type names its events from the scan rule, so “{name.trim()}” is not used.
+                </p>
+              )}
+              {identityTaken && (
+                <p className="mt-1 text-xs text-warning" role="alert">
+                  An event already answers to this name and would take every scan update:{' '}
+                  <Link
+                    to={`/p/${slug}/monitoring/event/${identityTaken.id}`}
+                    className="underline underline-offset-2"
+                  >
+                    open it instead
+                  </Link>
+                  .
+                </p>
+              )}
+            </EvField>
+
+            {/* The name is the scan identity and, under a rule, not the author's
+                to write; the title is the human label, and the event has room for
+                exactly this split now — production had analysts' wording jammed
+                into names that could never match a scan (tripl-kjhi.3). */}
+            <EvField
+              label="Title"
+              htmlFor="form-title"
+              hint="Shown beside the identity in lists and the diff. Never part of the name a scan matches on."
             >
               <input
-                id="form-sunset"
-                type="datetime-local"
-                className={`${TEXT_INPUT_CLASS} max-w-[240px]`}
-                value={sunsetAt}
-                onChange={e => setSunsetAt(e.target.value)}
+                id="form-title"
+                className={`${TEXT_INPUT_CLASS} max-w-[360px]`}
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                maxLength={500}
+                placeholder="Human-readable label, e.g. Tap on a model card"
               />
             </EvField>
-          )}
 
-          {/* Not offered while creating: `EventCreate` does not accept a
-              successor — a brand-new event has no predecessor to name — so the
-              control would quietly discard the choice. */}
-          {status === 'deprecated' && !isNew && (
+            <EvField label="Description" htmlFor="form-description">
+              <textarea
+                id="form-description"
+                className={`${EV_INPUT_CLASS} min-h-[60px] py-2 leading-[1.5]`}
+                rows={2}
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="What does this event represent?"
+              />
+              {!isNew && aiEnabled && (
+                <button
+                  type="button"
+                  onClick={() => aiDescribeMut.mutate()}
+                  disabled={aiDescribeMut.isPending}
+                  className="mt-[6px] inline-flex items-center gap-[5px] text-[11.5px] transition-colors hover:text-[var(--accent)]"
+                  style={{ color: 'var(--fg-subtle)' }}
+                >
+                  {aiDescribeMut.isPending ? <Loader2 className="animate-spin" size={12} /> : <Sparkles size={12} />}
+                  Suggest with AI
+                </button>
+              )}
+              {aiDescribeMut.isError && (
+                <p className="mt-1 text-[11px]" style={{ color: 'var(--danger)' }}>
+                  {aiDescribeMut.error instanceof Error ? aiDescribeMut.error.message : 'AI unavailable'}
+                </p>
+              )}
+            </EvField>
+
+            <EvField label="Status" htmlFor="form-status">
+              <SelectControl id="form-status" value={status} onChange={v => setStatus(v as EventStatus)} maxWidth={240}>
+                {EVENT_STATUSES.map(s => <option key={s} value={s}>{EVENT_STATUS_LABELS[s]}</option>)}
+              </SelectControl>
+            </EvField>
+
             <EvField
-              label="Replaced by"
-              htmlFor="form-superseded"
-              hint="What to send instead. Documentation only: nothing is matched, collected or counted through it."
+              label="Owner"
+              htmlFor="form-owner"
+              hint="Who answers for this event."
+              last={status !== 'deprecated'}
+            >
+              <SelectControl id="form-owner" value={ownerId} onChange={setOwnerId} maxWidth={240}>
+                <option value="">No owner</option>
+                {users.map(u => (
+                  <option key={u.id} value={u.id}>{u.name || u.email}</option>
+                ))}
+              </SelectControl>
+            </EvField>
+
+            {status === 'deprecated' && (
+              <EvField
+                label="Sunset date"
+                htmlFor="form-sunset"
+                hint="When this event stops being supported."
+                last={isNew}
+              >
+                <input
+                  id="form-sunset"
+                  type="datetime-local"
+                  className={`${TEXT_INPUT_CLASS} max-w-[240px]`}
+                  value={sunsetAt}
+                  onChange={e => setSunsetAt(e.target.value)}
+                />
+              </EvField>
+            )}
+
+            {/* Not offered while creating: `EventCreate` does not accept a
+                successor — a brand-new event has no predecessor to name — so the
+                control would quietly discard the choice. */}
+            {status === 'deprecated' && !isNew && (
+              <EvField
+                label="Replaced by"
+                htmlFor="form-superseded"
+                hint="What to send instead. Documentation only: nothing is matched, collected or counted through it."
+                last
+              >
+                <div className="flex flex-col gap-[6px]">
+                  <input
+                    type="search"
+                    className={`${TEXT_INPUT_CLASS} max-w-[240px]`}
+                    placeholder="Search events…"
+                    aria-label="Search for the replacement event"
+                    value={successorSearch}
+                    onChange={e => setSuccessorSearch(e.target.value)}
+                  />
+                  <SelectControl
+                    id="form-superseded"
+                    value={supersededBy}
+                    onChange={setSupersededBy}
+                    maxWidth={240}
+                  >
+                    <option value="">Nothing replaces it</option>
+                    {successorOptions.map(option => (
+                      <option key={option.id} value={option.id}>{option.name}</option>
+                    ))}
+                  </SelectControl>
+                  {hiddenSuccessorCount > 0 && (
+                    <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                      {hiddenSuccessorCount} more not shown — narrow the search.
+                    </p>
+                  )}
+                </div>
+              </EvField>
+            )}
+          </SurfCard>
+
+          <SurfCard title="Tags & breakdowns">
+            <EvField label="Tags" htmlFor="form-tags">
+              {tags.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-[6px]">
+                  {tags.map(t => (
+                    <span
+                      key={t}
+                      className="inline-flex h-[22px] items-center gap-[5px] rounded-full pl-[9px] pr-[6px] text-[11.5px]"
+                      style={{ background: 'var(--surface-hover)' }}
+                    >
+                      {t}
+                      <button
+                        type="button"
+                        onClick={() => setTags(tags.filter(x => x !== t))}
+                        className="flex transition-colors hover:text-[var(--danger)]"
+                        style={{ color: 'var(--fg-subtle)' }}
+                        aria-label={`Remove ${t} tag`}
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <input
+                id="form-tags"
+                className={`${TEXT_INPUT_CLASS} max-w-[280px]`}
+                value={tagInput}
+                onChange={e => setTagInput(e.target.value)}
+                onKeyDown={e => {
+                  if ((e.key === 'Enter' || e.key === ',') && tagInput.trim()) {
+                    e.preventDefault()
+                    addTag()
+                  }
+                }}
+                placeholder="Type tag + Enter"
+              />
+            </EvField>
+
+            <EvField
+              label="Metric breakdowns"
+              htmlFor="form-breakdown-column"
+              hint="Warehouse columns to roll metrics up by."
               last
             >
-              <div className="flex flex-col gap-[6px]">
-                <input
-                  type="search"
-                  className={`${TEXT_INPUT_CLASS} max-w-[240px]`}
-                  placeholder="Search events…"
-                  aria-label="Search for the replacement event"
-                  value={successorSearch}
-                  onChange={e => setSuccessorSearch(e.target.value)}
-                />
-                <SelectControl
-                  id="form-superseded"
-                  value={supersededBy}
-                  onChange={setSupersededBy}
-                  maxWidth={240}
-                >
-                  <option value="">Nothing replaces it</option>
-                  {successorOptions.map(option => (
-                    <option key={option.id} value={option.id}>{option.name}</option>
-                  ))}
-                </SelectControl>
-                {hiddenSuccessorCount > 0 && (
-                  <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                    {hiddenSuccessorCount} more not shown — narrow the search.
-                  </p>
-                )}
-              </div>
-            </EvField>
-          )}
-        </SurfCard>
-
-        <SurfCard title="Tags & breakdowns">
-          <EvField label="Tags" htmlFor="form-tags">
-            {tags.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-[6px]">
-                {tags.map(t => (
-                  <span
-                    key={t}
-                    className="inline-flex h-[22px] items-center gap-[5px] rounded-full pl-[9px] pr-[6px] text-[11.5px]"
-                    style={{ background: 'var(--surface-hover)' }}
-                  >
-                    {t}
+              <div className="flex flex-wrap gap-[6px]">
+                {breakdownOptions.map(c => {
+                  const on = metricBreakdownColumns.includes(c)
+                  return (
                     <button
+                      key={c}
                       type="button"
-                      onClick={() => setTags(tags.filter(x => x !== t))}
-                      className="flex transition-colors hover:text-[var(--danger)]"
-                      style={{ color: 'var(--fg-subtle)' }}
-                      aria-label={`Remove ${t} tag`}
-                    >
-                      <X size={11} />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <input
-              id="form-tags"
-              className={`${TEXT_INPUT_CLASS} max-w-[280px]`}
-              value={tagInput}
-              onChange={e => setTagInput(e.target.value)}
-              onKeyDown={e => {
-                if ((e.key === 'Enter' || e.key === ',') && tagInput.trim()) {
-                  e.preventDefault()
-                  addTag()
-                }
-              }}
-              placeholder="Type tag + Enter"
-            />
-          </EvField>
-
-          <EvField
-            label="Metric breakdowns"
-            htmlFor="form-breakdown-column"
-            hint="Warehouse columns to roll metrics up by."
-            last
-          >
-            <div className="flex flex-wrap gap-[6px]">
-              {breakdownOptions.map(c => {
-                const on = metricBreakdownColumns.includes(c)
-                return (
-                  <button
-                    key={c}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => toggleBreakdown(c)}
-                    className="mono rounded-full px-[9px] py-1 text-[11.5px]"
-                    style={{
-                      border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
-                      background: on ? 'var(--accent-soft)' : 'var(--bg)',
-                      color: on ? 'var(--accent)' : 'var(--fg-muted)',
-                    }}
-                  >
-                    {c}
-                  </button>
-                )
-              })}
-            </div>
-            {/* The other half of what the docs describe, and what the redesign
-                dropped: a column the offered set cannot know about — one the
-                base query computes, or a scan column no field definition
-                covers — is still reachable by typing it. */}
-            <input
-              id="form-breakdown-column"
-              className={`${TEXT_INPUT_CLASS} mono mt-2 max-w-[280px]`}
-              value={breakdownInput}
-              onChange={e => setBreakdownInput(e.target.value)}
-              onKeyDown={e => {
-                if ((e.key === 'Enter' || e.key === ',') && breakdownInput.trim()) {
-                  e.preventDefault()
-                  toggleBreakdown(breakdownInput.trim())
-                  setBreakdownInput('')
-                }
-              }}
-              placeholder="Other column + Enter"
-            />
-          </EvField>
-        </SurfCard>
-
-        {sortedFields.length > 0 && (
-          <SurfCard
-            title="Field values"
-            subtitle={
-              nameFormat
-                ? `From the ${typeLabel} schema. The event name is built from ${
-                    [...namingColumns].join(', ')
-                  }.`
-                : `From the ${typeLabel} schema`
-            }
-          >
-            {sortedFields.map((f, i) => (
-              <EvField
-                key={f.id}
-                label={f.display_name}
-                htmlFor={`field-${f.id}`}
-                // A naming row is required in practice whatever its schema says:
-                // Create stays blocked until it is filled. Marking only
-                // `is_required` made the form's own marks disagree with what it
-                // enforces — on windy-ios's `se` type none of the three columns
-                // that build the name carries the flag (tripl-u2h9.4).
-                required={f.is_required || namingColumns.has(f.name)}
-                hint={
-                  <>
-                    <span className="mono">{f.name} · {f.field_type}</span>
-                    {namingColumns.has(f.name) && (
-                      <span className="mt-[2px] block" style={{ color: 'var(--accent)' }}>
-                        names the event
-                      </span>
-                    )}
-                  </>
-                }
-                last={i === sortedFields.length - 1}
-              >
-                {/* The div is the mark's anchor: FieldValueControl is a plain
-                    function component and would swallow the cloned ref. */}
-                <ScenarioCoachMark
-                  step={editFieldCoachStep}
-                  when={f.name === SCENARIO_SEEDED.editedFieldName}
-                >
-                  <div
-                    className={
-                      editFieldCoachActive && f.name === SCENARIO_SEEDED.editedFieldName
-                        ? 'max-w-[320px]'
-                        : undefined
-                    }
-                  >
-                    <FieldValueControl
-                      field={f}
-                      // The label's required mark and the control must agree: a
-                      // naming column IS required to create the event, whatever
-                      // its schema flag says, and marking one without the other
-                      // is how the form came to promise a check nothing ran.
-                      requiredOverride={f.is_required || namingColumns.has(f.name)}
-                      inputId={`field-${f.id}`}
-                      value={fieldValues[f.id] ?? ''}
-                      onChange={v => {
-                        setFieldValues({ ...fieldValues, [f.id]: v })
+                      aria-pressed={on}
+                      onClick={() => toggleBreakdown(c)}
+                      className="mono rounded-full px-[9px] py-1 text-[11.5px]"
+                      style={{
+                        border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
+                        background: on ? 'var(--accent-soft)' : 'var(--bg)',
+                        color: on ? 'var(--accent)' : 'var(--fg-muted)',
                       }}
-                      variables={varSuggestions}
-                    />
-                  </div>
-                </ScenarioCoachMark>
-                <FieldTemplateHints
-                  value={fieldValues[f.id] ?? ''}
-                  variables={projectVariables}
-                  namesEvent={namingColumns.has(f.name)}
-                  slug={slug}
-                />
-                <ScanMaintenanceNotice
-                  stored={storedFieldValues.get(f.id) ?? null}
-                  current={fieldValues[f.id] ?? ''}
-                  onHandBack={
-                    f.is_required || namingColumns.has(f.name)
-                      ? undefined
-                      : () => setFieldValues({ ...fieldValues, [f.id]: '' })
+                    >
+                      {c}
+                    </button>
+                  )
+                })}
+              </div>
+              {/* The other half of what the docs describe, and what the redesign
+                  dropped: a column the offered set cannot know about — one the
+                  base query computes, or a scan column no field definition
+                  covers — is still reachable by typing it. */}
+              <input
+                id="form-breakdown-column"
+                className={`${TEXT_INPUT_CLASS} mono mt-2 max-w-[280px]`}
+                value={breakdownInput}
+                onChange={e => setBreakdownInput(e.target.value)}
+                onKeyDown={e => {
+                  if ((e.key === 'Enter' || e.key === ',') && breakdownInput.trim()) {
+                    e.preventDefault()
+                    toggleBreakdown(breakdownInput.trim())
+                    setBreakdownInput('')
                   }
-                />
-                {/* A JSON field is not a warehouse column, so it can never be a
-                    breakdown — `breakdownOptions` leaves those out too. */}
-                {event && f.field_type !== 'json' && (
-                  <FieldBreakdownLink
-                    column={f.name}
-                    href={branchLink(
-                      `/p/${slug}/monitoring/event/${event.id}`
-                        + `?tab=breakdowns&column=${encodeURIComponent(f.name)}`,
-                      branchId,
-                    )}
-                    state={
-                      collectedBreakdownColumns.has(f.name)
-                        ? 'collected'
-                        : metricBreakdownColumns.includes(f.name)
-                          ? 'collecting'
-                          : 'off'
-                    }
-                    onSelect={() => toggleBreakdown(f.name)}
-                  />
-                )}
-              </EvField>
-            ))}
+                }}
+                placeholder="Other column + Enter"
+              />
+            </EvField>
           </SurfCard>
-        )}
 
-        {metaFields.length > 0 && (
-          <SurfCard title="Meta fields">
-            {metaFields.map((mf, i) => (
-              <EvField
-                key={mf.id}
-                label={mf.display_name}
-                htmlFor={`meta-${mf.id}`}
-                required={mf.is_required}
-                last={i === metaFields.length - 1}
-              >
-                <MetaFieldControl
-                  metaField={mf}
-                  inputId={`meta-${mf.id}`}
-                  values={metaValues[mf.id] ?? []}
-                  onChange={next => setMetaValues({ ...metaValues, [mf.id]: next })}
-                  variables={varSuggestions}
-                />
-              </EvField>
-            ))}
-          </SurfCard>
-        )}
+          {sortedFields.length > 0 && (
+            <SurfCard
+              title="Field values"
+              subtitle={
+                nameFormat
+                  ? `From the ${typeLabel} schema. The event name is built from ${
+                      [...namingColumns].join(', ')
+                    }.`
+                  : `From the ${typeLabel} schema`
+              }
+            >
+              {sortedFields.map((f, i) => (
+                <EvField
+                  key={f.id}
+                  label={f.display_name}
+                  htmlFor={`field-${f.id}`}
+                  // A naming row is required in practice whatever its schema says:
+                  // Create stays blocked until it is filled. Marking only
+                  // `is_required` made the form's own marks disagree with what it
+                  // enforces — on windy-ios's `se` type none of the three columns
+                  // that build the name carries the flag (tripl-u2h9.4).
+                  required={f.is_required || namingColumns.has(f.name)}
+                  hint={
+                    <>
+                      <span className="mono">{f.name} · {f.field_type}</span>
+                      {namingColumns.has(f.name) && (
+                        <span className="mt-[2px] block" style={{ color: 'var(--accent)' }}>
+                          names the event
+                        </span>
+                      )}
+                    </>
+                  }
+                  last={i === sortedFields.length - 1}
+                >
+                  {/* The div is the mark's anchor: FieldValueControl is a plain
+                      function component and would swallow the cloned ref. */}
+                  <ScenarioCoachMark
+                    step={editFieldCoachStep}
+                    when={f.name === SCENARIO_SEEDED.editedFieldName}
+                  >
+                    <div
+                      className={
+                        editFieldCoachActive && f.name === SCENARIO_SEEDED.editedFieldName
+                          ? 'max-w-[320px]'
+                          : undefined
+                      }
+                    >
+                      <FieldValueControl
+                        field={f}
+                        // The label's required mark and the control must agree: a
+                        // naming column IS required to create the event, whatever
+                        // its schema flag says, and marking one without the other
+                        // is how the form came to promise a check nothing ran.
+                        requiredOverride={f.is_required || namingColumns.has(f.name)}
+                        inputId={`field-${f.id}`}
+                        value={fieldValues[f.id] ?? ''}
+                        onChange={v => {
+                          setFieldValues({ ...fieldValues, [f.id]: v })
+                        }}
+                        variables={varSuggestions}
+                      />
+                    </div>
+                  </ScenarioCoachMark>
+                  <FieldTemplateHints
+                    value={fieldValues[f.id] ?? ''}
+                    variables={projectVariables}
+                    namesEvent={namingColumns.has(f.name)}
+                    slug={slug}
+                  />
+                  <ScanMaintenanceNotice
+                    stored={storedFieldValues.get(f.id) ?? null}
+                    current={fieldValues[f.id] ?? ''}
+                    onHandBack={
+                      f.is_required || namingColumns.has(f.name)
+                        ? undefined
+                        : () => setFieldValues({ ...fieldValues, [f.id]: '' })
+                    }
+                  />
+                  {/* A JSON field is not a warehouse column, so it can never be a
+                      breakdown — `breakdownOptions` leaves those out too. */}
+                  {event && f.field_type !== 'json' && (
+                    <FieldBreakdownLink
+                      column={f.name}
+                      href={branchLink(
+                        `/p/${slug}/monitoring/event/${event.id}`
+                          + `?tab=breakdowns&column=${encodeURIComponent(f.name)}`,
+                        branchId,
+                      )}
+                      state={
+                        collectedBreakdownColumns.has(f.name)
+                          ? 'collected'
+                          : metricBreakdownColumns.includes(f.name)
+                            ? 'collecting'
+                            : 'off'
+                      }
+                      onSelect={() => toggleBreakdown(f.name)}
+                    />
+                  )}
+                </EvField>
+              ))}
+            </SurfCard>
+          )}
+
+          {metaFields.length > 0 && (
+            <SurfCard title="Meta fields">
+              {metaFields.map((mf, i) => (
+                <EvField
+                  key={mf.id}
+                  label={mf.display_name}
+                  htmlFor={`meta-${mf.id}`}
+                  required={mf.is_required}
+                  last={i === metaFields.length - 1}
+                >
+                  <MetaFieldControl
+                    metaField={mf}
+                    inputId={`meta-${mf.id}`}
+                    values={metaValues[mf.id] ?? []}
+                    onChange={next => setMetaValues({ ...metaValues, [mf.id]: next })}
+                    variables={varSuggestions}
+                  />
+                </EvField>
+              ))}
+            </SurfCard>
+          )}
+        </fieldset>
 
         {saveMut.isError && (
           <div className="mb-[18px]">
@@ -1355,9 +1421,9 @@ export function EventForm({
             className="inline-flex h-8 items-center rounded-[7px] px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
-            Cancel
+            {canWrite ? 'Cancel' : 'Close'}
           </button>
-          {isNew && (
+          {canWrite && isNew && (
             <button
               type="button"
               onClick={saveAndAddAnother}
@@ -1369,19 +1435,21 @@ export function EventForm({
               Save and add another
             </button>
           )}
-          <ScenarioCoachMark step="edit-event/save" when={!isNew}>
-            <button
-              type="submit"
-              disabled={cannotSave}
-              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
-              style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-            >
-              {saveMut.isPending
-                ? <Loader2 className="animate-spin" size={12} />
-                : isNew ? <Plus size={12} /> : <Save size={12} />}
-              {isNew ? 'Create event' : 'Save event'}
-            </button>
-          </ScenarioCoachMark>
+          {canWrite && (
+            <ScenarioCoachMark step="edit-event/save" when={!isNew}>
+              <button
+                type="submit"
+                disabled={cannotSave}
+                className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
+                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+              >
+                {saveMut.isPending
+                  ? <Loader2 className="animate-spin" size={12} />
+                  : isNew ? <Plus size={12} /> : <Save size={12} />}
+                {isNew ? 'Create event' : 'Save event'}
+              </button>
+            </ScenarioCoachMark>
+          )}
         </div>
       </form>
     </div>
@@ -1518,7 +1586,7 @@ export default function EventEditPage() {
         // authoring surface that never said which plan it was writing to. The
         // read is lenient and the write is strict, so a mismatch rendered a
         // perfectly normal form and failed as a bare 404 at Save.
-        <div className="mx-auto max-w-[880px] px-6 pt-4">
+        <div className="mx-auto max-w-[880px] px-4 sm:px-6 pt-4">
           <EntityBranchBanner
             slug={slug}
             rowBranchId={eventQuery.data?.branch_id}
@@ -1535,6 +1603,7 @@ export default function EventEditPage() {
         defaultEventTypeId={defaultEventTypeId}
         onClose={goBack}
         onCreated={postDraftNote}
+        hasOtherUnsavedInput={draftNote.trim() !== ''}
       />
       {/* The one home for the discussion, and outside the form on purpose: it
           is not plan content. Every other box on this page ships to whoever
@@ -1543,7 +1612,7 @@ export default function EventEditPage() {
           there reads as part of the specification. Edit only: there is no
           event to hang a thread on until one exists. */}
       {eventId ? (
-        <div className="mx-auto max-w-[880px] px-6 pb-10">
+        <div className="mx-auto max-w-[880px] px-4 sm:px-6 pb-10">
           {handoff?.commentError && (
             <p role="alert" className="mb-2 text-xs text-destructive">
               {handoff.commentError}
@@ -1566,7 +1635,7 @@ export default function EventEditPage() {
           />
         </div>
       ) : (
-        <div className="mx-auto max-w-[880px] px-6 pb-10">
+        <div className="mx-auto max-w-[880px] px-4 sm:px-6 pb-10">
           <DraftDiscussionNote value={draftNote} onChange={setDraftNote} />
         </div>
       )}

@@ -57,4 +57,8 @@ class VariableValueDriftActionRequest(BaseModel):
             self.snoozed_until = require_future_instant(
                 self.snoozed_until, field_name="snoozed_until"
             )
+        elif self.snoozed_until is not None:
+            # Refused rather than discarded, as on ``SchemaDriftActionRequest``
+            # and ``EventCommentActionRequest`` (tripl-0zpq.325).
+            raise ValueError("snoozed_until is only meaningful when action is snooze")
         return self

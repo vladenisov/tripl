@@ -29,7 +29,7 @@ import { CommentThread } from '@/components/comment-thread'
 import { ImplementationTicketRow } from '@/components/implementation-ticket-row'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
-import { useBranchLinkProps } from '@/hooks/useBranch'
+import { useBranchContext, useBranchLinkProps } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -66,6 +66,9 @@ import type {
   ResolutionChoice,
 } from '@/types'
 import { planBranchesKey } from '@/lib/queryKeys'
+import { ownerOnlyReason, useCanWriteProject, useIsOwner } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 const STATUS_LABEL: Record<PlanBranchStatus, string> = {
   draft: 'Draft',
@@ -434,6 +437,8 @@ function describeBranchActionError(error: unknown): string {
  * not in component state, so a review can be linked to and shared. */
 export function BranchesTab({ slug, branchId }: { slug: string; branchId?: string }) {
   const qc = useQueryClient()
+  // Every branch write is EditorUserDep (PLAN-11); a viewer follows the review.
+  const canWrite = useCanWriteProject()
   const navigate = useNavigate()
   const { confirm, dialog } = useConfirm()
   const [createOpen, setCreateOpen] = useState(false)
@@ -453,6 +458,7 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
     navigate(`/p/${slug}/settings/branches/${branch.id}`)
 
   const createMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       planBranchesApi.create(slug, { name: createName, description: createDescription }),
     onSuccess: (branch) => {
@@ -547,12 +553,15 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
               <Ticket className="size-3.5" />
               Implementation tracker
             </Button>
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus className="size-3.5" />
-              New branch
-            </Button>
+            {canWrite && (
+              <Button size="sm" onClick={() => setCreateOpen(true)}>
+                <Plus className="size-3.5" />
+                New branch
+              </Button>
+            )}
           </div>
         </div>
+        {!canWrite && <ReadOnlyNotice />}
 
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading branches…</p>
@@ -793,8 +802,15 @@ function FeatureBranchDetail({
   confirm,
 }: FeatureBranchDetailProps) {
   const qc = useQueryClient()
+  const canWrite = useCanWriteProject()
   const usersById = useUsersById()
   const branchLink = useBranchLinkProps()
+  const branchCtx = useBranchContext()
+  // A branch that is merged, closed or gone can no longer be worked in, so the
+  // shell must not keep sending every request to it (SHELL-18).
+  const leaveEndedBranch = () => {
+    if (branchCtx.branchId === branch.id) branchCtx.setBranchId(null)
+  }
   // The ticket a branch is named after, linked through the meta field that
   // links event values to the tracker (tripl-kjhi.14). Main's fields: the
   // template is project-wide and a branch copy carries the same one.
@@ -840,6 +856,7 @@ function FeatureBranchDetail({
   // previous error state, so a stale merge failure can't outlive a later
   // successful transition (or mask its error).
   const actionMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (action: PlanBranchTransitionAction | 'merge') =>
       action === 'merge'
         ? planBranchesApi.merge(slug, branch.id)
@@ -847,24 +864,30 @@ function FeatureBranchDetail({
     onSuccess: (_data, action) => {
       // An approval counts as review feedback, exactly like a posted comment.
       if (action === 'approve') notifyStepCompleted('branches/comment')
+      if (action === 'merge' || action === 'close') leaveEndedBranch()
       invalidate()
     },
   })
 
   const deleteMut = useMutation({
     mutationFn: () => planBranchesApi.delete(slug, branch.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: planBranchesKey(slug) }),
+    onSuccess: () => {
+      leaveEndedBranch()
+      return qc.invalidateQueries({ queryKey: planBranchesKey(slug) })
+    },
   })
 
   // Undo one diff entry — the whole entity, or one field of it — back to the
   // state the plan was in when the branch was opened.
   const revertMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: ({ entry, field }: { entry: PlanDiffEntry; field?: string }) =>
       planBranchesApi.revert(slug, branch.id, {
         entity_type: entry.entity_type,
         name: entry.name,
         parent: entry.parent,
         field: field ?? null,
+        entity_id: entry.entity_id ?? null,
       }),
     onSuccess: invalidate,
   })
@@ -1066,18 +1089,20 @@ function FeatureBranchDetail({
                     Events
                   </Link>
                 </Button>
-                <Button asChild variant="outline" size="sm">
-                  <Link
-                    {...branchLink(`/p/${slug}/events/all/new`, branch.id)}
-                    aria-label="New event on this branch"
-                  >
-                    <Plus className="size-3" />
-                    New event
-                  </Link>
-                </Button>
+                {canWrite && (
+                  <Button asChild variant="outline" size="sm">
+                    <Link
+                      {...branchLink(`/p/${slug}/events/all/new`, branch.id)}
+                      aria-label="New event on this branch"
+                    >
+                      <Plus className="size-3" />
+                      New event
+                    </Link>
+                  </Button>
+                )}
               </>
             ) : null}
-            {branch.status === 'approved' ? (
+            {canWrite && branch.status === 'approved' ? (
               <Button
                 size="sm"
                 disabled={actionMut.isPending || diffLoading}
@@ -1087,16 +1112,18 @@ function FeatureBranchDetail({
                 Merge to main
               </Button>
             ) : null}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8 text-muted-foreground hover:text-[var(--danger)]"
-              onClick={handleDelete}
-              title="Delete branch"
-              aria-label="Delete branch"
-            >
-              <Trash2 className="size-3.5" aria-hidden="true" />
-            </Button>
+            {canWrite && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 text-muted-foreground hover:text-[var(--danger)]"
+                onClick={handleDelete}
+                title="Delete branch"
+                aria-label="Delete branch"
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+              </Button>
+            )}
           </div>
         }
       >
@@ -1131,7 +1158,7 @@ function FeatureBranchDetail({
             </>
           )}
         </div>
-        {ALLOWED_TRANSITIONS[branch.status].length > 0 && (
+        {canWrite && ALLOWED_TRANSITIONS[branch.status].length > 0 && (
           <div
             className="flex flex-wrap gap-2 border-t px-4 py-3"
             style={{ borderColor: 'var(--border-subtle)' }}
@@ -1201,7 +1228,7 @@ function FeatureBranchDetail({
                   entryKey(entry.entity_type, entry.parent, entry.name),
                 )}
                 editable={branch.status !== 'merged' && branch.status !== 'closed'}
-                onRevert={handleRevert}
+                onRevert={canWrite ? handleRevert : undefined}
                 reverting={revertMut.isPending}
               />
             ))}
@@ -1400,11 +1427,13 @@ interface ChangeRowProps {
    * own `entity_id` is the base-side one, so editing it would edit main. The
    * branch-side id lives on the paired addition the list filters out. */
   renamedEntityId?: string | null
-  /** A merged or closed branch still renders its diff, and `resolve_branch_id`
-   * validates ownership but not status — so a write aimed at one is accepted.
-   * Do not offer the shortcut. */
+  /** A merged or closed branch still renders its diff, but its plan is
+   * read-only: the backend answers a write aimed at one with 409 ("Branch 'X'
+   * is merged, so its plan is read-only"). Do not offer a shortcut that can
+   * only fail. */
   editable: boolean
-  onRevert: (entry: PlanDiffEntry, field?: string) => void
+  /** Omitted for a viewer: reverting writes to the branch. */
+  onRevert?: (entry: PlanDiffEntry, field?: string) => void
   reverting: boolean
 }
 
@@ -1572,16 +1601,18 @@ function ChangeRow({
               ) : null}
             </p>
             <div className="flex shrink-0 items-center gap-3">
-              <button
-                type="button"
-                disabled={reverting}
-                onClick={() => onRevert(entry)}
-                className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
-                style={{ color: 'var(--fg-muted)' }}
-              >
-                <Undo2 className="size-3" aria-hidden="true" />
-                {renamedTo ? 'Undo this rename' : REVERT_LABEL[entry.kind]}
-              </button>
+              {onRevert && (
+                <button
+                  type="button"
+                  disabled={reverting}
+                  onClick={() => onRevert(entry)}
+                  className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+                  style={{ color: 'var(--fg-muted)' }}
+                >
+                  <Undo2 className="size-3" aria-hidden="true" />
+                  {renamedTo ? 'Undo this rename' : REVERT_LABEL[entry.kind]}
+                </button>
+              )}
               {link ? (
                 <Link
                   {...link}
@@ -1601,7 +1632,7 @@ function ChangeRow({
               <FieldChangeList
                 changes={fieldChanges}
                 reverting={reverting}
-                onRevert={(field) => onRevert(entry, field)}
+                onRevert={onRevert ? (field) => onRevert(entry, field) : undefined}
               />
             </DetailSection>
           ) : null}
@@ -1650,7 +1681,7 @@ function FieldChangeList({
 }: {
   changes: PlanFieldChange[]
   reverting: boolean
-  onRevert: (field: string) => void
+  onRevert?: (field: string) => void
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -1664,17 +1695,19 @@ function FieldChangeList({
             <span className="mono text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
               {change.field}
             </span>
-            <button
-              type="button"
-              disabled={reverting}
-              onClick={() => onRevert(change.field)}
-              aria-label={`Revert ${change.field}`}
-              className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
-              style={{ color: 'var(--fg-muted)' }}
-            >
-              <Undo2 className="size-3" aria-hidden="true" />
-              Revert
-            </button>
+            {onRevert && (
+              <button
+                type="button"
+                disabled={reverting}
+                onClick={() => onRevert(change.field)}
+                aria-label={`Revert ${change.field}`}
+                className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+                style={{ color: 'var(--fg-muted)' }}
+              >
+                <Undo2 className="size-3" aria-hidden="true" />
+                Revert
+              </button>
+            )}
           </div>
           {change.items && change.items.length > 0 ? (
             // A collection changed one member at a time — show those members,
@@ -1761,6 +1794,7 @@ function StateView({ state }: { state: Record<string, unknown> }) {
 
 function ConflictsPanel({ slug, branchId }: { slug: string; branchId: string }) {
   const qc = useQueryClient()
+  const canWrite = useCanWriteProject()
   const { data: conflicts } = useQuery({
     queryKey: ['planBranchConflicts', slug, branchId],
     queryFn: () => planBranchesApi.getConflicts(slug, branchId),
@@ -1811,9 +1845,9 @@ function ConflictsPanel({ slug, branchId }: { slug: string; branchId: string }) 
                   entityName={entity.name}
                   field={field}
                   pending={resolutionMut.isPending}
-                  onResolve={(choice) =>
+                  onResolve={canWrite ? (choice) =>
                     resolutionMut.mutate({ entity_name: entity.name, field: field.field, choice })
-                  }
+                    : undefined}
                 />
               ))}
             </div>
@@ -1833,7 +1867,8 @@ function ConflictFieldRow({
   entityName: string
   field: PlanBranchConflictField
   pending: boolean
-  onResolve: (choice: ResolutionChoice) => void
+  /** Omitted for a viewer, who sees the three values but picks no side. */
+  onResolve?: (choice: ResolutionChoice) => void
 }) {
   return (
     <div className="text-xs" data-entity={entityName}>
@@ -1845,20 +1880,22 @@ function ConflictFieldRow({
         <ConflictValue label="ours" value={field.ours} />
         <ConflictValue label="theirs" value={field.theirs} />
       </div>
-      <div className="mt-1 flex gap-1.5">
-        {(['ours', 'theirs'] as ResolutionChoice[]).map((choice) => (
-          <Button
-            key={choice}
-            size="sm"
-            variant={field.choice === choice ? 'default' : 'outline'}
-            className="h-6 px-2 text-[11px]"
-            disabled={pending}
-            onClick={() => onResolve(choice)}
-          >
-            Keep {choice}
-          </Button>
-        ))}
-      </div>
+      {onResolve && (
+        <div className="mt-1 flex gap-1.5">
+          {(['ours', 'theirs'] as ResolutionChoice[]).map((choice) => (
+            <Button
+              key={choice}
+              size="sm"
+              variant={field.choice === choice ? 'default' : 'outline'}
+              className="h-6 px-2 text-[11px]"
+              disabled={pending}
+              onClick={() => onResolve(choice)}
+            >
+              Keep {choice}
+            </Button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -2021,12 +2058,16 @@ interface MergePolicyFormProps {
 
 function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
   const qc = useQueryClient()
+  // The PATCH is OwnerUserDep; everyone else reads the policy, as the
+  // sibling tracker dialog does.
+  const canEdit = useIsOwner()
   const minApprovalsId = useId()
   const blockSelfId = useId()
   const [minApprovals, setMinApprovals] = useState(String(settings.min_approvals))
   const [blockSelf, setBlockSelf] = useState(settings.block_self_approval)
 
   const saveMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       branchSettingsApi.update(slug, {
         min_approvals: Math.max(0, Number.parseInt(minApprovals, 10) || 0),
@@ -2042,7 +2083,7 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
     <form
       onSubmit={(event) => {
         event.preventDefault()
-        saveMut.mutate()
+        if (canEdit) saveMut.mutate()
       }}
     >
       <div className="grid gap-4 py-4">
@@ -2055,6 +2096,7 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
             max={100}
             value={minApprovals}
             onChange={(event) => setMinApprovals(event.target.value)}
+            disabled={!canEdit}
           />
           <p className="text-xs text-muted-foreground">
             Distinct approvals a branch needs before it can merge. 0 disables the quota.
@@ -2067,21 +2109,33 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
               Branch authors cannot approve their own branch.
             </p>
           </div>
-          <Switch id={blockSelfId} checked={blockSelf} onCheckedChange={setBlockSelf} />
+          <Switch
+            id={blockSelfId}
+            checked={blockSelf}
+            onCheckedChange={setBlockSelf}
+            disabled={!canEdit}
+          />
         </div>
         {saveMut.isError && (
           <p className="text-sm" style={{ color: 'var(--danger)' }}>
             {getErrorMessage(saveMut.error)}
           </p>
         )}
+        {!canEdit && (
+          <p className="text-xs text-muted-foreground">
+            {ownerOnlyReason('change the merge policy')}
+          </p>
+        )}
       </div>
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onClose}>
-          Cancel
+          {canEdit ? 'Cancel' : 'Close'}
         </Button>
-        <Button type="submit" disabled={saveMut.isPending}>
-          Save
-        </Button>
+        {canEdit && (
+          <Button type="submit" disabled={saveMut.isPending}>
+            Save
+          </Button>
+        )}
       </DialogFooter>
     </form>
   )

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, Inbox, Layers, ListPlus } from 'lucide-react'
+import { ChevronDown, ChevronRight, Inbox, Layers, ListPlus, Loader2, Plus } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
@@ -42,10 +42,16 @@ import type {
 import { ColumnFilter, FilterableHead, type ColumnFilterType } from './ColumnFilter'
 import { eventsEmptyCopy, type EventsEmptyContext } from './emptyState'
 import { EventRow, type RowAction } from './EventRow'
-import { groupEventNames, type EventNameGroup } from './eventNameGroups'
+import {
+  TABLE_CLUSTER_MIN_SIZE,
+  groupEventNames,
+  isDeepPrefix,
+  type EventNameGroup,
+} from './eventNameGroups'
 import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
 import { variablesKey } from '@/lib/queryKeys'
+import { useCanWriteProject } from '@/lib/permissions'
 
 /** Cap the cluster list so the summary header stays compact; the rest fold into a count. */
 const MAX_VISIBLE_CLUSTERS = 6
@@ -68,6 +74,8 @@ export type EventsTableProps = {
   dndSensors: SensorDescriptor<SensorOptions>[]
   handleDragEnd: (event: DragEndEvent) => void
   visibleEventIds: string[]
+  /** Rows are in catalog order, so a drag has a meaning (see EventsPage). */
+  canReorder: boolean
   // Header
   allVisibleSelected: boolean
   someVisibleSelected: boolean
@@ -94,9 +102,20 @@ export type EventsTableProps = {
   // Body / virtualization
   events: EventListItem[]
   total: number
+  /** Rows loaded from the server, before any client-side column filter. */
+  loadedCount: number
+  /** A field/meta column filter is narrowing the loaded rows client-side. */
+  isClientFiltered: boolean
+  /** The column filter is still paging through the rest of the catalog. */
+  isScanningForMatches: boolean
+  /** The list query has not produced a page for this view yet. */
+  isLoading: boolean
   virtualize: boolean
   virtualItems: VirtualItem[]
+  /** Zero-based first/last row index inside the viewport, when virtualized. */
+  visibleRange: { first: number; last: number } | null
   totalVirtualSize: number
+  measureRow: (el: Element | null) => void
   colCount: number
   expandedCell: string | null
   eventWindowMetricsByEvent: Map<string, EventWindowMetrics>
@@ -116,6 +135,10 @@ export type EventsTableProps = {
    * (tripl-jfm3.30).
    */
   emptyContext?: EventsEmptyContext
+  /** Offered on a first-run empty state; omitted for a viewer. */
+  onNewEvent?: () => void
+  /** Adds ids to the selection in one update (a name cluster's "Select"). */
+  selectMany: (ids: string[]) => void
 }
 
 export function EventsTable({
@@ -125,6 +148,7 @@ export function EventsTable({
   dndSensors,
   handleDragEnd,
   visibleEventIds,
+  canReorder,
   allVisibleSelected,
   someVisibleSelected,
   toggleAllVisibleSelected,
@@ -149,9 +173,15 @@ export function EventsTable({
   updateMetaFilter,
   events,
   total,
+  loadedCount,
+  isClientFiltered,
+  isScanningForMatches,
+  isLoading,
   virtualize,
   virtualItems,
+  visibleRange,
   totalVirtualSize,
+  measureRow,
   colCount,
   expandedCell,
   eventWindowMetricsByEvent,
@@ -166,8 +196,12 @@ export function EventsTable({
   onToggleExpandedCell,
   onRowAction,
   emptyContext,
+  onNewEvent,
+  selectMany,
 }: EventsTableProps) {
   const branchId = useActiveBranchId()
+  // Selecting is only ever for a bulk edit, which a viewer cannot make.
+  const canWrite = useCanWriteProject()
   const emptyCopy = eventsEmptyCopy(
     emptyContext ?? { activeTab: 'all', hasActiveFilters: false, search: '' },
   )
@@ -190,32 +224,30 @@ export function EventsTable({
       groupEventNames(
         // `events` can be sparse while paginated rows stream in; drop the holes.
         events.filter((ev): ev is EventListItem => Boolean(ev)),
-      ).groups,
+        TABLE_CLUSTER_MIN_SIZE,
+      ).groups.filter(group => isDeepPrefix(group.prefix)),
     [events],
   )
-  const selectCluster = (group: EventNameGroup) => {
-    for (const id of group.eventIds) toggleEventSelected(id, true)
-  }
+  const selectCluster = (group: EventNameGroup) => selectMany(group.eventIds)
+  // Clusters come from the loaded pages, so their counts grow as more load.
+  const clustersArePartial = loadedCount < total
 
-  // Visible window for the "Showing X–Y of N" footer. When virtualized this
-  // tracks the rendered window as the user scrolls; otherwise all loaded rows
-  // are on screen.
-  const firstVisible =
-    virtualize && virtualItems.length > 0
-      ? virtualItems[0].index + 1
-      : events.length > 0
-        ? 1
-        : 0
-  const lastVisible =
-    virtualize && virtualItems.length > 0
-      ? virtualItems[virtualItems.length - 1].index + 1
-      : events.length
+  // Visible window for the "Showing X–Y" footer: the rows inside the viewport
+  // when virtualized, every loaded row otherwise.
+  const firstVisible = visibleRange ? visibleRange.first + 1 : events.length > 0 ? 1 : 0
+  const lastVisible = visibleRange ? visibleRange.last + 1 : events.length
   const rangeLabel =
     firstVisible === lastVisible
       ? firstVisible.toLocaleString()
       : `${firstVisible.toLocaleString()}–${lastVisible.toLocaleString()}`
+  // What the footer says. Under a column filter the server total is not the
+  // number of matches, so it reports the matches among the rows checked so far
+  // instead of "Showing 1–40 of 5,000" (EVT-16).
+  const footerLabel = isClientFiltered
+    ? `${events.length.toLocaleString()} matching · ${loadedCount.toLocaleString()} of ${total.toLocaleString()} checked`
+    : `Showing ${rangeLabel} of ${total.toLocaleString()} events`
 
-  const renderEventRow = (ev: EventListItem) => {
+  const renderEventRow = (ev: EventListItem, virtualIndex?: number) => {
     const expandedFieldId =
       expandedCell && expandedCell.startsWith(ev.id + '-')
         ? expandedCell.slice(ev.id.length + 1)
@@ -258,14 +290,23 @@ export function EventsTable({
         onToggleSelected={toggleEventSelected}
         onToggleExpanded={onToggleExpandedCell}
         onRowAction={onRowAction}
+        reorderable={canReorder}
+        measureRef={virtualize ? measureRow : undefined}
+        virtualIndex={virtualIndex}
       />
     )
   }
 
   return (
-    <TooltipProvider delayDuration={0}>
+    // A short delay: at 0 every 48h cell the pointer crossed mounted its lazy
+    // chart on the way past (EVT-46).
+    <TooltipProvider delayDuration={300}>
       <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext items={visibleEventIds} strategy={verticalListSortingStrategy}>
+        <SortableContext
+          items={visibleEventIds}
+          strategy={verticalListSortingStrategy}
+          disabled={!canReorder}
+        >
           {nameClusters.length > 0 && (
             <div
               className="border-b text-[11px]"
@@ -292,6 +333,7 @@ export function EventsTable({
                     {nameClusters.length.toLocaleString()}
                   </span>{' '}
                   similar-name {nameClusters.length === 1 ? 'cluster' : 'clusters'} detected
+                  {clustersArePartial && ' among loaded rows'}
                 </span>
               </button>
               {clustersExpanded && (
@@ -348,11 +390,13 @@ export function EventsTable({
                 <TableRow>
                   <TableHead className="w-8 px-1" aria-label="Reorder" />
                   <TableHead className="tripl-pin-l w-10 pl-5">
-                    <Checkbox
-                      checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
-                      onCheckedChange={(checked) => toggleAllVisibleSelected(checked === true)}
-                      aria-label="Select all visible events"
-                    />
+                    {canWrite && (
+                      <Checkbox
+                        checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
+                        onCheckedChange={(checked) => toggleAllVisibleSelected(checked === true)}
+                        aria-label="Select all visible events"
+                      />
+                    )}
                   </TableHead>
                   {/* Pinned left with the checkbox: 8 of 17 columns sit
                       off-screen at 1512px, so without this the reader scrolls
@@ -501,7 +545,7 @@ export function EventsTable({
                           </tr>
                         )
                       }
-                      return renderEventRow(ev)
+                      return renderEventRow(ev, vi.index)
                     })
                   : events.map((ev) => renderEventRow(ev))}
                 {virtualize &&
@@ -519,11 +563,36 @@ export function EventsTable({
                 {events.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={99}>
-                      <EmptyState
-                        icon={emptyCopy.isFirstRun ? ListPlus : Inbox}
-                        title={emptyCopy.title}
-                        description={emptyCopy.description}
-                      />
+                      {isLoading || isScanningForMatches ? (
+                        // Not the empty state: during the cold load it
+                        // flashed "No events yet — create your first event"
+                        // on every visit (EVT-14), and a column filter with no
+                        // match on the first page is still searching the rest
+                        // (EVT-4).
+                        <div
+                          role="status"
+                          className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground"
+                        >
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                          {isLoading
+                            ? 'Loading events…'
+                            : `Searching… ${loadedCount.toLocaleString()} of ${total.toLocaleString()} events checked`}
+                        </div>
+                      ) : (
+                        <EmptyState
+                          icon={emptyCopy.isFirstRun ? ListPlus : Inbox}
+                          title={emptyCopy.title}
+                          description={emptyCopy.description}
+                          action={
+                            emptyCopy.isFirstRun && onNewEvent ? (
+                              <Button size="sm" onClick={onNewEvent}>
+                                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                                New event
+                              </Button>
+                            ) : undefined
+                          }
+                        />
+                      )}
                     </TableCell>
                   </TableRow>
                 )}
@@ -540,20 +609,17 @@ export function EventsTable({
               }}
             >
               <span aria-live="polite" aria-atomic="true" className="sr-only">
-                Showing {rangeLabel} of {total.toLocaleString()} events
+                {footerLabel}
               </span>
-              <span>
-                Showing{' '}
-                <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>
-                  {rangeLabel}
-                </span>{' '}
-                of{' '}
-                <span className="mono tnum" style={{ color: 'var(--fg)' }}>
-                  {total.toLocaleString()}
+              <span aria-hidden="true" className="mono tnum">
+                {footerLabel}
+              </span>
+              {isScanningForMatches && (
+                <span className="inline-flex items-center gap-1.5">
+                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                  searching the rest…
                 </span>
-              </span>
-              <span style={{ color: 'var(--fg-faint)' }}>·</span>
-              <span className="mono tnum">{total.toLocaleString()} total in plan</span>
+              )}
               <div className="flex-1" />
               {virtualize && (
                 <span className="inline-flex items-center gap-1.5">

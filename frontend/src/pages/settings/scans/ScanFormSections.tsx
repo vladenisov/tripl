@@ -13,7 +13,7 @@ import { JsonValuePathsPicker } from './JsonValuePathsPicker'
 import { MetricBreakdownPicker } from './MetricBreakdownPicker'
 import { ScanCausalNote } from './ScanCausalNote'
 import { ScanPreviewPanel } from './ScanPreviewPanel'
-import { SqlEditor } from '@/components/sql-editor'
+import { LazySqlEditor } from '@/components/sql-editor-lazy'
 import { Field, SCard } from './scanLayout'
 import type { ScanFormMode } from './scanMode'
 import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
@@ -71,9 +71,9 @@ interface SectionProps {
   // Configuration tab locks the data source (a scan can't change source); the
   // create page lets the user pick one.
   sourceLocked: boolean
-  // Configuration tab supplies a per-card Save footer; the create page omits it
-  // and uses a single Create button at the bottom of the page instead.
-  footerFor?: () => React.ReactNode
+  // Configuration tab for someone who may not edit it: the SQL is shown, not
+  // editable, and the editor-only schema lookup behind autocomplete is skipped.
+  readOnly?: boolean
 }
 
 /**
@@ -91,13 +91,11 @@ function CollapsibleSection({
   title,
   explanation,
   defaultOpen,
-  footer,
   children,
 }: {
   title: string
   explanation: string
   defaultOpen: boolean
-  footer?: ReactNode
   children: ReactNode
 }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -124,22 +122,30 @@ function CollapsibleSection({
         <Chevron className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--fg-subtle)' }} aria-hidden="true" />
       </button>
       {open && (
-        <>
-          <div className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-            {children}
-          </div>
-          {footer && (
-            <footer
-              className="flex items-center gap-2.5 border-t px-[18px] py-3"
-              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
-            >
-              {footer}
-            </footer>
-          )}
-        </>
+        <div className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+          {children}
+        </div>
       )}
     </section>
   )
+}
+
+/**
+ * Why the numeric input above cannot be saved. The input points at it with
+ * `aria-describedby`, so it is read with the field rather than only seen.
+ */
+function FieldErrorText({ id, message }: { id: string; message: string | undefined }) {
+  if (!message) return null
+  return (
+    <p id={id} className="mt-1.5 text-xs" style={{ color: 'var(--danger)' }}>
+      {message}
+    </p>
+  )
+}
+
+/** `aria-invalid` + `aria-describedby` for an input whose error {@link FieldErrorText} renders. */
+function invalidProps(errorId: string, message: string | undefined) {
+  return message ? { 'aria-invalid': true, 'aria-describedby': errorId } : {}
 }
 
 function PreviewGate() {
@@ -163,7 +169,7 @@ export function ScanEssentialsSection({
   dataSources,
   eventTypes,
   sourceLocked,
-  footerFor,
+  readOnly = false,
 }: SectionProps) {
   const {
     state, set, preview, dryRun, dryRunStale,
@@ -194,7 +200,7 @@ export function ScanEssentialsSection({
   const namesEventsFromColumn = !state.eventTypeId || Boolean(state.eventTypeColumn)
   const selectedSource = dataSources.find(ds => ds.id === state.dataSourceId)
   const sourceName = selectedSource?.name ?? ''
-  const { data: schemaData } = useDataSourceSchema(state.dataSourceId || undefined)
+  const { data: schemaData } = useDataSourceSchema(readOnly ? undefined : state.dataSourceId || undefined)
 
   // A saved config opens its edit form before any preview has been loaded, so
   // the column list is empty and a <select> whose value matches no option shows
@@ -208,7 +214,7 @@ export function ScanEssentialsSection({
   const eventTypeColumnChoices = withSaved(state.eventTypeColumn)
 
   return (
-    <SCard title="" footer={footerFor?.()}>
+    <SCard title="">
       <fieldset
         data-testid="scan-mode"
         className="border-b px-[18px] py-4"
@@ -291,13 +297,14 @@ export function ScanEssentialsSection({
       {/* id={false}: SqlEditor is a CodeMirror contenteditable, not a labelable
           element — it names itself with ariaLabel below. */}
       <Field label="Base query" id={false} hint="Used as a subquery. tripl wraps it to scan windows.">
-        <SqlEditor
+        <LazySqlEditor
           ariaLabel="SQL base query"
           value={state.baseQuery}
           onChange={setBaseQuery}
           placeholder="SELECT * FROM analytics.events"
           dialect={selectedSource?.db_type}
           tables={schemaData?.tables}
+          readOnly={readOnly}
         />
       </Field>
       {/* The button loads the sample rows; the ANSWER it also computes is
@@ -501,6 +508,8 @@ export function ScanEssentialsSection({
               preview={preview}
               unmappedColumns={dryRun.unmapped_columns}
               branchId={branchId}
+              // Re-ask so the list names only what is still unmapped (DATA-27).
+              onCreated={runDryRun}
             />
           )}
         </div>
@@ -509,10 +518,10 @@ export function ScanEssentialsSection({
   )
 }
 
-export function EventNamingSection({ form, footerFor }: SectionProps) {
+export function EventNamingSection({ form }: SectionProps) {
   const {
-    state, set, preview,
-    toggleJsonValuePath, discoverJsonMut,
+    state, set, preview, fieldErrors,
+    toggleJsonValuePath, discoverJsonMut, discoverJsonPaths,
   } = form
   // "Event type column" is no longer here — it is half of the essentials'
   // "where does the event name come from?" question, and burying the field a
@@ -521,7 +530,7 @@ export function EventNamingSection({ form, footerFor }: SectionProps) {
   // header can promise that leaving it alone works and be telling the truth.
   const defaultOpen = Boolean(
     state.eventNameFormat
-    || state.cardinalityThreshold !== 100
+    || state.cardinalityThreshold !== '100'
     || state.eventGroupRules.length
     || state.jsonValuePaths.length,
   )
@@ -531,7 +540,6 @@ export function EventNamingSection({ form, footerFor }: SectionProps) {
       title="Event names and grouping"
       explanation="Reshape the names tripl derives above — rewrite them from a template, collapse high-cardinality values, or merge several into one. Leave this alone and each name is used as it is."
       defaultOpen={defaultOpen}
-      footer={footerFor?.()}
     >
       <Field label="Event name format" id="scan-event-name-format" hint="Template, e.g. {action}:{category}.">
         <Input
@@ -553,9 +561,11 @@ export function EventNamingSection({ form, footerFor }: SectionProps) {
           type="number"
           min={1}
           value={state.cardinalityThreshold}
-          onChange={e => set('cardinalityThreshold', Number(e.target.value))}
+          onChange={e => set('cardinalityThreshold', e.target.value)}
           className="font-mono max-w-[280px]"
+          {...invalidProps('cardinality-threshold-error', fieldErrors.cardinalityThreshold)}
         />
+        <FieldErrorText id="cardinality-threshold-error" message={fieldErrors.cardinalityThreshold} />
       </Field>
       <div className="space-y-4 border-t px-[18px] py-4" style={{ borderColor: 'var(--border-subtle)' }}>
         <EventGroupRulesEditor
@@ -568,7 +578,7 @@ export function EventNamingSection({ form, footerFor }: SectionProps) {
             preview={preview}
             selectedJsonValuePaths={state.jsonValuePaths}
             onToggleJsonValuePath={toggleJsonValuePath}
-            onDiscoverJsonPaths={() => discoverJsonMut.mutate()}
+            onDiscoverJsonPaths={discoverJsonPaths}
             isDiscoveringJsonPaths={discoverJsonMut.isPending}
             jsonPathsError={discoverJsonMut.error}
             jsonPathsDiscovered={discoverJsonMut.isSuccess}
@@ -581,8 +591,8 @@ export function EventNamingSection({ form, footerFor }: SectionProps) {
   )
 }
 
-export function AppVersionSection({ form, footerFor }: SectionProps) {
-  const { state, setAppVersionColumn, setPlatformColumn, set, preview } = form
+export function AppVersionSection({ form }: SectionProps) {
+  const { state, setAppVersionColumn, setPlatformColumn, set, preview, fieldErrors } = form
   const defaultOpen = Boolean(
     state.appVersionColumn
     || state.platformColumn
@@ -595,10 +605,10 @@ export function AppVersionSection({ form, footerFor }: SectionProps) {
       title="App version"
       explanation="Attach an app release and platform to every event. Leave this alone if you do not ship versioned apps."
       defaultOpen={defaultOpen}
-      footer={footerFor?.()}
     >
       <div className="px-[18px] py-4">
         <AppVersionFields
+          activeShareMinError={fieldErrors.appVersionActiveShareMin}
           columns={preview?.columns ?? null}
           appVersionColumn={state.appVersionColumn}
           prereleasePattern={state.appVersionPrereleasePattern}
@@ -615,9 +625,9 @@ export function AppVersionSection({ form, footerFor }: SectionProps) {
 }
 
 /** Rendered only in Catalog + monitoring — there are no metrics to break down otherwise. */
-export function MetricsDriftSection({ form, footerFor }: SectionProps) {
+export function MetricsDriftSection({ form }: SectionProps) {
   const {
-    state, set, preview,
+    state, set, preview, fieldErrors,
     toggleMetricBreakdownColumn, toggleDistributionDriftField,
   } = form
   if (state.mode !== 'monitoring') return null
@@ -633,7 +643,6 @@ export function MetricsDriftSection({ form, footerFor }: SectionProps) {
       title="Metric breakdowns and drift"
       explanation="Extra columns to split metrics by, and columns whose value mix you want watched for drift. Leave this alone to collect one series per event."
       defaultOpen={defaultOpen}
-      footer={footerFor?.()}
     >
       <div className="space-y-4 px-[18px] py-4">
         {preview ? (
@@ -646,6 +655,7 @@ export function MetricsDriftSection({ form, footerFor }: SectionProps) {
               appVersionColumn={state.appVersionColumn}
               platformColumn={state.platformColumn}
               valuesLimit={state.metricBreakdownValuesLimit}
+              valuesLimitError={fieldErrors.metricBreakdownValuesLimit}
               onToggleColumn={toggleMetricBreakdownColumn}
               onValuesLimitChange={value => set('metricBreakdownValuesLimit', value)}
             />
@@ -667,8 +677,8 @@ export function MetricsDriftSection({ form, footerFor }: SectionProps) {
   )
 }
 
-export function LimitsSection({ form, footerFor }: SectionProps) {
-  const { state, set } = form
+export function LimitsSection({ form }: SectionProps) {
+  const { state, set, fieldErrors } = form
   const monitoring = state.mode === 'monitoring'
   // A create-page lookback of "24" is this form's own default, not a user choice,
   // so it must not spring the section open on every edit of a fresh config.
@@ -680,7 +690,12 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
   const defaultOpen = Boolean(
     lookbackIsCustom
     || state.scanRowLimit
-    || (monitoring && (state.chunkInterval || state.metricsRowLimit)),
+    || (monitoring && (state.chunkInterval || state.metricsRowLimit))
+    // A value the save refuses must be on screen, or the blocker names a field
+    // behind a chevron.
+    || fieldErrors.scanLookbackHours
+    || fieldErrors.scanRowLimit
+    || fieldErrors.metricsRowLimit,
   )
 
   return (
@@ -688,7 +703,6 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
       title="Limits"
       explanation="Caps on how much warehouse data each run reads. Leave these alone unless runs are slow or expensive."
       defaultOpen={defaultOpen}
-      footer={footerFor?.()}
     >
       {monitoring && state.interval && (
         <Field
@@ -729,7 +743,9 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
             onChange={e => set('scanLookbackHours', e.target.value)}
             className="font-mono max-w-[280px]"
             placeholder="Default"
+            {...invalidProps('scan-lookback-hours-error', fieldErrors.scanLookbackHours)}
           />
+          <FieldErrorText id="scan-lookback-hours-error" message={fieldErrors.scanLookbackHours} />
         </Field>
       ) : (
         /* id={false}: this branch replaces the input with a sentence, so there is
@@ -749,7 +765,9 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
           onChange={e => set('scanRowLimit', e.target.value)}
           className="font-mono max-w-[280px]"
           placeholder="Default"
+          {...invalidProps('scan-row-limit-error', fieldErrors.scanRowLimit)}
         />
+        <FieldErrorText id="scan-row-limit-error" message={fieldErrors.scanRowLimit} />
       </Field>
       {/* A metrics run is `collect_metrics`, which the scheduler dispatches only
           for a config with both a schedule and a time column, so in Catalog only
@@ -768,7 +786,9 @@ export function LimitsSection({ form, footerFor }: SectionProps) {
             onChange={e => set('metricsRowLimit', e.target.value)}
             className="font-mono max-w-[280px]"
             placeholder="Default"
+            {...invalidProps('scan-metrics-row-limit-error', fieldErrors.metricsRowLimit)}
           />
+          <FieldErrorText id="scan-metrics-row-limit-error" message={fieldErrors.metricsRowLimit} />
         </Field>
       )}
     </CollapsibleSection>

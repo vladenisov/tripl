@@ -81,6 +81,8 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
         _assert_destination_enabled,
         _assert_destination_still_enabled,
         _assert_egress_allowed,
+        _assert_rule_active,
+        _assert_rule_still_active,
         _claim_delivery,
         _resolve_email_context,
         _resolve_slack_webhook,
@@ -119,7 +121,7 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
             delivery for delivery in deliveries if delivery.status != AlertDeliveryStatus.sent.value
         ]
         if not pending:
-            return {"status": "already_sent", "messages": 0, "sent": 0, "failed": 0}
+            return {"status": "already_sent", "messages": 0, "sent": 0, "failed": 0, "skipped": 0}
 
         # Single flight, per member, for the same reason the per-delivery task
         # claims (tripl-0zpq.37) — and here it is not optional, because these
@@ -138,8 +140,15 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
         # stamped `sent` over the failure the Inbox is showing for it.
         now = datetime.now(UTC)
         claimed = [delivery for delivery in pending if _claim_delivery(session, delivery, now=now)]
+        skipped_count = len(pending) - len(claimed)
         if not claimed:
-            return {"status": "already_claimed", "messages": 0, "sent": 0, "failed": 0}
+            return {
+                "status": "already_claimed",
+                "messages": 0,
+                "sent": 0,
+                "failed": 0,
+                "skipped": skipped_count,
+            }
 
         # Rendering is shared across the whole batch: both caches key on item id
         # / metric ref rather than on a delivery, so the warehouse and DB reads
@@ -181,6 +190,7 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
                 # four renders — which is why the group loop re-reads the
                 # toggle immediately before egress.
                 _assert_destination_enabled(destination)
+                _assert_rule_active(rule)
 
                 # Every delivery this task is handed came out of the flush, so
                 # it is a digest by construction — but the flag is still read
@@ -268,6 +278,24 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
             destination = session.get(AlertDestination, destination_id)
             if destination is None:  # pragma: no cover - FK guarantees it
                 continue
+            active_members: list[tuple[AlertDelivery, str]] = []
+            for delivery, text in members:
+                rule = session.get(AlertRule, delivery.rule_id)
+                try:
+                    if rule is None:
+                        raise ValueError(f"Alert rule {delivery.rule_id} no longer exists")
+                    _assert_rule_still_active(rule)
+                except ValueError as exc:
+                    delivery.status = AlertDeliveryStatus.failed.value
+                    delivery.error_message = str(exc)
+                    delivery.claimed_at = None
+                    failed_count += 1
+                else:
+                    active_members.append((delivery, text))
+            session.commit()
+            if not active_members:
+                continue
+            members = active_members
             body = _SECTION_SEPARATOR.join(text for _delivery, text in members)
             try:
                 # The toggle as of NOW, not as of the prepare loop that cleared
@@ -383,6 +411,7 @@ def send_alert_digest(self: object, delivery_ids: list[str]) -> dict[str, object
             "messages": messages,
             "sent": sent_count,
             "failed": failed_count,
+            "skipped": skipped_count,
         }
     finally:
         session.close()

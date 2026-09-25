@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, RouterProvider, createMemoryRouter } from 'react-router-dom'
 import type { Event as TEvent, EventType, MetaFieldDefinition, Project, Variable } from '@/types'
 import { eventsApi } from '@/api/events'
 import { planBranchesApi } from '@/api/planBranches'
@@ -13,6 +13,7 @@ import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import { readScenarioState, writeScenarioState } from '@/demo/scenarioModel'
 import { chapterState } from '@/demo/scenarioTestState'
 import { EventForm } from './EventForm'
+import { expectNoAxeViolations } from '@/test/axe'
 
 vi.mock('@/api/events', () => ({
   eventsApi: {
@@ -1029,7 +1030,9 @@ describe('EventForm ticket prefill from the branch name (tripl-kjhi.14)', () => 
     release()
     // The branch has arrived and the prefill effect has had its turn.
     await waitFor(() => expect(planBranchesApi.list).toHaveBeenCalled())
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
     expect(jira).toHaveValue('')
   })
 
@@ -1299,6 +1302,8 @@ describe('EventForm successor', () => {
       ],
       total: 2,
     } as never)
+    // Picking a successor reads it by id; answer with the event picked.
+    vi.mocked(eventsApi.get).mockResolvedValue({ id: 'ev-2', name: 'checkout:done' } as never)
     renderForm(DEPRECATED)
 
     // Wait for the OPTION, not the field: the select renders the moment the
@@ -1372,5 +1377,133 @@ describe('EventForm successor', () => {
 
     expect(screen.getByLabelText('Sunset date')).toBeInTheDocument()
     expect(screen.queryByLabelText('Replaced by')).toBeNull()
+  })
+})
+
+describe('EventForm accessibility', () => {
+  it('has no axe violations on a new event and on an existing one', async () => {
+    const { unmount } = renderForm(null)
+    await expectNoAxeViolations(document.body)
+    unmount()
+    renderForm(EXISTING_EVENT)
+    await expectNoAxeViolations(document.body)
+  })
+})
+
+/** Whether a reload/tab-close right now would get the browser's prompt. */
+function reloadIsGuarded(): boolean {
+  const event = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(event)
+  return event.defaultPrevented
+}
+
+describe('EventForm unsaved-changes guard (EVT-8)', () => {
+  it('keeps an edit typed while "Save and add another" was in flight unsaved', async () => {
+    let answerCreate: (value: never) => void = () => {}
+    vi.mocked(eventsApi.create).mockImplementation(
+      () => new Promise(resolve => { answerCreate = resolve as (value: never) => void }),
+    )
+    renderForm(null)
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Sent title' } })
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:started' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save and add another/i }))
+    await waitFor(() => expect(eventsApi.create).toHaveBeenCalled())
+
+    // Typed after the request left, before it answered: not part of the save.
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Typed during save' } })
+    await act(async () => answerCreate({ name: 'checkout:started' } as never))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Created checkout:started')
+    expect(reloadIsGuarded()).toBe(true)
+  })
+
+  it('arms the reload prompt only once the author has changed something', () => {
+    renderForm(null)
+    expect(reloadIsGuarded()).toBe(false)
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Checkout completed' } })
+    expect(reloadIsGuarded()).toBe(true)
+
+    // Back to where it started: nothing is at stake again.
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: '' } })
+    expect(reloadIsGuarded()).toBe(false)
+  })
+
+  it('asks before an in-app exit drops the draft, and stays put on Cancel', async () => {
+    const router = createMemoryRouter(
+      [
+        {
+          path: '/p/demo/events/all/new',
+          element: createElement(EventForm, {
+            slug: 'demo',
+            eventTypes: [EVENT_TYPE],
+            metaFields: [],
+            projectVariables: [],
+            event: null,
+            onClose: () => void router.navigate('/p/demo/events'),
+          }),
+        },
+        { path: '/p/demo/events', element: createElement('p', null, 'Events list') },
+      ],
+      { initialEntries: ['/p/demo/events/all/new'] },
+    )
+    render(createElement(RouterProvider, { router }), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client: queryClient }, children),
+    })
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Checkout completed' } })
+    // The form's own Cancel; the confirm is not open yet.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(router.state.location.pathname).toBe('/p/demo/events/all/new')
+    expect(screen.getByLabelText('Title')).toHaveValue('Checkout completed')
+  })
+
+  it('does not count the branch-ticket prefill as the author\'s input', async () => {
+    const jira: MetaFieldDefinition = {
+      id: 'mf-jira',
+      project_id: 'project-1',
+      name: 'jira',
+      display_name: 'Jira',
+      field_type: 'string',
+      is_required: false,
+      enum_options: null,
+      default_value: null,
+      link_template: 'https://jira.example/browse/${value}',
+      order: 0,
+      sensitivity: 'none',
+    }
+    vi.mocked(planBranchesApi.list).mockResolvedValue(
+      { items: [{ id: 'b-wnd', name: 'WND-4770', kind: 'working' }], total: 1 } as never,
+    )
+    render(
+      createElement(EventForm, {
+        slug: 'demo',
+        eventTypes: [EVENT_TYPE],
+        metaFields: [jira],
+        projectVariables: [],
+        event: null,
+        onClose: () => {},
+      }),
+      {
+        wrapper: ({ children }: { children: ReactNode }) =>
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(
+              BranchContext.Provider,
+              { value: { branchId: 'b-wnd', setBranchId: () => {}, slug: 'demo' } },
+              createElement(MemoryRouter, null, children),
+            ),
+          ),
+      },
+    )
+    await waitFor(() => expect(screen.getByLabelText('Jira')).toHaveValue('WND-4770'))
+    expect(reloadIsGuarded()).toBe(false)
   })
 })

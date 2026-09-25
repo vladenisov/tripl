@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { EventMetricPoint, Project } from '@/types'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
@@ -12,6 +12,7 @@ import {
   type ScenarioState,
 } from '@/demo/scenarioModel'
 import { liveLoopState } from '@/demo/scenarioTestState'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
 const { toastSuccess, toastError } = vi.hoisted(() => ({
@@ -28,16 +29,22 @@ vi.mock('@/components/ui/chart-lazy', () => ({
     data,
     forecast,
     valueFormatter,
+    sigmaThreshold,
   }: {
-    data?: Array<{ bucket: string }>
+    data?: Array<{ bucket: string; count?: number }>
     forecast?: unknown[]
     valueFormatter?: (value: number) => string
+    sigmaThreshold?: number
   }) => (
     <div
       data-testid="metrics-chart"
       data-forecast-count={forecast?.length ?? 0}
+      // The band multiplier the page handed the chart (tripl-2yww); the chart's
+      // own honouring of it is pinned in chart.test.tsx.
+      data-sigma-threshold={sigmaThreshold ?? ''}
       data-points={data?.length ?? 0}
       data-first-bucket={data?.[0]?.bucket ?? ''}
+      data-first-count={data?.[0]?.count ?? ''}
       // Probe the optional formatter: percent metrics turn 0.08 into '8%'.
       data-value-sample={valueFormatter ? valueFormatter(0.08) : ''}
     />
@@ -76,6 +83,19 @@ vi.mock('@/components/sql-editor', () => ({
     readOnly?: boolean
   }) => <textarea aria-label={ariaLabel} value={value} readOnly={readOnly} onChange={() => {}} />,
 }))
+
+/** The page writes its view state to the URL (MON-24); this reads it back. */
+function LocationProbe() {
+  const location = useLocation()
+  return <output data-testid="location-search">{location.search}</output>
+}
+
+function errorResponse(status = 500) {
+  return new Response(JSON.stringify({ detail: 'boom' }), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
 
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -205,6 +225,7 @@ function renderMonitoringPage(search = '') {
         <Routes>
           <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
         </Routes>
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -398,6 +419,7 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
   //   week -> 1 (all three land in the epoch-anchored 2026-01-01 week).
   function installProjectTotalFetch(
     forecast: Array<{ bucket: string; expected_count: number; stddev: number }> = [],
+    interval = '1h',
   ) {
     return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
@@ -409,7 +431,7 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
           scan_config_id: 'scan-1',
           event_id: null,
           event_type_id: null,
-          interval: '1h',
+          interval,
           latest_signal: null,
           data: [
             metricPoint('2026-01-01T05:00:00Z', 5),
@@ -417,6 +439,7 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
             metricPoint('2026-01-02T10:00:00Z', 3),
           ],
           forecast,
+          sigma_threshold: 6,
         })
       }
       if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
@@ -432,6 +455,16 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
   // always re-query the testid rather than holding a stale node reference.
   const chartPoints = () => screen.getByTestId('metrics-chart').getAttribute('data-points')
   const chartForecastCount = () => screen.getByTestId('metrics-chart').getAttribute('data-forecast-count')
+
+  it('hands the chart the sigma threshold the payload serves (tripl-2yww)', async () => {
+    installProjectTotalFetch()
+    renderMonitoringPage()
+
+    // 6, not undefined: dropping `sigmaThreshold={metrics?.sigma_threshold}`
+    // from the render site sends the band back to the chart's default of 4.
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-sigma-threshold', '6'))
+  })
 
   it('defaults to 7d hours and follows later range changes', async () => {
     const fetchSpy = installProjectTotalFetch()
@@ -502,9 +535,71 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
     fireEvent.click(screen.getByRole('button', { name: '90d' }))
     await waitFor(() => expect(chartForecastCount()).toBe('0'))
 
+    // Back at 7d a manual "Hours" pick is the native granularity again.
+    fireEvent.click(screen.getByRole('button', { name: '7d' }))
+    fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Days' }))
+    await waitFor(() => expect(chartForecastCount()).toBe('0'))
     fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
     fireEvent.click(await screen.findByRole('option', { name: 'Hours' }))
     await waitFor(() => expect(chartForecastCount()).toBe('1'))
+  })
+
+  it('refuses a granularity that would draw too many points over the range (MON-23)', async () => {
+    installProjectTotalFetch([], '6h')
+    renderMonitoringPage()
+    await screen.findByTestId('metrics-chart')
+
+    // 90 days of hourly buckets is 2,160 points per series: not offered for a
+    // series collected every 6 hours (its own 6 hours always is).
+    fireEvent.click(screen.getByRole('button', { name: '90d' }))
+    fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
+    expect(await screen.findByRole('option', { name: 'Hours' })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('option', { name: '6 hours' })).not.toHaveAttribute('aria-disabled')
+  })
+
+  it('bumps a sticky fine pick coarser when the range grows (MON-23)', async () => {
+    installProjectTotalFetch([], '6h')
+    renderMonitoringPage('?gran=15min&range=90')
+
+    await screen.findByTestId('metrics-chart')
+    // Clamped to 6 hours, the finest that fits 90d: the three points stay apart.
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: /time granularity/i })).toHaveTextContent('6 hours'))
+    expect(chartPoints()).toBe('3')
+  })
+
+  it('bumps a sticky fine pick only as far as the native granularity (MON-23)', async () => {
+    installProjectTotalFetch()
+    renderMonitoringPage('?gran=15min&range=90')
+
+    await screen.findByTestId('metrics-chart')
+    // The hourly series' own granularity is always allowed, so 15 min settles
+    // on Hours rather than jumping past it to 6 hours.
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: /time granularity/i })).toHaveTextContent('Hours'))
+  })
+
+  it('always offers a 15 min series its native granularity, forecast included', async () => {
+    // The smallest preset is 7d, where 15 min is 672 points — over the cap. A
+    // 15 min scan used to be unreadable at its own resolution anywhere, and so
+    // was its forecast, which only renders at the native granularity.
+    installProjectTotalFetch([{ bucket: '2026-01-02T10:15:00Z', expected_count: 4, stddev: 1 }], '15m')
+    renderMonitoringPage('?gran=15min')
+
+    await screen.findByTestId('metrics-chart')
+    const control = () => screen.getByRole('combobox', { name: /time granularity/i })
+    await waitFor(() => expect(control()).toHaveTextContent('15 min'))
+    expect(chartForecastCount()).toBe('1')
+
+    // Not clamped at 90d either: the native pick is exempt from the cap...
+    fireEvent.click(screen.getByRole('button', { name: '90d' }))
+    await waitFor(() => expect(chartForecastCount()).toBe('1'))
+    expect(control()).toHaveTextContent('15 min')
+    fireEvent.click(control())
+    expect(await screen.findByRole('option', { name: '15 min' })).not.toHaveAttribute('aria-disabled')
+    // ...while a non-native pick over it is still refused.
+    expect(screen.getByRole('option', { name: 'Hours' })).toHaveAttribute('aria-disabled', 'true')
   })
 })
 
@@ -572,6 +667,7 @@ function renderEventDetail(search = '') {
           <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
           <Route path="/p/:slug/events/:tab/:eventId/edit" element={<div>edit-page</div>} />
         </Routes>
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -692,6 +788,7 @@ function installEventDetailFetch(
     /** The event `superseded_by_event_id` points at. `null` answers 404, the
      *  same as a successor the reader cannot see. */
     successor?: Record<string, unknown> | null
+    sigmaThreshold?: number
   } = {},
 ) {
   const metricsData = opts.metricsData ?? [metricPoint('2026-01-02T00:00:00Z', 200)]
@@ -725,6 +822,7 @@ function installEventDetailFetch(
         latest_signal: latestSignal,
         data: metricsData,
         forecast: [],
+        ...(opts.sigmaThreshold === undefined ? {} : { sigma_threshold: opts.sigmaThreshold }),
       })
     }
     if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
@@ -846,6 +944,16 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     const miniChart = within(await screen.findByTestId('signal-volume-chart'))
       .getByTestId('metrics-chart')
     expect(miniChart).toHaveAttribute('data-points', '2')
+  })
+
+  it('hands the signal mini-chart the served sigma threshold (tripl-2yww)', async () => {
+    installEventDetailFetch({ latestSignal: dropToZeroSignal(), sigmaThreshold: 6 })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const miniChart = within(await screen.findByTestId('signal-volume-chart'))
+      .getByTestId('metrics-chart')
+    expect(miniChart).toHaveAttribute('data-sigma-threshold', '6')
   })
 
   it('names the baseline instead of titling a chart that cannot draw one (tripl-v2lm)', async () => {
@@ -1064,9 +1172,14 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     await screen.findByRole('heading', { name: 'checkout_completed' })
 
     const breadcrumb = screen.getByRole('navigation', { name: 'Breadcrumb' })
-    expect(within(breadcrumb).getByRole('button', { name: 'Plan' })).toBeInTheDocument()
-    expect(within(breadcrumb).getByRole('button', { name: 'Events' })).toBeInTheDocument()
+    // "Plan" is the sidebar group, not a page; "Events" is a real link to the
+    // catalog rather than a history pop that could land anywhere (MON-38).
+    expect(within(breadcrumb).getByText('Plan')).toBeInTheDocument()
+    expect(within(breadcrumb).queryByRole('button', { name: 'Plan' })).not.toBeInTheDocument()
+    expect(within(breadcrumb).getByRole('link', { name: /Events/ })).toHaveAttribute('href', '/p/demo/events')
     expect(within(breadcrumb).getByText('checkout_completed')).toBeInTheDocument()
+    // The permanently disabled "Coming soon" Prev/Next buttons are gone.
+    expect(within(breadcrumb).queryByRole('button', { name: /Prev|Next/ })).not.toBeInTheDocument()
   })
 
   it('explains the empty 24h metrics instead of rendering a bare dash', async () => {
@@ -1078,9 +1191,10 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
       'title',
       'No events in the last 24h',
     )
+    // The Events list's own sentence for the same state (MON-28).
     expect(screen.getByText('Δ · 24h').closest('[title]')).toHaveAttribute(
       'title',
-      'No prior 24h window to compare against',
+      'No metrics collected for this event in the last 48h.',
     )
   })
 
@@ -1328,15 +1442,12 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       const url = String(input)
 
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
-      // Events list backing the Definition card's event-name resolution.
-      if (url.endsWith('/api/v1/projects/demo/events')) {
-        return mockJsonResponse({
-          items: [
-            { id: 'event-a', name: 'checkout_completed' },
-            { id: 'event-b', name: 'session_started' },
-          ],
-          total: 2,
-        })
+      // The Definition card resolves each referenced event by id (MET-2).
+      if (url.endsWith('/api/v1/projects/demo/events/event-a')) {
+        return mockJsonResponse({ id: 'event-a', name: 'checkout_completed' })
+      }
+      if (url.endsWith('/api/v1/projects/demo/events/event-b')) {
+        return mockJsonResponse({ id: 'event-b', name: 'session_started' })
       }
       if (url.endsWith('/api/v1/projects/demo/fact-tables')) {
         return mockJsonResponse({
@@ -1465,23 +1576,52 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     })
   }
 
-  function renderMetricDetail() {
+  function renderMetricDetail(auth: AuthContextValue | null = null) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
     const result = render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
-          <Routes>
-            <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={auth}>
+          <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
+            <Routes>
+              <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
     return { ...result, queryClient }
   }
 
-  it('keeps the 30d range and defaults granularity to the interval for 1d metrics (tripl-4m86)', async () => {
+  it('offers a viewer no edit, collect, delete or annotation controls (MON-6)', async () => {
+    installMetricDetailFetch('1h')
+    renderMetricDetail({
+      user: {
+        id: 'viewer-1',
+        email: 'viewer@example.com',
+        name: 'Viewer',
+        role: 'viewer',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+    })
+
+    await screen.findByTestId('metrics-chart')
+    expect(await screen.findByRole('heading', { name: 'Annotations' })).toBeInTheDocument()
+    expect(screen.getByText(/Adding and removing them is done by an editor or owner/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Collect now|Refresh source metrics/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Label')).not.toBeInTheDocument()
+  })
+
+  it('opens on 7d like every scope and keeps the 1d interval as its granularity (MON-43, tripl-4m86)', async () => {
     const fetchSpy = installMetricDetailFetch('1d')
     renderMetricDetail()
 
@@ -1495,7 +1635,18 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     const range = new URL(seriesUrl!, 'http://localhost').searchParams
     const from = new Date(range.get('from')!).getTime()
     const to = new Date(range.get('to')!).getTime()
-    expect(to - from).toBe(30 * 24 * 60 * 60 * 1000)
+    expect(to - from).toBe(7 * 24 * 60 * 60 * 1000)
+  })
+
+  it('threads the metric series sigma threshold into the chart (tripl-4cgl)', async () => {
+    // A project that moved its sigma to 6: `adaptMetricSeries` has to carry the
+    // served value, or the catalog metric's band falls back to 4 while the
+    // event charts on the same page draw 6.
+    installMetricDetailFetch('1h', {}, { sigma_threshold: 6 })
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-sigma-threshold', '6'))
   })
 
   it('keeps the hourly default for sub-daily metrics', async () => {
@@ -1695,13 +1846,14 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(await screen.findByRole('heading', { name: 'Definition' })).toBeInTheDocument()
     // Kind chip + collection-interval meta chip.
     expect(screen.getByText('SQL')).toBeInTheDocument()
-    expect(screen.getByText('every 1d')).toBeInTheDocument()
+    expect(screen.getByText('Daily')).toBeInTheDocument()
     // Time/value column chips from the SQL config.
     expect(screen.getByText('day')).toBeInTheDocument()
     expect(screen.getByText('dau')).toBeInTheDocument()
 
     // The SQL itself is collapsed behind a "Show SQL" disclosure by default…
-    const sql = screen.getByDisplayValue('SELECT day, dau FROM daily_users')
+    // (The editor is a lazy chunk, so it can arrive a tick after the card.)
+    const sql = await screen.findByDisplayValue('SELECT day, dau FROM daily_users')
     expect(sql).not.toBeVisible()
     // …and expands on click.
     fireEvent.click(screen.getByText('Show SQL'))
@@ -1720,7 +1872,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
 
     expect(await screen.findByRole('heading', { name: 'Definition' })).toBeInTheDocument()
     expect(screen.getByText('Event composition')).toBeInTheDocument()
-    // Event ids resolve to names via the events list; joined by ÷.
+    // Event ids resolve to names by id; joined by ÷.
     expect(await screen.findByText('checkout_completed')).toBeInTheDocument()
     expect(screen.getByText('session_started')).toBeInTheDocument()
     expect(screen.getByText('÷')).toBeInTheDocument()
@@ -1801,6 +1953,85 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['metrics-catalog', 'demo'] })
   })
 
+  it('keeps an in-progress collect watch when the header actions unmount (canWrite flicker)', async () => {
+    // The definition never settles (status stays null), so the watch keeps polling.
+    installMetricDetailFetch('1d')
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const viewer: AuthContextValue = {
+      user: {
+        id: 'viewer-1',
+        email: 'viewer@example.com',
+        name: 'Viewer',
+        role: 'viewer',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+    }
+    const tree = (auth: AuthContextValue | null) => (
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={auth}>
+          <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
+            <Routes>
+              <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>
+    )
+    const { rerender } = render(tree(null))
+
+    const button = await screen.findByRole('button', { name: 'Collect now' })
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+    expect(await screen.findByRole('button', { name: 'Collecting…' })).toBeDisabled()
+
+    // The permission flickers: the header actions unmount, then come back.
+    rerender(tree(viewer))
+    expect(screen.queryByRole('button', { name: /Collect/ })).not.toBeInTheDocument()
+    rerender(tree(null))
+
+    // The watch lived on the page, so the run still reads as in progress.
+    expect(await screen.findByRole('button', { name: 'Collecting…' })).toBeDisabled()
+  })
+
+  it('does not render breakdowns before the metric definition fixes the rollup', async () => {
+    // Until the definition says "ratio", the rollup falls back to a sum; the
+    // tab must wait instead of drawing summed values and then snapping.
+    const fetchSpy = installMetricDetailFetch('1h', { kind: 'fact', composition: 'ratio', unit: '%' })
+    const base = fetchSpy.getMockImplementation()!
+    let releaseDefinition: () => void = () => {}
+    const definitionGate = new Promise<void>(resolve => { releaseDefinition = resolve })
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/api/v1/projects/demo/metrics/metric-1')) await definitionGate
+      return base(input, init)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1?tab=breakdowns']}>
+          <Routes>
+            <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Loading breakdowns…')).toBeInTheDocument()
+    // Give the series a chance to land: the tab still has not asked for data.
+    await waitFor(() =>
+      expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/metrics/metric-1/series'))).toBe(true))
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/metrics/metric-1/breakdowns'))).toBe(false)
+
+    releaseDefinition()
+    await waitFor(() =>
+      expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/metrics/metric-1/breakdowns'))).toBe(true))
+  })
+
   it('does not render the Definition card outside the metric scope', async () => {
     installEventDetailFetch()
     renderEventDetail()
@@ -1808,6 +2039,171 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
 
     expect(screen.queryByRole('heading', { name: 'Definition' })).not.toBeInTheDocument()
     expect(screen.queryByText('Show SQL')).not.toBeInTheDocument()
+  })
+
+  it('averages a ratio metric rolled up to days instead of summing it (MON-2)', async () => {
+    installMetricDetailFetch('1h', { kind: 'fact', composition: 'ratio', unit: '%' })
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-points', '2'))
+    fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Days' }))
+
+    // 10 and 20 in one day: the day reads 15, not 30.
+    await waitFor(() => expect(screen.getByTestId('metrics-chart')).toHaveAttribute('data-first-count', '15'))
+  })
+
+  it('still sums an additive count metric rolled up to days (MON-2)', async () => {
+    installMetricDetailFetch('1h', { kind: 'fact', aggregation: 'count' })
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-points', '2'))
+    fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Days' }))
+
+    await waitFor(() => expect(screen.getByTestId('metrics-chart')).toHaveAttribute('data-first-count', '30'))
+  })
+
+  it('never fetches event types on a metric page (MON-37)', async () => {
+    const fetchSpy = installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).endsWith('/event-types'))).toBe(false)
+  })
+
+  it('retries the failed metric definition from the page error (MON-7)', async () => {
+    const fetchSpy = installMetricDetailFetch('1d')
+    const base = fetchSpy.getMockImplementation()!
+    let definitionCalls = 0
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/api/v1/projects/demo/metrics/metric-1')) {
+        definitionCalls += 1
+        if (definitionCalls === 1) return errorResponse()
+      }
+      return base(input, init)
+    })
+    renderMetricDetail()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Try again/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Daily Active Users' })).toBeInTheDocument()
+    expect(definitionCalls).toBe(2)
+  })
+
+  it('keeps the range and granularity in the URL (MON-24)', async () => {
+    const fetchSpy = installMetricDetailFetch('1h')
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1?range=30&gran=day']}>
+          <Routes>
+            <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+          </Routes>
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await screen.findByTestId('metrics-chart')
+    // The link's range reached the request, and its granularity the control.
+    const seriesUrl = fetchSpy.mock.calls
+      .map(([input]) => String(input))
+      .find(url => url.includes('/metrics/metric-1/series'))
+    const range = new URL(seriesUrl!, 'http://localhost').searchParams
+    expect(new Date(range.get('to')!).getTime() - new Date(range.get('from')!).getTime())
+      .toBe(30 * 24 * 60 * 60 * 1000)
+    expect(screen.getByRole('combobox', { name: /time granularity/i })).toHaveTextContent('Days')
+    expect(screen.getByRole('button', { name: '30d' })).toHaveAttribute('aria-pressed', 'true')
+
+    // A change is written back, the other params kept.
+    fireEvent.click(screen.getByRole('button', { name: '90d' }))
+    await waitFor(() => {
+      const params = new URLSearchParams(screen.getByTestId('location-search').textContent ?? '')
+      expect(params.get('range')).toBe('90')
+      expect(params.get('gran')).toBe('day')
+    })
+    // Back to the default: the param leaves the URL instead of spelling it out.
+    fireEvent.click(screen.getByRole('button', { name: '7d' }))
+    await waitFor(() =>
+      expect(new URLSearchParams(screen.getByTestId('location-search').textContent ?? '').has('range')).toBe(false))
+    // The same for granularity: Hours is the 7d default of a 1h metric.
+    fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Hours' }))
+    await waitFor(() =>
+      expect(new URLSearchParams(screen.getByTestId('location-search').textContent ?? '').has('gran')).toBe(false))
+    expect(screen.getByRole('combobox', { name: /time granularity/i })).toHaveTextContent('Hours')
+  })
+
+  it('sends a neutral colour, names the time zone and caps the label (MON-25, MON-27)', async () => {
+    const fetchSpy = installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    const when = screen.getByLabelText('Date and time')
+    // Prefilled with now, so "we just deployed" is one field away.
+    expect((when as HTMLInputElement).value).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+    expect(screen.getByText(/Your local time \(UTC/)).toBeInTheDocument()
+    expect(screen.queryByText('YYYY-MM-DD HH:mm')).not.toBeInTheDocument()
+    const label = screen.getByPlaceholderText('Label (e.g. v1.4 deploy)')
+    expect(label).toHaveAttribute('maxLength', '200')
+
+    fireEvent.change(label, { target: { value: 'deploy' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+
+    await waitFor(() => {
+      const postCall = fetchSpy.mock.calls.find(
+        ([callUrl, callInit]) => String(callUrl).includes('/annotations') && callInit?.method === 'POST',
+      )
+      expect(postCall).toBeDefined()
+      // Never the backend's red default, which is the anomaly colour.
+      expect(JSON.parse(String(postCall![1]?.body)).color).toBe('var(--info)')
+    })
+  })
+
+  it('confirms before deleting, and says a project-wide marker goes everywhere (MON-26)', async () => {
+    const fetchSpy = installMetricDetailFetch('1d', {}, {}, [
+      metricAnnotationFixture({ scope_type: null, scope_ref: null, label: 'Global freeze' }),
+    ])
+    renderMetricDetail()
+
+    const deleteButton = await screen.findByRole('button', { name: 'Delete annotation Global freeze' })
+    const deletes = () => fetchSpy.mock.calls.filter(([, callInit]) => callInit?.method === 'DELETE')
+
+    fireEvent.click(deleteButton)
+    expect(await screen.findByText('Delete project-wide annotation?')).toBeInTheDocument()
+    expect(screen.getByText(/shown on every chart in this project/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByText('Delete project-wide annotation?')).not.toBeInTheDocument())
+    expect(deletes()).toHaveLength(0)
+
+    fireEvent.click(deleteButton)
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(deletes()).toHaveLength(1))
+  })
+
+  it('says how many breakdown values the chart leaves out (MON-29)', async () => {
+    installMetricDetailFetch('1d', {}, {}, [], {
+      columns: ['country'],
+      selected_column: 'country',
+      series: Array.from({ length: 10 }, (_, index) => ({
+        breakdown_value: `c${index}`,
+        is_other: false,
+        total_value: 10 - index,
+        data: [metricSeriesPoint('2026-01-02T00:00:00Z', 10 - index)],
+      })),
+    })
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    const breakdownsTab = screen.getByRole('tab', { name: /Breakdowns/i })
+    fireEvent.mouseDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.click(breakdownsTab)
+
+    expect(await screen.findByText(/Showing the first 8 of 10 values/)).toBeInTheDocument()
+    expect(screen.getByTestId('multi-chart').getAttribute('data-labels')?.split('|')).toHaveLength(8)
   })
 
   /**
@@ -1898,6 +2294,93 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts?.metricId).toBeUndefined()
       expect(callouts()).toHaveLength(0)
       expect(screen.queryByText(COLLECT_INSTRUCTION)).not.toBeInTheDocument()
+    })
+  })
+})
+
+describe('MonitoringDetailPage failures stay inside their tab (MON-8, MON-9)', () => {
+  it('shows a hero-shaped placeholder, not the generic header, while the event loads', async () => {
+    const fetchSpy = installEventDetailFetch()
+    const base = fetchSpy.getMockImplementation()!
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/api/v1/projects/demo/events/event-1')) return new Promise<Response>(() => {})
+      return base(input, init)
+    })
+    renderEventDetail()
+
+    expect(await screen.findByRole('status', { name: 'Loading event' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Back to events/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Monitoring detail for the selected event.')).not.toBeInTheDocument()
+  })
+
+  it('keeps the page when the Distribution endpoint fails', async () => {
+    const fetchSpy = installEventDetailFetch()
+    const base = fetchSpy.getMockImplementation()!
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).includes('/distribution-drift')) return errorResponse()
+      return base(input, init)
+    })
+    renderEventDetail('?tab=distribution')
+
+    expect(await screen.findByText('Could not load distribution drift')).toBeInTheDocument()
+    // The header, fields and the other tabs are all still there.
+    expect(screen.getByRole('heading', { name: 'checkout_completed' })).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Fields' })).toBeInTheDocument()
+    expect(screen.queryByText('Failed to load monitoring details')).not.toBeInTheDocument()
+  })
+
+  it('says the breakdowns failed instead of claiming there are none', async () => {
+    const fetchSpy = installEventDetailFetch()
+    const base = fetchSpy.getMockImplementation()!
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).includes('/metrics/breakdowns')) return errorResponse()
+      return base(input, init)
+    })
+    renderEventDetail('?tab=breakdowns')
+
+    expect(await screen.findByText('Could not load breakdowns')).toBeInTheDocument()
+    expect(screen.queryByText('No breakdown groups yet.')).not.toBeInTheDocument()
+  })
+
+  it('says the change history failed instead of "No recent changes"', async () => {
+    const fetchSpy = installEventDetailFetch()
+    const base = fetchSpy.getMockImplementation()!
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).includes('/events/event-1/history')) return errorResponse()
+      return base(input, init)
+    })
+    renderEventDetail()
+
+    expect(await screen.findByText('Could not load recent activity')).toBeInTheDocument()
+    expect(screen.queryByText('No recent changes')).not.toBeInTheDocument()
+  })
+
+  it('writes the breakdown value filter to the URL (MON-24)', async () => {
+    const point = metricPoint('2026-01-02T00:00:00Z', 10)
+    installEventDetailFetch({
+      breakdowns: {
+        event_id: 'event-1',
+        scan_config_id: 'scan-1',
+        interval: '1h',
+        columns: ['platform'],
+        selected_column: 'platform',
+        series: [
+          { breakdown_value: 'ios', is_other: false, total_count: 60, data: [point], parity_anomalies: [] },
+          { breakdown_value: 'android', is_other: false, total_count: 40, data: [point], parity_anomalies: [] },
+        ],
+      },
+    })
+    renderEventDetail('?tab=breakdowns&value=android')
+
+    // The link's filter is applied on arrival…
+    await waitFor(() =>
+      expect(screen.getByTestId('multi-chart')).toHaveAttribute('data-labels', 'android'))
+    // …and a change is written back.
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle ios' }))
+    await waitFor(() => {
+      const params = new URLSearchParams(screen.getByTestId('location-search').textContent ?? '')
+      expect(params.getAll('value')).toEqual(['android', 'ios'])
+      expect(params.get('tab')).toBe('breakdowns')
     })
   })
 })

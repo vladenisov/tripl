@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Coroutine
-from typing import Annotated, Any
+from typing import Annotated
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import Response
-from fastapi.routing import APIRoute
-from starlette.types import Message
 
 from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.schemas.event_photo import (
@@ -17,52 +14,11 @@ from tripl.schemas.event_photo import (
     EventPhotoReorder,
     EventPhotoResponse,
 )
-from tripl.services import event_photo_service
-
-
-class _PhotoBodyCapRoute(APIRoute):
-    """Refuse a request body bigger than a photo upload can be, before it is parsed.
-
-    FastAPI parses a multipart form before it resolves any dependency — the
-    editor check included — and Starlette spools a file part to a temporary
-    file with no size limit. The single container is the network edge, with no
-    proxy in front to cap the body, so one anonymous request could fill the
-    disk before the upload route learned who sent it (tripl-0zpq.214). A body
-    declaring a Content-Length over the cap is refused unread; one that does
-    not (chunked) is counted as it streams in and cut off at the cap. Every
-    route of this router gets it; only the upload carries a body anywhere near
-    the limit.
-    """
-
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        handler = super().get_route_handler()
-
-        async def capped_handler(request: Request) -> Response:
-            limit = event_photo_service.upload_body_limit_bytes()
-            declared = request.headers.get("content-length", "")
-            if declared.isdigit() and int(declared) > limit:
-                raise event_photo_service.upload_too_large()
-            receive = request.receive
-            received = 0
-
-            async def counting_receive() -> Message:
-                nonlocal received
-                message = await receive()
-                if message["type"] == "http.request":
-                    received += len(message.get("body", b""))
-                    if received > limit:
-                        raise event_photo_service.upload_too_large()
-                return message
-
-            return await handler(Request(request.scope, counting_receive))
-
-        return capped_handler
-
+from tripl.services import audit_service, event_photo_service
 
 router = APIRouter(
     prefix="/projects/{slug}/events/{event_id}/photos",
     tags=["event-photos"],
-    route_class=_PhotoBodyCapRoute,
 )
 
 
@@ -113,6 +69,15 @@ async def upload_event_photo(
         original_filename=file.filename or "",
         uploaded_by_user_id=current_user.id,
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event_photo.upload",
+        target_type="event_photo",
+        target_id=photo.id,
+        project_slug=slug,
+        payload={"event_id": str(event_id)},
+    )
     return await _to_response(photo, slug)
 
 
@@ -124,8 +89,16 @@ async def reorder_event_photos(
     data: EventPhotoReorder,
     current_user: EditorUserDep,
 ) -> list[EventPhotoResponse]:
-    del current_user
     photos = await event_photo_service.reorder_photos(session, slug, event_id, data.photo_ids)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event_photo.reorder",
+        target_type="event",
+        target_id=event_id,
+        project_slug=slug,
+        payload={"photo_ids": [str(photo_id) for photo_id in data.photo_ids]},
+    )
     return [await _to_response(photo, slug) for photo in photos]
 
 
@@ -137,8 +110,16 @@ async def delete_event_photo(
     photo_id: uuid.UUID,
     current_user: EditorUserDep,
 ) -> None:
-    del current_user
     await event_photo_service.delete_photo(session, slug, event_id, photo_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event_photo.delete",
+        target_type="event_photo",
+        target_id=photo_id,
+        project_slug=slug,
+        payload={"event_id": str(event_id)},
+    )
 
 
 @router.get("/{photo_id}/file")
@@ -184,6 +165,15 @@ async def attach_figma_spec(
         title=data.title,
         uploaded_by_user_id=current_user.id,
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event_photo.figma_attach",
+        target_type="event_photo",
+        target_id=photo.id,
+        project_slug=slug,
+        payload={"event_id": str(event_id)},
+    )
     return await _to_response(photo, slug)
 
 
@@ -216,6 +206,15 @@ async def create_photo_comment(
         parent_id=data.parent_id,
         user_id=current_user.id,
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event_photo.comment_create",
+        target_type="event_photo_comment",
+        target_id=comment.id,
+        project_slug=slug,
+        payload={"event_id": str(event_id), "photo_id": str(photo_id)},
+    )
     return EventPhotoCommentResponse.model_validate(comment)
 
 
@@ -228,5 +227,13 @@ async def delete_photo_comment(
     comment_id: uuid.UUID,
     current_user: EditorUserDep,
 ) -> None:
-    del current_user
     await event_photo_service.delete_comment(session, slug, event_id, photo_id, comment_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="event_photo.comment_delete",
+        target_type="event_photo_comment",
+        target_id=comment_id,
+        project_slug=slug,
+        payload={"event_id": str(event_id), "photo_id": str(photo_id)},
+    )

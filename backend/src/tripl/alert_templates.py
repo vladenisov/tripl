@@ -300,6 +300,16 @@ METRIC_UNIT_PERCENT = "%"
 # What the percent parenthetical says when there is nothing to divide by.
 NO_BASELINE_LABEL = "no baseline"
 
+# The ``local_notice`` a ``demo_sink`` delivery carries in its payload snapshot.
+# One constant for both writers — the demo seeder that records the initial
+# delivery and the worker's demo_sink dispatch branch (send, retry, simulate) —
+# so a freshly seeded delivery and a retried one always describe themselves the
+# same way (tripl-0zpq.320).
+DEMO_SINK_LOCAL_NOTICE = (
+    "Simulated local delivery (demo_sink) — rendered and recorded locally with "
+    "no external message sent."
+)
+
 
 @dataclass(frozen=True)
 class AlertTemplateContext:
@@ -554,8 +564,10 @@ ALERT_SCOPE_LABELS: dict[str, str] = {
     MetricScopeType.project_total.value: "Project total",
     MetricScopeType.event_type.value: "Event type",
     MetricScopeType.event.value: "Event",
+    MetricScopeType.metric.value: "Metric",
     MetricScopeType.schema.value: "Schema drift",
     MetricScopeType.distribution.value: "Distribution drift",
+    _SCOPE_VARIABLE_VALUE_DRIFT: "Variable value drift",
     _SCOPE_RELEASE_REGRESSION: "Release regression",
 }
 
@@ -563,12 +575,8 @@ ALERT_SCOPE_LABELS: dict[str, str] = {
 def alert_scope_label(scope_type: str) -> str:
     """The human name a rendered item gives a scope, for ``${scope_label}``.
 
-    Deliberately NOT exhaustive over ``MetricScopeType``: ``metric`` and
-    ``variable_value_drift`` have no entry and fall through to the raw scope
-    string, which is exactly what both renderers have always printed for them.
-    Filling those gaps would change the text of live messages, and unifying the
-    two maps (tripl-0zpq.165) must not — that is a separate decision with its
-    own reader-facing consequences.
+    Shared by delivered messages and simulator previews so their scope labels
+    stay identical. Unknown future scopes still fall back to their raw value.
     """
     return ALERT_SCOPE_LABELS.get(scope_type, str(scope_type))
 

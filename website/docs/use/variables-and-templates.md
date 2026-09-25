@@ -37,6 +37,17 @@ Only the name and type are required. **You do not have to fill in bindings** —
 a scan matches a variable by its name first, so a variable named after the
 column it stands for needs no binding at all.
 
+Each token belongs to one variable. Creating or editing a variable is refused
+with a conflict when a new binding is already another variable's name, binding
+or scan source, and when a new or changed name is already another variable's
+binding or scan source (a variable renamed after a scan keeps its original
+source). Editing a variable does not re-check the bindings it already has, so
+scan-created bindings such as `props.$os` and names such as `userId` save
+unchanged; only newly added bindings must be a column or dotted path.
+
+A scan skips, and reports in the run details, any variable token longer than
+100 characters, such as a JSON key typed by a user.
+
 ### A binding and a `${token}` are not the same thing
 
 They are written the same way and they are frequently the same string, which is
@@ -303,11 +314,17 @@ Two details worth knowing:
 - a context moves only when the surviving event's value for that field still
   names the variable. A group rule that rewrites a field value to the pattern it
   matched removes the reference, so the context is dropped rather than left
-  asserting a reference that is no longer there;
+  asserting a reference that is no longer there. A JSON column is never
+  rewritten that way: a rule condition on the column itself still groups the
+  event, but its value keeps the template, so every `${column.path}` context
+  moves with it;
 - where both events already carried an entry for the same variable, the
   surviving event's own override or drift decision wins. Observed contexts are
-  combined instead: the higher observation count, and the union of the sampled
-  values under the usual cap.
+  combined instead: the observation count becomes the number of distinct values
+  across both sides (never less than the larger of the two counts), and the
+  values are unioned. A low-cardinality context keeps every value until the
+  union outgrows the cardinality threshold; it then becomes high-cardinality and
+  its values are sampled.
 
 ## Exclude instead of deleting scan-owned variables
 
@@ -332,15 +349,17 @@ which variables, is a shorter list than "all of them":**
 
 | Run | Retires unused variables? |
 | --- | --- |
-| A scan you start by hand | Always, whatever minted them |
-| A **scheduled monitoring collection** | Always for a variable minted from a path inside a JSON column; for a variable minted from a scalar column, only when the config sets **Limits → Lookback (hours)** |
+| A scan you start by hand | Always for JSON-path variables; for scalar-column variables, only when every scan config in the project declares **Limits → Lookback (hours)** |
+| A **scheduled monitoring collection** | Always for JSON-path variables; for scalar-column variables, only when every scan config in the project declares **Limits → Lookback (hours)** |
 | A **metrics replay** | Never |
 
 Both exceptions are the same rule seen twice: a run only decides a variable is
 unused from a view it can defend.
 
-A manual scan with no lookback reads everything the base query returns, so
-"nothing refers to this" is a claim about all of your data. A scheduled
+A manual scan with no lookback reads everything its base query returns, but the
+variable sweep spans the whole project. A sibling config may have rewritten a
+scalar variable using a narrow collection interval, so the manual scan alone
+cannot justify retiring it. A scheduled
 collection has no such view. It always reads through a window, and with
 **Lookback (hours)** left blank that window is the slice it is collecting —
 usually one or two intervals, often a single hour. What that narrow view can do
@@ -371,15 +390,15 @@ sync the catalog at all — it recomputes counts over a past window and creates 
 events or variables — so it never sees which paths your rows currently carry and
 is in no position to call a variable unused.
 
-:::warning A schedule sweeps scalar-column variables only behind a lookback
+:::warning Scalar-column retirement needs lookbacks on every project scan
 The create page pre-fills **Limits → Lookback (hours)** with 24, but a config
 saved without one shows the field blank, and blank is a legitimate setting: each
-run reads the whole base query. It also means the scheduled runs of a
-**Catalog + monitoring** config judge only the variables minted from JSON paths
+run reads the whole base query. It also means catalog runs across that project
+judge only the variables minted from JSON paths
 — the shape that grows a permanent row per key, a map keyed by free text
 collected hourly, is swept — and leave every variable minted from a scalar
-column alone. If those are the rows piling up, set a lookback wide enough to
-contain your tracking plan, run the scan by hand, or clear the backlog from the
+column alone. If those are the rows piling up, set a representative lookback on
+every project scan config or clear the backlog from the
 danger zone below. *Variables retired* on a
 [run](./feature-reference.md#scan-runs) is present, `0` included, on every
 manual run and every scheduled collection, and absent only on a replay — so on a

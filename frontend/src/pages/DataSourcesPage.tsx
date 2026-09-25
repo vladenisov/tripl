@@ -4,6 +4,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dataSourcesApi } from '@/api/dataSources'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
+import {
+  UNSAVED_CHANGES_MESSAGE,
+  useDirtySinceOpen,
+  useUnsavedDialogGuard,
+} from '@/hooks/useUnsavedChangesGuard'
+import { LEAVE_CONFIRMED, useUnsavedChanges } from '@/components/settings/unsaved-changes'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { DataSource, DbType } from '@/types'
 import { DB_TYPE_OPTIONS } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -53,6 +60,7 @@ import { dataSourceHealthLexeme } from '@/lib/statusLexicon'
 import { getErrorMessage } from '@/lib/utils'
 import { formatDate } from '@/lib/datetime'
 import { dataSourcesKey } from '@/lib/queryKeys'
+import { isOwner } from '@/lib/permissions'
 
 const EMPTY_DATA_SOURCES: DataSource[] = []
 
@@ -111,7 +119,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setEditSettings((prev) => ({ ...prev, ...patch }))
 
   const [testingId, setTestingId] = useState<string | null>(null)
-  const canManageDataSources = user?.role === 'owner'
+  const canManageDataSources = isOwner(user?.role)
 
   const dataSourcesQuery = useQuery({
     queryKey: dataSourcesKey(),
@@ -119,7 +127,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   })
   const dataSources = dataSourcesQuery.data ?? EMPTY_DATA_SOURCES
 
+  // Create and update render their error inside their dialog.
   const createMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => {
       const connectionSettings = buildConnectionSettings(dbType, settings)
       return dataSourcesApi.create({
@@ -136,9 +146,18 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   })
 
   const updateMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (id: string) => {
       const editDbType = editingDs?.db_type
       if (!editDbType) throw new Error('No data source is being edited')
+      if (editingDs.is_synthetic) {
+        return dataSourcesApi.update(id, {
+          name: editName,
+          timeout_seconds: editCore.timeoutSeconds.trim()
+            ? Number(editCore.timeoutSeconds)
+            : null,
+        })
+      }
       const connectionSettings = buildConnectionSettings(editDbType, editSettings)
       return dataSourcesApi.update(id, {
         name: editName,
@@ -213,10 +232,13 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     navigate(`/settings/data-sources/${ds.id}`, { replace: true })
   }, [navigate, populateEditForm])
 
+  // Every caller has already settled the draft: the dialog guard asked, or
+  // there was nothing to ask about, or it was just saved. LEAVE_CONFIRMED tells
+  // the settings shell's blocker so, or it would ask a second time.
   const closeEdit = () => {
     editingDsIdRef.current = null
     setEditingDs(null)
-    navigate('/settings/data-sources', { replace: true })
+    navigate('/settings/data-sources', { replace: true, state: LEAVE_CONFIRMED })
   }
 
   useEffect(() => {
@@ -247,6 +269,28 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setSettings(EMPTY_CONNECTION_SETTINGS_FORM)
   }
 
+  // One stray overlay click or Escape used to throw away a pasted service-account
+  // key or PEM certificate (DATA-31). Both dialogs now ask first while they hold
+  // anything the user typed; Cancel asks too, since it is the same loss.
+  const createDirty = useDirtySinceOpen(showForm, { name, dbType, core, settings })
+  const createGuard = useUnsavedDialogGuard(createDirty)
+  const editDirty = useDirtySinceOpen(!!editingDs, { editName, editCore, editSettings })
+  const editGuard = useUnsavedDialogGuard(editDirty)
+  // The edit dialog has a URL of its own, so browser Back closes it without
+  // any of the dialog's close requests running. Registering the draft with the
+  // settings shell puts Back (and every other way out of this URL) behind the
+  // shell's blocker as well.
+  const { registerUnsaved } = useUnsavedChanges()
+  const editingId = editingDs?.id
+  useEffect(() => {
+    registerUnsaved(
+      editDirty && editingId
+        ? { keptBy: path => path === `data-sources/${editingId}`, message: UNSAVED_CHANGES_MESSAGE }
+        : null,
+    )
+    return () => registerUnsaved(null)
+  }, [editDirty, editingId, registerUnsaved])
+
   const healthyCount = dataSources.filter(
     (ds) => ds.last_test_status === 'success' && !isHealthCheckStale(ds),
   ).length
@@ -260,6 +304,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   return (
     <div className="space-y-5">
       {dialog}
+      {createGuard.dialog}
+      {editGuard.dialog}
 
       {/* Compact stats header (page title comes from the Settings tab bar) */}
       <div className="flex items-end justify-end gap-6">
@@ -289,7 +335,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       </div>
 
       {/* Create dialog */}
-      <Dialog open={showForm} onOpenChange={(v) => { if (!v) resetForm() }}>
+      <Dialog open={showForm} onOpenChange={(v) => { if (!v) createGuard.requestClose(resetForm) }}>
         <DialogContent className="sm:max-w-lg">
           <form onSubmit={(e) => { e.preventDefault(); createMut.mutate() }}>
             <DialogHeader>
@@ -335,7 +381,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
               )}
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={resetForm}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => createGuard.requestClose(resetForm)}>Cancel</Button>
               <Button type="submit" disabled={createMut.isPending}>Create</Button>
             </DialogFooter>
           </form>
@@ -343,7 +389,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       </Dialog>
 
       {/* Edit dialog */}
-      <Dialog open={!!editingDs} onOpenChange={(v) => { if (!v) closeEdit() }}>
+      <Dialog open={!!editingDs} onOpenChange={(v) => { if (!v) editGuard.requestClose(closeEdit) }}>
         <DialogContent className="sm:max-w-lg">
           <form onSubmit={(e) => { e.preventDefault(); if (editingDs) updateMut.mutate(editingDs.id) }}>
             <DialogHeader>
@@ -356,24 +402,40 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
               </div>
               {editingDs && (
                 <>
-                  {/* Same component as the create dialog, so a BigQuery source is
-                      edited as project id / dataset / service-account JSON — not
-                      as host / port / username. */}
-                  <ConnectionCoreFields
-                    idPrefix="edit-ds"
-                    dbType={editingDs.db_type}
-                    value={editCore}
-                    onChange={patchEditCore}
-                    mode="edit"
-                    secretSet={editingDs.password_set}
-                  />
-                  <ConnectionSettingsFields
-                    idPrefix="edit-ds"
-                    dbType={editingDs.db_type}
-                    value={editSettings}
-                    onChange={patchEditSettings}
-                    sslkeySet={editingDs.connection_settings?.sslkey_set ?? false}
-                  />
+                  {editingDs.is_synthetic ? (
+                    <div className="grid gap-2">
+                      <p className="text-sm text-muted-foreground">
+                        Demo sources have no warehouse connection to configure.
+                      </p>
+                      <Label htmlFor="edit-ds-timeout">Timeout, s</Label>
+                      <Input
+                        id="edit-ds-timeout"
+                        type="number"
+                        min={1}
+                        value={editCore.timeoutSeconds}
+                        onChange={(e) => patchEditCore({ timeoutSeconds: e.target.value })}
+                        placeholder="300"
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <ConnectionCoreFields
+                        idPrefix="edit-ds"
+                        dbType={editingDs.db_type}
+                        value={editCore}
+                        onChange={patchEditCore}
+                        mode="edit"
+                        secretSet={editingDs.password_set}
+                      />
+                      <ConnectionSettingsFields
+                        idPrefix="edit-ds"
+                        dbType={editingDs.db_type}
+                        value={editSettings}
+                        onChange={patchEditSettings}
+                        sslkeySet={editingDs.connection_settings?.sslkey_set ?? false}
+                      />
+                    </>
+                  )}
                 </>
               )}
               {updateMut.isError && (
@@ -381,7 +443,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
               )}
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => closeEdit()}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => editGuard.requestClose(closeEdit)}>Cancel</Button>
               <Button type="submit" disabled={updateMut.isPending}>Save</Button>
             </DialogFooter>
           </form>

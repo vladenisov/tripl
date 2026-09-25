@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { buildDocumentTitle, resolveTitleFromPath, useDocumentTitle } from './useDocumentTitle'
@@ -244,8 +245,8 @@ describe('resolveTitleFromPath', () => {
 
   it('labels auth, workspace and the root, and names unmatched paths not-found', () => {
     expect(resolveTitleFromPath('/auth')).toEqual({ label: 'Sign in' })
-    expect(resolveTitleFromPath('/')).toEqual({ label: 'Workspace' })
-    expect(resolveTitleFromPath('/workspace')).toEqual({ label: 'Workspace' })
+    expect(resolveTitleFromPath('/')).toEqual({ label: 'All projects' })
+    expect(resolveTitleFromPath('/workspace')).toEqual({ label: 'All projects' })
     expect(resolveTitleFromPath('/nope')).toEqual({ label: 'Page not found' })
     expect(buildDocumentTitle(resolveTitleFromPath('/nope').label)).toBe(
       `Page not found${SEP}tripl`,

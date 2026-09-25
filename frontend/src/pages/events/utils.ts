@@ -309,6 +309,21 @@ export function reorderWithSelection(
   ]
 }
 
+/**
+ * The contiguous span of `next` that differs from `prev` (two orderings of the
+ * same ids), or `[]` when nothing moved. The ids in that span are a permutation
+ * of the ids in the same span of `prev`, which is what the reorder endpoint
+ * needs to renumber them among their own order slots.
+ */
+export function changedSlice(prev: readonly string[], next: readonly string[]): string[] {
+  let first = 0
+  while (first < next.length && prev[first] === next[first]) first += 1
+  if (first === next.length) return []
+  let last = next.length - 1
+  while (last > first && prev[last] === next[last]) last -= 1
+  return next.slice(first, last + 1)
+}
+
 export const LAST_SEEN_COL_KEY = 'last_seen'
 
 export { formatRelativeTime } from '@/lib/datetime'
@@ -543,4 +558,29 @@ export function applyEventNameFormat(
 export function nameFormatBaseColumns(fmt: string | null | undefined): Set<string> {
   if (!fmt) return new Set()
   return new Set([...fmt.matchAll(NAME_FORMAT_TOKEN)].map(match => match[1].split('.')[0]))
+}
+
+/**
+ * The table's active filters the metrics endpoint cannot apply (it takes type,
+ * search, status and tag only), by the label the toolbar gives them. The chart
+ * names them rather than pass off an unfiltered series as the table's
+ * (EVT-20). Lives here so TabMetricsCard.tsx exports only components.
+ */
+export function unappliedChartFilters({
+  filterSilentDays,
+  filterReviewed,
+  filterOpenQuestions,
+  hasColumnFilters,
+}: {
+  filterSilentDays: number | undefined
+  filterReviewed: boolean | undefined
+  filterOpenQuestions: boolean | undefined
+  hasColumnFilters: boolean
+}): string[] {
+  const out: string[] = []
+  if (filterSilentDays !== undefined) out.push('activity')
+  if (filterReviewed !== undefined) out.push('reviewed')
+  if (filterOpenQuestions !== undefined) out.push('questions')
+  if (hasColumnFilters) out.push('column filters')
+  return out
 }

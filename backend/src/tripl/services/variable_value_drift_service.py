@@ -164,7 +164,10 @@ async def apply_drift_action(
     else:
         raise HTTPException(status_code=422, detail="Unsupported variable value drift action")
 
-    drift.resolution_note = data.note
+    if data.action == "reopen":
+        drift.resolution_note = None
+    elif "note" in data.model_fields_set:
+        drift.resolution_note = data.note
     await session.commit()
     await session.refresh(drift)
 

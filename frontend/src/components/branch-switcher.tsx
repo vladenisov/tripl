@@ -4,12 +4,13 @@ import { useQuery } from '@tanstack/react-query'
 import { Check, ChevronDown, GitBranch, GitCompare, Plus } from 'lucide-react'
 import { planBranchesApi } from '@/api/planBranches'
 import { useBranchContext } from '@/hooks/useBranch'
+import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
 import { Chip } from '@/components/primitives/chip'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { PlanBranchSummary } from '@/types'
 import { planBranchesKey } from '@/lib/queryKeys'
 
-export function BranchSwitcher({ slug }: { slug: string }) {
+export function BranchSwitcher({ slug, compact = false }: { slug: string; compact?: boolean }) {
   const { branchId, setBranchId } = useBranchContext()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
@@ -28,8 +29,19 @@ export function BranchSwitcher({ slug }: { slug: string }) {
   )
 
   const active = branchId ? (branches.find((b) => b.id === branchId) ?? null) : (mainBranch ?? null)
-  const activeLabel = active?.name ?? 'main'
+  // Until the list arrives a selected branch has no name to show, and "main"
+  // would be a claim about data the page is not reading.
+  const resolving = !!branchId && branchesQuery.isPending
+  const activeLabel = resolving ? 'loading…' : (active?.name ?? 'main')
   const onMain = !branchId || active?.kind === 'main'
+
+  // Switching branch swaps the data under the page without a navigation, so a
+  // form with a draft would be remounted empty. Ask the page's unsaved-changes
+  // guard first; the popover closes either way.
+  const switchTo = (id: string | null) => {
+    setOpen(false)
+    requestPageLeave(() => setBranchId(id))
+  }
 
   const goToBranches = () => {
     setOpen(false)
@@ -39,6 +51,26 @@ export function BranchSwitcher({ slug }: { slug: string }) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
+        {compact ? (
+          // The collapsed rail's form: an icon with the branch in its name and
+          // a dot when the pages read a feature branch rather than main.
+          <button
+            type="button"
+            title={`Branch: ${activeLabel}`}
+            aria-label={`Switch branch (current: ${activeLabel})`}
+            className="relative flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            <GitBranch className="h-[15px] w-[15px]" aria-hidden="true" />
+            {!onMain && (
+              <span
+                aria-hidden="true"
+                className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
+                style={{ background: 'var(--info)' }}
+              />
+            )}
+          </button>
+        ) : (
         <button
           type="button"
           title="Switch branch"
@@ -56,8 +88,9 @@ export function BranchSwitcher({ slug }: { slug: string }) {
           )}
           <ChevronDown className="h-3 w-3 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
         </button>
+        )}
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[260px] p-1.5">
+      <PopoverContent align="start" side={compact ? 'right' : 'bottom'} className="w-[260px] p-1.5">
         <div
           className="px-2 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.06em]"
           style={{ color: 'var(--fg-faint)' }}
@@ -74,10 +107,7 @@ export function BranchSwitcher({ slug }: { slug: string }) {
             <BranchRow
               branch={mainBranch}
               active={onMain}
-              onSelect={() => {
-                setBranchId(null)
-                setOpen(false)
-              }}
+              onSelect={() => switchTo(null)}
             />
           )}
           {workingBranches.map((branch) => (
@@ -85,10 +115,7 @@ export function BranchSwitcher({ slug }: { slug: string }) {
               key={branch.id}
               branch={branch}
               active={branchId === branch.id}
-              onSelect={() => {
-                setBranchId(branch.id)
-                setOpen(false)
-              }}
+              onSelect={() => switchTo(branch.id)}
             />
           ))}
           {!branchesQuery.isFetching && workingBranches.length === 0 && (

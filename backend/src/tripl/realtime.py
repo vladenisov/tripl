@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from typing import Any
 
 from tripl import cache
@@ -215,6 +216,82 @@ async def redis_message_iterator(
             pass
 
 
+@asynccontextmanager
+async def subscribed_messages(
+    slug: str,
+) -> AsyncIterator[AsyncIterator[dict[str, Any] | None] | None]:
+    """Subscribe before reading replay; yield None if Redis cannot be reached."""
+    client = cache.get_async_pubsub_client()
+    if client is None:
+        yield None
+        return
+    pubsub = client.pubsub()
+    try:
+        try:
+            await pubsub.subscribe(channel(slug))
+        except RedisError as exc:
+            logger.warning("realtime subscribe %s failed: %s", slug, exc)
+            yield None
+            return
+
+        async def messages() -> AsyncIterator[dict[str, Any] | None]:
+            while True:
+                try:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=HEARTBEAT_SECONDS
+                    )
+                except RedisError as exc:
+                    logger.warning("realtime read %s failed: %s", slug, exc)
+                    return
+                if message is None:
+                    yield None
+                    continue
+                try:
+                    envelope = json.loads(message.get("data"))
+                except ValueError, TypeError:
+                    continue
+                if isinstance(envelope, dict):
+                    yield envelope
+
+        yield messages()
+    finally:
+        try:
+            await pubsub.unsubscribe(channel(slug))
+            await pubsub.aclose()  # type: ignore[no-untyped-call]
+        except Exception:  # noqa: BLE001
+            logger.warning("realtime subscription cleanup failed for %s", slug, exc_info=True)
+
+
+async def project_response_stream(
+    *,
+    slug: str,
+    last_event_id: int | None,
+    is_disconnected: Callable[[], Awaitable[bool]],
+    max_messages: int | None,
+) -> AsyncIterator[str]:
+    async with subscribed_messages(slug) as messages:
+        replay = await replay_buffered_events(slug, last_event_id) if messages is not None else []
+        async for frame in sse_response_stream(
+            hello_payload={"project_slug": slug, "backend": "redis" if messages else "degraded"},
+            replay=replay,
+            messages=messages,
+            is_disconnected=is_disconnected,
+            max_messages=max_messages,
+        ):
+            yield frame
+        # A live subscription only ends when Redis fails. Stay connected in
+        # degraded mode so the browser enables its polling fallback without a
+        # rapid reconnect loop while Redis remains unavailable.
+        if messages is not None and max_messages is None and not await is_disconnected():
+            async for frame in sse_response_stream(
+                hello_payload={"project_slug": slug, "backend": "degraded"},
+                replay=[],
+                messages=None,
+                is_disconnected=is_disconnected,
+            ):
+                yield frame
+
+
 # ── SSE formatting + core stream generator ───────────────────────────────
 
 
@@ -258,6 +335,9 @@ async def sse_response_stream(
     yield format_sse_event({"id": 0, "type": EVENT_HELLO, "data": hello_payload})
     for envelope in replay:
         yield format_sse_event(envelope)
+
+    if max_messages == 0:
+        return
 
     delivered = 0
 

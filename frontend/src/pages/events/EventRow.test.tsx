@@ -119,7 +119,9 @@ function renderRow(
     setBranchId = () => {},
     metaFields = [] as MetaFieldDefinition[],
     metaValueMap,
+    reorderable,
   }: {
+    reorderable?: boolean
     variables?: Variable[]
     fieldColumns?: FieldDefinition[]
     metaFields?: MetaFieldDefinition[]
@@ -168,6 +170,7 @@ function renderRow(
                   onToggleSelected={() => {}}
                   onToggleExpanded={() => {}}
                   onRowAction={() => {}}
+                  reorderable={reorderable}
                 />
               </tbody>
             </table>
@@ -306,7 +309,7 @@ describe('EventRow name and type cells', () => {
     expect(link).toHaveAttribute('href', '/p/proj-1/monitoring/event/evt-1?branch=br-1')
 
     fireEvent.click(link)
-    expect(setBranchId).toHaveBeenCalledWith('br-1')
+    expect(setBranchId).toHaveBeenCalledWith('br-1', { updateUrl: false })
   })
 
   it('links to the plain path on main, with no branch param to copy', () => {
@@ -540,5 +543,27 @@ describe('EventRow open questions', () => {
 
     renderRow(makeEvent(), [])
     expect(screen.queryByTitle(/unanswered question/)).toBeNull()
+  })
+})
+
+describe('EventRow reorder handle (EVT-3)', () => {
+  it('offers the drag handle while the rows are in catalog order', () => {
+    renderRow(makeEvent(), [])
+
+    expect(screen.getByRole('button', { name: /Drag to reorder/ })).toBeInTheDocument()
+  })
+
+  it('offers no drag handle when a drag would rewrite the catalog order', () => {
+    renderRow(makeEvent(), [], undefined, { reorderable: false })
+
+    expect(screen.queryByRole('button', { name: /Drag to reorder/, hidden: true })).toBeNull()
+  })
+})
+
+describe('EventRow schema drift (EVT-33)', () => {
+  it('leaves the per-type drift count to the header, not every row', () => {
+    renderRow({ ...makeEvent(), drift_count: 4 } as EventListItem, [])
+
+    expect(screen.queryByRole('button', { name: /schema drift/, hidden: true })).toBeNull()
   })
 })

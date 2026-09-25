@@ -4,8 +4,10 @@ import { resolveTitleFromPath } from '@/hooks/useDocumentTitle'
 import {
   buildNavGroups,
   getAlertingPath,
+  projectHomePath,
   resolveActivityTargetPath,
   resolveNavLocation,
+  switchProjectPath,
 } from './navigation'
 
 /**
@@ -431,5 +433,26 @@ describe('resolveActivityTargetPath', () => {
     expect(
       resolveActivityTargetPath({ ...alertRow, id: 'alert:dlv-1', target_path: null }),
     ).toBeNull()
+  })
+})
+
+describe('switchProjectPath', () => {
+  it('keeps the surface when the new project has it', () => {
+    expect(switchProjectPath('/p/a/anomalies', 'a', 'b')).toBe('/p/b/anomalies')
+    expect(switchProjectPath('/p/a/metrics/fact-tables', 'a', 'b')).toBe('/p/b/metrics/fact-tables')
+    expect(switchProjectPath('/p/a/settings/alerting', 'a', 'b')).toBe('/p/b/settings/alerting')
+  })
+
+  it('drops everything that names a row of the old project', () => {
+    expect(switchProjectPath('/p/a/events/web/evt-1', 'a', 'b')).toBe('/p/b/events')
+    expect(switchProjectPath('/p/a/scans/scan-1', 'a', 'b')).toBe('/p/b/scans')
+    expect(switchProjectPath('/p/a/settings/branches/br-1', 'a', 'b')).toBe('/p/b/settings/branches')
+  })
+
+  it('lands on the project home from anywhere else', () => {
+    expect(switchProjectPath('/workspace', undefined, 'b')).toBe(projectHomePath('b'))
+    expect(switchProjectPath('/p/a/monitoring/event/evt-1', 'a', 'b')).toBe('/p/b/overview')
+    expect(switchProjectPath('/p/a', 'a', 'b')).toBe('/p/b/overview')
+    expect(switchProjectPath('/p/ab/events', 'a', 'b')).toBe('/p/b/overview')
   })
 })

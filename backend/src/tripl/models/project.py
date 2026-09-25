@@ -98,9 +98,9 @@ class Project(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True, default=None
     )
 
-    # These four collections exist for ONE reason: the ORM-level delete cascade in
-    # ``project_service.purge_project_rows`` (SQLite has FK cascades off in tests, so
-    # the unit of work has to issue the child DELETEs itself). Nothing reads them —
+    # These four collections support the ORM-level delete cascade in
+    # ``project_service.purge_project_rows``. SQLite tests also enable foreign-key
+    # cascades; the relationships preserve ORM cleanup independently of that. Nothing reads them —
     # every plan read goes through a branch-scoped query in the services.
     #
     # They must therefore stay lazily loaded. They used to be ``lazy="selectin"``,

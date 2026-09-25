@@ -22,6 +22,11 @@ class LastOwnerError(Exception):
     """Raised when a demotion would leave the instance with no owner at all."""
 
 
+async def list_users(session: AsyncSession, *, limit: int, offset: int) -> list[User]:
+    rows = await session.scalars(select(User).order_by(User.created_at).limit(limit).offset(offset))
+    return list(rows)
+
+
 async def update_role(session: AsyncSession, user_id: uuid.UUID, role: str) -> tuple[User, str]:
     """Change one user's role, returning the user and the role it used to hold.
 

@@ -35,6 +35,33 @@ router = APIRouter(prefix="/projects/{slug}/variables", tags=["variables"])
 DEFAULT_PAGE_SIZE = 200
 MAX_PAGE_SIZE = 5000
 
+# How many ids/names one bulk audit row carries before it is a sample. The same
+# ceiling as ``events._BULK_SAMPLE`` and ``metrics_catalog._BULK_SAMPLE``, for the
+# same reason: ``payload`` is an uncapped JSON column, nobody reads the 201st id
+# off a compliance row, and a bulk delete here has no upper bound either. The
+# payload shape below is ``events.bulk_event_audit_payload``'s, spelled locally
+# because that helper's fixed keys are named ``event_ids``/``event_names`` and
+# filing variables under them would be worse than the duplication.
+_BULK_SAMPLE = 200
+
+
+def _bulk_variable_audit_payload(deleted: list[tuple[uuid.UUID, str]]) -> dict[str, object]:
+    """One bulk delete's payload: the true count plus a sample of ids and names.
+
+    ``count`` is the real number of variables deleted, so a reader can tell a
+    3-variable delete from a 3000-variable one even when the lists are cut off.
+    The row used to carry the REQUEST's raw id list with no names and no count —
+    an irreversible delete whose trail named nothing a human recognises, and
+    which listed ids that may not have resolved to a variable at all
+    (tripl-0zpq.241).
+    """
+    return {
+        "count": len(deleted),
+        "variable_ids": [str(variable_id) for variable_id, _ in deleted[:_BULK_SAMPLE]],
+        "variable_names": [name for _, name in deleted[:_BULK_SAMPLE]],
+        "truncated": len(deleted) > _BULK_SAMPLE,
+    }
+
 
 @router.post("/bulk-update", status_code=204)
 async def bulk_update_variables(
@@ -64,7 +91,7 @@ async def bulk_delete_variables(
     current_user: EditorUserDep,
     branch_id: BranchIdDep,
 ) -> None:
-    await variable_service.bulk_delete_variables(session, slug, data, branch_id)
+    deleted = await variable_service.bulk_delete_variables(session, slug, data, branch_id)
     await audit_service.record(
         session,
         user=current_user,
@@ -72,7 +99,7 @@ async def bulk_delete_variables(
         target_type="variable",
         target_id=None,
         project_slug=slug,
-        payload=data.model_dump(mode="json"),
+        payload=_bulk_variable_audit_payload(deleted),
     )
 
 
@@ -248,7 +275,7 @@ async def upsert_event_override(
     current_user: EditorUserDep,
     branch_id: BranchIdDep,
 ) -> VariableEventValueOverride:
-    override = await variable_service.upsert_event_override(
+    override, variable_name = await variable_service.upsert_event_override(
         session, slug, variable_id, event_id, data, branch_id
     )
     await audit_service.record(
@@ -257,9 +284,16 @@ async def upsert_event_override(
         action="variable.override_set",
         target_type="variable",
         target_id=variable_id,
-        target_name=override.event_name,
+        # The VARIABLE's name: the target is a variable, and filing the event's
+        # name here made the row read as though the event were the thing changed
+        # (tripl-0zpq.241). The event is in the payload, where it belongs.
+        target_name=variable_name,
         project_slug=slug,
-        payload={"event_id": str(event_id), "values": data.values},
+        payload={
+            "event_id": str(event_id),
+            "event_name": override.event_name,
+            "values": data.values,
+        },
     )
     return override
 
@@ -273,15 +307,20 @@ async def delete_event_override(
     current_user: EditorUserDep,
     branch_id: BranchIdDep,
 ) -> None:
-    await variable_service.delete_event_override(session, slug, variable_id, event_id, branch_id)
+    variable_name, event_name = await variable_service.delete_event_override(
+        session, slug, variable_id, event_id, branch_id
+    )
     await audit_service.record(
         session,
         user=current_user,
         action="variable.override_delete",
         target_type="variable",
         target_id=variable_id,
+        # Was filed with no ``target_name`` at all, so the trail read as an
+        # anonymous delete (tripl-0zpq.241).
+        target_name=variable_name,
         project_slug=slug,
-        payload={"event_id": str(event_id)},
+        payload={"event_id": str(event_id), "event_name": event_name},
     )
 
 
@@ -294,20 +333,28 @@ async def update_variable(
     current_user: EditorUserDep,
     branch_id: BranchIdDep,
 ) -> Variable:
-    v = await variable_service.update_variable(session, slug, variable_id, data, branch_id)
-    # The raw patch body is an honest payload for every field but one. A
-    # ``name`` change is not confined to this row: ``update_variable`` also
-    # rewrites ``${old}`` to ``${new}`` in every event field value on the
-    # branch, and the record below carries only the new name — target_name too
-    # — so the token that was replaced is not recoverable from the trail.
+    v, previous_name = await variable_service.update_variable(
+        session, slug, variable_id, data, branch_id
+    )
+    # The raw patch body is an honest payload for every field but one, and that
+    # one now carries its own key. A ``name`` change is not confined to this row:
+    # ``update_variable`` also rewrites ``${old}`` to ``${new}`` in every event
+    # field value on the branch, and this record used to carry only the NEW name
+    # — target_name too — so the token that was replaced was not recoverable
+    # from the trail. ``previous_name`` is added only on an actual rename, so an
+    # ordinary patch is unchanged and its presence is itself the signal that the
+    # branch-wide rewrite ran.
     #
-    # That is the survivor of a larger miss. While excluding a variable also
+    # That was the survivor of a larger miss. While excluding a variable also
     # deleted every observed context and drift row for it, a record reading
     # ``{"excluded_from_scans": true}`` under a generic "variable.update" was
-    # the only trace of an irreversible bulk delete; the delete is gone, the
-    # rename fan-out is not. Anything else added to ``update_variable`` that
+    # the only trace of an irreversible bulk delete; the delete is gone, and now
+    # so is the rename gap. Anything else added to ``update_variable`` that
     # touches rows this body does not name needs its own action or its own
-    # payload key, and the rename is the one already owed one.
+    # payload key.
+    payload = data.model_dump(exclude_unset=True)
+    if previous_name != v.name:
+        payload["previous_name"] = previous_name
     await audit_service.record(
         session,
         user=current_user,
@@ -316,7 +363,7 @@ async def update_variable(
         target_id=v.id,
         target_name=v.name,
         project_slug=slug,
-        payload=data.model_dump(exclude_unset=True),
+        payload=payload,
     )
     return v
 

@@ -27,6 +27,10 @@ import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanM
 import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import { projectEventTypesKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
+import { useConfirm } from '@/hooks/useConfirm'
+import { ScanErrorTechnicalDetails } from './scans/ScanErrorTechnicalDetails'
 
 function chipList(values: string[]) {
   if (values.length === 0) return <NoneTag />
@@ -39,9 +43,11 @@ function chipList(values: string[]) {
 
 /* ─── Per-event platform presence matrix (events × platform values, ✓/—) ─── */
 function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfigId: string }) {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['platformPresence', slug, scanConfigId],
     queryFn: () => scansApi.getPlatformPresence(slug, scanConfigId),
+    // Rendered inline below, with a retry.
+    meta: SILENT_ERROR_META,
   })
 
   const subtitle = data?.platform_column
@@ -51,6 +57,21 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
   let body: React.ReactNode
   if (isLoading) {
     body = <p className="px-4 py-3 text-sm text-muted-foreground">Loading platform presence…</p>
+  } else if (isError) {
+    // Without this branch a failed fetch fell through to "No platform column
+    // configured" — false for a scan that has one (DATA-21).
+    body = (
+      <div className="p-4">
+        <ErrorState
+          compact
+          title="Couldn't load platform presence"
+          error={error}
+          onRetry={() => {
+            void refetch()
+          }}
+        />
+      </div>
+    )
   } else if (!data?.platform_column) {
     body = (
       <p className="px-4 py-3 text-sm" style={{ color: 'var(--fg-subtle)' }}>
@@ -123,6 +144,9 @@ export function ScanDetail({
   dataSource?: DataSource | null
 }) {
   const qc = useQueryClient()
+  const canApplyGroups = useIsOwner()
+  // Retry and Stop are run/cancel, which the backend gives any editor.
+  const canRun = useCanWriteProject()
   const { notifyScanRunStarted } = useDemoScenarioActions()
   // Null for every non-demo project — no row is ever the scenario's row.
   const { scanJobId } = useScenarioArtifacts()
@@ -131,6 +155,7 @@ export function ScanDetail({
   // banner already summarizes them (tripl-7l83.4).
   const [streakExpanded, setStreakExpanded] = useState(false)
   const [applyGroupsMessage, setApplyGroupsMessage] = useState('')
+  const { confirm, dialog } = useConfirm()
 
   const etName = eventTypes.find((et: EventType) => et.id === scanConfig.event_type_id)?.display_name
 
@@ -166,6 +191,18 @@ export function ScanDetail({
     mutationFn: (jobId: string) => scansApi.cancelJob(slug, scanConfig.id, jobId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] }),
   })
+  // Stop sits one small icon away from Expand, and a stopped run is not
+  // resumed — only started again — so it asks first (DATA-24).
+  const requestCancel = async (jobId: string) => {
+    const ok = await confirm({
+      title: 'Stop this run?',
+      message:
+        'The run is marked cancelled now and stops at its next checkpoint; whatever it already wrote is kept. You can start the scan again at any time.',
+      confirmLabel: 'Stop run',
+      variant: 'danger',
+    })
+    if (ok) cancelMut.mutate(jobId)
+  }
 
   const retryMut = useMutation({
     mutationFn: () => scansApi.run(slug, scanConfig.id),
@@ -215,15 +252,16 @@ export function ScanDetail({
       watched={job.id === scanJobId}
       expanded={expandedJobId === job.id}
       onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
-      onCancel={() => cancelMut.mutate(job.id)}
+      onCancel={canRun ? () => void requestCancel(job.id) : undefined}
       cancelPending={cancelMut.isPending && cancelMut.variables === job.id}
-      onRetry={() => retryMut.mutate()}
+      onRetry={canRun ? () => retryMut.mutate() : undefined}
       retryPending={retryMut.isPending}
     />
   )
 
   return (
     <div className="flex flex-col gap-4">
+      {dialog}
       {/* Stat cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard
@@ -337,7 +375,7 @@ export function ScanDetail({
       <SurfPanel
         title="Recent runs"
         subtitle={recentJobsSubtitle}
-        right={
+        right={canApplyGroups ? (
           <Button
             size="sm"
             variant="outline"
@@ -352,7 +390,7 @@ export function ScanDetail({
             <GitMerge className="size-3" />
             {applyGroupsMut.isPending ? 'Applying…' : 'Apply groups'}
           </Button>
-        }
+        ) : undefined}
       >
         {applyGroupsMut.isError && (
           <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(applyGroupsMut.error)}</p>
@@ -363,11 +401,14 @@ export function ScanDetail({
         {retryMut.isError && (
           <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(retryMut.error)}</p>
         )}
+        {/* Always mounted, so the live region exists before it has anything to
+            say; padded only once it does, instead of a blank strip over the
+            runs on every visit (DATA-22). */}
         <p
           role="status"
           aria-live="polite"
           aria-atomic="true"
-          className="px-4 py-2 text-sm"
+          className={applyGroupsMessage ? 'px-4 py-2 text-sm' : 'sr-only'}
           style={{ color: 'var(--fg-subtle)' }}
         >
           {applyGroupsMessage}
@@ -393,7 +434,10 @@ export function ScanDetail({
               </Button>
             </div>
             {streakError && (
-              <p className="text-[12px]" style={{ color: 'var(--danger)' }}>{streakError.message}</p>
+              <div className="text-[12px]" style={{ color: 'var(--danger)' }}>
+                <p>{streakError.message}</p>
+                <ScanErrorTechnicalDetails technical={streakError.technical} />
+              </div>
             )}
           </div>
         )}
@@ -455,6 +499,10 @@ export function ScanDetail({
   )
 }
 
+// 24px suits a mouse; a finger gets 32px, since Stop sits right beside Expand
+// (DATA-24).
+const RUN_CONTROL_SIZE = 'size-6 pointer-coarse:size-8'
+
 function JobRow({
   job,
   slug,
@@ -478,9 +526,10 @@ function JobRow({
   watched: boolean
   expanded: boolean
   onToggle: () => void
-  onCancel: () => void
+  /** Omitted for a viewer, as is `onRetry`: both are editor actions. */
+  onCancel?: () => void
   cancelPending: boolean
-  onRetry: () => void
+  onRetry?: () => void
   retryPending: boolean
 }) {
   const durationSec = jobDurationSeconds(job)
@@ -501,7 +550,11 @@ function JobRow({
       <ScenarioCoachMark step="live-loop/watch-scan" when={watched}>
         <tr className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
           <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--fg-muted)' }}>
-            {job.started_at ? formatRelativeTime(job.started_at) : '—'}
+            {/* A queued run has no start yet; its queue time says more than a
+                dash, and it is what the scans list shows for it (DATA-23). */}
+            {job.started_at
+              ? formatRelativeTime(job.started_at)
+              : `queued ${formatRelativeTime(job.created_at)}`}
           </td>
           <td className="mono px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>{duration}</td>
           {/* The header says "Rows read" for every row, but a catalog run and a
@@ -517,12 +570,12 @@ function JobRow({
             <RunStatusPill status={runPillStatus(job.status)} title={failedMessage ?? undefined} />
           </td>
           <td className="px-2">
-            <div className="flex items-center justify-end gap-1">
-              {isActive && (
+            <div className="flex items-center justify-end gap-1 pointer-coarse:gap-2">
+              {isActive && onCancel && (
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-6 text-muted-foreground hover:text-[var(--danger)]"
+                  className={`${RUN_CONTROL_SIZE} text-muted-foreground hover:text-[var(--danger)]`}
                   title="Stop run"
                   aria-label="Stop run"
                   disabled={cancelPending}
@@ -531,11 +584,11 @@ function JobRow({
                   <Ban className="size-3" aria-hidden="true" />
                 </Button>
               )}
-              {job.status === 'failed' && (
+              {job.status === 'failed' && onRetry && (
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-6 text-muted-foreground hover:text-[var(--accent)]"
+                  className={`${RUN_CONTROL_SIZE} text-muted-foreground hover:text-[var(--accent)]`}
                   title="Retry scan"
                   aria-label="Retry scan"
                   disabled={retryPending}
@@ -548,7 +601,7 @@ function JobRow({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-6"
+                  className={RUN_CONTROL_SIZE}
                   aria-label={expanded ? 'Collapse run details' : 'Expand run details'}
                   aria-expanded={expanded}
                   onClick={onToggle}
@@ -560,7 +613,9 @@ function JobRow({
           </td>
         </tr>
       </ScenarioCoachMark>
-      {job.result_summary && (
+      {/* Only a replay has chunk progress to show; for every other run this row
+          was an empty 8px strip under the run (DATA-22). */}
+      {job.result_summary?.mode === 'metrics_replay' && (
         <tr>
           <td colSpan={6} className="p-0">
             <div className="px-4 pb-2">

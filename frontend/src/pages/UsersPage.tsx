@@ -11,6 +11,7 @@ import { Select } from '@/components/settings/kit'
 import { ROLE_OPTIONS, type Role, type UserListItem } from '@/types'
 import { formatIsoDate } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
+import { isOwner as isOwnerRole } from '@/lib/permissions'
 
 function roleChip(role: Role) {
   return ROLE_OPTIONS.find((r) => r.value === role)?.chip ?? 'bg-muted text-muted-foreground'
@@ -263,7 +264,7 @@ function InviteMemberCard() {
 export default function UsersPage() {
   const qc = useQueryClient()
   const { user: currentUser } = useAuth()
-  const isOwner = currentUser?.role === 'owner'
+  const isOwner = isOwnerRole(currentUser?.role)
 
   const listQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
   const updateMut = useMutation({

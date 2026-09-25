@@ -2,11 +2,20 @@ import { useCallback, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import {
+  applyViewParams,
   deleteEventsSavedView,
   loadEventsSavedViews,
   saveEventsSavedView,
+  viewParamsOf,
   type EventsSavedView,
 } from './savedViews'
+
+type ConfirmFn = (options: {
+  title: string
+  message: string
+  variant?: 'danger' | 'primary'
+  confirmLabel?: string
+}) => Promise<boolean>
 
 /**
  * Holds the URL-derived "saved views" state for the events page: persisted
@@ -16,9 +25,12 @@ import {
 export function useSavedViews({
   slug,
   activeTab,
+  confirm,
 }: {
   slug: string | undefined
   activeTab: string
+  /** Asks before a save replaces a view of the same name. */
+  confirm: ConfirmFn
 }) {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -36,31 +48,45 @@ export function useSavedViews({
 
   const [savedViewName, setSavedViewName] = useState('')
 
-  const currentSavedViewParams = searchParams.toString()
+  const currentSavedViewParams = viewParamsOf(searchParams)
 
+  // Compared as normalized pairs: views saved before normalization still match
+  // when their keys come back in another order.
   const activeSavedViewName = useMemo(
     () => savedViews.find(view => (
-      view.tab === activeTab && view.params === currentSavedViewParams
+      view.tab === activeTab && viewParamsOf(view.params) === currentSavedViewParams
     ))?.name ?? null,
     [activeTab, currentSavedViewParams, savedViews],
   )
 
-  const saveCurrentView = useCallback(() => {
+  const saveCurrentView = useCallback(async () => {
     if (!slug) return
+    const name = savedViewName.trim()
+    if (!name) return
+    // Saving under a taken name used to replace that view without a word.
+    if (savedViews.some(view => view.name === name)) {
+      const ok = await confirm({
+        title: 'Replace saved view',
+        message: `A view named "${name}" already exists. Replace it with the current filters?`,
+        confirmLabel: 'Replace',
+      })
+      if (!ok) return
+    }
     const nextViews = saveEventsSavedView(slug, {
-      name: savedViewName,
+      name,
       tab: activeTab,
       params: currentSavedViewParams,
     })
     setSavedViews(nextViews)
     setSavedViewName('')
-  }, [activeTab, currentSavedViewParams, savedViewName, slug])
+  }, [activeTab, confirm, currentSavedViewParams, savedViewName, savedViews, slug])
 
   const applySavedView = useCallback((view: EventsSavedView) => {
     if (!slug) return
     const path = view.tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${view.tab}`
-    navigate(path + (view.params ? `?${view.params}` : ''), { replace: true })
-  }, [navigate, slug])
+    const params = applyViewParams(searchParams, view.params).toString()
+    navigate(path + (params ? `?${params}` : ''), { replace: true })
+  }, [navigate, searchParams, slug])
 
   const deleteSavedView = useCallback((name: string) => {
     if (!slug) return

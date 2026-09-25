@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -10,7 +11,7 @@ class ProjectTrackerConfigUpdate(BaseModel):
     the stored token; omitting / null leaves it unchanged."""
 
     enabled: bool | None = None
-    tracker_type: str | None = None
+    tracker_type: Literal["jira"] | None = None
     base_url: str | None = None
     project_key: str | None = None
     auth_email: str | None = None

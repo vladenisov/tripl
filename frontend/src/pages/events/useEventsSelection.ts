@@ -2,8 +2,29 @@ import { useCallback, useMemo, useState } from 'react'
 
 import type { EventListItem } from '@/types'
 
-export function useEventsSelection({ events }: { events: EventListItem[] }) {
+export function useEventsSelection({
+  events,
+  scopeKey,
+}: {
+  events: EventListItem[]
+  /**
+   * Identifies the result set the selection was made in (tab, branch, server
+   * filters). When it changes the selection is dropped: 20 rows ticked on
+   * Review and then "Set status" on Archived changed 20 events the operator
+   * could no longer see (EVT-10). Sort order is not part of it — it reorders
+   * the same set. Client-side column filters are not part of it either; the
+   * bar and the confirmations name off-screen rows instead.
+   */
+  scopeKey?: string
+}) {
   const [selectedEventIds, setSelectedEventIds] = useState<string[]>([])
+  const [selectionScope, setSelectionScope] = useState(scopeKey)
+  // Reset during render (React-recommended) rather than in an effect, so no
+  // frame ever pairs the new scope with the old selection.
+  if (selectionScope !== scopeKey) {
+    setSelectionScope(scopeKey)
+    setSelectedEventIds([])
+  }
 
   const visibleEventIds = useMemo(
     () => events.map(event => event.id),
@@ -50,6 +71,17 @@ export function useEventsSelection({ events }: { events: EventListItem[] }) {
     setSelectedEventIds(ids)
   }, [])
 
+  // Add many ids in one update. Ticking them one by one through
+  // `toggleEventSelected` was quadratic (an `includes` per id) for a large
+  // name cluster (EVT-40).
+  const selectMany = useCallback((ids: string[]) => {
+    setSelectedEventIds(current => {
+      const next = new Set(current)
+      for (const id of ids) next.add(id)
+      return next.size === current.length ? current : Array.from(next)
+    })
+  }, [])
+
   const clearSelection = useCallback(() => {
     setSelectedEventIds([])
   }, [])
@@ -66,6 +98,7 @@ export function useEventsSelection({ events }: { events: EventListItem[] }) {
     toggleEventSelected,
     toggleAllVisibleSelected,
     selectAll,
+    selectMany,
     clearSelection,
   }
 }

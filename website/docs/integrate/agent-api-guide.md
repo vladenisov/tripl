@@ -97,6 +97,8 @@ A merged branch is read-only, and a closed one is read-only until it is reopened
 
 The photo and Figma spec writes (`POST /api/v1/projects/{slug}/events/{event_id}/photos`, `POST .../photos/figma`, `PATCH .../photos/reorder` and `DELETE .../photos/{photo_id}`) take no `branch`: they address a branch's event by its own id. They answer the same `409` when that event belongs to a merged or closed branch. Their order differs, and two of the refusals come before authentication rather than after it: the whole router caps the request body, so an upload declaring a `Content-Length` over `PHOTO_MAX_SIZE_MB` — or streaming past it — is `413` before any dependency runs, `401` included, and a malformed JSON body on `photos/figma` or `photos/reorder` is `422` in the same place. Everything after that is dependency-ordered: `401`, then the route's `403`, then the `404` for an unknown event, then the `409`, and only then the file's own `415` / `422`, the `404` for an unknown photo or the `400` for an incomplete reorder list. Comments, on a photo or on the event, are not plan content and are accepted on any branch.
 
+Plan writes and merges never interleave. A write to a branch that is being merged (a `?branch=` write, a revert, or a photo or Figma spec write) waits until the merge commits and then answers the `409` above; a merge that starts while a write to its branch is in flight waits for it, so a write after the approval makes the merge answer `409` `insufficient_approvals` with the approval counted as stale. A write to main waits for any merge in progress and then applies on top of the merged plan, and a merge that starts during a write to main waits for it and reports a `409` `conflicts` where the two disagree, rather than overwriting it. A comment on a branch's event posted during that branch's merge waits as well, then lands in the thread on main. The wait lasts as long as the merge takes, which grows with the size of the plan; the AI `describe-event` and `describe-event-type` suggestions, which write nothing, never wait.
+
 Passing `branch` also makes the write **attributable**: the audit log records the entry against that working branch, by id and by name, and an owner reading the log sees a branch chip on the row. A write with no `branch` carries no chip, which covers both a deliberate write to main and an action that has no branch dimension at all — and passing the **main** branch's own id records no branch either, by design, so one write to main cannot render two ways. So an agent's branch-scoped edits are distinguishable after the fact from writes to the live plan — which is the other reason to pass the id rather than rely on the default. This applies to the branch-scoped plan writes (`event.*`, `field.*`, `event_type.*`, `variable.*`, `meta_field.*`, `relation.*`, and `project.retire_unused_variables`). Drift resolutions (`variable.drift_action`, `schema_drift.*`) are the exception: a drift is only ever detected against main, so accepting one is always a write to the main plan and carries no chip whatever `branch` you pass. Event writes are recorded as `event.create`, `event.bulk_create`, `event.update`, `event.bulk_update`, `event.delete` and `event.bulk_delete`; a bulk route files one row per request, with the ids (and, for a delete, the names) in the payload. Reordering an event is not recorded, and neither are events written by a scan — but accepting a scan's shadow-event candidate is a plan write, not a scan write, and files `event.create` like any other, with the candidate it was admitted from named in the payload; dismissing one files `shadow_event.dismiss` against the candidate and carries no branch, a candidate having no branch to name. Events additionally keep their own per-event history (`GET /projects/{slug}/events/{event_id}/history`): a `created` row first, then before/after rows keyed `status`, `name`, `title`, `description`, `sunset_at`, `tags`, `field:<field name>` and `meta:<meta field name>`. That history is removed with the event, while the audit row is not — so a deleted event's `field_values` are recoverable from neither surface.
 
 Discover branches:
@@ -120,17 +122,17 @@ POST /api/v1/projects/{slug}/branches/{branch_id}/revert
 
 The diff returns one entry per changed entity, each carrying `entity_type`, `kind` (`added` / `changed` / `removed`), `name`, `parent`, the `entity_id` it describes, and — for a changed entity — `field_changes`. A collection-valued field there additionally breaks down into `items`, keyed by the member that moved (a field name, a tag, the event an override targets).
 
-Names are not always unique: two events can share a type and name, and two relations can link the same two fields. The diff, the merge and a revert still match rows by that key, one row per key, so the diff shows at most one entry for such a name, standing for all of its rows: deleting one of two such events can read as a change to the other, or as nothing when the two were identical. An entry for such a name carries a warning in `warnings` telling you to rename one of the events, or remove one of the relations, before changing either; do that rather than editing one of them.
+Names are not always unique: two events can share a type and name, and two relations can link the same two fields. Each branch copy records the `main` row it was made from, so the diff, the merge and a revert pair such rows one by one: each gets its own entry, and an entry's `entity_id` (the branch row, or the base row for a removal) tells them apart. Only on a branch opened before copies recorded their origin can a name still stand for several rows the server cannot tell apart; an entry for such a name carries a warning in `warnings` telling you to rename one of the events, or remove one of the relations, before changing either.
 
 Read the response's `renames` list before interpreting those entries. Entities are keyed by name, so a rename arrives split in two — a removal of the old name beside an addition of the new one — which reads as a deletion your agent never made. Each `renames` element (`entity_type`, `parent`, `removed_name`, `added_name`) names the two entries the merge will treat as **one** renamed row, keeping the entity's id and everything hanging off it. The pairing is stated by the server because it also depends on `main`, which the diff you are holding does not show.
 
 `revert` takes the coordinates of one such entry and restores it to the branch's base state, responding with the resulting diff:
 
 ```json
-{ "entity_type": "event", "name": "purchase:success", "parent": "track", "field": "field_values" }
+{ "entity_type": "event", "name": "purchase:success", "parent": "track", "field": "field_values", "entity_id": "5a1f…" }
 ```
 
-Omit `field` to revert the whole entity: an addition is deleted, an edit is written back, a deletion is rebuilt with its child rows and, for an event, its `superseded_by` successor. A revert never touches main, needs an open branch and an editor role, and answers with a `409` — rather than a partial write — when the change cannot be undone unambiguously: two entities on the branch answer to the name (`Rename one of them, then revert.`), several rows of the branch's base snapshot answer to it (`Undo it by hand instead.`, which renaming on the branch does not lift, since the base never changes), two events answer to the `superseded_by` successor being restored, on the branch or in the base, the parent event type is still deleted, or the branch's base snapshot predates a field the entity needs. A restored `superseded_by` whose successor no longer exists on the branch is cleared instead. A merged branch answers `409` `Branch is merged, so its plan is read-only`, and a closed one `Branch is closed — reopen it before reverting changes`.
+Pass the entry's `entity_id` as well: when two entries share a name it is the only thing that says which one you mean, and without it such a name is refused with `409` (`More than one change on this branch is called …`). Omit `field` to revert the whole entity: an addition is deleted, an edit is written back, a deletion is rebuilt with its child rows and, for an event, its `superseded_by` successor. A revert never touches main, needs an open branch and an editor role, and answers with a `409` — rather than a partial write — when the change cannot be undone unambiguously: two entities on the branch answer to the name and nothing records which one the entry is about (`Rename one of them, then revert.`), several rows of the branch's base snapshot answer to it with none of them named by the entry or a copy's origin (`Undo it by hand instead.`), two base events share the name of an event a restored variable override points at (`Set the overrides by hand instead.`), two events answer to the `superseded_by` successor being restored, on the branch or in the base, the parent event type is still deleted, or the branch's base snapshot predates a field the entity needs. A restored `superseded_by` whose successor no longer exists on the branch is cleared instead. A merged branch answers `409` `Branch is merged, so its plan is read-only`, and a closed one `Branch is closed — reopen it before reverting changes`.
 
 ## Search And Retrieval Flow
 
@@ -291,6 +293,28 @@ wrong label through `title`, since `name` is the identity. Values written
 through event mutations are treated as authored and are protected from later
 scan overwrite; re-sending an unchanged value keeps its flag as it was.
 
+On every partial-update body in the API — events, event types, fields, meta
+fields, scan configs, data sources, variables and projects — omitting a field is
+how you leave it alone, and sending it as an explicit `null` means "clear it".
+A `null` on a field whose column cannot be empty is refused with a `422` naming
+the field (`Field(s) cannot be null: status`). On `EventUpdate` those are `name`,
+`description`, `status` and `reviewed`; `sunset_at`, `owner_id` and
+`superseded_by_event_id` all accept a `null` and clear, `title` reads a `null` as
+`""`, `metric_breakdown_columns` reads one as `[]`, and `tags`, `field_values`
+and `meta_values` read one as "leave the children alone". These requests all
+failed before; only the status code and the message changed.
+
+Every `meta_field_definition_id` in a patch, and the `event_type_id` in a create,
+must come from a listing read with the same `branch` you are writing to. A branch
+holds its own copy of every event type and meta field under a new id, so an id
+read without `branch` is `main`'s and is refused with a `422` on a branch write.
+Because `meta_values` is a full-list replacement, you cannot get past that `422`
+by dropping the offending entry without losing the event's other meta values —
+re-read the meta fields on the right branch instead. Tags are
+stored lower-cased, trimmed and de-duplicated, and one over 100 characters is a
+`422`; a meta value over 2,000 bytes as stored is a `422` too (for a field with
+a link template, only the part the template wraps is stored).
+
 Event create and patch return `EventMutationResponse`, which is the event plus a
 `warnings` array. When a scan config governs the event type with an
 `event_name_format`, manual creation derives the canonical name from the
@@ -325,6 +349,15 @@ Payload:
 
 The uniform bulk patch supports `status`, `sunset_at`, `owner_id`, and
 `reviewed`. Bulk delete is a separate endpoint; both are write operations.
+
+Which fields you **send** is what the request means, not what values they hold.
+A field you leave out is left alone across the whole selection. An explicit
+`null` for `sunset_at` or `owner_id` clears that field across the whole
+selection — `{"event_ids": [...], "owner_id": null}` is how you unassign a
+selection, and it is the only way to do it. `status` and `reviewed` are NOT NULL
+columns: an explicit `null` for either is refused with 422. A body that sends
+nothing but `event_ids` is refused with 422 as well. The web UI spells the same
+unassign as an **Unassign** entry in the bulk bar's owner picker.
 
 ## Search Indexing
 

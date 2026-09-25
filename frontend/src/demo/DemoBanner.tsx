@@ -30,6 +30,8 @@ import {
 import { useBranchContext } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { formatRelativeTime } from '@/lib/datetime'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { canManageProject } from '@/lib/permissions'
 import { getErrorMessage } from '@/lib/utils'
 import type { Project } from '@/types'
 import { ProductTour } from './ProductTour'
@@ -83,11 +85,12 @@ export function DemoBanner({ project }: { project: Project }) {
   const [limitsOpen, setLimitsOpen] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
 
-  const canManage =
-    user?.role === 'owner' ||
-    (user?.id != null && user.id === project.created_by_user_id)
+  // The backend's own pair of gates (EditorUserDep + `_require_demo_manager`):
+  // a creator since demoted to viewer is refused, so they are not offered it.
+  const canManage = canManageProject(user, project)
 
   const resetMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.resetDemo(project.slug),
     onSuccess: () => {
       // A re-seed rewrites every entity with a NEW id, so anything still holding
@@ -97,7 +100,7 @@ export function DemoBanner({ project }: { project: Project }) {
       //   - the banner is mounted on every surface, so a reset can be triggered
       //     from a metric/event/scan detail page whose URL carries a now-dead
       //     id — leave for the overview rather than render a 404.
-      setBranchId(null)
+      setBranchId(null, { updateUrl: false })
       void navigate(`/p/${project.slug}/overview`)
       // Every cached row describes a deleted entity now — drop them outright
       // rather than merely marking them stale.
@@ -111,10 +114,11 @@ export function DemoBanner({ project }: { project: Project }) {
   })
 
   const deleteMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => projectsApi.deleteDemo(project.slug),
     onSuccess: () => {
       // The project is gone; leave no branch selection behind pointing into it.
-      setBranchId(null)
+      setBranchId(null, { updateUrl: false })
       void queryClient.invalidateQueries({ queryKey: ['projects'] })
       void navigate('/workspace')
     },

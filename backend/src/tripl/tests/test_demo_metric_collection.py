@@ -747,7 +747,10 @@ def test_synthetic_dataset_stays_within_row_budget() -> None:
             assert len(rows) < synth.SYNTHETIC_MAX_ROWS, (anchor, len(rows))
             newest = anchor - timedelta(hours=1)
             emitted = {row["event_name"] for row in rows if row["event_time"] >= newest}
-            assert emitted == set(synth.SYNTHETIC_EVENT_NAMES), (anchor, sorted(emitted))
+            # Retired identities (the planted dead event, tripl-0zpq.245) stay on
+            # the roster but emit nothing.
+            live_names = {ev.event_name for ev in synth._EVENT_DEFS if not ev.retired}
+            assert emitted == live_names, (anchor, sorted(emitted))
 
 
 def test_synthetic_ongoing_counts_stay_within_detector_drop_band() -> None:

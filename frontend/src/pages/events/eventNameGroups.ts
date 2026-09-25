@@ -15,6 +15,19 @@
 /** Minimum number of events that must share a prefix before it forms a cluster. */
 export const MIN_GROUP_SIZE = 3
 
+/**
+ * Stricter bar for the events table's cluster banner. Any three names sharing
+ * one segment (`checkout:started|completed|failed`) formed a cluster, so the
+ * banner showed on almost every catalog and stopped meaning "these look
+ * machine-generated" (EVT-40).
+ */
+export const TABLE_CLUSTER_MIN_SIZE = 5
+
+/** A prefix of two or more segments — `a_b`, not just `a`. */
+export function isDeepPrefix(prefix: string): boolean {
+  return /[_:/]/.test(prefix)
+}
+
 /** A cluster of events whose names share a common prefix. */
 export interface EventNameGroup {
   /** Shared prefix: the name with its final delimiter-separated segment removed. */

@@ -22,6 +22,7 @@ from tripl.core.analyzers._event_identity import (
     scan_identity_winner_order,
 )
 from tripl.models.alert_delivery_item import AlertDeliveryItem, trim_scope_name
+from tripl.models.domain_enums import FieldDefinitionType
 from tripl.models.event import Event
 from tripl.models.event import EventStatus as _ES
 from tripl.models.event import event_status_rank as _rank
@@ -294,6 +295,11 @@ def _merge_existing_grouped_events(
         return 0
 
     field_name_by_id = {fd.id: name for name, fd in field_definitions.items()}
+    # Same rule as ``plan_events`` (tripl-p5ac): an override never lands on a
+    # JSON field, whose stored value is the template naming every path variable.
+    json_field_names = {
+        name for name, fd in field_definitions.items() if fd.field_type == FieldDefinitionType.json
+    }
     merged = 0
 
     for identity, source in list(existing_by_identity.items()):
@@ -321,7 +327,11 @@ def _merge_existing_grouped_events(
                 source=source,
                 group_name=match.event_name,
                 field_name_by_id=field_name_by_id,
-                field_value_overrides=match.field_value_overrides,
+                field_value_overrides={
+                    key: literal
+                    for key, literal in match.field_value_overrides.items()
+                    if key not in json_field_names
+                },
                 order=next_event_order,
             )
             if created:
@@ -516,9 +526,18 @@ def _merge_event_into_group(
     # database reflection can find and which therefore went unnoticed until the
     # FK ledger was written out by hand (tripl-avf4, tripl-jtnv).
     move_dangling_event_references(session, source=source, target=target)
+    # Only an item whose scope IS the event names it in ``scope_ref``. Other
+    # scopes that carry ``event_id`` keep their own reference — a value-drift
+    # item's ``scope_ref`` is the drift id and its ``scope_name`` names the
+    # variable — so rewriting those would break the Inbox label, search and the
+    # rule-state lookup keyed on the drift (tripl-0zpq.85). They are re-pointed
+    # by ``event_id`` alone.
     session.execute(
         update(AlertDeliveryItem)
-        .where(AlertDeliveryItem.event_id == source.id)
+        .where(
+            AlertDeliveryItem.event_id == source.id,
+            AlertDeliveryItem.scope_ref == str(source.id),
+        )
         # ``scope_name`` is String(255) and ``Event.name`` is String(500), so
         # merging into a long-named survivor used to fail this UPDATE on
         # Postgres — and it runs inside ``run_scan``, whose handler marks the
@@ -528,6 +547,11 @@ def _merge_event_into_group(
             scope_ref=str(target.id),
             scope_name=trim_scope_name(target.name),
         )
+    )
+    session.execute(
+        update(AlertDeliveryItem)
+        .where(AlertDeliveryItem.event_id == source.id)
+        .values(event_id=target.id)
     )
     session.delete(source)
     session.flush()

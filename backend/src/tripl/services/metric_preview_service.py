@@ -1,13 +1,23 @@
 """Stateless dry-run previews for draft catalog metrics.
 
-Two flavours, one rule: the metric's SQL is EXECUTED against the selected
-warehouse before it can be saved, so a query that only fails inside a Celery
-worker — where nobody is watching — fails here instead, in the editor.
+Two flavours, one purpose: the metric's SQL is EXECUTED against the selected
+warehouse while the editor is open, so a query that would otherwise only fail
+inside a Celery worker — where nobody is watching — can fail here instead, in
+front of the person writing it.
+
+Preview is an OFFER, not a gate. Nothing in the save path calls it and the form
+does not require it, so "it previewed" is never a precondition for 201 and
+"it did not" is never a refusal. Whatever the save path must guarantee it has to
+check for itself: the projection rule the collector enforces lives in
+``SqlConfig`` on the schema boundary, not here (tripl-0zpq.173). Preview's job is
+the half a schema cannot do — actually running the statement against the real
+warehouse.
 
 * ``preview_sql_metric`` runs a user-authored ``sql``-kind SELECT through the
-  SAME safety gate (``validate_select_sql``), dialect lint (``lint_dialect_sql``)
-  and time-window wrapping (``get_preview_rows``) the worker's ``_collect_sql``
-  uses.
+  SAME safety gate (``validate_select_sql``) and time-window wrapping
+  (``get_preview_rows``) the worker's ``_collect_sql`` uses, plus the dialect lint
+  (``lint_dialect_sql``), which ONLY this preview runs — neither the save path
+  nor the worker's collection calls it (tripl-0zpq.355).
 * ``preview_fact_operand`` compiles a draft ``fact`` operand's row filter with
   the worker's OWN ``_resolve_fact_operand_query`` (fed the very config dict a
   save would persist) and executes the result, bounded to one row.

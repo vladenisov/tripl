@@ -16,7 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tripl.models.base import Base, UUIDMixin
+from tripl.models.base import Base, UtcDateTime, UUIDMixin
 
 
 class MetricValueBreakdown(UUIDMixin, Base):
@@ -65,7 +65,7 @@ class MetricValueBreakdown(UUIDMixin, Base):
         ForeignKey("scan_configs.id", ondelete="CASCADE"),
         nullable=True,
     )
-    bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bucket: Mapped[datetime] = mapped_column(UtcDateTime())
     breakdown_column: Mapped[str] = mapped_column(String(255))
     breakdown_value: Mapped[str] = mapped_column(String(500))
     is_other: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -45,7 +45,8 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
 import { useEventsDndSensors } from '@/pages/events/useEventsDndSensors'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
-import { formatMetricValue } from '@/lib/metricFormat'
+import { METRIC_INTERVAL_LABEL, formatMetricValue } from '@/lib/metricFormat'
+import { factOperandConfigToPayload, readFactOperandConfig } from '@/lib/factOperandConfig'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
 import { getErrorMessage } from '@/lib/utils'
 import {
@@ -55,7 +56,6 @@ import {
   METRIC_STATUSES,
   type EventCompositionMetricCreate,
   type FactMetricCreate,
-  type MetricAggregation,
   type MetricCreate,
   type MetricDefinitionListItem,
   type MetricDefinitionListResponse,
@@ -65,6 +65,8 @@ import {
   type MetricStatus,
   type SqlMetricCreate,
 } from '@/types'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { useCanWriteProject } from '@/lib/permissions'
 
 // The metric name gets the widest flexible track on purpose. Its cell packs a
 // dot, a truncating name and a nowrap kind chip, so the widest chip ("Event
@@ -90,17 +92,6 @@ const KIND_FILTER_OPTIONS: { value: '' | MetricKind; label: string }[] = [
 
 const FILTER_SELECT_CLASS =
   'h-8 rounded-md border bg-[var(--bg)] px-2 text-[12px] text-[var(--fg)] outline-none'
-
-// Human-readable collection cadence, used as the Latest-cell tooltip context
-// when a metric has no known bucket timestamp for its latest value
-// (tripl-nxk2.11). Mirrors the backend ScanInterval enum.
-const INTERVAL_LABEL: Record<MetricScanInterval, string> = {
-  '15m': 'every 15 min',
-  '1h': 'hourly',
-  '6h': 'every 6 h',
-  '1d': 'daily',
-  '1w': 'weekly',
-}
 
 // Interval → milliseconds, for the staleness threshold (tripl-nxk2.10).
 const INTERVAL_MS: Record<MetricScanInterval, number> = {
@@ -185,11 +176,6 @@ function StatFilter({
   )
 }
 
-// The single fact operand shape (numerator / denominator) sent to the backend —
-// derived from the generated create schema so it stays in lock-step.
-type FactOperandPayload = NonNullable<FactMetricCreate['numerator']>
-type FactConditionPayload = NonNullable<FactOperandPayload['conditions']>[number]
-
 // A metric's internal name is a lowercase [a-z0-9_] identifier. Derive a unique
 // copy name: `<name>_copy`, then `_2` / `_3`… on collision against the loaded
 // catalog. The source name is already a valid identifier, so the suffix keeps it
@@ -200,40 +186,6 @@ function makeCopyName(baseName: string, existing: ReadonlySet<string>): string {
   let suffix = 2
   while (existing.has(`${root}_${suffix}`)) suffix += 1
   return `${root}_${suffix}`
-}
-
-// Narrow one fact operand out of a stored fact-metric config sub-object (a ratio
-// numerator/denominator). Untrusted JSON, so every field is read defensively.
-function readFactOperand(raw: unknown): FactOperandPayload {
-  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
-  const strOrNull = (key: string): string | null =>
-    typeof obj[key] === 'string' ? (obj[key] as string) : null
-  return {
-    fact_table_id: typeof obj['fact_table_id'] === 'string' ? (obj['fact_table_id'] as string) : '',
-    aggregation: (obj['aggregation'] as MetricAggregation | undefined) ?? 'count',
-    measure_column: strOrNull('measure_column'),
-    distinct_column: strOrNull('distinct_column'),
-    row_filters: Array.isArray(obj['row_filters']) ? (obj['row_filters'] as string[]) : [],
-    filter_sql: strOrNull('filter_sql'),
-    conditions: readFactConditions(obj['conditions']),
-  }
-}
-
-function readFactConditions(raw: unknown): FactConditionPayload[] {
-  if (!Array.isArray(raw)) return []
-  return raw
-    .filter(
-      (condition): condition is Record<string, unknown> =>
-        Boolean(condition) && typeof condition === 'object',
-    )
-    .filter(
-      condition => typeof condition.column === 'string' && typeof condition.operator === 'string',
-    )
-    .map(condition => ({
-      column: condition.column as string,
-      operator: condition.operator as FactConditionPayload['operator'],
-      ...(condition.value == null ? {} : { value: condition.value as FactConditionPayload['value'] }),
-    }))
 }
 
 /**
@@ -292,8 +244,8 @@ function buildDuplicatePayload(
         kind: 'fact',
         composition: 'ratio',
         interval: def.interval ?? '1h',
-        numerator: readFactOperand(config['numerator']),
-        denominator: readFactOperand(config['denominator']),
+        numerator: factOperandConfigToPayload(readFactOperandConfig(config['numerator'])),
+        denominator: factOperandConfigToPayload(readFactOperandConfig(config['denominator'])),
         replay_chunk_interval: def.replay_chunk_interval,
       }
       return payload
@@ -303,13 +255,16 @@ function buildDuplicatePayload(
       kind: 'fact',
       composition: 'single',
       interval: def.interval ?? '1h',
+      // One narrowing reader for every stored operand (MET-43): it validates
+      // the aggregation, filters `row_filters` to strings and folds a legacy
+      // single `row_filter` in, which this copy used to lose.
+      ...factOperandConfigToPayload(
+        readFactOperandConfig(config, {
+          factTableId: def.fact_table_id,
+          aggregation: def.aggregation,
+        }),
+      ),
       fact_table_id: def.fact_table_id,
-      aggregation: def.aggregation,
-      measure_column: strOrNull('measure_column'),
-      distinct_column: strOrNull('distinct_column'),
-      row_filters: Array.isArray(config['row_filters']) ? (config['row_filters'] as string[]) : [],
-      filter_sql: strOrNull('filter_sql'),
-      conditions: readFactConditions(config['conditions']),
       replay_chunk_interval: def.replay_chunk_interval,
     }
     return payload
@@ -335,6 +290,9 @@ function buildDuplicatePayload(
  */
 export function MetricsCatalog({ slug }: { slug?: string }) {
   const qc = useQueryClient()
+  // Reorder, bulk status and every row action are EditorUserDep; a viewer gets
+  // the catalog to read and drill into, without controls that end in a 403.
+  const canWrite = useCanWriteProject()
   const [searchInput, setSearchInput] = useState('')
   const [statusFilter, setStatusFilter] = useState<'' | MetricStatus>('')
   // The kind filter lives in the URL rather than in component state so each kind
@@ -426,7 +384,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
 
   // Reorder only makes sense against the full, unfiltered catalog: a partial
   // list can't express the canonical order the backend persists.
-  const canReorder = !hasFilters && metrics.length > 1
+  const canReorder = canWrite && !hasFilters && metrics.length > 1
 
   const selected = useMemo(
     () => visibleMetrics.filter(m => selectedIds.has(m.id)),
@@ -464,6 +422,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   }
 
   const bulkStatusMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (status: MetricStatus) =>
       metricsCatalogApi.bulkUpdate(slug!, {
         metric_ids: selected.map(m => m.id),
@@ -586,7 +545,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               title="No metrics yet"
               description="Metrics turn a SQL query, a warehouse aggregation, or an event ratio into a tracked time series with anomaly detection. Create one to start collecting."
               action={
-                slug ? (
+                slug && canWrite ? (
                   <Button asChild size="sm">
                     <Link to={`/p/${slug}/metrics/new`} className="no-underline">
                       <Plus className="h-3.5 w-3.5" />
@@ -648,7 +607,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               </div>
             }
           >
-            {selected.length > 0 && (
+            {canWrite && selected.length > 0 && (
               <div
                 className="flex flex-wrap items-center gap-2 border-b px-4 py-2"
                 style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
@@ -719,11 +678,13 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                       >
                         <span role="columnheader" aria-label="Reorder" />
                         <span role="columnheader">
-                          <Checkbox
-                            aria-label="Select all metrics"
-                            checked={allSelected}
-                            onCheckedChange={toggleAll}
-                          />
+                          {canWrite && (
+                            <Checkbox
+                              aria-label="Select all metrics"
+                              checked={allSelected}
+                              onCheckedChange={toggleAll}
+                            />
+                          )}
                         </span>
                         <span role="columnheader">Metric</span>
                         <span role="columnheader">Latest</span>
@@ -746,6 +707,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                             metric={metric}
                             slug={slug}
                             canReorder={canReorder}
+                            canWrite={canWrite}
                             existingNames={existingNames}
                             isSelected={selectedIds.has(metric.id)}
                             onToggleSelected={() => toggleSelected(metric.id)}
@@ -769,6 +731,8 @@ interface MetricRowProps {
   metric: MetricDefinitionListItem
   slug?: string
   canReorder: boolean
+  /** False for a viewer: no select box and no row menu (every item writes). */
+  canWrite: boolean
   existingNames: ReadonlySet<string>
   isSelected: boolean
   onToggleSelected: () => void
@@ -782,6 +746,7 @@ function MetricRow({
   metric,
   slug,
   canReorder,
+  canWrite,
   existingNames,
   isSelected,
   onToggleSelected,
@@ -814,7 +779,7 @@ function MetricRow({
   const latestTitle = bucketIso
     ? `Latest point: ${formatDateTime(bucketIso)}`
     : metric.interval
-      ? `Collected ${INTERVAL_LABEL[metric.interval]}`
+      ? `Collected ${METRIC_INTERVAL_LABEL[metric.interval].toLowerCase()}`
       : undefined
 
   return (
@@ -864,12 +829,14 @@ function MetricRow({
         ) : null}
       </span>
       <span role="cell">
-        <Checkbox
-          aria-label={`Select ${metric.display_name}`}
-          checked={isSelected}
-          onCheckedChange={onToggleSelected}
-          onClick={event => event.stopPropagation()}
-        />
+        {canWrite && (
+          <Checkbox
+            aria-label={`Select ${metric.display_name}`}
+            checked={isSelected}
+            onCheckedChange={onToggleSelected}
+            onClick={event => event.stopPropagation()}
+          />
+        )}
       </span>
       <span role="cell" className="flex min-w-0 items-center gap-2">
         {signalTone ? (
@@ -934,7 +901,7 @@ function MetricRow({
         {formatRelativeTime(metric.updated_at)}
       </span>
       <span role="cell" className="flex justify-end">
-        {slug ? (
+        {slug && canWrite ? (
           <MetricRowMenu
             metric={metric}
             slug={slug}
@@ -980,7 +947,7 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
       toast.success('Metric duplicated as a draft.')
       navigate(`/p/${slug}/metrics/${created.id}/edit`)
     },
-    onError: error => toast.error(getErrorMessage(error)),
+    // No onError: the global backstop already toasts this exact message.
   })
 
   const statusMut = useMutation({
@@ -989,7 +956,6 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
       void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
       toast.success(status === 'archived' ? 'Metric archived.' : 'Metric restored.')
     },
-    onError: error => toast.error(getErrorMessage(error)),
   })
 
   // Watch the queued run's persisted last_collection_status until it settles so
@@ -999,6 +965,7 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
     void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
   })
   const collectMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => metricsCatalogApi.collect(slug, metric.id),
     onSuccess: () => {
       toast.success('Collection started — you will be notified when it finishes.')
@@ -1009,7 +976,8 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
       // manufactures collections of its own (tripl-2su6.21). Inert elsewhere.
       notifyMetricCollectStarted(metric.id)
     },
-    onError: () => toast.error('Could not start collection.'),
+    // Its own toast (silenced in the backstop): what failed, and why.
+    onError: error => toast.error(`Could not start collection — ${getErrorMessage(error)}`),
   })
 
   const busy =

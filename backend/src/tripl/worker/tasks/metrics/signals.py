@@ -25,8 +25,8 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import ColumnElement, Select, select
 from sqlalchemy import func as sa_func
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import (
@@ -167,6 +167,37 @@ def _emission_lag(interval: timedelta | None, settling_delay: timedelta) -> time
     return settling_buckets_for(interval, settling_delay) * interval
 
 
+def _latest_anomaly_per_scope(
+    *criteria: ColumnElement[bool],
+    join_event: bool = False,
+) -> Select[tuple[MetricAnomaly]]:
+    """The newest ``MetricAnomaly`` per ``(scope_type, scope_ref)`` among ``criteria``.
+
+    Picked in SQL with ``ROW_NUMBER() OVER (PARTITION BY scope_type, scope_ref
+    ORDER BY bucket DESC)``: every caller only ever wanted each scope's latest
+    row, and loading every stored row to keep one per scope in Python grew with
+    the table — the metric-scope rows are never aged out at all (tripl-0zpq.9).
+    ``join_event`` outer-joins ``Event`` so ``criteria`` may filter on it.
+    """
+    ranked = select(
+        MetricAnomaly.id.label("anomaly_id"),
+        sa_func.row_number()
+        .over(
+            partition_by=(MetricAnomaly.scope_type, MetricAnomaly.scope_ref),
+            order_by=(MetricAnomaly.bucket.desc(), MetricAnomaly.id),
+        )
+        .label("row_num"),
+    )
+    if join_event:
+        ranked = ranked.outerjoin(Event, MetricAnomaly.event_id == Event.id)
+    latest = ranked.where(*criteria).subquery()
+    return (
+        select(MetricAnomaly)
+        .join(latest, MetricAnomaly.id == latest.c.anomaly_id)
+        .where(latest.c.row_num == 1)
+    )
+
+
 def _get_latest_metric_buckets(
     session: Session,
     scan_config_id: uuid.UUID,
@@ -251,13 +282,11 @@ def _get_visible_signal_scope_keys(
     latest_metrics = _get_latest_metric_buckets(session, scan_config_id)
     latest_anomalies: dict[tuple[str, str], MetricAnomaly] = {}
     for anomaly in session.execute(
-        select(MetricAnomaly)
-        .outerjoin(Event, MetricAnomaly.event_id == Event.id)
-        .where(
+        _latest_anomaly_per_scope(
             MetricAnomaly.scan_config_id == scan_config_id,
             (MetricAnomaly.event_id.is_(None)) | (Event.status != "archived"),
+            join_event=True,
         )
-        .order_by(MetricAnomaly.bucket.desc())
     ).scalars():
         key = (anomaly.scope_type, anomaly.scope_ref)
         latest_anomalies.setdefault(key, anomaly)
@@ -288,13 +317,11 @@ def _get_latest_active_anomalies(
     latest_metrics = _get_latest_metric_buckets(session, config.id)
     latest_anomalies: dict[tuple[str, str], MetricAnomaly] = {}
     for anomaly in session.execute(
-        select(MetricAnomaly)
-        .outerjoin(Event, MetricAnomaly.event_id == Event.id)
-        .where(
+        _latest_anomaly_per_scope(
             MetricAnomaly.scan_config_id == config.id,
             (MetricAnomaly.event_id.is_(None)) | (Event.status != "archived"),
+            join_event=True,
         )
-        .order_by(MetricAnomaly.bucket.desc())
     ).scalars():
         key = (anomaly.scope_type, anomaly.scope_ref)
         latest_anomalies.setdefault(key, anomaly)
@@ -418,12 +445,10 @@ def _get_active_metric_anomaly_candidates(
 
     latest_anomalies: dict[str, MetricAnomaly] = {}
     for anomaly in session.execute(
-        select(MetricAnomaly)
-        .where(
+        _latest_anomaly_per_scope(
             MetricAnomaly.scope_type == SCOPE_METRIC,
             MetricAnomaly.scope_ref.in_(scope_refs),
         )
-        .order_by(MetricAnomaly.bucket.desc())
     ).scalars():
         latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
 

@@ -2,10 +2,7 @@
 
 import json
 
-from tripl.core.analyzers.variable_detector import (
-    detect_variables,
-    expand_json_low_cardinality,
-)
+from tripl.core.analyzers.variable_detector import detect_variables
 
 
 class TestJsonDetection:
@@ -14,8 +11,10 @@ class TestJsonDetection:
         result = detect_variables("property", values, cardinality_threshold=100)
         assert result is not None
         assert "${spot_id}" in result.template
-        # "type" should be low-cardinality since it has only 1 unique value
-        assert "${_low:type}" in result.template
+        # "type" is low-cardinality (one unique value), so the template carries
+        # that value literally rather than a ``${_low:type}`` token nothing ever
+        # expanded (tripl-0zpq.96).
+        assert json.loads(result.template)["type"] == "banner"
         assert any(v.name == "spot_id" for v in result.variables)
         assert any(v.inferred_type == "number" for v in result.variables)
 
@@ -139,27 +138,3 @@ class TestGenericStringDetection:
         assert result is not None
         # Should fall back to ${column_name}
         assert result.template == "${hash}"
-
-
-class TestExpandJsonLowCardinality:
-    def test_expand_low_cardinality_keys(self):
-        template = json.dumps(
-            {"spot_id": "${spot_id}", "type": "${_low:type}"},
-            sort_keys=True,
-        )
-        values = [
-            json.dumps({"spot_id": 1, "type": "banner"}),
-            json.dumps({"spot_id": 2, "type": "interstitial"}),
-            json.dumps({"spot_id": 3, "type": "banner"}),
-        ]
-        results = expand_json_low_cardinality(template, "prop", values, 100)
-        assert len(results) == 2  # banner, interstitial
-        templates = [t for t, _ in results]
-        assert any("banner" in t for t in templates)
-        assert any("interstitial" in t for t in templates)
-
-    def test_no_low_cardinality_keys(self):
-        template = json.dumps({"id": "${id}"}, sort_keys=True)
-        results = expand_json_low_cardinality(template, "col", [], 100)
-        assert len(results) == 1
-        assert results[0][0] == template

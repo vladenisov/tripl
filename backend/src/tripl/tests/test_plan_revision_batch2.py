@@ -403,14 +403,13 @@ async def test_an_approval_stays_fresh_when_the_rows_come_back_in_another_order(
 
 _EVENT_WARNING = (
     "More than one event is named 'purchase' in 'track'. This diff, the merge and a "
-    "revert match rows by name, so a change to one of them can show on, or land on, the "
-    "other. Rename one of them before changing either."
+    "revert all match rows by name, so a change to one of them can show on, or land on, "
+    "the other. Rename one of them before changing either."
 )
 _RELATION_WARNING = (
     "More than one relation links the same two fields (track.screen_id → screen.id). "
-    "This diff, the merge and a revert match relations by those fields, so a change to "
-    "one of them can show on, or land on, the other. Remove one of them before changing "
-    "either."
+    "This diff and a revert match relations by those fields, so a change to one of them "
+    "can show on, or land on, the other. Remove one of them before changing either."
 )
 
 _SHARED_KEY_KINDS = [
@@ -432,8 +431,18 @@ def test_an_entry_whose_key_more_than_one_row_holds_says_so(
     """Rows are matched one per key, as main always matched them, so with two
     rows under a key the entry can show one row's change as the other's: here a
     deleted namesake reads as an edit to the survivor, and an added one as an
-    edit to the original. The entry says that, and how to get out of it. It
-    claims nothing about the merge refusing."""
+    edit to the original. The entry says that, and how to get out of it.
+
+    It claims NOTHING about the merge refusing. A refusal was written in this
+    batch and then removed (``plan_branch_merge_service._reject_ambiguous_keys``
+    is gone): a branch is how an analyst CLEANS UP a pair of namesakes — delete
+    both copies, author one row in their place — and refusing that merge takes
+    away the only door out of the state this very sentence complains about
+    (``test_event_comment_merge_batch2`` holds that workflow). So the merge is
+    named here only as one more reader that matches by name, and the sentence
+    ends on the repair the operator can perform. The wording and the claim move
+    together, which is why the whole sentence is pinned above rather than a
+    substring of it."""
     original = row("original")
     if held_twice_on == "base":
         base, branch = [original, row("deleted")], [_copy(original)]
@@ -445,34 +454,38 @@ def test_an_entry_whose_key_more_than_one_row_holds_says_so(
     )
 
     assert [(e.kind, e.warnings) for e in entries] == [("changed", [warning])]
+    # No gate is promised: the merge matches rows by name like the diff and the
+    # revert do, it does not refuse while the pair exists.
     assert "refuse" not in warning
+    # Still prose a reviewer can act on, not a status code read aloud.
     assert "409" not in warning
+    assert warning.rstrip().endswith("before changing either.")
 
 
 @pytest.mark.parametrize(("collection", "row", "warning"), _SHARED_KEY_KINDS)
-def test_a_key_only_main_holds_twice_still_warns(
+def test_a_key_only_main_holds_twice_no_longer_warns(
     collection: str, row: Callable[[str], dict[str, Any]], warning: str
 ) -> None:
     """Copilot on PR #164: the duplicate is on MAIN, where a branch diff never
-    looks — the base holds one row and so does the branch. That is the case the
-    warning most needs to reach, since the merge keeps one main row per key and
-    writes the branch's change onto whichever it kept."""
+    looks — the base holds one row and so does the branch. The merge used to
+    keep one main row per key and write the branch's change onto whichever it
+    kept, so this diff had to warn.
+
+    It no longer has to: the merge pairs main's rows with the base by their own
+    ids, which the base recorded, so the row the branch changed lands on the
+    main row it was cut from however many namesakes main has grown since
+    (tripl-0zpq.292). A warning here would send the analyst to rename a row for
+    nothing."""
     original = row("original")
     base, branch = [original], [_copy(original, description="edited")]
     main = [original, row("added on main after the cut")]
-
-    without_main = compute_plan_diff_entries(
-        _payload(**{collection: base}), _payload(**{collection: branch})
-    )
-    (blind,) = without_main
-    assert blind.warnings == []
 
     (entry,) = compute_plan_diff_entries(
         _payload(**{collection: base}),
         _payload(**{collection: branch}),
         key_collisions_from=_payload(**{collection: main}),
     )
-    assert (entry.kind, entry.warnings) == ("changed", [warning])
+    assert (entry.kind, entry.warnings) == ("changed", [])
 
 
 @pytest.mark.parametrize(("collection", "row", "warning"), _SHARED_KEY_KINDS)

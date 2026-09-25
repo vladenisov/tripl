@@ -714,7 +714,7 @@ export function buildChapterSteps(
         {
           id: 'reconcile/review-drift',
           title: 'Resolve a schema drift',
-          instruction: `Open the drift badge on ${SCENARIO_SEEDED.schemaDriftEventName} and accept the amount type change.`,
+          instruction: `Open the schema-drift badge beside the Events heading and accept the amount type change on ${SCENARIO_SEEDED.schemaDriftEventName}.`,
           to: `${base}/events`,
           ctaLabel: 'Open Events',
           coach: { side: 'bottom', align: 'start', emphasis: 'ring' },

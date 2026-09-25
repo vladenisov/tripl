@@ -22,3 +22,17 @@ export const CommandPaletteContext = createContext<CommandPaletteContextValue>(N
 export function useCommandPalette(): CommandPaletteContextValue {
   return useContext(CommandPaletteContext)
 }
+
+/** The palette dialog's chunk (command-palette-dialog.tsx). */
+export const loadCommandPalette = () => import('@/components/command-palette-dialog')
+
+/**
+ * Start fetching the palette chunk before it is needed — the top-bar trigger
+ * calls this on hover and focus, so a click opens a dialog that is already
+ * there. Repeated calls reuse the one module request.
+ */
+export function preloadCommandPalette(): void {
+  void loadCommandPalette().catch(() => {
+    /* the lazy component retries (and recovers a stale chunk) on open */
+  })
+}

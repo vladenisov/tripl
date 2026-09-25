@@ -2,12 +2,11 @@ import { useCallback, useMemo, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Plus, RotateCw } from "lucide-react"
-import { dataSourcesApi } from "@/api/dataSources"
 import { eventTypesApi } from "@/api/eventTypes"
 import { scansApi } from "@/api/scans"
 import { useDemoScenarioActions, useScenarioArtifacts } from "@/demo/demoScenarioContext"
 import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
-import type { DataSource, ScanConfig, ScanJob } from "@/types"
+import type { ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
@@ -16,16 +15,31 @@ import { Chip } from "@/components/primitives/chip"
 import { Search } from "lucide-react"
 import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
 import { runPillStatus } from "./scans/scanRunStatus"
-import { ScanCreatePage } from "./scans/ScanConfigForm"
 import { scanModeOf } from "./scans/scanMode"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
-import { LOADING_SCAN_RUN_INFO, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
+import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
 import { countOf, pluralize } from "@/lib/plural"
-import { dataSourcesKey, projectEventTypesKey } from '@/lib/queryKeys'
+import { getErrorMessage } from '@/lib/utils'
+import { projectEventTypesKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { useProjectDataSources } from '@/hooks/useProjectDataSources'
+import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/read-only-notice'
+
+/**
+ * Jobs per scan the list asks for. It shows the head of each history (the last
+ * run, and a collapsed failing streak), so 50 full jobs per scan, re-polled for
+ * every scan while any one is active, was almost all waste (DATA-17).
+ */
+const SCAN_LIST_JOBS_LIMIT = 10
+
+// Module-level, so `useQueries` keeps one `combine` and hands back a stable
+// result while the underlying data has not changed.
+const jobsData = (results: { data?: ScanJob[] }[]) => results.map(result => result.data)
 
 interface RecentRun {
   jobId: string
@@ -39,6 +53,8 @@ interface RecentRun {
   // Current failing streak (leading consecutive failed runs for this scan).
   // Only meaningful on the collapsed streak row; 0 on every other row.
   failingStreak: number
+  // The streak runs past the capped history this list loads, so it is a floor.
+  failingStreakAtLeast: boolean
   // What the completed job actually changed (+N events / metrics / signals …).
   changes: ScanChange[]
 }
@@ -48,15 +64,19 @@ export function ScansTab({ slug }: { slug: string }) {
   const { notifyScanRunStarted } = useDemoScenarioActions()
   // Null for every non-demo project — no run row is ever the scenario's row.
   const { scanJobId } = useScenarioArtifacts()
-  const [view, setView] = useState<'list' | 'new'>('list')
+  // Authoring a scan (and its SQL) is OwnerUserDep; running one is an editor's
+  // job (DATA-6). Each control below is offered only to a role that can use it.
+  const isOwner = useIsOwner()
+  const canRun = useCanWriteProject()
   // Captured once at mount so the 24h window stays stable across re-renders
   // (keeps the rows-scanned KPI pure rather than reading the wall clock in render).
   const [mountedAtMs] = useState(() => Date.now())
 
-  const { data: dataSources = [] } = useQuery({
-    queryKey: dataSourcesKey(),
-    queryFn: () => dataSourcesApi.list(),
-  })
+  // Scoped to this project (DATA-15), and only a LOADED empty list means "no
+  // data sources": during a cold load the empty state and the disabled New
+  // scan used to flash for everyone (DATA-16).
+  const { data: dataSources = [], isSuccess: dataSourcesLoaded } = useProjectDataSources()
+  const noDataSources = dataSourcesLoaded && dataSources.length === 0
 
   const {
     data: scanConfigs = [],
@@ -91,21 +111,26 @@ export function ScansTab({ slug }: { slug: string }) {
   )
 
   // Per-scan jobs power the "Last run" status and the "Recent runs" feed. The
-  // backend exposes jobs per scan, so we fan out one query per config.
+  // backend exposes jobs per scan only, so this is still one query per config,
+  // each capped at the head of its history.
   const jobsRefetchInterval = useAdaptiveRefetchIntervalFn<ScanJob[]>({
     activeMs: 10000,
     isActive: scanJobsHaveActiveWork,
   })
-  const jobQueries = useQueries({
+  // Its own key under the scan's `['scanJobs', slug, id]` prefix: the detail
+  // page caches the full history there, and a capped list must not stand in for
+  // it. Every invalidation of the prefix still reaches both.
+  const jobsByScan = useQueries({
     queries: scanConfigs.map((sc: ScanConfig) => ({
-      queryKey: ['scanJobs', slug, sc.id],
-      queryFn: () => scansApi.listJobs(slug, sc.id),
+      queryKey: ['scanJobs', slug, sc.id, { limit: SCAN_LIST_JOBS_LIMIT }],
+      queryFn: () => scansApi.listJobs(slug, sc.id, { limit: SCAN_LIST_JOBS_LIMIT }),
       refetchInterval: jobsRefetchInterval,
     })),
+    combine: jobsData,
   })
 
   const dsMap = useMemo(
-    () => new Map((dataSources as DataSource[]).map(ds => [ds.id, ds])),
+    () => new Map(dataSources.map(ds => [ds.id, ds])),
     [dataSources],
   )
 
@@ -115,24 +140,33 @@ export function ScansTab({ slug }: { slug: string }) {
   const runInfoById = useMemo(() => {
     const map = new Map<string, ScanRunInfo>()
     scanConfigs.forEach((sc: ScanConfig, index: number) => {
-      map.set(sc.id, deriveScanRunInfo(jobQueries[index]?.data as ScanJob[] | undefined))
+      map.set(sc.id, deriveScanRunInfo(jobsByScan[index]))
     })
     return map
-  }, [scanConfigs, jobQueries])
+  }, [scanConfigs, jobsByScan])
 
   const recentRuns = useMemo<RecentRun[]>(() => {
     const runs: RecentRun[] = []
     scanConfigs.forEach((sc: ScanConfig, index: number) => {
-      const jobs = (jobQueries[index]?.data ?? []) as ScanJob[]
+      const jobs = jobsByScan[index] ?? []
       if (jobs.length === 0) return
-      // Jobs arrive newest-first. Count the current failing streak — the run of
-      // leading consecutive failures — so we can collapse it into one row tagged
-      // "failed last N runs" instead of N identical failed rows. When the latest
-      // run didn't fail we keep the two most recent jobs as before.
-      let streak = 0
-      while (streak < jobs.length && jobs[streak].status === 'failed') streak += 1
-      const collapsed = streak > 0 ? [jobs[0], ...jobs.slice(streak, streak + 1)] : jobs.slice(0, 2)
-      collapsed.forEach((job, position) => {
+      // Jobs arrive newest-first. The failing streak is the detail page's own
+      // count (`consecutiveFailedRuns`), which looks past a queued or running
+      // retry: counting only LEADING failures made a pending retry after five
+      // failures read "failed last 5 runs" on the detail page and nothing here
+      // (DATA-18). The streak collapses into its newest failure, tagged, after
+      // any active run; with no streak the two most recent jobs show as before.
+      const streak = consecutiveFailedRuns(jobs)
+      const firstSettled = jobs.findIndex(job => job.status !== 'pending' && job.status !== 'running')
+      const streakHead = streak > 0 ? jobs[firstSettled] : null
+      const collapsed = streakHead
+        ? [
+          ...jobs.slice(0, firstSettled),
+          streakHead,
+          ...jobs.slice(firstSettled + streak, firstSettled + streak + 1),
+        ].slice(0, 2)
+        : jobs.slice(0, 2)
+      collapsed.forEach(job => {
         runs.push({
           jobId: job.id,
           scanId: sc.id,
@@ -142,7 +176,10 @@ export function ScansTab({ slug }: { slug: string }) {
           durationSec: jobDurationSeconds(job),
           status: job.status,
           errorMessage: job.error_message,
-          failingStreak: position === 0 ? streak : 0,
+          failingStreak: job === streakHead ? streak : 0,
+          // Only a full page can hide older failures; a shorter one is the whole history.
+          failingStreakAtLeast:
+            job === streakHead && firstSettled + streak === jobs.length && jobs.length >= SCAN_LIST_JOBS_LIMIT,
           changes: summarizeScanChanges(job),
         })
       })
@@ -150,30 +187,42 @@ export function ScansTab({ slug }: { slug: string }) {
     return runs
       .sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))
       .slice(0, 6)
-  }, [scanConfigs, jobQueries])
+  }, [scanConfigs, jobsByScan])
 
   // Null until every scan's jobs have arrived: a partial sum reads as a real
   // figure, and "0" while loading contradicted the completed runs already
   // listed in the activity rail (tripl-jfm3.28). `formatCount(null)` renders "—".
-  const rowsScanned24h = useMemo<number | null>(() => {
+  //
+  // Each scan's history is capped, so a scan that ran more often than that in
+  // the window contributes only its newest runs: the figure is then a floor,
+  // and it says so with a "+" instead of passing for the whole day.
+  const rowsScanned24h = useMemo<{ total: number; partial: boolean } | null>(() => {
     const cutoff = mountedAtMs - 24 * 60 * 60 * 1000
     let total = 0
+    let partial = false
     for (let index = 0; index < scanConfigs.length; index += 1) {
-      const jobs = jobQueries[index]?.data as ScanJob[] | undefined
+      const jobs = jobsByScan[index]
       if (!jobs) return null
       jobs.forEach(job => {
         const stamp = job.completed_at ?? job.started_at
         if (stamp && Date.parse(stamp) >= cutoff) total += jobRowsScanned(job) ?? 0
       })
+      const oldest = jobs[jobs.length - 1]
+      const oldestStamp = oldest ? (oldest.completed_at ?? oldest.started_at ?? oldest.created_at) : null
+      if (jobs.length >= SCAN_LIST_JOBS_LIMIT && oldestStamp && Date.parse(oldestStamp) >= cutoff) {
+        partial = true
+      }
     }
-    return total
-  }, [scanConfigs, jobQueries, mountedAtMs])
+    return { total, partial }
+  }, [scanConfigs, jobsByScan, mountedAtMs])
 
   // Both the per-row "Run now" and the failed-row "Run again" reuse the manual
   // scan trigger (POST /scans/{id}/run). On success we refetch that scan's jobs
   // so the new pending run appears in the feed.
   const queryClient = useQueryClient()
   const runScan = useMutation({
+    // Rendered inline, naming the scan it was for (DATA-5).
+    meta: SILENT_ERROR_META,
     mutationFn: (scanId: string) => scansApi.run(slug, scanId),
     onSuccess: (job, scanId) => {
       // Only the job this POST returned can advance the coached demo scenario:
@@ -187,10 +236,9 @@ export function ScansTab({ slug }: { slug: string }) {
   // the newest request. Both the row-level "Run now" and the failed-row
   // "Run again" derive their busy state from this id.
   const pendingScanId = runScan.isPending ? runScan.variables : undefined
-
-  if (view === 'new') {
-    return <ScanCreatePage slug={slug} onBack={() => setView('list')} />
-  }
+  const failedRunScanName = runScan.isError
+    ? scanConfigs.find((sc: ScanConfig) => sc.id === runScan.variables)?.name ?? 'this scan'
+    : null
 
   // Counting `interval` alone counted the broken quadrant — a schedule with no
   // time column is never dispatched, so it monitors nothing (tripl-3y7z.1).
@@ -212,16 +260,26 @@ export function ScansTab({ slug }: { slug: string }) {
             what anomaly detection and alerts are built on.
           </p>
         </div>
-        <Button
-          size="sm"
-          disabled={dataSources.length === 0}
-          title={dataSources.length === 0 ? 'Add a data source first' : ''}
-          onClick={() => setView('new')}
-        >
-          <Plus className="size-3.5" />
-          New scan
-        </Button>
+        {isOwner && (
+          <Button
+            size="sm"
+            disabled={noDataSources}
+            title={noDataSources ? 'Add a data source first' : ''}
+            onClick={() => navigate(`/p/${slug}/scans/new`)}
+          >
+            <Plus className="size-3.5" />
+            New scan
+          </Button>
+        )}
       </div>
+
+      {!isOwner && (
+        <ReadOnlyNotice>
+          {canRun
+            ? 'Creating and changing scans is done by an owner. You can run the scans below.'
+            : undefined}
+        </ReadOnlyNotice>
+      )}
 
       {/* Collapses before the labels do: "Warehouse rows read · 24h" wraps to
           three lines in a fixed third of a phone viewport. Same convention as
@@ -231,25 +289,41 @@ export function ScansTab({ slug }: { slug: string }) {
         <StatCard label="Monitoring" value={monitoringCount} />
         <StatCard
           label="Warehouse rows read · 24h"
-          value={formatCount(rowsScanned24h)}
-          title="Rows read across every catalog and metrics run in the last 24 hours."
+          value={
+            rowsScanned24h == null
+              ? formatCount(null)
+              : `${formatCount(rowsScanned24h.total)}${rowsScanned24h.partial ? '+' : ''}`
+          }
+          title={
+            rowsScanned24h?.partial
+              ? 'At least this many: rows read across the most recent runs of each scan in the last 24 hours.'
+              : 'Rows read across every catalog and metrics run in the last 24 hours.'
+          }
         />
       </div>
 
-      {dataSources.length === 0 && (
+      {noDataSources && (
         <EmptyState
           icon={Search}
           title="No data sources"
-          description="Add a data source connection first to create a scan."
+          description={
+            isOwner
+              ? 'Add a data source connection first to create a scan.'
+              : 'An owner has to add a data source connection before scans can be created.'
+          }
           action={
             // The empty state used to name the page that fixes it and leave the
-            // reader to find it; the link IS the remedy now (tripl-eadx).
-            <Button asChild size="sm">
-              <Link to="/settings/data-sources">
-                <Plus className="size-3.5" />
-                Add connection
-              </Link>
-            </Button>
+            // reader to find it; the link IS the remedy now (tripl-eadx). Only
+            // for an owner: data sources are owner-only, and anyone else landed
+            // on a page with nothing they could add.
+            isOwner ? (
+              <Button asChild size="sm">
+                <Link to="/settings/data-sources">
+                  <Plus className="size-3.5" />
+                  Add connection
+                </Link>
+              </Button>
+            ) : undefined
           }
         />
       )}
@@ -258,6 +332,11 @@ export function ScansTab({ slug }: { slug: string }) {
           checklist's "Run a scan" step, so "1 scans" was the first thing a new
           user read on the page this epic exists to make comprehensible. */}
       <SurfPanel title="Scans" subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
+        {failedRunScanName && (
+          <p role="alert" className="border-b px-4 py-2 text-sm" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
+            Could not start {failedRunScanName}: {getErrorMessage(runScan.error)}
+          </p>
+        )}
         {scanConfigsLoading ? (
           <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading scans">
             {[0, 1, 2].map((index) => (
@@ -281,7 +360,9 @@ export function ScansTab({ slug }: { slug: string }) {
           </p>
         ) : (
           <table className="w-full border-collapse">
-            <thead>
+            {/* Phones get the rows as stacked cards (ScanListRow), so the
+                column headings have nothing to head there. */}
+            <thead className="hidden sm:table-header-group">
               <tr style={{ background: 'var(--bg-sunken)' }}>
                 {['Scan', 'Last run'].map(h => (
                   <th
@@ -312,7 +393,7 @@ export function ScansTab({ slug }: { slug: string }) {
                     intervalLabel={INTERVAL_LABEL}
                     detailHref={detailHref}
                     onNavigate={() => navigate(detailHref)}
-                    onRun={() => runScan.mutate(sc.id)}
+                    onRun={canRun ? () => runScan.mutate(sc.id) : undefined}
                     runPending={pendingScanId === sc.id}
                     // The step-1 CTA opens this list; point the coach at the first
                     // row's Run control (inert unless the demo scenario is active).
@@ -341,13 +422,21 @@ export function ScansTab({ slug }: { slug: string }) {
                   side="top"
                   align="start"
                 >
+                  {/* One row from `sm` up. Below it the row wraps — pill, name
+                      and the rows/duration figures on the first line, what
+                      happened on the next, a failed run's actions under that —
+                      because the fixed 150px name and 52px duration left a
+                      375px screen nothing for the rest, and "3h ago" ran into
+                      "4.8K rows" (DATA-10). */}
                   <div
-                    className="flex items-center gap-3 border-t px-4 py-2.5 first:border-t-0"
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-4 py-2.5 first:border-t-0 sm:flex-nowrap"
                     style={{ borderColor: 'var(--border-subtle)' }}
                   >
                     <RunStatusPill status={runPillStatus(run.status)} title={friendly ?? undefined} />
-                    <span className="w-[150px] shrink-0 truncate text-xs font-medium">{run.scanName}</span>
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="min-w-0 flex-1 truncate text-xs font-medium sm:w-[150px] sm:flex-none sm:shrink-0">
+                      {run.scanName}
+                    </span>
+                    <div className="order-last flex min-w-0 basis-full flex-col gap-1 sm:order-none sm:basis-auto sm:flex-1">
                       <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
                         {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
                       </span>
@@ -368,28 +457,31 @@ export function ScansTab({ slug }: { slug: string }) {
                       )}
                     </div>
                     {isFailed ? (
-                      <div className="flex shrink-0 items-center gap-2">
+                      <div className="order-last flex shrink-0 flex-wrap items-center gap-2 sm:order-none">
                         {run.failingStreak > 1 && (
                           <span
                             className="whitespace-nowrap rounded border px-1.5 py-0.5 text-[10.5px] font-semibold"
                             style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
                           >
-                            failed last {run.failingStreak} runs
+                            failed last {run.failingStreak}
+                            {run.failingStreakAtLeast ? '+' : ''} runs
                           </span>
                         )}
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          disabled={pendingScanId === run.scanId}
-                          onClick={() => runScan.mutate(run.scanId)}
-                        >
-                          <RotateCw className="size-3" aria-hidden="true" />
-                          {pendingScanId === run.scanId ? 'Starting…' : 'Run again'}
-                        </Button>
+                        {canRun && (
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            disabled={pendingScanId === run.scanId}
+                            onClick={() => runScan.mutate(run.scanId)}
+                          >
+                            <RotateCw className="size-3" aria-hidden="true" />
+                            {pendingScanId === run.scanId ? 'Starting…' : 'Run again'}
+                          </Button>
+                        )}
                       </div>
                     ) : (
                       <>
-                        <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                        <span className="mono shrink-0 whitespace-nowrap text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
                           {/* `formatCount` compacts (1.8M), so the noun agrees
                               with the raw count rather than the printed text —
                               a run that read a single row said "1 rows". */}
@@ -397,7 +489,7 @@ export function ScansTab({ slug }: { slug: string }) {
                             ? '—'
                             : `${formatCount(run.rows)} ${pluralize(run.rows, 'row', 'rows')}`}
                         </span>
-                        <span className="mono w-[52px] text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+                        <span className="mono shrink-0 whitespace-nowrap text-right text-[11px] sm:w-[52px]" style={{ color: 'var(--fg-faint)' }}>
                           {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
                         </span>
                       </>

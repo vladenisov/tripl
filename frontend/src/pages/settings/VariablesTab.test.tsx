@@ -1,7 +1,9 @@
 import { act, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BranchContext } from '@/components/branch-context-internal'
+import { AuthContext } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
 import { eventsApi } from '@/api/events'
 import { variablesApi } from '@/api/variables'
 import { variableDriftsApi } from '@/api/variableDrifts'
@@ -117,6 +119,15 @@ function renderInBranch(branchId: string | null) {
   const view = render(tree(branchId))
   return { ...view, switchBranch: (next: string | null) => view.rerender(tree(next)) }
 }
+
+// The detail panels query overrides, drifts and the event picker; a bare
+// vi.fn() resolves to undefined, which react-query reports as an error, so they
+// answer empty unless a test says otherwise.
+beforeEach(() => {
+  vi.mocked(variableOverridesApi.list).mockResolvedValue([])
+  vi.mocked(variableDriftsApi.list).mockResolvedValue({ items: [], total: 0 })
+  vi.mocked(eventsApi.list).mockResolvedValue({ items: [] as never, total: 0 })
+})
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -1482,5 +1493,36 @@ describe('VariablesTab — bindings versus tokens', () => {
       within(dialog).getByText('page_data.extra.variant', { selector: 'code' }),
     ).toBeInTheDocument()
     expect(within(dialog).getByText('${variant}', { selector: 'code' })).toBeInTheDocument()
+  })
+})
+
+describe('VariablesTab — a viewer reads without write controls', () => {
+  it('hides create, select, exclude and delete, and opens the variable read-only', async () => {
+    mockList([makeVariable({ id: 'var-1', name: 'user_id', event_count: 0 })])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authAs('viewer')}>
+          <VariablesTab slug="demo" />
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    const edit = await screen.findByRole('button', { name: 'Edit variable user_id' })
+    expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
+    expect(screen.queryByRole('button', { name: /Add variable/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'Select all variables' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Exclude variable/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete variable user_id' })).not.toBeInTheDocument()
+
+    // Opening the variable is how its drift and observed values are read.
+    fireEvent.click(edit)
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText('Name')).toBeDisabled()
+    expect(within(dialog).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    for (const close of within(dialog).getAllByRole('button', { name: 'Close' })) {
+      expect(close).toBeEnabled()
+    }
   })
 })

@@ -13,14 +13,18 @@ invented: they are derived from the synthetic dataset by running the REAL
 ``SyntheticAdapter`` (via ``registry.build_adapter`` over the demo's synthetic
 DataSource) with each metric's validated config — the same shapes the worker
 collectors use — so the seeded values are reproducible from the synthetic rows.
-The adapter is pure in-memory (no network/filesystem), so it is safe to call
-inside async provisioning. Values are deterministic for a given clock/seed.
+The adapter is pure in-memory (no network/filesystem), but building its dataset
+and scanning it is still CPU work, so it runs in a worker thread rather than on
+the API event loop (tripl-0zpq.251); only the row inserts happen on the loop.
+Values are deterministic for a given clock/seed.
 """
 
 from __future__ import annotations
 
+import asyncio
 import math
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -224,11 +228,10 @@ async def _build_metric_values(
 
     data_source = await session.get(DataSource, ctx.data_source_id)
     if data_source is not None:
-        adapter = build_adapter(data_source)
-        try:
-            _build_adapter_derived_values(session, ctx, metric_defs, adapter)
-        finally:
-            adapter.close()
+        sql_metric = metric_defs["active_sessions"]
+        metric_sql = str((sql_metric.config or {}).get("metric_sql", ""))
+        series = await asyncio.to_thread(_read_adapter_series, data_source, ctx.now, metric_sql)
+        _add_adapter_derived_values(session, metric_defs, series)
     await session.flush()
 
 
@@ -253,13 +256,32 @@ def _build_conversion_values(
         )
 
 
-def _build_adapter_derived_values(
-    session: AsyncSession,
-    ctx: DemoContext,
-    metric_defs: dict[str, MetricDefinition],
-    adapter: BaseAdapter,
-) -> None:
-    """Derive the sql + fact series from the synthetic adapter (scan_config_id NULL).
+@dataclass(frozen=True)
+class _AdapterSeries:
+    """The raw adapter reads behind the sql + fact metric values."""
+
+    revenue_rows: list[tuple[object, ...]]
+    aov_rows: list[tuple[object, ...]]
+    sql_columns: list[str]
+    sql_rows: list[tuple[object, ...]]
+
+
+def _read_adapter_series(data_source: DataSource, now: datetime, metric_sql: str) -> _AdapterSeries:
+    """Build the synthetic adapter and derive the series. The worker-thread target.
+
+    Runs off the event loop (tripl-0zpq.251), so it touches nothing but the
+    already-loaded ``data_source`` columns: the adapter's constructor generates
+    the whole synthetic dataset and every read scans it, all CPU.
+    """
+    adapter = build_adapter(data_source)
+    try:
+        return _derive_adapter_series(adapter, now, metric_sql)
+    finally:
+        adapter.close()
+
+
+def _derive_adapter_series(adapter: BaseAdapter, now: datetime, metric_sql: str) -> _AdapterSeries:
+    """Derive the sql + fact series from the synthetic adapter. No session.
 
     Mirrors what the worker collectors compute: a conditional daily SUM for the
     filtered single (revenue), a two-operand daily ratio (average order value),
@@ -267,7 +289,7 @@ def _build_adapter_derived_values(
     """
     day = timedelta(days=1)
     interval_code = get_interval(ScanInterval.d1.value).code
-    end_day = ctx.now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     time_from = end_day - day * _DEMO_METRIC_HISTORY_DAYS
     # Ends at the start of TODAY, so only COMPLETE days are seeded. This is
     # exactly the window the worker would compute — ``metric_collect
@@ -279,8 +301,9 @@ def _build_adapter_derived_values(
     # thirty full ones, and it read as a drop rather than as a day in progress.
     time_to = end_day
 
-    # revenue_completed: SUM(amount) WHERE status = 'completed' per day -- the same
-    # conditional aggregate the batched fact collector runs for a filtered single.
+    # revenue_completed: SUM(amount) WHERE status = 'completed' per day -- the
+    # same conditional aggregate the batched fact collector runs for a
+    # filtered single.
     revenue_specs = [
         AggregateSpec(
             key="revenue",
@@ -292,7 +315,41 @@ def _build_adapter_derived_values(
     _revenue_cols, revenue_rows = adapter.get_time_bucketed_multi_aggregate(
         _ORDERS_SQL, "created_at", interval_code, revenue_specs, time_from, time_to
     )
-    for bucket, revenue in revenue_rows:
+    # average_order_value: SUM(amount) / COUNT(*) per day -- the ratio's two
+    # operands read from one shared daily scan, divided per bucket.
+    aov_specs = [
+        AggregateSpec(key="numerator", aggregation=MetricAggregation.sum, column="amount"),
+        AggregateSpec(key="denominator", aggregation=MetricAggregation.count),
+    ]
+    _aov_cols, aov_rows = adapter.get_time_bucketed_multi_aggregate(
+        _ORDERS_SQL, "created_at", interval_code, aov_specs, time_from, time_to
+    )
+    # active_sessions (sql): distinct sessions per day, read back through the
+    # same get_preview_rows path the sql collector uses (the adapter
+    # recognises the seeded metric SQL and computes it from the synthetic
+    # events).
+    column_names, rows = adapter.get_preview_rows(
+        metric_sql,
+        limit=_METRIC_QUERY_ROW_LIMIT,
+        time_column="ts",
+        time_from=time_from,
+        time_to=time_to,
+    )
+    return _AdapterSeries(
+        revenue_rows=revenue_rows,
+        aov_rows=aov_rows,
+        sql_columns=column_names,
+        sql_rows=rows,
+    )
+
+
+def _add_adapter_derived_values(
+    session: AsyncSession,
+    metric_defs: dict[str, MetricDefinition],
+    series: _AdapterSeries,
+) -> None:
+    """Insert the adapter-derived series as ``MetricValue`` rows (scan_config_id NULL)."""
+    for bucket, revenue in series.revenue_rows:
         if revenue is None:
             continue
         session.add(
@@ -304,16 +361,7 @@ def _build_adapter_derived_values(
             )
         )
 
-    # average_order_value: SUM(amount) / COUNT(*) per day -- the ratio's two
-    # operands read from one shared daily scan, divided per bucket.
-    aov_specs = [
-        AggregateSpec(key="numerator", aggregation=MetricAggregation.sum, column="amount"),
-        AggregateSpec(key="denominator", aggregation=MetricAggregation.count),
-    ]
-    _aov_cols, aov_rows = adapter.get_time_bucketed_multi_aggregate(
-        _ORDERS_SQL, "created_at", interval_code, aov_specs, time_from, time_to
-    )
-    for bucket, numerator, denominator in aov_rows:
+    for bucket, numerator, denominator in series.aov_rows:
         if not denominator:
             continue
         session.add(
@@ -325,21 +373,10 @@ def _build_adapter_derived_values(
             )
         )
 
-    # active_sessions (sql): distinct sessions per day, read back through the same
-    # get_preview_rows path the sql collector uses (the adapter recognises the
-    # seeded metric SQL and computes it from the synthetic events).
     sql_metric = metric_defs["active_sessions"]
-    metric_sql = str((sql_metric.config or {}).get("metric_sql", ""))
-    column_names, rows = adapter.get_preview_rows(
-        metric_sql,
-        limit=_METRIC_QUERY_ROW_LIMIT,
-        time_column="ts",
-        time_from=time_from,
-        time_to=time_to,
-    )
-    ts_index = column_names.index("ts")
-    value_index = column_names.index("value")
-    for row in rows:
+    ts_index = series.sql_columns.index("ts")
+    value_index = series.sql_columns.index("value")
+    for row in series.sql_rows:
         session.add(
             MetricValue(
                 metric_definition_id=sql_metric.id,

@@ -49,15 +49,9 @@ from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.worker.tasks.metrics import detect as metrics_detect
 from tripl.worker.tasks.metrics.coverage import covered_buckets_from_scan_jobs
 
-# Hourly, tz-naive buckets, matching the sync fixtures' naive bucket columns
-# (``MetricValue.bucket`` / ``EventMetric.bucket`` are plain
-# ``DateTime(timezone=True)``, which sqlite hands back without tzinfo). Anchored
-# to a recent wall-clock hour so seeded buckets stay inside the freshness
-# horizon, exactly as ``test_metric_anomaly_scope._BASE`` does.
+# Hourly UTC buckets, anchored inside the freshness horizon.
 _HOUR = timedelta(hours=1)
-_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(
-    hours=12
-)
+_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=12)
 _SPIKE_HOUR = 9
 _EVAL_FROM = _BASE + _HOUR * 8
 _EVAL_TO = _BASE + _HOUR * 10
@@ -709,10 +703,12 @@ def test_multi_grid_metric_unions_every_source_configs_coverage(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
     """``_load_metric_value_points`` SUMS a metric's values across every source
-    grid with no ``scan_config_id`` filter, so coverage has to describe the same
-    population. Resolving it from one source alone excluded every bucket only
-    the other source contributed — ``expand_series`` drops an uncovered bucket
-    even when a real value is sitting in it.
+    grid ON THE RESOLVED GRID'S INTERVAL, with no filter down to one config, so
+    coverage has to describe the same population. Resolving it from one source
+    alone excluded every bucket only the other source contributed —
+    ``expand_series`` drops an uncovered bucket even when a real value is sitting
+    in it. Both sibling configs here are the default 1h, so the interval
+    predicate keeps every seeded row and the population is the full union.
 
     Two live scans collect the same event type. The YOUNGER one holds the newest
     stored bucket, so ``metric_grid_stmt``'s ``ORDER BY bucket DESC`` resolves

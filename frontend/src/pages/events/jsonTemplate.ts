@@ -8,16 +8,41 @@
 import { getErrorMessage } from '@/lib/utils'
 
 const TEMPLATE_TOKEN_PATTERN = /\$\{([^}]*)\}/g
-export const TEMPLATE_TOKEN_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
-const JSON_TEMPLATE_VALUE_PATTERN = /"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"|\$\{[A-Za-z_][A-Za-z0-9_.-]*\}/g
-const JSON_TEMPLATE_KEY_PATTERN = /"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"\s*:/
+
+/**
+ * A bare word that `jsonRelaxed` may read as a variable reference, and the only
+ * thing this file still spells as an identifier.
+ *
+ * Kept narrow on purpose: relaxed JSON turns unquoted text into a reference when
+ * it looks like a name, so widening this to the token grammar below would make
+ * almost any bare text a variable. Exported for `jsonRelaxed.classifyBare`,
+ * which is its only caller.
+ */
+export const BARE_WORD_VARIABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
+
+// The token body the BACKEND accepts, character for character:
+// `event_service._JSON_TEMPLATE_TOKEN_NAME_PATTERN` is `^[^"\\}\x00-\x1f]+$`.
+// A scan legitimately writes `${property.Москва}` or `${property.Albany, OR}` —
+// `derive_display_name` falls back to the raw JSON path whenever it cannot
+// sanitise one — and the form re-sends every field value on save, so an
+// identifier grammar here blocked every later edit of such an event, including
+// one that only touched the description (tripl-0zpq.125). The backend accepted
+// those saves from this batch on; this file was the remaining door that did not.
+// What stays out is what a JSON string cannot hold verbatim (a quote, a
+// backslash, a C0 control character) plus `}`, which ends the token.
+// eslint-disable-next-line no-control-regex -- the C0 range is excluded, never matched: a JSON string cannot hold one verbatim and the backend pattern above refuses them too
+const JSON_TEMPLATE_TOKEN_NAME_PATTERN = /^[^"\\}\x00-\x1f]+$/
+// eslint-disable-next-line no-control-regex -- same C0 exclusion as the token name pattern above
+const JSON_TEMPLATE_VALUE_PATTERN = /"\$\{[^"\\}\x00-\x1f]+\}"|\$\{[^"\\}\x00-\x1f]+\}/g
+// eslint-disable-next-line no-control-regex -- same C0 exclusion as the token name pattern above
+const JSON_TEMPLATE_KEY_PATTERN = /"\$\{[^"\\}\x00-\x1f]+\}"\s*:/
 
 const SENTINEL_BASE = '__TRIPL_VAR_'
 
 export function templateJsonError(text: string): string | null {
   const tokens = [...text.matchAll(TEMPLATE_TOKEN_PATTERN)].map(match => match[1])
-  if (tokens.some(token => !TEMPLATE_TOKEN_NAME_PATTERN.test(token))) {
-    return 'Variable tokens may use letters, digits, underscores, dots, or hyphens.'
+  if (tokens.some(token => !JSON_TEMPLATE_TOKEN_NAME_PATTERN.test(token))) {
+    return 'A ${...} token must name a variable and cannot contain a quote, a backslash or a control character.'
   }
   const templateValues = text.match(JSON_TEMPLATE_VALUE_PATTERN) ?? []
   if (templateValues.length !== tokens.length) {

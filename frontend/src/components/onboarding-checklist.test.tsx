@@ -1,10 +1,13 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, describe, expect, it } from 'vitest'
+import { toast } from 'sonner'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthUser, ProjectLatestScanJob, ProjectSummary, Role } from '@/types'
 import { AuthContext, type AuthContextValue } from './auth-context'
 import { OnboardingChecklist } from './onboarding-checklist'
 import { countRealSources } from './onboarding-utils'
+
+vi.mock('sonner', () => ({ toast: vi.fn() }))
 
 // The checklist is role-aware (tripl-yfsj.4): it reads the current user's role
 // via useAuth(), so tests must render it inside an AuthContext. `role: null`
@@ -74,6 +77,7 @@ function renderChecklist(props: {
   summary: ProjectSummary | undefined
   sourceCount?: number
   slug?: string
+  projectId?: string
   isDemo?: boolean
   // Defaults to 'owner' so the pre-role-awareness cases (all five steps count)
   // read exactly as before.
@@ -84,6 +88,7 @@ function renderChecklist(props: {
       <MemoryRouter>
         <OnboardingChecklist
           slug={props.slug ?? 'demo'}
+          projectId={props.projectId}
           summary={props.summary}
           sourceCount={props.sourceCount ?? 0}
           isDemo={props.isDemo}
@@ -95,6 +100,64 @@ function renderChecklist(props: {
 
 afterEach(() => {
   localStorage.clear()
+  vi.clearAllMocks()
+})
+
+describe('OnboardingChecklist collapse and recovery (SHELL-51 / WS-35)', () => {
+  const nearlyDone = () =>
+    makeSummary({
+      event_type_count: 4,
+      latest_scan_job: executedJob(),
+      implemented_event_count: 3,
+    })
+
+  it('collapses back to the slim bar after "Show steps", with a real aria-expanded', () => {
+    renderChecklist({ summary: nearlyDone(), sourceCount: 1 })
+
+    const show = screen.getByRole('button', { name: /show steps/i })
+    expect(show).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(show)
+
+    const hide = screen.getByRole('button', { name: /hide steps/i })
+    expect(hide).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('list', { name: 'Setup steps' })).toBeInTheDocument()
+
+    fireEvent.click(hide)
+    expect(screen.queryByRole('list', { name: 'Setup steps' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /show steps/i })).toBeInTheDocument()
+  })
+
+  it('offers Undo after a dismissal', () => {
+    renderChecklist({ summary: nearlyDone(), sourceCount: 1, projectId: 'project-1' })
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByText('4 of 5')).not.toBeInTheDocument()
+
+    const options = vi.mocked(toast).mock.calls[0]?.[1] as {
+      action: { label: string; onClick: () => void }
+    }
+    expect(options.action.label).toBe('Undo')
+    act(() => options.action.onClick())
+    expect(screen.getByText('4 of 5')).toBeInTheDocument()
+  })
+
+  it('keys the dismissal on the project id, so a slug rename keeps it', () => {
+    const { unmount } = renderChecklist({
+      summary: nearlyDone(),
+      sourceCount: 1,
+      projectId: 'project-1',
+    })
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(localStorage.getItem('tripl-onboarding-dismissed:project-1')).toBe('1')
+    unmount()
+
+    renderChecklist({
+      summary: nearlyDone(),
+      sourceCount: 1,
+      slug: 'renamed',
+      projectId: 'project-1',
+    })
+    expect(screen.queryByText('4 of 5')).not.toBeInTheDocument()
+  })
 })
 
 describe('OnboardingChecklist', () => {
@@ -205,6 +268,15 @@ describe('OnboardingChecklist', () => {
     )
     expect(screen.getByText('Owner only')).toBeInTheDocument()
     expect(screen.getByText(/ask an owner/i)).toBeInTheDocument()
+  })
+
+  it('is not shown to a viewer, who can take none of its steps', () => {
+    // Plan, scans and alerting are editor-gated and sources owner-only; the
+    // card could never reach done for this role and just sat there.
+    renderChecklist({ role: 'viewer', summary: makeSummary({ event_type_count: 4 }) })
+
+    expect(screen.queryByRole('list', { name: 'Setup steps' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/of \d/)).not.toBeInTheDocument()
   })
 
   it('treats an anonymous (no-user) context as a non-owner', () => {

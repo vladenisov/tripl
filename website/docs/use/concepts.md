@@ -265,7 +265,9 @@ does, tripl keeps a metric series per release. One project-level **Releases to
 keep** setting under **Settings → Project → General** controls how many latest
 releases stay explicit across event monitoring, adoption, project totals, and
 SQL/fact/event-composition metrics; older releases fold into a single
-**"Other"** bucket. Event scans also watch for a **release regression**: an
+**"Other"** bucket. "Latest" follows version order: SemVer precedence, and
+plain dotted numbers that are not strict SemVer (`15.8`, `15.10`, `1.2.3.4`)
+compared numerically, so `15.10` is newer than `15.9`. Event scans also watch for a **release regression**: an
 event that disappeared or fired far less in the newest release than in the one
 before it.
 
@@ -343,16 +345,23 @@ for everything tripl has told the team.
 
 Every workspace member has a **role** that applies across the instance:
 
-- **Viewer** — can look, can't change anything.
-- **Editor** — can change the plan, scans, and alerts.
-- **Owner** — full control, including managing people and deleting the project.
+- **Viewer** — can look, can't change anything. Pages show a viewer what there
+  is to read and leave out the buttons that change it, with one line saying so.
+- **Editor** — can change the plan and alerts, and run scans, in the projects
+  an owner created and in their own. A demo, or a project another editor
+  created, is that person's to change (and an owner's). A project's own name,
+  slug and retention can be changed only by the person who created it or an
+  owner.
+- **Owner** — full control, including data sources, writing and changing scans,
+  managing people, and deleting the project.
 
 ### API key
 
 An **API key** lets a script or an AI agent talk to tripl without a human logged
 in. Keys are scoped to be safe: **read** keys can only look, **write** keys can
 edit, and a key can be locked to a single project and given an expiry date. They
-can be revoked at any time. See **[agent-api-guide.md](../integrate/agent-api-guide.md)** for
+can be revoked at any time. Creating and revoking keys requires an interactive
+session; a Bearer key cannot manage keys. See **[agent-api-guide.md](../integrate/agent-api-guide.md)** for
 the details.
 
 ### Audit log

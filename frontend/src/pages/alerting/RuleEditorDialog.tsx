@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react"
 
+import { MAX_ALERT_RULE_NAME_LENGTH } from "@/api/alerting"
 import type { AlertDestination, AlertScopeReadiness, EventType, ScanConfig } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -7,6 +8,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useDirtySinceOpen, useUnsavedDialogGuard } from "@/hooks/useUnsavedChangesGuard"
 import { getErrorMessage } from "@/lib/utils"
 
 import { FilterEditor } from "./FilterEditor"
@@ -101,8 +103,16 @@ export function RuleEditorDialog({
   const valueDriftIsInert =
     ruleForm.include_variable_value_drifts && scopeReadiness?.variable_value_drift === false
 
+  // Two 8-row templates, filters and thresholds: Escape, a stray overlay click
+  // or Cancel used to drop all of it at once (ALR-17). They ask first now,
+  // while the form differs from what it opened with.
+  const unsaved = useUnsavedDialogGuard(useDirtySinceOpen(open, { ruleForm, destinationId }))
+  const requestClose = () => unsaved.requestClose(onClose)
+
   return (
-    <Dialog open={open} onOpenChange={value => { if (!value) onClose() }}>
+    <>
+    {unsaved.dialog}
+    <Dialog open={open} onOpenChange={value => { if (!value) requestClose() }}>
       <DialogContent className="max-w-3xl">
         <form onSubmit={event => { event.preventDefault(); onSubmit() }}>
           <DialogHeader>
@@ -114,6 +124,7 @@ export function RuleEditorDialog({
                 <Label htmlFor="rule-name">Name</Label>
                 <Input
                   id="rule-name"
+                  maxLength={MAX_ALERT_RULE_NAME_LENGTH}
                   value={ruleForm.name}
                   onChange={event => setRuleForm(current => ({ ...current, name: event.target.value }))}
                   required
@@ -404,7 +415,7 @@ export function RuleEditorDialog({
             )}
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="button" variant="outline" onClick={requestClose}>Cancel</Button>
             {/* A rule with no destination cannot be created: the API addresses
                 the rule through it, so submitting would 404 on a path segment
                 the reader never saw. */}
@@ -415,5 +426,6 @@ export function RuleEditorDialog({
         </form>
       </DialogContent>
     </Dialog>
+    </>
   )
 }

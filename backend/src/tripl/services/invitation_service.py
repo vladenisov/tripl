@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -172,7 +173,7 @@ async def redeem_invitation(
     user = User(
         email=invitation.email,
         name=stripped_name,
-        password_hash=hash_password(password),
+        password_hash=await asyncio.to_thread(hash_password, password),
         role=invitation.role,
     )
     session.add(user)

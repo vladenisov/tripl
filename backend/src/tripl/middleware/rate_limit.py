@@ -1,9 +1,8 @@
 """In-process token-bucket rate limiter for auth endpoints.
 
-Scope: protect ``/auth/login`` and ``/auth/register`` from credential-stuffing
-and signup abuse, and the unauthenticated ``/auth/status`` read from scraping,
-from a single source IP. Each limiter is keyed on the client IP plus the
-endpoint name so the routes share no quota.
+Scope: protect login, registration, status, invitations, and password-reset
+routes from abuse by a single source IP. Each limiter is keyed on the client
+IP plus its limiter name; routes using the same limiter share a quota.
 
 This implementation is per-worker. For multi-worker deployments behind a
 reverse proxy, terminate rate limiting at the proxy (or replace this with a

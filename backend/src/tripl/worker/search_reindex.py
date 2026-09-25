@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from tripl.config import settings
+from tripl.db_config import postgres_connect_args
 from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.services.search_service import reindex_project_branch
@@ -62,7 +63,11 @@ def reindex_branch_from_worker(
         # async(api)/sync(Celery)/async-NullPool(worker-bridge) split — this is
         # the worker-bridge case, so it intentionally skips the shared pool
         # constants and uses NullPool.
-        engine = create_async_engine(settings.database_url, poolclass=NullPool)
+        engine = create_async_engine(
+            settings.database_url,
+            poolclass=NullPool,
+            connect_args=postgres_connect_args(settings.database_url),
+        )
         try:
             session_factory = async_sessionmaker(engine, expire_on_commit=False)
             async with session_factory() as async_db:

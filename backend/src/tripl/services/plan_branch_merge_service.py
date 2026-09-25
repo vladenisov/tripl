@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import lazyload, selectinload
@@ -37,9 +36,12 @@ from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
 from tripl.services._branch_counterparts import main_counterparts
+from tripl.services._branch_event_threads import move_event_threads
 from tripl.services._celery_dispatch import dispatch
 from tripl.services._event_reference_cleanup import drop_dangling_event_references
+from tripl.services._plan_branch_locks import lock_main_plan_for_merge
 from tripl.services._plan_branch_renames import pair_renames, rekey_in_place
+from tripl.services._plan_merge_slots import merge_slots
 from tripl.services.event_photo_service import PHOTO_KIND_PHOTO, delete_unreferenced_blobs
 from tripl.services.event_type_owner_service import load_owner_user_ids
 from tripl.services.plan_branch_conflicts import (
@@ -65,7 +67,9 @@ from tripl.services.plan_revision_service import (
 )
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
 from tripl.services.scan_config_lookup import (
+    event_type_binding_conflict_detail,
     name_format_conflict_detail,
+    scan_configs_binding_event_types,
     scan_configs_blocking_field_removals,
 )
 
@@ -678,17 +682,10 @@ async def _move_event_threads_to_main(
     not guess. An event the merge itself deletes from main takes main's thread
     with it through the same cascade as a delete on main.
     """
-    for branch_event_id, main_event_id in main_event_id_by_branch_event_id.items():
-        await session.execute(
-            update(EventPhotoComment)
-            .where(
-                EventPhotoComment.event_id == branch_event_id,
-                EventPhotoComment.photo_id.is_(None),
-            )
-            # Re-anchored, not edited: named explicitly so the column's onupdate
-            # does not stamp the merge time on every row that moved.
-            .values(event_id=main_event_id, updated_at=EventPhotoComment.updated_at)
-        )
+    # The UPDATE itself is shared with every door that deletes a branch row
+    # which has a main twin, so the two can never disagree about what a moved
+    # thread looks like (tripl-0zpq.289).
+    await move_event_threads(session, target_by_event_id=main_event_id_by_branch_event_id)
 
 
 async def _apply_merge(
@@ -722,6 +719,11 @@ async def _apply_merge(
     # row reads its discussion through today, which the thread move at the end
     # prefers over the row the merge lands its key on (tripl-0zpq.122).
     thread_twins = await _event_thread_twins(session, project_id=project_id, branch_id=branch_id)
+    branch_origins_complete = bool(
+        await session.scalar(
+            select(PlanBranch.origin_ids_complete).where(PlanBranch.id == branch_id)
+        )
+    )
     released_blobs: set[tuple[str, str]] = set()
     base_et_by_name: dict[str, dict[str, Any]] = {
         e["name"]: e for e in (base_payload or {}).get("event_types", [])
@@ -798,6 +800,30 @@ async def _apply_merge(
         for name, m_et in main_et_by_name.items()
         if name in base_et_by_name and name not in branch_et_by_name
     ]
+    # The second door onto ``scan_configs.event_type_id``'s ON DELETE SET NULL,
+    # after ``event_type_service.delete_event_type``: merging a branch that
+    # removed an event type deletes main's copy, and every scan bound to it goes
+    # on running against an empty binding, collecting nothing (tripl-0zpq.254).
+    # Refused for the reason ``_reject_removals_a_scan_names_events_by`` — the
+    # field-removal guard, awaited further down this same function — gives in its
+    # docstring: a merge refuses whole rather than skipping the deletion.
+    if removed_main_ets:
+        binding = await scan_configs_binding_event_types(
+            session,
+            project_id=project_id,
+            event_type_ids=[m_et.id for m_et in removed_main_ets],
+        )
+        blocked_types = [
+            event_type_binding_conflict_detail(
+                configs=binding[m_et.id],
+                lead=f"Cannot merge this branch: merging deletes '{m_et.name}' from main.",
+                then="merge the branch",
+            )
+            for m_et in removed_main_ets
+            if binding.get(m_et.id)
+        ]
+        if blocked_types:
+            raise HTTPException(status_code=409, detail=" ".join(blocked_types))
     if removed_main_ets:
         # BEFORE the delete, and this placement is the substance of the fix.
         # Deleting the event type takes its events with it through the database
@@ -975,11 +1001,43 @@ async def _apply_merge(
         if name in base_mf_by_name and name not in branch_mf_by_name:
             await session.delete(m_mf)
     await session.flush()
-    main_mf_name_to_id = {
+    main_mf_name_to_id: dict[str, uuid.UUID] = {
         mf.name: mf.id
         for mf in await _load_for_branch(session, MetaFieldDefinition, project_id, main_branch_id)
     }
     branch_mf_id_to_name = {mf.id: mf.name for mf in branch_mfs}
+
+    def main_meta_field_id(event: Event, mv: EventMetaValue) -> uuid.UUID:
+        """Translate a branch meta value onto main by NAME, or refuse the merge.
+
+        ``branch_mf_id_to_name`` holds this branch's own definitions only, so a
+        value pointing at another branch's definition was an unqualified
+        subscript — the same bare 500, from the same pre-refusal rows, that
+        ``deep_copy_plan_to_branch`` now answers 409 for (tripl-0zpq.123).
+        ``event_service._normalize_meta_values`` refuses to write one today; no
+        migration sweeps the ones already stored, and the merge is the second
+        place they surface.
+
+        Refusing rather than skipping the value: both replay arms below DELETE
+        main's whole set for the event and rebuild it from the branch, so a
+        skipped value is one that disappears from main with nothing said.
+
+        ``main_mf_name_to_id`` needs no guard of its own — it is rebuilt after
+        the meta-field upsert above, which gives main a definition for every
+        name this branch has.
+        """
+        mf_name = branch_mf_id_to_name.get(mv.meta_field_definition_id)
+        if mf_name is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot merge this branch: event '{event.name}' carries a meta "
+                    f"value on {mv.meta_field_definition_id}, which is not a meta "
+                    "field of this branch, so it has no name to carry onto main. "
+                    "Edit the event to drop that value, then merge."
+                ),
+            )
+        return main_mf_name_to_id[mf_name]
 
     # --- variables: upsert by name
     main_vars = await _load_variables(session, project_id, main_branch_id)
@@ -1006,8 +1064,23 @@ async def _apply_merge(
             {(name,): variable.get("source_name") for name, variable in base_var_by_name.items()},
             {(name,): variable.source_name for name, variable in main_var_by_name.items()},
             {(name,): variable.source_name for name, variable in branch_var_by_name.items()},
+            vacate_removed=True,
         ).items()
     }
+    # A move onto a name a non-moving main row holds is only proposed when the
+    # branch deleted that row (tripl-ifuv). It has to go FIRST and be flushed on
+    # its own: SQLAlchemy orders a mapper's saves ahead of its deletes, so left
+    # to the removal loop below it would still hold the name and the
+    # ``source_name`` slot when the renamed row's UPDATE goes out.
+    displaced = [
+        main_var_by_name.pop(new_name)
+        for new_name in var_renames.values()
+        if new_name in main_var_by_name and new_name not in var_renames
+    ]
+    if displaced:
+        for occupant in displaced:
+            await session.delete(occupant)
+        await session.flush()
     if var_renames:
         await _rename_main_variables(session, main_var_by_name, var_renames)
         rekey_in_place(main_var_by_name, var_renames)
@@ -1071,9 +1144,13 @@ async def _apply_merge(
     # row's scan identity, and the next scan matching warehouse data onto the
     # wrong history. Nothing in ``build_plan_snapshot`` would show it.
     #
-    # A merge that genuinely wants both — the deletion and the move onto the
-    # freed name — is ambiguous, and 409 asking the user to rename the clashing
-    # entity is the honest answer. Cycles do NOT rely on this order: the parking
+    # The one unambiguous version of that shape — the branch deleted ``b``, whose
+    # identity S2 no branch row carries any more, and ``b`` still wears S2 on
+    # main as it did at the cut — is now paired, and its occupant deleted and
+    # flushed ahead of the rename above (tripl-ifuv). Every other merge that
+    # wants both the deletion and the move onto the freed name is still
+    # ambiguous, and 409 asking the user to rename the clashing entity is the
+    # honest answer. Cycles do NOT rely on this order: the parking
     # pass in ``_rename_main_variables`` is what makes a swap or a rotation work,
     # and it operates on names before either arm runs (tripl-htcz).
     for name, m_v in list(main_var_by_name.items()):
@@ -1120,185 +1197,214 @@ async def _apply_merge(
             await session.delete(e)
     await session.flush()
     main_events = [e for e in main_events if e.event_type_id in main_et_id_to_name]
-    main_event_by_key = {(main_et_id_to_name[e.event_type_id], e.name): e for e in main_events}
-    branch_event_by_key = {
-        (branch_et_id_to_name[e.event_type_id], e.name): e for e in branch_events
-    }
-    base_event_by_key = {
-        (event["event_type_name"], event["name"]): event
-        for event in (base_payload or {}).get("events", [])
-    }
-    created_event_by_key: dict[tuple[str, str], Event] = {}
-    branch_event_snapshot_by_key = {
-        (event["event_type_name"], event["name"]): event
-        for event in branch_snapshot_payload.get("events", [])
-    }
-
-    # Same move as the variables above, and here it is the destructive one.
-    # Event has no ``display_name`` — its machine name is the one on screen, so
-    # renaming an event is routine editing — and replacing the row would take
-    # its ``variable_values``, their drift rows and its ``event_changes`` with
-    # it through the FK cascade, and leave the ``event_metrics`` series behind
-    # holding a NULL ``event_id`` (that FK is SET NULL), which to anything that
-    # asks by event is the same loss. None of those are in
-    # ``build_plan_snapshot``, so no diff would have shown it and no arm below
-    # would carry them over.
+    # The subscript below was unguarded, and it is the FIRST place a branch event
+    # parented by another branch's type lands — the pre-refusal row shape
+    # ``event_service`` now blocks, with no migration sweeping the ones already
+    # stored (tripl-0zpq.123). A KeyError here is the same bare 500 on the merge,
+    # naming nothing, that ``deep_copy_plan_to_branch`` now answers 409 for.
     #
-    # Photos are NOT on that list, though the cascade takes them too: they are
-    # in the snapshot and the photos arm re-creates them on whichever main row
-    # now holds the key. Alerting is not either — nothing alerting holds an FK
-    # to an event — but it is no safer for it: the filters and detections
-    # naming the old row are dropped on purpose by
-    # ``drop_dangling_event_references`` further down, which is right for the
-    # removal it thinks it is looking at and wrong only because a rename is not
-    # one.
-    event_renames = pair_renames(
-        {key: event.get("source_name") for key, event in base_event_by_key.items()},
-        {key: event.source_name for key, event in main_event_by_key.items()},
-        {key: event.source_name for key, event in branch_event_by_key.items()},
+    # Deliberately NOT the deletion main's events get a few lines above: there
+    # the type is missing because THIS merge removed it, so its events are doomed
+    # by the merge itself. Here the type is simply on another branch, and
+    # dropping the event would carry onto main a deletion nobody made.
+    mis_parented = [e for e in branch_events if e.event_type_id not in branch_et_id_to_name]
+    if mis_parented:
+        raise HTTPException(
+            status_code=409,
+            detail=" ".join(
+                f"Cannot merge this branch: event '{e.name}' is parented by "
+                f"{e.event_type_id}, which is not an event type of this branch, so it "
+                "has no type on main to land under. Delete the event, then merge."
+                for e in mis_parented
+            ),
+        )
+
+    def main_event_key(event: Event) -> tuple[str, str]:
+        return (main_et_id_to_name[event.event_type_id], event.name)
+
+    def branch_event_key(event: Event) -> tuple[str, str]:
+        return (branch_et_id_to_name[event.event_type_id], event.name)
+
+    def base_event_key(event: dict[str, Any]) -> tuple[str, str]:
+        return (event["event_type_name"], event["name"])
+
+    branch_event_snapshot_by_id: dict[str, dict[str, Any]] = {
+        event["id"]: event for event in branch_snapshot_payload.get("events", [])
+    }
+    # Row by row, not key by key (tripl-0zpq.292). Main's rows pair with the
+    # base by their own ids, which the base recorded; the branch's by the main
+    # row each copy was made from. Keyed by (type, name) instead, two namesakes
+    # collapsed to one on every side: deleting one of them on the branch left
+    # both on main, and each copy's edits landed on whichever main namesake the
+    # dict kept (tripl-0zpq.149). The natural key still pairs the rows the ids
+    # do not place — see ``merge_slots``.
+    #
+    # A slot whose branch copy moved to another name is a rename, and main's row
+    # takes the new name in place. Event has no ``display_name`` — its machine
+    # name is the one on screen, so renaming an event is routine editing — and
+    # replacing the row would take its ``variable_values``, their drift rows and
+    # its ``event_changes`` with it through the FK cascade, and leave the
+    # ``event_metrics`` series holding a NULL ``event_id`` (that FK is SET NULL).
+    # Only the name can differ: a copy under another TYPE is a removal plus an
+    # addition, as the natural-key merge always read it. Events need no parking
+    # pass: nothing is unique on the name, and ``uq_event_scan_identity`` is on
+    # ``(event_type_id, source_name)``, which a name-only write never touches.
+    event_slots = merge_slots(
+        list((base_payload or {}).get("events", [])),
+        main_events,
+        branch_events,
+        base_key=base_event_key,
+        main_key=main_event_key,
+        branch_key=branch_event_key,
+        main_ref=lambda event: str(event.id),
+        branch_ref=lambda event: str(event.origin_id or event.id),
+        follows_rename=lambda old_key, new_key: old_key[0] == new_key[0],
+        branch_origins_complete=branch_origins_complete,
+        identities=(
+            lambda event: event.get("source_name"),
+            lambda event: event.source_name,
+            lambda event: event.source_name,
+        ),
     )
-    for old_event_key, new_event_key in event_renames.items():
-        # Only the last component of the key can differ: the pairing refuses to
-        # cross event types, so the row keeps its parent.
-        #
-        # Events need no parking pass of their own: nothing is unique on the
-        # name, so a rotation among them costs only the all-at-once re-key
-        # below. Their identity IS unique — ``uq_event_scan_identity`` on
-        # ``(event_type_id, source_name)`` (tripl-8tdl) — and this is a
-        # name-only write, which never touches it. What the pairing used to
-        # cost instead was silence: keyed by name, a swap paired nothing and the
-        # upsert wrote each branch row's ``source_name`` onto the main row
-        # wearing its new name, mixing up two scan identities with, back then,
-        # no constraint to stop it (tripl-htcz). Today that write trips the
-        # constraint and ``_commit_merged_plan`` answers 409; the pairing is
-        # what keeps a legitimate rotation from ever reaching it.
-        main_event_by_key[old_event_key].name = new_event_key[-1]
-    rekey_in_place(main_event_by_key, event_renames)
-    rekey_in_place(base_event_by_key, event_renames)
+    # (branch row, the main row it lands on, its base state) for every branch
+    # row the merge carries onto main, created or matched. Every arm below that
+    # follows a branch row onto main — the successor pointer, the photos, the
+    # discussion and the variable overrides — reads it from here, so none of
+    # them can pick a different namesake than the attribute writes did.
+    landings: list[tuple[Event, Event, dict[str, Any] | None]] = []
+    doomed_main_events: list[Event] = []
+    event_attrs = (
+        "source_name",
+        "title",
+        "description",
+        "sunset_at",
+        "order",
+        "owner_id",
+        "reviewed",
+        "metric_breakdown_columns",
+    )
+    for slot in event_slots.slots:
+        m_ev, b_ev, base_event = slot.main, slot.branch, slot.base
+        if m_ev is None:
+            # Main deleted the row after the cut (or never had it): main's
+            # deletion stands, and divergent branch edits are the conflict
+            # scan's to refuse.
+            continue
+        if b_ev is None:
+            # The branch deleted THIS row — the very main namesake its copy
+            # came from, not whichever shares the key (tripl-0zpq.149).
+            if base_event is not None and slot.branch_known:
+                doomed_main_events.append(m_ev)
+            continue
+        if (
+            base_event is not None
+            and branch_event_key(b_ev) != base_event_key(base_event)
+            and main_event_key(m_ev) == base_event_key(base_event)
+        ):
+            m_ev.name = b_ev.name
+        landings.append((b_ev, m_ev, base_event))
+        branch_event_snapshot = branch_event_snapshot_by_id[str(b_ev.id)]
+        for attr in event_attrs:
+            if base_event is None or branch_event_snapshot.get(attr) != base_event.get(attr):
+                branch_value = getattr(b_ev, attr)
+                if attr == "metric_breakdown_columns":
+                    branch_value = list(branch_value or [])
+                setattr(m_ev, attr, branch_value)
+        if base_event is None or branch_event_snapshot.get("status") != base_event.get("status"):
+            b_status = _ES(b_ev.status)
+            m_status = _ES(m_ev.status)
+            if b_status != _ES.archived:
+                m_ev.status = b_status if _rank(b_status) >= _rank(m_status) else m_status
 
-    for key, b_ev in branch_event_by_key.items():
-        et_name, _ev_name = key
-        if key in main_event_by_key:
-            m_ev = main_event_by_key[key]
-            base_event = base_event_by_key.get(key)
-            branch_event_snapshot = branch_event_snapshot_by_key[key]
-            event_attrs = (
-                "source_name",
-                "title",
-                "description",
-                "sunset_at",
-                "order",
-                "owner_id",
-                "reviewed",
-                "metric_breakdown_columns",
+        if base_event is None or branch_event_snapshot.get("field_values") != base_event.get(
+            "field_values"
+        ):
+            await session.execute(
+                delete(EventFieldValue).where(EventFieldValue.event_id == m_ev.id)
             )
-            for attr in event_attrs:
-                if base_event is None or branch_event_snapshot.get(attr) != base_event.get(attr):
-                    branch_value = getattr(b_ev, attr)
-                    if attr == "metric_breakdown_columns":
-                        branch_value = list(branch_value or [])
-                    setattr(m_ev, attr, branch_value)
-            if base_event is None or branch_event_snapshot.get("status") != base_event.get(
-                "status"
-            ):
-                b_status = _ES(b_ev.status)
-                m_status = _ES(m_ev.status)
-                if b_status != _ES.archived:
-                    m_ev.status = b_status if _rank(b_status) >= _rank(m_status) else m_status
-
-            if base_event is None or branch_event_snapshot.get("field_values") != base_event.get(
-                "field_values"
-            ):
-                await session.execute(
-                    delete(EventFieldValue).where(EventFieldValue.event_id == m_ev.id)
-                )
-                for fv in b_ev.field_values:
-                    bf_et, bf_name = branch_field_by_id[fv.field_definition_id]
-                    session.add(
-                        EventFieldValue(
-                            id=uuid.uuid4(),
-                            event_id=m_ev.id,
-                            field_definition_id=main_field_by_key[(bf_et, bf_name)],
-                            value=fv.value,
-                            is_authored=fv.is_authored,
-                        )
-                    )
-            if base_event is None or branch_event_snapshot.get("meta_values") != base_event.get(
-                "meta_values"
-            ):
-                await session.execute(
-                    delete(EventMetaValue).where(EventMetaValue.event_id == m_ev.id)
-                )
-                for mv in b_ev.meta_values:
-                    mf_name = branch_mf_id_to_name[mv.meta_field_definition_id]
-                    session.add(
-                        EventMetaValue(
-                            id=uuid.uuid4(),
-                            event_id=m_ev.id,
-                            meta_field_definition_id=main_mf_name_to_id[mf_name],
-                            value=mv.value,
-                        )
-                    )
-            if base_event is None or branch_event_snapshot.get("tags") != base_event.get("tags"):
-                await session.execute(delete(EventTag).where(EventTag.event_id == m_ev.id))
-                for tag in b_ev.tags:
-                    session.add(EventTag(id=uuid.uuid4(), event_id=m_ev.id, name=tag.name))
-        else:
-            if key in base_event_by_key or et_name not in main_et_name_to_id:
-                continue
-            new_ev_id = uuid.uuid4()
-            created_event = Event(
-                id=new_ev_id,
-                project_id=project_id,
-                branch_id=main_branch_id,
-                event_type_id=main_et_name_to_id[et_name],
-                name=b_ev.name,
-                title=b_ev.title,
-                source_name=b_ev.source_name,
-                description=b_ev.description,
-                order=b_ev.order,
-                status=b_ev.status,
-                sunset_at=b_ev.sunset_at,
-                last_seen_at=b_ev.last_seen_at,
-                metric_breakdown_columns=list(b_ev.metric_breakdown_columns or []),
-                owner_id=b_ev.owner_id,
-                reviewed=b_ev.reviewed,
-                # superseded_by_event_id is deliberately absent: the value on
-                # the branch row is a BRANCH event id, meaningless on main.
-                # The translating pass after the flush below sets it.
-            )
-            session.add(created_event)
-            created_event_by_key[key] = created_event
             for fv in b_ev.field_values:
                 bf_et, bf_name = branch_field_by_id[fv.field_definition_id]
                 session.add(
                     EventFieldValue(
                         id=uuid.uuid4(),
-                        event_id=new_ev_id,
+                        event_id=m_ev.id,
                         field_definition_id=main_field_by_key[(bf_et, bf_name)],
                         value=fv.value,
                         is_authored=fv.is_authored,
                     )
                 )
+        if base_event is None or branch_event_snapshot.get("meta_values") != base_event.get(
+            "meta_values"
+        ):
+            await session.execute(delete(EventMetaValue).where(EventMetaValue.event_id == m_ev.id))
             for mv in b_ev.meta_values:
-                mf_name = branch_mf_id_to_name[mv.meta_field_definition_id]
                 session.add(
                     EventMetaValue(
                         id=uuid.uuid4(),
-                        event_id=new_ev_id,
-                        meta_field_definition_id=main_mf_name_to_id[mf_name],
+                        event_id=m_ev.id,
+                        meta_field_definition_id=main_meta_field_id(b_ev, mv),
                         value=mv.value,
                     )
                 )
+        if base_event is None or branch_event_snapshot.get("tags") != base_event.get("tags"):
+            await session.execute(delete(EventTag).where(EventTag.event_id == m_ev.id))
             for tag in b_ev.tags:
-                session.add(EventTag(id=uuid.uuid4(), event_id=new_ev_id, name=tag.name))
+                session.add(EventTag(id=uuid.uuid4(), event_id=m_ev.id, name=tag.name))
+
+    for b_ev in event_slots.created:
+        et_name = branch_et_id_to_name[b_ev.event_type_id]
+        if et_name not in main_et_name_to_id:
+            continue
+        new_ev_id = uuid.uuid4()
+        created_event = Event(
+            id=new_ev_id,
+            project_id=project_id,
+            branch_id=main_branch_id,
+            event_type_id=main_et_name_to_id[et_name],
+            name=b_ev.name,
+            title=b_ev.title,
+            source_name=b_ev.source_name,
+            description=b_ev.description,
+            order=b_ev.order,
+            status=b_ev.status,
+            sunset_at=b_ev.sunset_at,
+            last_seen_at=b_ev.last_seen_at,
+            metric_breakdown_columns=list(b_ev.metric_breakdown_columns or []),
+            owner_id=b_ev.owner_id,
+            reviewed=b_ev.reviewed,
+            # superseded_by_event_id is deliberately absent: the value on
+            # the branch row is a BRANCH event id, meaningless on main.
+            # The translating pass after the flush below sets it.
+        )
+        session.add(created_event)
+        landings.append((b_ev, created_event, None))
+        for fv in b_ev.field_values:
+            bf_et, bf_name = branch_field_by_id[fv.field_definition_id]
+            session.add(
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=new_ev_id,
+                    field_definition_id=main_field_by_key[(bf_et, bf_name)],
+                    value=fv.value,
+                    is_authored=fv.is_authored,
+                )
+            )
+        for mv in b_ev.meta_values:
+            session.add(
+                EventMetaValue(
+                    id=uuid.uuid4(),
+                    event_id=new_ev_id,
+                    meta_field_definition_id=main_meta_field_id(b_ev, mv),
+                    value=mv.value,
+                )
+            )
+        for tag in b_ev.tags:
+            session.add(EventTag(id=uuid.uuid4(), event_id=new_ev_id, name=tag.name))
+    main_target_by_branch_id: dict[uuid.UUID, Event] = {
+        b_ev.id: target for b_ev, target, _ in landings
+    }
     # Collect, clear, then delete. These are main events the branch removed on
     # purpose, so again there is no survivor and the rule is DROP.
-    doomed_main_events = [
-        m_ev
-        for key, m_ev in main_event_by_key.items()
-        if key in base_event_by_key and key not in branch_event_by_key
-    ]
     if doomed_main_events:
         doomed_main_event_ids = [m_ev.id for m_ev in doomed_main_events]
         released_blobs |= await _blob_keys_of(session, doomed_main_event_ids)
@@ -1315,33 +1421,21 @@ async def _apply_merge(
     # copies raw ORM values, which for this column would write a BRANCH event id
     # onto a main row; the snapshot carries the successor as a natural key for
     # exactly that reason, so the branch's own pointer is re-resolved against
-    # main here. It runs after the flush because a successor may be an event
-    # this very merge created, and because the FK is immediate.
-    branch_event_key_by_id = {
-        e.id: (branch_et_id_to_name[e.event_type_id], e.name)
-        for e in branch_events
-        if e.event_type_id in branch_et_id_to_name
-    }
-    for key, b_ev in branch_event_by_key.items():
-        target = main_event_by_key.get(key) or created_event_by_key.get(key)
-        if target is None:
-            continue
-        base_event = base_event_by_key.get(key)
-        snapshot = branch_event_snapshot_by_key.get(key, {})
+    # main here — through the landings, so a successor with a namesake resolves
+    # to the main row ITS copy landed on rather than the last row under the key
+    # (tripl-0zpq.292). It runs after the flush because a successor may be an
+    # event this very merge created, and because the FK is immediate.
+    for b_ev, target, base_event in landings:
+        snapshot = branch_event_snapshot_by_id.get(str(b_ev.id), {})
         # Untouched on the branch: leave main's own answer alone, the same
         # three-way rule every attribute above follows.
         if base_event is not None and snapshot.get("superseded_by") == base_event.get(
             "superseded_by"
         ):
             continue
-        successor_key = (
-            branch_event_key_by_id.get(b_ev.superseded_by_event_id)
-            if b_ev.superseded_by_event_id is not None
-            else None
-        )
         successor = (
-            (main_event_by_key.get(successor_key) or created_event_by_key.get(successor_key))
-            if successor_key is not None
+            main_target_by_branch_id.get(b_ev.superseded_by_event_id)
+            if b_ev.superseded_by_event_id is not None
             else None
         )
         # A successor the merge cannot place on main clears the pointer rather
@@ -1371,18 +1465,13 @@ async def _apply_merge(
         .scalars()
         .all()
     )
-    main_event_key_to_id: dict[tuple[str, str], uuid.UUID] = {}
-    for e in main_events_after:
-        main_et_name = main_et_id_to_name.get(e.event_type_id)
-        if main_et_name is not None:
-            main_event_key_to_id[(main_et_name, e.name)] = e.id
+    surviving_main_ids = {e.id for e in main_events_after}
 
-    for key, b_ev in branch_event_by_key.items():
-        main_ev_id = main_event_key_to_id.get(key)
-        if main_ev_id is None:
+    for b_ev, target, base_event in landings:
+        main_ev_id = target.id
+        if main_ev_id not in surviving_main_ids:
             continue
-        base_event = base_event_by_key.get(key)
-        branch_event_snapshot = branch_event_snapshot_by_key[key]
+        branch_event_snapshot = branch_event_snapshot_by_id[str(b_ev.id)]
         if base_event is not None and branch_event_snapshot.get("photos") == base_event.get(
             "photos"
         ):
@@ -1492,37 +1581,26 @@ async def _apply_merge(
 
     # --- the event's own discussion: not plan content, so ungated by any diff.
     # The twin the branch row reads through today when the merge kept it, else
-    # the row its key lands on — but only a key that names ONE row on each
-    # side. Several events can share a (type, name), and nothing records which
-    # main row a branch copy came from, so for such a key the lookup above
-    # returns an arbitrary member: a thread about an event main deleted moved
-    # onto its same-named sibling. That thread stays with the branch instead,
-    # as one whose event lands nowhere does.
-    surviving_main_ids = {e.id for e in main_events_after}
-    main_rows_per_key = Counter(
-        (main_et_id_to_name[e.event_type_id], e.name)
-        for e in main_events_after
-        if e.event_type_id in main_et_id_to_name
-    )
-    branch_rows_per_key = Counter(branch_event_key_by_id.values())
+    # the main row the branch row itself landed on. A row that landed nowhere —
+    # main deleted it, or it is one of several namesakes nothing tells apart —
+    # keeps its thread, as one whose event main deleted always has. The landing
+    # is the slot the attribute writes used, so a thread about one namesake can
+    # no longer move onto the other (tripl-0zpq.292).
     thread_targets: dict[uuid.UUID, uuid.UUID] = {}
     for branch_event_id, twin_id in thread_twins.items():
-        thread_key = branch_event_key_by_id.get(branch_event_id)
+        landed = main_target_by_branch_id.get(branch_event_id)
         if twin_id is not None and twin_id in surviving_main_ids:
             thread_targets[branch_event_id] = twin_id
-        elif (
-            thread_key is not None
-            and main_rows_per_key[thread_key] == 1
-            and branch_rows_per_key[thread_key] == 1
-        ):
-            thread_targets[branch_event_id] = main_event_key_to_id[thread_key]
+        elif landed is not None and landed.id in surviving_main_ids:
+            thread_targets[branch_event_id] = landed.id
     await _move_event_threads_to_main(session, main_event_id_by_branch_event_id=thread_targets)
 
     # --- variable event value overrides: replace only for variables whose
-    # branch-side override map changed from the base.
+    # branch-side override map changed from the base. Each override follows its
+    # branch event to the main row that event landed on, not to whichever main
+    # row shares the event's (type, name) (tripl-0zpq.292).
     main_vars_after = await _load_variables(session, project_id, main_branch_id)
     main_var_name_to_id = {v.name: v.id for v in main_vars_after}
-    branch_event_id_to_key = {e.id: key for key, e in branch_event_by_key.items()}
     branch_overrides = await _load_for_branch(
         session, VariableEventValueOverride, project_id, branch_id
     )
@@ -1551,13 +1629,8 @@ async def _apply_merge(
             )
         )
         for override in branch_overrides_by_var.get(branch_var.id, []):
-            override_event_key = branch_event_id_to_key.get(override.event_id)
-            main_override_event_id = (
-                main_event_key_to_id.get(override_event_key)
-                if override_event_key is not None
-                else None
-            )
-            if main_override_event_id is None:
+            landed = main_target_by_branch_id.get(override.event_id)
+            if landed is None or landed.id not in surviving_main_ids:
                 continue
             session.add(
                 VariableEventValueOverride(
@@ -1565,13 +1638,16 @@ async def _apply_merge(
                     project_id=project_id,
                     branch_id=main_branch_id,
                     variable_id=main_var_id,
-                    event_id=main_override_event_id,
+                    event_id=landed.id,
                     values=list(override.values or []),
                 )
             )
     await session.flush()
 
-    # --- relations: natural-key three-way apply.
+    # --- relations: three-way apply, row by row. Paired like the events above:
+    # main's by their own ids, the branch's by origin id, the natural key only
+    # for rows neither places. Nothing makes a relation's four names unique
+    # either (tripl-0zpq.292).
     branch_relations = await _load_for_branch(session, EventTypeRelation, project_id, branch_id)
     branch_fd_id_to_key = {
         fd.id: (branch_et_id_to_name[fd.event_type_id], fd.name)
@@ -1596,56 +1672,87 @@ async def _apply_merge(
             target_field[1],
         )
 
-    main_relation_by_key = {
-        relation_key(relation, main_et_id_to_name_after, main_fd_id_to_key): relation
-        for relation in main_relations
-        if relation.source_field_id in main_fd_id_to_key
-        and relation.target_field_id in main_fd_id_to_key
-    }
-    branch_relation_by_key = {
-        relation_key(relation, branch_et_id_to_name, branch_fd_id_to_key): relation
-        for relation in branch_relations
-    }
-    base_relation_by_key = {
-        (
+    relation_slots = merge_slots(
+        list((base_payload or {}).get("relations", [])),
+        [
+            relation
+            for relation in main_relations
+            # ``relation_key`` indexes both maps directly, so a relation naming
+            # an end that is not on this side was a KeyError — a 500 on the
+            # merge with nothing saying which relation (tripl-0zpq.128).
+            # ``relation_service.create_relation`` now refuses to write one, but
+            # rows stored before that refusal have no migration sweeping them,
+            # and the merge is where they surface. Main needs the event-type half
+            # as much as the branch does: ``main_et_id_to_name_after`` covers
+            # MAIN's types only, and the four ids were never checked against
+            # each other, so a main relation can hold a branch copy's type id
+            # beside a main field id.
+            if relation.source_field_id in main_fd_id_to_key
+            and relation.target_field_id in main_fd_id_to_key
+            and relation.source_event_type_id in main_et_id_to_name_after
+            and relation.target_event_type_id in main_et_id_to_name_after
+        ],
+        [
+            relation
+            for relation in branch_relations
+            # Guarded the same way main's are above, and for the same reason.
+            if relation.source_field_id in branch_fd_id_to_key
+            and relation.target_field_id in branch_fd_id_to_key
+            and relation.source_event_type_id in branch_et_id_to_name
+            and relation.target_event_type_id in branch_et_id_to_name
+        ],
+        base_key=lambda relation: (
             relation["source_event_type_name"],
             relation["source_field_name"],
             relation["target_event_type_name"],
             relation["target_field_name"],
-        ): relation
-        for relation in (base_payload or {}).get("relations", [])
-    }
-    for relation_key_value, b_rel in branch_relation_by_key.items():
-        src_et_name, _src_field_name, tgt_et_name, _tgt_field_name = relation_key_value
-        src_fd_key = branch_fd_id_to_key[b_rel.source_field_id]
-        tgt_fd_key = branch_fd_id_to_key[b_rel.target_field_id]
-        m_rel = main_relation_by_key.get(relation_key_value)
+        ),
+        main_key=lambda relation: relation_key(
+            relation, main_et_id_to_name_after, main_fd_id_to_key
+        ),
+        branch_key=lambda relation: relation_key(
+            relation, branch_et_id_to_name, branch_fd_id_to_key
+        ),
+        main_ref=lambda relation: str(relation.id),
+        branch_ref=lambda relation: str(relation.origin_id or relation.id),
+        # A relation whose ends moved is carried as a removal plus an addition,
+        # as the natural-key merge always carried it.
+        follows_rename=lambda old_key, new_key: False,
+        branch_origins_complete=branch_origins_complete,
+    )
+    for relation_slot in relation_slots.slots:
+        m_rel, b_rel, base_relation = (
+            relation_slot.main,
+            relation_slot.branch,
+            relation_slot.base,
+        )
         if m_rel is None:
-            if relation_key_value in base_relation_by_key:
-                continue
-            session.add(
-                EventTypeRelation(
-                    id=uuid.uuid4(),
-                    project_id=project_id,
-                    branch_id=main_branch_id,
-                    source_event_type_id=main_et_name_to_id[src_et_name],
-                    target_event_type_id=main_et_name_to_id[tgt_et_name],
-                    source_field_id=main_field_by_key[src_fd_key],
-                    target_field_id=main_field_by_key[tgt_fd_key],
-                    relation_type=b_rel.relation_type,
-                    description=b_rel.description,
-                )
-            )
             continue
-        base_relation = base_relation_by_key.get(relation_key_value)
+        if b_rel is None:
+            if base_relation is not None and relation_slot.branch_known:
+                await session.delete(m_rel)
+            continue
         if base_relation is None or b_rel.relation_type != base_relation.get("relation_type"):
             m_rel.relation_type = b_rel.relation_type
         if base_relation is None or b_rel.description != base_relation.get("description"):
             m_rel.description = b_rel.description
-    for removed_relation_key in set(base_relation_by_key) - set(branch_relation_by_key):
-        m_rel = main_relation_by_key.get(removed_relation_key)
-        if m_rel is not None:
-            await session.delete(m_rel)
+    for b_rel in relation_slots.created:
+        src_et_name, _src_field_name, tgt_et_name, _tgt_field_name = relation_key(
+            b_rel, branch_et_id_to_name, branch_fd_id_to_key
+        )
+        session.add(
+            EventTypeRelation(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                branch_id=main_branch_id,
+                source_event_type_id=main_et_name_to_id[src_et_name],
+                target_event_type_id=main_et_name_to_id[tgt_et_name],
+                source_field_id=main_field_by_key[branch_fd_id_to_key[b_rel.source_field_id]],
+                target_field_id=main_field_by_key[branch_fd_id_to_key[b_rel.target_field_id]],
+                relation_type=b_rel.relation_type,
+                description=b_rel.description,
+            )
+        )
     return frozenset(released_blobs)
 
 
@@ -2042,6 +2149,21 @@ async def merge_branch(
         raise HTTPException(status_code=409, detail="Branch must be approved before merging")
 
     main_branch_id = await ensure_main_branch_id(session, project.id)
+    # Main is locked from here to the commit, BEFORE main_payload is read for
+    # the conflict check (tripl-0zpq.294). Without it a main edit committed
+    # between that read and ``_apply_merge`` was invisible to the check, and
+    # the apply step, which compares the branch against the BASE, wrote the
+    # branch's value over it: no conflict, no warning, no trail. Plan writes to
+    # main hold main's row FOR SHARE (``api.deps.get_branch_id_override``, the
+    # photo path), so each one now either commits before this lock is granted,
+    # and the check below sees it, or waits until this merge commits and
+    # applies on top of it. A lock rather than re-checking main's fingerprint
+    # before the apply: a recheck still leaves the gap between the recheck and
+    # the apply, and would fail a merge the user can only retry, while the lock
+    # is one statement whose effect a two-session test can pin. Taken after the
+    # branch's own lock, the order every merge uses; ``_plan_branch_locks``
+    # holds the deadlock audit. A no-op off PostgreSQL.
+    await lock_main_plan_for_merge(session, main_branch_id)
     base_payload: dict[str, Any] = {}
     if branch.base_revision_id is not None:
         base_rev = await session.get(PlanRevision, branch.base_revision_id)
@@ -2061,7 +2183,12 @@ async def merge_branch(
     main_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
     branch_payload = await build_plan_snapshot(session, project.id, branch_id=branch.id)
 
-    all_conflicts = _detect_merge_conflicts(base_payload, main_payload, branch_payload)
+    all_conflicts = _detect_merge_conflicts(
+        base_payload,
+        main_payload,
+        branch_payload,
+        theirs_origins_complete=branch.origin_ids_complete,
+    )
     field_conflicts = _field_conflicts_event_type(base_payload, main_payload, branch_payload)
     # Modify-modify clashes on event_type fields are surfaced via the inline
     # resolution flow; entity-level adds/removes and conflicts on other entity

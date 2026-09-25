@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, AUTH_UNAUTHORIZED_EVENT } from './client'
 
 // Exercise the REAL client (no vi.mock of './client'); only global fetch is
@@ -25,12 +26,6 @@ function mockFetchOnce(options: ResponseOptions) {
   vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeResponse(options))
 }
 
-beforeEach(() => {
-  // crypto.randomUUID is used for the X-Request-ID header.
-  if (!globalThis.crypto?.randomUUID) {
-    vi.stubGlobal('crypto', { randomUUID: () => 'test-uuid' })
-  }
-})
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -46,6 +41,32 @@ describe('api request success', () => {
   it('returns undefined on 204 No Content', async () => {
     mockFetchOnce({ status: 204 })
     await expect(api.del('/things/1')).resolves.toBeUndefined()
+  })
+})
+
+describe('outside a secure context', () => {
+  it('still sends a request id when crypto.randomUUID is missing (plain HTTP)', async () => {
+    const real = globalThis.crypto
+    vi.stubGlobal('crypto', { getRandomValues: real.getRandomValues.bind(real) })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeResponse({ status: 200, body: { ok: true } }),
+    )
+
+    await expect(api.get('/auth/me')).resolves.toEqual({ ok: true })
+    const headers = fetchSpy.mock.calls[0]![1]!.headers as Headers
+    expect(headers.get('X-Request-ID')).toMatch(/^[0-9a-f-]{36}$/)
+  })
+})
+
+describe('cancellation', () => {
+  it('forwards the caller\'s AbortSignal to fetch', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeResponse({ status: 200, body: {} }),
+    )
+    const controller = new AbortController()
+
+    await api.get('/things', controller.signal)
+    expect(fetchSpy.mock.calls[0]![1]!.signal).toBe(controller.signal)
   })
 })
 

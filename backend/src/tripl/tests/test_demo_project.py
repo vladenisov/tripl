@@ -35,6 +35,7 @@ from tripl.services.demo import DemoContext, noise, seed_demo_content
 from tripl.services.demo.builders import plan
 from tripl.services.demo.builders.variables import DRIFT_OBSERVED_VALUES
 from tripl.services.demo.scenario import DEMO_SEED
+from tripl.services.project_service import demo_data_source_name
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -1199,7 +1200,13 @@ async def test_demo_audit_trail_covers_the_events_it_authored(client: AsyncClien
     at = {entry["id"]: parsed(entry["created_at"]) for entry in entries}
 
     created = [entry for entry in entries if entry["action"] == "event.create"]
-    updated = [entry for entry in entries if entry["action"] == "event.update"]
+    # MAIN edits only. The recipe also authors one edit ON the feature branch
+    # (branches.CHANGED_EVENT_NAME), and that row targets the branch's COPY of
+    # the event — a row the deep copy created, not an authored ``event.create``
+    # — so the creation-precedes-edit check below cannot reach it (tripl-0zpq.246).
+    updated = [
+        entry for entry in entries if entry["action"] == "event.update" and not entry["branch_name"]
+    ]
     assert created, "the Events filter group would match nothing"
     assert updated, "no edit was recorded for the events the recipe edited"
     assert "shadow_event.dismiss" in {entry["action"] for entry in entries}
@@ -1255,7 +1262,14 @@ async def test_demo_does_not_scope_the_data_source_entry_to_the_project(
     # is a different change with a different meaning. It still exists, unscoped —
     # exactly what api/v1/data_sources.py writes.
     unscoped = await client.get("/api/v1/audit?action=data_source.create&limit=200")
-    rows = [entry for entry in unscoped.json()["items"] if entry["target_name"] == "Demo warehouse"]
+    # The name the warehouse builder really gave the row, read from the same
+    # helper it used: the audit entry restated a bare "Demo warehouse" literal
+    # until tripl-0zpq.246, naming a source that exists under no such name.
+    rows = [
+        entry
+        for entry in unscoped.json()["items"]
+        if entry["target_name"] == demo_data_source_name(slug)
+    ]
     assert len(rows) == 1, rows
     assert rows[0]["project_id"] is None
     assert rows[0]["project_slug"] == ""
@@ -1306,7 +1320,9 @@ async def test_resetting_a_demo_does_not_stack_the_previous_trail(client: AsyncC
     # would add another creation of a warehouse that no longer exists.
     unscoped = await client.get("/api/v1/audit?action=data_source.create&limit=200")
     warehouses = [
-        entry for entry in unscoped.json()["items"] if entry["target_name"] == "Demo warehouse"
+        entry
+        for entry in unscoped.json()["items"]
+        if entry["target_name"] == demo_data_source_name(slug)
     ]
     assert len(warehouses) == 1, warehouses
 

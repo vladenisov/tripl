@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
-from math import ceil, sqrt
+from math import ceil, isfinite, sqrt
 from statistics import fmean, median
 
 import numpy as np
@@ -201,15 +201,20 @@ def expand_series(
     covered bucket with no data point is still zero-filled — that is a genuine
     "scan ran, zero events" observation. When ``None`` the behavior is
     byte-identical to the historical unconditional zero-fill.
+
+    A NaN or infinite point is EXCLUDED the same way an uncovered bucket is —
+    neither zero-filled nor kept — so it can neither become a fake zero nor
+    poison every mean, band and z-score it touches (tripl-0zpq.101).
     """
     if not points:
         return []
 
     counts_by_bucket = {point.bucket: point.count for point in points}
+    non_finite = {bucket for bucket, count in counts_by_bucket.items() if not isfinite(count)}
     bucket = min(counts_by_bucket)
     expanded: list[SeriesPoint] = []
     while bucket < end_exclusive:
-        if covered_buckets is not None and bucket not in covered_buckets:
+        if bucket in non_finite or (covered_buckets is not None and bucket not in covered_buckets):
             bucket += interval
             continue
         expanded.append(SeriesPoint(bucket=bucket, count=counts_by_bucket.get(bucket, 0)))
@@ -458,7 +463,9 @@ def _rolling_anomaly_at(
         stddev, expected_count, absolute_floor=stddev_absolute_floor, poisson=poisson
     )
     z_score = (point.count - expected_count) / effective_stddev
-    if abs(z_score) < settings.sigma_threshold:
+    # ``abs(nan) < sigma`` is False, so without the finiteness test a NaN z
+    # slipped through as an "anomaly" (tripl-0zpq.101).
+    if not isfinite(z_score) or abs(z_score) < settings.sigma_threshold:
         return None
 
     return DetectedAnomaly(
@@ -610,7 +617,9 @@ def _phase_anomaly_at(
         poisson=poisson,
     )
     z_score = (point.count - expected_count) / effective_stddev
-    if abs(z_score) < settings.sigma_threshold:
+    # ``abs(nan) < sigma`` is False, so without the finiteness test a NaN z
+    # slipped through as an "anomaly" (tripl-0zpq.101).
+    if not isfinite(z_score) or abs(z_score) < settings.sigma_threshold:
         return None
 
     return DetectedAnomaly(
@@ -630,13 +639,28 @@ class TrendShiftResult:
     """Trend-shift rows to persist, plus every bucket the shift spans.
 
     ``shifted_buckets`` covers the whole contiguous run — including the buckets
-    no row is emitted for. ``detect_anomalies`` uses it to suppress the
+    no row is emitted for — of every run that OWNS a trend row (emitted now, by
+    an earlier scan, or once it settles); a run whose row is gated out claims
+    nothing (tripl-0zpq.107). ``detect_anomalies`` uses it to suppress the
     per-bucket rows that would otherwise re-announce one level change bucket
     after bucket (tripl-jfm3.46).
     """
 
     anomalies: list[DetectedAnomaly]
     shifted_buckets: frozenset[datetime]
+
+
+def _departs_from_pre_shift(actual: float, reconstructed: float) -> bool:
+    """Whether a bucket's RAW value left its pre-shift expectation (tripl-0zpq.107).
+
+    Uses the trend path's own relative effect-size bar, against the larger of
+    the two magnitudes so it stays defined near zero — a bucket inside normal
+    noise is not where a level change began.
+    """
+    reference = max(abs(actual), abs(reconstructed))
+    if reference <= 0:
+        return False
+    return abs(actual - reconstructed) / reference >= _TREND_MIN_RELATIVE_SHIFT
 
 
 def _detect_trend_shift(
@@ -666,16 +690,30 @@ def _detect_trend_shift(
     anomalies: list[DetectedAnomaly] = []
     shifted_buckets: set[datetime] = set()
     # A sustained shift spans many buckets; we collapse each contiguous shifted
-    # run into a SINGLE row anchored at the run's FIRST shifted bucket, and a run
-    # that started before ``evaluation_start`` is not re-emitted at all. Anchoring
-    # at the true start is what makes the collapse survive ACROSS scans: the
+    # run into a SINGLE row, and a run whose anchor lies before
+    # ``evaluation_start`` is not re-emitted at all. Anchoring at a fixed point of
+    # the incident is what makes the collapse survive ACROSS scans: the
     # evaluation window slides forward one bucket per run and ``_replace_scope_
     # anomalies`` only deletes inside it, so a window-anchored row landed one
     # bucket further along every run and the incident accumulated one row per
-    # scan (tripl-jfm3.47). Anchored at the true start, every run rewrites the
-    # same row until the start leaves the window, then leaves it frozen there —
-    # one incident, one row, dated when it began.
-    run_start_idx: int | None = None
+    # scan (tripl-jfm3.47).
+    #
+    # The anchor is the run's first bucket whose RAW value actually left its
+    # pre-shift expectation, not the run's first shifted TREND bucket. The STL
+    # trend is centred, so it starts bending hours before the change; anchored
+    # at the bend, a run could date its row on a bucket that was inside normal
+    # noise, and that start moved with every refit — one scan replaced an
+    # incident's drop rows with a single misdated row and the next reverted it
+    # (tripl-0zpq.107). The raw departure does not move between refits.
+    #
+    # A run only suppresses its buckets' per-bucket rows when it owns the trend
+    # row: it emitted one now, its anchor sits before the window (a previous
+    # scan owned the emission), or its anchor is still settling (a later scan
+    # will). A run whose anchor is gated out, or which never
+    # departs at all, leaves its per-bucket rows alone instead of silencing the
+    # incident with nothing written in its place (tripl-0zpq.107).
+    runs: list[list[tuple[int, SeriesPoint, float, float, float, float]]] = []
+    current_run: list[tuple[int, SeriesPoint, float, float, float, float]] = []
     for idx, point in enumerate(expanded):
         # "One period ago" is a position on the GRID, not ``idx - period``: with
         # a bucket missing, the list offset lands on a neighbouring hour and the
@@ -687,7 +725,9 @@ def _detect_trend_shift(
 
         pre_shift_level = trend[previous_idx]
         if not _clears_volume_gate(trend[idx], settings, signed=signed):
-            run_start_idx = None
+            if current_run:
+                runs.append(current_run)
+                current_run = []
             continue
 
         scale = _robust_scale(residuals[previous_idx:idx])
@@ -705,21 +745,40 @@ def _detect_trend_shift(
         reference_level = max(abs(pre_shift_level), abs(trend[idx]))
         relative_change = abs(level_change) / reference_level if reference_level > 0 else 0.0
         is_shifted = (
-            abs(z_score) >= settings.sigma_threshold
+            isfinite(z_score)
+            and abs(z_score) >= settings.sigma_threshold
             and relative_change >= _TREND_MIN_RELATIVE_SHIFT
         )
         if not is_shifted:
-            run_start_idx = None
+            if current_run:
+                runs.append(current_run)
+                current_run = []
             continue
+        current_run.append((idx, point, pre_shift_level, scale, effective_stddev, z_score))
+    if current_run:
+        runs.append(current_run)
 
-        shifted_buckets.add(point.bucket)
-        if run_start_idx is None:
-            run_start_idx = idx
-        # Only the run's first bucket is a candidate row, and only when that
-        # start falls inside the settled part of the evaluation window.
-        if idx != run_start_idx or point.bucket < evaluation_start:
+    for run in runs:
+        run_buckets = [member[1].bucket for member in run]
+        anchor = next(
+            (
+                member
+                for member in run
+                if _departs_from_pre_shift(member[1].count, member[2] + seasonal[member[0]])
+            ),
+            None,
+        )
+        if anchor is None:
+            continue
+        idx, point, pre_shift_level, scale, effective_stddev, z_score = anchor
+        if point.bucket < evaluation_start:
+            # Emitted (and frozen) by an earlier scan: still the same incident.
+            shifted_buckets.update(run_buckets)
             continue
         if emission_end is not None and point.bucket >= emission_end:
+            # Still settling: a later scan emits the row, so the run already
+            # owns its buckets.
+            shifted_buckets.update(run_buckets)
             continue
 
         # Reconstruct what this bucket would have been without the level shift so
@@ -780,6 +839,7 @@ def _detect_trend_shift(
                 kind="trend",
             )
         )
+        shifted_buckets.update(run_buckets)
 
     return TrendShiftResult(anomalies=anomalies, shifted_buckets=frozenset(shifted_buckets))
 
@@ -1009,10 +1069,14 @@ def _present_series(
 
     Used instead of ``expand_series`` when gaps must NOT be zero-filled (e.g.
     fractional metric series, where a missing bucket means "no data" rather than
-    "the value dropped to zero"). Later points win on duplicate buckets.
+    "the value dropped to zero"). Later points win on duplicate buckets. A NaN
+    or infinite value is "no data" too and is dropped (tripl-0zpq.101).
     """
     counts_by_bucket = {
         point.bucket: point.count for point in points if point.bucket < end_exclusive
+    }
+    counts_by_bucket = {
+        bucket: count for bucket, count in counts_by_bucket.items() if isfinite(count)
     }
     return [
         SeriesPoint(bucket=bucket, count=counts_by_bucket[bucket])
@@ -1230,10 +1294,17 @@ def forecast_next_buckets(
 ) -> list[ForecastPoint]:
     """One-step (or N-step) seasonal-naive + trend forecast.
 
-    Reuses the same STL/MSTL decomposition the anomaly detector fits, then
-    extrapolates: trend continues with the slope of the last full seasonal
-    period, and the seasonal component repeats with its phase. Stddev comes
-    from the robust scale of residuals so the UI can render a band of the
+    Fits its OWN STL/MSTL decomposition — the same KIND the anomaly detector
+    fits, but a separate model: it calls ``STL(...).fit()`` / ``MSTL(...).fit()``
+    directly rather than going through ``_fit_components_cached``, so it shares
+    neither that cache nor its flat-series shortcut. A caller on the request path
+    must therefore bound the series it hands in and expect to pay for a real fit;
+    callers that do not read the result should not ask for one at all.
+
+    It then extrapolates: trend continues with the slope of the last full
+    seasonal period, and the seasonal component repeats the most recent cycle
+    at the matching phase. Stddev
+    comes from the robust scale of residuals so the UI can render a band of the
     same width as the historical anomaly band.
 
     Returns an empty list when there isn't enough history to fit a model.
@@ -1241,7 +1312,12 @@ def forecast_next_buckets(
     if not points or horizon < 1:
         return []
 
-    sorted_points = sorted(points, key=lambda point: point.bucket)
+    # A NaN/inf point would turn the whole STL fit into NaN (tripl-0zpq.101).
+    sorted_points = sorted(
+        (point for point in points if isfinite(point.count)), key=lambda point: point.bucket
+    )
+    if not sorted_points:
+        return []
     last_bucket = sorted_points[-1].bucket
     counts = [point.count for point in sorted_points]
 
@@ -1287,11 +1363,15 @@ def forecast_next_buckets(
 
     forecasts: list[ForecastPoint] = []
     for step in range(1, horizon + 1):
-        future_index = series_length - 1 + step
         trend_future = last_trend + slope * step
         seasonal_future = 0.0
         for col, period in enumerate(effective_periods):
-            seasonal_future += float(seasonal_columns[future_index % period, col])
+            # The same phase as the future bucket, taken from the LATEST cycle
+            # rather than the first one: STL's seasonal component drifts over
+            # the window, so a first-cycle lookup (``future_index % period``)
+            # replays a stale amplitude (tripl-0zpq.105).
+            same_phase_index = series_length - period + ((step - 1) % period)
+            seasonal_future += float(seasonal_columns[same_phase_index, col])
         expected = max(trend_future + seasonal_future, 0.0)
         forecasts.append(
             ForecastPoint(

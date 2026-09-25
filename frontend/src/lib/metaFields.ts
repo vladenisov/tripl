@@ -70,6 +70,43 @@ export function metaFieldLinkExample(template: string | null | undefined): strin
   return template.replaceAll(META_FIELD_LINK_PLACEHOLDER, META_FIELD_LINK_EXAMPLE_KEY)
 }
 
+/** Schemes a raw meta value may link to. `data:`, `blob:` and the like are text. */
+const SAFE_LINK = /^(https?:\/\/|mailto:)/i
+
+/**
+ * The scheme an href opens with, lower-cased, or null for a relative one.
+ * Browsers drop ASCII tabs and newlines anywhere in a URL and leading
+ * whitespace/control characters before parsing, so `java\tscript:` is still
+ * `javascript:`; strip them the same way before reading the scheme.
+ */
+function hrefScheme(href: string): string | null {
+  // eslint-disable-next-line no-control-regex
+  const normalized = href.replace(/[\t\n\r]/g, '').replace(/^[\u0000-\u0020]+/, '')
+  const match = /^([a-z][a-z0-9+.-]*):/i.exec(normalized)
+  return match ? match[1].toLowerCase() : null
+}
+
+/**
+ * Whether a link built from an admin's template may be an anchor. The backend
+ * accepts any template holding the placeholder (`schemas/meta_field.py`), so
+ * relative links such as `/wiki/${value}` are legitimate; only a scheme other
+ * than http(s) or mailto — `javascript:`, `data:`, `vbscript:` — is refused.
+ */
+function isSafeTemplateLink(href: string): boolean {
+  const scheme = hrefScheme(href)
+  return scheme === null || scheme === 'http' || scheme === 'https' || scheme === 'mailto'
+}
+
+/**
+ * A key as it goes into a link template: URL-encoded, so a key with a space,
+ * `#`, `?` or `&` cannot end the path early or start a fragment. `/` stays as
+ * it is: templates such as `https://github.com/${value}` take `org/repo` keys
+ * whose slashes are meant as path separators.
+ */
+function encodeTemplateValue(value: string): string {
+  return encodeURIComponent(value).replaceAll('%2F', '/')
+}
+
 export function resolveMetaFieldHref(
   metaField: Pick<MetaFieldDefinition, 'field_type' | 'link_template'>,
   value: string,
@@ -77,17 +114,26 @@ export function resolveMetaFieldHref(
   if (!value) {
     return null
   }
+  // A stored value is user input: used as the href itself, only web and mail
+  // links become anchors, so a `data:` or other scheme renders as plain text
+  // (EVT-43).
+  const rawLink = (href: string) => (SAFE_LINK.test(href) ? href : null)
   if (metaField.link_template) {
     // A value that already is a link — pasted whole, or stored before the
     // server began stripping — must not be wrapped in the template a second
     // time (tripl-kjhi.5).
-    if (ABSOLUTE_URL.test(value) || stripLinkTemplate(metaField.link_template, value) !== value) {
-      return value
+    if (ABSOLUTE_URL.test(value)) return rawLink(value)
+    // The value IS the template around a key, so it is the link the template
+    // would build and is judged as one (a relative template stays a link).
+    if (stripLinkTemplate(metaField.link_template, value) !== value) {
+      return isSafeTemplateLink(value) ? value : null
     }
-    return metaField.link_template.replaceAll(META_FIELD_LINK_PLACEHOLDER, value)
+    const href = metaField.link_template.replaceAll(
+      META_FIELD_LINK_PLACEHOLDER,
+      encodeTemplateValue(value),
+    )
+    return isSafeTemplateLink(href) ? href : null
   }
-  if (metaField.field_type === 'url') {
-    return value
-  }
+  if (metaField.field_type === 'url') return rawLink(value.trim())
   return null
 }

@@ -57,13 +57,8 @@ async def _seed_project_operations(
                 id=uuid.uuid4(),
                 scan_config_id=uuid.UUID(scan_config_id),
                 scope_type="event_type",
-                # The project-summary union derives the latest-metric key from
-                # ``cast(EventMetric.event_type_id, String)``, which on the test's
-                # in-memory SQLite renders a UUID as bare hex (no dashes). Store the
-                # anomaly's scope_ref in that same form so ``classify_signal_state``
-                # finds a live metric bucket to anchor recency on (otherwise the
-                # signal is treated as closed and the counts drop to 0).
-                scope_ref=uuid.UUID(event_type_id).hex,
+                # Detector-written scope refs use the hyphenated UUID format.
+                scope_ref=event_type_id,
                 event_id=None,
                 event_type_id=uuid.UUID(event_type_id),
                 bucket=metric_bucket,
@@ -376,11 +371,10 @@ async def test_project_summary_counts(client: AsyncClient):
         "scan_config_id": scan_config_id,
         "scan_name": "Production scan",
         "scope_type": "event_type",
-        # Stored (and echoed back) as bare hex on SQLite; see the fixture note.
-        "scope_ref": uuid.UUID(event_type_id).hex,
+        "scope_ref": event_type_id,
         "scope_name": "Page View",
         "state": "latest_scan",
-        "bucket": _METRIC_BUCKET.replace(tzinfo=None).isoformat(),
+        "bucket": _METRIC_BUCKET.isoformat().replace("+00:00", "Z"),
         "actual_count": 42,
         "expected_count": 21.0,
         "z_score": 7.0,
@@ -1167,13 +1161,12 @@ async def test_monitoring_signal_count_includes_significant_event_scope_anomalie
                 count=42,
             )
         )
-        # Page-visible scope: counted. scope_ref uses the bare-hex form the
-        # SQLite cast produces (see the fixture note in _seed_project_operations).
+        # Page-visible scope: counted with the detector's UUID representation.
         session.add(
             _anomaly(
                 scan_config_id,
                 "event_type",
-                uuid.UUID(event_type_id).hex,
+                event_type_id,
                 _METRIC_BUCKET,
                 event_type_id=event_type_id,
             )
@@ -1185,7 +1178,7 @@ async def test_monitoring_signal_count_includes_significant_event_scope_anomalie
                 id=uuid.uuid4(),
                 scan_config_id=uuid.UUID(scan_config_id),
                 scope_type="event",
-                scope_ref=uuid.UUID(event_id).hex,
+                scope_ref=event_id,
                 event_id=uuid.UUID(event_id),
                 event_type_id=uuid.UUID(event_type_id),
                 bucket=_METRIC_BUCKET,
@@ -1276,7 +1269,7 @@ async def test_monitoring_signal_count_excludes_below_significant_signals(
                 id=uuid.uuid4(),
                 scan_config_id=uuid.UUID(scan_config_id),
                 scope_type="event_type",
-                scope_ref=uuid.UUID(event_type_id).hex,
+                scope_ref=event_type_id,
                 event_id=None,
                 event_type_id=uuid.UUID(event_type_id),
                 bucket=_METRIC_BUCKET,

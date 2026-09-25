@@ -43,6 +43,58 @@ describe('resolveMetaFieldHref', () => {
   })
 })
 
+describe('resolveMetaFieldHref encoding and schemes (EVT-43)', () => {
+  it('URL-encodes the key it puts into a template', () => {
+    expect(resolveMetaFieldHref(
+      { field_type: 'string', link_template: 'https://x.example/search?q=${value}' },
+      'a b#c?d&e',
+    )).toBe('https://x.example/search?q=a%20b%23c%3Fd%26e')
+  })
+
+  it('keeps slashes, which templates use as path separators', () => {
+    expect(resolveMetaFieldHref(
+      { field_type: 'string', link_template: 'https://github.com/${value}' },
+      'acme/app',
+    )).toBe('https://github.com/acme/app')
+  })
+
+  it('links only http(s) and mailto values', () => {
+    expect(resolveMetaFieldHref({ field_type: 'url', link_template: null }, 'data:text/html,hi'))
+      .toBeNull()
+    expect(resolveMetaFieldHref({ field_type: 'url', link_template: null }, 'javascript:alert(1)'))
+      .toBeNull()
+    expect(resolveMetaFieldHref({ field_type: 'url', link_template: null }, 'mailto:ops@example.com'))
+      .toBe('mailto:ops@example.com')
+  })
+
+  it('links a relative template, which the backend accepts', () => {
+    expect(resolveMetaFieldHref({ field_type: 'string', link_template: '/wiki/${value}' }, 'Checkout'))
+      .toBe('/wiki/Checkout')
+    expect(resolveMetaFieldHref({ field_type: 'string', link_template: 'mailto:${value}@example.com' }, 'ops'))
+      .toBe('mailto:ops@example.com')
+    // A value stored as the whole relative link is the same link.
+    expect(resolveMetaFieldHref({ field_type: 'string', link_template: '/wiki/${value}' }, '/wiki/Checkout'))
+      .toBe('/wiki/Checkout')
+  })
+
+  it('refuses a template that builds a script or data link', () => {
+    for (const template of [
+      'javascript:alert(${value})',
+      ' JavaScript:${value}',
+      'java\tscript:${value}',
+      'data:text/html,${value}',
+      'vbscript:${value}',
+    ]) {
+      expect(resolveMetaFieldHref({ field_type: 'string', link_template: template }, 'x')).toBeNull()
+    }
+  })
+
+  it('keeps a raw relative value as text: only templates may build relative links', () => {
+    expect(resolveMetaFieldHref({ field_type: 'url', link_template: null }, '/wiki/Checkout'))
+      .toBeNull()
+  })
+})
+
 describe('stripLinkTemplate', () => {
   it('returns the bare key when the value is the template around one', () => {
     expect(stripLinkTemplate(TEMPLATE, 'https://tracker.example.com/issues/TASK-123'))

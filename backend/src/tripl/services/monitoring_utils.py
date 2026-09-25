@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 
 # Default freshness window for an open signal. Projects can override it via
 # ProjectAnomalySettings.recent_signal_window_hours, which reaches this module as
@@ -23,10 +23,11 @@ RECENT_SIGNAL_WINDOW = timedelta(hours=24)
 #
 # Both are ``max(recent_window, N * interval)``, so sub-daily scans keep exactly
 # the configured window and only long grids move. ``worker.tasks.metrics.signals``
-# IMPORTS this rather than keeping its own copy: it used to mirror it, and the
-# mirror drifted twice (tripl-l429.14, tripl-l429.19). ``test_monitors_summary``
-# pins the two as the same object, not merely as equal values — equality is what
-# a fresh copy also satisfies on the day it is written.
+# does NOT import this name: it reaches the constant only through
+# ``classify_signal_state``, so there is no second copy to drift. It used to keep
+# a mirror, and the mirror drifted twice (tripl-l429.14, tripl-l429.19);
+# ``test_monitors_summary`` pins that the name is absent from ``signals`` so a
+# re-introduced copy fails loudly (tripl-0zpq.170).
 LATEST_SCAN_STALE_INTERVALS = 3
 
 # ScanInterval enum string (e.g. "1d") -> wall-clock duration. Keyed by string so
@@ -38,6 +39,13 @@ _SCAN_INTERVAL_DELTAS: dict[str, timedelta] = {
     "1d": timedelta(days=1),
     "1w": timedelta(weeks=1),
 }
+
+
+def _utc_bucket(bucket: datetime) -> datetime:
+    """SQLite drops timezone metadata from UTC buckets; restore it for comparisons."""
+    if bucket.tzinfo is None:
+        return bucket.replace(tzinfo=UTC)
+    return bucket.astimezone(UTC)
 
 
 def scan_interval_to_timedelta(interval: str | None) -> timedelta | None:
@@ -106,7 +114,7 @@ def scan_liveness_cutoff(
     measured against a different window than the decision it feeds is exactly
     how the two signal paths drifted before.
     """
-    reference = now if now is not None else datetime.now(UTC)
+    reference = _utc_bucket(now) if now is not None else datetime.now(UTC)
     window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
     return reference - _freshness_horizon(scan_interval_to_timedelta(interval), window)
 
@@ -128,7 +136,7 @@ def latest_bucket_by_scan(
         if scan_config_id is None or bucket is None:
             continue
         current = latest.get(scan_config_id)
-        if current is None or bucket > current:
+        if current is None or _utc_bucket(bucket) > _utc_bucket(current):
             latest[scan_config_id] = bucket
     return latest
 
@@ -239,13 +247,13 @@ def classify_signal_state(
     if latest_metric_bucket is None:
         return None
 
-    reference = now if now is not None else datetime.now(UTC)
+    reference = _utc_bucket(now) if now is not None else datetime.now(UTC)
     # Absent per-project override, every branch below behaves exactly as it did
     # when the 24h constant was read directly.
     window = recent_window if recent_window is not None else RECENT_SIGNAL_WINDOW
     horizon = _freshness_horizon(interval, window)
 
-    if anomaly_bucket >= latest_metric_bucket - emission_lag:
+    if _utc_bucket(anomaly_bucket) >= _utc_bucket(latest_metric_bucket) - emission_lag:
         latest_scan_cutoff = reference - horizon
         if _bucket_is_recent(anomaly_bucket, latest_scan_cutoff):
             return "latest_scan"
@@ -279,20 +287,21 @@ def classify_signal_state(
 
 
 def _bucket_is_recent(bucket: datetime, cutoff: datetime) -> bool:
-    """Compare a (possibly tz-naive) anomaly bucket against an aware cutoff.
-
-    Mirrors ``classify_signal_state``'s handling so naive timestamps coming
-    back from the DB don't raise on aware/naive comparison.
-    """
-    if bucket.tzinfo is None:
-        cutoff = cutoff.replace(tzinfo=None)
-    return bucket >= cutoff
+    """Compare SQLite and PostgreSQL buckets as UTC instants."""
+    return _utc_bucket(bucket) >= _utc_bucket(cutoff)
 
 
 class _MonitorState(Protocol):
     is_active: bool
     last_anomaly_bucket: datetime | None
     last_notified_at: datetime | None
+
+
+# Resolves the grid one alert state's series is scored on (its scan config's
+# interval, or a catalog metric's own grid), or None when it has none.
+# Typed on ``Any`` because callers hand in their concrete ORM row type, which a
+# callable parameterised on the protocol would not accept (contravariance).
+MonitorStateInterval = Callable[[Any], timedelta | None]
 
 
 @dataclass(frozen=True)
@@ -308,25 +317,49 @@ def summarize_monitor_states(
     states: Sequence[_MonitorState],
     *,
     now: datetime,
+    interval_of: MonitorStateInterval | None = None,
 ) -> MonitorRollup:
     """Roll a rule's per-scope alert states into a single monitor status.
 
-    * firing  — at least one active scope with an anomaly inside the recent window
+    * firing  — at least one active scope with an anomaly inside the freshness
+      horizon alert dispatch judges it by
     * warning — active scopes exist, but none have a recent anomaly (stale/open)
     * healthy — no active scopes
 
     Deliberately NOT narrowed by the project's configured open-signal window:
-    this summarizes ALERT state, and alert dispatch stays on the fixed window
+    this summarizes ALERT state, and alert dispatch ignores that setting too
     (see ``worker.tasks.metrics.signals._get_latest_active_anomalies``), so a
     monitor must not read "healthy" while its rule is still delivering.
+
+    It DOES follow dispatch's interval floor: dispatch keeps a scope open for
+    ``max(24h, 3 x interval)`` of its own grid, so a daily or weekly anomaly it
+    is still delivering sits well past a bare 24 hours. Judging that against
+    ``now - 24h`` read "warning" — firing_count 0, the sidebar badge off —
+    while the alert was being sent (tripl-0zpq.162). ``interval_of`` resolves
+    each state's grid; a caller that passes nothing, or a state it cannot
+    resolve, falls back to the bare 24-hour window.
+
+    It does NOT follow dispatch's still-running-outage re-check
+    (``_outage_is_still_running``): dispatch keeps a zero-actual outage anchor
+    live for as long as its scan keeps collecting, while this rollup sees only
+    ``last_anomaly_bucket`` (the onset, which never advances). A monitor on an
+    outage older than the horizon therefore reads "warning" while dispatch still
+    holds the state active. Closing that gap needs the anchor's counts and the
+    scan's latest bucket, which ``AlertRuleState`` does not carry.
     """
-    firing_cutoff = now - RECENT_SIGNAL_WINDOW
     active = [state for state in states if state.is_active]
     firing = [
         state
         for state in active
         if state.last_anomaly_bucket is not None
-        and _bucket_is_recent(state.last_anomaly_bucket, firing_cutoff)
+        and _bucket_is_recent(
+            state.last_anomaly_bucket,
+            now
+            - _freshness_horizon(
+                interval_of(state) if interval_of is not None else None,
+                RECENT_SIGNAL_WINDOW,
+            ),
+        )
     ]
     if firing:
         status = "firing"

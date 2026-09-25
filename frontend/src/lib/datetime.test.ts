@@ -197,3 +197,25 @@ describe('formatRelativeTime', () => {
     expect(formatRelativeTime(new Date().toISOString())).toBe('just now')
   })
 })
+
+// SHELL-52: `new Date('2026-09-24')` is UTC midnight, i.e. Sep 23 anywhere west
+// of UTC. A date-only value names a calendar day and must render as that day.
+describe('date-only strings west of UTC', () => {
+  beforeEach(() => {
+    vi.stubEnv('TZ', 'America/Los_Angeles')
+  })
+
+  it('keeps the calendar day in formatIsoDate', () => {
+    expect(formatIsoDate('2026-09-24')).toBe('2026-09-24')
+  })
+
+  it('keeps the calendar day in formatDate', () => {
+    expect(formatDate('2026-09-24')).toMatch(/24/)
+    expect(formatDate('2026-09-24')).not.toMatch(/23/)
+  })
+
+  it('still reads a full timestamp as an instant', () => {
+    // 03:00Z on the 24th is the evening of the 23rd in Los Angeles.
+    expect(formatIsoDate('2026-09-24T03:00:00Z')).toBe('2026-09-23')
+  })
+})

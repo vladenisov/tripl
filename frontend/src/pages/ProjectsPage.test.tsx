@@ -148,7 +148,7 @@ describe('ProjectsPage', () => {
     renderProjectsPage()
 
     expect(await screen.findByText('Alpha')).toBeInTheDocument()
-    expect(screen.getByText('Analytics workspace')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'All projects' })).toBeInTheDocument()
     expect(screen.getByText('Project portfolio')).toBeInTheDocument()
     expect(screen.getByText('Landing coverage and funnel events.')).toBeInTheDocument()
     expect(screen.getByText('66.7% implemented')).toBeInTheDocument()
@@ -415,7 +415,6 @@ describe('ProjectsPage', () => {
                 completed_at: '2026-06-10T08:02:00Z',
                 result_summary: {
                   scan_rows_processed: 12345,
-                  scan_truncated: false,
                 },
                 error_message: null,
                 created_at: '2026-06-10T08:02:00Z',
@@ -497,7 +496,6 @@ describe('ProjectsPage', () => {
                   signals_added: 0,
                   alerts_queued: 0,
                   scan_rows_processed: 8261,
-                  scan_truncated: false,
                 },
                 error_message: null,
                 created_at: '2026-06-10T08:02:00Z',
@@ -569,7 +567,6 @@ describe('ProjectsPage', () => {
                 result_summary: {
                   scan_rows_processed: 900,
                   query_rows_scanned: 12345,
-                  scan_truncated: false,
                 },
                 error_message: null,
                 created_at: '2026-06-10T08:02:00Z',
@@ -638,7 +635,6 @@ describe('ProjectsPage', () => {
                 result_summary: {
                   events_created: 0,
                   scan_rows_processed: 8261,
-                  scan_truncated: false,
                 },
                 error_message: null,
                 created_at: '2026-06-10T09:00:00Z',
@@ -1040,7 +1036,7 @@ describe('ProjectsPage', () => {
     expect(await screen.findByText('Keep your product analytics honest')).toBeInTheDocument()
     // The h1 stays, but the duplicate header CTA pair is gone — each CTA now
     // exists exactly once, inside the hero.
-    expect(screen.getByText('Analytics workspace')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'All projects' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /Generate demo project/i })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: /New project/i })).toHaveLength(1)
     // The all-zero stat band is hidden until the first project exists.

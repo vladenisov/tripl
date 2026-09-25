@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectSettingsPage from './ProjectSettingsPage'
@@ -121,6 +121,7 @@ describe('ProjectSettingsPage', () => {
       sigma_threshold: 4.5,
       min_expected_count: 25,
       recent_signal_window_hours: 36,
+      anomaly_ingestion_settling_minutes: 120,
       created_at: '2026-01-01T00:00:00Z',
       updated_at: '2026-01-01T00:00:00Z',
     }
@@ -308,12 +309,14 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/scans']}>
-          <Routes>
-            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
-            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/scans']}>
+            <Routes>
+              <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+              <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 
@@ -453,12 +456,14 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/scans']}>
-          <Routes>
-            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
-            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/scans']}>
+            <Routes>
+              <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+              <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 
@@ -583,12 +588,14 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/scans']}>
-          <Routes>
-            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
-            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/scans']}>
+            <Routes>
+              <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+              <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 
@@ -748,6 +755,64 @@ describe('ProjectSettingsPage', () => {
     expect(dialog.textContent).toContain('Use')
     expect(dialog.textContent).toContain('${items_text}')
     expect(dialog.textContent).toContain('full matched alert list')
+  })
+
+  it('starts the alerting tab fresh when the project changes', async () => {
+    // ALR-37: the route element is reused across `:slug`, so an open rule
+    // dialog (and filters, drafts) from project A carried into project B.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      const match = /\/api\/v1\/projects\/(demo|other)\/(.*)$/.exec(url)
+      const rest = match?.[2] ?? ''
+      if (rest === 'alert-destinations') {
+        return mockJsonResponse([{
+          id: `dest-${match?.[1]}`,
+          project_id: 'project-1',
+          type: 'telegram',
+          name: 'Ops Bot',
+          enabled: true,
+          webhook_set: false,
+          bot_token_set: true,
+          chat_id: '-100123',
+          delivery_count: 0,
+          incident_count: 0,
+          rules: [],
+          created_at: '2026-04-11T00:00:00Z',
+          updated_at: '2026-04-11T00:00:00Z',
+        }])
+      }
+      if (rest === 'event-types') return mockJsonResponse([])
+      if (rest.startsWith('events?')) return mockJsonResponse({ items: [], total: 0 })
+      if (rest === 'scans') return mockJsonResponse([])
+      if (rest.startsWith('alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
+      if (rest === 'monitors-summary') return mockJsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=monitors']}>
+          <Link to="/p/other/settings/alerting?section=monitors">Switch project</Link>
+          <Routes>
+            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add rule/ }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+
+    // A link outside the dialog: the modal marks the rest of the page inert
+    // for pointer users, but the navigation is what is under test here.
+    fireEvent.click(screen.getByText('Switch project'))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(await screen.findByRole('button', { name: /Add rule/ })).toBeInTheDocument()
   })
 
   it('renders alert rule summary on the alerting tab', async () => {
@@ -1272,12 +1337,14 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/scans']}>
-          <Routes>
-            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
-            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/scans']}>
+            <Routes>
+              <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+              <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 
@@ -1478,12 +1545,14 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/scans']}>
-          <Routes>
-            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
-            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/scans']}>
+            <Routes>
+              <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+              <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 
@@ -1730,12 +1799,14 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/scans']}>
-          <Routes>
-            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
-            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/scans']}>
+            <Routes>
+              <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+              <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 
@@ -1979,12 +2050,14 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/scans']}>
-          <Routes>
-            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
-            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/scans']}>
+            <Routes>
+              <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+              <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 
@@ -2176,12 +2249,14 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/scans']}>
-          <Routes>
-            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
-            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/scans']}>
+            <Routes>
+              <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+              <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 

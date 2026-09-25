@@ -1,45 +1,65 @@
 import { api, withBranch } from './client'
 import type { Event, EventChange, EventListResponse, EventMutationResponse } from '../types'
+import type { components, operations } from '../types/api.gen'
 import type { ImplementationTicket } from '../types/tracker'
 
-type ListParams = {
-  event_type_id?: string
-  search?: string
-  status?: string[]
-  tag?: string
-  silent_since_days?: number
-  /** Isolate reviewed / still-unreviewed events. Omit for "any". */
-  reviewed?: boolean
-  order_by?: 'catalog' | 'volume'
-  offset?: number
-  /**
-   * Omitting this does NOT mean "every event". No limit is emitted, so the
-   * server's own default applies — `limit: int = Query(200, ge=1, le=10000)` in
-   * backend/src/tripl/api/v1/events.py — and the caller gets a silently
-   * truncated page with no signal that anything was left behind. That is
-   * exactly how the variables tab's override picker came to offer only the
-   * first 200 events of a larger project (tripl-46am). A caller that renders a
-   * roster must pass a limit it chose and read `total` to say what it did not
-   * show.
-   */
-  limit?: number
+type Schemas = components['schemas']
+type ListQuery = NonNullable<
+  operations['list_events_api_v1_projects__slug__events_get']['parameters']['query']
+>
+
+/**
+ * The list endpoint's query parameters, derived from the generated OpenAPI
+ * types rather than restated by hand. The hand-written copy drifted: it had no
+ * `has_open_questions`, so the toolbar's "Open questions" filter reached the URL
+ * and saved views but never the server, and the list came back unfiltered (EVT-1).
+ * `branch` travels separately through `withBranch`; `null` is the backend's
+ * "absent", which callers express by omitting the key.
+ *
+ * About `limit`: omitting it does NOT mean "every event". No limit is emitted,
+ * so the server's own default applies — `limit: int = Query(200, ge=1,
+ * le=10000)` in backend/src/tripl/api/v1/events.py — and the caller gets a
+ * silently truncated page with no signal that anything was left behind. That is
+ * exactly how the variables tab's override picker came to offer only the first
+ * 200 events of a larger project (tripl-46am). A caller that renders a roster
+ * must pass a limit it chose and read `total` to say what it did not show.
+ */
+export type EventListParams = {
+  [K in Exclude<keyof ListQuery, 'branch'>]?: NonNullable<ListQuery[K]>
 }
 
-export const eventsApi = {
-  list: (slug: string, params?: ListParams, branchId?: string | null) => {
-    const sp = new URLSearchParams()
-    if (params?.event_type_id) sp.set('event_type_id', params.event_type_id)
-    if (params?.search) sp.set('search', params.search)
-    if (params?.status?.length) {
-      for (const s of params.status) sp.append('status', s)
+/**
+ * Serializes every key of `params`, so a parameter added to the generated type
+ * cannot be accepted by `list` and then dropped on the way to the URL. Empty
+ * strings and empty arrays read as "no filter", like the controls that set them.
+ */
+export function eventListSearchParams(params: EventListParams = {}): URLSearchParams {
+  const sp = new URLSearchParams()
+  for (const [key, value] of Object.entries(params) as [string, unknown][]) {
+    if (value === undefined || value === null || value === '') continue
+    if (Array.isArray(value)) {
+      for (const item of value) sp.append(key, String(item))
+    } else {
+      sp.set(key, String(value))
     }
-    if (params?.tag) sp.set('tag', params.tag)
-    if (params?.silent_since_days !== undefined) sp.set('silent_since_days', String(params.silent_since_days))
-    if (params?.reviewed !== undefined) sp.set('reviewed', String(params.reviewed))
-    if (params?.order_by) sp.set('order_by', params.order_by)
-    if (params?.offset !== undefined) sp.set('offset', String(params.offset))
-    if (params?.limit !== undefined) sp.set('limit', String(params.limit))
-    const qs = sp.toString()
+  }
+  return sp
+}
+
+/**
+ * Request bodies, typed from the generated schemas. Fields the backend defaults
+ * (description, tags, status, …) come out required in the generated type, so
+ * only the two with no default stay required here.
+ */
+export type EventCreateBody = Pick<Schemas['EventCreate'], 'event_type_id' | 'name'>
+  & Partial<Omit<Schemas['EventCreate'], 'event_type_id' | 'name'>>
+export type EventUpdateBody = Schemas['EventUpdate']
+export type EventBulkUpdateBody = Omit<Schemas['EventBulkUpdate'], 'event_ids'>
+type EventMoveBody = Schemas['EventMove']
+
+export const eventsApi = {
+  list: (slug: string, params?: EventListParams, branchId?: string | null) => {
+    const qs = eventListSearchParams(params).toString()
     const path = `/projects/${slug}/events${qs ? `?${qs}` : ''}`
     return api.get<EventListResponse>(withBranch(path, branchId))
   },
@@ -54,84 +74,34 @@ export const eventsApi = {
     api.get<ImplementationTicket[]>(
       withBranch(`/projects/${slug}/events/${id}/implementation-tickets`, branchId),
     ),
-  create: (
-    slug: string,
-    data: {
-      event_type_id: string
-      name: string
-      title?: string
-      description?: string
-      status?: string
-      sunset_at?: string | null
-      owner_id?: string | null
-      tags?: string[]
-      metric_breakdown_columns?: string[]
-      field_values?: { field_definition_id: string; value: string }[]
-      meta_values?: { meta_field_definition_id: string; value: string }[]
-    },
-    branchId?: string | null,
-  ) => api.post<EventMutationResponse>(withBranch(`/projects/${slug}/events`, branchId), data),
-  update: (
-    slug: string,
-    id: string,
-    data: {
-      name?: string
-      title?: string
-      description?: string
-      status?: string
-      sunset_at?: string | null
-      /** The event that replaced this one. Update-only: a brand-new event has
-       *  no predecessor to name, so `create` does not accept it. */
-      superseded_by_event_id?: string | null
-      owner_id?: string | null
-      tags?: string[]
-      metric_breakdown_columns?: string[]
-      field_values?: { field_definition_id: string; value: string }[]
-      meta_values?: { meta_field_definition_id: string; value: string }[]
-    },
-    branchId?: string | null,
-  ) => api.patch<EventMutationResponse>(withBranch(`/projects/${slug}/events/${id}`, branchId), data),
+  create: (slug: string, data: EventCreateBody, branchId?: string | null) =>
+    api.post<EventMutationResponse>(withBranch(`/projects/${slug}/events`, branchId), data),
+  /** `superseded_by_event_id` is update-only: a brand-new event has no
+   *  predecessor to name, so `EventCreate` does not accept it. */
+  update: (slug: string, id: string, data: EventUpdateBody, branchId?: string | null) =>
+    api.patch<EventMutationResponse>(withBranch(`/projects/${slug}/events/${id}`, branchId), data),
   del: (slug: string, id: string, branchId?: string | null) =>
     api.del(withBranch(`/projects/${slug}/events/${id}`, branchId)),
-  bulkCreate: (
-    slug: string,
-    data: {
-      event_type_id: string
-      /**
-       * Ignored where a scan rule names this event type: the server generates
-       * the name from the field values, exactly as the single create does, so
-       * both doors author the same event for the same payload.
-       */
-      name: string
-      status?: string
-      metric_breakdown_columns?: string[]
-      field_values?: { field_definition_id: string; value: string }[]
-      meta_values?: { meta_field_definition_id: string; value: string }[]
-    }[],
-    branchId?: string | null,
-  ) => api.post<Event[]>(withBranch(`/projects/${slug}/events/bulk`, branchId), data),
+  /**
+   * `name` is ignored where a scan rule names the event type: the server
+   * generates it from the field values, exactly as the single create does, so
+   * both doors author the same event for the same payload.
+   */
+  bulkCreate: (slug: string, data: EventCreateBody[], branchId?: string | null) =>
+    api.post<Event[]>(withBranch(`/projects/${slug}/events/bulk`, branchId), data),
   bulkDelete: (slug: string, eventIds: string[], branchId?: string | null) =>
     api.post<void>(withBranch(`/projects/${slug}/events/bulk-delete`, branchId), { event_ids: eventIds }),
   bulkUpdate: (
     slug: string,
     eventIds: string[],
-    data: {
-      status?: string
-      sunset_at?: string | null
-      reviewed?: boolean
-      owner_id?: string | null
-    },
+    data: EventBulkUpdateBody,
     branchId?: string | null,
   ) => api.post<void>(
     withBranch(`/projects/${slug}/events/bulk-update`, branchId),
     { event_ids: eventIds, ...data },
   ),
-  move: (
-    slug: string,
-    id: string,
-    data: { direction: 'up' | 'down'; visible_event_ids?: string[] },
-    branchId?: string | null,
-  ) => api.patch<Event>(withBranch(`/projects/${slug}/events/${id}/move`, branchId), data),
+  move: (slug: string, id: string, data: EventMoveBody, branchId?: string | null) =>
+    api.patch<Event>(withBranch(`/projects/${slug}/events/${id}/move`, branchId), data),
   reorder: (slug: string, eventIds: string[], branchId?: string | null) =>
     api.patch<Event[]>(withBranch(`/projects/${slug}/events/reorder`, branchId), { event_ids: eventIds }),
   history: (slug: string, eventId: string, branchId?: string | null) =>

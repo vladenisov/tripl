@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import {
   dataSourcesKey,
   eventTypesKey,
+  metricDrilldownKeys,
   planBranchesKey,
   projectEventTypesKey,
   variablesKey,
@@ -49,6 +50,15 @@ describe('shared query keys (tripl-jfm3.115, tripl-jfm3.116)', () => {
     const project = projectEventTypesKey('demo')
     expect(eventTypesKey('demo', 'branch-1')).toEqual(['eventTypes', 'demo', 'branch-1'])
     expect(eventTypesKey('demo', 'branch-1').slice(0, project.length)).toEqual([...project])
+  })
+
+  it('makes each metric drilldown key a prefix of the page query it refreshes (MET-27)', () => {
+    // MonitoringDetailPage keys the series `[family, slug, scope, scopeId, …range]`;
+    // an invalidation only reaches it while these stay prefixes of that shape.
+    const [series, breakdowns, versions] = metricDrilldownKeys('demo', 'm-1')
+    expect(series).toEqual(['monitoringMetrics', 'demo', 'metric', 'm-1'])
+    expect(breakdowns).toEqual(['eventMetricBreakdowns', 'demo', 'metric', 'm-1'])
+    expect(versions).toEqual(['appVersionSeries', 'demo', 'metric', 'm-1'])
   })
 
   it('is the only place these keys are written', () => {

@@ -127,6 +127,10 @@ def _spaced_identifiers(values: Sequence[object | None]) -> str:
 # remains as a backstop.
 EMBED_TEXT_MAX_CHARS = 6000
 
+# SearchDocument.title and .subtitle are VARCHAR(500) in PostgreSQL. Keep
+# generated labels within that limit before hashing or embedding them.
+SEARCH_LABEL_MAX_CHARS = 500
+
 
 def embed_text_for(*, title: str, subtitle: str, keywords: str, body: str) -> str:
     """Build the text that gets embedded for one search document.
@@ -153,6 +157,10 @@ class BuiltDocument:
     route_path: str
     description: str = ""
     archived: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "title", self.title[:SEARCH_LABEL_MAX_CHARS])
+        object.__setattr__(self, "subtitle", self.subtitle[:SEARCH_LABEL_MAX_CHARS])
 
     @property
     def content_hash(self) -> str:
@@ -199,9 +207,34 @@ class BuiltDocument:
 #: 2 — scan configurations and alert rules became searchable (tripl-dfct). Every
 #:     branch gains documents it did not have, which no content_hash comparison
 #:     could have discovered, so this is exactly the case the stamp exists for.
-DOCUMENT_BUILDER_VERSION = 2
+#: 3 — generated titles and subtitles are capped to their storage column width.
+DOCUMENT_BUILDER_VERSION = 3
 
 
+# Every caller reindexes inside its OWN transaction, right after mutating the
+# rows it is about to index, so ``build_documents`` shares the writer's identity
+# map. Without ``populate_existing`` the ORM hands back the objects already in
+# that map and a ``selectinload`` does NOT overwrite a collection that is
+# already loaded — so an event whose tags/field values/meta values were replaced
+# by a bulk ``delete()`` plus FK-only ``add_all`` (``event_service.update_event``)
+# still carries the OLD children in memory, and a field created or deleted
+# through ``field_service`` is missing from or still present in
+# ``EventType.field_definitions``. The rebuilt text then matches the stored
+# ``content_hash``, the row is KEPT, and the index sits exactly one write behind
+# until some later reindex runs from a fresh session (tripl-0zpq.183). Reading
+# with ``populate_existing`` costs the same query and returns what the
+# transaction actually holds.
+#
+# Where it is and is not, and why — a loaded COLLECTION is what a ``selectinload``
+# will not overwrite, so the option goes on exactly the four reads that load one:
+# ``EventType``, ``Event``, ``VariableValue`` and ``EventTypeRelation``. The
+# plain-column reads below (``MetaFieldDefinition``, ``MetricDefinition``,
+# ``FactTable``, ``ScanConfig``, ``AlertRule``) need nothing: a scalar edit is
+# already on the identity-map object the query hands back, so they are current
+# without it. The one read where it would be actively WRONG is ``Variable``,
+# which carries ``lazyload(Variable.value_contexts)``: refreshing there would
+# unload a collection the caller may still touch, and a lazy load on this async
+# session raises.
 async def build_documents(
     session: AsyncSession,
     project_id: uuid.UUID,
@@ -213,6 +246,7 @@ async def build_documents(
             select(EventType)
             .where(EventType.project_id == project_id, EventType.branch_id == branch_id)
             .options(selectinload(EventType.field_definitions))
+            .execution_options(populate_existing=True)
         )
     )
     event_types_by_id = {event_type.id: event_type for event_type in event_types}
@@ -236,6 +270,7 @@ async def build_documents(
                 selectinload(Event.meta_values).selectinload(EventMetaValue.meta_field_definition),
                 selectinload(Event.tags),
             )
+            .execution_options(populate_existing=True)
         )
     )
 
@@ -273,6 +308,7 @@ async def build_documents(
                 selectinload(VariableValue.event),
                 selectinload(VariableValue.field_definition),
             )
+            .execution_options(populate_existing=True)
         ),
         key=_variable_value_sort_key,
     )
@@ -297,6 +333,7 @@ async def build_documents(
                 selectinload(EventTypeRelation.source_field),
                 selectinload(EventTypeRelation.target_field),
             )
+            .execution_options(populate_existing=True)
         )
     )
 
@@ -625,7 +662,12 @@ def _event_document(
                 event.source_name,
                 " ".join(event_type_names),
                 " ".join(tag_names),
-                " ".join(event.metric_breakdown_columns),
+                # ``or []`` matches the two readers in ``event_service.update_event``.
+                # The column is NOT NULL and the PATCH schema now turns an explicit
+                # null into ``[]`` (tripl-0zpq.190), so nothing can write None here
+                # — but a legacy row that did would take out the reindex of the
+                # WHOLE branch with a TypeError, where this makes it a blank keyword.
+                " ".join(event.metric_breakdown_columns or []),
                 " ".join(authored_values),
                 " ".join(variable_context_keywords),
                 _spaced_identifiers([event.name, event.source_name]),

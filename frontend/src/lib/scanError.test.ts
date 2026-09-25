@@ -180,4 +180,27 @@ describe('friendlyScanError', () => {
       expectSanitised(friendlyScanError(raw).message)
     }
   })
+
+  // The rules used to match bare substrings, so a message that merely NAMED a
+  // column like these got a confident, wrong diagnosis (DATA-20).
+  it('does not diagnose a timeout or a connect failure from a column name', () => {
+    for (const raw of [
+      'Column session_timeout has an unsupported type',
+      'Unknown identifier connection_id in the base query',
+      'Column refused_count is ambiguous',
+    ]) {
+      const result = friendlyScanError(raw)
+      expect(result.message).toBe('Scan failed.')
+      expect(result.technical).toBe(raw)
+    }
+  })
+
+  it('still reads the drivers\' own exception names', () => {
+    expect(friendlyScanError('requests.exceptions.ReadTimeout: ...').message).toBe(
+      'Scan failed: the data source did not respond in time.',
+    )
+    expect(friendlyScanError('ConnectionError: reset by peer').message).toBe(
+      'Scan failed: could not connect to the data source.',
+    )
+  })
 })

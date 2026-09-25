@@ -1,0 +1,316 @@
+import { useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { Layers, Pencil } from 'lucide-react'
+import { metricsApi } from '@/api/metrics'
+import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { ErrorState } from '@/components/error-state'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { adaptMetricBreakdowns } from '@/lib/metricAdapters'
+import type { MetricRollupMode, MetricsGranularity } from '@/lib/metrics'
+import { monitoringBreakdownsKey } from '@/lib/queryKeys'
+import {
+  BREAKDOWN_SERIES_CAP,
+  breakdownLabel,
+  buildBreakdownEntries,
+  formatPercent,
+  legendValueKindFor,
+  selectBreakdownChartSeries,
+  type BreakdownSeriesEntry,
+  type LegendValueKind,
+} from './chartSeries'
+import { ChartCardHeader } from './MetricsRangeControls'
+import { SeriesSwatch } from './SeriesSwatch'
+
+export interface BreakdownsTabProps {
+  slug: string
+  scope: 'event' | 'metric'
+  scopeId: string
+  rangeDays: number
+  timeRange: { from: string; to: string }
+  granularity: MetricsGranularity
+  rollupMode: MetricRollupMode
+  refetchInterval: number | false
+  column: string
+  selectedValues: string[]
+  seriesLabel: string
+  valueFormatter?: (value: number) => string
+  metricEditPath: string
+  onColumnChange: (column: string) => void
+  onSelectedValuesChange: (values: string[]) => void
+}
+
+/**
+ * Breakdowns: split this event's volume (or this metric's value) into a series
+ * per value of a chosen column. Columns come from the entity's configured
+ * breakdown columns plus scan-wide breakdown columns that have collected data.
+ */
+export function BreakdownsTab({
+  slug,
+  scope,
+  scopeId,
+  rangeDays,
+  timeRange,
+  granularity,
+  rollupMode,
+  refetchInterval,
+  column,
+  selectedValues,
+  seriesLabel,
+  valueFormatter,
+  metricEditPath,
+  onColumnChange,
+  onSelectedValuesChange,
+}: BreakdownsTabProps) {
+  const navigate = useNavigate()
+  const query = useQuery({
+    queryKey: [...monitoringBreakdownsKey(slug, scope, scopeId), column, rangeDays],
+    queryFn: () => {
+      if (scope === 'metric') {
+        return metricsCatalogApi
+          .getBreakdowns(slug, scopeId, { column: column || undefined, ...timeRange })
+          .then(adaptMetricBreakdowns)
+      }
+      return metricsApi.getEventMetricBreakdowns(slug, scopeId, {
+        column: column || undefined,
+        ...timeRange,
+      })
+    },
+    enabled: !!scopeId,
+    refetchInterval,
+    placeholderData: keepPreviousData,
+    meta: SILENT_ERROR_META,
+  })
+  const breakdowns = query.data
+  const selectedColumn = column || breakdowns?.selected_column || ''
+  const legendKind = legendValueKindFor(rollupMode)
+
+  const entries = useMemo(
+    () => buildBreakdownEntries(breakdowns?.series ?? [], legendKind),
+    [breakdowns?.series, legendKind],
+  )
+  // Only labels that still exist in the response count: a stale selection
+  // (e.g. after a range change drops a value) falls back to "show everything"
+  // instead of an inexplicably empty chart.
+  const effectiveFilter = useMemo(
+    () => selectedValues.filter(label => entries.some(entry => entry.label === label)),
+    [entries, selectedValues],
+  )
+  const chart = useMemo(
+    () => selectBreakdownChartSeries(entries, effectiveFilter, granularity, rollupMode),
+    [entries, effectiveFilter, granularity, rollupMode],
+  )
+  const latestParityAnomalies = useMemo(
+    () => (breakdowns?.series ?? []).flatMap(series => {
+      const latest = [...(series.parity_anomalies ?? [])]
+        .sort((left, right) => left.bucket.localeCompare(right.bucket))
+        .at(-1)
+      return latest ? [{ series, anomaly: latest }] : []
+    }),
+    [breakdowns?.series],
+  )
+  const toggleValue = (label: string) => {
+    onSelectedValuesChange(
+      effectiveFilter.includes(label)
+        ? effectiveFilter.filter(value => value !== label)
+        : [...effectiveFilter, label],
+    )
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-4 sm:p-6">
+        <ChartCardHeader
+          title={(
+            <>
+              <Layers aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-lg font-semibold">Breakdowns</h2>
+            </>
+          )}
+        >
+          <Select
+            value={selectedColumn}
+            onValueChange={onColumnChange}
+            disabled={!breakdowns?.columns.length}
+          >
+            <SelectTrigger className="h-8 w-full sm:w-[200px]" aria-label="Breakdown column">
+              <SelectValue placeholder="Column" />
+            </SelectTrigger>
+            <SelectContent>
+              {breakdowns?.columns.map(option => (
+                <SelectItem key={option} value={option}>
+                  {option}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </ChartCardHeader>
+        {query.isError ? (
+          // Not "No breakdown groups yet" — that told the reader to go
+          // configure something that was already configured (MON-8).
+          <ErrorState
+            compact
+            title="Could not load breakdowns"
+            error={query.error}
+            onRetry={() => void query.refetch()}
+          />
+        ) : query.isLoading ? (
+          <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
+            Loading breakdowns…
+          </div>
+        ) : !breakdowns?.columns.length ? (
+          <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
+            <p>No breakdown groups yet.</p>
+            {scope === 'metric' ? (
+              <>
+                <p className="text-xs">
+                  Add breakdown columns in the metric settings — each configured
+                  column splits this metric into a series per value after the next
+                  collection.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2"
+                  onClick={() => navigate(metricEditPath)}
+                >
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit metric
+                </Button>
+              </>
+            ) : (
+              <p className="text-xs">
+                Edit this event and add a column under “Metric breakdowns”, then run a
+                scan — its volume will split into a series per value of that column.
+              </p>
+            )}
+          </div>
+        ) : (
+          <>
+            <MetricsMultiSeriesChart
+              series={chart.series}
+              height={280}
+              granularity={granularity}
+              seriesLabel={seriesLabel}
+              valueFormatter={valueFormatter}
+            />
+            {chart.hiddenCount > 0 && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Showing the first {BREAKDOWN_SERIES_CAP} of {chart.series.length + chart.hiddenCount} values
+                — pick values below to compare others.
+              </p>
+            )}
+            <BreakdownValueChips
+              options={entries}
+              selected={effectiveFilter}
+              valueFormatter={valueFormatter}
+              valueKind={legendKind}
+              onToggle={toggleValue}
+              onReset={() => onSelectedValuesChange([])}
+            />
+            {latestParityAnomalies.length > 0 && (
+              <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
+                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                  {selectedColumn} share anomalies
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {latestParityAnomalies.map(({ series, anomaly }) => (
+                    <Badge
+                      key={`${series.breakdown_value}-${anomaly.bucket}`}
+                      aria-label={`${breakdownLabel(series)} share ${anomaly.direction}: ${formatPercent(anomaly.expected_share)} -> ${formatPercent(anomaly.actual_share)}`}
+                      variant="outline"
+                      className={anomaly.direction === 'drop'
+                        ? 'border-destructive/50 text-destructive'
+                        : 'border-warning/50 text-warning'}
+                    >
+                      {breakdownLabel(series)}
+                      {' share '}{anomaly.direction}:{' '}
+                      {formatPercent(anomaly.expected_share)} {'->'} {formatPercent(anomaly.actual_share)}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            {breakdowns?.interval && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Collection interval: {breakdowns.interval}
+              </p>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// Legend-style toggles for the breakdown chart: when the selected column has
+// many values, click chips to isolate one or several series (tripl-egt5).
+// Empty selection = every value shown, and a single-value breakdown has
+// nothing to filter, so the row hides itself.
+function BreakdownValueChips({
+  options,
+  selected,
+  valueFormatter,
+  valueKind,
+  onToggle,
+  onReset,
+}: {
+  options: BreakdownSeriesEntry[]
+  selected: string[]
+  valueFormatter?: (value: number) => string
+  valueKind: LegendValueKind
+  onToggle: (label: string) => void
+  onReset: () => void
+}) {
+  if (options.length < 2) return null
+  const hasFilter = selected.length > 0
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      {options.map(option => {
+        const isSelected = selected.includes(option.label)
+        const isVisible = !hasFilter || isSelected
+        const value = valueFormatter ? valueFormatter(option.legendValue) : option.legendValue.toLocaleString()
+        return (
+          <button
+            key={option.label}
+            type="button"
+            aria-pressed={isSelected}
+            aria-label={`Toggle ${option.label}`}
+            onClick={() => onToggle(option.label)}
+            className={`flex min-w-0 items-center gap-2 rounded-md border px-2 py-1 text-xs transition-colors hover:bg-muted/40 ${
+              isSelected
+                ? 'border-[var(--accent)]/60 bg-[var(--accent-soft)]'
+                : isVisible
+                  ? 'bg-background'
+                  : 'bg-background opacity-50'
+            }`}
+          >
+            <SeriesSwatch color={option.color} dash={option.dash} />
+            <span className="min-w-0 truncate font-mono">{option.label}</span>
+            <span className="shrink-0 text-muted-foreground">
+              {valueKind === 'latest' ? `latest ${value}` : value}
+            </span>
+          </button>
+        )
+      })}
+      {hasFilter && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2 text-xs"
+          onClick={onReset}
+        >
+          Show all
+        </Button>
+      )}
+    </div>
+  )
+}

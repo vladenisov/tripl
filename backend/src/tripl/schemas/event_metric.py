@@ -111,8 +111,9 @@ class SeasonalityHeatmapResponse(BaseModel):
     max_count: int
     total_count: int
     #: The scan interval the cells were binned from, and whether that interval
-    #: actually resolves an hour. A daily or weekly scan puts EVERY bucket in
-    #: hour 0, so 23 of each row's 24 cells are structurally empty — a 7x24 grid
+    #: actually resolves an hour (an interval of one hour or finer). A daily or
+    #: weekly scan puts EVERY bucket in hour 0, and a 6h scan fills only 4 of
+    #: 24 columns (tripl-0zpq.199), so most cells are structurally empty — a 7x24 grid
     #: then reads as missing data instead of as a coarser interval
     #: (tripl-jfm3.128). Clients render the weekday strip alone when this is
     #: false rather than drawing a grid that can never fill.
@@ -162,9 +163,16 @@ class EventMetricsResponse(BaseModel):
     event_type_id: uuid.UUID | None = None
     interval: ScanInterval | None = None
     latest_signal: MetricSignalResponse | None = None
-    # The scan's anomaly sigma threshold — the ``k`` the UI multiplies the
-    # per-point (effective) stddev by to draw the confidence band, so "outside
-    # the band" equals "flagged". Defaults to the scan-config default.
+    # The anomaly sigma threshold — the ``k`` the UI multiplies the per-point
+    # (effective) stddev by to draw the confidence band, so "outside the band"
+    # equals "flagged". Read from ``ProjectAnomalySettings`` and narrowed by this
+    # scope's false-positive override, which is what the detector scored with;
+    # NOT from ``ScanConfig.sigma_threshold``, which no API has ever written and
+    # which has no reader left (``metrics_service._get_project_sigma_threshold``).
+    # The default below is the system default, and it is served as-is by the one
+    # route that does not resolve a sigma — ``get_events_metrics``, whose points
+    # carry no ``expected_count``/``stddev``, so no band is drawn from it
+    # (tripl-0zpq.119 follow-up).
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD
     data: list[EventMetricPoint]
     forecast: list[ForecastPoint] = []

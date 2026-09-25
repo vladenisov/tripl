@@ -44,7 +44,12 @@ MIGRATED: dict[tuple[str, str], str] = {
         "MERGE: _move_superseded_pointers re-points every event whose successor was the "
         "merged-away source onto the target — 'send this instead' is a statement about what to "
         "do from now on, and the target is what to send now. No fold: the column is not unique "
-        "and any number of retired events may name the same successor. "
+        "and any number of retired events may name the same successor. ONE row is exempt, the "
+        "TARGET itself: re-pointing it would write superseded_by_event_id = its own id, an event "
+        "telling clients to send itself instead, which _resolve_successor then 400s on every save "
+        "while the event is deprecated (tripl-0zpq.86). Where the target really did name the "
+        "source, its pointer is CLEARED rather than moved: the successor it named is the row "
+        "being merged into it, so 'send this instead' has no referent left. "
         "DELETE: the FK is ondelete SET NULL and that is the entire policy — a deleted "
         "successor means there is no successor to name, so the pointer clears itself. Nothing "
         "is added to _event_reference_cleanup, because a second mechanism for one rule is how "
@@ -194,8 +199,9 @@ NON_FK_EVENT_REFERENCES: dict[tuple[str, str], str] = {
         "DELETE: _event_reference_cleanup. Two-key delete on both paths."
     ),
     ("alert_delivery_items", "scope_ref"): (
-        "str(event.id) copied off the anomaly. Handled: rewritten to str(target.id) alongside "
-        "event_id in _merge_event_into_group."
+        "str(event.id) copied off the anomaly for event-scope items; other scopes carry their "
+        "own id (a value drift's is the drift id). Handled: _merge_event_into_group rewrites it "
+        "to str(target.id) only where it equals str(source.id), and re-points event_id for all."
     ),
     ("alert_delivery_items", "details_path"): (
         "Frozen '/monitoring/event/{event_id}' link. NOT rewritten by the merge — a delivered "

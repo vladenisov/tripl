@@ -17,6 +17,10 @@ interface ColumnSuggestInputProps {
   placeholder?: string
   disabled?: boolean
   'aria-label'?: string
+  /** Set by a form row that is showing a validation message for this input. */
+  'aria-invalid'?: boolean
+  'aria-describedby'?: string
+  'aria-required'?: boolean
 }
 
 /**
@@ -32,6 +36,9 @@ export function ColumnSuggestInput({
   placeholder,
   disabled,
   'aria-label': ariaLabel,
+  'aria-invalid': ariaInvalid,
+  'aria-describedby': ariaDescribedBy,
+  'aria-required': ariaRequired,
 }: ColumnSuggestInputProps) {
   const uid = useId()
   const listboxId = `column-listbox-${uid}`
@@ -108,6 +115,9 @@ export function ColumnSuggestInput({
         aria-controls={listboxId}
         aria-activedescendant={expanded ? `${listboxId}-opt-${activeIdx}` : undefined}
         aria-label={ariaLabel}
+        aria-invalid={ariaInvalid || undefined}
+        aria-describedby={ariaDescribedBy}
+        aria-required={ariaRequired}
         autoComplete="off"
         className="mono"
         // The disabled cue comes from the shared primitive, not from a local

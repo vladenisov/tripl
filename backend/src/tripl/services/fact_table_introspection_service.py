@@ -15,9 +15,10 @@ It reads the query's SHAPE and never its rows. The response used to carry up
 to twenty raw warehouse rows as ``sample_rows``, which nothing in the product
 displayed; see :func:`_run_introspection`.
 
-Scope: a data source is global in this schema; it "belongs to" a project when
-the project has at least one ``ScanConfig`` bound to it. The introspection
-refuses any data source the project is not already using.
+Scope: a data source is global in this schema, and which project may use it is
+decided by OWNERSHIP — see ``services/data_source_scope``, whose rule this door
+shares with the fact-table save door and both ``sql``-metric doors. The
+introspection refuses any data source that is identifiably another project's.
 
 Security: the SQL is re-validated as a safe read-only ``SELECT`` before any
 warehouse call (defense in depth — the request schemas validate it too), and the
@@ -34,13 +35,16 @@ import re
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.adapters.base import BaseAdapter, ColumnInfo
 from tripl.core.adapters.measure_validator import validate_select_sql_safety
 from tripl.models.data_source import DataSource
-from tripl.models.scan_config import ScanConfig
+from tripl.services.data_source_scope import (
+    DATA_SOURCE_NOT_AVAILABLE,
+    data_source_out_of_project_scope,
+    scanning_project_ids_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +147,20 @@ def is_identifier_column(name: str, type_name: str = "") -> bool:
 class FactTableIntrospectionError(ValueError):
     """A fact-table SQL could not be introspected.
 
-    Carries a user-safe message (no credentials, no stack detail). Slice .3 maps
-    this to an HTTP 400/404 at the router boundary.
+    Carries a user-safe message (no credentials, no stack detail). The router
+    maps this to an HTTP 400: the request named something it may name, and the
+    query or the warehouse is what went wrong.
+    """
+
+
+class DataSourceNotAvailableError(FactTableIntrospectionError):
+    """The project may not use the data source the preview named.
+
+    Split out of the plain introspection error so the router can answer 404, the
+    same status and the same sentence the three other data-source doors answer
+    with. Previewing an out-of-scope source used to be a 400 while SAVING the
+    same source was a 404, and a user in the fact-table wizard met both for one
+    id in one flow (tripl-0zpq.353).
     """
 
 
@@ -227,30 +243,28 @@ async def _load_project_data_source(
 ) -> DataSource:
     """Load the data source and assert the project is allowed to use it.
 
-    A data source is global; it "belongs to" a project when the project has at
-    least one ``ScanConfig`` bound to it. Raises ``FactTableIntrospectionError``
-    when no data source is given, the row is missing, or it is not in scope.
+    The rule is OWNERSHIP, shared verbatim with the fact-table SAVE door and with
+    the ``sql``-metric save and preview doors — see ``services/data_source_scope``
+    for why ownership and not "bound by a ``ScanConfig``". Raises
+    ``DataSourceNotAvailableError`` (a 404 at the router) when the row is missing
+    or out of scope, and a plain ``FactTableIntrospectionError`` (a 400) when the
+    request named no data source at all, which is a malformed request rather than
+    a scope verdict.
     """
     if data_source_id is None:
         msg = "A data source is required to preview fact-table columns."
         raise FactTableIntrospectionError(msg)
-    # Use one message for both "row missing" and "row exists but out of scope":
-    # distinct messages would let a project member probe arbitrary UUIDs and
-    # distinguish non-existent ids from other projects' data sources (enumeration).
-    not_available_msg = "Data source is not available in this project."
+    # One message for both "row missing" and "row exists but out of scope" — see
+    # DATA_SOURCE_NOT_AVAILABLE for what that uniformity is and is not worth.
     data_source = await session.get(DataSource, data_source_id)
     if data_source is None:
-        raise FactTableIntrospectionError(not_available_msg)
-    in_project = await session.scalar(
-        select(ScanConfig.id)
-        .where(
-            ScanConfig.data_source_id == data_source_id,
-            ScanConfig.project_id == project_id,
-        )
-        .limit(1)
-    )
-    if in_project is None:
-        raise FactTableIntrospectionError(not_available_msg)
+        raise DataSourceNotAvailableError(DATA_SOURCE_NOT_AVAILABLE)
+    if data_source_out_of_project_scope(
+        data_source,
+        project_id=project_id,
+        scanning_project_ids=await scanning_project_ids_for(session, data_source),
+    ):
+        raise DataSourceNotAvailableError(DATA_SOURCE_NOT_AVAILABLE)
     return data_source
 
 
@@ -323,9 +337,10 @@ async def introspect_fact_table(
     name or UUID-declared type), excluding ``timestamp_column``, in projection
     order.
 
-    Raises ``FactTableIntrospectionError`` when the data source is missing/out of
-    scope, the SQL is not a safe read-only ``SELECT``, or the adapter cannot read
-    the query.
+    Raises ``DataSourceNotAvailableError`` (a 404) when the data source is
+    missing or out of scope, and ``FactTableIntrospectionError`` (a 400) when no
+    data source was named, the SQL is not a safe read-only ``SELECT``, or the
+    adapter cannot read the query.
     """
     # Defense in depth: the request schemas already gate ``sql`` via the same
     # validator, but re-check here so any direct (non-HTTP) caller cannot reach

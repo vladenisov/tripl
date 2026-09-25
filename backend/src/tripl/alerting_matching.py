@@ -26,7 +26,7 @@ import hashlib
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from tripl.models.alert_rule import AlertRule
@@ -37,6 +37,13 @@ SCOPE_DISTRIBUTION_DRIFT = MetricScopeType.distribution.value
 SCOPE_RELEASE_REGRESSION = MetricScopeType.release_regression.value
 SCOPE_METRIC = MetricScopeType.metric.value
 SCOPE_VARIABLE_VALUE_DRIFT = MetricScopeType.variable_value_drift.value
+
+
+def _utc_bucket(bucket: datetime) -> datetime:
+    """Compare UTC buckets consistently across SQLite and PostgreSQL drivers."""
+    if bucket.tzinfo is None:
+        return bucket.replace(tzinfo=UTC)
+    return bucket.astimezone(UTC)
 
 
 class AlertMatchCandidate(Protocol):
@@ -405,7 +412,7 @@ def simulate_rule_firings(
     # scan, or None for the project-global ``metric`` scope.
     last_fired_at: dict[tuple[str, str, uuid.UUID | None], datetime] = {}
 
-    for anomaly in sorted(anomalies, key=lambda a: a.bucket):
+    for anomaly in sorted(anomalies, key=lambda a: _utc_bucket(a.bucket)):
         if not rule_matches_anomaly(
             rule,
             anomaly,
@@ -417,7 +424,7 @@ def simulate_rule_firings(
         scan_partition = None if anomaly.scope_type == SCOPE_METRIC else anomaly.scan_config_id
         key = (anomaly.scope_type, anomaly.scope_ref, scan_partition)
         last = last_fired_at.get(key)
-        if last is not None and anomaly.bucket - last < cooldown:
+        if last is not None and _utc_bucket(anomaly.bucket) - _utc_bucket(last) < cooldown:
             continue
         fired.append(anomaly)
         last_fired_at[key] = anomaly.bucket

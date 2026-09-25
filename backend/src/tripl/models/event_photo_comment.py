@@ -41,7 +41,7 @@ class EventPhotoComment(UUIDMixin, TimestampMixin, Base):
             "(photo_id IS NULL) <> (event_id IS NULL)",
             name="ck_event_photo_comment_one_anchor",
         ),
-        Index("ix_event_photo_comment_event", "event_id"),
+        Index("ix_event_photo_comment_photo_created", "photo_id", "created_at"),
         # The catalog filter asks "which events have an unanswered question",
         # which is this index's exact shape: anchored on an event, top-level,
         # not yet resolved.

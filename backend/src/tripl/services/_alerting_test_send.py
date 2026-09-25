@@ -315,19 +315,18 @@ async def send_destination_test(
             destination_name=destination_name,
         )
 
-    # The other half of the demo zero-egress rule (tripl-2su6.12). A demo ships a
-    # permanently disabled Slack example purely to SHOW what a real channel looks
-    # like; a test send is still a send, so it is refused here just as
-    # send_alert_delivery refuses it. Not a 422: the operator asked a question
-    # about the destination and this IS the answer.
-    if project.is_demo:
+    # A test send is still egress. Derive its readable refusal from the same
+    # predicate used by actual delivery tasks, keeping this answer aligned when
+    # the zero-egress policy changes. Import here to avoid worker/service cycles.
+    from tripl.worker.tasks.alerts import _assert_egress_allowed
+
+    try:
+        _assert_egress_allowed(destination, project)
+    except ValueError as exc:
         return DestinationTestOutcome(
             response=AlertDestinationTestResponse(
                 ok=False,
-                error=(
-                    "Demo projects cannot send external alerts. This destination is a "
-                    "disabled example — create a real project to test a live channel."
-                ),
+                error=f"Demo projects cannot send external alerts. {exc}",
                 # Nothing was sent, so there is no instant to report — but the
                 # key is still present, because the response type says it is.
                 sent_at=None,

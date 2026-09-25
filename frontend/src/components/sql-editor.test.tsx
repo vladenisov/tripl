@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { SqlEditor } from './sql-editor'
 
@@ -22,6 +22,22 @@ describe('SqlEditor', () => {
     )
 
     expect(screen.getByLabelText('Fact metric SQL')).toBeInTheDocument()
+  })
+
+  // MET-15: the focusable surface is CodeMirror's contenteditable, so that is
+  // where a validation message has to be linked, not the wrapper div.
+  it('puts validation attributes on the editable surface', () => {
+    const { container, rerender } = render(
+      <SqlEditor value="" onChange={vi.fn()} ariaInvalid ariaRequired ariaDescribedBy="sql-error" />,
+    )
+    const content = container.querySelector('.cm-content')!
+    expect(content).toHaveAttribute('aria-invalid', 'true')
+    expect(content).toHaveAttribute('aria-required', 'true')
+    expect(content).toHaveAttribute('aria-describedby', 'sql-error')
+
+    rerender(<SqlEditor value="" onChange={vi.fn()} ariaRequired />)
+    expect(content).not.toHaveAttribute('aria-invalid')
+    expect(content).not.toHaveAttribute('aria-describedby')
   })
 
   // tripl-h2sx.11: the Format button used to sit ON the editor, covering the
@@ -55,7 +71,18 @@ describe('SqlEditor', () => {
     expect(screen.queryByRole('button', { name: 'Format' })).toBeNull()
   })
 
-  it('formats through the dialect formatter, not a re-indent', () => {
+  it('formats through the dialect formatter, not a re-indent', async () => {
+    // Waiting for the formatter chunk gives CodeMirror time for its first
+    // layout pass, which measures text ranges — an API jsdom does not have.
+    const emptyRects = () => ({ length: 0, item: () => null, [Symbol.iterator]: [][Symbol.iterator] })
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: emptyRects,
+    })
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => new DOMRect(),
+    })
     const onChange = vi.fn()
     render(
       <SqlEditor
@@ -68,7 +95,8 @@ describe('SqlEditor', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Format' }))
 
-    expect(onChange).toHaveBeenCalledTimes(1)
+    // The formatter is a lazily imported chunk, so the result lands async.
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1))
     const formatted = onChange.mock.calls[0][0] as string
     expect(formatted).toMatch(/\n/)
     expect(formatted.toLowerCase()).toContain('from')

@@ -1,7 +1,26 @@
 from __future__ import annotations
 
-from pydantic import field_validator
+import re
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
+
+from tripl.alerting_validation import validate_sender_address
+
+_HTTP_TOKEN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+
+def validate_http_token(value: str) -> str:
+    if not _HTTP_TOKEN.fullmatch(value):
+        raise ValueError("must be a valid HTTP token")
+    return value
+
+
+def validate_csp(value: str) -> str:
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("Content Security Policy must not contain control characters")
+    return value
+
 
 # Credential fragments shipped in the dev-default connection URLs. If any of
 # these survive into a non-debug deploy, the operator forgot to set real
@@ -134,6 +153,11 @@ class Settings(BaseSettings):
     photo_storage_backend: str = "local"
     photo_local_dir: str = "./var/photos"
     photo_max_size_mb: int = 10
+    max_request_body_mb: int = Field(default=2, ge=1, le=100)
+    # Daily retention of operational history. Active scans are never pruned.
+    scan_job_retention_days: int = Field(default=90, ge=1)
+    distribution_drift_retention_days: int = Field(default=90, ge=1)
+    distribution_drift_minor_retention_days: int = Field(default=30, ge=1)
     photo_allowed_mime: str = "image/jpeg,image/png,image/gif,image/webp"
     gcs_photo_bucket: str = ""
     # Path to a service-account JSON. Empty falls back to Application Default
@@ -141,6 +165,13 @@ class Settings(BaseSettings):
     gcs_photo_credentials_path: str = ""
     gcs_photo_public: bool = False
     gcs_photo_signed_url_ttl_seconds: int = 3600
+    # Daily sweep of photo blobs no event_photos row references. A blob younger
+    # than this is left alone, because an upload writes its blob before the row
+    # commits (tripl-0zpq.291). The age is the blob's write time, not its last
+    # reference, so it does not cover a branch creation copying an OLD key in a
+    # transaction the sweep cannot see while the last committed row holding that
+    # key is deleted: that narrow window can still lose the blob.
+    photo_orphan_sweep_grace_hours: int = Field(default=24, ge=1)
 
     # Request ID and structured logging.
     request_id_header: str = "X-Request-ID"
@@ -188,9 +219,8 @@ class Settings(BaseSettings):
 
     # OpenTelemetry tracing. Setting `otel_exporter_otlp_endpoint` to a non-
     # empty string opts the API + worker into FastAPI/SQLAlchemy/Celery auto-
-    # instrumentation with an OTLP exporter. No-op when the env is blank or
-    # the opentelemetry-* packages aren't installed (graceful — keeps the
-    # base image lean).
+    # instrumentation with an OTLP exporter. No-op when the env is blank.
+    # Shipped images include the optional OpenTelemetry dependency group.
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "tripl"
 
@@ -271,7 +301,27 @@ class Settings(BaseSettings):
     @field_validator("log_level")
     @classmethod
     def _normalize_log_level(cls, value: str) -> str:
-        return value.upper().strip()
+        normalized = value.upper().strip()
+        if normalized not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
+            raise ValueError("log_level must be a standard uppercase logging level")
+        return normalized
+
+    @field_validator("request_id_header", "session_cookie_name")
+    @classmethod
+    def _validate_header_or_cookie_name(cls, value: str) -> str:
+        return validate_http_token(value)
+
+    @field_validator("content_security_policy")
+    @classmethod
+    def _validate_content_security_policy(cls, value: str) -> str:
+        return validate_csp(value)
+
+    @field_validator("smtp_from_address")
+    @classmethod
+    def _validate_smtp_sender(cls, value: str) -> str:
+        if value:
+            validate_sender_address(value)
+        return value
 
     @field_validator("registration_mode")
     @classmethod
@@ -283,6 +333,16 @@ class Settings(BaseSettings):
             msg = f"registration_mode must be one of {', '.join(REGISTRATION_MODES)}"
             raise ValueError(msg)
         return normalized
+
+    @field_validator("search_embedding_dimensions")
+    @classmethod
+    def _fixed_search_embedding_dimensions(cls, value: int) -> int:
+        if value != 1536:
+            raise ValueError(
+                "SEARCH_EMBEDDING_DIMENSIONS must be 1536: "
+                "search_documents.embedding is vector(1536)"
+            )
+        return value
 
     @field_validator("smtp_security")
     @classmethod
@@ -368,7 +428,7 @@ class Settings(BaseSettings):
                 "CORS origins are empty: no browser can call the API. Set "
                 "CORS_ALLOW_ORIGINS or APP_BASE_URL to your frontend origin."
             )
-        elif resolved_cors == ["*"]:
+        elif "*" in resolved_cors:
             problems.append(
                 "CORS origins resolve to the wildcard '*' in production: browsers "
                 "reject credentialed (cookie) requests against a wildcard origin, "

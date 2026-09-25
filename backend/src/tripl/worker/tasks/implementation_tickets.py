@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.error
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -35,6 +36,7 @@ from tripl.alerting_validation import (
 )
 from tripl.config import settings
 from tripl.crypto import decrypt_value
+from tripl.db_config import postgres_connect_args
 from tripl.models.event import Event, EventStatus, event_status_rank
 from tripl.models.implementation_ticket import ImplementationTicket
 from tripl.models.project_tracker_config import ProjectTrackerConfig
@@ -52,6 +54,18 @@ logger = logging.getLogger(__name__)
 
 # Jira status categories: "new" (to-do), "indeterminate" (in-progress), "done".
 _DONE_CATEGORY = "done"
+
+
+class TransientTrackerError(Exception):
+    """A ticket create may succeed after a bounded retry."""
+
+
+def _is_transient_tracker_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429 or exc.code >= 500
+    if isinstance(exc, urllib.error.URLError | TimeoutError | ConnectionError):
+        return True
+    return isinstance(exc.__cause__, Exception) and _is_transient_tracker_error(exc.__cause__)
 
 
 def _coerce_uuids(event_ids: list[str]) -> list[uuid.UUID]:
@@ -189,17 +203,22 @@ async def _create_ticket(
         )
     else:
         body_text = await _build_ticket_body(session, event_ids)
-        issue_id, issue_key = _send_jira_issue(
-            _post_json,
-            base_url=base_url,
-            auth_email=auth_email,
-            api_token=api_token,
-            project_key=project_key,
-            issue_type=issue_type,
-            summary=summary,
-            body_text=body_text,
-            labels=[marker],
-        )
+        try:
+            issue_id, issue_key = _send_jira_issue(
+                _post_json,
+                base_url=base_url,
+                auth_email=auth_email,
+                api_token=api_token,
+                project_key=project_key,
+                issue_type=issue_type,
+                summary=summary,
+                body_text=body_text,
+                labels=[marker],
+            )
+        except Exception as exc:
+            if _is_transient_tracker_error(exc):
+                raise TransientTrackerError("Temporary Jira ticket creation failure") from exc
+            raise
 
     external_url = f"{base_url}/browse/{issue_key}" if issue_key else ""
     session.add(
@@ -326,7 +345,11 @@ async def _sync_tickets(session: AsyncSession) -> None:
 async def _with_worker_session(run: Callable[[AsyncSession], Awaitable[None]]) -> None:
     """Async-bridge: throwaway NullPool engine that lives and dies inside this
     loop, disposed before it closes. See module docstring for the invariant."""
-    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    engine = create_async_engine(
+        settings.database_url,
+        poolclass=NullPool,
+        connect_args=postgres_connect_args(settings.database_url),
+    )
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         async with session_factory() as session:
@@ -337,6 +360,11 @@ async def _with_worker_session(run: Callable[[AsyncSession], Awaitable[None]]) -
 
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="tripl.worker.tasks.implementation_tickets.create_implementation_ticket",
+    autoretry_for=(TransientTrackerError,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 5},
 )
 def create_implementation_ticket(
     project_id: str,

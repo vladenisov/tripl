@@ -1,8 +1,9 @@
-import { lazy, Suspense } from 'react'
+import { Suspense } from 'react'
+import { lazyWithReload } from '@/lib/lazyWithReload'
 import { SHeader } from '@/components/settings/kit'
 import type { ServiceSettingsSectionKey } from '@/pages/serviceSettingsTabs'
 
-const ServiceSettingsSection = lazy(() => import('@/pages/ServiceSettingsPage'))
+const ServiceSettingsSection = lazyWithReload(() => import('@/pages/ServiceSettingsPage'))
 
 const META: Record<ServiceSettingsSectionKey, { title: string; description: string }> = {
   // No "takes effect on the next deploy" line here any more: all three runtime

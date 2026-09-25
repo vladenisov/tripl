@@ -10,6 +10,12 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
+// A stand-in for "no owner" inside the picker. Radix treats an empty
+// SelectItem value as "clear the selection" and throws on it, and this Select
+// already uses `value=""` as its own placeholder state, so the null has to
+// travel as a sentinel and be turned back into a null on the way out.
+const UNASSIGN_VALUE = '__unassign__'
+
 export function BulkActionBar({
   selectedCount,
   selectedVisibleCount,
@@ -35,8 +41,13 @@ export function BulkActionBar({
    * (tripl-4i49). Omit when the two cannot differ.
    */
   selectedVisibleCount?: number
-  /** Total events matching the current filters/tab (may exceed loaded rows). */
-  matchingTotal?: number
+  /**
+   * Total events matching the current filters/tab (may exceed loaded rows).
+   * `null` when the match count is not known — a client-side column filter
+   * narrows rows the server total still counts — so the button offers "all
+   * matching" without a number rather than print the wrong one (EVT-2).
+   */
+  matchingTotal?: number | null
   /** Select every matching event so one bulk action sweeps the whole queue. */
   onSelectAllMatching?: () => void
   isSelectingAll?: boolean
@@ -44,7 +55,8 @@ export function BulkActionBar({
   isUpdating: boolean
   onSetStatus: (status: EventStatus) => void
   onMarkReviewed: () => void
-  onAssignOwner: (userId: string) => void
+  /** `null` clears the owner across the selection — see `UNASSIGN_VALUE`. */
+  onAssignOwner: (userId: string | null) => void
   owners: { id: string; name: string | null; email: string }[]
   onDelete: () => void
   onClear: () => void
@@ -54,10 +66,15 @@ export function BulkActionBar({
   // Offer to widen the selection to the whole matching set when more events
   // match the filter than are currently selected (bulk triage by prefix/tab).
   const canSelectAll =
-    !!onSelectAllMatching && matchingTotal != null && matchingTotal > selectedCount
+    !!onSelectAllMatching &&
+    matchingTotal !== undefined &&
+    (matchingTotal === null || matchingTotal > selectedCount)
   return (
+    // Wraps, and never wider than the viewport: on one line the bar was ~750px,
+    // so at 375px both ends were cut off and Delete and Clear were unreachable
+    // (EVT-5). The page reserves room under the table while it is open.
     <div
-      className="fixed bottom-[18px] left-1/2 z-30 flex -translate-x-1/2 items-center gap-2.5 rounded-[10px] border py-1.5 pl-3.5 pr-2"
+      className="fixed bottom-[18px] left-1/2 z-30 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2.5 rounded-[10px] border py-1.5 pl-3.5 pr-2"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-strong)',
@@ -80,10 +97,14 @@ export function BulkActionBar({
           className="text-[12px] font-medium underline-offset-2 hover:underline disabled:opacity-50"
           style={{ color: 'var(--accent)' }}
         >
-          {isSelectingAll ? 'Selecting…' : `Select all ${matchingTotal}`}
+          {isSelectingAll
+            ? 'Selecting…'
+            : matchingTotal === null
+              ? 'Select all matching'
+              : `Select all ${matchingTotal.toLocaleString()}`}
         </button>
       )}
-      <div className="h-5 w-px" style={{ background: 'var(--border)' }} />
+      <div className="hidden h-5 w-px sm:block" style={{ background: 'var(--border)' }} />
       <Select
         value=""
         onValueChange={v => { if (v) onSetStatus(v as EventStatus) }}
@@ -113,13 +134,22 @@ export function BulkActionBar({
       {owners.length > 0 && (
         <Select
           value=""
-          onValueChange={v => { if (v) onAssignOwner(v) }}
+          onValueChange={v => { if (v) onAssignOwner(v === UNASSIGN_VALUE ? null : v) }}
           disabled={disabled}
         >
           <SelectTrigger className="h-7 w-auto min-w-[9.5rem] whitespace-nowrap border-[var(--border-strong)] text-xs data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Assign owner">
             <SelectValue placeholder="Assign owner…" />
           </SelectTrigger>
           <SelectContent>
+            {/*
+              The one bulk owner change the API offers that is not an
+              assignment. `bulk-update` reads an explicit `owner_id: null` as
+              "clear it across the selection" (tripl-0zpq.276); without an entry
+              here it was reachable from the API and MCP only.
+            */}
+            <SelectItem value={UNASSIGN_VALUE} className="text-xs">
+              Unassign
+            </SelectItem>
             {owners.map(u => (
               <SelectItem key={u.id} value={u.id} className="text-xs">
                 {u.name ?? u.email}
@@ -138,7 +168,7 @@ export function BulkActionBar({
         <Trash2 className="mr-1 h-3.5 w-3.5" />
         Delete selected
       </Button>
-      <div className="h-5 w-px" style={{ background: 'var(--border)' }} />
+      <div className="hidden h-5 w-px sm:block" style={{ background: 'var(--border)' }} />
       <button
         type="button"
         onClick={onClear}

@@ -13,7 +13,16 @@
  */
 
 import type { QueryClient, QueryKey } from '@tanstack/react-query'
-import { projectEventTypesKey } from '@/lib/queryKeys'
+import { refreshEventsLists } from '@/lib/eventsListCache'
+import {
+  alertDeliveriesAnyKey,
+  alertInboxGroupKey,
+  alertInboxKey,
+  eventsMetricsKey,
+  projectEventTypesKey,
+  projectKey,
+  projectsKey,
+} from '@/lib/queryKeys'
 
 export const PROJECT_EVENT_TYPES = [
   'scan_job.updated',
@@ -27,6 +36,16 @@ export type ProjectEventType = (typeof PROJECT_EVENT_TYPES)[number]
 
 export function isProjectEventType(value: string): value is ProjectEventType {
   return (PROJECT_EVENT_TYPES as readonly string[]).includes(value)
+}
+
+/**
+ * The alert inbox: the incident queue, one incident's deliveries, and the
+ * "has this project ever delivered" probe. The inbox does not poll while the
+ * stream is live, so without these a new incident never appeared in an open
+ * Inbox until a reload (#194 SHELL-29).
+ */
+function alertInboxKeys(slug: string): QueryKey[] {
+  return [alertInboxKey(slug), alertInboxGroupKey(slug), alertDeliveriesAnyKey(slug)]
 }
 
 /** Activity rail keys — project feed + the workspace ('workspace' fallback) feed. */
@@ -46,7 +65,8 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['scanJobs', slug],
         ['events', slug],
         projectEventTypesKey(slug),
-        ['eventsMetrics', slug],
+        // The events-tab dynamics chart does not poll while the stream is live.
+        eventsMetricsKey(slug),
         ['overview'],
         ...activityKeys(slug),
       ]
@@ -55,14 +75,20 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['scans', slug],
         ['scanJobs', slug],
         ['metrics-catalog', slug],
+        eventsMetricsKey(slug),
         ['monitoringMetrics', slug],
         ['metricDefinition', slug],
         ['eventMetricBreakdowns', slug],
         ['eventHistory', slug],
         ['event', slug],
-        ['eventsMetrics', slug],
         ['eventWindowMetrics', slug],
+        // The By version series sits right above the adoption chart; refreshing
+        // only the adoption made the two cards disagree after a collection,
+        // since neither polls while the stream is live (MON-4).
+        ['appVersionSeries', slug],
         ['appVersionAdoption', slug],
+        ['chartAnnotations', slug],
+        ['breakdownTimeline', slug],
         ['distributionDrifts', slug],
         ['seasonality', slug],
         ['topMovers', slug],
@@ -89,24 +115,30 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['monitor-history', slug],
         ['metricDefinition', slug],
         ['monitoringMetrics', slug],
+        ['appVersionSeries', slug],
         ['topbarNotifications', slug],
         ['overview'],
         ...activityKeys(slug),
+        ...alertInboxKeys(slug),
       ]
     case 'activity.created':
       return [
         ...activityKeys(slug),
         ['topbarNotifications', slug],
         ['alertDeliveries', slug],
+        ...alertInboxKeys(slug),
       ]
     case 'project_summary.updated':
-      return [['projects'], ['project', slug], ['overview']]
+      return [projectsKey(), projectKey(slug), ['overview']]
   }
 }
 
 /**
  * Invalidate every mapped query key for an event. Idempotent — a duplicated
- * event (e.g. replayed on reconnect) simply re-marks the same keys stale.
+ * event (e.g. replayed on reconnect) simply re-marks the same keys stale. The
+ * events lists refresh the way a bulk edit refreshes them
+ * (`refreshEventsLists`), so a scan landing does not re-request every page
+ * the catalog table has scrolled through when it need not.
  */
 export function invalidateForEvent(
   queryClient: QueryClient,
@@ -114,6 +146,7 @@ export function invalidateForEvent(
   slug: string,
 ): void {
   for (const queryKey of invalidationKeysFor(type, slug)) {
-    void queryClient.invalidateQueries({ queryKey })
+    if (queryKey[0] === 'events') void refreshEventsLists(queryClient, queryKey)
+    else void queryClient.invalidateQueries({ queryKey })
   }
 }

@@ -9,7 +9,9 @@ warehouse series, every signal is reproducible for a given ``(clock, seed)``.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,10 +20,11 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
     SCOPE_PROJECT_TOTAL,
+    DetectedAnomaly,
     SeriesPoint,
     detect_anomalies,
 )
-from tripl.core.analyzers.distribution_drift import compute_psi
+from tripl.core.analyzers.distribution_drift import DistributionDriftResult, compute_psi
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
@@ -61,37 +64,103 @@ async def _build_anomaly_settings(session: AsyncSession, ctx: DemoContext) -> No
     await session.flush()
 
 
+@dataclass(frozen=True)
+class _AnomalyScope:
+    """One detector scope: its series plus the ``MetricAnomaly`` identity columns."""
+
+    series: dict[datetime, int]
+    scope_type: str
+    scope_ref: str
+    event_id: uuid.UUID | None
+    event_type_id: uuid.UUID | None
+
+
+def _detect_scope_anomalies(
+    scopes: list[_AnomalyScope], *, evaluation_start: datetime, evaluation_end: datetime
+) -> list[list[DetectedAnomaly]]:
+    """Run the real detector over every scope. Pure CPU, no session.
+
+    Each hourly series is long enough to trigger the detector's robust MSTL fit,
+    about 1.4 s per scope, so three scopes held the API event loop for ~4 s on
+    every demo create or reset and stalled every other request on that worker.
+    The caller runs this in a thread and only adds the rows on the loop
+    (tripl-0zpq.251).
+    """
+    results: list[list[DetectedAnomaly]] = []
+    for scope in scopes:
+        points = [
+            SeriesPoint(bucket=bucket, count=count)
+            for bucket, count in sorted(scope.series.items())
+        ]
+        results.append(
+            detect_anomalies(
+                points,
+                interval=timedelta(hours=1),
+                evaluation_start=evaluation_start,
+                evaluation_end=evaluation_end,
+                settings=noise.DEMO_ANOMALY_SETTINGS,
+            ).anomalies
+        )
+    return results
+
+
 async def _build_anomalies(session: AsyncSession, ctx: DemoContext) -> None:
     evaluation_start = ctx.now - timedelta(hours=noise.DEMO_EVAL_WINDOW_HOURS)
     evaluation_end = ctx.now
     screen_view_type_id = ctx.event_type_ids["screen_view"]
     spike_event_id = ctx.event_ids[SPIKE_EVENT_NAME]
 
-    def seed_scope_anomalies(
-        series: dict[datetime, int],
-        *,
-        scope_type: str,
-        scope_ref: str,
-        event_id: uuid.UUID | None,
-        event_type_id: uuid.UUID | None,
-    ) -> None:
-        points = [
-            SeriesPoint(bucket=bucket, count=count) for bucket, count in sorted(series.items())
-        ]
-        for anomaly in detect_anomalies(
-            points,
-            interval=timedelta(hours=1),
-            evaluation_start=evaluation_start,
-            evaluation_end=evaluation_end,
-            settings=noise.DEMO_ANOMALY_SETTINGS,
-        ).anomalies:
+    # Event-type scope: the screen_view aggregate (Home rolls up into it).
+    screen_view_series = {
+        bucket: count
+        for (et_id, bucket), count in ctx.type_bucket_counts.items()
+        if et_id == screen_view_type_id
+    }
+    # Project-total scope: sum of every type aggregate per bucket (scope_ref is the
+    # scan_config_id, per metrics_service).
+    project_total_series: dict[datetime, int] = {}
+    for (_et_id, bucket), count in ctx.type_bucket_counts.items():
+        project_total_series[bucket] = project_total_series.get(bucket, 0) + count
+
+    scopes = [
+        # Event scope: Home Screen View's own series.
+        _AnomalyScope(
+            series=dict(ctx.home_series),
+            scope_type=SCOPE_EVENT,
+            scope_ref=str(spike_event_id),
+            event_id=spike_event_id,
+            event_type_id=None,
+        ),
+        _AnomalyScope(
+            series=screen_view_series,
+            scope_type=SCOPE_EVENT_TYPE,
+            scope_ref=str(screen_view_type_id),
+            event_id=None,
+            event_type_id=screen_view_type_id,
+        ),
+        _AnomalyScope(
+            series=project_total_series,
+            scope_type=SCOPE_PROJECT_TOTAL,
+            scope_ref=str(ctx.scan_config_id),
+            event_id=None,
+            event_type_id=None,
+        ),
+    ]
+    detected = await asyncio.to_thread(
+        _detect_scope_anomalies,
+        scopes,
+        evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end,
+    )
+    for scope, anomalies in zip(scopes, detected, strict=True):
+        for anomaly in anomalies:
             session.add(
                 MetricAnomaly(
                     scan_config_id=ctx.scan_config_id,
-                    scope_type=scope_type,
-                    scope_ref=scope_ref,
-                    event_id=event_id,
-                    event_type_id=event_type_id,
+                    scope_type=scope.scope_type,
+                    scope_ref=scope.scope_ref,
+                    event_id=scope.event_id,
+                    event_type_id=scope.event_type_id,
                     bucket=anomaly.bucket,
                     actual_count=anomaly.actual_count,
                     expected_count=anomaly.expected_count,
@@ -100,59 +169,33 @@ async def _build_anomalies(session: AsyncSession, ctx: DemoContext) -> None:
                     direction=anomaly.direction,
                 )
             )
-
-    # Event scope: Home Screen View's own series.
-    seed_scope_anomalies(
-        ctx.home_series,
-        scope_type=SCOPE_EVENT,
-        scope_ref=str(spike_event_id),
-        event_id=spike_event_id,
-        event_type_id=None,
-    )
-
-    # Event-type scope: the screen_view aggregate (Home rolls up into it).
-    screen_view_series = {
-        bucket: count
-        for (et_id, bucket), count in ctx.type_bucket_counts.items()
-        if et_id == screen_view_type_id
-    }
-    seed_scope_anomalies(
-        screen_view_series,
-        scope_type=SCOPE_EVENT_TYPE,
-        scope_ref=str(screen_view_type_id),
-        event_id=None,
-        event_type_id=screen_view_type_id,
-    )
-
-    # Project-total scope: sum of every type aggregate per bucket (scope_ref is the
-    # scan_config_id, per metrics_service).
-    project_total_series: dict[datetime, int] = {}
-    for (_et_id, bucket), count in ctx.type_bucket_counts.items():
-        project_total_series[bucket] = project_total_series.get(bucket, 0) + count
-    seed_scope_anomalies(
-        project_total_series,
-        scope_type=SCOPE_PROJECT_TOTAL,
-        scope_ref=str(ctx.scan_config_id),
-        event_id=None,
-        event_type_id=None,
-    )
     await session.flush()
+
+
+def _compute_drift_ladder(now: datetime) -> list[tuple[datetime, DistributionDriftResult]]:
+    """One ``(bucket, PSI)`` per day of the drift span. Pure CPU, no session.
+
+    Runs in a thread beside the detector for the same reason (tripl-0zpq.251).
+    """
+    baseline_counts = noise.shares_to_counts(
+        noise.platform_shares(0.0), noise.DEMO_DRIFT_DAILY_TOTAL
+    )
+    ladder: list[tuple[datetime, DistributionDriftResult]] = []
+    for days_back in range(noise.DEMO_DRIFT_SPAN_DAYS, 0, -1):
+        drift_bucket = (now - timedelta(days=days_back)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        current_shares = noise.platform_shares(noise.drift_span_progress(float(days_back)))
+        current_counts = noise.shares_to_counts(current_shares, noise.DEMO_DRIFT_DAILY_TOTAL)
+        ladder.append((drift_bucket, compute_psi(baseline_counts, current_counts)))
+    return ladder
 
 
 async def _build_distribution_drift(session: AsyncSession, ctx: DemoContext) -> None:
     """One daily DistributionDrift row across the drift span, PSI from real
     ``compute_psi`` over the window-start baseline vs each day's drifted mix."""
     screen_view_type_id = ctx.event_type_ids["screen_view"]
-    baseline_counts = noise.shares_to_counts(
-        noise.platform_shares(0.0), noise.DEMO_DRIFT_DAILY_TOTAL
-    )
-    for days_back in range(noise.DEMO_DRIFT_SPAN_DAYS, 0, -1):
-        drift_bucket = (ctx.now - timedelta(days=days_back)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        current_shares = noise.platform_shares(noise.drift_span_progress(float(days_back)))
-        current_counts = noise.shares_to_counts(current_shares, noise.DEMO_DRIFT_DAILY_TOTAL)
-        result = compute_psi(baseline_counts, current_counts)
+    for drift_bucket, result in await asyncio.to_thread(_compute_drift_ladder, ctx.now):
         session.add(
             DistributionDrift(
                 scan_config_id=ctx.scan_config_id,

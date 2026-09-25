@@ -29,6 +29,24 @@ describe('BulkActionBar select-all-matching (tripl-7l83.11)', () => {
     expect(onSelectAllMatching).toHaveBeenCalledTimes(1)
   })
 
+  it('offers "all matching" without a count when the count is not known (EVT-2)', () => {
+    // A client-side column filter narrows rows the server total still counts,
+    // so "Select all 5000" over 12 visible rows was the wrong number.
+    const onSelectAllMatching = vi.fn()
+    renderBar({ selectedCount: 5, matchingTotal: null, onSelectAllMatching })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select all matching' }))
+    expect(onSelectAllMatching).toHaveBeenCalledTimes(1)
+  })
+
+  it('formats a large match count', () => {
+    renderBar({ selectedCount: 5, matchingTotal: 12000, onSelectAllMatching: vi.fn() })
+
+    expect(
+      screen.getByRole('button', { name: `Select all ${(12000).toLocaleString()}` }),
+    ).toBeInTheDocument()
+  })
+
   it('hides the affordance once the whole matching set is selected', () => {
     renderBar({ selectedCount: 499, matchingTotal: 499, onSelectAllMatching: vi.fn() })
     expect(screen.queryByRole('button', { name: /Select all/ })).toBeNull()
@@ -60,6 +78,38 @@ describe('BulkActionBar select-all-matching (tripl-7l83.11)', () => {
       />,
     )
     expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe('BulkActionBar bulk unassign (tripl-0zpq.276)', () => {
+  it('offers Unassign and reports it as a null owner', async () => {
+    // `POST .../events/bulk-update` keys off which fields were SENT, so
+    // `owner_id: null` is the selection-wide unassign and an omitted `owner_id`
+    // is "leave it alone". The picker offered assignments only, so the one bulk
+    // owner change the API has was reachable from the API and MCP alone.
+    //
+    // RED on a revert: drop the `Unassign` SelectItem from BulkActionBar and
+    // `findByRole` throws; keep it but drop the `UNASSIGN_VALUE` mapping in
+    // `onValueChange` and the callback gets the sentinel string, not `null`.
+    const { onAssignOwner } = renderBar({
+      owners: [{ id: 'user-1', name: 'Ada', email: 'ada@example.com' }],
+    })
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Assign owner' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Unassign' }))
+
+    expect(onAssignOwner).toHaveBeenCalledWith(null)
+  })
+
+  it('still reports a real owner by id', async () => {
+    const { onAssignOwner } = renderBar({
+      owners: [{ id: 'user-1', name: 'Ada', email: 'ada@example.com' }],
+    })
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Assign owner' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Ada' }))
+
+    expect(onAssignOwner).toHaveBeenCalledWith('user-1')
   })
 })
 

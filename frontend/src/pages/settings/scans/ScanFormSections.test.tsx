@@ -1,7 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ScanConfig } from '@/types'
+import type { Project, ScanConfig } from '@/types'
+import { ActiveProjectContext } from '@/components/active-project-context'
+import { AuthContext } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
 import { ScanConfigurationTab, ScanCreatePage } from './ScanConfigForm'
 
 // CodeMirror needs real layout measurement jsdom can't provide; a plain textarea
@@ -93,7 +96,7 @@ function renderCreatePage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ScanCreatePage slug="demo" onBack={() => {}} />
+      <ScanCreatePage slug="demo" onBack={() => {}} onCreated={() => {}} />
     </QueryClientProvider>,
   )
 }
@@ -560,5 +563,70 @@ describe('ScanFormSections — field labelling', () => {
     expect(captions).not.toContain('Base query')
     expect(captions).not.toContain('Preview')
     expect(captions).not.toContain('Lookback (hours)')
+  })
+})
+
+describe('ScanFormSections — batch 4', () => {
+  it("offers only this project's and workspace-wide sources (DATA-15)", async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources')) {
+        return mockJsonResponse([
+          { ...dataSource, project_id: null },
+          { ...dataSource, id: 'ds-own', name: 'Own demo warehouse', project_id: 'p-1' },
+          { ...dataSource, id: 'ds-other', name: 'Other demo warehouse', project_id: 'p-2' },
+        ])
+      }
+      if (url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ActiveProjectContext.Provider value={{ id: 'p-1', slug: 'demo' } as Project}>
+          <ScanCreatePage slug="demo" onBack={() => {}} onCreated={() => {}} />
+        </ActiveProjectContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    const picker = await screen.findByLabelText('Data source')
+    await waitFor(() => expect(picker).toHaveTextContent('Own demo warehouse'))
+    expect(picker).toHaveTextContent('Web Production')
+    expect(picker).not.toHaveTextContent('Other demo warehouse')
+  })
+
+  it('explains a limit the backend would refuse instead of saving it (DATA-25)', async () => {
+    setupFetch()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authAs('owner')}>
+          <ScanConfigurationTab
+            slug="demo"
+            scanConfig={{
+              id: 'sc-1',
+              data_source_id: 'ds-1',
+              name: 'Nightly',
+              base_query: 'SELECT * FROM analytics.events',
+              event_type_column: 'event_name',
+              time_column: 'event_ts',
+              interval: '1h',
+              scan_row_limit: 5000,
+              cardinality_threshold: 100,
+            } as unknown as ScanConfig}
+            onDeleted={() => {}}
+          />
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    const rowCap = await screen.findByLabelText('Row cap per run')
+    fireEvent.change(rowCap, { target: { value: '0' } })
+
+    expect(rowCap).toHaveAttribute('aria-invalid', 'true')
+    expect(rowCap).toHaveAccessibleDescription(/whole number of 1 or more/)
+    const save = screen.getByRole('button', { name: 'Save' })
+    expect(save).toBeDisabled()
+    expect(save).toHaveAttribute('title', 'Fix Row cap per run.')
   })
 })

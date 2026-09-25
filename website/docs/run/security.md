@@ -120,11 +120,11 @@ Conditional:
   default-src 'self'; script-src 'self';
   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
   img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com;
-  connect-src 'self';
+  connect-src 'self'; frame-src https://www.figma.com https://embed.figma.com;
   frame-ancestors 'none'; base-uri 'self'; form-action 'self'
   ```
 
-  If you do not serve the SPA from the API and you do not set `CONTENT_SECURITY_POLICY`, **no CSP header is emitted** — set one at your proxy or via the env var.
+  With GCS photo storage, `https://storage.googleapis.com` is also added to `img-src`. If you do not serve the SPA from the API and you do not set `CONTENT_SECURITY_POLICY`, **no CSP header is emitted** — set one at your proxy or via the env var.
 
 - **HSTS** — emitted only when `HSTS_ENABLED=true`, as `Strict-Transport-Security: max-age=<HSTS_MAX_AGE_SECONDS>; includeSubDomains` (default max-age 31536000, one year). HSTS is opt-in by design: enabling it without HTTPS in front would make the site unreachable over HTTP with no way back. Turn it on only once TLS and `SESSION_COOKIE_SECURE=true` are in place.
 
@@ -140,7 +140,7 @@ The middleware reads `CONTENT_SECURITY_POLICY`, `SERVE_FRONTEND`, `HSTS_ENABLED`
 
 ## Rate limiting
 
-`backend/src/tripl/middleware/rate_limit.py` provides an in-process token-bucket limiter wired as a FastAPI dependency on the two unauthenticated auth endpoints:
+`backend/src/tripl/middleware/rate_limit.py` provides an in-process token-bucket limiter for unauthenticated auth endpoints:
 
 | Route | Setting | Default |
 |---|---|---|
@@ -148,6 +148,9 @@ The middleware reads `CONTENT_SECURITY_POLICY`, `SERVE_FRONTEND`, `HSTS_ENABLED`
 | `POST /api/v1/auth/register` | `RATE_LIMIT_REGISTER_PER_HOUR` | 3 / hour |
 | `POST /api/v1/auth/password-reset/request` | `RATE_LIMIT_LOGIN_PER_MINUTE` | 5 / minute |
 | `POST /api/v1/auth/password-reset/confirm` | `RATE_LIMIT_LOGIN_PER_MINUTE` | 5 / minute |
+| `GET /api/v1/auth/status` | Shared status limiter | 30 / minute |
+| `GET /api/v1/auth/invitations/{token}` | Shared status limiter | 30 / minute |
+| `POST /api/v1/auth/invitations/{token}/accept` | `RATE_LIMIT_REGISTER_PER_HOUR` | 3 / hour |
 
 The two password-reset routes reuse the **login** limiter (same bucket and
 setting), so they share its per-IP quota. Buckets are keyed per
@@ -209,8 +212,11 @@ viewer — so a stranger who registers can immediately **read**:
   use.** A fact table and a `sql`-kind metric are both free-text `SELECT`
   statements, saved by an editor and then executed by the worker under an
   owner-configured warehouse credential. An editor never sees the credential,
-  and cannot point one at a warehouse that is identifiably another project's —
-  but within that scope, **whatever that credential can read, they can read**.
+  and cannot point one at a warehouse that is identifiably another project's.
+  Read "identifiably" literally: a workspace-global data source that **no**
+  project scans is nobody's in particular, so it is in scope from every project,
+  including one that has never scanned it. Within that scope, **whatever that
+  credential can read, they can read**.
 
 So on an internet-reachable instance with `open` registration, a stranger who
 registers becomes a read-only SQL user on the warehouses your projects query.
@@ -310,6 +316,8 @@ Sessions are server-side records (`user_sessions`): each carries an expiry, expi
 
 For non-browser clients, tripl issues personal API keys (`api_key_service.py`). The raw token has the shape `tk_<scope-letter>_<random>` (e.g. `tk_r_…` / `tk_w_…`); only its SHA-256 hash is stored, so a leaked DB dump cannot replay tokens. Keys carry a scope (`read` / `write`), an optional expiry, and an optional project binding. They are presented as `Authorization: Bearer <token>` and are resolved before cookie auth. See the [Agent API Guide](../integrate/agent-api-guide.md).
 
+Creating and revoking keys requires an interactive user session. A Bearer key cannot mint a successor or revoke another key, even when it has write scope and no project binding.
+
 ## Roles and access control (RBAC)
 
 tripl has three instance roles (`UserRole`: `owner`, `editor`, `viewer`) plus a two-level API-key scope (`ApiKeyScope`: `read`, `write`). The **first** registered user becomes `owner` so the instance always has an operator who can manage roles; every subsequent self-registration defaults to `editor` — and is refused entirely unless registration is `open` (see [Self-service registration](#self-service-registration)).
@@ -355,14 +363,28 @@ Some surfaces carry a stricter gate than the role table alone implies:
 
 | Surface | Gate | Why |
 |---|---|---|
-| Scan configs — create / update / delete, `preview`, `preview-jobs`, `dry-run`, `dry-run-jobs`, `metrics/replay` | `get_owner_user` (owner, interactive session) | A scan config is the project's **ingestion contract**: it binds a warehouse credential to a project permanently, drives event-type discovery and schema drift, and its `base_query` is recorded in the audit log. Owning that binding is an owner's decision. This gate is **not** a data-access boundary — see the row below. |
-| Fact tables and `sql`-kind catalog metrics — create / update / delete, `preview`, `metrics/preview`, `metrics/fact-preview` | `get_editor_user` | These are also free-text `SELECT` statements run against an owner-configured credential, and they are **editor**-authored on purpose: maintaining the metrics catalog is what the editor role is for. The consequence is stated plainly rather than hidden — **an editor is a read-only SQL user on every warehouse their projects already use.** Scoping is by project: a data source that is identifiably another project's (owned by it, or scanned by it and not by this one) is refused. The three preview routes write an audit row, because they are the only ones here that leave no stored object behind. |
+| Scan configs — create / update / delete, `preview`, `preview-jobs`, `dry-run`, `dry-run-jobs` | `get_owner_user` (owner, interactive session) | A scan config is the project's **ingestion contract**: it drives event-type discovery and schema drift, and its `base_query` is recorded in the audit log. Owning that is an owner's decision. This gate is **not** what admits a warehouse into a project — that is decided by ownership, see the row below — but creating one does narrow who *else* may reach a workspace-global data source: scanning it claims it for this project, and every project that does not scan it is refused from then on. Delete the last scan config on that source and it is shared again. |
+| Fact tables and `sql`-kind catalog metrics — create / update / delete, `preview`, `metrics/preview`, `metrics/fact-preview` | `get_editor_user` | These are also free-text `SELECT` statements run against an owner-configured credential, and they are **editor**-authored on purpose: maintaining the metrics catalog is what the editor role is for. The consequence is stated plainly rather than hidden — **an editor is a read-only SQL user on every warehouse their projects already use.** Scoping is by **ownership**, one rule for the save, the preview and the worker that later runs the statement (`services/data_source_scope`): a data source is refused when its `project_id` names a different project, or when it is workspace-global (`project_id IS NULL`) and some *other* project scans it while this one does not. Two consequences are worth reading twice — a workspace-global source that **no** project scans is bindable and previewable from **every** project, which is what the NULL means; and a source **owned** by another project stays refused even when this project scans it. The three preview routes write an audit row, because they are the only ones here that leave no stored object behind. |
 | `GET /metrics/{id}/generated-sql` | `get_editor_user` | The compiled SQL embeds the fact table's own query — warehouse table and column names an editor authored. A `viewer` authors none of it and does not need to read it. |
-| `POST /scans/{id}/run`, `event-groups/apply`, cancelling a job | `get_editor_user` | Running a **stored** config executes no new SQL, so it stays with the role that maintains the plan — and with the API keys that automate it. |
+| `POST /scans/{id}/metrics/replay` | `get_key_reachable_owner_user` | An owner session or an owner's write key can replay a stored config over a chosen window. The request and resulting job are recorded in the audit log. |
+| `POST /scans/{id}/event-groups/apply` | `get_owner_user` (owner, interactive session) | Applying saved grouping rules to existing events is owner-only. Editors do not see the Apply groups action. |
+| `POST /scans/{id}/run`, cancelling a job | `get_editor_user` | Running a **stored** config executes no new SQL, so it stays with the role that maintains the plan — and with the API keys that automate it. |
 | `PATCH /api/v1/projects/{slug}` (name, slug, retention) | Project **creator** or owner | Identity, not content: otherwise any editor could rename or re-slug every project on the instance. Stricter than the content rule above, which permits shared-project edits. |
-| `GET /data-sources/{id}/schema` | `get_editor_user` | Warehouse table and column names. Editors need it — the scan, metric and fact-table forms drive column pickers off it — but a `viewer` edits none of those. |
+| `GET /data-sources/{id}/schema` | `get_editor_user`, plus the owning project's editor scope for project-owned sources | Warehouse table and column names. Editors need it for scan, metric and fact-table forms; a `viewer` cannot access it, and editors cannot inspect another editor's project-owned source. |
 | `GET /data-sources/{id}/stats`, and connection details (host, port, username, `password_set`, TLS) on every data-source read | Owner | Non-owners see a data source's name, type and health, which is all the scan picker and metric card need. |
 | `GET /api/v1/audit`, `GET /api/v1/audit/{entry_id}` | Owner | The list carries no payload; a payload is read one entry at a time from the detail route, behind the same owner gate. A payload re-exposes both of the rows above: `data_source.*` payloads carry the connection details blanked on a direct read, and `scan_config.create` payloads carry `base_query`. It is also instance-wide — `project_slug` is a filter, not a scope, and **Settings → Instance → Audit log** is the owner-only screen that reads it that way: the actions belonging to no project (`data_source.*`, `user.*`, workspace `api_key.*`) answer nowhere else. That filter resolves the slug to a project and matches on its id, so a renamed project keeps one trail and a re-used slug inherits nobody's; while no live project answers to a slug, the denormalized label is matched instead, which is what keeps a deleted project's entries readable. Passwords were always redacted (`audit_service._redact`). |
+
+That ownership rule is recent, and on an existing instance it changes two stored
+configurations. Fact tables used to ask the narrower question "does a
+`ScanConfig` bind this data source to this project?" — a question the `sql`-metric
+doors could not ask, because a `sql` metric needs no scan at all and creating a
+scan config is owner-only, so there was no way for an owner to bless a
+warehouse that is queried but never scanned. After the change, a warehouse no
+project scans is usable from every project (that is the widening above), and a
+fact metric whose fact table points at a source **owned** by another project now
+fails collection with a message telling the editor to repoint it, where before a
+`ScanConfig` in this project would have let it run. All four doors and the worker
+share one predicate, so save, preview and collect cannot drift apart.
 
 Every one of those statements — a scan's `base_query`, a fact table's `sql`, a
 metric's `metric_sql` — goes through the same read-only-SELECT gate

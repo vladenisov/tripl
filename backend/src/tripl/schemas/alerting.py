@@ -4,7 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
-from tripl.alert_templates import percent_delta_or_none
+from tripl.alert_templates import percent_delta_of, percent_delta_or_none
+from tripl.alerting_matching import AlertMatchCandidate
 from tripl.alerting_validation import (
     _validate_https_url,
     normalize_optional_secret,
@@ -28,6 +29,7 @@ from tripl.alerting_validation import (
 )
 from tripl.core.alert_schedule import parse_cron
 from tripl.models.alert_delivery import AlertDeliveryStatus
+from tripl.models.alert_delivery_item import trim_scope_name
 from tripl.models.alert_destination import AlertDestinationType
 from tripl.models.alert_rule import DEFAULT_MIN_PERCENT_DELTA
 from tripl.models.domain_enums import (
@@ -444,7 +446,7 @@ class AlertDestinationCreate(BaseModel):
     # expression otherwise, read in the project's timezone. The UI's presets
     # ("daily at 09:00") are cron strings it generates, so the wire format has
     # exactly one shape.
-    delivery_schedule_cron: str | None = None
+    delivery_schedule_cron: str | None = Field(None, max_length=120)
     webhook_url: str | None = None
     bot_token: str | None = None
     # ``name`` above was not the only field here written into a bounded VARCHAR
@@ -459,15 +461,9 @@ class AlertDestinationCreate(BaseModel):
     # or drop a trailing slash, so what reaches the column is never longer than
     # the string pydantic measured here.
     #
-    # The other bounded columns are left undeclared on purpose, each already
-    # held under its width by a check of its own: ``jira_auth_email`` (255) by
-    # ``email_validator``'s 254-octet address limit — the same accident
-    # ``email_from_address`` lost in tripl-v422, still intact here because this
-    # field is an address and nothing else; ``delivery_schedule_cron`` (120) by
-    # ``parse_cron``, whose ``MAX_CRON_EXPRESSION_LENGTH`` is that same 120;
-    # ``email_subject_template`` (500) and ``jira_issue_type`` (64) by
-    # ``_validate_single_line``; ``jira_project_key`` (64) and the two Linear id
-    # fields (64) by their regexes.
+    # Declare every bounded destination column on the wire too. This keeps the
+    # OpenAPI contract aligned with PostgreSQL even when another validator also
+    # checks an address, template, cron expression, or identifier.
     chat_id: str | None = Field(None, max_length=255)
     target_url: str | None = None
     webhook_header_name: str | None = Field(None, max_length=255)
@@ -480,15 +476,15 @@ class AlertDestinationCreate(BaseModel):
     # override exists to carry is not the address part. See that helper for why
     # the bound sits on the field rather than inside it.
     email_from_address: str | None = Field(None, max_length=255)
-    email_subject_template: str | None = None
+    email_subject_template: str | None = Field(None, max_length=500)
     jira_base_url: str | None = Field(None, max_length=255)
-    jira_auth_email: str | None = None
+    jira_auth_email: str | None = Field(None, max_length=255)
     jira_api_token: str | None = None
-    jira_project_key: str | None = None
-    jira_issue_type: str | None = None
+    jira_project_key: str | None = Field(None, max_length=64)
+    jira_issue_type: str | None = Field(None, max_length=64)
     linear_api_key: str | None = None
-    linear_team_id: str | None = None
-    linear_state_id: str | None = None
+    linear_team_id: str | None = Field(None, max_length=64)
+    linear_state_id: str | None = Field(None, max_length=64)
     # Same width as ``alert_destinations.linear_label_ids`` (String(1024)), and
     # the entry-count limit does not imply it: ``_LINEAR_LABEL_LIMIT`` is 20 and
     # ``_LINEAR_ID_RE`` allows 64 characters each, so the longest list
@@ -931,7 +927,8 @@ class AlertDeliveryItemResponse(BaseModel):
     drift_field: str | None
     drift_type: AlertDriftType | None
     sample_value: str | None
-    # The incident this row belongs to: one (scan config, rule, direction).
+    # The incident this row belongs to: one
+    # (scan config, rule, scope type, scope ref, direction).
     # It is also the handle the alert inbox acts on, so EVERY item written since
     # tripl-jfm3.91 carries one — a solitary alert had none before and was
     # therefore invisible to the inbox and impossible to acknowledge. Co-firing
@@ -1152,8 +1149,8 @@ class AlertInboxActionRequest(BaseModel):
     action: AlertInboxAction
     note: str | None = Field(None, max_length=2000)
     # ``None`` on a ``mute`` is the INDEFINITE mute — "muted until I unmute" —
-    # not a missing field; see ``validate_action``. Every other action nulls the
-    # column anyway, so a value sent with them is ignored.
+    # not a missing field; see ``validate_action``. A value sent with any other
+    # action is refused rather than discarded (tripl-0zpq.325).
     muted_until: datetime | None = None
 
     @model_validator(mode="after")
@@ -1209,6 +1206,13 @@ class AlertInboxActionRequest(BaseModel):
             # the route audits through ``model_dump``, is the UTC value this
             # check passed on rather than a floating wall time.
             self.muted_until = require_future_instant(self.muted_until, field_name="muted_until")
+        # An end date on an acknowledge, a resolve or a reopen is a client that
+        # meant to mute; every action but ``mute`` nulls the column, so taking
+        # it would answer 200 and do something else. Refused, as
+        # ``EventCommentActionRequest`` refuses a stray ``snoozed_until`` —
+        # one rule across the four action bodies (tripl-0zpq.325).
+        if self.action != "mute" and self.muted_until is not None:
+            raise ValueError("muted_until is only meaningful when action is mute")
         return self
 
 
@@ -1312,6 +1316,9 @@ class AlertInboxBulkActionRequest(BaseModel):
         # and not one of them actually silenced (tripl-0zpq.273).
         if self.action == "mute" and self.muted_until is not None:
             self.muted_until = require_future_instant(self.muted_until, field_name="muted_until")
+        # Same refusal as the single-incident body (tripl-0zpq.325).
+        if self.action != "mute" and self.muted_until is not None:
+            raise ValueError("muted_until is only meaningful when action is mute")
         # ``false_positive`` is refused in bulk, and this is the ONLY action that
         # is. Direction is part of the correlation key (see
         # worker/tasks/metrics/dispatch.py), so ONE scope's spike and ONE scope's
@@ -1381,6 +1388,7 @@ class SimulatedRuleFiring(BaseModel):
     """One virtual delivery the rule would have triggered during the window."""
 
     anomaly_id: uuid.UUID
+    scan_config_id: uuid.UUID | None = None
     scope_type: MetricScopeType
     scope_ref: str
     scope_name: str
@@ -1416,6 +1424,55 @@ class SimulatedRuleFiring(BaseModel):
     # and nowhere else.
     percent_delta: float
     rendered_item: str | None = None
+
+    @classmethod
+    def from_candidate(
+        cls,
+        candidate: AlertMatchCandidate,
+        *,
+        scope_name: str,
+        bucket: datetime | None = None,
+    ) -> SimulatedRuleFiring:
+        """The one place a firing's fields are read off a matched candidate.
+
+        Both builders of this DTO go through here — the rule simulator
+        (``alerting_service.simulate_rule``) and the demo seeder
+        (``demo.builders.alerts._build_firings``). They used to be two
+        hand-maintained constructor calls, and they had already drifted: the
+        seeder never passed the drift fields, so a field added here reached the
+        live replay and silently not the demo (tripl-0zpq.324).
+
+        ``scope_name`` is resolved by the caller (each has its own name source)
+        and trimmed here the way the live send path trims it. The delta goes
+        through the shared ``percent_delta_of``. The drift fields and
+        ``window_from`` are read with ``getattr`` because ``AlertMatchCandidate``
+        is a Protocol whose ``MetricAnomaly`` members carry none of them.
+        ``bucket`` overrides the candidate's when the caller has to normalise it
+        (the demo seeder re-attaches the UTC zone SQLite drops).
+        """
+        return cls(
+            anomaly_id=candidate.id,
+            scan_config_id=candidate.scan_config_id,
+            scope_type=candidate.scope_type,
+            scope_ref=candidate.scope_ref,
+            scope_name=trim_scope_name(scope_name),
+            event_type_id=candidate.event_type_id,
+            event_id=candidate.event_id,
+            drift_field=getattr(candidate, "drift_field", None),
+            drift_type=getattr(candidate, "drift_type", None),
+            sample_value=getattr(candidate, "sample_value", None),
+            bucket=candidate.bucket if bucket is None else bucket,
+            # ``bucket`` is the window's END; this carries the START for the
+            # release-regression family, so the preview prints the same
+            # "over the 51h rollout overlap" clause the delivered item does
+            # (tripl-0zpq.165).
+            window_from=getattr(candidate, "window_from", None),
+            direction=candidate.direction,
+            actual_count=candidate.actual_count,
+            expected_count=candidate.expected_count,
+            absolute_delta=abs(candidate.actual_count - candidate.expected_count),
+            percent_delta=percent_delta_of(candidate.actual_count, candidate.expected_count),
+        )
 
     @field_serializer("percent_delta")
     def encode_percent_delta(self, value: float) -> float | None:

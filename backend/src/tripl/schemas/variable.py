@@ -5,6 +5,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tripl.schemas.not_null_update import reject_explicit_nulls
+
 # Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 BINDING_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$")
 
@@ -27,6 +29,26 @@ def _validate_bindings(bindings: list[str] | None) -> list[str] | None:
         return None
     for binding in bindings:
         if not BINDING_PATTERN.match(binding):
+            raise ValueError(f"Invalid binding path: {binding!r}")
+    if len(set(bindings)) != len(bindings):
+        raise ValueError("Duplicate binding paths")
+    return bindings
+
+
+# What a scan itself can write as a binding: the token grammar ``${...}``
+# admits anything but ``}``, and a JSON map keyed by user-typed text mints keys
+# such as ``props.$os`` or ``props.utm source``. An update resends the
+# variable's stored bindings, so the schema accepts that grammar and the
+# service applies ``BINDING_PATTERN`` only to bindings the update ADDS
+# (tripl-0zpq.265).
+_STORED_BINDING_PATTERN = re.compile(r"^[^}\x00-\x1f\x7f]+$")
+
+
+def _validate_update_bindings(bindings: list[str] | None) -> list[str] | None:
+    if bindings is None:
+        return None
+    for binding in bindings:
+        if not _STORED_BINDING_PATTERN.match(binding):
             raise ValueError(f"Invalid binding path: {binding!r}")
     if len(set(bindings)) != len(bindings):
         raise ValueError("Duplicate binding paths")
@@ -59,18 +81,42 @@ class VariableCreate(BaseModel):
     _check_bindings = field_validator("bindings")(_validate_bindings)
 
 
+# Every field of VariableUpdate maps to a NOT NULL Variable column, and
+# ``update_variable`` ``setattr``s whatever the dump holds — so an explicit
+# ``null`` is a 422 naming the field rather than a DB-level 500. See
+# ``schemas/not_null_update`` (tripl-0zpq.267). ``name`` is in the set for a
+# second reason: the rename branch reaches ``_STRICT_NAME_PATTERN.match(None)``,
+# which is a TypeError before any column is touched.
+_VARIABLE_NOT_NULL_UPDATE_FIELDS = frozenset(
+    {
+        "name",
+        "variable_type",
+        "description",
+        "allowed_values",
+        "bindings",
+        "excluded_from_scans",
+    }
+)
+
+
 class VariableUpdate(BaseModel):
-    # Dots stay permitted at the schema level so legacy scan-created dotted
-    # names remain loadable; the service enforces the strict (dot-free)
-    # pattern when the name actually changes.
-    name: str | None = Field(None, min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.]*$")
+    # No pattern here: the edit form resends the stored name, and a scan-created
+    # name can be anything the scan writes (``userId``, ``params.screenName``).
+    # The service enforces the strict pattern only when the name actually
+    # changes (tripl-0zpq.265).
+    name: str | None = Field(None, min_length=1, max_length=100)
     variable_type: VariableType | None = None
     description: str | None = None
     allowed_values: list[str] | None = Field(None, max_length=500)
     bindings: list[str] | None = Field(None, max_length=100)
     excluded_from_scans: bool | None = None
 
-    _check_bindings = field_validator("bindings")(_validate_bindings)
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _VARIABLE_NOT_NULL_UPDATE_FIELDS)
+
+    _check_bindings = field_validator("bindings")(_validate_update_bindings)
 
 
 class VariableResponse(BaseModel):

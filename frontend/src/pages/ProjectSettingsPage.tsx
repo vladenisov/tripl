@@ -1,15 +1,48 @@
-import { lazy, Suspense } from 'react'
+import { Suspense } from 'react'
 import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowUpRight } from 'lucide-react'
-import { AuditTab } from './settings/AuditTab'
-import { BranchesTab } from './settings/BranchesTab'
-import { EventTypesTab } from './settings/EventTypesTab'
-import { EventTypeDetail } from './settings/EventTypeDetailView'
-import { HistoryTab } from './settings/HistoryTab'
-import { MetaFieldsTab } from './settings/MetaFieldsTab'
-import { RelationsTab } from './settings/RelationsTab'
-import { VariablesTab } from './settings/VariablesTab'
-import { MonitoringTab } from './settings/MonitoringTab'
+import { lazyWithReload } from '@/lib/lazyWithReload'
+
+// Each surface is its own chunk. They are separate sidebar destinations and
+// only one renders at a time, but importing them statically put all nine —
+// the branch diff UI, the audit table, the events table under the event-type
+// detail — into one chunk that every one of them downloaded (#194 SHELL-5).
+const AuditTab = lazyWithReload(() =>
+  import('./settings/AuditTab').then((m) => ({ default: m.AuditTab })),
+)
+const BranchesTab = lazyWithReload(() =>
+  import('./settings/BranchesTab').then((m) => ({ default: m.BranchesTab })),
+)
+const EventTypesTab = lazyWithReload(() =>
+  import('./settings/EventTypesTab').then((m) => ({ default: m.EventTypesTab })),
+)
+const EventTypeDetail = lazyWithReload(() =>
+  import('./settings/EventTypeDetailView').then((m) => ({ default: m.EventTypeDetail })),
+)
+const HistoryTab = lazyWithReload(() =>
+  import('./settings/HistoryTab').then((m) => ({ default: m.HistoryTab })),
+)
+const MetaFieldsTab = lazyWithReload(() =>
+  import('./settings/MetaFieldsTab').then((m) => ({ default: m.MetaFieldsTab })),
+)
+const RelationsTab = lazyWithReload(() =>
+  import('./settings/RelationsTab').then((m) => ({ default: m.RelationsTab })),
+)
+const VariablesTab = lazyWithReload(() =>
+  import('./settings/VariablesTab').then((m) => ({ default: m.VariablesTab })),
+)
+const MonitoringTab = lazyWithReload(() =>
+  import('./settings/MonitoringTab').then((m) => ({ default: m.MonitoringTab })),
+)
+const ProjectAlertingTab = lazyWithReload(() => import('@/pages/ProjectAlertingTab'))
+
+function TabFallback() {
+  return (
+    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+      Loading…
+    </p>
+  )
+}
 
 /**
  * Functional project surfaces (event types, schema & fields, monitoring,
@@ -48,8 +81,6 @@ const FUNCTIONAL_TABS: FunctionalTab[] = [
   'audit',
 ]
 
-const ProjectAlertingTab = lazy(() => import('@/pages/ProjectAlertingTab'))
-
 export default function ProjectSettingsPage() {
   const { slug, tab: urlTab, itemId } = useParams<{ slug: string; tab?: string; itemId?: string }>()
   // `?item=<scope_type>:<scope_ref>` names ONE row inside the delivery `itemId`
@@ -74,7 +105,7 @@ export default function ProjectSettingsPage() {
   // Bare /p/:slug/settings and the old general config tab both belong to the
   // full-takeover Settings area now.
   if (!urlTab || urlTab === 'general') {
-    return <Navigate to="/settings/project/general" replace />
+    return <Navigate to={`/settings/project/general?project=${encodeURIComponent(slug)}`} replace />
   }
 
   if (!FUNCTIONAL_TABS.includes(urlTab as FunctionalTab)) {
@@ -86,33 +117,41 @@ export default function ProjectSettingsPage() {
   return (
     <div className="min-w-0">
       <SettingsSignpost />
-      {tab === 'event-types' && itemId && <EventTypeDetail slug={slug} eventTypeId={itemId} />}
-      {tab === 'event-types' && !itemId && <EventTypesTab slug={slug} />}
-      {tab === 'meta-fields' && <MetaFieldsTab slug={slug} />}
-      {tab === 'relations' && <RelationsTab slug={slug} />}
-      {/* `itemId` focuses one variable — the target of a branch-diff link — and
-          `?edit=1` opens its editor, which is that link's Edit action. */}
-      {tab === 'variables' && (
-        <VariablesTab slug={slug} focusId={itemId} openEditor={openItemEditor} />
-      )}
-      {tab === 'monitoring' && <MonitoringTab slug={slug} />}
-      {tab === 'alerting' && (
-        <Suspense fallback={<p className="text-sm text-muted-foreground">Loading alerting settings…</p>}>
-          {/* `itemId` focuses one delivery and `?item=` one row inside it —
-              together the target of the deep link an alert message carries for
-              scopes with no monitoring page. */}
-          <ProjectAlertingTab
-            slug={slug}
-            focusDeliveryId={itemId}
-            focusItemKey={focusItemKey}
-            focusScanId={focusScanId}
-            focusIncidentId={focusIncidentId}
-          />
-        </Suspense>
-      )}
-      {tab === 'branches' && <BranchesTab slug={slug} branchId={itemId} />}
-      {tab === 'history' && <HistoryTab slug={slug} />}
-      {tab === 'audit' && <AuditTab slug={slug} />}
+      {/* Keyed by tab so moving between surfaces shows the fallback at once
+          instead of leaving the previous surface up while the next loads. */}
+      <Suspense key={tab} fallback={<TabFallback />}>
+        {tab === 'event-types' && itemId && <EventTypeDetail slug={slug} eventTypeId={itemId} />}
+        {tab === 'event-types' && !itemId && <EventTypesTab slug={slug} />}
+        {tab === 'meta-fields' && <MetaFieldsTab slug={slug} />}
+        {tab === 'relations' && <RelationsTab slug={slug} />}
+        {/* `itemId` focuses one variable — the target of a branch-diff link — and
+            `?edit=1` opens its editor, which is that link's Edit action. */}
+        {tab === 'variables' && (
+          <VariablesTab slug={slug} focusId={itemId} openEditor={openItemEditor} />
+        )}
+        {tab === 'monitoring' && <MonitoringTab slug={slug} />}
+        {tab === 'alerting' && (
+          <>
+            {/* `itemId` focuses one delivery and `?item=` one row inside it —
+                together the target of the deep link an alert message carries for
+                scopes with no monitoring page. */}
+            {/* Keyed by project: filters, drafts and an open destination dialog
+                from project A must not carry into project B (a dialog would
+                PATCH A's destination id under B's slug). */}
+            <ProjectAlertingTab
+              key={slug}
+              slug={slug}
+              focusDeliveryId={itemId}
+              focusItemKey={focusItemKey}
+              focusScanId={focusScanId}
+              focusIncidentId={focusIncidentId}
+            />
+          </>
+        )}
+        {tab === 'branches' && <BranchesTab slug={slug} branchId={itemId} />}
+        {tab === 'history' && <HistoryTab slug={slug} />}
+        {tab === 'audit' && <AuditTab slug={slug} />}
+      </Suspense>
     </div>
   )
 }

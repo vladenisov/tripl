@@ -19,6 +19,8 @@ import json
 import re
 from typing import Any
 
+from tripl.json_paths import format_json_path_value
+
 NAME_FORMAT_PATTERN = re.compile(r"\{([^}]+)\}")
 
 # The OTHER grammar: ``${variable}`` references inside a stored field value.
@@ -41,8 +43,12 @@ NAME_FORMAT_PATTERN = re.compile(r"\{([^}]+)\}")
 # different questions: ``generation._VARIABLE_TEMPLATE_PATTERN`` is the same
 # grammar without a capture group (it tests whether a value is templated at all,
 # and a capture would change what ``findall`` returns), and
-# ``event_service._JSON_TEMPLATE_VALUE_PATTERN`` restricts the token body to an
-# identifier grammar on purpose, to keep hand-authored JSON values parseable.
+# ``event_service._JSON_TEMPLATE_VALUE_PATTERN`` narrows this body to
+# ``[^"\\}\x00-\x1f]+`` for two different reasons, which that file spells out:
+# ``}`` is what terminates the token in ``VARIABLE_TOKEN_PATTERN`` here, while a
+# quote, a backslash and the C0 control characters are what would break the JSON
+# text a token is spliced back into VERBATIM after ``json.dumps``. Everything
+# else a scan can write — spaces, commas, non-ASCII — stays saveable.
 VARIABLE_TOKEN_PATTERN = re.compile(r"\$\{([^}]*)\}")
 
 
@@ -106,9 +112,10 @@ def resolve_dotted_keys(fmt: str, values_by_field: dict[str, str]) -> dict[str, 
     """Field-name values plus ``{col.path}`` keys walked out of JSON values.
 
     A dotted key like ``page_data.extra.variant`` resolves by parsing the
-    ``page_data`` field value as JSON and walking ``extra.variant``; values
-    that are missing, non-scalar or unparseable (e.g. still templated with
-    ``${var}``) stay unresolved.
+    ``page_data`` field value as JSON and walking ``extra.variant``, and renders
+    the value found there exactly as the scan does. Paths that are missing, and
+    values that are unparseable (e.g. still templated with ``${var}``), stay
+    unresolved.
     """
     resolved = dict(values_by_field)
     for key in format_keys(fmt):
@@ -122,14 +129,17 @@ def resolve_dotted_keys(fmt: str, values_by_field: dict[str, str]) -> dict[str, 
             node: Any = json.loads(raw)
         except ValueError, TypeError:
             continue
+        found = True
         for segment in path.split("."):
             if not isinstance(node, dict) or segment not in node:
-                node = None
+                found = False
                 break
             node = node[segment]
-        if node is None or isinstance(node, (dict, list)):
+        if not found:
             continue
-        if isinstance(node, float) and node.is_integer():
-            node = int(node)
-        resolved[key] = str(node)
+        # The scan renders a JSON path value with ``format_json_path_value``, so
+        # the API must too: ``true``/``false``/``null`` and a container's JSON,
+        # never Python's ``True`` or an unresolved key, or a hand-made event and
+        # its scanned twin get two different identities (tripl-0zpq.98).
+        resolved[key] = format_json_path_value(node)
     return resolved

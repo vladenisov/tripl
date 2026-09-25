@@ -49,9 +49,11 @@ def event_create_audit_payload(
     """What an ``event.create`` row stores.
 
     Deliberately NOT ``data.model_dump()``, the shape every other router uses:
-    one ``EventFieldValueIn.value`` may be 100 000 characters and the list has no
-    upper bound, and ``EventMetaValueIn.value`` is uncapped outright, so copying
-    the body verbatim would put megabytes into a single ``audit_log.payload``.
+    one ``EventFieldValueIn.value`` may be 100 000 characters and one
+    ``EventMetaValueIn.value`` 8000, and NEITHER list has an upper bound, so
+    copying the body verbatim would put megabytes into a single
+    ``audit_log.payload``. (8000 is the payload guard; what the service will
+    actually STORE is capped at ``META_VALUE_MAX_BYTES``.)
     The counts record that values were written; the values themselves live on the
     event (tripl-wkwv.10).
 
@@ -290,7 +292,12 @@ async def bulk_update_events(
             # (tripl-wkwv.10). bulk_delete deliberately 404s the same body, so
             # only this route can see a duplicate at all.
             list(dict.fromkeys(data.event_ids)),
-            extra=data.model_dump(mode="json", exclude_none=True, exclude={"event_ids"}),
+            # ``exclude_unset``, the same key the service updates by: an
+            # explicit ``owner_id: null`` unassigns across the selection, and
+            # ``exclude_none`` filed that change as a row saying nothing about
+            # owners at all (tripl-0zpq.276). Unsent fields still stay out, so
+            # the row keeps reporting exactly what the request said.
+            extra=data.model_dump(mode="json", exclude_unset=True, exclude={"event_ids"}),
         ),
     )
 
@@ -340,8 +347,11 @@ async def update_event(
         session, slug, event_id, data, branch_id, user_id=current_user.id
     )
     # This row and the per-event history are different surfaces, not duplicates:
-    # ``_record_changes`` covers four fields' before/after values and dies with
-    # the event, this one covers who/what/when/which-branch and outlives it.
+    # ``_record_changes`` covers the before/after values of the fields in
+    # ``event_service._TRACKED_FIELDS`` and dies with the event, this one covers
+    # who/what/when/which-branch and outlives it. The count is deliberately not
+    # spelled out here — it was written as "four fields" and the tuple has since
+    # grown to six (tripl-0zpq.244).
     await audit_service.record(
         session,
         user=current_user,

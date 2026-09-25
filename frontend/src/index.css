@@ -194,19 +194,33 @@
    shadows at the extremes, `scroll` shadow gradients stay pinned to the box.
    Both paint on the scroller, i.e. behind the table, so the sticky header keeps
    its own solid background and only the (transparent) body cells show the fade.
-   Apply it with `.tripl-scroll-x` to any `overflow-x: auto` container. */
+   Apply it with `.tripl-scroll-x` to any `overflow-x: auto` container. The
+   cover colour must match what sits behind the scroller; a surface that is not
+   `--bg` (a panel card) sets `--scroll-x-bg` for everything inside it. The
+   shadow is a faint tint of --fg: at 30% it read as a dark smudge along the
+   right edge in the light theme (LIVE-6). */
 .tripl-scroll-x {
   background-image:
-    linear-gradient(to right, var(--bg) 40%, transparent),
-    linear-gradient(to left, var(--bg) 40%, transparent),
-    linear-gradient(to right, color-mix(in srgb, var(--fg) 30%, transparent), transparent),
-    linear-gradient(to left, color-mix(in srgb, var(--fg) 30%, transparent), transparent);
+    linear-gradient(to right, var(--scroll-x-bg, var(--bg)) 40%, transparent),
+    linear-gradient(to left, var(--scroll-x-bg, var(--bg)) 40%, transparent),
+    linear-gradient(to right, color-mix(in srgb, var(--fg) 12%, transparent), transparent),
+    linear-gradient(to left, color-mix(in srgb, var(--fg) 12%, transparent), transparent);
   background-position: left center, right center, left center, right center;
   background-repeat: no-repeat;
   background-size: 32px 100%, 32px 100%, 18px 100%, 18px 100%;
   background-attachment: local, local, scroll, scroll;
-  background-color: var(--bg);
+  background-color: var(--scroll-x-bg, var(--bg));
   overflow-x: auto;
+}
+
+/* The body of a panel card (kit `Panel`, the scans and event-type `SurfPanel`s).
+   The card clips to its rounded corners, so a wide table placed straight in it
+   lost its right-hand columns, row actions included, on a phone with no way to
+   reach them (DS-5 / DATA-9). The body scrolls sideways instead, with the fade
+   above in the card's colour; vertically it still clips, as the card did. */
+.tripl-panel-body {
+  --scroll-x-bg: var(--surface);
+  overflow-y: hidden;
 }
 
 .tripl-table-wrap {

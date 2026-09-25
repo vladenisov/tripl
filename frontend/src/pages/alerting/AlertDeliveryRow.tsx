@@ -5,7 +5,7 @@ import { ChevronDown, Loader2, RotateCcw, Sparkles } from "lucide-react"
 import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { getScopeMonitoringPath } from "@/lib/monitoring"
-import { useCanWrite } from "@/lib/permissions"
+import { useCanWriteProject } from "@/lib/permissions"
 import { getErrorMessage } from "@/lib/utils"
 import { formatDateTime } from "@/lib/datetime"
 import { formatIncidentCount } from "@/lib/alertStatus"
@@ -209,7 +209,7 @@ export function AlertDeliveryRow({
   // IncidentDeliveries, on an incident card that has no such prop, and one row
   // must not offer a Retry the other one hides. Same context either way, so
   // there is still exactly one answer per session (tripl-oxkt.9).
-  const canWrite = useCanWrite()
+  const canWrite = useCanWriteProject()
   // Deep-linked rows arrive expanded: the link exists to show one delivery's
   // per-scope numbers, and landing on a collapsed row hides exactly those.
   const [open, setOpen] = useState(isFocused)

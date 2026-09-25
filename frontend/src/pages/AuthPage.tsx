@@ -8,8 +8,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import { postLoginDestination } from '@/lib/authRedirect'
 import { PASSWORD_MIN_LENGTH, PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
 import type { AuthUser } from '@/types'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 type AuthMode = 'login' | 'register' | 'forgot' | 'reset'
 
@@ -48,9 +50,7 @@ export default function AuthPage() {
   const [password, setPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
 
-  const destination = (
-    location.state as { from?: { pathname?: string } } | null
-  )?.from?.pathname ?? '/'
+  const destination = postLoginDestination(location.state)
 
   // Unauthenticated instance probe: drives the "first account becomes owner"
   // note and whether a sign-up form is worth offering at all.
@@ -77,6 +77,7 @@ export default function AuthPage() {
       : chosenMode
 
   const authMutation = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       mode === 'login'
         ? authApi.login({ email, password })
@@ -93,10 +94,12 @@ export default function AuthPage() {
   })
 
   const forgotMutation = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => authApi.requestPasswordReset({ email }),
   })
 
   const resetMutation = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () =>
       authApi.confirmPasswordReset({ token: resetToken, new_password: newPassword }),
   })
@@ -116,7 +119,7 @@ export default function AuthPage() {
   const isAuthTab = mode === 'login' || mode === 'register'
   const submitLabel =
     mode === 'login'
-      ? 'Sign In'
+      ? 'Sign in'
       : mode === 'register'
         ? 'Create your account'
         : mode === 'forgot'
@@ -125,23 +128,34 @@ export default function AuthPage() {
   const { title: cardTitle, description: cardDescription } = CARD_COPY[mode]
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(20,184,166,0.15),_transparent_32%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(2,6,23,0.94))] text-slate-50">
+    // Theme tokens throughout: the page used to be hard-coded slate and teal,
+    // so a light-theme user with a violet accent landed on a dark teal splash,
+    // outside the contrast checks every other screen passes (DS-46).
+    <div
+      className="min-h-screen text-fg"
+      style={{
+        background:
+          'radial-gradient(circle at top left, var(--accent-soft), transparent 32%), var(--bg)',
+      }}
+    >
       <div className="mx-auto grid min-h-screen max-w-6xl items-center gap-8 px-6 py-10 lg:grid-cols-[1.15fr_0.85fr]">
-        <section className="space-y-8">
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs uppercase tracking-[0.28em] text-teal-200/80">
-            <Radar className="h-3.5 w-3.5" />
-            Tracking Operations
+        {/* Below lg the form comes first: the pitch stacked above it put the
+            sign-in card about a screen and a half down on a phone (SHELL-43). */}
+        <section className="order-last space-y-8 lg:order-none">
+          <div className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-3 py-1 text-xs uppercase tracking-[0.28em] text-accent">
+            <Radar className="h-3.5 w-3.5" aria-hidden="true" />
+            Tracking operations
           </div>
           <div className="max-w-2xl space-y-4">
-            <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+            <h1 className="text-4xl font-semibold tracking-tight text-fg sm:text-5xl">
               Operate the tracking plan before the data drifts.
             </h1>
-            <p className="max-w-xl text-base leading-7 text-slate-300">
+            <p className="max-w-xl text-base leading-7 text-fg-muted">
               Sign in to manage catalog coverage, scan production data, review anomalies,
               and route alerts without losing the operational context of the workspace.
             </p>
           </div>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="hidden gap-4 sm:grid sm:grid-cols-3">
             <FeatureCard
               eyebrow="Catalog"
               title="Track intent"
@@ -160,16 +174,16 @@ export default function AuthPage() {
           </div>
         </section>
 
-        <Card className="border-white/10 bg-slate-950/70 py-0 shadow-2xl shadow-teal-950/40 backdrop-blur">
-          <CardHeader className="border-b border-white/10 px-6 py-6">
+        <Card className="order-first border-border bg-bg-elevated py-0 shadow-lg lg:order-none">
+          <CardHeader className="border-b border-border px-6 py-6">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <CardTitle as="h2" className="text-2xl text-white">{cardTitle}</CardTitle>
-                <CardDescription className="mt-2 text-slate-400">
+                <CardTitle as="h2" className="text-2xl text-fg">{cardTitle}</CardTitle>
+                <CardDescription className="mt-2 text-fg-subtle">
                   {cardDescription}
                 </CardDescription>
               </div>
-              <div className="rounded-full border border-teal-400/30 bg-teal-400/10 p-2 text-teal-200">
+              <div className="rounded-full border border-accent/30 bg-accent-soft p-2 text-accent">
                 {mode === 'register' ? (
                   <UserPlus className="h-4 w-4" />
                 ) : (
@@ -180,19 +194,19 @@ export default function AuthPage() {
           </CardHeader>
           <CardContent className="space-y-6 px-6 py-6">
             {isAuthTab && !registrationClosed && (
-              <div className="grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-white/5 p-1">
+              <div className="grid grid-cols-2 gap-2 rounded-xl border border-border bg-bg-sunken p-1">
                 <button
                   type="button"
                   aria-pressed={mode === 'login'}
                   className={cn(
                     'rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                     mode === 'login'
-                      ? 'bg-white text-slate-950 shadow-sm'
-                      : 'text-slate-300 hover:text-white',
+                      ? 'bg-surface text-fg shadow-sm'
+                      : 'text-fg-muted hover:text-fg',
                   )}
                   onClick={() => switchMode('login')}
                 >
-                  Existing Account
+                  Existing account
                 </button>
                 <button
                   type="button"
@@ -200,8 +214,8 @@ export default function AuthPage() {
                   className={cn(
                     'rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                     mode === 'register'
-                      ? 'bg-white text-slate-950 shadow-sm'
-                      : 'text-slate-300 hover:text-white',
+                      ? 'bg-surface text-fg shadow-sm'
+                      : 'text-fg-muted hover:text-fg',
                   )}
                   onClick={() => switchMode('register')}
                 >
@@ -220,7 +234,7 @@ export default function AuthPage() {
               >
                 {mode === 'register' && (
                   <div className="space-y-2">
-                    <Label htmlFor="auth-name" className="text-slate-200">
+                    <Label htmlFor="auth-name">
                       Name
                     </Label>
                     <Input
@@ -228,13 +242,12 @@ export default function AuthPage() {
                       value={name}
                       onChange={event => setName(event.target.value)}
                       placeholder="Analytics owner"
-                      className="border-white/10 bg-white/5 text-white placeholder:text-slate-500"
-                    />
+                      />
                   </div>
                 )}
 
                 <div className="space-y-2">
-                  <Label htmlFor="auth-email" className="text-slate-200">
+                  <Label htmlFor="auth-email">
                     Email
                   </Label>
                   <Input
@@ -245,12 +258,11 @@ export default function AuthPage() {
                     onChange={event => setEmail(event.target.value)}
                     placeholder="you@company.com"
                     required
-                    className="border-white/10 bg-white/5 text-white placeholder:text-slate-500"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="auth-password" className="text-slate-200">
+                  <Label htmlFor="auth-password">
                     Password
                   </Label>
                   <Input
@@ -265,17 +277,16 @@ export default function AuthPage() {
                     // pre-policy accounts can still sign in.
                     minLength={mode === 'register' ? PASSWORD_MIN_LENGTH : 1}
                     aria-describedby={mode === 'register' ? 'auth-password-hint' : undefined}
-                    className="border-white/10 bg-white/5 text-white placeholder:text-slate-500"
                   />
                   {mode === 'register' && (
-                    <p id="auth-password-hint" className="text-xs leading-5 text-slate-400">
+                    <p id="auth-password-hint" className="text-xs leading-5 text-fg-subtle">
                       {PASSWORD_POLICY_HINT}
                     </p>
                   )}
                 </div>
 
                 {mode === 'register' && isFreshInstance && (
-                  <p className="rounded-lg border border-teal-400/20 bg-teal-400/5 px-3 py-2 text-sm leading-6 text-teal-100/90">
+                  <p className="rounded-lg border border-accent/25 bg-accent-soft px-3 py-2 text-sm leading-6 text-fg">
                     The first account on a new instance becomes the owner and can manage
                     members and instance settings.
                   </p>
@@ -284,7 +295,7 @@ export default function AuthPage() {
                 {authMutation.isError && (
                   <div
                     role="alert"
-                    className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
+                    className="rounded-lg border border-danger/25 bg-danger-soft px-3 py-2 text-sm text-danger"
                   >
                     {authMutation.error.message}
                   </div>
@@ -293,7 +304,7 @@ export default function AuthPage() {
                 <Button
                   type="submit"
                   size="lg"
-                  className="w-full justify-center bg-teal-400 text-slate-950 hover:bg-teal-300"
+                  className="w-full justify-center bg-accent text-[var(--accent-fg)] hover:bg-[var(--accent-hover)]"
                   disabled={authMutation.isPending}
                 >
                   {authMutation.isPending ? 'Working…' : submitLabel}
@@ -307,7 +318,7 @@ export default function AuthPage() {
                 <div className="space-y-4">
                   <div
                     role="status"
-                    className="rounded-lg border border-teal-400/20 bg-teal-400/5 px-3 py-3 text-sm leading-6 text-teal-100/90"
+                    className="rounded-lg border border-accent/25 bg-accent-soft px-3 py-3 text-sm leading-6 text-fg"
                   >
                     {forgotMutation.data?.email_configured
                       ? 'If an account exists for that email, a password reset link is on its way. The link expires in one hour.'
@@ -316,7 +327,7 @@ export default function AuthPage() {
                   <button
                     type="button"
                     onClick={() => switchMode('login')}
-                    className="text-sm font-medium text-teal-300 underline-offset-4 hover:underline"
+                    className="text-sm font-medium text-accent underline-offset-4 hover:underline"
                   >
                     Back to sign in
                   </button>
@@ -330,7 +341,7 @@ export default function AuthPage() {
                   }}
                 >
                   <div className="space-y-2">
-                    <Label htmlFor="forgot-email" className="text-slate-200">
+                    <Label htmlFor="forgot-email">
                       Email
                     </Label>
                     <Input
@@ -341,14 +352,13 @@ export default function AuthPage() {
                       onChange={event => setEmail(event.target.value)}
                       placeholder="you@company.com"
                       required
-                      className="border-white/10 bg-white/5 text-white placeholder:text-slate-500"
-                    />
+                      />
                   </div>
 
                   {forgotMutation.isError && (
                     <div
                       role="alert"
-                      className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
+                      className="rounded-lg border border-danger/25 bg-danger-soft px-3 py-2 text-sm text-danger"
                     >
                       {forgotMutation.error.message}
                     </div>
@@ -357,7 +367,7 @@ export default function AuthPage() {
                   <Button
                     type="submit"
                     size="lg"
-                    className="w-full justify-center bg-teal-400 text-slate-950 hover:bg-teal-300"
+                    className="w-full justify-center bg-accent text-[var(--accent-fg)] hover:bg-[var(--accent-hover)]"
                     disabled={forgotMutation.isPending}
                   >
                     {forgotMutation.isPending ? 'Working…' : submitLabel}
@@ -367,7 +377,7 @@ export default function AuthPage() {
                   <button
                     type="button"
                     onClick={() => switchMode('login')}
-                    className="text-sm font-medium text-teal-300 underline-offset-4 hover:underline"
+                    className="text-sm font-medium text-accent underline-offset-4 hover:underline"
                   >
                     Back to sign in
                   </button>
@@ -379,14 +389,14 @@ export default function AuthPage() {
                 <div className="space-y-4">
                   <div
                     role="status"
-                    className="rounded-lg border border-teal-400/20 bg-teal-400/5 px-3 py-3 text-sm leading-6 text-teal-100/90"
+                    className="rounded-lg border border-accent/25 bg-accent-soft px-3 py-3 text-sm leading-6 text-fg"
                   >
                     Your password has been reset. Sign in with your new password to continue.
                   </div>
                   <Button
                     type="button"
                     size="lg"
-                    className="w-full justify-center bg-teal-400 text-slate-950 hover:bg-teal-300"
+                    className="w-full justify-center bg-accent text-[var(--accent-fg)] hover:bg-[var(--accent-hover)]"
                     onClick={() => switchMode('login')}
                   >
                     Back to sign in
@@ -402,7 +412,7 @@ export default function AuthPage() {
                   }}
                 >
                   <div className="space-y-2">
-                    <Label htmlFor="reset-password" className="text-slate-200">
+                    <Label htmlFor="reset-password">
                       New password
                     </Label>
                     <Input
@@ -415,9 +425,8 @@ export default function AuthPage() {
                       required
                       minLength={PASSWORD_MIN_LENGTH}
                       aria-describedby="reset-password-hint"
-                      className="border-white/10 bg-white/5 text-white placeholder:text-slate-500"
-                    />
-                    <p id="reset-password-hint" className="text-xs leading-5 text-slate-400">
+                      />
+                    <p id="reset-password-hint" className="text-xs leading-5 text-fg-subtle">
                       {PASSWORD_POLICY_HINT}
                     </p>
                   </div>
@@ -425,7 +434,7 @@ export default function AuthPage() {
                   {resetMutation.isError && (
                     <div
                       role="alert"
-                      className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
+                      className="rounded-lg border border-danger/25 bg-danger-soft px-3 py-2 text-sm text-danger"
                     >
                       {resetMutation.error.message}
                     </div>
@@ -434,7 +443,7 @@ export default function AuthPage() {
                   <Button
                     type="submit"
                     size="lg"
-                    className="w-full justify-center bg-teal-400 text-slate-950 hover:bg-teal-300"
+                    className="w-full justify-center bg-accent text-[var(--accent-fg)] hover:bg-[var(--accent-hover)]"
                     disabled={resetMutation.isPending}
                   >
                     {resetMutation.isPending ? 'Working…' : submitLabel}
@@ -444,7 +453,7 @@ export default function AuthPage() {
                   <button
                     type="button"
                     onClick={() => switchMode('login')}
-                    className="text-sm font-medium text-teal-300 underline-offset-4 hover:underline"
+                    className="text-sm font-medium text-accent underline-offset-4 hover:underline"
                   >
                     Back to sign in
                   </button>
@@ -454,7 +463,7 @@ export default function AuthPage() {
             {mode === 'login' && registrationClosed && (
               <p
                 role="status"
-                className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm leading-6 text-slate-300"
+                className="rounded-lg border border-border bg-bg-sunken px-3 py-2 text-sm leading-6 text-fg-muted"
               >
                 Sign-ups are closed on this instance. Ask an owner to reopen registration
                 under Settings → Instance → Security &amp; access so you can sign up.
@@ -462,12 +471,12 @@ export default function AuthPage() {
             )}
 
             {mode === 'login' && (
-              <div className="space-y-2 text-sm leading-6 text-slate-400">
+              <div className="space-y-2 text-sm leading-6 text-fg-subtle">
                 <p>Use the same account across catalog, monitoring, and alerting workflows.</p>
                 <button
                   type="button"
                   onClick={() => switchMode('forgot')}
-                  className="font-medium text-teal-300 underline-offset-4 hover:underline"
+                  className="font-medium text-accent underline-offset-4 hover:underline"
                 >
                   Forgot your password?
                 </button>
@@ -475,7 +484,7 @@ export default function AuthPage() {
             )}
 
             {mode === 'register' && (
-              <p className="text-sm leading-6 text-slate-400">
+              <p className="text-sm leading-6 text-fg-subtle">
                 New accounts are created inside this tripl workspace and receive access immediately.
               </p>
             )}
@@ -496,12 +505,12 @@ function FeatureCard({
   description: string
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-teal-200/70">
+    <div className="rounded-2xl border border-border bg-surface p-4">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-accent">
         {eyebrow}
       </div>
-      <div className="mt-3 text-lg font-semibold text-white">{title}</div>
-      <p className="mt-2 text-sm leading-6 text-slate-300">{description}</p>
+      <div className="mt-3 text-lg font-semibold text-fg">{title}</div>
+      <p className="mt-2 text-sm leading-6 text-fg-muted">{description}</p>
     </div>
   )
 }

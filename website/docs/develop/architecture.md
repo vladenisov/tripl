@@ -41,7 +41,7 @@ tripl is three cooperating processes plus a database and a message broker:
   warehouses.
 - **celery-beat** — the scheduler. Triggers due metric-collection checks — for
   both event counts and the **metric catalog** (a ~300 s due-check) — and the
-  schema-drift retention cleanup. It also polls implementation tickets, chases
+  schema, distribution-drift, and scan-job retention cleanup. It also polls implementation tickets, chases
   stranded search embeddings, reaps stuck alert deliveries (retrying
   transiently-failed ones for a bounded window), and runs periodic
   alert/maintenance tasks.
@@ -71,11 +71,14 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - DB engine and pool configuration is centralized in `src/tripl/db_config.py`
   (an async pooled engine for the API, a sync pooled engine for Celery; the
   worker→async bridge uses a throwaway NullPool engine — see
-  `worker/search_reindex.py`).
-- Migrations are applied by the deployment entrypoint (the Compose `api` command
-  runs `alembic upgrade head`) before the API starts serving requests, so the
-  schema is current. The app process itself does not run migrations on startup;
-  its lifespan only configures logging and asserts production readiness.
+  `worker/search_reindex.py`). PostgreSQL connections pin the session timezone
+  to UTC for both asyncpg and psycopg.
+- Migrations are applied by the Compose `migrate` one-shot via `alembic upgrade
+  head` before the API and workers start. Alembic uses the asyncpg
+  `DATABASE_URL`; the worker uses the psycopg `SYNC_DATABASE_URL`. Reserved
+  characters in URL credentials are percent-encoded. The app process does not
+  run migrations on startup; its lifespan configures logging and asserts
+  production readiness.
 - **Migrations are executed in CI, not just parsed.** The `migrations` job stands
   up the same `pgvector/pgvector` image the Compose stack uses (the chain enables
   `pg_trgm`, `unaccent` and `vector`, so a stock `postgres` image cannot run it)
@@ -399,22 +402,25 @@ photos, comments) and merge back via a
    and the reindex; a replay skips catalog sync entirely, so it holds no fresh
    evidence about which paths a row still carries and is in no position to call
    a variable unused — and lets **whether the catalog window was DECLARED**
-   decide how much of the catalog that sweep may judge (tripl-bh1q, tripl-bwo8):
+   decide how much of the catalog that sweep may judge (tripl-bh1q, tripl-bwo8).
+   The sweep is project-wide, so a scalar-derived variable is deferred whenever
+   **any** scan config in that project has no declared `scan_lookback_hours`,
+   even when the current scan uses a full-table query or declares its own
+   lookback:
 
    - a **JSON-derived** variable — `source_name` a path whose dotted prefix
      names a `FieldDefinition` that is `json`-typed on every event type of the
      branch declaring it (`variable_retirement.is_json_derived` over
      `variable_sweep._json_column_names`) — is judged on every run;
-   - a **scalar-derived** variable is judged only when `resolve_lookback_window`
-     returned a window rather than `None`, i.e. the config sets
-     `scan_lookback_hours`; otherwise
-     `retire_unused_variables(include_scalar_derived=False)` leaves it in place,
+   - a **scalar-derived** variable is judged only when the current collection
+     has a declared lookback and every project config declares one; otherwise
+     `retire_unused_variables` leaves it in place,
      unjudged, and counts it as `deferred` in the log. On this path the catalog
      view is *always* windowed (the task returns early without a `time_column`)
      and the fallback is `(time_from_dt, time_to_dt)`, one interval in steady
      state. `run_scan` has no such fallback: an unset lookback leaves its window
-     `None` and it reads the whole table, which is why the manual path needs no
-     gate.
+     `None` and it reads the whole table, but its project-wide sweep still
+     defers scalar-derived variables when a sibling config has no lookback.
 
    The split exists because a too-narrow view does not merely *mis-report* — it
    rewrites the evidence the sweep reads, and how much it rewrites depends on
@@ -435,7 +441,8 @@ photos, comments) and merge back via a
    and documented for users: `scan_lookback_hours` is nullable and defaults to
    `None` in every request schema — the create page pre-fills 24, a config saved
    without one shows the field blank — so a config that never had one typed into
-   it never has its scalar-derived variables swept on a schedule.
+   it prevents scalar-derived retirement across the project until every config
+   has a declared lookback.
 
    `collect_metrics` also stamps the count onto `ScanJob.result_summary` the
    moment the delete commits, ~400 lines before the full summary is assembled.
@@ -446,8 +453,8 @@ photos, comments) and merge back via a
    `variables_retired` is therefore **absent** only on a replay, the one run
    that did not sweep, so a reader cannot mistake "did not look" for "found
    nothing"; every other run emits it, `run_scan` unconditionally, where `0`
-   honestly means "swept, found nothing" — and on a scheduled run with no
-   declared lookback, "swept" covers the JSON-derived rows alone.
+   honestly means "swept, found nothing" — and whenever the project-wide gate
+   defers scalar-derived variables, "swept" covers the JSON-derived rows alone.
 7. `ScanJob.result_summary` is filled in for the UI.
 
 Steps 4 and 5 are two modules, not one. `core/analyzers/event_plan.plan_events`
@@ -536,8 +543,15 @@ session — so `reserved_catalog_columns` can be reused verbatim on it.
    reindex. A replay skips this whole phase and both of its tails; an undeclared
    window narrows only the sweep, never the reindex.
 4. Counts are aggregated into `event_metrics`.
-5. Anomalies are recalculated into `metric_anomalies`.
-6. Matching alert rules enqueue deliveries.
+ 5. Anomalies are recalculated into `metric_anomalies`.
+ 6. Matching alert rules enqueue deliveries.
+
+Metric and anomaly bucket timestamps are UTC-aware in application code,
+including SQLite-backed tests. The six event/catalog metric, breakdown, and
+anomaly bucket model columns use the same UTC conversion contract as production
+PostgreSQL; this model change does not require a database migration. API series
+and anomaly responses serialize these bucket instants as RFC 3339 timestamps
+with an explicit UTC `Z` suffix, for example `2026-09-24T08:00:00Z`.
 
 ### Catalog metric flow
 
@@ -604,10 +618,12 @@ branch is searchable from the next request.
 
 - **Prometheus** — a `/metrics` endpoint, enabled with
   `PROMETHEUS_METRICS_ENABLED`, exposing scan, anomaly, alert-delivery,
-  schema-drift, and Celery task counters and histograms.
+  schema-drift, and Celery task counters and histograms. Compose provides a
+  shared multiprocess directory for API and worker metrics and clears stale
+  files at deployment startup. A Celery failure is counted once.
 - **OpenTelemetry** — tracing for FastAPI + SQLAlchemy + Celery, enabled with
-  `OTEL_EXPORTER_OTLP_ENDPOINT`. It degrades to a logged no-op when the env var
-  is blank or the `opentelemetry-*` packages aren't installed.
+  `OTEL_EXPORTER_OTLP_ENDPOINT`. The production image includes the tracing
+  dependencies; a blank endpoint leaves tracing disabled.
 
 ---
 

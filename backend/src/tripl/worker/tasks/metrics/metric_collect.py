@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -48,7 +49,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.core.adapters.base import AggregateSpec, BaseAdapter
+from tripl.core.adapters.base import AggregateSpec, BaseAdapter, rank_top_n_once
 from tripl.core.adapters.measure_validator import (
     SqlDialect,
     coerce_aggregation,
@@ -85,6 +86,7 @@ from tripl.models.metric_definition import (
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.scan_config import ScanConfig
+from tripl.services.data_source_scope import data_source_out_of_project_scope
 from tripl.worker.analyzers.metric_composition import evaluate_composition
 from tripl.worker.celery_app import celery_app
 from tripl.worker.tasks._errors import ScanError, user_facing_error
@@ -692,11 +694,25 @@ def _aggregate_fact_window(
 
 
 def _metric_breakdown_columns(definition: MetricDefinition) -> list[str]:
-    """Return the metric's configured breakdown dimensions in collection order."""
-    breakdown_columns: list[str] = list(definition.breakdown_columns or [])
-    for extra in (definition.app_version_column, definition.platform_column):
-        if extra and extra not in breakdown_columns:
-            breakdown_columns.append(extra)
+    """Return the metric's configured breakdown dimensions in collection order.
+
+    Deduplicated, order preserved. The schema now refuses to SAVE a repeated
+    ``breakdown_columns`` entry, but rows stored before it still carry one, and a
+    column listed twice makes assembly emit each ``(bucket, breakdown_value)``
+    row twice inside a single ``INSERT ... ON CONFLICT DO UPDATE``, which
+    Postgres refuses with "command cannot affect row a second time" — the metric
+    then errors on every tick (tripl-0zpq.270). This guard is what protects the
+    legacy rows; the ``app_version``/``platform`` extras were always deduplicated
+    against the stored list, just never the stored list against itself.
+    """
+    breakdown_columns: list[str] = []
+    seen: set[str] = set()
+    extras = (definition.app_version_column, definition.platform_column)
+    for column in (*(definition.breakdown_columns or []), *(extra for extra in extras if extra)):
+        if column in seen:
+            continue
+        seen.add(column)
+        breakdown_columns.append(column)
     return breakdown_columns
 
 
@@ -832,8 +848,9 @@ def _collect_fact_breakdown_rows(
         time_from=chunk_from,
         time_to=chunk_to,
     )
-    _upsert_metric_value_breakdown_rows(session, rows=rows_out)
-    return len(rows_out)
+    # The upsert's own return, not ``len(rows_out)``: it drops non-finite values
+    # first, and the count the task reports has to be what was stored.
+    return _upsert_metric_value_breakdown_rows(session, rows=rows_out)
 
 
 def _collect_fact_ratio_breakdown_rows(
@@ -923,8 +940,9 @@ def _collect_fact_ratio_breakdown_rows(
         time_from=chunk_from,
         time_to=chunk_to,
     )
-    _upsert_metric_value_breakdown_rows(session, rows=rows_out)
-    return len(rows_out)
+    # The upsert's own return, not ``len(rows_out)``: it drops non-finite values
+    # first, and the count the task reports has to be what was stored.
+    return _upsert_metric_value_breakdown_rows(session, rows=rows_out)
 
 
 def _resolve_fact_composition(definition: MetricDefinition) -> MetricComposition:
@@ -1020,6 +1038,9 @@ def _collect_fact_single(
     if ds is None:
         msg = "DataSource for fact metric not found"
         raise ScanError(msg)
+    # ``_load_fact_table`` scoped the fact TABLE to this project; this scopes the
+    # warehouse credential behind it, which nothing else on this path does.
+    _reject_foreign_data_source(session, project_id=definition.project_id, data_source=ds)
     interval_code = interval_spec.code
     dialect = _dialect_for_data_source(ds)
 
@@ -1042,44 +1063,46 @@ def _collect_fact_single(
             interval_delta=delta,
             chunk_interval_code=definition.replay_chunk_interval,
         )
-        for chunk_from, chunk_to in chunks:
-            values, base_query, measure = _aggregate_fact_window(
-                adapter,
-                fact_table=fact_table,
-                operand=operand,
-                allowed_columns=allowed_columns,
-                dialect=dialect,
-                interval_code=interval_code,
-                chunk_from=chunk_from,
-                chunk_to=chunk_to,
-            )
-            value_rows = _build_metric_value_rows(
-                metric_definition_id=definition.id,
-                scan_config_id=None,
-                values=values,
-            )
-            _delete_metric_values_window(
-                session,
-                metric_definition_id=definition.id,
-                time_from=chunk_from,
-                time_to=chunk_to,
-            )
-            _upsert_metric_values_rows(session, rows=value_rows)
-            total_values += len(value_rows)
-            total_breakdowns += _collect_fact_breakdown_rows(
-                session,
-                adapter=adapter,
-                definition=definition,
-                base_query=base_query,
-                time_column=fact_table.timestamp_column,
-                interval_code=interval_code,
-                agg=operand.aggregation,
-                measure_column=measure,
-                allowed_columns=allowed_columns,
-                chunk_from=chunk_from,
-                chunk_to=chunk_to,
-            )
-            session.commit()
+        # Rank top-N breakdown values once over the whole window (tripl-0zpq.346).
+        # That pre-query is not chunked: it is the one statement spanning it.
+        with rank_top_n_once(adapter, time_from, time_to):
+            for chunk_from, chunk_to in chunks:
+                values, base_query, measure = _aggregate_fact_window(
+                    adapter,
+                    fact_table=fact_table,
+                    operand=operand,
+                    allowed_columns=allowed_columns,
+                    dialect=dialect,
+                    interval_code=interval_code,
+                    chunk_from=chunk_from,
+                    chunk_to=chunk_to,
+                )
+                value_rows = _build_metric_value_rows(
+                    metric_definition_id=definition.id,
+                    scan_config_id=None,
+                    values=values,
+                )
+                _delete_metric_values_window(
+                    session,
+                    metric_definition_id=definition.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
+                total_values += _upsert_metric_values_rows(session, rows=value_rows)
+                total_breakdowns += _collect_fact_breakdown_rows(
+                    session,
+                    adapter=adapter,
+                    definition=definition,
+                    base_query=base_query,
+                    time_column=fact_table.timestamp_column,
+                    interval_code=interval_code,
+                    agg=operand.aggregation,
+                    measure_column=measure,
+                    allowed_columns=allowed_columns,
+                    chunk_from=chunk_from,
+                    chunk_to=chunk_to,
+                )
+                session.commit()
     finally:
         adapter.close()
 
@@ -1123,6 +1146,12 @@ def _collect_fact_ratio(
     if numerator_ds is None or denominator_ds is None:
         msg = "DataSource for fact ratio operand not found"
         raise ScanError(msg)
+    # Both operands, because they may sit on different warehouses and either one
+    # is a credential this collection is about to open.
+    for operand_ds in (numerator_ds, denominator_ds):
+        _reject_foreign_data_source(
+            session, project_id=definition.project_id, data_source=operand_ds
+        )
     breakdown_columns = _metric_breakdown_columns(definition)
     if breakdown_columns and numerator_ft.id != denominator_ft.id:
         msg = (
@@ -1159,59 +1188,62 @@ def _collect_fact_ratio(
                 interval_delta=delta,
                 chunk_interval_code=definition.replay_chunk_interval,
             )
-            for chunk_from, chunk_to in chunks:
-                numerator_values, _nq, _nm = _aggregate_fact_window(
-                    numerator_adapter,
-                    fact_table=numerator_ft,
-                    operand=numerator_op,
-                    allowed_columns=numerator_allowed,
-                    dialect=numerator_dialect,
-                    interval_code=interval_code,
-                    chunk_from=chunk_from,
-                    chunk_to=chunk_to,
-                )
-                denominator_values, _dq, _dm = _aggregate_fact_window(
-                    denominator_adapter,
-                    fact_table=denominator_ft,
-                    operand=denominator_op,
-                    allowed_columns=denominator_allowed,
-                    dialect=denominator_dialect,
-                    interval_code=interval_code,
-                    chunk_from=chunk_from,
-                    chunk_to=chunk_to,
-                )
-                values = evaluate_composition(
-                    MetricComposition.ratio,
-                    numerator=numerator_values,
-                    denominator=denominator_values,
-                )
-                value_rows = _build_metric_value_rows(
-                    metric_definition_id=definition.id,
-                    scan_config_id=None,
-                    values=values,
-                )
-                _delete_metric_values_window(
-                    session,
-                    metric_definition_id=definition.id,
-                    time_from=chunk_from,
-                    time_to=chunk_to,
-                )
-                _upsert_metric_values_rows(session, rows=value_rows)
-                total_values += len(value_rows)
-                if breakdown_columns:
-                    total_breakdowns += _collect_fact_ratio_breakdown_rows(
-                        session,
-                        adapter=numerator_adapter,
-                        definition=definition,
+            # Rank top-N breakdown values once over the whole window (tripl-0zpq.346);
+            # only the numerator adapter serves the ratio breakdown pass. That
+            # pre-query is not chunked: it is the one statement spanning it.
+            with rank_top_n_once(numerator_adapter, time_from, time_to):
+                for chunk_from, chunk_to in chunks:
+                    numerator_values, _nq, _nm = _aggregate_fact_window(
+                        numerator_adapter,
                         fact_table=numerator_ft,
-                        numerator_op=numerator_op,
-                        denominator_op=denominator_op,
+                        operand=numerator_op,
+                        allowed_columns=numerator_allowed,
                         dialect=numerator_dialect,
                         interval_code=interval_code,
                         chunk_from=chunk_from,
                         chunk_to=chunk_to,
                     )
-                session.commit()
+                    denominator_values, _dq, _dm = _aggregate_fact_window(
+                        denominator_adapter,
+                        fact_table=denominator_ft,
+                        operand=denominator_op,
+                        allowed_columns=denominator_allowed,
+                        dialect=denominator_dialect,
+                        interval_code=interval_code,
+                        chunk_from=chunk_from,
+                        chunk_to=chunk_to,
+                    )
+                    values = evaluate_composition(
+                        MetricComposition.ratio,
+                        numerator=numerator_values,
+                        denominator=denominator_values,
+                    )
+                    value_rows = _build_metric_value_rows(
+                        metric_definition_id=definition.id,
+                        scan_config_id=None,
+                        values=values,
+                    )
+                    _delete_metric_values_window(
+                        session,
+                        metric_definition_id=definition.id,
+                        time_from=chunk_from,
+                        time_to=chunk_to,
+                    )
+                    total_values += _upsert_metric_values_rows(session, rows=value_rows)
+                    if breakdown_columns:
+                        total_breakdowns += _collect_fact_ratio_breakdown_rows(
+                            session,
+                            adapter=numerator_adapter,
+                            definition=definition,
+                            fact_table=numerator_ft,
+                            numerator_op=numerator_op,
+                            denominator_op=denominator_op,
+                            dialect=numerator_dialect,
+                            interval_code=interval_code,
+                            chunk_from=chunk_from,
+                            chunk_to=chunk_to,
+                        )
+                    session.commit()
         finally:
             denominator_adapter.close()
     finally:
@@ -1314,11 +1346,26 @@ class _RatioMetricPlan:
     breakdowns: tuple[_RatioBreakdownPlan, ...]
 
 
-# A breakdown scan is keyed by (fact table, column, values_limit): the top-N
-# "Other" rollup depends on values_limit, so metrics that share a column but not
-# a limit cannot share one scan (different rollups). Everything else (the per-spec
-# aggregate columns) is layered on top of the shared GROUP BY.
-_BreakdownScanKey = tuple[uuid.UUID, str, int | None]
+# A breakdown scan is keyed by (fact table, column, values_limit, ranking window):
+# the top-N "Other" rollup depends on values_limit, so metrics that share a column
+# but not a limit cannot share one scan (different rollups). A limited rollup also
+# depends on the window its values are ranked over, which is the metric's OWN
+# collection window — the per-metric collectors rank there too — so limited
+# metrics share a scan only when their windows match (tripl-0zpq.346). An
+# unlimited breakdown ranks nothing and keeps ``None`` there, sharing one scan
+# across windows as before. Everything else (the per-spec aggregate columns) is
+# layered on top of the shared GROUP BY.
+_BreakdownScanKey = tuple[uuid.UUID, str, int | None, tuple[datetime, datetime] | None]
+
+
+def _breakdown_scan_key(
+    fact_table_id: uuid.UUID,
+    column: str,
+    values_limit: int | None,
+    window: tuple[datetime, datetime],
+) -> _BreakdownScanKey:
+    """The shared breakdown scan a metric's ``column`` breakdown reads from."""
+    return (fact_table_id, column, values_limit, window if values_limit is not None else None)
 
 
 def _index_multi_aggregate(
@@ -1435,33 +1482,60 @@ class _FactBatchContext:
     """Lazily-built fact-table / data-source / adapter caches for one batch."""
 
     session: Session
+    #: Fact tables that already passed ``_load_fact_table``'s project scope for
+    #: the metric that resolved them. Keyed by id alone, which is sound only
+    #: because :meth:`resolve` re-applies the scope on every cache HIT: one batch
+    #: mixes projects (``schedule.check_metric_definitions_due`` groups fact
+    #: metrics by interval alone), so an entry cached under project A used to be
+    #: served to project B's metric past the check that would refuse it
+    #: (tripl-m81e). The out-of-resolve readers in
+    #: ``_run_fact_interval_group`` only index ids a successful ``resolve``
+    #: registered, so every entry they read has already been scoped.
     fact_tables: dict[uuid.UUID, FactTable] = field(default_factory=dict)
     adapters: dict[uuid.UUID, BaseAdapter] = field(default_factory=dict)
     columns: dict[uuid.UUID, set[str]] = field(default_factory=dict)
     dialects: dict[uuid.UUID, SqlDialect] = field(default_factory=dict)
+    #: ``(data_source_id, project_id)`` pairs already cleared by
+    #: ``_reject_foreign_data_source``. Keyed by BOTH because one batch mixes
+    #: projects: ``check_metric_definitions_due`` groups the fact metrics it
+    #: dispatches by interval alone, so an adapter this project legitimately
+    #: opened is sitting in ``adapters`` when the next project's metric asks for
+    #: the same source. A per-source-only memo would let that second project
+    #: inherit the first one's verdict.
+    scoped: set[tuple[uuid.UUID, uuid.UUID]] = field(default_factory=set)
 
     def resolve(
         self, fact_table_id: uuid.UUID | None, *, project_id: uuid.UUID
     ) -> tuple[FactTable, BaseAdapter]:
         fact_table = self.fact_tables.get(fact_table_id) if fact_table_id else None
-        if fact_table is None:
+        # A cached table is reused only for its own project; for any other the
+        # load runs again and ``_load_fact_table`` refuses it (tripl-m81e).
+        if fact_table is None or fact_table.project_id != project_id:
             fact_table = _load_fact_table(self.session, fact_table_id, project_id=project_id)
             self.fact_tables[fact_table.id] = fact_table
         # ``_load_fact_table`` rejects a fact table without a bound data source.
         data_source_id = fact_table.data_source_id
         assert data_source_id is not None
         adapter = self.adapters.get(data_source_id)
-        if adapter is None:
+        scope_key = (data_source_id, project_id)
+        if adapter is None or scope_key not in self.scoped:
             ds = self.session.get(DataSource, data_source_id)
             if ds is None:
                 msg = "DataSource for fact metric not found"
                 raise ScanError(msg)
-            adapter = _build_adapter(ds)
-            adapter.test_connection()
-            self.adapters[data_source_id] = adapter
-            # Cached under the same key as the adapter: the dialect a filter must be
-            # compiled for is a property of the data source, not of the fact table.
-            self.dialects[data_source_id] = _dialect_for_data_source(ds)
+            # Before the credential is opened, and again for a project that has
+            # not been cleared for this source yet — see ``scoped`` above. The
+            # repeat ``session.get`` costs no query: the row is already in the
+            # session's identity map.
+            _reject_foreign_data_source(self.session, project_id=project_id, data_source=ds)
+            self.scoped.add(scope_key)
+            if adapter is None:
+                adapter = _build_adapter(ds)
+                adapter.test_connection()
+                self.adapters[data_source_id] = adapter
+                # Cached under the same key as the adapter: the dialect a filter must be
+                # compiled for is a property of the data source, not of the fact table.
+                self.dialects[data_source_id] = _dialect_for_data_source(ds)
         return fact_table, adapter
 
     def adapter_for(self, fact_table: FactTable) -> BaseAdapter:
@@ -1536,10 +1610,8 @@ def _plan_single_metric(
     _validate_breakdown_columns(breakdown_columns, allowed_columns=allowed_columns)
     breakdowns: list[_BreakdownPlan] = []
     for column in breakdown_columns:
-        scan_key: _BreakdownScanKey = (
-            fact_table.id,
-            column,
-            definition.breakdown_values_limit,
+        scan_key = _breakdown_scan_key(
+            fact_table.id, column, definition.breakdown_values_limit, window
         )
         bd_registry = bd_registries.setdefault(scan_key, _SpecRegistry())
         bd_key = bd_registry.register(
@@ -1623,10 +1695,8 @@ def _plan_ratio_metric(
         numerator_op, _num_ft_id, numerator_measure, numerator_filter = operand_plans[0]
         denominator_op, _den_ft_id, denominator_measure, denominator_filter = operand_plans[1]
         for column in breakdown_columns:
-            scan_key: _BreakdownScanKey = (
-                numerator_ft_id,
-                column,
-                definition.breakdown_values_limit,
+            scan_key = _breakdown_scan_key(
+                numerator_ft_id, column, definition.breakdown_values_limit, window
             )
             bd_registry = bd_registries.setdefault(scan_key, _SpecRegistry())
             numerator_bd_key = bd_registry.register(
@@ -1685,14 +1755,12 @@ def _assemble_single_metric(
         time_from=time_from,
         time_to=time_to,
     )
-    _upsert_metric_values_rows(session, rows=value_rows)
+    values_written = _upsert_metric_values_rows(session, rows=value_rows)
 
     breakdown_rows: list[dict[str, object]] = []
     for breakdown in plan.breakdowns:
-        scan_key: _BreakdownScanKey = (
-            plan.fact_table_id,
-            breakdown.column,
-            breakdown.values_limit,
+        scan_key = _breakdown_scan_key(
+            plan.fact_table_id, breakdown.column, breakdown.values_limit, plan.window
         )
         entry = breakdown_results.get(scan_key)
         if entry is None:
@@ -1719,6 +1787,7 @@ def _assemble_single_metric(
                 }
             )
 
+    breakdowns_written = 0
     if plan.breakdowns:
         _delete_metric_value_breakdowns_window(
             session,
@@ -1726,9 +1795,9 @@ def _assemble_single_metric(
             time_from=time_from,
             time_to=time_to,
         )
-        _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
+        breakdowns_written = _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
 
-    return len(value_rows), len(breakdown_rows)
+    return values_written, breakdowns_written
 
 
 def _assemble_ratio_metric(
@@ -1764,14 +1833,12 @@ def _assemble_ratio_metric(
         time_from=time_from,
         time_to=time_to,
     )
-    _upsert_metric_values_rows(session, rows=value_rows)
+    values_written = _upsert_metric_values_rows(session, rows=value_rows)
 
     breakdown_rows: list[dict[str, object]] = []
     for breakdown in plan.breakdowns:
-        scan_key: _BreakdownScanKey = (
-            plan.numerator_fact_table_id,
-            breakdown.column,
-            breakdown.values_limit,
+        scan_key = _breakdown_scan_key(
+            plan.numerator_fact_table_id, breakdown.column, breakdown.values_limit, plan.window
         )
         entry = breakdown_results.get(scan_key)
         if entry is None:
@@ -1789,6 +1856,7 @@ def _assemble_ratio_metric(
             denominator_index=index_by_key[breakdown.denominator_key],
         )
 
+    breakdowns_written = 0
     if plan.breakdowns:
         _delete_metric_value_breakdowns_window(
             session,
@@ -1796,9 +1864,9 @@ def _assemble_ratio_metric(
             time_from=time_from,
             time_to=time_to,
         )
-        _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
+        breakdowns_written = _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
 
-    return len(value_rows), len(breakdown_rows)
+    return values_written, breakdowns_written
 
 
 def _run_fact_interval_group(
@@ -1888,85 +1956,107 @@ def _run_fact_interval_group(
 
         # Bound each warehouse scan's time range the way the per-metric path does:
         # split the covering window into interval-aligned chunks (smallest
-        # replay_chunk_interval among the group's metrics) so no single query
+        # replay_chunk_interval among the group's metrics) so no bucketed scan
         # spans the whole window, which on fine-grained intervals could exceed the
         # task soft_time_limit. Merging the per-chunk results reproduces the same
         # per-bucket series a single covering scan would (value-identity holds).
+        # The one exception is a limited breakdown's top-N ranking pre-query: it
+        # runs once over its metric's whole window by design (tripl-0zpq.346),
+        # an un-bucketed GROUP BY over the breakdown column rather than a scan of
+        # every bucket's aggregates.
         chunks = _iter_window_chunks(
             covering_from,
             covering_to,
             interval_delta=delta,
             chunk_interval_code=_batch_chunk_interval_code(definitions),
         )
-        for chunk_from, chunk_to in chunks:
-            for fact_table_id, registry in ft_registries.items():
-                if not registry.specs or fact_table_id in fact_errors:
-                    continue
-                try:
-                    fact_table = context.fact_tables[fact_table_id]
-                    adapter = context.adapter_for(fact_table)
-                    # Refresh the adapter's column allowlist for THIS fact table's
-                    # query (a shared adapter serves several fact tables in turn).
-                    adapter.get_columns(fact_table.sql)
-                    col_names, rows = adapter.get_time_bucketed_multi_aggregate(
-                        fact_table.sql,
-                        fact_table.timestamp_column,
-                        interval_code,
-                        registry.specs,
-                        chunk_from,
-                        chunk_to,
-                        limit=metric_query_fetch_limit(),
-                    )
-                    rows = _reject_truncated_rows(
-                        rows,
-                        what=f"Batched fact aggregate for fact table {fact_table_id}",
-                        chunk_from=chunk_from,
-                        chunk_to=chunk_to,
-                    )
-                    _merge_multi_aggregate(
-                        results.setdefault(fact_table_id, {}),
-                        _index_multi_aggregate(col_names, rows, interval_code),
-                    )
-                except Exception as exc:  # noqa: BLE001 - attributed per metric below
-                    logger.exception(
-                        "Batch multi-aggregate failed for fact table %s", fact_table_id
-                    )
-                    fact_errors[fact_table_id] = exc
+        # One ranking block per adapter spans the whole chunk loop, so each top-N
+        # pre-query runs once rather than once per chunk. The window it ranks over
+        # is set per limited breakdown scan below — the scan's metric window, not
+        # this covering one (tripl-0zpq.346); the outer window only owns the cache.
+        with ExitStack() as ranking:
+            for group_adapter in context.adapters.values():
+                ranking.enter_context(rank_top_n_once(group_adapter, covering_from, covering_to))
+            for chunk_from, chunk_to in chunks:
+                for fact_table_id, registry in ft_registries.items():
+                    if not registry.specs or fact_table_id in fact_errors:
+                        continue
+                    try:
+                        fact_table = context.fact_tables[fact_table_id]
+                        adapter = context.adapter_for(fact_table)
+                        # Refresh the adapter's column allowlist for THIS fact table's
+                        # query (a shared adapter serves several fact tables in turn).
+                        adapter.get_columns(fact_table.sql)
+                        col_names, rows = adapter.get_time_bucketed_multi_aggregate(
+                            fact_table.sql,
+                            fact_table.timestamp_column,
+                            interval_code,
+                            registry.specs,
+                            chunk_from,
+                            chunk_to,
+                            limit=metric_query_fetch_limit(),
+                        )
+                        rows = _reject_truncated_rows(
+                            rows,
+                            what=f"Batched fact aggregate for fact table {fact_table_id}",
+                            chunk_from=chunk_from,
+                            chunk_to=chunk_to,
+                        )
+                        _merge_multi_aggregate(
+                            results.setdefault(fact_table_id, {}),
+                            _index_multi_aggregate(col_names, rows, interval_code),
+                        )
+                    except Exception as exc:  # noqa: BLE001 - attributed per metric below
+                        logger.exception(
+                            "Batch multi-aggregate failed for fact table %s", fact_table_id
+                        )
+                        fact_errors[fact_table_id] = exc
 
-            for scan_key, registry in bd_registries.items():
-                if not registry.specs or scan_key in breakdown_errors:
-                    continue
-                fact_table_id, column, values_limit = scan_key
-                try:
-                    fact_table = context.fact_tables[fact_table_id]
-                    adapter = context.adapter_for(fact_table)
-                    adapter.get_columns(fact_table.sql)
-                    col_names, rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
-                        fact_table.sql,
-                        fact_table.timestamp_column,
-                        interval_code,
-                        column,
-                        registry.specs,
-                        chunk_from,
-                        chunk_to,
-                        values_limit=values_limit,
-                        limit=metric_query_fetch_limit(),
-                    )
-                    rows = _reject_truncated_rows(
-                        rows,
-                        what=f"Batched fact breakdown {column!r}",
-                        chunk_from=chunk_from,
-                        chunk_to=chunk_to,
-                    )
-                    index_by_name = {name: index for index, name in enumerate(col_names)}
-                    existing = breakdown_results.get(scan_key)
-                    if existing is None:
-                        breakdown_results[scan_key] = (index_by_name, list(rows))
-                    else:
-                        existing[1].extend(rows)
-                except Exception as exc:  # noqa: BLE001 - attributed per metric below
-                    logger.exception("Batch breakdown scan failed for %s", scan_key)
-                    breakdown_errors[scan_key] = exc
+                for scan_key, registry in bd_registries.items():
+                    if not registry.specs or scan_key in breakdown_errors:
+                        continue
+                    fact_table_id, column, values_limit, rank_window = scan_key
+                    # A limited scan serves only metrics sharing ``rank_window``,
+                    # so chunks outside it would be read only to be clipped away.
+                    if rank_window is not None and not (
+                        chunk_from < rank_window[1] and rank_window[0] < chunk_to
+                    ):
+                        continue
+                    try:
+                        fact_table = context.fact_tables[fact_table_id]
+                        adapter = context.adapter_for(fact_table)
+                        adapter.get_columns(fact_table.sql)
+                        with (
+                            rank_top_n_once(adapter, *rank_window)
+                            if rank_window is not None
+                            else nullcontext()
+                        ):
+                            col_names, rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
+                                fact_table.sql,
+                                fact_table.timestamp_column,
+                                interval_code,
+                                column,
+                                registry.specs,
+                                chunk_from,
+                                chunk_to,
+                                values_limit=values_limit,
+                                limit=metric_query_fetch_limit(),
+                            )
+                        rows = _reject_truncated_rows(
+                            rows,
+                            what=f"Batched fact breakdown {column!r}",
+                            chunk_from=chunk_from,
+                            chunk_to=chunk_to,
+                        )
+                        index_by_name = {name: index for index, name in enumerate(col_names)}
+                        existing = breakdown_results.get(scan_key)
+                        if existing is None:
+                            breakdown_results[scan_key] = (index_by_name, list(rows))
+                        else:
+                            existing[1].extend(rows)
+                    except Exception as exc:  # noqa: BLE001 - attributed per metric below
+                        logger.exception("Batch breakdown scan failed for %s", scan_key)
+                        breakdown_errors[scan_key] = exc
 
         plans: list[_SingleMetricPlan | _RatioMetricPlan] = [*single_plans, *ratio_plans]
         plans.sort(
@@ -1983,7 +2073,12 @@ def _run_fact_interval_group(
                         raise fact_error
                     for breakdown in plan.breakdowns:
                         bd_error = breakdown_errors.get(
-                            (plan.fact_table_id, breakdown.column, breakdown.values_limit)
+                            _breakdown_scan_key(
+                                plan.fact_table_id,
+                                breakdown.column,
+                                breakdown.values_limit,
+                                plan.window,
+                            )
                         )
                         if bd_error is not None:
                             raise bd_error
@@ -2004,10 +2099,11 @@ def _run_fact_interval_group(
                             raise fact_error
                     for ratio_breakdown in plan.breakdowns:
                         bd_error = breakdown_errors.get(
-                            (
+                            _breakdown_scan_key(
                                 plan.numerator_fact_table_id,
                                 ratio_breakdown.column,
                                 ratio_breakdown.values_limit,
+                                plan.window,
                             )
                         )
                         if bd_error is not None:
@@ -2045,6 +2141,60 @@ def _run_fact_interval_group(
         context.close()
 
 
+def _reject_foreign_data_source(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    data_source: DataSource,
+) -> None:
+    """Fail the collection if the stored data source is another project's.
+
+    The save doors (``load_project_data_source`` for a ``sql`` metric,
+    ``fact_table_service._verify_data_source`` for a fact table) are SAVE-time,
+    and rows written before them walked in while they were open: this collector
+    resolves the credential by primary key alone and the beat dispatches every
+    active metric with no scoping join, so such a row kept running its project's
+    free-text SELECT under a foreign warehouse credential, unattended, forever
+    (tripl-0zpq.347).
+
+    Called on EVERY credential this module opens, not just the ``sql`` one: the
+    fact half reaches its warehouse through ``fact_tables.data_source_id``, and
+    ``_load_fact_table`` scopes the fact TABLE to the metric's project while
+    nothing scoped the source behind it. That half needs the guard MORE, because
+    tripl-0zpq.177 tightened its save door from "a ScanConfig binds this source
+    to this project" to ownership — so a stored binding the save door would now
+    refuse (a workspace-global source this project has since stopped scanning,
+    or one owned by another project) survives untouched in ``fact_tables`` and
+    is honoured on every tick.
+
+    The verdict is the SAME predicate the save doors apply
+    (:func:`data_source_out_of_project_scope`) — one rule, every caller — so a
+    legacy row now fails loudly, with a red metric and a message an owner can
+    act on, instead of quietly succeeding.
+
+    Takes ``project_id`` rather than the metric definition because the batched
+    fact path resolves data sources inside ``_FactBatchContext``, which is keyed
+    by fact table and holds no single definition.
+    """
+    scanning_project_ids: set[uuid.UUID] = set()
+    if data_source.project_id is None:
+        scanning_project_ids = set(
+            session.scalars(
+                select(ScanConfig.project_id).where(ScanConfig.data_source_id == data_source.id)
+            ).all()
+        )
+    if data_source_out_of_project_scope(
+        data_source,
+        project_id=project_id,
+        scanning_project_ids=scanning_project_ids,
+    ):
+        msg = (
+            "This metric's data source belongs to another project and cannot be "
+            "used here. Repoint the metric at a data source this project may use."
+        )
+        raise ScanError(msg)
+
+
 def _collect_sql(
     session: Session,
     *,
@@ -2079,12 +2229,23 @@ def _collect_sql(
         raise ScanError(msg)
     value_column = _config_str(config, "value_column") or SQL_VALUE_COLUMN
 
-    safe_sql = validate_select_sql(metric_sql, value_column=value_column, time_column=time_column)
+    try:
+        safe_sql = validate_select_sql(
+            metric_sql, value_column=value_column, time_column=time_column
+        )
+    except ValueError as exc:
+        # The validator's message is tripl-authored English naming the missing
+        # or unsafe part ("SELECT must project a 'value' column", ...). Letting
+        # the bare ValueError escape made ``user_facing_error`` fall back to
+        # "Scan failed due to an internal error." on a mistake the user can
+        # actually fix (tripl-0zpq.173).
+        raise ScanError(str(exc)) from exc
 
     ds = session.get(DataSource, definition.data_source_id)
     if ds is None:
         msg = "DataSource for sql metric not found"
         raise ScanError(msg)
+    _reject_foreign_data_source(session, project_id=definition.project_id, data_source=ds)
 
     adapter = _build_adapter(ds)
     total_values = 0
@@ -2141,8 +2302,7 @@ def _collect_sql(
                 time_from=chunk_from,
                 time_to=chunk_to,
             )
-            _upsert_metric_values_rows(session, rows=value_rows)
-            total_values += len(value_rows)
+            total_values += _upsert_metric_values_rows(session, rows=value_rows)
             session.commit()
     finally:
         adapter.close()
@@ -2328,8 +2488,9 @@ def _compose_grid_region(
         time_to=window_to,
         scan_config_id=scan_config.id,
     )
-    _upsert_metric_values_rows(session, rows=value_rows)
-    return len(value_rows), True
+    # ``True`` regardless: the window was processed and its watermark must move
+    # even if every bucket the warehouse answered was non-finite and dropped.
+    return _upsert_metric_values_rows(session, rows=value_rows), True
 
 
 def _collect_event_composition(

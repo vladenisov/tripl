@@ -289,6 +289,53 @@ const NAV_SUBSURFACE_LEAVES: Record<string, string> = {
 }
 
 /**
+ * The one landing page of a project. "/" sends a single-project account here,
+ * and the project switcher and palette used to pick Events instead, so the same
+ * project had two front doors (SHELL-44).
+ */
+export function projectHomePath(slug: string): string {
+  return `/p/${slug}/overview`
+}
+
+// Surfaces that exist in every project under the same address, so switching
+// project can keep the reader on the one they are comparing.
+const PORTABLE_SURFACES: ReadonlySet<string> = new Set([
+  'overview',
+  'events',
+  'metrics',
+  'anomalies',
+  'reconciliation',
+  'coverage',
+  'scans',
+  'concepts',
+])
+
+/**
+ * Where switching from project `fromSlug` to `toSlug` lands: the same surface
+ * in the new project when it has one, the project's home otherwise.
+ *
+ * Only the surface survives. Anything after it names a row of the old project
+ * (an event type, a scan, a metric, a settings item) and would 404 or, worse,
+ * resolve to an unrelated row in the new one. The query string goes too: its
+ * `?branch=` and item anchors belong to the old project.
+ */
+export function switchProjectPath(
+  currentPath: string,
+  fromSlug: string | undefined,
+  toSlug: string,
+): string {
+  const home = projectHomePath(toSlug)
+  if (!fromSlug) return home
+  const base = `/p/${fromSlug}`
+  if (currentPath !== base && !currentPath.startsWith(`${base}/`)) return home
+  const [surface, sub] = currentPath.slice(base.length).split('/').filter(Boolean)
+  if (!surface) return home
+  if (surface === 'settings' && sub) return `/p/${toSlug}/settings/${sub}`
+  if (surface === 'metrics' && sub === 'fact-tables') return `/p/${toSlug}/metrics/fact-tables`
+  return PORTABLE_SURFACES.has(surface) ? `/p/${toSlug}/${surface}` : home
+}
+
+/**
  * Resolve which nav area (group) and item a project-scoped pathname belongs to,
  * for breadcrumbs like "project › Plan › Events". Returns null when no grouped
  * nav item matches (e.g. project general settings, overview).

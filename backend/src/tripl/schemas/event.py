@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from tripl.models.event import EventStatus
 from tripl.models.variable_value import VariableValueKind
 from tripl.schemas.event_type import EventTypeBrief
+from tripl.schemas.not_null_update import reject_explicit_nulls
 
 
 class EventFieldValueIn(BaseModel):
@@ -14,9 +15,34 @@ class EventFieldValueIn(BaseModel):
     value: str = Field(max_length=100_000)
 
 
+# The most a meta value may weigh ONCE STORED.
+# ``uq_event_meta_value_event_meta_value`` (b7f4d02a91c6) took the stored value
+# into a btree, and a btree entry cannot exceed 2704 bytes on the default 8 KiB
+# page. Nothing bounded it, so a pasted note or blob reached Postgres and came
+# back as ProgramLimitExceeded ("index row size ... exceeds btree version 4
+# maximum") — a 500 on the whole event save, for a payload that stored fine while
+# the key was the two uuids alone (tripl-0zpq.255). The budget is in BYTES
+# because bytes are what the index counts: 2000 characters of Cyrillic are 4000
+# of them. 2000 leaves room for the tuple header and the two uuids beside it.
+#
+# Enforced in ``event_service._normalize_meta_values_against`` rather than here,
+# and against the value that function RETURNS: a meta field with a
+# ``link_template`` stores only the part the template wraps, so someone pasting
+# the whole URL sends a prefix that never enters the key. Checking the pasted
+# text refused saves whose stored value would have fitted with room to spare.
+META_VALUE_MAX_BYTES = 2000
+# A bound on the PAYLOAD, which is a different question: nothing should be able
+# to hand an unbounded string to the JSON parser or to
+# ``api/v1/events.event_create_audit_payload``. Deliberately loose, so it never
+# fires ahead of the real rule above — the longest legitimate paste is a
+# 2000-byte value wrapped in a ``link_template``, itself capped at 2000
+# characters (``schemas/meta_field``).
+_META_VALUE_MAX_PAYLOAD_CHARS = 8000
+
+
 class EventMetaValueIn(BaseModel):
     meta_field_definition_id: uuid.UUID
-    value: str
+    value: str = Field(max_length=_META_VALUE_MAX_PAYLOAD_CHARS)
 
 
 class EventCreate(BaseModel):
@@ -40,6 +66,26 @@ class EventCreate(BaseModel):
     def validate_metric_breakdown_columns(cls, value: list[str]) -> list[str]:
         return _normalize_metric_breakdown_columns(value)
 
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, value: list[str]) -> list[str]:
+        return _normalize_tags(value)
+
+
+# The single-event PATCH counterpart of ``_BULK_NOT_NULL_UPDATE_FIELDS`` below:
+# the update fields whose Event column is NOT NULL, where ``update_event``
+# assigns the dumped value straight onto the row (tripl-0zpq.267). Four names
+# only, and every omission is deliberate:
+#   * ``title`` — NOT NULL, but ``update_event`` writes ``(value or "").strip()``,
+#     so a null already means "clear the label" and has always worked;
+#   * ``metric_breakdown_columns`` — NOT NULL, but its own validator turns a null
+#     into ``[]`` (tripl-0zpq.190), which is a MEANING, not an error;
+#   * ``tags`` / ``field_values`` / ``meta_values`` — the service tests these
+#     ``is not None``, so a null is how a client says "leave the children alone";
+#   * ``sunset_at`` / ``owner_id`` / ``superseded_by_event_id`` — nullable, and a
+#     null clears them.
+_NOT_NULL_UPDATE_FIELDS = frozenset({"name", "description", "status", "reviewed"})
+
 
 class EventUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=500)
@@ -58,12 +104,76 @@ class EventUpdate(BaseModel):
     field_values: list[EventFieldValueIn] | None = None
     meta_values: list[EventMetaValueIn] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _NOT_NULL_UPDATE_FIELDS)
+
     @field_validator("metric_breakdown_columns")
     @classmethod
-    def validate_metric_breakdown_columns(cls, value: list[str] | None) -> list[str] | None:
+    def validate_metric_breakdown_columns(cls, value: list[str] | None) -> list[str]:
+        # An explicit ``null`` means "no breakdown columns". It cannot mean
+        # "leave them alone": ``update_event`` keys off PRESENCE in
+        # ``model_dump(exclude_unset=True)``, so the field a client did not send
+        # is already the way to leave them alone. Before this, a sent ``null``
+        # was assigned straight to a NOT NULL column and re-indexed inside the
+        # same transaction, where ``" ".join(None)`` in ``_event_document``
+        # raised TypeError — a rolled-back 500 instead of a save
+        # (tripl-0zpq.190). Nothing can depend on the old meaning: it had none,
+        # every such request failed.
+        return _normalize_metric_breakdown_columns(value or [])
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
-        return _normalize_metric_breakdown_columns(value)
+        return _normalize_tags(value)
+
+
+# ``event_tags.name`` is ``String(100)``.
+_TAG_MAX_LENGTH = 100
+
+
+def _normalize_tags(value: list[str]) -> list[str]:
+    """The one place a tag is put in the form the tag FILTER can find.
+
+    ``?tag=`` is an equality on ``event_tags.name``, so the stored spelling IS
+    the lookup key and the documented rule ("free-form labels, lower-cased") had
+    to hold on every door. It held on exactly one: the web form's own
+    ``addTag``. Everything else — MCP ``create_event``, the bulk paste, a raw
+    API client — stored what it was handed, so ``Checkout`` was invisible to
+    ``?tag=checkout`` and sat beside it in the tag list as a second label.
+
+    This fixes WRITES from here on; no migration rewrites the rows already
+    stored. What reaches those is the other half of the same repair:
+    ``event_service.list_events`` case-folds both sides of the ``?tag=``
+    equality and ``event_service.list_tags`` lower-cases the facet, so a legacy
+    ``Checkout`` row answers ``checkout`` and appears under it. A row keeps its
+    old spelling in its own ``tags`` array until the event is next saved, which
+    is cosmetic — nothing looks an event up by the spelling it carries.
+
+    Two of the ways that went wrong were bare 500s. A repeated tag hit
+    ``uq_event_tag`` at a flush no ``IntegrityError`` arm covers, and an
+    over-long one overflowed ``String(100)`` in Postgres; both surfaced through
+    the generic handler in ``main.py``. Deduping here means the constraint is
+    never reached by a client that simply said the same thing twice. Length is
+    REFUSED rather than truncated: two labels cut to the same 100 characters
+    would then collide on that same key, turning a bad tag into a failed save
+    of the whole event.
+    """
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        tag = item.strip().lower()
+        if not tag:
+            continue
+        if len(tag) > _TAG_MAX_LENGTH:
+            raise ValueError(f"Tag is longer than {_TAG_MAX_LENGTH} characters: '{tag[:40]}...'")
+        if tag not in seen:
+            normalized.append(tag)
+            seen.add(tag)
+    return normalized
 
 
 def _normalize_metric_breakdown_columns(value: list[str]) -> list[str]:
@@ -85,6 +195,14 @@ class EventBulkDelete(BaseModel):
     event_ids: list[uuid.UUID] = Field(min_length=1)
 
 
+# ``events.status`` and ``events.reviewed`` are NOT NULL, and ``bulk_update_events``
+# feeds this model's dump straight into ``update(...).values()``, so a null for
+# either would reach the column. ``sunset_at`` and ``owner_id`` stay OUT of the
+# set on purpose: they are nullable, and a null is the only way to clear them
+# across a selection.
+_BULK_NOT_NULL_UPDATE_FIELDS = frozenset({"status", "reviewed"})
+
+
 class EventBulkUpdate(BaseModel):
     event_ids: list[uuid.UUID] = Field(min_length=1)
     status: EventStatus | None = None
@@ -92,14 +210,20 @@ class EventBulkUpdate(BaseModel):
     owner_id: uuid.UUID | None = None
     reviewed: bool | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _BULK_NOT_NULL_UPDATE_FIELDS)
+
     @model_validator(mode="after")
     def validate_has_update(self) -> EventBulkUpdate:
-        if (
-            self.status is None
-            and self.sunset_at is None
-            and self.owner_id is None
-            and self.reviewed is None
-        ):
+        # The set of fields the client actually SENT, not their values — the
+        # shape ``MetricDefinitionBulkUpdate`` already uses. Reading the values
+        # made ``{"owner_id": null}`` a 422 claiming nothing was provided, and
+        # ``{"reviewed": true, "owner_id": null}`` a 204 that kept every owner,
+        # so the one selection-wide unassign the API offered could not be
+        # spelled (tripl-0zpq.276). The same body on metrics unassigns.
+        if not (self.model_fields_set - {"event_ids"}):
             raise ValueError(
                 "At least one of status, sunset_at, owner_id or reviewed must be provided"
             )
@@ -111,6 +235,10 @@ class EventMove(BaseModel):
     visible_event_ids: list[uuid.UUID] | None = None
 
 
+# The events of one view, in the order they should be shown. Ids must be unique —
+# a duplicate is rejected with 400 (it used to walk off the end of the slot list
+# with an IndexError 500). A comment rather than a docstring: a docstring here
+# would change the published schema description in ``backend/openapi.json``.
 class EventReorder(BaseModel):
     event_ids: list[uuid.UUID] = Field(min_length=1)
 

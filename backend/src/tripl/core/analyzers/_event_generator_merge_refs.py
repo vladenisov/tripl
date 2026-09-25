@@ -49,6 +49,7 @@ from tripl.models.chart_annotation import ChartAnnotation
 from tripl.models.domain_enums import (
     AlertRuleFilterField,
     ChartAnnotationScopeType,
+    MetricComposition,
     MetricScopeType,
 )
 from tripl.models.event import Event
@@ -99,6 +100,13 @@ def _move_metric_composition_operands(session: Session, *, source: Event, target
     worse, so the operands are re-pointed and the metric is driven red instead,
     naming both originals so an operator can see what happened and redefine it.
 
+    That red is gated on ``composition == ratio``, which is the only composition
+    the 1.0 argument is about: ``single`` and ``per_distinct_user`` read the
+    numerator alone, so a leftover denominator matching it changes nothing they
+    compute. The schema now refuses to STORE such a row, but one written before
+    that (only a hand-written API call could make one) was being marked red here
+    with a message about a ratio it is not (tripl-0zpq.89).
+
     Deliberately does NOT touch ``numerator_event_type_id`` /
     ``denominator_event_type_id``. They have the identical SET NULL shape when an
     event TYPE is deleted, which is a different trigger on a different path;
@@ -121,7 +129,8 @@ def _move_metric_composition_operands(session: Session, *, source: Event, target
             definition.denominator_event_id = target.id
 
         if (
-            definition.numerator_event_id is not None
+            definition.composition == MetricComposition.ratio
+            and definition.numerator_event_id is not None
             and definition.numerator_event_id == definition.denominator_event_id
         ):
             # Names THIS merge's source and target rather than the operands as
@@ -237,14 +246,27 @@ def _move_superseded_pointers(session: Session, *, source: Event, target: Event)
     pointer follows it. Nothing to fold — the column is not unique and any
     number of retired events may name the same successor.
 
-    The source's OWN pointer needs nothing here: the target keeps whatever
-    successor it already named, and a group merge is not a statement about the
-    target's own retirement.
+    ONE row is not re-pointed, and it is the target itself. If the target had
+    already named the SOURCE as its successor, the blanket re-point set
+    ``target.superseded_by_event_id = target.id`` — an event that says "send this
+    instead: itself" (tripl-0zpq.86). Nothing at the database level stops it:
+    ``models/event.py``'s column is a plain FK with ON DELETE SET NULL and
+    c3a81f6d40b2 adds no CHECK. The damage outlives the merge, because the event
+    form re-sends ``superseded_by_event_id`` on every save while an event is
+    deprecated, so ``_resolve_successor`` then answers 400 on every save until
+    the event is un-deprecated. The target's stated successor is being merged
+    INTO the target, so "send this instead" has no referent left and the pointer
+    is cleared rather than moved.
     """
     for row in session.execute(
-        select(Event).where(Event.superseded_by_event_id == source.id)
+        select(Event).where(
+            Event.superseded_by_event_id == source.id,
+            Event.id != target.id,
+        )
     ).scalars():
         row.superseded_by_event_id = target.id
+    if target.superseded_by_event_id == source.id:
+        target.superseded_by_event_id = None
 
 
 def _move_chart_annotations(session: Session, *, source: Event, target: Event) -> None:

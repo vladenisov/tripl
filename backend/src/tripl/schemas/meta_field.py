@@ -4,6 +4,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tripl.models.domain_enums import MetaFieldType, Sensitivity
+from tripl.schemas.not_null_update import reject_explicit_nulls
 
 LINK_TEMPLATE_PLACEHOLDER = "${value}"
 
@@ -56,6 +57,26 @@ class MetaFieldCreate(BaseModel):
         return self
 
 
+# The update fields whose MetaFieldDefinition column is NOT NULL, so an explicit
+# ``null`` is a 422 naming the field and not a DB-level 500 out of
+# ``update_meta_field``'s generic ``setattr`` loop — see
+# ``schemas/not_null_update`` (tripl-0zpq.267). ``field_type`` is in the set for
+# a second reason: the service resolves the stored type through
+# ``MetaFieldType(resulting_type)``, and ``MetaFieldType(None)`` raises ValueError
+# before any column is touched. ``enum_options``, ``default_value`` and
+# ``link_template`` stay out — each is nullable, and a null clears it.
+_META_FIELD_NOT_NULL_UPDATE_FIELDS = frozenset(
+    {
+        "display_name",
+        "field_type",
+        "is_required",
+        "allow_multiple",
+        "order",
+        "sensitivity",
+    }
+)
+
+
 class MetaFieldUpdate(BaseModel):
     display_name: str | None = Field(None, min_length=1, max_length=255)
     field_type: MetaFieldType | None = None
@@ -68,6 +89,11 @@ class MetaFieldUpdate(BaseModel):
     sensitivity: Sensitivity | None = None
 
     _validate_link_template = field_validator("link_template")(_normalize_link_template)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: object) -> object:
+        return reject_explicit_nulls(data, _META_FIELD_NOT_NULL_UPDATE_FIELDS)
 
     @model_validator(mode="after")
     def _check_multi(self) -> MetaFieldUpdate:
