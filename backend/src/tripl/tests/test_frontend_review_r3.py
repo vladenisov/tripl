@@ -129,6 +129,11 @@ async def test_inbox_bad_cursor_is_a_422(client: AsyncClient) -> None:
     await _seed_inbox_groups(client, slug, "R3 inbox bad", count=1)
     resp = await client.get(f"/api/v1/projects/{slug}/alert-inbox", params={"cursor": "junk"})
     assert resp.status_code == 422
+    # A NUL is refused by the decoder too, never bound into a query (the
+    # exemption test_text_filters.py records for `cursor`).
+    for path in ("alert-inbox", "alert-deliveries"):
+        laced = await client.get(f"/api/v1/projects/{slug}/{path}", params={"cursor": "a\x00b"})
+        assert laced.status_code == 422, (path, laced.text)
 
 
 @pytest.mark.asyncio
