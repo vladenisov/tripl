@@ -74,7 +74,8 @@ Backend:
 Frontend:
 - `pnpm`
 - React `19`
-- TypeScript
+- TypeScript `7` for type checking (`tsc`); TypeScript 6 stays installed as
+  `typescript` for tools that load its API (see CONTRIBUTING.md)
 - Vite `8`
 - Tailwind CSS `4`
 - Radix UI primitives
@@ -562,9 +563,9 @@ Backend:
 
 Frontend:
 - `pnpm install`
-- `pnpm lint`
+- `pnpm lint` (oxlint, then eslint for the rules oxlint lacks)
 - `pnpm test`
-- `pnpm exec tsc --noEmit`
+- `pnpm exec tsc -b` (TypeScript 7)
 
 ### Running tests: no database, no services
 

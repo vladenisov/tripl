@@ -262,8 +262,8 @@ cd frontend
 pnpm install        # install deps from pnpm-lock.yaml
 pnpm dev            # Vite dev server on :5173
 pnpm test           # vitest run
-pnpm lint           # eslint . --max-warnings 0  (zero-warning policy)
-pnpm build          # tsc -b && vite build  (full type check + production build)
+pnpm lint           # oxlint, then eslint for what oxlint lacks  (zero-warning policy)
+pnpm build          # tsc -b && vite build  (full type check with TypeScript 7 + production build)
 pnpm check:bundle   # after a build: first-load JavaScript stays inside its budget
 ```
 
@@ -293,6 +293,45 @@ pnpm gen:api        # regenerates src/types/api.gen.ts from ../backend/openapi.j
 
 `pnpm lint` enforces a zero-warning policy and `pnpm build` runs a full
 type-check, so both must be clean before you push frontend changes.
+
+### Linting
+
+`pnpm lint` runs [Oxlint](https://oxc.rs/docs/guide/usage/linter) first
+(`oxlint --deny-warnings --report-unused-disable-directives`, about a second)
+and then ESLint (`eslint . --max-warnings 0`). ESLint only keeps what Oxlint
+cannot do: the `no-restricted-syntax` selector rules in `eslint.config.js`
+(no bare `React.lazy`, no hand-written query keys, no raw `<select>` in pages)
+and `no-useless-assignment`. `eslint-plugin-oxlint` switches off in ESLint
+every rule `.oxlintrc.json` enables, and Oxlint reports unused
+`eslint-disable` comments, since most of them now name Oxlint's rules.
+
+`eslint.config.js` is the source of the rule set; `.oxlintrc.json` is
+generated from it. After changing rules there, regenerate and re-apply the
+hand edits:
+
+```bash
+npx @oxlint/migrate@<oxlint version> eslint.config.js --js-plugins=false
+```
+
+1. Delete the `allowCompoundComponents` option of
+   `react/only-export-components` and the `includeRoles` option of
+   `jsx-a11y/control-has-associated-label`; Oxlint does not know them.
+2. Add `"no-var"`, `"prefer-const"`, `"prefer-rest-params"` and
+   `"prefer-spread"` (all `"error"`) to the `**/*.{ts,tsx}` override. They
+   come from typescript-eslint's TypeScript-only block, whose file globs the
+   migration cannot combine with ours, so it drops them.
+
+### TypeScript 6 and 7 side by side
+
+Type checking uses TypeScript 7 (the native compiler, `tsc -b` in about 4 s
+instead of about 50 s). Tools that load the TypeScript API
+(typescript-eslint, `openapi-typescript` for `pnpm gen:api`) still need
+TypeScript 6, which has no successor API until 7.1. `package.json` therefore
+installs both, as the TypeScript 7.0 release notes describe:
+`"typescript": "npm:@typescript/typescript6@…"` keeps `import 'typescript'`
+on TypeScript 6 (its command is `tsc6`), and
+`"@typescript/native": "npm:typescript@^7…"` provides `tsc`. So
+`pnpm exec tsc` is TypeScript 7 and `pnpm exec tsc6` is TypeScript 6.
 
 ## Database Migrations (Alembic)
 

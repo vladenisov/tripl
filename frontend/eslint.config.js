@@ -3,8 +3,17 @@ import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import jsxA11y from 'eslint-plugin-jsx-a11y'
+import oxlint from 'eslint-plugin-oxlint'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
+
+// Oxlint is the main linter (`pnpm lint` runs it first). Its config,
+// .oxlintrc.json, is generated from this file by @oxlint/migrate plus a few
+// hand edits (CONTRIBUTING.md, "Linting"): change rules here, then regenerate
+// it. The oxlint block near the end switches off in ESLint every rule oxlint
+// runs, so ESLint is left with what oxlint cannot do: the no-restricted-syntax
+// selector rules below, and no-useless-assignment (still a nursery rule in
+// oxlint).
 
 // Every code-split component goes through lib/lazyWithReload.ts, which
 // recovers a tab left open across a deploy. A bare React.lazy turns that
@@ -137,5 +146,19 @@ export default defineConfig([
     // The one module allowed to call React.lazy: the wrapper itself.
     files: ['src/lib/lazyWithReload.ts'],
     rules: { 'no-restricted-syntax': ['error', ...NO_QUERY_KEY_LITERALS] },
+  },
+  ...oxlint.buildFromOxlintConfigFile(`${import.meta.dirname}/.oxlintrc.json`),
+  {
+    // Oxlint has no equivalent of these two (it runs the React Compiler with
+    // fixed options), and they only check compiler options we do not set —
+    // yet `config` runs the whole compiler over every file, most of ESLint's
+    // time once oxlint covers the compiler-based rules.
+    files: ['**/*.{ts,tsx}'],
+    rules: { 'react-hooks/config': 'off', 'react-hooks/gating': 'off' },
+  },
+  {
+    // Most disable directives name rules only oxlint runs now, so oxlint
+    // reports the unused ones (--report-unused-disable-directives).
+    linterOptions: { reportUnusedDisableDirectives: 'off' },
   },
 ])

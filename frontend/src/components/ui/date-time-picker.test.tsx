@@ -43,7 +43,10 @@ describe('DateTimePicker', () => {
     const grid = await openCalendar()
     const day = within(grid).getByRole('button', { name: 'Wednesday, January 14, 2026' })
     await waitFor(() => expect(day).toHaveFocus())
-    expect(day.closest('[role="gridcell"]')).toHaveAttribute('aria-selected', 'true')
+    // The <td> is a gridcell by virtue of its role="grid" table, so it carries
+    // no explicit role. Testing Library does not derive that implicit role, so
+    // reach the cell through the DOM; the axe test below checks the semantics.
+    expect(day.closest('td')).toHaveAttribute('aria-selected', 'true')
     expect(day).toHaveAttribute('tabindex', '0')
   })
 

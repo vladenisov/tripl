@@ -1024,7 +1024,7 @@ function MetricRow({
   // per row that did the same thing, announced as every cell run together
   // (MET-39). The row click stays for the pointer, as a bigger target.
   return (
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/interactive-supports-focus -- pointer-only convenience; the name Link is the keyboard route (MET-39)
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events -- pointer-only convenience; the name Link is the keyboard route (MET-39)
     <div
       ref={setNodeRef}
       role="row"
