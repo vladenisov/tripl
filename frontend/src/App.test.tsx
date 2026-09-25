@@ -222,7 +222,13 @@ describe('App', () => {
       if (url.endsWith('/api/v1/projects')) {
         return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
       }
-      // The Scans surface itself needs a config list; everything else may 404.
+      // The Scans surface itself needs a config list and its activity summary
+      // (an object, not a list); everything else may 404.
+      if (url.includes('/scans/activity')) {
+        return Promise.resolve(
+          jsonResponse({ window_from: '2026-01-01T00:00:00Z', window_to: '2026-01-02T00:00:00Z', items: [] }),
+        )
+      }
       if (url.includes('/scans')) return Promise.resolve(jsonResponse([]))
       return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
     })
@@ -234,7 +240,8 @@ describe('App', () => {
     })
     // …and the Scans surface really mounted, rather than the redirect merely
     // rewriting the URL under a different page.
-    expect(await screen.findByRole('heading', { name: 'Scans' })).toBeInTheDocument()
+    // Exactly one heading names the page; the list panel below it is "All scans".
+    expect(await screen.findByRole('heading', { level: 2, name: 'Scans' })).toBeInTheDocument()
   })
 
   it('redirects the legacy /p/:slug/settings/scans/:id URL and keeps the scan id', async () => {

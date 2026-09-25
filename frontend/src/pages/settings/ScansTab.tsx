@@ -332,7 +332,7 @@ export function ScansTab({ slug }: { slug: string }) {
       {/* A project has exactly one scan the moment it finishes the onboarding
           checklist's "Run a scan" step, so "1 scans" was the first thing a new
           user read on the page this epic exists to make comprehensible. */}
-      <Panel title="Scans" subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
+      <Panel title="All scans" headingLevel={3} subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
         {failedRunScanName && (
           <p role="alert" className="border-b px-4 py-2 text-sm" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
             Could not start {failedRunScanName}: {getErrorMessage(runScan.error)}
