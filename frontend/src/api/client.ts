@@ -3,6 +3,10 @@ import { uid } from '@/lib/uid'
 const BASE = '/api/v1'
 const BACKEND_UNAVAILABLE_MESSAGE = 'Backend is unavailable. Check that the API server is running and try again.'
 export const AUTH_UNAUTHORIZED_EVENT = 'tripl:unauthorized'
+/** Fired when the user signs out on purpose. Module state that outlives the
+ *  shell (collect watches) listens for it, so the auth provider does not have
+ *  to import — and put on the first load — every module that keeps some. */
+export const AUTH_SIGNED_OUT_EVENT = 'tripl:signed-out'
 
 /** One entry of a FastAPI 422 validation error `detail` array. */
 export interface ApiFieldError {

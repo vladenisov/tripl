@@ -12,7 +12,7 @@ vi.mock('sonner', () => ({
 
 import { toast } from 'sonner'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
-import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
+import { ApiError, AUTH_SIGNED_OUT_EVENT, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
 import {
   startMetricCollectionWatch,
   stopAllMetricCollectionWatches,
@@ -414,7 +414,7 @@ describe('startMetricCollectionWatch (MET-8)', () => {
     expect(onSettled).not.toHaveBeenCalled()
   })
 
-  it('stops every watch when the app signals a lost session', async () => {
+  it.each([AUTH_UNAUTHORIZED_EVENT, AUTH_SIGNED_OUT_EVENT])('stops every watch when the app signals %s', async (event) => {
     vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('running'))
     render(<WatchedBadge metricId="m-1" />)
     act(() => {
@@ -426,7 +426,7 @@ describe('startMetricCollectionWatch (MET-8)', () => {
     expect(await screen.findByText('watching')).toBeInTheDocument()
 
     act(() => {
-      window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT))
+      window.dispatchEvent(new Event(event))
     })
 
     expect(screen.getByText('idle')).toBeInTheDocument()

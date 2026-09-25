@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
+import { ApiError, AUTH_SIGNED_OUT_EVENT, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import type { MetricDefinitionDetailResponse } from '@/types'
 import { metricCollectWatchKey } from '@/lib/queryKeys'
@@ -358,7 +358,9 @@ export function stopAllMetricCollectionWatches(): void {
 }
 
 // Detached watches outlive every component, including the signed-in shell, so
-// they end with the session: any 401 anywhere in the app stops them all.
+// they end with the session: a sign-out, or any 401 anywhere in the app, stops
+// them all.
 if (typeof window !== 'undefined') {
   window.addEventListener(AUTH_UNAUTHORIZED_EVENT, stopAllMetricCollectionWatches)
+  window.addEventListener(AUTH_SIGNED_OUT_EVENT, stopAllMetricCollectionWatches)
 }

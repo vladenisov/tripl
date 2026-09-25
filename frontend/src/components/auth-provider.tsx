@@ -6,7 +6,7 @@ import {
 } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { authApi } from '@/api/auth'
-import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
+import { ApiError, AUTH_SIGNED_OUT_EVENT, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
 import {
   AUTH_QUERY_KEY,
   AuthContext,
@@ -16,7 +16,6 @@ import {
 } from './auth-context'
 import type { AuthUser } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { stopAllMetricCollectionWatches } from '@/hooks/useMetricCollectionWatcher'
 // Eager on purpose: the dialog exists to keep an unsaved page alive, and a lazy
 // chunk that failed to load after a deploy would reload that page away.
 import { SessionExpiredDialog } from './session-expired-dialog'
@@ -45,8 +44,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loggingOutRef.current = true
       // Collect watches outlive every page, so they end with the session: a
       // poll still running after sign-out would toast the previous user's
-      // metric to whoever signs in next.
-      stopAllMetricCollectionWatches()
+      // metric to whoever signs in next. An event, not a direct call, so the
+      // watcher module stays off the first load.
+      window.dispatchEvent(new Event(AUTH_SIGNED_OUT_EVENT))
     },
     onSettled: async () => {
       loggingOutRef.current = false
