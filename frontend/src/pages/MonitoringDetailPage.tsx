@@ -35,7 +35,7 @@ import {
   metricRollupMode,
 } from '@/lib/metricAdapters'
 import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
-import { aggregateMetricPoints, clampGranularityToRange } from '@/lib/metrics'
+import { aggregateMetricPoints, clampGranularityToRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveDetailScope } from '@/lib/monitoring'
 import { useCanWriteProject } from '@/lib/permissions'
 import { eventTypesKey, metricDefinitionKey, monitoringSeriesKey } from '@/lib/queryKeys'
@@ -51,6 +51,7 @@ import { LIVE_STATUSES } from './monitoring/event/surface'
 import { MetricHeaderActions } from './monitoring/MetricHeaderActions'
 import { ChartCardHeader, MetricsRangeControls } from './monitoring/MetricsRangeControls'
 import { useChartAnnotations } from './monitoring/useChartAnnotations'
+import { useMetricCollect } from './monitoring/useMetricCollect'
 import { useMonitoringDetailSearch, type MonitoringDetailTab } from './monitoring/useMonitoringDetailSearch'
 import { VersionsTab } from './monitoring/VersionsTab'
 
@@ -163,6 +164,10 @@ export default function MonitoringDetailPage() {
     meta: SILENT_ERROR_META,
   })
   const metricDefinition = metricDefinitionQuery.data
+  // Owned here, not by the header's Collect button: that button unmounts when
+  // the page swaps to its error state or canWrite flickers, and an in-progress
+  // watch must outlive it.
+  const metricCollect = useMetricCollect(scopeId)
 
   // Percent-unit catalog metrics store fractions (0.08 for 8 %): render them
   // ×100 everywhere on this page (chart ticks, tooltip, stat card). Every
@@ -181,6 +186,9 @@ export default function MonitoringDetailPage() {
   // Event volumes sum into a coarser bucket; a ratio, average or percentage
   // metric averages instead (MON-2 / MET-12).
   const rollupMode = scope === 'metric' ? metricRollupMode(metricDefinition) : 'sum'
+  // Until a metric's definition arrives its rollup is unknown: anything drawn
+  // with the 'sum' fallback would show a ratio metric summed, then snap.
+  const rollupPending = scope === 'metric' && metricDefinitionQuery.isPending
 
   const metricsQuery = useQuery({
     // Keyed on the range length, not the live bounds: the bound steps every five
@@ -213,10 +221,18 @@ export default function MonitoringDetailPage() {
   // never finer than the collection interval. A manual pick wins and stays
   // sticky across range changes — but is bumped coarser when it would draw more
   // points than a chart can take over the new range (MON-23).
+  // The collection interval's own granularity is exempt from that cap, so a
+  // 15 min series can still be read at 15 min with its band and forecast.
+  const nativeGranularity = granularityForInterval(metrics?.interval)
+  const defaultGranularity = defaultDrilldownGranularity(rangeDays, metrics?.interval)
   const granularity = clampGranularityToRange(
-    search.granularity ?? defaultDrilldownGranularity(rangeDays, metrics?.interval),
+    search.granularity ?? defaultGranularity,
     rangeDays,
+    nativeGranularity,
   )
+  // A pick equal to the default stays out of the URL, like every other param.
+  const setGranularity = (next: MetricsGranularity) =>
+    searchActions.setGranularity(next, defaultGranularity)
   const scanConfigId = metrics?.scan_config_id ?? (scope === 'project_total' ? scopeId : null)
 
   // Secondary: without it the By version tab stays hidden, and the global toast
@@ -266,7 +282,7 @@ export default function MonitoringDetailPage() {
   // The API forecasts exactly one native collection bucket. Once actuals are
   // rolled up (for example 1h -> day), that single point is not a forecast for
   // the whole display bucket and can even duplicate the last x-axis date.
-  const chartForecast = granularityForInterval(metrics?.interval) === granularity
+  const chartForecast = nativeGranularity === granularity
     ? metrics?.forecast
     : undefined
 
@@ -356,7 +372,7 @@ export default function MonitoringDetailPage() {
   const chartIsLoading = metricsQuery.isLoading
     // A metric's rollup depends on its definition; charting before it arrives
     // would draw a sum and then snap to a mean.
-    || (scope === 'metric' && metricDefinitionQuery.isPending)
+    || rollupPending
 
   return (
     <div className={containerClassName}>
@@ -391,6 +407,7 @@ export default function MonitoringDetailPage() {
                 scopeId={scopeId}
                 metricDefinition={metricDefinition}
                 editPath={metricEditPath}
+                collect={metricCollect}
               />
             )}
           </div>
@@ -549,8 +566,8 @@ export default function MonitoringDetailPage() {
                 scopeType={latestSignal.scope_type}
                 scopeRef={latestSignal.scope_ref}
                 bucket={latestSignal.bucket}
-                from={timeRange.from}
-                to={timeRange.to}
+                rangeDays={rangeDays}
+                timeRange={timeRange}
               />
             )}
 
@@ -560,8 +577,9 @@ export default function MonitoringDetailPage() {
                   <MetricsRangeControls
                     rangeDays={rangeDays}
                     granularity={granularity}
+                    nativeGranularity={nativeGranularity}
                     onRangeDaysChange={searchActions.setRangeDays}
-                    onGranularityChange={searchActions.setGranularity}
+                    onGranularityChange={setGranularity}
                   />
                 </ChartCardHeader>
                 {chartIsLoading ? (
@@ -621,13 +639,14 @@ export default function MonitoringDetailPage() {
                 rangeDays={rangeDays}
                 timeRange={timeRange}
                 granularity={granularity}
+                nativeGranularity={nativeGranularity}
                 rollupMode={rollupMode}
                 refetchInterval={refetchInterval}
                 versionFilter={search.versionFilter}
                 seriesLabel={metricSeriesLabel}
                 valueFormatter={metricValueFormatter}
                 onRangeDaysChange={searchActions.setRangeDays}
-                onGranularityChange={searchActions.setGranularity}
+                onGranularityChange={setGranularity}
                 onVersionFilterChange={searchActions.setVersionFilter}
               />
             </TabsContent>
@@ -640,8 +659,8 @@ export default function MonitoringDetailPage() {
                 scanConfigId={metrics.scan_config_id}
                 scopeType={scope}
                 scopeRef={scopeId}
-                from={timeRange.from}
-                to={timeRange.to}
+                rangeDays={rangeDays}
+                timeRange={timeRange}
                 color={eventType?.color || 'var(--chart-3)'}
               />
             ) : (
@@ -670,23 +689,33 @@ export default function MonitoringDetailPage() {
 
           {slug && (scope === 'event' || scope === 'metric') && (
             <TabsContent value="breakdowns">
-              <BreakdownsTab
-                slug={slug}
-                scope={scope}
-                scopeId={scopeId}
-                rangeDays={rangeDays}
-                timeRange={timeRange}
-                granularity={granularity}
-                rollupMode={rollupMode}
-                refetchInterval={refetchInterval}
-                column={search.breakdownColumn}
-                selectedValues={search.breakdownValues}
-                seriesLabel={metricSeriesLabel}
-                valueFormatter={metricValueFormatter}
-                metricEditPath={metricEditPath}
-                onColumnChange={searchActions.setBreakdownColumn}
-                onSelectedValuesChange={searchActions.setBreakdownValues}
-              />
+              {rollupPending ? (
+                // Same reason as the volume chart: no summed values for a
+                // ratio metric while its definition is on the way.
+                <Card>
+                  <CardContent className="p-6 text-sm text-muted-foreground">
+                    Loading breakdowns…
+                  </CardContent>
+                </Card>
+              ) : (
+                <BreakdownsTab
+                  slug={slug}
+                  scope={scope}
+                  scopeId={scopeId}
+                  rangeDays={rangeDays}
+                  timeRange={timeRange}
+                  granularity={granularity}
+                  rollupMode={rollupMode}
+                  refetchInterval={refetchInterval}
+                  column={search.breakdownColumn}
+                  selectedValues={search.breakdownValues}
+                  seriesLabel={metricSeriesLabel}
+                  valueFormatter={metricValueFormatter}
+                  metricEditPath={metricEditPath}
+                  onColumnChange={searchActions.setBreakdownColumn}
+                  onSelectedValuesChange={searchActions.setBreakdownValues}
+                />
+              )}
             </TabsContent>
           )}
         </Tabs>

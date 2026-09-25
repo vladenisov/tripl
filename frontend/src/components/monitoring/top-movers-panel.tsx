@@ -18,8 +18,10 @@ interface TopMoversPanelProps {
   scopeRef: string
   bucket: string
   limit?: number
-  from?: string
-  to?: string
+  /** Keys the drilldown timeline: the window's length, not its moving bounds. */
+  rangeDays?: number
+  /** The live window, read by each timeline fetch. */
+  timeRange?: { from: string; to: string }
 }
 
 function formatCount(value: number): string {
@@ -53,8 +55,8 @@ export function TopMoversPanel({
   scopeRef,
   bucket,
   limit = 8,
-  from,
-  to,
+  rangeDays,
+  timeRange,
 }: TopMoversPanelProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   const { data, isLoading, isError } = useQuery({
@@ -113,8 +115,8 @@ export function TopMoversPanel({
                     breakdownColumn={item.breakdown_column}
                     breakdownValue={item.breakdown_value}
                     isOther={item.is_other}
-                    from={from}
-                    to={to}
+                    rangeDays={rangeDays}
+                    timeRange={timeRange}
                   />
                 )}
               </li>
@@ -201,8 +203,8 @@ function BreakdownDrilldown({
   breakdownColumn,
   breakdownValue,
   isOther,
-  from,
-  to,
+  rangeDays,
+  timeRange,
 }: {
   slug: string
   scanConfigId: string
@@ -211,8 +213,8 @@ function BreakdownDrilldown({
   breakdownColumn: string
   breakdownValue: string
   isOther: boolean
-  from?: string
-  to?: string
+  rangeDays?: number
+  timeRange?: { from: string; to: string }
 }) {
   const { data, isLoading } = useQuery({
     queryKey: [
@@ -224,8 +226,9 @@ function BreakdownDrilldown({
       breakdownColumn,
       breakdownValue,
       isOther,
-      from,
-      to,
+      // The range length, not the live bounds: those step every five minutes,
+      // and a key that moved with them refetched the timeline each time (MON-3).
+      rangeDays,
     ],
     queryFn: () =>
       metricsApi.getBreakdownTimeline(slug, scanConfigId, {
@@ -234,11 +237,10 @@ function BreakdownDrilldown({
         breakdown_column: breakdownColumn,
         breakdown_value: breakdownValue,
         is_other: isOther,
-        from,
-        to,
+        from: timeRange?.from,
+        to: timeRange?.to,
       }),
-    // `from`/`to` follow the live window, which steps every five minutes; keep
-    // the timeline on screen while the next window loads (MON-3).
+    // Keep the timeline on screen while a new range loads.
     placeholderData: keepPreviousData,
   })
 

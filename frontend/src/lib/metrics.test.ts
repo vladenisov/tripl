@@ -529,4 +529,24 @@ describe('granularity point cap (MON-23)', () => {
     // A pick that already fits is left alone.
     expect(clampGranularityToRange('week', 7)).toBe('week')
   })
+
+  it('always allows the native collection granularity, however many points it draws', () => {
+    // A 15 min series at the smallest preset: over the cap, still offered.
+    expect(granularityFitsRange('15min', 7, '15min')).toBe(true)
+    expect(granularityFitsRange('15min', 90, '15min')).toBe(true)
+    expect(granularityFitsRange('hour', 90, 'hour')).toBe(true)
+    // Finer than native is still held to the cap.
+    expect(granularityFitsRange('15min', 7, 'hour')).toBe(false)
+    expect(granularityFitsRange('hour', 90, '15min')).toBe(false)
+  })
+
+  it('never bumps the native granularity, only picks finer than it', () => {
+    expect(clampGranularityToRange('15min', 7, '15min')).toBe('15min')
+    expect(clampGranularityToRange('15min', 90, '15min')).toBe('15min')
+    expect(clampGranularityToRange('15min', 7, 'hour')).toBe('hour')
+    // A too-fine pick stops at native instead of jumping past it.
+    expect(clampGranularityToRange('15min', 90, 'hour')).toBe('hour')
+    // A non-native pick over the cap is still clamped for a 15 min series.
+    expect(clampGranularityToRange('hour', 90, '15min')).toBe('6h')
+  })
 })

@@ -11,8 +11,10 @@ interface SeasonalityHeatmapProps {
   scanConfigId: string
   scopeType: string
   scopeRef: string
-  from: string
-  to: string
+  /** Keys the query: the window's length, not its moving bounds. */
+  rangeDays: number
+  /** The live window, read by each fetch. */
+  timeRange: { from: string; to: string }
   color?: string
 }
 
@@ -87,22 +89,26 @@ export function SeasonalityHeatmap({
   scanConfigId,
   scopeType,
   scopeRef,
-  from,
-  to,
+  rangeDays,
+  timeRange,
   color = 'var(--chart-1)',
 }: SeasonalityHeatmapProps) {
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['seasonality', slug, scanConfigId, scopeType, scopeRef, from, to],
+    // Keyed on the range length, not the live bounds: those step every five
+    // minutes, and a key that moved with them refetched the grid each time
+    // (MON-3). The query function reads the current window on each fetch, as
+    // the By version and Breakdowns tabs do.
+    queryKey: ['seasonality', slug, scanConfigId, scopeType, scopeRef, rangeDays],
     queryFn: () =>
       metricsApi.getSeasonalityHeatmap(slug, scanConfigId, {
         scope_type: scopeType,
         scope_ref: scopeRef,
-        from,
-        to,
+        from: timeRange.from,
+        to: timeRange.to,
       }),
     enabled: Boolean(slug && scanConfigId && scopeRef),
-    // The live window's bounds step every five minutes; keep the grid on
-    // screen while the new window loads instead of flashing "Loading…" (MON-3).
+    // Keep the grid on screen while a new range loads instead of flashing
+    // "Loading…".
     placeholderData: keepPreviousData,
   })
 

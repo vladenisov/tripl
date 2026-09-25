@@ -30,7 +30,8 @@ export interface MonitoringDetailSearch {
 export interface MonitoringDetailSearchActions {
   setTab: (tab: MonitoringDetailTab) => void
   setRangeDays: (days: number) => void
-  setGranularity: (granularity: MetricsGranularity) => void
+  /** A pick equal to the scope's current `fallback` default leaves the URL. */
+  setGranularity: (granularity: MetricsGranularity, fallback: MetricsGranularity) => void
   setVersionFilter: (filter: VersionFilter) => void
   setDistributionField: (field: string) => void
   /** A new column has a different value set, so the value filter resets with it. */
@@ -93,7 +94,8 @@ export function useMonitoringDetailSearch(): [MonitoringDetailSearch, Monitoring
   const actions: MonitoringDetailSearchActions = {
     setTab: tab => update(params => setOrDelete(params, 'tab', tab, 'volume')),
     setRangeDays: days => update(params => setOrDelete(params, 'range', String(days), String(DEFAULT_RANGE_DAYS))),
-    setGranularity: granularity => update(params => params.set('gran', granularity)),
+    setGranularity: (granularity, fallback) =>
+      update(params => setOrDelete(params, 'gran', granularity, fallback)),
     setVersionFilter: filter => update(params => setOrDelete(params, 'version', filter, 'all')),
     setDistributionField: field => update(params => setOrDelete(params, 'field', field, '')),
     setBreakdownColumn: column => update(params => {

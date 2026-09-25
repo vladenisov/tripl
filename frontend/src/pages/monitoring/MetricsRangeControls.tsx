@@ -8,16 +8,20 @@ import { GRANULARITY_OPTIONS, granularityFitsRange, type MetricsGranularity } fr
 /**
  * Range + granularity for a drilldown chart. Granularities that would draw more
  * than the per-series point cap over the selected range are disabled rather
- * than offered (MON-23); the page clamps a sticky pick the same way.
+ * than offered (MON-23); the page clamps a sticky pick the same way. The
+ * series' native collection granularity is always offered.
  */
 export function MetricsRangeControls({
   rangeDays,
   granularity,
+  nativeGranularity,
   onRangeDaysChange,
   onGranularityChange,
 }: {
   rangeDays: number
   granularity: MetricsGranularity
+  /** The series' collection granularity, exempt from the point cap. */
+  nativeGranularity: MetricsGranularity | null
   onRangeDaysChange: (days: number) => void
   onGranularityChange: (granularity: MetricsGranularity) => void
 }) {
@@ -36,7 +40,7 @@ export function MetricsRangeControls({
             <SelectItem
               key={option.value}
               value={option.value}
-              disabled={!granularityFitsRange(option.value, rangeDays)}
+              disabled={!granularityFitsRange(option.value, rangeDays, nativeGranularity)}
             >
               {option.label}
             </SelectItem>

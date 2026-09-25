@@ -419,6 +419,7 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
   //   week -> 1 (all three land in the epoch-anchored 2026-01-01 week).
   function installProjectTotalFetch(
     forecast: Array<{ bucket: string; expected_count: number; stddev: number }> = [],
+    interval = '1h',
   ) {
     return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
@@ -430,7 +431,7 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
           scan_config_id: 'scan-1',
           event_id: null,
           event_type_id: null,
-          interval: '1h',
+          interval,
           latest_signal: null,
           data: [
             metricPoint('2026-01-01T05:00:00Z', 5),
@@ -545,11 +546,12 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
   })
 
   it('refuses a granularity that would draw too many points over the range (MON-23)', async () => {
-    installProjectTotalFetch()
+    installProjectTotalFetch([], '6h')
     renderMonitoringPage()
     await screen.findByTestId('metrics-chart')
 
-    // 90 days of hourly buckets is 2,160 points per series: not offered.
+    // 90 days of hourly buckets is 2,160 points per series: not offered for a
+    // series collected every 6 hours (its own 6 hours always is).
     fireEvent.click(screen.getByRole('button', { name: '90d' }))
     fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
     expect(await screen.findByRole('option', { name: 'Hours' })).toHaveAttribute('aria-disabled', 'true')
@@ -557,7 +559,7 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
   })
 
   it('bumps a sticky fine pick coarser when the range grows (MON-23)', async () => {
-    installProjectTotalFetch()
+    installProjectTotalFetch([], '6h')
     renderMonitoringPage('?gran=15min&range=90')
 
     await screen.findByTestId('metrics-chart')
@@ -565,6 +567,39 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
     await waitFor(() =>
       expect(screen.getByRole('combobox', { name: /time granularity/i })).toHaveTextContent('6 hours'))
     expect(chartPoints()).toBe('3')
+  })
+
+  it('bumps a sticky fine pick only as far as the native granularity (MON-23)', async () => {
+    installProjectTotalFetch()
+    renderMonitoringPage('?gran=15min&range=90')
+
+    await screen.findByTestId('metrics-chart')
+    // The hourly series' own granularity is always allowed, so 15 min settles
+    // on Hours rather than jumping past it to 6 hours.
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: /time granularity/i })).toHaveTextContent('Hours'))
+  })
+
+  it('always offers a 15 min series its native granularity, forecast included', async () => {
+    // The smallest preset is 7d, where 15 min is 672 points — over the cap. A
+    // 15 min scan used to be unreadable at its own resolution anywhere, and so
+    // was its forecast, which only renders at the native granularity.
+    installProjectTotalFetch([{ bucket: '2026-01-02T10:15:00Z', expected_count: 4, stddev: 1 }], '15m')
+    renderMonitoringPage('?gran=15min')
+
+    await screen.findByTestId('metrics-chart')
+    const control = () => screen.getByRole('combobox', { name: /time granularity/i })
+    await waitFor(() => expect(control()).toHaveTextContent('15 min'))
+    expect(chartForecastCount()).toBe('1')
+
+    // Not clamped at 90d either: the native pick is exempt from the cap...
+    fireEvent.click(screen.getByRole('button', { name: '90d' }))
+    await waitFor(() => expect(chartForecastCount()).toBe('1'))
+    expect(control()).toHaveTextContent('15 min')
+    fireEvent.click(control())
+    expect(await screen.findByRole('option', { name: '15 min' })).not.toHaveAttribute('aria-disabled')
+    // ...while a non-native pick over it is still refused.
+    expect(screen.getByRole('option', { name: 'Hours' })).toHaveAttribute('aria-disabled', 'true')
   })
 })
 
@@ -1918,6 +1953,85 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['metrics-catalog', 'demo'] })
   })
 
+  it('keeps an in-progress collect watch when the header actions unmount (canWrite flicker)', async () => {
+    // The definition never settles (status stays null), so the watch keeps polling.
+    installMetricDetailFetch('1d')
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const viewer: AuthContextValue = {
+      user: {
+        id: 'viewer-1',
+        email: 'viewer@example.com',
+        name: 'Viewer',
+        role: 'viewer',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+    }
+    const tree = (auth: AuthContextValue | null) => (
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={auth}>
+          <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
+            <Routes>
+              <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>
+    )
+    const { rerender } = render(tree(null))
+
+    const button = await screen.findByRole('button', { name: 'Collect now' })
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+    expect(await screen.findByRole('button', { name: 'Collecting…' })).toBeDisabled()
+
+    // The permission flickers: the header actions unmount, then come back.
+    rerender(tree(viewer))
+    expect(screen.queryByRole('button', { name: /Collect/ })).not.toBeInTheDocument()
+    rerender(tree(null))
+
+    // The watch lived on the page, so the run still reads as in progress.
+    expect(await screen.findByRole('button', { name: 'Collecting…' })).toBeDisabled()
+  })
+
+  it('does not render breakdowns before the metric definition fixes the rollup', async () => {
+    // Until the definition says "ratio", the rollup falls back to a sum; the
+    // tab must wait instead of drawing summed values and then snapping.
+    const fetchSpy = installMetricDetailFetch('1h', { kind: 'fact', composition: 'ratio', unit: '%' })
+    const base = fetchSpy.getMockImplementation()!
+    let releaseDefinition: () => void = () => {}
+    const definitionGate = new Promise<void>(resolve => { releaseDefinition = resolve })
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/api/v1/projects/demo/metrics/metric-1')) await definitionGate
+      return base(input, init)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1?tab=breakdowns']}>
+          <Routes>
+            <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Loading breakdowns…')).toBeInTheDocument()
+    // Give the series a chance to land: the tab still has not asked for data.
+    await waitFor(() =>
+      expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/metrics/metric-1/series'))).toBe(true))
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/metrics/metric-1/breakdowns'))).toBe(false)
+
+    releaseDefinition()
+    await waitFor(() =>
+      expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/metrics/metric-1/breakdowns'))).toBe(true))
+  })
+
   it('does not render the Definition card outside the metric scope', async () => {
     installEventDetailFetch()
     renderEventDetail()
@@ -2015,6 +2129,12 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     fireEvent.click(screen.getByRole('button', { name: '7d' }))
     await waitFor(() =>
       expect(new URLSearchParams(screen.getByTestId('location-search').textContent ?? '').has('range')).toBe(false))
+    // The same for granularity: Hours is the 7d default of a 1h metric.
+    fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Hours' }))
+    await waitFor(() =>
+      expect(new URLSearchParams(screen.getByTestId('location-search').textContent ?? '').has('gran')).toBe(false))
+    expect(screen.getByRole('combobox', { name: /time granularity/i })).toHaveTextContent('Hours')
   })
 
   it('sends a neutral colour, names the time zone and caps the label (MON-25, MON-27)', async () => {

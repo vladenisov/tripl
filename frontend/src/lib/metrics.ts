@@ -59,7 +59,8 @@ const GRANULARITY_SPAN_MS: Record<MetricsGranularity, number> = {
  * The most buckets one series may draw. A 15 min pick over 90 days is 8,640
  * SVG points per series, times up to eight series, and the page janks on every
  * range change and hover (MON-23). 500 keeps each preset's finest readable
- * option: hours for 7d, 6 hours for 30d and 90d.
+ * option: hours for 7d, 6 hours for 30d and 90d. A series' own collection
+ * granularity is exempt (see {@link granularityFitsRange}).
  */
 export const MAX_POINTS_PER_SERIES = 500
 
@@ -71,26 +72,39 @@ export function coarserGranularity(
   return GRANULARITY_ORDER.indexOf(left) >= GRANULARITY_ORDER.indexOf(right) ? left : right
 }
 
-/** Whether `granularity` over `rangeDays` stays within {@link MAX_POINTS_PER_SERIES}. */
+/**
+ * Whether `granularity` may be picked over `rangeDays`: it stays within
+ * {@link MAX_POINTS_PER_SERIES}, or it is the series' `native` collection
+ * granularity. The native one is always allowed — the smallest preset is 7d, so
+ * the cap alone ruled out a 15 min metric's own buckets everywhere, and with
+ * them the anomaly band a roll-up drops and the forecast that only renders at
+ * the native granularity.
+ */
 export function granularityFitsRange(
   granularity: MetricsGranularity,
   rangeDays: number,
+  native: MetricsGranularity | null = null,
 ): boolean {
+  if (granularity === native) return true
   return (rangeDays * GRANULARITY_SPAN_MS.day) / GRANULARITY_SPAN_MS[granularity]
     <= MAX_POINTS_PER_SERIES
 }
 
 /**
- * `granularity`, bumped up to the finest one that fits the range. A manual pick
- * stays sticky across range changes, so without this a "15 min" chosen at 7d
- * followed the reader to 90d.
+ * `granularity`, bumped up to the finest one at least as coarse that
+ * {@link granularityFitsRange} allows. A manual pick stays sticky across range
+ * changes, so without this a "15 min" chosen at 7d followed the reader to 90d.
+ * The series' `native` granularity counts as fitting, so it is never bumped and
+ * a finer pick stops at it rather than jumping past it.
  */
 export function clampGranularityToRange(
   granularity: MetricsGranularity,
   rangeDays: number,
+  native: MetricsGranularity | null = null,
 ): MetricsGranularity {
-  const finest = GRANULARITY_ORDER.find(option => granularityFitsRange(option, rangeDays)) ?? 'month'
-  return coarserGranularity(granularity, finest)
+  return GRANULARITY_ORDER
+    .slice(GRANULARITY_ORDER.indexOf(granularity))
+    .find(option => granularityFitsRange(option, rangeDays, native)) ?? 'month'
 }
 
 const MINUTE_MS = 60 * 1000

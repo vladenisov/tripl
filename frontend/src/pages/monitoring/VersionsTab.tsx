@@ -33,6 +33,8 @@ export interface VersionsTabProps {
   rangeDays: number
   timeRange: { from: string; to: string }
   granularity: MetricsGranularity
+  /** The series' collection granularity, always offered by the control. */
+  nativeGranularity: MetricsGranularity | null
   rollupMode: MetricRollupMode
   refetchInterval: number | false
   versionFilter: VersionFilter
@@ -61,6 +63,7 @@ export function VersionsTab({
   rangeDays,
   timeRange,
   granularity,
+  nativeGranularity,
   rollupMode,
   refetchInterval,
   versionFilter,
@@ -219,6 +222,7 @@ export function VersionsTab({
             <MetricsRangeControls
               rangeDays={rangeDays}
               granularity={granularity}
+              nativeGranularity={nativeGranularity}
               onRangeDaysChange={onRangeDaysChange}
               onGranularityChange={onGranularityChange}
             />

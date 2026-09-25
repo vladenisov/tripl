@@ -480,7 +480,9 @@ see, across tabs:
 - **Volume** (**Value** for a catalog metric) — every drilldown opens on the
   last 7 days, at hourly granularity or the metric's collection interval if
   that is coarser. Granularities that would draw more than 500 points over the
-  selected range are not offered. When you pick a coarser granularity, event
+  selected range are not offered, except the collection interval itself: a
+  15-minute metric can always be read at 15 minutes, with its anomaly band and
+  forecast. When you pick a coarser granularity, event
   volumes and additive metrics (counts and sums) add up, while ratios,
   averages, percentages and distinct counts are averaged, so a conversion rate
   stays on its own scale. The range, granularity, tab and filters are kept in
