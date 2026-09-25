@@ -6,6 +6,7 @@ import {
   invalidationKeysFor,
   isProjectEventType,
 } from './invalidationMap'
+import { eventsMetricsKey } from '@/lib/queryKeys'
 
 const SLUG = 'demo'
 
@@ -47,14 +48,16 @@ describe('invalidationKeysFor', () => {
     expect(hasKey(keys, ['activity', SLUG])).toBe(true)
     expect(hasKey(keys, ['activity', 'workspace'])).toBe(true)
     expect(hasKey(keys, ['overview'])).toBe(true)
+    expect(hasKey(keys, eventsMetricsKey(SLUG))).toBe(true)
   })
 
   it('metric_collection.updated refreshes metrics, monitors, reconciliation and overview', () => {
     const keys = invalidationKeysFor('metric_collection.updated', SLUG)
     expect(hasKey(keys, ['metrics-catalog', SLUG])).toBe(true)
     expect(hasKey(keys, ['monitoringMetrics', SLUG])).toBe(true)
-    // A key no query uses: it matched nothing and read as coverage.
-    expect(hasKey(keys, ['eventsMetrics', SLUG])).toBe(false)
+    // The events-tab dynamics chart (TabMetricsCard) does not poll while the
+    // stream is live, so its prefix must be here or the chart never refreshes.
+    expect(hasKey(keys, eventsMetricsKey(SLUG))).toBe(true)
     expect(hasKey(keys, ['eventWindowMetrics', SLUG])).toBe(true)
     expect(hasKey(keys, ['reconciliation'])).toBe(true)
     expect(hasKey(keys, ['overview'])).toBe(true)

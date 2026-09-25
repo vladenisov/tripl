@@ -18,6 +18,7 @@ import {
   alertDeliveriesAnyKey,
   alertInboxGroupKey,
   alertInboxKey,
+  eventsMetricsKey,
   projectEventTypesKey,
   projectKey,
   projectsKey,
@@ -64,6 +65,8 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['scanJobs', slug],
         ['events', slug],
         projectEventTypesKey(slug),
+        // The events-tab dynamics chart does not poll while the stream is live.
+        eventsMetricsKey(slug),
         ['overview'],
         ...activityKeys(slug),
       ]
@@ -72,6 +75,7 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['scans', slug],
         ['scanJobs', slug],
         ['metrics-catalog', slug],
+        eventsMetricsKey(slug),
         ['monitoringMetrics', slug],
         ['metricDefinition', slug],
         ['eventMetricBreakdowns', slug],

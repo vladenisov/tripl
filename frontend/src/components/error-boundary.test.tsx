@@ -58,6 +58,31 @@ describe('ErrorBoundary', () => {
     expect(screen.queryByRole('button', { name: /Try again/ })).not.toBeInTheDocument()
   })
 
+  it('does not reset an error thrown by the same update that changed resetKey', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    function MaybeBoom({ broken }: { broken: boolean }) {
+      if (broken) throw new Error(INTERNAL_MESSAGE)
+      return <p>Fine page</p>
+    }
+    const { rerender } = render(
+      <ErrorBoundary resetKey="/fine">
+        <MaybeBoom broken={false} />
+      </ErrorBoundary>,
+    )
+
+    rerender(
+      <ErrorBoundary resetKey="/broken">
+        <MaybeBoom broken />
+      </ErrorBoundary>,
+    )
+
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    // Caught once. Resetting on the key change would re-render the broken page
+    // and catch the same error a second time.
+    const caught = consoleError.mock.calls.filter(call => call[0] === 'Unhandled render error')
+    expect(caught).toHaveLength(1)
+  })
+
   it('always offers a reload on the top-level fallback', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     render(

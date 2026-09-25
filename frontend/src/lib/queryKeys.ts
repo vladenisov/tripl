@@ -128,6 +128,14 @@ export const projectsKey = () => ['projects'] as const
 export const projectsQueryOptions = () =>
   queryOptions({ queryKey: projectsKey(), queryFn: ({ signal }) => projectsApi.list(signal) })
 
+/**
+ * Every events-tab dynamics cache for a project — `metricsApi.getEventsMetrics`.
+ * TabMetricsCard extends it with branch, filters and range; the realtime layer
+ * invalidates this prefix because the card does not poll while the stream is
+ * live, so a finished scan or collection would otherwise never reach the chart.
+ */
+export const eventsMetricsKey = (slug: string | undefined) => ['eventsMetrics', slug] as const
+
 /** One project — `GET /projects/{slug}`. */
 export const projectKey = (slug: string | undefined) => ['project', slug] as const
 

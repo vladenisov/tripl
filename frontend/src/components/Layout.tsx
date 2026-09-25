@@ -15,7 +15,7 @@ import { AppSidebar } from '@/components/app-sidebar'
 import { BranchProvider } from '@/components/branch-context'
 import { CommandPaletteProvider } from '@/components/command-palette'
 import { ActiveProjectContext } from '@/components/active-project-context'
-import { RouteErrorBoundary } from '@/components/error-boundary'
+import { ErrorBoundary, RouteErrorBoundary } from '@/components/error-boundary'
 import { ErrorState } from '@/components/error-state'
 import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import { TopBar } from '@/components/top-bar'
@@ -237,16 +237,23 @@ export default function Layout() {
   // sidebar, top bar or the page's own queries — could start. Whichever answer
   // names the project first releases the shell. It also settles a slug the list
   // does not know: the list hides demos that are still seeding and can lag a
-  // project created moments ago. The key is the one the project pages already
-  // read, so they pay nothing extra.
+  // project created moments ago. So it is asked only while the list is still in
+  // flight or does not name the slug; navigating between pages of a project the
+  // cached list already holds costs no request. The key is the one the project
+  // pages already read, so they pay nothing extra.
   const confirmProject = useQuery({
     ...projectQueryOptions(slug),
-    enabled: !!slug,
+    // A pending list names nothing yet, so this also covers the deep link.
+    enabled: !!slug && !activeProject,
     retry: false,
     // Rendered below as not-found or a retryable error; no toast on top.
     meta: SILENT_ERROR_META,
   })
-  const projectKnown = !!activeProject || confirmProject.isSuccess
+  // The same resolution ActiveProjectContext hands the pages: the list's row,
+  // else the project endpoint's answer (a deep link whose list has not landed,
+  // or a project the list does not show yet).
+  const project = activeProject ?? confirmProject.data
+  const projectKnown = !!project
 
   // Deciding this HERE, before the shell mounts, is what stops an invented slug
   // rendering a complete, working-looking project behind a dozen 404ing requests
@@ -266,8 +273,8 @@ export default function Layout() {
   const projectResolving = !!slug && !projectKnown && !projectMissing && !projectLookupFailed
 
   const { crumbs, title } = useMemo(
-    () => resolveCrumbs(location.pathname, slug, activeProject?.name ?? slug),
-    [location.pathname, activeProject?.name, slug],
+    () => resolveCrumbs(location.pathname, slug, project?.name ?? slug),
+    [location.pathname, project?.name, slug],
   )
 
   // Hold the shell until the slug is resolved. Everything below fans out
@@ -314,8 +321,8 @@ export default function Layout() {
     {/* Holds the coached demo scenario across navigations: the scan the user
         started keeps being watched while they walk to the metrics catalog.
         Inert for every non-demo project. */}
-    <DemoScenarioProvider project={activeProject}>
-    <ActiveProjectContext.Provider value={activeProject ?? confirmProject.data}>
+    <DemoScenarioProvider project={project}>
+    <ActiveProjectContext.Provider value={project}>
     <TweaksPanelProvider>
       <CommandPaletteProvider>
         <div
@@ -367,14 +374,20 @@ export default function Layout() {
                   {/* Persistent demo marker across every surface of a demo
                       project — synthetic/local data, recipe version, freshness,
                       and creator/owner reset + delete controls. */}
-                  {activeProject?.is_demo && (
-                    <Suspense fallback={null}>
-                      <DemoBanner project={activeProject} />
-                      {/* The coached scenario. Gated with the banner, but it
-                          decides for itself whether there is anything left to
-                          coach. */}
-                      <DemoScenarioStrip />
-                    </Suspense>
+                  {project?.is_demo && (
+                    // Its own boundary: this chrome sits outside the route
+                    // boundary, so a chunk that fails to load (or a render
+                    // error) here used to reach main.tsx's and blank the whole
+                    // app. The demo chrome simply goes missing instead.
+                    <ErrorBoundary fallback={() => null}>
+                      <Suspense fallback={null}>
+                        <DemoBanner project={project} />
+                        {/* The coached scenario. Gated with the banner, but it
+                            decides for itself whether there is anything left to
+                            coach. */}
+                        <DemoScenarioStrip />
+                      </Suspense>
+                    </ErrorBoundary>
                   )}
                   {/* The skip link's landmark — and it starts HERE, below the
                       demo chrome, not around it. Both blocks above are shell

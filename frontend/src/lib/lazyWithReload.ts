@@ -1,8 +1,18 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react'
 
-// One reload is allowed to recover from a chunk that no longer exists; the flag
-// makes sure a genuinely broken build cannot put the tab in a reload loop.
+// One reload is allowed to recover from a chunk that no longer exists. The key
+// holds the time of the last chunk reload, so a genuinely broken build cannot
+// put the tab in a reload loop: a second chunk failure inside the window below
+// surfaces instead of reloading again.
 export const CHUNK_RELOAD_KEY = 'tripl:chunk-reload'
+
+/**
+ * How long after a chunk reload another chunk failure counts as the same broken
+ * deploy. Long enough to cover the reloaded document booting and requesting the
+ * same chunk again; short enough that the next deploy, minutes or days later,
+ * is still recovered by a reload.
+ */
+export const CHUNK_RELOAD_WINDOW_MS = 10_000
 
 /**
  * sessionStorage access that never throws. With site data blocked (third-party
@@ -27,13 +37,13 @@ const safeSession = {
       return false
     }
   },
-  remove(key: string): void {
-    try {
-      sessionStorage.removeItem(key)
-    } catch {
-      /* ignore */
-    }
-  },
+}
+
+/** True when a chunk reload already happened within {@link CHUNK_RELOAD_WINDOW_MS}. */
+function reloadedRecently(stored: string | null): boolean {
+  if (stored === null) return false
+  const at = Number(stored)
+  return Number.isFinite(at) && Date.now() - at < CHUNK_RELOAD_WINDOW_MS
 }
 
 /** True for the errors a browser raises when a lazy chunk cannot be fetched. */
@@ -57,9 +67,15 @@ export function isChunkLoadError(error: unknown): boolean {
  * Server-side `Cache-Control` (backend/src/tripl/middleware/static_cache.py,
  * which sets `no-cache` on the shell) stops NEW page loads from booting a stale
  * shell, but it cannot help a document that is already running. Reloading once
- * re-fetches index.html and with it the current graph. A successful import
- * re-arms the guard, so the next deploy is covered too. Where sessionStorage is
- * unavailable the guard cannot be kept, so there is no reload: the original
+ * re-fetches index.html and with it the current graph.
+ *
+ * Only a chunk-load failure reloads — any other rejection (a module that throws
+ * while evaluating) would fail the same way after a reload. The guard is
+ * time-based rather than cleared by a successful import: lazies nest (a page
+ * lazily loads a chart, the SQL editor, a settings tab), so the page loading
+ * fine says nothing about the nested chunk, and clearing the guard there let a
+ * permanently missing nested chunk reload the tab forever. Where sessionStorage
+ * is unavailable the guard cannot be kept, so there is no reload: the original
  * error propagates to the nearest error boundary, which offers one.
  */
 // Mirrors React.lazy's own constraint. Narrowing it (e.g. ComponentType<unknown>)
@@ -70,14 +86,11 @@ export function lazyWithReload<T extends ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
 ): LazyExoticComponent<T> {
   return lazy(() =>
-    factory()
-      .then((module) => {
-        safeSession.remove(CHUNK_RELOAD_KEY)
-        return module
-      })
-      .catch((error: unknown) => {
-        if (safeSession.read(CHUNK_RELOAD_KEY) !== null) throw error
-        if (!safeSession.write(CHUNK_RELOAD_KEY, '1')) throw error
+    factory().catch((error: unknown) => {
+        if (!isChunkLoadError(error)) throw error
+        const stored = safeSession.read(CHUNK_RELOAD_KEY)
+        if (stored === undefined || reloadedRecently(stored)) throw error
+        if (!safeSession.write(CHUNK_RELOAD_KEY, String(Date.now()))) throw error
         window.location.reload()
         // The reload replaces the document, so this promise intentionally never
         // settles — resolving would flash an error UI on the way out.

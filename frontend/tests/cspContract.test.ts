@@ -47,6 +47,19 @@ describe('production CSP contract', () => {
     expect(backendCsp).toBe(EXPECTED_CSP)
   })
 
+  // The same two deploy shapes: the standalone nginx document went out without
+  // the Permissions-Policy the API's own static handler sends.
+  it('sends the backend Permissions-Policy on the SPA document', () => {
+    const backend = readFrontendFile('../backend/src/tripl/middleware/security_headers.py')
+    const backendPolicy = backend.match(/"permissions-policy": "([^"]+)"/)?.[1]
+    expect(backendPolicy).toBeDefined()
+
+    const nginxConfig = readFrontendFile('nginx.conf')
+    const documentBlock = nginxConfig.match(/location \/ \{([\s\S]*?)\n {8}\}/)?.[1] ?? ''
+    const nginxPolicy = documentBlock.match(/add_header Permissions-Policy "([^"]+)" always;/)?.[1]
+    expect(nginxPolicy).toBe(backendPolicy)
+  })
+
   it('lets the API accept an event photo as large as the backend allows', () => {
     const nginxConfig = readFrontendFile('nginx.conf')
     const apiBlock = nginxConfig.match(/location \/api\/ \{([\s\S]*?)\n {8}\}/)?.[1] ?? ''

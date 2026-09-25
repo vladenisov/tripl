@@ -52,8 +52,17 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     console.error('Unhandled render error', error, info.componentStack)
   }
 
-  componentDidUpdate(prevProps: ErrorBoundaryProps): void {
-    if (this.state.error != null && !Object.is(prevProps.resetKey, this.props.resetKey)) {
+  componentDidUpdate(prevProps: ErrorBoundaryProps, prevState: ErrorBoundaryState): void {
+    // Only an error that was already on screen before the key changed is
+    // cleared. When the update that changes the key is itself the one that
+    // throws (navigating straight to a broken page), resetting here would
+    // re-render the failing tree a second time for nothing (as in
+    // react-error-boundary).
+    if (
+      prevState.error != null &&
+      this.state.error != null &&
+      !Object.is(prevProps.resetKey, this.props.resetKey)
+    ) {
       this.reset()
     }
   }

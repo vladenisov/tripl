@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { toast } from 'sonner'
 import type { AuthUser } from '@/types'
 import { buildNavGroups } from '@/lib/navigation'
 import { AuthContext, type AuthContextValue } from './auth-context'
@@ -11,6 +12,23 @@ import {
   COMMAND_PALETTE_TRIGGER_ATTR,
   useCommandPalette,
 } from './command-palette-context'
+
+// Lets one test make the palette dialog fail the way a missing chunk does,
+// while every other test gets the real dialog.
+const paletteDialog = vi.hoisted(() => ({ fail: false }))
+vi.mock('@/components/command-palette-dialog', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/command-palette-dialog')>()
+  const Real = actual.default
+  return {
+    ...actual,
+    default: (props: Parameters<typeof Real>[0]) => {
+      if (paletteDialog.fail) {
+        throw new TypeError('Failed to fetch dynamically imported module: /assets/palette-abc.js')
+      }
+      return <Real {...props} />
+    },
+  }
+})
 
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -160,6 +178,7 @@ function renderHarness(
 }
 
 afterEach(() => {
+  paletteDialog.fail = false
   vi.restoreAllMocks()
   // BranchProvider persists the selection per slug; a branch left behind by
   // one test would silently attach `?branch=` to the next test's requests.
@@ -997,6 +1016,26 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     // palette must not turn the first into a claim about the user's data.
     expect(screen.queryByText('No knowledge matches.')).toBeNull()
     expect(screen.queryByText('No matches.')).toBeNull()
+  })
+})
+
+describe('CommandPalette load failure', () => {
+  it('keeps the page and offers a reload when the dialog cannot load', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const toastError = vi.spyOn(toast, 'error')
+    paletteDialog.fail = true
+    renderHarness('/p/demo/events')
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled())
+    expect(toastError.mock.calls[0][1]).toMatchObject({
+      action: expect.objectContaining({ label: 'Reload' }),
+    })
+    // The failure stays inside the palette: the page around it is untouched.
+    expect(screen.getByTestId('open-palette')).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/p/demo/events')
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 })
 

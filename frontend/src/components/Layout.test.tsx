@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { projectsKey } from '@/lib/queryKeys'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -45,13 +46,21 @@ vi.mock('@/components/tweaks-panel', () => ({
 // The demo chrome, stood in for by the controls that matter to the bypass block:
 // the real components need mutations, a tour dialog and scenario polling, none of
 // which decides where in the DOM the shell puts them.
+// Lets a test make the demo chrome fail the way a missing chunk does.
+const demoChrome = vi.hoisted(() => ({ fail: false }))
+
 vi.mock('@/demo/DemoBanner', () => ({
-  DemoBanner: () => (
+  DemoBanner: () => {
+    if (demoChrome.fail) {
+      throw new TypeError('Failed to fetch dynamically imported module: /assets/DemoBanner-abc.js')
+    }
+    return (
     <div>
       <button type="button">What’s simulated</button>
       <button type="button">Delete</button>
     </div>
-  ),
+    )
+  },
 }))
 
 vi.mock('@/demo/DemoScenarioStrip', () => ({
@@ -69,6 +78,8 @@ interface RenderLayoutOptions {
   page?: ReactNode
   /** Overrides the default API mocks, applied before the first render. */
   mocks?: () => void
+  /** Seeds the query cache before the first render (e.g. an already-loaded list). */
+  seed?: (queryClient: QueryClient) => void
 }
 
 function makeProject(isDemo = false): Project {
@@ -117,6 +128,7 @@ function renderLayout(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  options.seed?.(queryClient)
   const page = options.page ?? <div>{pageLabel}</div>
   return render(
     <QueryClientProvider client={queryClient}>
@@ -173,6 +185,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  demoChrome.fail = false
   vi.restoreAllMocks()
   // defineProperty isn't undone by restoreAllMocks — drop the matchMedia stub so
   // it can't leak into other suites under full-suite concurrency.
@@ -307,6 +320,30 @@ describe('Layout unknown project (tripl-jfm3.2)', () => {
     expect(await screen.findByText('Live activity body')).toBeInTheDocument()
   })
 
+  it('takes the demo chrome from the project endpoint when the list has not answered', async () => {
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body', {
+      mocks: () => {
+        vi.mocked(projectsApi.list).mockReturnValue(new Promise(() => {}))
+        vi.mocked(projectsApi.get).mockResolvedValue(makeProject(true))
+      },
+    })
+
+    expect(await screen.findByText('Events body')).toBeInTheDocument()
+    // The same project ActiveProjectContext hands the page — not the list row
+    // alone, which a deep link does not have yet.
+    expect(await screen.findByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+  })
+
+  it('does not re-confirm a project the loaded list already names', async () => {
+    vi.mocked(projectsApi.get).mockClear()
+    renderLayout('/p/demo/overview', '/p/:slug/overview', 'Live activity body', {
+      seed: (queryClient) => queryClient.setQueryData(projectsKey(), [makeProject()]),
+    })
+
+    expect(await screen.findByText('Live activity body')).toBeInTheDocument()
+    expect(projectsApi.get).not.toHaveBeenCalled()
+  })
+
   it('renders the full shell once the slug is confirmed to exist', async () => {
     renderLayout('/p/demo/overview', '/p/:slug/overview', 'Live activity body')
 
@@ -368,6 +405,22 @@ describe("Layout after a demo is deleted (tripl-jfm3.74)", () => {
       expect(screen.queryByRole('navigation', { name: 'sidebar' })).toBeNull()
     },
   )
+})
+
+describe('Layout demo chrome failure', () => {
+  it('keeps the page when the demo chrome cannot load', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    demoChrome.fail = true
+    renderLayout('/p/demo/events', '/p/:slug/events', 'Events body', { isDemo: true })
+
+    // Outside the route boundary, a failing banner chunk used to reach the
+    // app-level boundary and take the sidebar, top bar and page with it.
+    expect(await screen.findByText('Events body')).toBeInTheDocument()
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalled())
+    expect(screen.getByText('Events body')).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'sidebar' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull()
+  })
 })
 
 describe('Layout accessibility', () => {
