@@ -387,3 +387,39 @@ describe('secondary text on tinted fills', () => {
     expect(failing.length, 'every tinted pairing passes: the --fg-faint ban can be lifted').toBeGreaterThan(0)
   })
 })
+
+/**
+ * The chart series palette (DS-23 / MON-36). Lines and dots are non-text
+ * graphics, so each slot answers to 3:1 against the surfaces a chart sits on,
+ * in both themes. Slots must also stay out of the danger hue — anomaly dots
+ * are `--danger` — and be told apart from one another.
+ */
+describe('chart series tokens', () => {
+  const SERIES = Array.from({ length: 8 }, (_, i) => `--series-${i + 1}`)
+  const CHART_SURFACES = ['--bg', '--surface', '--bg-elevated'] as const
+
+  it.each(THEMES)('$name: every series clears 3:1 on every chart surface', ({ name, body }) => {
+    for (const token of SERIES) {
+      for (const surface of CHART_SURFACES) {
+        const ratio = contrastRatio(oklchToken(body, token), oklchToken(body, surface))
+        expect(ratio, `${name} ${token} on ${surface} measured ${ratio.toFixed(2)}:1`)
+          .toBeGreaterThanOrEqual(AA_NON_TEXT)
+      }
+    }
+  })
+
+  it.each(THEMES)('$name: every series is inside sRGB and away from the danger hue', ({ name, body }) => {
+    const dangerHue = oklchDecl(body, '--danger').hueDeg
+    for (const token of SERIES) {
+      const decl = oklchDecl(body, token)
+      expect(isInSrgbGamut(decl), `${name} ${token} is outside sRGB`).toBe(true)
+      const gap = Math.min(Math.abs(decl.hueDeg - dangerHue), 360 - Math.abs(decl.hueDeg - dangerHue))
+      expect(gap, `${name} ${token} hue sits ${gap.toFixed(0)}° from --danger`).toBeGreaterThanOrEqual(30)
+    }
+  })
+
+  it.each(THEMES)('$name: no two series share a hue', ({ name, body }) => {
+    const hues = SERIES.map((token) => oklchDecl(body, token).hueDeg)
+    expect(new Set(hues).size, `${name} series hues ${hues.join(', ')}`).toBe(SERIES.length)
+  })
+})

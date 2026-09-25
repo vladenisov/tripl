@@ -285,6 +285,21 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     )
   }
 
+  it('jumps between the ends of the tab strip with End and Home (DS-35)', async () => {
+    setupFetch()
+    renderAt(`/p/${SLUG}/scans/scan-1`)
+
+    const overview = await screen.findByRole('tab', { name: 'Overview' })
+    fireEvent.keyDown(overview, { key: 'End' })
+
+    const configuration = screen.getByRole('tab', { name: 'Configuration' })
+    expect(configuration).toHaveAttribute('aria-selected', 'true')
+    expect(configuration).toHaveFocus()
+
+    fireEvent.keyDown(configuration, { key: 'Home' })
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true'))
+  })
+
   it('opens on the tab the URL names, so a reload keeps the reader on Configuration', async () => {
     setupFetch()
     renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)

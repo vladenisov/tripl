@@ -9,12 +9,13 @@ import type { Variable, VariableType } from '@/types'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ChipListInput } from '@/components/chip-list-input'
-import { Select } from '@/components/settings/kit'
+import { NativeSelect } from '@/components/settings/kit'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
@@ -350,7 +351,7 @@ export function VariablesEditDialog({
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="grid gap-2">
                   <Label htmlFor={typeId}>Type</Label>
-                  <Select
+                  <NativeSelect
                     id={typeId}
                     value={editVarType}
                     onChange={value => setEditVarType(value as VariableType)}
@@ -521,12 +522,11 @@ export function VariablesEditDialog({
                               absent from the roster page below — an override outlives
                               whatever the picker is searched to — and a bare id left
                               the select blank with Save still enabled (tripl-46am). */}
-                          <Button
+                          <IconButton
                             type="button"
                             variant="ghost"
-                            size="icon"
                             className="h-6 w-6"
-                            aria-label={`Edit override for ${eventNameLabel(override.event_name)}`}
+                            label={`Edit override for ${eventNameLabel(override.event_name)}`}
                             onClick={() => {
                               setPickerActive(true)
                               setOverrideEvent({ id: override.event_id, name: override.event_name })
@@ -534,18 +534,17 @@ export function VariablesEditDialog({
                             }}
                           >
                             <Pencil className="h-3 w-3" aria-hidden="true" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             type="button"
                             variant="ghost"
-                            size="icon"
                             className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                            aria-label={`Delete override for ${eventNameLabel(override.event_name)}`}
+                            label={`Delete override for ${eventNameLabel(override.event_name)}`}
                             disabled={overrideDeleteMut.isPending}
                             onClick={() => { void handleOverrideDelete(override) }}
                           >
                             <Trash2 className="h-3 w-3" aria-hidden="true" />
-                          </Button>
+                          </IconButton>
                         </div>
                       </li>
                     ))}
@@ -576,7 +575,7 @@ export function VariablesEditDialog({
                         content, so a blank-named event was a selectable row with
                         no name at all — indistinguishable from a rendering glitch
                         in the list, and announced as nothing (tripl-wkwv.5). */}
-                    <Select
+                    <NativeSelect
                       aria-label="Override event"
                       value={overrideEvent?.id ?? ''}
                       onChange={value => {

@@ -1,4 +1,6 @@
-import { useState, type ReactNode } from 'react'
+import { PageHeader } from '@/components/primitives/page-header'
+import { useState } from 'react'
+import { Panel } from '@/components/settings/kit'
 import { Link, useParams } from 'react-router-dom'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Inbox, Info } from 'lucide-react'
@@ -440,21 +442,11 @@ export default function ReconciliationPage() {
   return (
     <div className="min-w-0 space-y-[18px] pb-12">
       {dialog}
-      {/* Header */}
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <div
-            className="text-[11px] font-semibold uppercase tracking-[0.08em]"
-            style={{ color: 'var(--fg-subtle)' }}
-          >
-            Govern
-          </div>
-          <h1 className="mt-1 text-[22px] font-semibold tracking-[-0.01em]">Reconciliation</h1>
-          <p className="mt-1.5 max-w-[560px] text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-            Compare what your plan defines against what your data sources actually send.
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Govern"
+        title="Reconciliation"
+        description="Compare what your plan defines against what your data sources actually send."
+      />
 
       {!canWrite && <ReadOnlyNotice />}
 
@@ -585,7 +577,7 @@ export default function ReconciliationPage() {
                 <div className="text-[12px] font-medium" style={{ color: 'var(--fg-muted)' }}>
                   No new events
                 </div>
-                <div className="text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="text-2xs" style={{ color: 'var(--fg-subtle)' }}>
                   No unexpected events seen in the last {COVERAGE_DAYS} days.
                 </div>
               </div>
@@ -635,7 +627,7 @@ export default function ReconciliationPage() {
                   : 'Dismiss selected'}
               </Button>
               {selectedShadowItems.length > acceptableShadowItems.length && !bulkRunning && (
-                <span className="text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                <span className="text-2xs" style={{ color: 'var(--fg-subtle)' }}>
                   Rows without an event type are accepted one at a time.
                 </span>
               )}
@@ -757,13 +749,13 @@ export default function ReconciliationPage() {
                   aria-label="Select all dead events"
                 />
               )}
-              <span className="text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              <span className="text-2xs" style={{ color: 'var(--fg-subtle)' }}>
                 Planned events not seen in your data recently — often expected.
               </span>
             </div>
           )}
           {canWrite && onFeatureBranch && deadItems.length > 0 && (
-            <div className="px-4 pb-2 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="px-4 pb-2 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
               Dead events are checked on the main branch, and archiving them changes main. Switch
               to main to archive them.
             </div>
@@ -838,46 +830,6 @@ export default function ReconciliationPage() {
   )
 }
 
-function Panel({
-  title,
-  subtitle,
-  right,
-  tone,
-  children,
-}: {
-  title: string
-  subtitle?: string
-  right?: ReactNode
-  tone?: 'warning' | 'danger'
-  children: ReactNode
-}) {
-  const headerBg = tone ? `var(--${tone}-soft)` : 'transparent'
-  const titleColor = tone ? `var(--${tone})` : 'var(--fg)'
-  return (
-    <div
-      className="overflow-hidden rounded-[10px] border"
-      style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
-    >
-      <div
-        className="flex items-center gap-2.5 border-b px-4 py-3"
-        style={{ borderColor: 'var(--border-subtle)', background: headerBg }}
-      >
-        <div className="flex-1">
-          <div className="text-[12.5px] font-semibold" style={{ color: titleColor }}>
-            {title}
-          </div>
-          {subtitle && (
-            <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
-              {subtitle}
-            </div>
-          )}
-        </div>
-        {right}
-      </div>
-      {children}
-    </div>
-  )
-}
 
 // Coverage is "steady" when every day has data and rounds to the same
 // whole percent — the per-day histogram then carries no signal worth its
@@ -929,7 +881,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
         <div
           role="img"
           aria-label={`Data match steady at ${steadyPct}% across the window`}
-          className="inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11.5px]"
+          className="inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-caption"
           style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-muted)' }}
         >
           <Dot tone={coverageTone(steadyPct)} size={6} />
@@ -1062,11 +1014,11 @@ function ShadowRow({
           />
         )}
         <div className="min-w-0 flex-1">
-          <span className="mono text-[12.5px]" style={{ color: 'var(--fg)' }}>
+          <span className="mono text-body-sm" style={{ color: 'var(--fg)' }}>
             <EventName name={item.event_name} />
           </span>
           <div
-            className="mt-0.5 flex flex-wrap items-center gap-2 text-[10.5px]"
+            className="mt-0.5 flex flex-wrap items-center gap-2 text-2xs"
             style={{ color: 'var(--fg-subtle)' }}
           >
             <span>{item.scan_config_name}</span>
@@ -1079,7 +1031,7 @@ function ShadowRow({
         {item.event_type_name ? (
           <Chip size="xs">{item.event_type_name}</Chip>
         ) : (
-          <span className="shrink-0 text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+          <span className="shrink-0 text-2xs" style={{ color: 'var(--fg-faint)' }}>
             no type
           </span>
         )}
@@ -1181,7 +1133,7 @@ function DeadRow({
       </Link>
       {item.event_type_name && <Chip size="xs">{item.event_type_name}</Chip>}
       <span
-        className="mono shrink-0 text-[10.5px]"
+        className="mono shrink-0 text-2xs"
         style={{ color: isNever ? 'var(--warning)' : 'var(--fg-faint)' }}
       >
         {formatRelativeTime(item.last_seen_at)}

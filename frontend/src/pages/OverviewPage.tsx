@@ -21,9 +21,11 @@ import { countRealSources } from '@/components/onboarding-utils'
 import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
 import { DemoWelcomePanel } from '@/demo/DemoWelcomePanel'
 import { Dot } from '@/components/primitives/dot'
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
-import { PageHead, Panel } from '@/components/settings/kit'
+import { Panel } from '@/components/settings/kit'
+import { PageHeader } from '@/components/primitives/page-header'
+import { LoadingState } from '@/components/primitives/loading-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useTheme } from '@/components/theme-provider'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
@@ -35,6 +37,7 @@ import {
   type StatusLexeme,
 } from '@/lib/statusLexicon'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
+import { formatNumber } from '@/lib/format'
 import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { formatSignalValues } from '@/lib/signalMetricFormat'
@@ -224,7 +227,7 @@ export default function OverviewPage() {
       )}
 
       {/* Header */}
-      <PageHead eyebrow={projectQuery.data?.name ?? 'Project'} title="Live activity" />
+      <PageHeader eyebrow={projectQuery.data?.name ?? 'Project'} title="Live activity" />
 
 
       {/* KPI strip */}
@@ -239,35 +242,31 @@ export default function OverviewPage() {
           compact
         />
       ) : (
-        <div
-          className="flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3"
+        <MiniStatStrip
+          className="rounded-lg border px-4 py-3"
           style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
         >
           <MiniStat
             label="Active events"
-            value={summary ? summary.active_event_count.toLocaleString() : '—'}
+            value={summary ? formatNumber(summary.active_event_count) : '—'}
           />
-          <MiniStatDivider />
           <MiniStat
             label="Implemented"
-            value={summary ? summary.implemented_event_count.toLocaleString() : '—'}
+            value={summary ? formatNumber(summary.implemented_event_count) : '—'}
             tone="success"
           />
-          <MiniStatDivider />
           <MiniStat
             label="Needs review"
-            value={summary ? reviewCount.toLocaleString() : '—'}
+            value={summary ? formatNumber(reviewCount) : '—'}
             tone={reviewCount > 0 ? 'warning' : 'neutral'}
           />
-          <MiniStatDivider />
           <MiniStat
             label="Open signals"
-            value={signalsQuery.data ? signalCount.toLocaleString() : '—'}
+            value={signalsQuery.data ? formatNumber(signalCount) : '—'}
             tone={signalCount > 0 ? 'danger' : 'success'}
             pulse={signalCount > 0}
             delta={signalCount > 0 ? 'active' : undefined}
           />
-          <MiniStatDivider />
           <MiniStat
             label="Coverage"
             value={
@@ -279,7 +278,6 @@ export default function OverviewPage() {
           />
           {newEventsSeries.length > 1 && (
             <>
-              <MiniStatDivider />
               {/* Stacked like the MiniStat columns (caption above, figure below):
                   same `gap-px` label→figure rhythm and a 24px figure so the top
                   caption sits on the same baseline as the numeric stats in this
@@ -306,13 +304,13 @@ export default function OverviewPage() {
                     height={24}
                   />
                   <span className="sr-only">
-                    New events added by day: {newEventsSeries.map((c) => c.toLocaleString()).join(', ')}.
+                    New events added by day: {newEventsSeries.map((c) => formatNumber(c)).join(', ')}.
                   </span>
                 </div>
               </div>
             </>
           )}
-        </div>
+        </MiniStatStrip>
       )}
 
       {/* Volume — one scan config, named. Labelled "project total" until
@@ -376,11 +374,11 @@ export default function OverviewPage() {
           <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
             <div
               role="group"
-              aria-label={`Latest bucket volume ${volumeCounts[volumeCounts.length - 1]!.toLocaleString()}, ${volumePoints.length} buckets`}
+              aria-label={`Latest bucket volume ${formatNumber(volumeCounts[volumeCounts.length - 1]!)}, ${volumePoints.length} buckets`}
               className="flex shrink-0 flex-col gap-px"
             >
               <span className="mono tnum text-2xl font-medium tracking-[-0.01em]">
-                {volumeCounts[volumeCounts.length - 1]!.toLocaleString()}
+                {formatNumber(volumeCounts[volumeCounts.length - 1]!)}
               </span>
               <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
                 latest bucket · {volumePoints.length} buckets
@@ -393,7 +391,7 @@ export default function OverviewPage() {
             >
               <Sparkline data={volumeCounts} variant={chartStyle} width={320} height={48} responsive />
               <span className="sr-only">
-                Volume by bucket: {volumeCounts.map((c) => c.toLocaleString()).join(', ')}.
+                Volume by bucket: {volumeCounts.map((c) => formatNumber(c)).join(', ')}.
               </span>
             </div>
           </div>
@@ -419,7 +417,7 @@ export default function OverviewPage() {
         )}
         {!topEventsQuery.isError && topEvents.length === 0 && (
           <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            {topEventsQuery.isLoading ? 'Loading…' : 'No event volume in the last 48 hours.'}
+            {topEventsQuery.isLoading ? <LoadingState as="span" /> : 'No event volume in the last 48 hours.'}
           </div>
         )}
         {topEvents.length > 0 && (
@@ -428,7 +426,7 @@ export default function OverviewPage() {
               <div
                 key={e.event_id}
                 role="listitem"
-                aria-label={`${e.name}: ${e.total_count.toLocaleString()} events`}
+                aria-label={`${e.name}: ${formatNumber(e.total_count)} events`}
                 className="flex items-center gap-3"
               >
                 {/* The label column grows with the panel instead of sitting at
@@ -460,7 +458,7 @@ export default function OverviewPage() {
                   className="mono tnum w-16 shrink-0 text-right text-[11px]"
                   style={{ color: 'var(--fg-subtle)' }}
                 >
-                  {e.total_count.toLocaleString()}
+                  {formatNumber(e.total_count)}
                 </span>
               </div>
             ))}
@@ -480,7 +478,7 @@ export default function OverviewPage() {
               className="rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
               style={{ color: 'var(--accent)' }}
             >
-              View all ({signals.length.toLocaleString()})
+              View all ({formatNumber(signals.length)})
             </Link>
           ) : undefined
         }
@@ -499,7 +497,7 @@ export default function OverviewPage() {
         )}
         {!signalsQuery.isError && signals.length === 0 && (
           <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            {signalsQuery.isLoading ? 'Loading…' : 'No active monitoring signals.'}
+            {signalsQuery.isLoading ? <LoadingState as="span" /> : 'No active monitoring signals.'}
           </div>
         )}
         {signals.length > 0 && slug && (
@@ -535,7 +533,7 @@ export default function OverviewPage() {
         )}
         {!activityQuery.isError && activity.length === 0 && (
           <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            {activityQuery.isLoading ? 'Loading…' : 'No recent activity.'}
+            {activityQuery.isLoading ? <LoadingState as="span" /> : 'No recent activity.'}
           </div>
         )}
         {activity.length > 0 && (
@@ -565,7 +563,7 @@ export default function OverviewPage() {
         )}
         {!sourcesQuery.isError && sources.length === 0 && (
           <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            {sourcesQuery.isLoading ? 'Loading…' : 'No data sources connected.'}
+            {sourcesQuery.isLoading ? <LoadingState as="span" /> : 'No data sources connected.'}
           </div>
         )}
         {sources.length > 0 && (
@@ -617,7 +615,7 @@ function volumeChartLabel(counts: number[], scanName: string | null): string {
   const latest = counts[counts.length - 1]!
   const min = Math.min(...counts)
   const max = Math.max(...counts)
-  return `${scope}. ${counts.length} buckets. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
+  return `${scope}. ${counts.length} buckets. Latest ${formatNumber(latest)}, range ${formatNumber(min)} to ${formatNumber(max)}.`
 }
 
 // Text alternative for the new-events trend sparkline (issue #12). Mirrors
@@ -630,7 +628,7 @@ function newEventsTrendLabel(counts: number[]): string {
   const latest = counts[counts.length - 1]!
   const min = Math.min(...counts)
   const max = Math.max(...counts)
-  return `New events added per day over the last 14 days. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
+  return `New events added per day over the last 14 days. Latest ${formatNumber(latest)}, range ${formatNumber(min)} to ${formatNumber(max)}.`
 }
 
 function SignalRow({
@@ -712,7 +710,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
           {detail}
         </div>
       </div>
-      <span className="mono shrink-0 text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+      <span className="mono shrink-0 text-2xs" style={{ color: 'var(--fg-faint)' }}>
         {formatRelativeTime(item.occurred_at)}
       </span>
     </>
@@ -760,7 +758,7 @@ function SourceRow({ source }: { source: DataSource }) {
       </span>
       {source.is_synthetic && <SyntheticSourceBadge />}
       <span
-        className="mono hidden shrink-0 text-[10.5px] uppercase sm:inline"
+        className="mono hidden shrink-0 text-2xs uppercase sm:inline"
         style={{ color: 'var(--fg-faint)' }}
       >
         {source.db_type}

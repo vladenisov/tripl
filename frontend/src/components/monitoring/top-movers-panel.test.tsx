@@ -1,13 +1,29 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { eventMetricsApi } from '@/api/eventMetrics'
 import type { TopMoverItem } from '@/types'
 
 import { topMoversKey } from '@/lib/queryKeys'
+import { formatSeriesValue, type SeriesNoun } from '@/components/ui/chart-format'
 
 import { TopMoversPanel } from './top-movers-panel'
+
+// Pass-through wrapper: the real chart renders, and the noun it was handed is
+// kept for the tooltip-grammar assertion (the tooltip never paints in jsdom).
+const { chartNouns } = vi.hoisted(() => ({ chartNouns: [] as SeriesNoun[] }))
+vi.mock('@/components/ui/chart', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/components/ui/chart')>()
+  return {
+    ...actual,
+    MetricsChart: (props: ComponentProps<typeof actual.MetricsChart>) => {
+      if (props.seriesLabel) chartNouns.push(props.seriesLabel)
+      return <actual.MetricsChart {...props} />
+    },
+  }
+})
 
 vi.mock('@/api/eventMetrics', () => ({
   eventMetricsApi: { getTopMovers: vi.fn(), getBreakdownSeries: vi.fn(), getBreakdownTimeline: vi.fn() },
@@ -231,6 +247,33 @@ describe('TopMoversPanel', () => {
     fireEvent.click(await screen.findByRole('button', { name: /platform=ios/ }))
     const chart = await screen.findByRole('img', { name: 'events (platform=ios) over time' })
     expect(chart).toHaveAccessibleDescription(/3 data points\. 1 anomal/)
+  })
+
+  // DS-26: the drilldown handed the chart a plain string, so a one-event
+  // bucket's tooltip read "1 events (platform=ios)".
+  it('agrees the drilldown noun with a one-event bucket', async () => {
+    vi.mocked(eventMetricsApi.getTopMovers).mockResolvedValue([mover()])
+    const fetchTimeline = vi.mocked(eventMetricsApi.getBreakdownTimeline)
+    fetchTimeline.mockReset()
+    fetchTimeline.mockResolvedValue({
+      scan_config_id: 'scan-1',
+      scope_type: 'event',
+      scope_ref: 'event-1',
+      breakdown_column: 'platform',
+      breakdown_value: 'ios',
+      is_other: false,
+      interval: '1h',
+      data: [{ bucket: '2026-01-02T00:00:00Z', count: 1 }],
+    })
+    chartNouns.length = 0
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: /platform=ios/ }))
+    await screen.findByRole('img', { name: 'events (platform=ios) over time' })
+    const noun = chartNouns.at(-1)
+    expect(noun).toBeDefined()
+    expect(formatSeriesValue(1, noun!)).toBe('1 event (platform=ios)')
+    expect(formatSeriesValue(3, noun!)).toBe('3 events (platform=ios)')
   })
 
   it('says so inline when the drilldown timeline fails (MON-20)', async () => {

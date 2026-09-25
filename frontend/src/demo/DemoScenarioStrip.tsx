@@ -146,7 +146,7 @@ function ActiveStrip({
         {/* Cut to the row's width on a desktop, whole in the DOM (and so to a
             screen reader), and whole on hover. */}
         <span
-          className="min-w-0 text-[11.5px] leading-[1.45] lg:truncate"
+          className="min-w-0 text-caption leading-[1.45] lg:truncate"
           style={{ color: 'var(--fg-muted)' }}
           title={step.instruction}
         >
@@ -215,13 +215,13 @@ function ActiveStrip({
           under may not have changed. A line of its own under the row: the
           exception may cost height, the normal state does not. */}
       {hint && (
-        <p role="status" className="basis-full text-[11.5px]" style={{ color: 'var(--warning)' }}>
+        <p role="status" className="basis-full text-caption" style={{ color: 'var(--warning)' }}>
           {SCENARIO_HINT_COPY[hint]}
         </p>
       )}
 
       {targetMissing && (
-        <p className="basis-full text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+        <p className="basis-full text-caption" style={{ color: 'var(--fg-muted)' }}>
           {MISSING_TARGET_COPY}
         </p>
       )}

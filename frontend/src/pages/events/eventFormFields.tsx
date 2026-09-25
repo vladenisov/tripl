@@ -186,7 +186,7 @@ export function FieldTemplateHints({
               key={allowedValue}
               type="button"
               aria-label={`Copy documented value ${allowedValue}`}
-              className="rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-accent"
+              className="rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-surface-hover"
               onClick={() => void copyValue(allowedValue)}
             >
               {allowedValue}

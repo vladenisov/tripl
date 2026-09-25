@@ -226,7 +226,7 @@ export function InboxBulkActionBar({
     <div aria-hidden="true" data-bulk-bar-spacer="" style={{ height: barHeight + 18 + 12 }} />
     <div
       ref={measureBar}
-      className="fixed bottom-[18px] left-1/2 z-30 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col gap-1.5 rounded-[10px] border py-1.5 pl-3.5 pr-2"
+      className="fixed bottom-[18px] left-1/2 z-(--z-bar) flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col gap-1.5 rounded-card border py-1.5 pl-3.5 pr-2"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-strong)',

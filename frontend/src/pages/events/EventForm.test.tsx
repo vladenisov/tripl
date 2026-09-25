@@ -275,12 +275,13 @@ describe('EventForm template authoring', () => {
 
     const selectedSuggestion = screen.getByRole('option', { name: /\$\{variant\}/ })
     expect(selectedSuggestion).toBeInTheDocument()
-    expect(within(selectedSuggestion).getByText('${variant}')).toHaveClass(
-      'text-accent-foreground',
-    )
+    // The highlight is the option's selected state, on the neutral hover
+    // surface (DS-10), not a brand-coloured text class.
+    expect(selectedSuggestion).toHaveAttribute('aria-selected', 'true')
+    expect(within(selectedSuggestion).getByText('${variant}')).toBeInTheDocument()
     const description = within(selectedSuggestion).getByText('Experiment variant')
     expect(description.parentElement).toHaveClass('min-w-0', 'flex-1', 'overflow-hidden')
-    expect(description).toHaveClass('w-full', 'truncate', 'text-accent-foreground/80')
+    expect(description).toHaveClass('w-full', 'truncate')
     expect(within(selectedSuggestion).getByText('payload.variant')).toHaveClass(
       'w-full',
       'truncate',
@@ -1902,7 +1903,9 @@ describe('EventForm hint wiring (EVT-48)', () => {
 
   it('does not read the required star aloud; the control says it is required', () => {
     const { container } = renderForm(null)
-    const star = container.querySelector('label[for="form-name"] span')
+    // The star sits beside the label, outside its text, so the accessible
+    // name stays "Name" (DS-17).
+    const star = container.querySelector('label[for="form-name"] + [aria-hidden="true"]')
     expect(star).toHaveTextContent('*')
     expect(star).toHaveAttribute('aria-hidden', 'true')
     expect(screen.getByLabelText(/^Name/)).toBeRequired()

@@ -5,6 +5,7 @@ import type { AlertDestination } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { IconButton } from "@/components/ui/icon-button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
 import { getErrorMessage } from '@/lib/utils'
@@ -193,13 +194,13 @@ export function DestinationCard({
               onCheckedChange={checked => updateDestinationMut.mutate({ enabled: checked })}
               aria-label={`Toggle ${destination.name}`}
             />
-            <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit destination ${destination.name}`} onClick={() => {
+            <IconButton variant="ghost" className="h-8 w-8" label={`Edit destination ${destination.name}`} onClick={() => {
               // The editor can replace a secret the fingerprint cannot see.
               setTestedVersion(null)
               onEditDestination(destination)
             }}>
               <Pencil aria-hidden="true" className="h-4 w-4" />
-            </Button>
+            </IconButton>
           </div>
           )}
         </div>

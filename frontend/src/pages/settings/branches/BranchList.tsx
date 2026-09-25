@@ -105,10 +105,10 @@ export function BranchList({
                 aria-hidden="true"
               />
               <div className="min-w-0 flex-1">
-                <div className="mono truncate text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
+                <div className="mono truncate text-body-sm font-medium" style={{ color: 'var(--fg)' }}>
                   {branch.name}
                 </div>
-                <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="mt-0.5 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
                   {branchSubtitle(branch, usersById)}
                 </div>
               </div>
@@ -117,7 +117,7 @@ export function BranchList({
                   distance, so it is a dot and not a number (PLAN-14). */}
               {!isMain && counts && (
                 <span
-                  className="mono flex shrink-0 items-center gap-1 text-[10.5px]"
+                  className="mono flex shrink-0 items-center gap-1 text-2xs"
                   style={{ color: 'var(--fg-faint)' }}
                 >
                   <span aria-hidden="true">↑{counts.ahead}</span>

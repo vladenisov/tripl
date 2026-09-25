@@ -25,7 +25,7 @@ import type { EventsSavedView } from './savedViews'
 import type { EventsSortOrder } from './useEventsQuery'
 
 const FILTER_TRIGGER_CLASS =
-  'h-8 w-auto gap-1.5 border-dashed bg-transparent text-[11.5px] text-[var(--fg-muted)]'
+  'h-8 w-auto gap-1.5 border-dashed bg-transparent text-caption text-[var(--fg-muted)]'
 
 /** The silent-days values the Activity filter offers as presets. */
 const SILENT_DAY_PRESETS = [1, 7, 30]
@@ -326,7 +326,7 @@ export function EventsToolbar({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sideOffset={6} className="w-[212px]">
             <DropdownMenuItem
-              className="text-[12.5px]"
+              className="text-body-sm"
               disabled={isExporting || !canExport}
               onSelect={onExportCsv}
               title={
@@ -340,7 +340,7 @@ export function EventsToolbar({
             </DropdownMenuItem>
             {onBulkNew && (
               <DropdownMenuItem
-                className="text-[12.5px]"
+                className="text-body-sm"
                 onSelect={onBulkNew}
                 title="Create a run of events from a pasted list"
               >

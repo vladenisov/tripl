@@ -206,9 +206,9 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             <Chip tone="accent" size="xs">
               {step.area}
             </Chip>
-            <span className="text-[13px] font-semibold">{step.title}</span>
+            <span className="text-body font-semibold">{step.title}</span>
           </div>
-          <p className="mt-2 text-[12.5px] leading-[1.5]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="mt-2 text-body-sm leading-[1.5]" style={{ color: 'var(--fg-subtle)' }}>
             {step.blurb}
           </p>
           {step.action === 'open-command-palette' ? (
@@ -284,7 +284,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             onClick={() => setIndexOpen((value) => !value)}
             aria-expanded={indexOpen}
             aria-controls={indexId}
-            className="flex items-center gap-1 rounded px-1 py-0.5 text-[11.5px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            className="flex items-center gap-1 rounded px-1 py-0.5 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
             All surfaces

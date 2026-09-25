@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 
 const DEFAULT_INVALID_MESSAGE = 'That value is not accepted here.'
+const DUPLICATE_MESSAGE = 'Already added.'
 
 export interface ChipListInputProps {
   values: string[]
@@ -32,21 +33,44 @@ export function ChipListInput({
   inputId,
 }: ChipListInputProps) {
   const [draft, setDraft] = useState('')
-  const [invalid, setInvalid] = useState(false)
-  const add = () => {
+  // The message on screen, or null. One slot for both reasons a draft is not
+  // added, so a screen reader hears exactly the one that applies (DS-18).
+  const [problem, setProblem] = useState<string | null>(null)
+  const errorId = `${useId()}-error`
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  /**
+   * Adds the draft. `quiet` is for focus moving to one of this control's own
+   * chip remove buttons: that is not a request to validate half-typed text, so
+   * a rejected draft is simply left in the box. Any other blur (Tab onward, a
+   * click on the form's Save) says why the draft was not added — otherwise the
+   * form saves without it and the only hint is leftover text in the box.
+   */
+  const add = (quiet = false) => {
     const value = draft.trim()
     if (!value) return
     if (validate && !validate(value)) {
-      setInvalid(true)
+      if (!quiet) setProblem(invalidMessage)
       return
     }
-    if (!values.includes(value)) onChange([...values, value])
+    if (values.includes(value)) {
+      // Said, not silently swallowed: the draft used to vanish with no sign
+      // the value was already in the list.
+      if (!quiet) setProblem(DUPLICATE_MESSAGE)
+      return
+    }
+    onChange([...values, value])
     setDraft('')
-    setInvalid(false)
+    setProblem(null)
   }
+
+  const invalid = problem !== null
   return (
     <div>
-      <div className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-input bg-transparent px-2 py-1">
+      <div
+        ref={rootRef}
+        className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-input bg-transparent px-2 py-1 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50"
+      >
         {values.map(value => (
           <span
             key={value}
@@ -56,6 +80,8 @@ export function ChipListInput({
             <button
               type="button"
               aria-label={`Remove ${value}`}
+              // The icon is 12px; the pointer target grows to 24px (WCAG 2.5.8).
+              className="hit-target-24 rounded-sm hover:text-destructive"
               onClick={() => onChange(values.filter(v => v !== value))}
             >
               <X className="h-3 w-3" aria-hidden="true" />
@@ -65,11 +91,13 @@ export function ChipListInput({
         <input
           id={inputId}
           aria-label={ariaLabel}
+          aria-invalid={invalid || undefined}
+          aria-describedby={invalid ? errorId : undefined}
           className="h-6 min-w-28 flex-1 bg-transparent text-sm outline-none"
           value={draft}
           onChange={e => {
             setDraft(e.target.value)
-            setInvalid(false)
+            setProblem(null)
           }}
           // Enter adds a chip and nothing else: this control is mounted inside
           // forms whose own submit saves something much larger.
@@ -77,13 +105,25 @@ export function ChipListInput({
             if (e.key === 'Enter') {
               e.preventDefault()
               add()
+            } else if (e.key === 'Backspace' && draft === '' && values.length > 0) {
+              // The conventional token-input gesture: Backspace in an empty
+              // box takes back the last chip.
+              e.preventDefault()
+              onChange(values.slice(0, -1))
             }
           }}
-          onBlur={add}
+          onBlur={e => {
+            const next = e.relatedTarget
+            add(next instanceof Node && rootRef.current?.contains(next) === true)
+          }}
           placeholder={placeholder}
         />
       </div>
-      {invalid && <p className="mt-1 text-xs text-destructive">{invalidMessage}</p>}
+      {invalid && (
+        <p id={errorId} role="alert" className="mt-1 text-xs text-destructive">
+          {problem}
+        </p>
+      )}
     </div>
   )
 }

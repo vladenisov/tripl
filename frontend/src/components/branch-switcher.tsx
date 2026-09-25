@@ -74,7 +74,7 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
         <button
           type="button"
           title="Switch branch"
-          className="flex h-7 w-full items-center gap-1.5 rounded-md border px-2 text-[11.5px] transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex h-7 w-full items-center gap-1.5 rounded-md border px-2 text-caption transition-colors hover:bg-[var(--surface-hover)]"
           style={{ background: 'transparent', borderColor: 'var(--border-subtle)' }}
         >
           <GitBranch className="h-3 w-3 shrink-0" style={{ color: 'var(--accent)' }} />
@@ -119,7 +119,7 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
             />
           ))}
           {!branchesQuery.isFetching && workingBranches.length === 0 && (
-            <div className="px-2 py-1.5 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="px-2 py-1.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
               No active branches yet.
             </div>
           )}

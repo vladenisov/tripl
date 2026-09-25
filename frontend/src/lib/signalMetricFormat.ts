@@ -3,6 +3,7 @@
  * module is on the first-load path (the top-bar bell reads it), and this one
  * pulls in the metric and incident formatters.
  */
+import { formatNumber } from '@/lib/format'
 import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatMetricValue } from '@/lib/metricFormat'
 import type { MonitoringSignal } from '@/types'
@@ -21,5 +22,5 @@ export function formatSignalValues(
   if (signal.unit) {
     return `${formatMetricValue(signal.actual_count, signal.unit)} vs ${formatMetricValue(signal.expected_count, signal.unit)}`
   }
-  return `${signal.actual_count.toLocaleString()} vs ${formatIncidentCount(signal.expected_count)}`
+  return `${formatNumber(signal.actual_count)} vs ${formatIncidentCount(signal.expected_count)}`
 }

@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { INPUT_BASE, INPUT_DISABLED } from '@/components/settings/input-style'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 
 /**
  * Column-name input backed by data-source schema suggestions. Free typing is
@@ -42,7 +43,7 @@ export function ColumnSuggestInput({
 }: ColumnSuggestInputProps) {
   const uid = useId()
   const listboxId = `column-listbox-${uid}`
-  const wrapperRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const [open, setOpen] = useState(false)
   const [highlight, setHighlight] = useState(0)
 
@@ -56,14 +57,13 @@ export function ColumnSuggestInput({
   // resetting so ArrowUp/Down stay stable while typing.
   const activeIdx = Math.min(highlight, filtered.length - 1)
 
+  // Keep the highlighted option visible: the list scrolls at ~8 rows, and
+  // ArrowDown past that used to highlight options nobody could see (DS-35).
+  // Optional call — jsdom has no scrollIntoView.
   useEffect(() => {
-    if (!open) return
-    const handler = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [open])
+    if (!expanded) return
+    document.getElementById(`${listboxId}-opt-${activeIdx}`)?.scrollIntoView?.({ block: 'nearest' })
+  }, [expanded, activeIdx, listboxId])
 
   const pick = (name: string) => {
     onChange(name)
@@ -104,66 +104,82 @@ export function ColumnSuggestInput({
     }
   }
 
+  // The list is portalled (Radix Popover anchored to the input) rather than
+  // positioned inside the field: in the last Field of an SCard it was cut off
+  // by the card's rounded-corner clip almost entirely, while the combobox still
+  // reported itself expanded (DS-3). Focus never leaves the input — the popover
+  // neither takes it on open nor hands it back on close.
   return (
-    <div ref={wrapperRef} className="relative">
-      <input
-        id={id}
-        type="text"
-        role="combobox"
-        aria-expanded={expanded}
-        aria-haspopup="listbox"
-        aria-autocomplete="list"
-        aria-controls={listboxId}
-        aria-activedescendant={expanded ? `${listboxId}-opt-${activeIdx}` : undefined}
-        aria-label={ariaLabel}
-        aria-invalid={ariaInvalid || undefined}
-        aria-describedby={ariaDescribedBy}
-        aria-required={ariaRequired}
-        autoComplete="off"
-        className="mono"
-        // The disabled cue comes from the shared primitive, not from a local
-        // knock-down. This box used to dim itself with `opacity: 0.6`, the same
-        // treatment that on the dark theme left a dead field 3/255 of fill and
-        // 7/255 of border away from a live one — indistinguishable in a
-        // screenshot (tripl-91j6). INPUT_DISABLED is a shape change (no well,
-        // dashed border) precisely so it does not depend on that delta.
-        style={{ ...INPUT_BASE, ...(disabled ? INPUT_DISABLED : {}) }}
-        value={value}
-        placeholder={placeholder}
-        disabled={disabled}
-        onChange={e => handleChange(e.target.value)}
-        onKeyDown={handleKeyDown}
-        onFocus={() => setOpen(true)}
-      />
-      {expanded && (
-        <div
-          id={listboxId}
-          role="listbox"
-          aria-label="Column suggestions"
-          className="absolute z-50 mt-1 max-h-[220px] w-full overflow-y-auto rounded-[7px] border p-1 shadow-md"
-          style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
-        >
-          {filtered.map((name, i) => (
-            <button
-              key={name}
-              id={`${listboxId}-opt-${i}`}
-              type="button"
-              role="option"
-              aria-selected={i === activeIdx}
-              onMouseDown={e => e.preventDefault()}
-              onClick={() => pick(name)}
-              onMouseEnter={() => setHighlight(i)}
-              className="mono flex w-full items-center rounded-[5px] px-2 py-[5px] text-left text-[12px]"
-              style={{
-                background: i === activeIdx ? 'var(--surface-hover)' : 'transparent',
-                color: 'var(--fg)',
-              }}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <Popover open={expanded} onOpenChange={next => { if (!next) setOpen(false) }}>
+      <PopoverAnchor asChild>
+        <input
+          ref={inputRef}
+          id={id}
+          type="text"
+          role="combobox"
+          aria-expanded={expanded}
+          aria-haspopup="listbox"
+          aria-autocomplete="list"
+          aria-controls={listboxId}
+          aria-activedescendant={expanded ? `${listboxId}-opt-${activeIdx}` : undefined}
+          aria-label={ariaLabel}
+          aria-invalid={ariaInvalid || undefined}
+          aria-describedby={ariaDescribedBy}
+          aria-required={ariaRequired}
+          autoComplete="off"
+          className="mono"
+          // The disabled cue comes from the shared primitive, not from a local
+          // knock-down. This box used to dim itself with `opacity: 0.6`, the same
+          // treatment that on the dark theme left a dead field 3/255 of fill and
+          // 7/255 of border away from a live one — indistinguishable in a
+          // screenshot (tripl-91j6). INPUT_DISABLED is a shape change (no well,
+          // dashed border) precisely so it does not depend on that delta.
+          style={{ ...INPUT_BASE, ...(disabled ? INPUT_DISABLED : {}) }}
+          value={value}
+          placeholder={placeholder}
+          disabled={disabled}
+          onChange={e => handleChange(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onFocus={() => setOpen(true)}
+        />
+      </PopoverAnchor>
+      <PopoverContent
+        id={listboxId}
+        role="listbox"
+        aria-label="Column suggestions"
+        align="start"
+        sideOffset={4}
+        onOpenAutoFocus={e => e.preventDefault()}
+        onCloseAutoFocus={e => e.preventDefault()}
+        // A press on the input itself is not "outside": it is where typing
+        // happens, and closing there would flicker the list on every click.
+        onInteractOutside={e => {
+          if (inputRef.current?.contains(e.target as Node)) e.preventDefault()
+        }}
+        className="max-h-[220px] w-(--radix-popover-trigger-width) overflow-y-auto rounded-control p-1"
+        style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+      >
+        {filtered.map((name, i) => (
+          <button
+            key={name}
+            id={`${listboxId}-opt-${i}`}
+            type="button"
+            role="option"
+            tabIndex={-1}
+            aria-selected={i === activeIdx}
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => pick(name)}
+            onMouseEnter={() => setHighlight(i)}
+            className="mono flex w-full items-center rounded-[5px] px-2 py-[5px] text-left text-[12px]"
+            style={{
+              background: i === activeIdx ? 'var(--surface-hover)' : 'transparent',
+              color: 'var(--fg)',
+            }}
+          >
+            {name}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
   )
 }

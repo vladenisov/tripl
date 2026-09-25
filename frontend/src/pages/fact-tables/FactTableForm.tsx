@@ -1,3 +1,5 @@
+import { DEFAULT_ENTITY_COLOR } from '@/types'
+import { PageHeader } from '@/components/primitives/page-header'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -14,10 +16,11 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import {
   SCard,
-  Select,
+  NativeSelect,
   TextArea,
   TextInput,
   type SelectOption,
+  Field,
 } from '@/components/settings/kit'
 import type {
   DataSource,
@@ -43,7 +46,6 @@ import { uid } from '@/lib/uid'
 // The shared settings field row and error wiring: the metric and fact-table
 // editors report validation the same way — inline under the field, linked from
 // the summary, focus moved to the first one (MET-35).
-import { FormField } from '@/components/settings/form-field'
 import {
   errorAria,
   fieldErrorId,
@@ -51,7 +53,6 @@ import {
   type FieldErrors,
 } from '@/lib/fieldErrors'
 
-const DEFAULT_COLOR = '#6366f1'
 
 /** The inline "Could not preview columns" block; a failed save-time preview focuses it. */
 const PREVIEW_ERROR_ID = 'fact-preview-error'
@@ -203,7 +204,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     setName(value)
   }
   const [description, setDescription] = useState(factTable?.description ?? '')
-  const [color, setColor] = useState(factTable?.color ?? DEFAULT_COLOR)
+  const [color, setColor] = useState(factTable?.color ?? DEFAULT_ENTITY_COLOR)
   const [dataSourceId, setDataSourceId] = useState(factTable?.data_source_id ?? '')
   const [sql, setSql] = useState(factTable?.sql ?? '')
   const [timestampColumn, setTimestampColumn] = useState(factTable?.timestamp_column ?? '')
@@ -505,14 +506,15 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
         <button
           type="button"
           onClick={onClose}
-          className="mb-[14px] inline-flex items-center gap-1 text-[11.5px] transition-colors hover:text-[var(--fg)]"
+          className="mb-[14px] inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
           style={{ color: 'var(--fg-muted)' }}
         >
           <ChevronLeft size={13} /> Fact tables
         </button>
-        <h1 className="mb-[18px] text-[22px] font-semibold tracking-[-0.01em]">
-          {isNew ? 'New fact table' : canWrite ? 'Edit fact table' : 'Fact table'}
-        </h1>
+        <PageHeader
+          className="mb-[18px]"
+          title={isNew ? 'New fact table' : canWrite ? 'Edit fact table' : 'Fact table'}
+        />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         {/* A viewer gets the definition read-only: `disabled` on a fieldset
@@ -520,11 +522,12 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             the layout. */}
         <fieldset disabled={!canWrite} className="contents">
           <SCard title="Details">
-            <FormField
+            <Field
               label="Display name"
               htmlFor="fact-display-name"
               required
               error={fieldErrors['fact-display-name']}
+              announceError={false}
             >
               <TextInput
                 id="fact-display-name"
@@ -534,8 +537,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 aria-required
                 {...errorAria(fieldErrors, 'fact-display-name')}
               />
-            </FormField>
-            <FormField
+            </Field>
+            <Field
               label="Internal name"
               // After creation this row holds the name as text, not a control:
               // `false` names it as a group instead of pointing the label at a
@@ -544,6 +547,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               required={isNew}
               hint={isNew ? 'Stable identifier used by fact metrics.' : "Can't be changed after creation."}
               error={isNew ? fieldErrors['fact-name'] : undefined}
+              announceError={false}
             >
               {isNew ? (
                 <TextInput
@@ -556,12 +560,12 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                   {...errorAria(fieldErrors, 'fact-name')}
                 />
               ) : (
-                <div className="mono text-[13px]" style={{ color: 'var(--fg)' }}>
+                <div className="mono text-body" style={{ color: 'var(--fg)' }}>
                   {name}
                 </div>
               )}
-            </FormField>
-            <FormField label="Description" htmlFor="fact-description">
+            </Field>
+            <Field label="Description" htmlFor="fact-description">
               <TextArea
                 id="fact-description"
                 value={description}
@@ -569,8 +573,8 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 rows={2}
                 placeholder="What does this fact table represent?"
               />
-            </FormField>
-            <FormField label="Color" htmlFor="fact-color" last>
+            </Field>
+            <Field label="Color" htmlFor="fact-color" last>
               <input
                 id="fact-color"
                 type="color"
@@ -579,17 +583,18 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 className="h-8 w-12 cursor-pointer rounded border bg-transparent"
                 style={{ borderColor: 'var(--border)' }}
               />
-            </FormField>
+            </Field>
           </SCard>
 
           <SCard title="Source" description="A full read-only SELECT or WITH ... SELECT plus the warehouse it runs against.">
-            <FormField
+            <Field
               label="Data source"
               htmlFor="fact-data-source"
               required
               error={fieldErrors['fact-data-source']}
+              announceError={false}
             >
-              <Select
+              <NativeSelect
                 id="fact-data-source"
                 value={dataSourceId}
                 onChange={setDataSourceId}
@@ -597,14 +602,15 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 aria-required
                 {...errorAria(fieldErrors, 'fact-data-source')}
               />
-            </FormField>
-            <FormField
+            </Field>
+            <Field
               label="SQL"
               htmlFor="fact-sql"
               required
               stacked
               hint="A single read-only SELECT or WITH ... SELECT."
               error={fieldErrors['fact-sql']}
+              announceError={false}
             >
               <SqlEditor
                 id="fact-sql"
@@ -620,14 +626,15 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 ariaInvalid={errorAria(fieldErrors, 'fact-sql')['aria-invalid']}
                 ariaDescribedBy={errorAria(fieldErrors, 'fact-sql')['aria-describedby']}
               />
-            </FormField>
-            <FormField
+            </Field>
+            <Field
               label="Timestamp column"
               htmlFor="fact-timestamp"
               required
               last
               hint="The column used to bucket facts over time."
               error={fieldErrors['fact-timestamp']}
+              announceError={false}
             >
               <ColumnSuggestInput
                 id="fact-timestamp"
@@ -638,7 +645,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 aria-required
                 {...errorAria(fieldErrors, 'fact-timestamp')}
               />
-            </FormField>
+            </Field>
           </SCard>
 
           <SCard
@@ -651,7 +658,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 type="button"
                 onClick={runPreview}
                 disabled={previewMut.isPending || !sql.trim() || !dataSourceId}
-                className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+                className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
                 style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
               >
                 {previewMut.isPending ? (
@@ -679,7 +686,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               {columns.length > 0 && (
                 <div className="mt-4">
                   <div
-                    className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]"
+                    className="mb-2 text-2xs font-semibold uppercase tracking-[0.05em]"
                     style={{ color: 'var(--fg-faint)' }}
                   >
                     Columns
@@ -694,7 +701,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                           style={{ borderColor: 'var(--border-subtle)' }}
                         >
                           <span className="flex min-w-0 items-center gap-2">
-                            <label className="flex items-center gap-2 text-[12.5px]">
+                            <label className="flex items-center gap-2 text-body-sm">
                               <input
                                 type="checkbox"
                                 checked={isIdentifier}
@@ -778,7 +785,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                             type="button"
                             onClick={() => removeRowFilter(filter.id)}
                             aria-label={`Remove row filter ${index + 1}`}
-                            className="col-start-2 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-[7px] border transition-colors hover:bg-[var(--surface-hover)] sm:col-start-3"
+                            className="col-start-2 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)] sm:col-start-3"
                             style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
                           >
                             <Trash2 size={13} />
@@ -801,7 +808,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               <button
                 type="button"
                 onClick={addRowFilter}
-                className="mt-3 inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+                className="mt-3 inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
                 style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
               >
                 <Plus size={12} /> Add row filter
@@ -813,7 +820,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
         {errorEntries.length > 0 && (
           <div
             role="alert"
-            className="mb-[18px] rounded-[10px] border px-4 py-3 text-[12.5px]"
+            className="mb-[18px] rounded-card border px-4 py-3 text-body-sm"
             style={{
               background: 'var(--danger-soft)',
               borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
@@ -856,7 +863,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 void onDelete()
               }}
               disabled={busy}
-              className="mr-auto inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-60"
+              className="mr-auto inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-60"
               style={{ borderColor: 'var(--border)', color: 'var(--danger)' }}
             >
               {deleteMut.isPending ? (
@@ -870,7 +877,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 items-center rounded-[7px] px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            className="inline-flex h-8 items-center rounded-control px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
             {canWrite ? 'Cancel' : 'Close'}
@@ -879,7 +886,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             <button
               type="submit"
               disabled={busy}
-              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
+              className="inline-flex h-8 items-center gap-[6px] rounded-control px-3 text-[12px] font-medium disabled:opacity-60"
               style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
             >
               {saveMut.isPending || previewMut.isPending ? (

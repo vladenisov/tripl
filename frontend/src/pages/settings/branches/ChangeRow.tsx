@@ -139,13 +139,13 @@ export function ChangeRow({
         >
           {meta.sym}
         </span>
-        <span className="mono min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }}>
+        <span className="mono min-w-0 truncate text-body-sm" style={{ color: 'var(--fg)' }}>
           {entry.name}
         </span>
         {title ? (
           // Muted and after the scan name, not instead of it: the name is what
           // the merge pairs on and what the scanner reports (tripl-kjhi.3).
-          <span className="min-w-0 truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="min-w-0 truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
             · {title}
           </span>
         ) : null}
@@ -155,7 +155,7 @@ export function ChangeRow({
             and with it the panel and the page. `truncate` keeps the collapsed
             summary to one line; the full before/after is a click away. */}
         <span
-          className="min-w-0 flex-1 truncate text-right text-[11.5px]"
+          className="min-w-0 flex-1 truncate text-right text-caption"
           style={{ color: 'var(--fg-subtle)' }}
         >
           {renamedTo ? `→ ${renamedTo}` : diffEntryDetail(entry)}
@@ -287,7 +287,7 @@ export function ChangeRow({
             </DetailSection>
           ) : null}
           {!hasFieldChanges && !hasState ? (
-            <p className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
               No further detail for this change.
             </p>
           ) : null}
@@ -315,7 +315,7 @@ function RevertBlockedNote({
 }) {
   const branchLink = useBranchLinkProps()
   return (
-    <div role="note" className="text-[11.5px]" style={{ color: 'var(--warning)' }}>
+    <div role="note" className="text-caption" style={{ color: 'var(--warning)' }}>
       <p className="flex items-start gap-1.5">
         <AlertTriangle className="mt-[2px] size-3 shrink-0" aria-hidden="true" />
         <span>
@@ -373,7 +373,7 @@ function StateView({ state }: { state: Record<string, unknown> }) {
         <Fragment key={key}>
           <dt
             id={`${uid}-${key}`}
-            className="mono truncate text-[11.5px]"
+            className="mono truncate text-caption"
             style={{ color: 'var(--fg-subtle)' }}
           >
             {key}
@@ -406,7 +406,7 @@ export function HousekeepingFold({ entries }: { entries: PlanDiffEntry[] }) {
         // Only while the list exists: an idref to a missing element is an
         // a11y error, which ChangeRow's toggle already avoids (PLAN-20).
         aria-controls={expanded ? listId : undefined}
-        className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-[11.5px]"
+        className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-caption"
         style={{ color: 'var(--fg-subtle)' }}
       >
         <ChevronRight
@@ -424,7 +424,7 @@ export function HousekeepingFold({ entries }: { entries: PlanDiffEntry[] }) {
           {entries.map((entry) => (
             <li
               key={`${entry.entity_type}-${entry.parent ?? ''}-${entry.name}`}
-              className="flex items-baseline gap-2 py-0.5 text-[11.5px]"
+              className="flex items-baseline gap-2 py-0.5 text-caption"
             >
               <span className="mono truncate" style={{ color: 'var(--fg-muted)' }}>
                 {entry.name}

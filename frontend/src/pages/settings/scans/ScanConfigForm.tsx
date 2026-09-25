@@ -1,3 +1,4 @@
+import { PageHeader } from '@/components/primitives/page-header'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, RotateCcw, Trash2 } from 'lucide-react'
@@ -187,7 +188,7 @@ export function ScanConfigurationTab({
             style={{ borderColor: 'var(--border-subtle)' }}
           >
             <div className="flex-1">
-              <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+              <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
                 Run a one-off replay
               </div>
               <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
@@ -213,7 +214,7 @@ export function ScanConfigurationTab({
           )}
           <div className="flex items-center gap-[18px] px-[18px] py-3.5">
             <div className="flex-1">
-              <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+              <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
                 Delete scan
               </div>
               <div className="mt-0.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
@@ -301,21 +302,22 @@ export function ScanCreatePage({
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex items-center gap-1 text-[11.5px]"
+          className="inline-flex items-center gap-1 text-caption"
           style={{ color: 'var(--fg-muted)' }}
         >
           <span aria-hidden>←</span> Scans
         </button>
       </div>
-      <h1 className="m-0 mb-1 text-[19px] font-semibold tracking-tight">New scan</h1>
       {/* "…to ingest events and roll up metrics" promised monitoring before the
           user had chosen it, and read as a contradiction with Catalog only two
           lines below. What the scan does is now the first question, and the note
           under the radio answers it, so this line only has to say what you are
           pointing at what. */}
-      <p className="mb-[18px] text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        Point a warehouse query at tripl, and choose what it does with the rows.
-      </p>
+      <PageHeader
+        className="mb-[18px]"
+        title="New scan"
+        description="Point a warehouse query at tripl, and choose what it does with the rows."
+      />
 
       <ScanEssentialsSection {...sectionProps} />
       <EventNamingSection {...sectionProps} />
@@ -330,7 +332,7 @@ export function ScanCreatePage({
       )}
 
       <div className="mt-1 flex items-center gap-2.5">
-        <span className="flex-1 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="flex-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
           {/* In Catalog + monitoring the preview is not optional: the time column
               is chosen from the columns it returns. In Catalog only it is not
               "optional" either any more — it is how you find out what this scan

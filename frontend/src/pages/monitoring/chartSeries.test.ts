@@ -86,6 +86,29 @@ describe('buildVersionChartSeries', () => {
     expect(latest.legendValue).toBe(0.3)
     expect(at(latest.data, 0).count).toBeCloseTo(0.3, 10)
   })
+
+  // The 7th slot used to fall back to --fg-subtle, the grey "Other" draws in,
+  // and the 1st to the accent the latest release draws in.
+  it('never draws two solid series in one colour', () => {
+    const many = [
+      version({ version: '3.0.0', is_latest: true }),
+      ...Array.from({ length: 7 }, (_, index) => version({ version: `2.${index}.0` })),
+      version({ version: '', is_other: true }),
+    ]
+    const built = buildVersionChartSeries(many, 'day', 'all', '3.0.0')
+    expect(built).toHaveLength(9)
+    const colors = built.map(item => item.color)
+    expect(new Set(colors).size).toBe(colors.length)
+
+    const preRelease = buildVersionChartSeries(
+      [version({ version: '3.0.0', is_latest: true, is_active: false }), ...many.slice(1)],
+      'day',
+      'all',
+      '3.0.0',
+    )
+    const preColors = preRelease.map(item => item.color)
+    expect(new Set(preColors).size).toBe(preColors.length)
+  })
 })
 
 describe('breakdown series', () => {

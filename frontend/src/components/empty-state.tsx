@@ -1,28 +1,75 @@
 import type { LucideIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { cn } from '@/lib/utils'
 
+export type EmptyStateSize = 'default' | 'sm'
+
+/**
+ * "Nothing here yet" for a page or a panel.
+ *
+ * `size="sm"` is the in-panel form: a compact block that fits inside a card or
+ * a table body, where the page-level `py-16` block was too tall, so pages kept
+ * writing one-off "No … yet" lines that looked different everywhere (DS-38).
+ * Convention: tables load with skeleton rows (`LoadingState`), panels show a
+ * compact EmptyState.
+ */
 export function EmptyState({
   icon: Icon,
   title,
   description,
   action,
+  size = 'default',
+  headingLevel = 2,
+  className,
 }: {
-  icon: LucideIcon
+  icon?: LucideIcon
   title: string
-  description?: string
-  action?: React.ReactNode
+  description?: ReactNode
+  action?: ReactNode
+  size?: EmptyStateSize
+  /**
+   * 2 by default: a page-level empty state sits directly under the page's h1,
+   * so h3 opened a 1→3 gap in the outline (tripl-jfm3.69). 3 (or 4) inside a
+   * card or panel that already has its own heading (DS-16).
+   */
+  headingLevel?: 2 | 3 | 4
+  className?: string
 }) {
+  const Heading = headingLevel === 4 ? 'h4' : headingLevel === 3 ? 'h3' : 'h2'
+  const compact = size === 'sm'
   return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted mb-4">
-        <Icon className="h-6 w-6 text-muted-foreground" />
-      </div>
-      {/* h2, not h3: an empty state sits directly under the page's h1, so h3
-          opened a 1→3 gap in the heading outline (tripl-jfm3.69). */}
-      <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-      {description && (
-        <p className="mt-1 text-sm text-muted-foreground max-w-sm">{description}</p>
+    <div
+      data-slot="empty-state"
+      className={cn(
+        'flex flex-col items-center justify-center text-center',
+        compact ? 'px-4 py-7' : 'py-16',
+        className,
       )}
-      {action && <div className="mt-4">{action}</div>}
+    >
+      {Icon &&
+        (compact ? (
+          <Icon className="mb-2 h-5 w-5 text-muted-foreground" aria-hidden="true" />
+        ) : (
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+            <Icon className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+          </div>
+        ))}
+      <Heading
+        className={cn('font-semibold text-foreground', compact ? 'text-body-sm' : 'text-sm')}
+      >
+        {title}
+      </Heading>
+      {description && (
+        <p
+          className={cn(
+            'mt-1 max-w-sm text-muted-foreground',
+            compact ? 'text-[12px]' : 'text-sm',
+          )}
+        >
+          {description}
+        </p>
+      )}
+      {action && <div className={compact ? 'mt-3' : 'mt-4'}>{action}</div>}
     </div>
   )
 }

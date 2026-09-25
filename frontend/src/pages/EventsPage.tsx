@@ -677,7 +677,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
               onSaveCurrentView={() => { void saveCurrentView() }}
               showSavedViews={!embedded}
               onApplySavedView={applySavedView}
-              onDeleteSavedView={deleteSavedView}
+              onDeleteSavedView={name => void deleteSavedView(name)}
               columnsMenuOpen={colMenuOpen}
               onColumnsMenuOpenChange={setColMenuOpen}
               hiddenColumns={hiddenColumns}
@@ -739,7 +739,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
           )}
 
           <div
-            className="rounded-[10px] border overflow-hidden"
+            className="rounded-card border overflow-hidden"
             style={{ borderColor: 'var(--border)' }}
           >
             <EventsTable

@@ -75,11 +75,14 @@ export function JsonEditor({
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setShowMenu(false)
+      const target = e.target as Node
+      // The list is portalled, so a press on it (its scrollbar) is outside the wrapper.
+      if (document.getElementById(listboxId)?.contains(target)) return
+      if (wrapperRef.current && !wrapperRef.current.contains(target)) setShowMenu(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [])
+  }, [listboxId])
 
   const insertVar = useCallback((varName: string) => {
     const before = raw.slice(0, insertPos)
@@ -214,9 +217,15 @@ export function JsonEditor({
           aria-describedby={describedBy}
           aria-activedescendant={menuOpen ? `${listboxId}-opt-${highlightIdx}` : undefined}
         />
-        {menuOpen && (
-          <SuggestionListbox id={listboxId} suggestions={filtered} highlightIdx={highlightIdx} onPick={insertVar} />
-        )}
+        <SuggestionListbox
+          id={listboxId}
+          open={menuOpen}
+          anchorRef={wrapperRef}
+          onDismiss={() => setShowMenu(false)}
+          suggestions={filtered}
+          highlightIdx={highlightIdx}
+          onPick={insertVar}
+        />
       </div>
       {/* Format sits under the field, not over it: an overlay button covered the
           first line of every payload wider than the box. */}

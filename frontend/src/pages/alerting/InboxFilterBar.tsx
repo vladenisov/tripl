@@ -24,7 +24,7 @@ import {
 // filter bars on one page looked like two products (ALR-49). Sized down only in
 // text: the h-9 default is also the touch target a phone needs.
 const CONTROL_CLASS = 'text-xs'
-const LABEL_CLASS = 'text-[10.5px] font-normal text-muted-foreground'
+const LABEL_CLASS = 'text-2xs font-normal text-muted-foreground'
 
 // Radix Select cannot carry an empty value, which is what "not filtering" is in
 // `InboxFilterState`. One sentinel, translated at the edge in both directions.
@@ -192,7 +192,7 @@ export function InboxFilterBar({ value, onChange }: InboxFilterBarProps) {
           already here and cannot fetch an older incident — a control that
           accepted such a date and answered "none" would be describing the
           project rather than the page (tripl-39n6, tripl-htfn.4). */}
-      <p className="basis-full text-[10.5px] text-muted-foreground">
+      <p className="basis-full text-2xs text-muted-foreground">
         Dates narrow the {INBOX_LOOKBACK_DAYS} days this list already covers — an older incident is
         not reachable from here, and its own link still opens it.
       </p>

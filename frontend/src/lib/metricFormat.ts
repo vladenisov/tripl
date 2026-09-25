@@ -1,13 +1,13 @@
 /**
  * Shared metric value formatting (tripl-nxk2.1).
  *
- * Convention: a metric whose unit is '%' stores FRACTIONS (0.08 for an 8 %
+ * Convention: a metric whose unit is '%' stores FRACTIONS (0.08 for an 8%
  * conversion), so every display multiplies by 100. All other units render the
- * stored value unchanged, matching the historical MetricsCatalog behavior
- * exactly.
+ * stored value unchanged.
  */
 
 import type { MetricScanInterval } from '@/types'
+import { formatCompactNumber, formatNumber } from '@/lib/format'
 
 /**
  * Human-readable collection cadence, one spelling for every metric surface —
@@ -42,41 +42,72 @@ export function isIntervalFinerThan(a: MetricScanInterval, b: MetricScanInterval
   return INTERVAL_MINUTES[a] < INTERVAL_MINUTES[b]
 }
 
-// Precision rule shared with the metrics catalog: whole numbers at >= 100,
-// two decimals below.
-function roundForDisplay(value: number): number {
-  return Math.abs(value) >= 100 ? Math.round(value) : Math.round(value * 100) / 100
+/**
+ * The display precision shared by tiles, tables and tooltips, in the app
+ * locale: whole numbers at >= 100, two decimals from 1 to 100, and two
+ * SIGNIFICANT digits below 1. The old rule rounded everything under 100 to two
+ * decimals, so a 0.004 s latency or a small rate read "0" (MET-40).
+ */
+function formatForDisplay(value: number): string {
+  const abs = Math.abs(value)
+  if (abs >= 100) return formatNumber(value, { maximumFractionDigits: 0 })
+  if (abs >= 1 || abs === 0) return formatNumber(value, { maximumFractionDigits: 2 })
+  return formatNumber(value, { maximumSignificantDigits: 2 })
 }
 
 export function isPercentUnit(unit: string | null | undefined): boolean {
   return unit?.trim() === '%'
 }
 
+// Currency symbols read in front of the number ("$1,234"), not after it: the
+// "Revenue" and "AOV" templates seed `$`, which used to print "1,234 $".
+const PREFIX_UNITS = new Set(['$', '€', '£', '¥', '₽'])
+
+function withUnit(text: string, unit: string | null): string {
+  const trimmed = unit?.trim()
+  if (!trimmed) return text
+  if (PREFIX_UNITS.has(trimmed)) {
+    return text.startsWith('-') ? `-${trimmed}${text.slice(1)}` : `${trimmed}${text}`
+  }
+  return `${text} ${trimmed}`
+}
+
 /**
- * Human-readable metric value with its unit suffix. Percent units render the
- * stored fraction ×100 ('8 %'); other units keep the raw value ('123 ms').
+ * Human-readable metric value with its unit. Percent units render the stored
+ * fraction ×100 with the sign attached ('8%', the spelling the chart axis uses
+ * too — the tile and the axis used to disagree on '8 %' vs '8%', DS-31);
+ * currency units lead ('$1,234'); other units trail ('123 ms').
  */
 export function formatMetricValue(value: number | null | undefined, unit: string | null): string {
   if (value === null || value === undefined) return '—'
   if (isPercentUnit(unit)) {
-    return `${roundForDisplay(value * 100).toLocaleString()} %`
+    return `${formatForDisplay(value * 100)}%`
   }
-  const text = roundForDisplay(value).toLocaleString()
-  return unit ? `${text} ${unit}` : text
+  return withUnit(formatForDisplay(value), unit)
+}
+
+/**
+ * Compact axis number: '1.5k' / '-2.5M' from a thousand up (by magnitude, so
+ * negatives compact too), the display precision below — never the raw float
+ * ('0.30000000000000004') the old branch returned.
+ */
+function formatAxisNumber(value: number): string {
+  return Math.abs(value) >= 1_000 ? formatCompactNumber(value) : formatForDisplay(value)
 }
 
 /**
  * Tick/tooltip formatter for metric charts. Percent units render compact ×100
- * values ('8%', '0.5%'); anything else keeps the chart's historical
- * compact-count behavior ('8', '1.5k', '2.5M').
+ * values ('8%', '0.5%'); anything else renders a compact number ('8', '1.5k',
+ * '-2.5M', '0.05'), prefixed by a currency unit when there is one. Other units
+ * stay off the axis, where every tick would repeat them.
  */
 export function metricAxisFormatter(unit: string | null): (value: number) => string {
   if (isPercentUnit(unit)) {
-    return value => `${roundForDisplay(value * 100).toLocaleString()}%`
+    return value => `${formatAxisNumber(value * 100)}%`
   }
-  return value => {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
-    return String(value)
+  const prefix = unit?.trim()
+  if (prefix && PREFIX_UNITS.has(prefix)) {
+    return value => withUnit(formatAxisNumber(value), prefix)
   }
+  return formatAxisNumber
 }

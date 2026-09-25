@@ -83,7 +83,7 @@ export function TopBar({
           <Menu className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
-      <div className="flex min-w-0 items-center gap-1.5 text-[12.5px]">
+      <div className="flex min-w-0 items-center gap-1.5 text-body-sm">
         {crumbs.map((c, i) => (
           <div key={`${c}-${i}`} className="hidden items-center gap-1.5 sm:flex">
             <span style={{ color: 'var(--fg-muted)' }}>{c}</span>
@@ -121,7 +121,7 @@ export function TopBar({
               onClick={onToggleActivity}
               aria-label="Toggle activity panel"
               aria-pressed={activityOpen}
-              className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] font-medium transition-colors"
+              className="flex h-7 items-center gap-1.5 rounded-md px-2 text-body-sm font-medium transition-colors"
               style={{
                 background: activityOpen ? 'var(--surface)' : 'transparent',
                 color: activityOpen ? 'var(--fg)' : 'var(--fg-muted)',
@@ -225,10 +225,10 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
           style={{ borderColor: 'var(--border-subtle)' }}
         >
           <Bell className="h-3.5 w-3.5" style={{ color: 'var(--fg-muted)' }} />
-          <span className="text-[12.5px] font-semibold">Notifications</span>
+          <span className="text-body-sm font-semibold">Notifications</span>
           <div className="flex-1" />
           {projectSlug && activeSignalCount > 0 && (
-            <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+            <span className="mono text-2xs" style={{ color: 'var(--fg-faint)' }}>
               {activeSignalCount} active
             </span>
           )}
@@ -287,7 +287,7 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
           >
             <Link
               to={`/p/${projectSlug}/settings/alerting`}
-              className="text-[11.5px] font-medium no-underline hover:underline"
+              className="text-caption font-medium no-underline hover:underline"
               style={{ color: 'var(--fg-muted)' }}
             >
               Open alerting settings
@@ -362,7 +362,7 @@ function SignalNotification({
         <div className="truncate text-[12px] font-medium" title={title}>
           {verb} on {scopeLabel ?? unnamedScopeLabel(signal)}
         </div>
-        <div className="mono mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="mono mt-0.5 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
           {signal.actual_count.toLocaleString()} actual vs{' '}
           {formatIncidentCount(signal.expected_count)} expected · {formatSignalSeverity(signal)}
         </div>
@@ -414,7 +414,7 @@ function DeliveryNotification({
             <div className="truncate text-[12px] font-medium">
               {delivery.rule_name}
             </div>
-            <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="mt-0.5 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
               {delivery.status} · {delivery.channel} · {delivery.matched_count} matched
             </div>
           </div>
@@ -425,7 +425,7 @@ function DeliveryNotification({
             onClick={() => retryMut.mutate()}
             disabled={retryMut.isPending}
             aria-label={`Retry delivery for ${delivery.rule_name}`}
-            className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[10.5px] font-medium transition-colors hover:bg-[var(--surface-active)] disabled:opacity-60"
+            className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-2xs font-medium transition-colors hover:bg-[var(--surface-active)] disabled:opacity-60"
             style={{ color: 'var(--fg-muted)' }}
           >
             {retryMut.isPending ? (
@@ -438,7 +438,7 @@ function DeliveryNotification({
         )}
       </div>
       {isFailed && retryMut.isError && (
-        <p role="alert" className="px-1.5 pb-1.5 text-[10.5px]" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="px-1.5 pb-1.5 text-2xs" style={{ color: 'var(--danger)' }}>
           {getErrorMessage(retryMut.error)}
         </p>
       )}
@@ -448,7 +448,7 @@ function DeliveryNotification({
 
 function EmptyNotifications({ message }: { message: string }) {
   return (
-    <div className="px-4 py-8 text-center text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+    <div className="px-4 py-8 text-center text-caption" style={{ color: 'var(--fg-subtle)' }}>
       {message}
     </div>
   )
@@ -456,7 +456,7 @@ function EmptyNotifications({ message }: { message: string }) {
 
 function EmptySectionText({ children }: { children: ReactNode }) {
   return (
-    <div className="px-1.5 py-2 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+    <div className="px-1.5 py-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
       {children}
     </div>
   )

@@ -3,8 +3,7 @@ import type { ReactNode } from 'react'
 import { describe, expect, it } from 'vitest'
 import { Field, InfoRow, Panel } from '@/components/settings/kit'
 import { EvField } from '@/pages/events/eventFormLayout'
-import { SField, SurfPanel as EventTypesPanel } from '@/pages/settings/EventTypesTab'
-import { Field as ScanField, SurfPanel as ScanPanel } from '@/pages/settings/scans/scanLayout'
+import { SField } from '@/pages/settings/EventTypesTab'
 import { FormRow } from './form-row'
 
 // jsdom applies no Tailwind, so these pin the STRUCTURE the stacking layout
@@ -30,7 +29,6 @@ describe('FormRow', () => {
 describe('forms that used a fixed-width caption now stack on phones (EVT-6 / DATA-8 / PLAN-35 / MON-32)', () => {
   const cases: [string, ReactNode][] = [
     ['event form row', <EvField label="Name" htmlFor="c"><input id="c" /></EvField>],
-    ['scan form row', <ScanField label="Name" id="c"><input id="c" /></ScanField>],
     ['event-type form row', <SField label="Name"><input aria-label="Name" /></SField>],
     ['settings kit row', <Field label="Name" htmlFor="c"><input id="c" /></Field>],
   ]
@@ -60,9 +58,9 @@ describe('panel bodies scroll sideways instead of clipping a wide table (DS-5 / 
   )
 
   it.each([
+    // The one Panel: the scan and event-type SurfPanel copies are gone (DS-15).
     ['settings kit Panel', <Panel title="P">{table}</Panel>],
-    ['scans SurfPanel', <ScanPanel title="P">{table}</ScanPanel>],
-    ['event-types SurfPanel', <EventTypesPanel title="P">{table}</EventTypesPanel>],
+    ['settings kit Panel with no header', <Panel>{table}</Panel>],
   ])('the %s wraps its body in the scrolling panel body', (_name, element) => {
     render(<>{element}</>)
     expect(screen.getByRole('table', { name: 'Wide' }).closest('[data-slot="panel-body"]')).not.toBeNull()

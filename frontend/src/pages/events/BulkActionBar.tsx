@@ -74,7 +74,7 @@ export function BulkActionBar({
     // so at 375px both ends were cut off and Delete and Clear were unreachable
     // (EVT-5). The page reserves room under the table while it is open.
     <div
-      className="fixed bottom-[18px] left-1/2 z-30 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2.5 rounded-[10px] border py-1.5 pl-3.5 pr-2"
+      className="fixed bottom-[18px] left-1/2 z-(--z-bar) flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2.5 rounded-card border py-1.5 pl-3.5 pr-2"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-strong)',

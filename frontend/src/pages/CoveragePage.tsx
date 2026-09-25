@@ -6,11 +6,14 @@ import { reconciliationApi } from '@/api/reconciliation'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
-import { PageHead, Panel } from '@/components/settings/kit'
+import { Panel } from '@/components/settings/kit'
+import { PageHeader } from '@/components/primitives/page-header'
+import { LoadingState } from '@/components/primitives/loading-state'
 import { Chip } from '@/components/primitives/chip'
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { DEAD_EVENT_DAYS, formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { formatRelativeTime } from '@/lib/datetime'
+import { formatNumber } from '@/lib/format'
 import { eventNameLabel } from '@/lib/eventName'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { coverageTone } from '@/lib/statusLexicon'
@@ -75,10 +78,10 @@ export default function CoveragePage() {
 
   return (
     <div className="min-w-0 space-y-6 pb-12">
-      <PageHead
+      <PageHeader
         eyebrow="Govern"
         title="Coverage"
-        right={
+        actions={
           slug ? (
             <Link
               to={`/p/${slug}/reconciliation`}
@@ -105,46 +108,38 @@ export default function CoveragePage() {
         />
       ) : (
         <>
-          <div
-            className="flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3"
+          <MiniStatStrip
+            className="rounded-lg border px-4 py-3"
             style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
           >
-            <div className="inline-flex items-center gap-1" title={PLAN_COVERAGE_HELP}>
+            <div title={PLAN_COVERAGE_HELP}>
               <MiniStat
                 label="Plan coverage"
                 value={summary ? formatPlanCoverage(implemented, active) : '—'}
                 // The shared thresholds (they take a percent), so this tile and
                 // Reconciliation cannot drift apart (DATA-45).
                 tone={summary && active > 0 ? coverageTone(coverageRatio * 100) : 'neutral'}
-              />
-              <Info
-                className="h-3 w-3 shrink-0 self-end"
-                style={{ color: 'var(--fg-faint)' }}
-                aria-hidden
+                labelAddon={<Info className="h-3 w-3 shrink-0" aria-hidden />}
               />
             </div>
-            <MiniStatDivider />
             <MiniStat
               label="Active events"
-              value={summary ? active.toLocaleString() : '—'}
+              value={summary ? formatNumber(active) : '—'}
             />
-            <MiniStatDivider />
             <MiniStat
               label="Implemented"
-              value={summary ? implemented.toLocaleString() : '—'}
+              value={summary ? formatNumber(implemented) : '—'}
             />
-            <MiniStatDivider />
             <MiniStat
               label="Awaiting review"
-              value={summary ? summary.review_pending_event_count.toLocaleString() : '—'}
+              value={summary ? formatNumber(summary.review_pending_event_count) : '—'}
               tone={summary && summary.review_pending_event_count > 0 ? 'warning' : 'neutral'}
             />
-            <MiniStatDivider />
             <MiniStat
               label="Archived"
-              value={summary ? summary.archived_event_count.toLocaleString() : '—'}
+              value={summary ? formatNumber(summary.archived_event_count) : '—'}
             />
-          </div>
+          </MiniStatStrip>
 
           {/* Coverage bar: implemented vs pending across the active plan */}
           {summary && active > 0 && (
@@ -182,14 +177,14 @@ export default function CoveragePage() {
           title="Instrumentation gaps"
           subtitle={
             deadQuery.data
-              ? `${deadTotal.toLocaleString()} implemented event${deadTotal === 1 ? '' : 's'} with no data in the last ${DEAD_DAYS} days`
+              ? `${formatNumber(deadTotal)} implemented event${deadTotal === 1 ? '' : 's'} with no data in the last ${DEAD_DAYS} days`
               : undefined
           }
           right={
             slug && deadItems.length > 0 ? (
               <Link
                 to={`/p/${slug}/reconciliation`}
-                className="flex items-center gap-1 text-[11.5px] no-underline hover:underline"
+                className="flex items-center gap-1 text-caption no-underline hover:underline"
                 style={{ color: 'var(--fg-muted)' }}
               >
                 Triage in Reconciliation
@@ -211,12 +206,10 @@ export default function CoveragePage() {
               />
             </div>
           ) : deadQuery.isLoading ? (
-            <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-              Loading…
-            </div>
+            <LoadingState className="px-4 py-6 text-[12px]" />
           ) : noGaps ? (
             <div
-              className="flex items-center gap-2 px-4 py-6 text-[12.5px]"
+              className="flex items-center gap-2 px-4 py-6 text-body-sm"
               style={{ color: 'var(--fg-muted)' }}
             >
               <ShieldCheck className="h-4 w-4" style={{ color: 'var(--success)' }} />
@@ -224,7 +217,7 @@ export default function CoveragePage() {
             </div>
           ) : (
             <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
-              <p className="px-4 py-2 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="px-4 py-2 text-2xs" style={{ color: 'var(--fg-subtle)' }}>
                 {GAP_BASIS_HELP}
               </p>
               {deadItems.slice(0, GAP_LIMIT).map((item) => (
@@ -232,7 +225,7 @@ export default function CoveragePage() {
               ))}
               {deadItems.length > GAP_LIMIT && (
                 <div className="px-4 py-2 text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-                  Showing {GAP_LIMIT} of {deadTotal.toLocaleString()} — see Reconciliation for the full list.
+                  Showing {GAP_LIMIT} of {formatNumber(deadTotal)} — see Reconciliation for the full list.
                 </div>
               )}
             </div>
@@ -263,7 +256,7 @@ function CoverageBar({
       <div className="mb-2 flex items-center justify-between text-[11px]" style={{ color: 'var(--fg-muted)' }}>
         <span>
           <span className="font-semibold" style={{ color: 'var(--fg)' }}>
-            {implemented.toLocaleString()}
+            {formatNumber(implemented)}
           </span>{' '}
           implemented
         </span>
@@ -272,7 +265,7 @@ function CoverageBar({
             className="font-semibold"
             style={{ color: notImplemented > 0 ? 'var(--warning)' : 'var(--fg)' }}
           >
-            {notImplemented.toLocaleString()}
+            {formatNumber(notImplemented)}
           </span>{' '}
           not implemented
         </span>
@@ -281,7 +274,7 @@ function CoverageBar({
         className="flex h-2 overflow-hidden rounded-full"
         style={{ background: 'var(--bg-sunken)' }}
         role="img"
-        aria-label={`${coverageLabel} of active events are implemented; ${notImplemented.toLocaleString()} are not implemented yet.`}
+        aria-label={`${coverageLabel} of active events are implemented; ${formatNumber(notImplemented)} are not implemented yet.`}
       >
         <div style={{ width: `${implementedPct}%`, background: 'var(--success)' }} />
         <div style={{ width: `${100 - implementedPct}%`, background: 'var(--warning)' }} />
@@ -300,7 +293,7 @@ function GapRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
       {slug ? (
         <Link
           to={getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id })}
-          className="mono min-w-0 flex-1 truncate text-[12.5px] font-medium hover:underline"
+          className="mono min-w-0 flex-1 truncate text-body-sm font-medium hover:underline"
           style={{ color: 'var(--fg)' }}
           title={label}
         >
@@ -308,7 +301,7 @@ function GapRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
         </Link>
       ) : (
         <span
-          className="mono min-w-0 flex-1 truncate text-[12.5px] font-medium"
+          className="mono min-w-0 flex-1 truncate text-body-sm font-medium"
           style={{ color: 'var(--fg)' }}
           title={label}
         >
@@ -320,7 +313,7 @@ function GapRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
           {item.event_type_name}
         </Chip>
       )}
-      <span className="mono w-28 shrink-0 text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+      <span className="mono w-28 shrink-0 text-right text-2xs" style={{ color: 'var(--fg-faint)' }}>
         {item.last_seen_at ? formatRelativeTime(item.last_seen_at) : 'Never seen'}
       </span>
     </div>

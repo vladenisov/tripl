@@ -31,11 +31,13 @@ vi.mock('@/components/ui/chart-lazy', () => ({
     data,
     forecast,
     valueFormatter,
+    tooltipFormatter,
     sigmaThreshold,
   }: {
     data?: Array<{ bucket: string; count?: number }>
     forecast?: unknown[]
     valueFormatter?: (value: number) => string
+    tooltipFormatter?: (value: number) => string
     sigmaThreshold?: number
   }) => (
     <div
@@ -49,6 +51,10 @@ vi.mock('@/components/ui/chart-lazy', () => ({
       data-first-count={data?.[0]?.count ?? ''}
       // Probe the optional formatter: percent metrics turn 0.08 into '8%'.
       data-value-sample={valueFormatter ? valueFormatter(0.08) : ''}
+      // Probe the tooltip spelling on a sub-1 and a four-digit value.
+      data-tooltip-sample={tooltipFormatter ? tooltipFormatter(0.0045) : ''}
+      data-tooltip-large={tooltipFormatter ? tooltipFormatter(1234) : ''}
+      data-axis-small={valueFormatter ? valueFormatter(0.0045) : ''}
     />
   ),
   MetricsMultiSeriesChart: ({
@@ -1693,16 +1699,49 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     // The percent-aware formatter reached the chart: 0.08 → '8%'.
     expect(chart).toHaveAttribute('data-value-sample', '8%')
     // The latest-signal stat card renders the stored fractions ×100.
-    expect(screen.getByText('8 %')).toBeInTheDocument()
-    expect(screen.getByText('5 %')).toBeInTheDocument()
+    expect(screen.getByText('8%')).toBeInTheDocument()
+    expect(screen.getByText('5%')).toBeInTheDocument()
   })
 
-  it('passes no value formatter for metrics without a percent unit', async () => {
-    installMetricDetailFetch('1d')
+  // DS-31 / MET-40: only '%' used to get a formatter, so a 0.0045 s latency
+  // ticked and tooltipped as '0' and a '$' metric read '1,234 $' in the tooltip.
+  it('formats a sub-1 non-percent metric on the axis and in the tooltip', async () => {
+    installMetricDetailFetch('1d', { unit: 's' })
     renderMetricDetail()
 
     const chart = await screen.findByTestId('metrics-chart')
-    expect(chart).toHaveAttribute('data-value-sample', '')
+    await waitFor(() => expect(chart).toHaveAttribute('data-axis-small', '0.0045'))
+    expect(chart).toHaveAttribute('data-tooltip-sample', '0.0045 s')
+  })
+
+  it('leads with the currency symbol in the tooltip of a $ metric', async () => {
+    installMetricDetailFetch(
+      '1d',
+      { unit: '$' },
+      {
+        latest_signal: {
+          scan_config_id: null,
+          scope_type: 'metric',
+          scope_ref: 'metric-1',
+          state: 'latest_scan',
+          event_id: null,
+          event_type_id: null,
+          bucket: '2026-01-02T00:00:00Z',
+          actual_count: 1234,
+          expected_count: 1000,
+          stddev: 10,
+          z_score: 3,
+          direction: 'spike',
+        },
+      },
+    )
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-tooltip-large', '$1,234'))
+    // The stat card spells the value the same way the tooltip does.
+    expect(screen.getByText('$1,234')).toBeInTheDocument()
+    expect(screen.getByText('$1,000')).toBeInTheDocument()
   })
 
   it('labels the primary tab and card "Value" for the metric scope, not "Volume"', async () => {

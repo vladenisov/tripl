@@ -1,3 +1,5 @@
+import { DEFAULT_ENTITY_COLOR } from '@/types'
+import { Panel } from '@/components/settings/kit'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -34,7 +36,6 @@ import {
   SInput,
   STextarea,
   SaveFooter,
-  SurfPanel,
 } from './EventTypesTab'
 
 const sensitiveFieldCount = (et: EventType): number =>
@@ -159,19 +160,19 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
       <div className="mb-3.5 flex flex-wrap items-start gap-x-3.5 gap-y-2.5">
         <span
           className="mt-1.5 size-3.5 shrink-0 rounded"
-          style={{ background: et.color || '#6366f1' }}
+          style={{ background: et.color || DEFAULT_ENTITY_COLOR }}
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1 basis-[calc(100%-2rem)] sm:basis-0">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <h1 className="m-0 min-w-0 break-words text-[21px] font-semibold tracking-[-0.01em]">{et.display_name}</h1>
-            <span className="mono text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <h1 className="m-0 min-w-0 break-words text-title font-semibold tracking-[-0.01em]">{et.display_name}</h1>
+            <span className="mono text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
               {et.name}
             </span>
             <MergeGateChip slug={slug} eventType={et} />
           </div>
           {et.description && (
-            <p className="mt-1.5 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="mt-1.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
               {et.description}
             </p>
           )}
@@ -206,20 +207,20 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
               aria-controls={`et-tabpanel-${t.id}`}
               onClick={() => setTab(t.id)}
               onKeyDown={(e) => {
-                if (e.key === 'ArrowRight') {
-                  const next = TABS[(idx + 1) % TABS.length]
-                  if (!next) return
-                  setTab(next.id)
-                  document.getElementById(`et-tab-${next.id}`)?.focus()
-                } else if (e.key === 'ArrowLeft') {
-                  const prev = TABS[(idx - 1 + TABS.length) % TABS.length]
-                  if (!prev) return
-                  setTab(prev.id)
-                  document.getElementById(`et-tab-${prev.id}`)?.focus()
-                }
+                // The APG tabs keys: arrows wrap, Home/End jump to the ends (DS-35).
+                const target =
+                  e.key === 'ArrowRight' ? TABS[(idx + 1) % TABS.length]
+                  : e.key === 'ArrowLeft' ? TABS[(idx - 1 + TABS.length) % TABS.length]
+                  : e.key === 'Home' ? TABS[0]
+                  : e.key === 'End' ? TABS[TABS.length - 1]
+                  : undefined
+                if (!target) return
+                e.preventDefault()
+                setTab(target.id)
+                document.getElementById(`et-tab-${target.id}`)?.focus()
               }}
               tabIndex={active ? 0 : -1}
-              className="-mb-px px-3 py-2 text-[12.5px] font-medium transition-colors"
+              className="-mb-px px-3 py-2 text-body-sm font-medium transition-colors"
               style={{
                 color: active ? 'var(--fg)' : 'var(--fg-muted)',
                 borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
@@ -275,14 +276,14 @@ function SummaryTab({ et }: { et: EventType }) {
         {stats.map((s) => (
           <div
             key={s.label}
-            className="rounded-[10px] border px-3.5 py-3"
+            className="rounded-card border px-3.5 py-3"
             style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
           >
             <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
               {s.label}
             </div>
             <div
-              className="mono tnum mt-1 text-[21px] font-medium"
+              className="mono tnum mt-1 text-title font-medium"
               style={{ color: s.warning ? 'var(--warning)' : 'var(--fg)' }}
             >
               {s.value}
@@ -292,7 +293,7 @@ function SummaryTab({ et }: { et: EventType }) {
       </div>
 
       <div className="grid items-start gap-3 md:grid-cols-2">
-        <SurfPanel title="About">
+        <Panel title="About">
           <div className="flex flex-col gap-2.5 px-4 py-3">
             <KeyValue label="Name" value={<span className="mono">{et.name}</span>} />
             <KeyValue label="Description" value={et.description || '—'} />
@@ -305,9 +306,9 @@ function SummaryTab({ et }: { et: EventType }) {
               value={sensitive > 0 ? `${sensitive} field${sensitive > 1 ? 's' : ''}` : 'None'}
             />
           </div>
-        </SurfPanel>
+        </Panel>
 
-        <SurfPanel title="Sensitive fields" subtitle="Fields carrying a sensitivity label">
+        <Panel title="Sensitive fields" subtitle="Fields carrying a sensitivity label">
           {sensitiveFields.length === 0 ? (
             <p className="px-4 py-6 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
               No sensitive fields.
@@ -320,7 +321,7 @@ function SummaryTab({ et }: { et: EventType }) {
                   className="flex items-center gap-2.5 border-t px-4 py-1.5"
                   style={{ borderColor: 'var(--border-subtle)' }}
                 >
-                  <span className="mono flex-1 truncate text-[11.5px]">{f.name}</span>
+                  <span className="mono flex-1 truncate text-caption">{f.name}</span>
                   <Chip tone="warning" size="xs">
                     {f.sensitivity}
                   </Chip>
@@ -328,7 +329,7 @@ function SummaryTab({ et }: { et: EventType }) {
               ))}
             </div>
           )}
-        </SurfPanel>
+        </Panel>
       </div>
     </div>
   )
@@ -336,7 +337,7 @@ function SummaryTab({ et }: { et: EventType }) {
 
 function KeyValue({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="flex gap-3.5 text-[12.5px]">
+    <div className="flex gap-3.5 text-body-sm">
       <span className="w-[90px] shrink-0" style={{ color: 'var(--fg-subtle)' }}>
         {label}
       </span>
@@ -383,7 +384,7 @@ function GeneralCard({
   canWrite: boolean
 }) {
   const qc = useQueryClient()
-  const savedColor = eventType.color || '#6366f1'
+  const savedColor = eventType.color || DEFAULT_ENTITY_COLOR
   const [displayName, setDisplayName] = useState(eventType.display_name)
   const [description, setDescription] = useState(eventType.description)
   const [color, setColor] = useState(savedColor)
@@ -523,7 +524,7 @@ function DangerZoneCard({
       {dialog}
       <div className="flex items-center gap-[18px] px-[18px] py-3.5">
         <div className="flex-1">
-          <div className="text-[13px] font-medium">Delete event type</div>
+          <div className="text-body font-medium">Delete event type</div>
           <div className="mt-0.5 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
             {impact}
           </div>
@@ -575,7 +576,7 @@ function BackLink({ label, onClick }: { label: string; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="mb-3.5 inline-flex items-center gap-1 text-[11.5px] transition-colors hover:text-[var(--fg)]"
+      className="mb-3.5 inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
       style={{ color: 'var(--fg-muted)' }}
     >
       <ArrowLeft className="size-3" />

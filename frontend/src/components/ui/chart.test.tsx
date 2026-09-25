@@ -20,16 +20,19 @@ vi.mock('recharts', async () => {
   }
 })
 
-import { metricAxisFormatter } from '@/lib/metricFormat'
+import { formatMetricValue, metricAxisFormatter } from '@/lib/metricFormat'
 import type { EventMetricPoint, EventMetricsResponse } from '@/types'
 import {
   AnomalyMark,
   buildChartData,
   CustomTooltip,
   MetricsChart,
+  MetricsMultiSeriesChart,
+  MiniMetricsChart,
   MultiSeriesTooltip,
   renderCountSeries,
 } from './chart'
+import { EVENTS_NOUN, formatTooltipLabel } from './chart-format'
 import { at } from '@/test/at'
 
 describe('MetricsChart', () => {
@@ -106,8 +109,46 @@ describe('MetricsChart', () => {
     )
 
     const marker = screen.getByTestId('chart-annotation')
-    expect(marker.textContent).toContain('2026-01-01T11:00:00Z')
+    // Humanized like the rest of the summary, never the raw ISO instant (DS-25).
+    expect(marker.textContent).toContain(formatTooltipLabel('2026-01-01T11:00:00Z', 'hour'))
+    expect(marker.textContent).not.toContain('2026-01-01T11:00:00Z')
     expect(marker.textContent).toContain('v1.4 deploy')
+  })
+
+  it('separates annotations in the screen-reader summary (DS-25)', () => {
+    const annotation = {
+      project_id: 'proj',
+      scope_type: null,
+      scope_ref: null,
+      description: null,
+      color: '#ef4444',
+      created_by_user_id: null,
+      created_at: '2026-01-01T09:00:00Z',
+    }
+    const point: EventMetricPoint = {
+      bucket: '2026-01-01T10:00:00Z',
+      count: 10,
+      expected_count: null,
+      stddev: null,
+      is_anomaly: false,
+      anomaly_direction: null,
+      z_score: null,
+    }
+    render(
+      <MetricsChart
+        granularity="hour"
+        data={[point, { ...point, bucket: '2026-01-01T11:00:00Z' }]}
+        annotations={[
+          { ...annotation, id: 'a1', bucket: '2026-01-01T10:00:00Z', label: 'Deploy' },
+          { ...annotation, id: 'a2', bucket: '2026-01-01T11:00:00Z', label: 'Rollback' },
+        ]}
+      />,
+    )
+
+    const description = screen.getByRole('img').getAttribute('aria-describedby')
+    const summary = document.getElementById(description ?? '')?.textContent ?? ''
+    expect(summary).toContain('Deploy; ')
+    expect(summary).not.toMatch(/DeployJan|Deploy2026/)
   })
 
   it('summarizes forecast points as a humanized range in the sr-only summary', () => {
@@ -344,6 +385,26 @@ describe('CustomTooltip', () => {
 
     expect(screen.getByText('±2.5σ band: 3%–7%')).toBeInTheDocument()
   })
+
+  // DS-31 / MET-40: the axis formatter leaves a trailing unit off; the tooltip
+  // spells the value out with it, and a currency leads.
+  it('prefers tooltipFormatter over the axis formatter', () => {
+    render(
+      <CustomTooltip
+        active
+        payload={[{ value: 1234, payload: { ...point, count: 1234, expected_count: 1000, band: undefined } }]}
+        label="2026-01-01T10:00:00Z"
+        granularity="hour"
+        seriesLabel="$"
+        valueFormatter={metricAxisFormatter('$')}
+        tooltipFormatter={value => formatMetricValue(value, '$')}
+      />,
+    )
+
+    expect(screen.getByText('$1,234')).toBeInTheDocument()
+    expect(screen.getByText('Expected: $1,000')).toBeInTheDocument()
+    expect(screen.queryByText(/1,234 \$/)).not.toBeInTheDocument()
+  })
 })
 
 // Same jsdom constraint as CustomTooltip: the breakdown/version tooltip is
@@ -388,6 +449,22 @@ describe('MultiSeriesTooltip', () => {
     expect(screen.getByText('5%')).toBeInTheDocument()
     // …and the seriesLabel suffix disappears entirely.
     expect(screen.queryByText(/events/)).not.toBeInTheDocument()
+  })
+
+  it('prefers tooltipFormatter over the axis formatter', () => {
+    render(
+      <MultiSeriesTooltip
+        active
+        payload={[{ value: 0.0045, dataKey: 'series_0', color: '#111111', name: 'ios' }]}
+        label="2026-01-01T10:00:00Z"
+        granularity="hour"
+        seriesLabel="s"
+        valueFormatter={metricAxisFormatter('s')}
+        tooltipFormatter={value => formatMetricValue(value, 's')}
+      />,
+    )
+
+    expect(screen.getByText('0.0045 s')).toBeInTheDocument()
   })
 })
 
@@ -700,5 +777,137 @@ describe('chart surface accessibility', () => {
     // The accessible content lives on the wrapper, which stays named.
     const wrapper = container.querySelector('[role="img"]')
     expect(wrapper).toHaveAttribute('aria-label')
+  })
+})
+
+describe('chart summaries reach assistive tech (DS-25)', () => {
+  const point: EventMetricPoint = {
+    bucket: '2026-01-01T10:00:00Z',
+    count: 10,
+    expected_count: null,
+    stddev: null,
+    is_anomaly: false,
+    anomaly_direction: null,
+    z_score: null,
+  }
+  const flagged: EventMetricPoint = {
+    ...point,
+    bucket: '2026-01-01T11:00:00Z',
+    is_anomaly: true,
+    anomaly_direction: 'spike',
+    z_score: 5,
+  }
+
+  // role="img" makes its children presentational, so a summary inside it is
+  // only read when the wrapper points at it.
+  it('describes the multi-series chart with its series and anomalies', () => {
+    render(
+      <MetricsMultiSeriesChart
+        granularity="hour"
+        series={[
+          { label: 'ios', data: [point, flagged] },
+          { label: 'android', data: [point] },
+        ]}
+      />,
+    )
+
+    const chart = screen.getByRole('img', { name: 'events breakdown over time' })
+    expect(chart).toHaveAccessibleDescription(/2 series: ios, android\./)
+    expect(chart).toHaveAccessibleDescription(/ios: 1 anomaly detected/)
+  })
+
+  it('describes the mini chart', () => {
+    render(<MiniMetricsChart data={[point, flagged]} label="Event volume trend" />)
+
+    const chart = screen.getByRole('img', { name: 'Event volume trend' })
+    expect(chart).toHaveAccessibleDescription('2 data points, 1 anomaly detected.')
+  })
+})
+
+// DS-27: the mini chart mounted recharts inside zero-size containers.
+describe('MiniMetricsChart container gate', () => {
+  const point: EventMetricPoint = {
+    bucket: '2026-01-01T10:00:00Z',
+    count: 10,
+    expected_count: null,
+    stddev: null,
+    is_anomaly: false,
+    anomaly_direction: null,
+    z_score: null,
+  }
+
+  it('waits for a measured size before mounting recharts', () => {
+    composedChartProps.length = 0
+    // jsdom measures every element as 0x0.
+    render(<MiniMetricsChart data={[point]} />)
+    expect(composedChartProps).toHaveLength(0)
+  })
+
+  it('mounts recharts once the container has a size', () => {
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ width: 200, height: 72, x: 0, y: 0, top: 0, left: 0, right: 200, bottom: 72, toJSON: () => ({}) })
+    composedChartProps.length = 0
+    render(<MiniMetricsChart data={[point]} />)
+    rect.mockRestore()
+    expect(composedChartProps).not.toHaveLength(0)
+  })
+
+  // The hook used to measure once on mount; the empty state carries no ref, so
+  // a chart that first rendered with no data stayed blank once points arrived.
+  it('mounts recharts when data arrives after an empty first render', () => {
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ width: 200, height: 72, x: 0, y: 0, top: 0, left: 0, right: 200, bottom: 72, toJSON: () => ({}) })
+    composedChartProps.length = 0
+    const { rerender } = render(<MiniMetricsChart data={[]} />)
+    expect(screen.getByText('No recent events')).toBeInTheDocument()
+    expect(composedChartProps).toHaveLength(0)
+
+    rerender(<MiniMetricsChart data={[point]} />)
+    expect(composedChartProps).not.toHaveLength(0)
+
+    // …and again after going back to empty and returning.
+    rerender(<MiniMetricsChart data={[]} />)
+    composedChartProps.length = 0
+    rerender(<MiniMetricsChart data={[point]} />)
+    rect.mockRestore()
+    expect(composedChartProps).not.toHaveLength(0)
+  })
+})
+
+// DS-26: a single-event bucket read "1 events".
+describe('tooltip nouns agree with the count', () => {
+  it('says "1 event" for a one-event bucket', () => {
+    render(
+      <CustomTooltip
+        active
+        payload={[
+          {
+            value: 1,
+            payload: { bucket: '2026-01-02T10:00:00Z', count: 1, expected_count: null, stddev: null },
+          },
+        ]}
+        label="2026-01-02T10:00:00Z"
+        granularity="day"
+        seriesLabel={EVENTS_NOUN}
+      />,
+    )
+
+    expect(screen.getByText('1 event')).toBeInTheDocument()
+  })
+
+  it('groups large counts in the app locale', () => {
+    render(
+      <MultiSeriesTooltip
+        active
+        payload={[{ value: 1234, dataKey: 'series_0', color: '#111111', name: 'ios' }]}
+        label="2026-01-02T10:00:00Z"
+        granularity="day"
+        seriesLabel="events"
+      />,
+    )
+
+    expect(screen.getByText('1,234 events')).toBeInTheDocument()
   })
 })

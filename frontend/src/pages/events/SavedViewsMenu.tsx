@@ -1,5 +1,6 @@
 import { Bookmark, Check, Save, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { EventsSavedView } from './savedViews'
@@ -28,7 +29,7 @@ export function SavedViewsMenu({
           <Bookmark className="h-3 w-3" />
           <span className="max-sm:sr-only">Views</span>
           {activeViewName && (
-            <span className="max-w-24 truncate text-[10.5px] text-muted-foreground max-sm:hidden">
+            <span className="max-w-24 truncate text-2xs text-muted-foreground max-sm:hidden">
               {activeViewName}
             </span>
           )}
@@ -36,7 +37,7 @@ export function SavedViewsMenu({
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-2">
         <div
-          className="px-1 pb-2 text-[10.5px] font-semibold uppercase tracking-[0.06em]"
+          className="px-1 pb-2 text-2xs font-semibold uppercase tracking-[0.06em]"
           style={{ color: 'var(--fg-subtle)' }}
         >
           Saved views
@@ -52,17 +53,16 @@ export function SavedViewsMenu({
             placeholder="Current filters as..."
             className="h-8 text-xs"
           />
-          <Button
+          <IconButton
             type="button"
             variant="outline"
-            size="icon"
             className="h-8 w-8"
             onClick={onSave}
             disabled={!draftName.trim()}
-            aria-label="Save current view"
+            label="Save current view"
           >
             <Save className="h-3.5 w-3.5" />
-          </Button>
+          </IconButton>
         </div>
 
         {views.length === 0 ? (
@@ -90,16 +90,15 @@ export function SavedViewsMenu({
                     <span className="min-w-0 flex-1 truncate">{view.name}</span>
                     <span className="shrink-0 text-[10px] text-muted-foreground">{view.tab}</span>
                   </button>
-                  <Button
+                  <IconButton
                     type="button"
                     variant="ghost"
-                    size="icon"
                     className="h-7 w-7 text-muted-foreground"
                     onClick={() => onDelete(view.name)}
-                    aria-label={`Delete saved view ${view.name}`}
+                    label={`Delete saved view ${view.name}`}
                   >
                     <Trash2 className="h-3 w-3" />
-                  </Button>
+                  </IconButton>
                 </div>
               )
             })}

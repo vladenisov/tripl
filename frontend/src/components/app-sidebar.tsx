@@ -32,6 +32,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { initialsOf } from '@/components/ui/initials'
+import { UserAvatar } from '@/components/ui/user-avatar'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import {
   buildNavGroups,
@@ -222,7 +224,7 @@ export function AppSidebar() {
   })
   const eventTypes = eventTypesQuery.data ?? []
   const currentPath = location.pathname
-  const userInitials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
+  const userInitials = initialsOf(auth.user?.name ?? auth.user?.email)
   const conceptsActive = !!slug && currentPath === `/p/${slug}/concepts`
   // Switching project keeps the surface being compared when the new project
   // has it, and otherwise lands on the project's one home (SHELL-44).
@@ -347,7 +349,7 @@ export function AppSidebar() {
               to={projectSettingsHref(slug)}
               // Never "active": project settings open in the full-screen
               // takeover, which does not render this sidebar.
-              className={navLinkClass(false, 'text-[12.5px]')}
+              className={navLinkClass(false, 'text-body-sm')}
               style={navLinkStyle(false)}
             >
               <SlidersHorizontal
@@ -381,19 +383,13 @@ export function AppSidebar() {
           </Link>
         )}
         <div className="flex items-center gap-1.5">
-          <div
-            aria-hidden="true"
-            className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[11px] font-semibold text-white"
-            style={{ background: 'var(--avatar-bg)' }}
-          >
-            {userInitials}
-          </div>
+          <UserAvatar name={auth.user?.name ?? auth.user?.email} />
           <div className="min-w-0 flex-1">
             <div className="truncate text-[12px] font-medium leading-[1.1]">
               {auth.user?.name ?? auth.user?.email}
             </div>
             <div
-              className="mt-px truncate text-[10.5px] leading-[1.1]"
+              className="mt-px truncate text-2xs leading-[1.1]"
               style={{ color: 'var(--fg-subtle)' }}
             >
               {auth.user?.role ? capitalize(auth.user.role) : 'Signed in'}
@@ -497,7 +493,7 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
     <Link
       to={item.href}
       aria-current={active ? 'page' : undefined}
-      className={navLinkClass(active, 'text-[12.5px]')}
+      className={navLinkClass(active, 'text-body-sm')}
       style={navLinkStyle(active)}
     >
       <Icon
@@ -508,7 +504,7 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
       <span className="flex-1 truncate text-left">{item.label}</span>
       {item.count !== undefined && (
         <span
-          className="mono text-[10.5px]"
+          className="mono text-2xs"
           style={{
             color:
               item.tone === 'danger'
@@ -550,7 +546,7 @@ function EventTypesNavCategory({
       <Link
         to={item.href}
         aria-current={settingsActive ? 'page' : undefined}
-        className={navLinkClass(settingsActive, 'text-[12.5px]')}
+        className={navLinkClass(settingsActive, 'text-body-sm')}
         style={
           settingsActive
             ? navLinkStyle(true)
@@ -564,7 +560,7 @@ function EventTypesNavCategory({
         />
         <span className="flex-1 truncate text-left">{item.label}</span>
         {item.count !== undefined && (
-          <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+          <span className="mono text-2xs" style={{ color: 'var(--fg-faint)' }}>
             {item.count}
           </span>
         )}
@@ -818,12 +814,12 @@ function CollapsedSidebar({
             <DropdownMenuLabel className="truncate text-[12px]">{userLabel}</DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
-              <Link to="/settings" className="flex items-center gap-2 text-[12.5px] no-underline">
+              <Link to="/settings" className="flex items-center gap-2 text-body-sm no-underline">
                 <Settings className="h-3.5 w-3.5" aria-hidden="true" />
                 Workspace settings
               </Link>
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onOpenTweaks} className="flex items-center gap-2 text-[12.5px]">
+            <DropdownMenuItem onSelect={onOpenTweaks} className="flex items-center gap-2 text-body-sm">
               <Palette className="h-3.5 w-3.5" aria-hidden="true" />
               Appearance
             </DropdownMenuItem>
@@ -831,7 +827,7 @@ function CollapsedSidebar({
             <DropdownMenuItem
               onSelect={onSignOut}
               disabled={isLoggingOut}
-              className="flex items-center gap-2 text-[12.5px]"
+              className="flex items-center gap-2 text-body-sm"
             >
               <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
               {isLoggingOut ? 'Signing out…' : 'Sign out'}
@@ -894,11 +890,11 @@ function ProjectSwitcher({
               {monogram}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[12.5px] font-semibold leading-[1.1]">
+              <div className="truncate text-body-sm font-semibold leading-[1.1]">
                 {displayName}
               </div>
               <div
-                className="mt-px text-[10.5px] leading-[1.1] truncate"
+                className="mt-px text-2xs leading-[1.1] truncate"
                 style={{ color: 'var(--fg-subtle)' }}
               >
                 {subtitle}
@@ -939,13 +935,13 @@ function ProjectSwitcher({
             <DropdownMenuItem
               key={project.id}
               onSelect={() => onPick(project)}
-              className="flex items-center gap-2 text-[12.5px]"
+              className="flex items-center gap-2 text-body-sm"
             >
               <Folder className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
               <div className="min-w-0 flex-1">
                 <div className="truncate">{project.name}</div>
                 <div
-                  className="mono truncate text-[10.5px]"
+                  className="mono truncate text-2xs"
                   style={{ color: 'var(--fg-faint)' }}
                 >
                   {project.slug}
@@ -961,7 +957,7 @@ function ProjectSwitcher({
         <DropdownMenuItem asChild>
           <Link
             to="/workspace"
-            className="flex items-center gap-2 text-[12.5px] no-underline"
+            className="flex items-center gap-2 text-body-sm no-underline"
             style={{ color: 'var(--fg)' }}
           >
             <LayoutDashboard
@@ -980,15 +976,3 @@ function capitalize(value: string): string {
   return value ? value[0]!.toUpperCase() + value.slice(1) : value
 }
 
-function initialsFrom(nameOrEmail: string): string {
-  if (!nameOrEmail) return '•'
-  const trimmed = nameOrEmail.trim()
-  if (trimmed.includes(' ')) {
-    return trimmed
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((w) => w[0]!.toUpperCase())
-      .join('')
-  }
-  return trimmed.slice(0, 2).toUpperCase()
-}

@@ -64,3 +64,28 @@ describe('VariableInput suggestions (EVT-24)', () => {
     expect(screen.queryByRole('combobox')).toBeNull()
   })
 })
+
+describe('VariableInput suggestion list placement (DS-35)', () => {
+  it('portals the list out of the field, so a clipping card cannot cut it off', () => {
+    const { container } = render(<Controlled variables={MANY} />)
+    const input = screen.getByRole('combobox')
+    fireEvent.change(input, { target: { value: '$' } })
+
+    const listbox = screen.getByRole('listbox')
+    expect(container.contains(listbox)).toBe(false)
+    expect(input).toHaveAttribute('aria-controls', listbox.id)
+    // Focus never moves into the list; typing continues in the field.
+    expect(input).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('picks an option from the portalled list and closes it', () => {
+    render(<Controlled variables={MANY} />)
+    const input = screen.getByRole('combobox')
+    fireEvent.change(input, { target: { value: '${var_19' } })
+
+    fireEvent.mouseDown(screen.getByRole('option', { name: /\$\{var_19\}/ }))
+
+    expect(input).toHaveValue('${var_19}')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+  })
+})

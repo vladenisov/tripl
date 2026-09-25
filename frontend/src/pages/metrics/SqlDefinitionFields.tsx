@@ -6,7 +6,7 @@ import { ColumnSuggestInput } from '@/components/column-suggest'
 import { ErrorState } from '@/components/error-state'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { SqlEditor } from '@/components/sql-editor'
-import { SCard, Select, type SelectOption } from '@/components/settings/kit'
+import { SCard, NativeSelect, type SelectOption, Field } from '@/components/settings/kit'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { formatMetricValue } from '@/lib/metricFormat'
 import type {
@@ -17,7 +17,6 @@ import type {
 } from '@/types'
 import type { TableSchema } from '@/types/dataSourceSchema'
 import { IntervalField } from './IntervalField'
-import { FormField } from '@/components/settings/form-field'
 import { errorAria, fieldErrorId, type FieldErrors } from '@/lib/fieldErrors'
 import type { MetricDraft } from './metricDraft'
 
@@ -39,7 +38,7 @@ function SqlPreviewPanel({ result, color, unit }: SqlPreviewPanelProps) {
     return (
       <div
         role="alert"
-        className="mt-[10px] rounded-[10px] border px-4 py-3 text-[12.5px]"
+        className="mt-[10px] rounded-card border px-4 py-3 text-body-sm"
         style={{
           background: 'var(--danger-soft)',
           borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
@@ -67,7 +66,7 @@ function SqlPreviewPanel({ result, color, unit }: SqlPreviewPanelProps) {
   return (
     <div
       role="status"
-      className="mt-[10px] rounded-[10px] border px-4 py-3"
+      className="mt-[10px] rounded-card border px-4 py-3"
       style={{ borderColor: 'var(--border)' }}
     >
       {points.length > 1 && (
@@ -195,13 +194,14 @@ export function SqlDefinitionFields({
   return (
     <>
       <SCard title="Source" description="Where the query runs, and how often.">
-        <FormField
+        <Field
           label="Data source"
           htmlFor="metric-sql-data-source"
           required
           error={errors['metric-sql-data-source']}
+          announceError={false}
         >
-          <Select
+          <NativeSelect
             id="metric-sql-data-source"
             value={draft.dataSourceId}
             onChange={value => {
@@ -222,7 +222,7 @@ export function SqlDefinitionFields({
               />
             </div>
           )}
-        </FormField>
+        </Field>
         <IntervalField
           id="metric-sql-interval"
           value={draft.interval}
@@ -237,12 +237,13 @@ export function SqlDefinitionFields({
 
       {/* The query itself, below the Source card that says where it runs. */}
       <SCard title="Query" description="A custom query returning one numeric value per bucket.">
-        <FormField
+        <Field
           label="Metric SQL"
           htmlFor="metric-sql-query"
           required
           stacked
           error={errors['metric-sql-query']}
+          announceError={false}
         >
           <SqlEditor
             id="metric-sql-query"
@@ -266,7 +267,7 @@ export function SqlDefinitionFields({
               type="button"
               onClick={onPreview}
               disabled={!canPreview}
-              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
               style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
             >
               {previewMut.isPending ? (
@@ -276,7 +277,7 @@ export function SqlDefinitionFields({
               )}
               {previewMut.isPending ? 'Running…' : 'Preview'}
             </button>
-            <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
               Dry-run against the data source over recent buckets; nothing is saved.
             </span>
           </div>
@@ -286,13 +287,14 @@ export function SqlDefinitionFields({
             </div>
           )}
           {preview && <SqlPreviewPanel result={preview} color={draft.color} unit={draft.unit} />}
-        </FormField>
-        <FormField
+        </Field>
+        <Field
           label="Time column"
           htmlFor="metric-sql-time"
           required
           hint="The bucket/time column returned by the query."
           error={errors['metric-sql-time']}
+          announceError={false}
         >
           <div className="max-w-[280px]">
             <ColumnSuggestInput
@@ -308,8 +310,8 @@ export function SqlDefinitionFields({
               {...errorAria(errors, 'metric-sql-time')}
             />
           </div>
-        </FormField>
-        <FormField
+        </Field>
+        <Field
           label="Value column"
           htmlFor="metric-sql-value"
           last
@@ -327,7 +329,7 @@ export function SqlDefinitionFields({
               placeholder="value"
             />
           </div>
-        </FormField>
+        </Field>
       </SCard>
     </>
   )

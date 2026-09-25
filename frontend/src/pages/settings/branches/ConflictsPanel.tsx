@@ -65,7 +65,7 @@ export function ConflictsPanel({ slug, branch }: { slug: string; branch: PlanBra
       subtitleTone={conflicts.unresolved_count > 0 ? 'danger' : 'neutral'}
     >
       <div className="space-y-3 p-4">
-        <p className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
           Main and this branch both changed these fields since the branch was opened. Pick which
           value the merge keeps.
         </p>
@@ -102,7 +102,7 @@ export function ConflictsPanel({ slug, branch }: { slug: string; branch: PlanBra
           </div>
         ))}
         {resolutionMut.isError ? (
-          <p role="alert" className="text-[11.5px]" style={{ color: 'var(--danger)' }}>
+          <p role="alert" className="text-caption" style={{ color: 'var(--danger)' }}>
             Could not save the choice: {getErrorMessage(resolutionMut.error)}
           </p>
         ) : null}

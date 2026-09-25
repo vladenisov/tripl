@@ -1,7 +1,7 @@
 import { CheckCircle2, Loader2, Play, Plus, Trash2 } from 'lucide-react'
 import { ChipListInput } from '@/components/chip-list-input'
 import { SqlEditor } from '@/components/sql-editor'
-import { Select, TextInput, type SelectOption } from '@/components/settings/kit'
+import { NativeSelect, TextInput, type SelectOption } from '@/components/settings/kit'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,7 +64,7 @@ interface FactFilterEditorProps {
   checkError?: string | null
 }
 
-const MENU_ITEM_CLASS = 'text-[12.5px]'
+const MENU_ITEM_CLASS = 'text-body-sm'
 
 /**
  * Point-and-click editor for an operand's filter list. An "Add filter" menu
@@ -148,7 +148,7 @@ export function FactFilterEditor({
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
                     {filter.kind === 'named' ? (
-                      <Select
+                      <NativeSelect
                         id={rowId}
                         value={filter.name}
                         onChange={value => setName(filter.id, value)}
@@ -189,7 +189,7 @@ export function FactFilterEditor({
                     type="button"
                     onClick={() => remove(filter.id)}
                     aria-label={`Remove filter ${index + 1}`}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border transition-colors hover:bg-[var(--surface-hover)]"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)]"
                     style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
                   >
                     <Trash2 size={13} />
@@ -216,7 +216,7 @@ export function FactFilterEditor({
             <button
               type="button"
               disabled={disabled}
-              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
               style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
             >
               <Plus size={12} /> Add filter
@@ -242,7 +242,7 @@ export function FactFilterEditor({
             disabled={disabled || checkPending || !!checkBlockedReason}
             onClick={onCheck}
             aria-describedby={checkBlockedReason ? checkHintId : undefined}
-            className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+            className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
             style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
           >
             {checkPending ? (
@@ -255,7 +255,7 @@ export function FactFilterEditor({
         )}
       </div>
       {onCheck && checkBlockedReason && !disabled && (
-        <p id={checkHintId} className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        <p id={checkHintId} className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
           {checkBlockedReason}
         </p>
       )}
@@ -307,7 +307,7 @@ function ConditionRow({
   const takesValue = !VALUELESS_CONDITION_OPERATORS.has(filter.operator)
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(150px,1fr)_120px_minmax(150px,1fr)]">
-      <Select
+      <NativeSelect
         id={id}
         value={filter.column}
         onChange={onColumn}
@@ -316,7 +316,7 @@ function ConditionRow({
         aria-label={`Filter ${index + 1} condition column`}
         {...aria}
       />
-      <Select
+      <NativeSelect
         value={filter.operator}
         onChange={value =>
           onChange(withConditionOperator(filter, value as FactConditionOperator))
@@ -364,7 +364,7 @@ function FilterCheckPanel({ result, transportError }: FilterCheckPanelProps) {
     return (
       <div
         role="alert"
-        className="rounded-[10px] border px-4 py-3 text-[12.5px]"
+        className="rounded-card border px-4 py-3 text-body-sm"
         style={{
           background: 'var(--danger-soft)',
           borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
@@ -379,7 +379,7 @@ function FilterCheckPanel({ result, transportError }: FilterCheckPanelProps) {
   return (
     <div
       role="status"
-      className="flex items-center gap-[6px] rounded-[10px] border px-4 py-3 text-[12.5px]"
+      className="flex items-center gap-[6px] rounded-card border px-4 py-3 text-body-sm"
       style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
     >
       <CheckCircle2 size={13} style={{ color: 'var(--success, var(--fg-muted))' }} />

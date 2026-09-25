@@ -1,5 +1,6 @@
 import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import type { AlertDestinationType, AlertMessageFormat } from "@/types"
+import { AnchoredListbox } from "@/components/ui/anchored-listbox"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -41,6 +42,7 @@ export function TemplateEditor({
   error?: string | null
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const fieldRef = useRef<HTMLDivElement | null>(null)
   const [activeToken, setActiveToken] = useState<{ start: number; end: number; query: string } | null>(null)
   // Which suggestion the arrow keys are on. The textarea declared
   // role="combobox" and handled none of the keys that role promises, so a
@@ -210,7 +212,7 @@ export function TemplateEditor({
               </PopoverContent>
             </Popover>
           </div>
-          <div className="relative">
+          <div ref={fieldRef} className="relative">
             <Textarea
               ref={textareaRef}
               id={textareaId}
@@ -238,13 +240,16 @@ export function TemplateEditor({
               }}
               onBlur={() => setActiveToken(null)}
             />
-            {listOpen && (
-              <div
-                id={listboxId}
-                role="listbox"
-                aria-label="Variable suggestions"
-                className="absolute inset-x-0 top-full z-50 mt-2 rounded-md border bg-popover p-1 shadow-md"
-              >
+            {/* Portalled and anchored to the field (DS-35): inline, the list
+                sat under the dialog's scroll clip and z-order. */}
+            <AnchoredListbox
+              id={listboxId}
+              open={listOpen}
+              anchorRef={fieldRef}
+              onDismiss={() => setActiveToken(null)}
+              ariaLabel="Variable suggestions"
+              className="max-h-72"
+            >
                 {suggestions.map((option, index) => (
                   <button
                     key={option.name}
@@ -255,7 +260,7 @@ export function TemplateEditor({
                     // Out of the Tab order: the list is driven from the
                     // textarea through aria-activedescendant.
                     tabIndex={-1}
-                    className={`flex w-full items-start justify-between gap-3 rounded-sm px-2 py-1.5 text-left hover:bg-muted ${index === highlighted ? 'bg-muted' : ''}`}
+                    className={`flex w-full items-start justify-between gap-3 rounded-sm px-2 py-1.5 text-left hover:bg-surface-hover ${index === highlighted ? 'bg-surface-hover' : ''}`}
                     // Keep focus in the textarea, where the arrow keys live.
                     onMouseDown={event => event.preventDefault()}
                     onClick={() => insertVariable(option.name)}
@@ -264,8 +269,7 @@ export function TemplateEditor({
                     <span className="text-xs text-muted-foreground">{option.description}</span>
                   </button>
                 ))}
-              </div>
-            )}
+            </AnchoredListbox>
           </div>
           {unknownVariables.length > 0 && (
             <p id={warningId} className="text-xs text-warning">

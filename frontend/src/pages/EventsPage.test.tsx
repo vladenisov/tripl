@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
@@ -100,9 +101,12 @@ function renderEventsPage(
   auth: AuthContextValue | null = null,
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ) {
+  // The app mounts one TooltipProvider in main.tsx; the page no longer brings
+  // its own (DS-12), so the test stands in for main.tsx.
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
+        <TooltipProvider delayDuration={300}>
         <MemoryRouter initialEntries={initialEntries}>
           <LocationProbe />
           <Routes>
@@ -113,6 +117,7 @@ function renderEventsPage(
             <Route path="/p/:slug/events/:tab/:eventId" element={<EventsPage />} />
           </Routes>
         </MemoryRouter>
+        </TooltipProvider>
       </AuthContext.Provider>
     </QueryClientProvider>,
   )
@@ -557,7 +562,8 @@ describe('EventsPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Event' })).toBeInTheDocument()
     expect(screen.getAllByRole('note')[0]).toHaveTextContent(/viewer role/)
-    expect(screen.getByRole('group')).toBeDisabled()
+    // The form's fieldset; rows that hold no single control are named groups too.
+    expect(document.querySelector('fieldset')).toBeDisabled()
     expectAbsent('button', 'Save event')
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
     // The discussion is readable, but the composer is an editor's.
@@ -1295,6 +1301,7 @@ describe('EventsPage current view', () => {
 
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TooltipProvider>
         <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1']}>
           <Routes>
             <Route
@@ -1303,6 +1310,7 @@ describe('EventsPage current view', () => {
             />
           </Routes>
         </MemoryRouter>
+        </TooltipProvider>
       </QueryClientProvider>,
     )
 

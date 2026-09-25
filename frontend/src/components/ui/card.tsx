@@ -5,7 +5,10 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card"
-      className={cn("bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm", className)}
+      // --scroll-x-bg: a ui/Table inside the card paints its sideways-scroll
+      // fades in the card's colour rather than --bg, which in dark mode drew a
+      // darker band across the card (DS-34; see .tripl-scroll-x in index.css).
+      className={cn("bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm [--scroll-x-bg:var(--card)]", className)}
       {...props}
     />
   )

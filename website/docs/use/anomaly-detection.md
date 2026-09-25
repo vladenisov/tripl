@@ -362,6 +362,12 @@ flags.
 Metric series and anomaly API responses return bucket timestamps in UTC RFC
 3339 form with an explicit `Z` suffix, for example `2026-09-24T08:00:00Z`.
 
+In the app, 15-minute, hourly and 6-hour buckets are shown in your local time,
+the same as signal cards, annotations and every other timestamp. Daily, weekly
+and monthly buckets are calendar buckets cut in UTC, so they are labelled by
+their UTC date. The hour × weekday heatmap is built from UTC buckets and is
+labelled UTC.
+
 These records become the **signals** you see on the monitoring views, and they
 are the candidates the alerting layer evaluates. Schema, distribution, and
 variable-value drift plus release regression feed the same machinery as

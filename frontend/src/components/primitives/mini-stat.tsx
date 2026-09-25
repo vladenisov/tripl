@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { Children, type CSSProperties, type ReactNode } from 'react'
 import { Dot, type DotTone } from '@/components/primitives/dot'
 
 export type MiniStatTone = 'success' | 'danger' | 'warning' | 'info' | 'accent' | 'neutral'
@@ -20,6 +20,12 @@ type MiniStatProps = {
    */
   valueTone?: MiniStatTone
   pulse?: boolean
+  /**
+   * Rendered inline right after the caption text, e.g. an info icon. Placed
+   * beside the whole stat, the icon sat 60–100px from its caption on a wide
+   * figure and read as belonging to the next stat (LIVE-23).
+   */
+  labelAddon?: ReactNode
 }
 
 const TONE_COLOR: Record<MiniStatTone, string> = {
@@ -47,6 +53,7 @@ export function MiniStat({
   tone = 'neutral',
   valueTone,
   pulse = false,
+  labelAddon,
 }: MiniStatProps) {
   // A definition list programmatically ties the value (<dd>) to its caption
   // (<dt>) so assistive tech announces "<label>: <value>" together, instead of
@@ -56,10 +63,11 @@ export function MiniStat({
   return (
     <dl className="m-0 flex flex-col gap-px">
       <dt
-        className="text-[10px] font-semibold uppercase tracking-[0.06em]"
+        className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.06em]"
         style={{ color: 'var(--fg-faint)' }}
       >
         {label}
+        {labelAddon}
       </dt>
       <dd className="m-0 flex items-baseline gap-1.5">
         <span
@@ -71,7 +79,7 @@ export function MiniStat({
         </span>
         {delta != null && (
           <span
-            className="inline-flex items-center gap-[3px] text-[10.5px]"
+            className="inline-flex items-center gap-[3px] text-2xs"
             style={{ color: TONE_COLOR[tone] }}
           >
             {pulse && <Dot tone={TONE_DOT[tone]} size={5} pulse />}
@@ -83,6 +91,58 @@ export function MiniStat({
   )
 }
 
-export function MiniStatDivider() {
-  return <div className="h-6 w-px" style={{ background: 'var(--border)' }} />
+/**
+ * A wrapping row of stats with a hairline between neighbours (LIVE-8).
+ *
+ * The divider used to be a sibling element between two stats, so when the row
+ * wrapped (375px, and 768px beside the sidebar) it stayed at the end of the
+ * line with nothing after it ("COVERAGE 58.8% |"). Here every stat but the
+ * first carries its own divider in the gap to its left, and the row clips a
+ * few pixels outside its content box: a stat that starts a line has its
+ * divider out in that clipped margin, so no line ever begins or ends with one.
+ * The clip is horizontal only, so focus rings above and below stay whole.
+ *
+ * `className` / `style` style the outer box (border, background, padding);
+ * falsy children are skipped, so a conditional stat needs no divider logic.
+ */
+export function MiniStatStrip({
+  children,
+  className,
+  style,
+}: {
+  children: ReactNode
+  className?: string
+  style?: CSSProperties
+}) {
+  const items = Children.toArray(children)
+  return (
+    <div className={className} style={style}>
+      {/* The clip box sits 4px outside the row, enough for a focus ring on a
+          stat at the edge; the dividers sit 12px out, in the 24px gap. It
+          clips sideways only: a divider only ever pokes out at the left, and a
+          vertical clip cut the top and bottom of the focus ring of a stat that
+          reaches past its row (the Metrics catalog's filter toggles). */}
+      <div
+        className="-m-1 p-1"
+        data-slot="mini-stat-clip"
+        style={{ overflowX: 'clip', overflowY: 'visible' }}
+      >
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
+          {items.map((item, index) => (
+            <div key={index} className="relative flex min-w-0 items-center">
+              {index > 0 && (
+                <span
+                  aria-hidden="true"
+                  data-slot="mini-stat-divider"
+                  className="absolute -left-3 top-1/2 h-6 w-px -translate-y-1/2"
+                  style={{ background: 'var(--border)' }}
+                />
+              )}
+              {item}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
 }

@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { formatNumber } from '@/lib/format'
 import { adaptMetricVersions } from '@/lib/metricAdapters'
 import type { MetricRollupMode, MetricsGranularity } from '@/lib/metrics'
 import { appVersionAdoptionKey, appVersionSeriesRangeKey } from '@/lib/queryKeys'
@@ -40,6 +41,8 @@ export interface VersionsTabProps {
   versionFilter: VersionFilter
   seriesLabel: string
   valueFormatter?: (value: number) => string
+  /** The chart tooltip and legend spelling; see MetricsChartProps.tooltipFormatter. */
+  tooltipFormatter?: (value: number) => string
   onRangeDaysChange: (days: number) => void
   onGranularityChange: (granularity: MetricsGranularity) => void
   onVersionFilterChange: (filter: VersionFilter) => void
@@ -69,6 +72,7 @@ export function VersionsTab({
   versionFilter,
   seriesLabel,
   valueFormatter,
+  tooltipFormatter,
   onRangeDaysChange,
   onGranularityChange,
   onVersionFilterChange,
@@ -246,6 +250,7 @@ export function VersionsTab({
                 granularity={granularity}
                 seriesLabel={seriesLabel}
                 valueFormatter={valueFormatter}
+                tooltipFormatter={tooltipFormatter}
                 emptyLabel="No version metrics available"
                 from={timeRange.from}
                 to={timeRange.to}
@@ -253,7 +258,7 @@ export function VersionsTab({
               <VersionLegend
                 series={versionChartSeries}
                 latestShare={latestAdoptionShare}
-                valueFormatter={valueFormatter}
+                valueFormatter={tooltipFormatter ?? valueFormatter}
                 valueKind={legendKind}
               />
               {seriesQuery.data?.interval && (
@@ -348,7 +353,7 @@ function VersionLegend({
   return (
     <div className="mt-3 flex flex-wrap gap-2">
       {series.map(item => {
-        const value = valueFormatter ? valueFormatter(item.legendValue) : item.legendValue.toLocaleString()
+        const value = valueFormatter ? valueFormatter(item.legendValue) : formatNumber(item.legendValue)
         return (
           <div
             key={`${item.version}-${item.isOther}`}

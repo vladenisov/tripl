@@ -29,22 +29,36 @@ describe('formatMetricValue', () => {
   })
 
   it('multiplies percent-unit fractions by 100', () => {
-    expect(formatMetricValue(0.08, '%')).toBe('8 %')
-    expect(formatMetricValue(0.0812, '%')).toBe('8.12 %')
-    expect(formatMetricValue(0.5, '%')).toBe('50 %')
+    expect(formatMetricValue(0.08, '%')).toBe('8%')
+    expect(formatMetricValue(0.0812, '%')).toBe('8.12%')
+    expect(formatMetricValue(0.5, '%')).toBe('50%')
   })
 
   it('rounds percent displays >= 100 to whole numbers', () => {
-    // 1.056 → 105.6 % → whole-number rounding above the 100 threshold.
-    expect(formatMetricValue(1.056, '%')).toBe('106 %')
-    // Locale-safe: grouping of large numbers matches toLocaleString.
-    expect(formatMetricValue(42, '%')).toBe(`${(4200).toLocaleString()} %`)
+    // 1.056 → 105.6% → whole-number rounding above the 100 threshold.
+    expect(formatMetricValue(1.056, '%')).toBe('106%')
+    expect(formatMetricValue(42, '%')).toBe('4,200%')
   })
 
-  it('keeps the historical catalog behavior for non-percent units', () => {
+  it('spells a percent the way the chart axis does (DS-31)', () => {
+    expect(formatMetricValue(0.08, '%')).toBe(metricAxisFormatter('%')(0.08))
+  })
+
+  it('keeps two decimals for other units from 1 up', () => {
     expect(formatMetricValue(0.08, 'ratio')).toBe('0.08 ratio')
     expect(formatMetricValue(12.346, null)).toBe('12.35')
-    expect(formatMetricValue(1234.56, 'ms')).toBe(`${(1235).toLocaleString()} ms`)
+    expect(formatMetricValue(1234.56, 'ms')).toBe('1,235 ms')
+  })
+
+  it('keeps small magnitudes visible instead of rounding them to 0 (MET-40)', () => {
+    expect(formatMetricValue(0.004, 's')).toBe('0.004 s')
+    expect(formatMetricValue(0.00123, null)).toBe('0.0012')
+    expect(formatMetricValue(0, 'ms')).toBe('0 ms')
+  })
+
+  it('puts a currency unit in front of the number (MET-40)', () => {
+    expect(formatMetricValue(1234, '$')).toBe('$1,234')
+    expect(formatMetricValue(-12.5, '€')).toBe('-€12.5')
   })
 })
 
@@ -64,8 +78,19 @@ describe('metricAxisFormatter', () => {
     expect(format(2_500_000)).toBe('2.5M')
   })
 
-  it('treats non-percent units the same as no unit', () => {
+  it('compacts negatives and never prints float noise (DS-31 / MET-40)', () => {
+    const format = metricAxisFormatter(null)
+    expect(format(-2_000_000)).toBe('-2M')
+    expect(format(-1_234_567)).toBe('-1.2M')
+    expect(format(0.1 + 0.2)).toBe('0.3')
+  })
+
+  it('treats trailing units the same as no unit', () => {
     expect(metricAxisFormatter('ms')(1500)).toBe('1.5k')
+  })
+
+  it('keeps a currency prefix on the axis', () => {
+    expect(metricAxisFormatter('$')(1500)).toBe('$1.5k')
   })
 })
 

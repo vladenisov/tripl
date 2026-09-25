@@ -1,3 +1,4 @@
+import { APP_LOCALE } from '@/lib/format'
 import { arrayMove } from '@dnd-kit/sortable'
 import type {
   EventMetricPoint,
@@ -48,7 +49,7 @@ export const EMPTY_EVENT_WINDOW_METRICS: {
 }[] = []
 export const EMPTY_WINDOW_POINTS: EventMetricPoint[] = []
 
-const compactCountFormatter = new Intl.NumberFormat('en-US', {
+const compactCountFormatter = new Intl.NumberFormat(APP_LOCALE, {
   notation: 'compact',
   compactDisplay: 'short',
   maximumFractionDigits: 0,
@@ -88,7 +89,7 @@ export const WINDOW_DELTA_HOURS = 24
  */
 const MIN_WINDOW_COVERAGE = 0.75
 
-const exactCountFormatter = new Intl.NumberFormat('en-US')
+const exactCountFormatter = new Intl.NumberFormat(APP_LOCALE)
 
 /**
  * Width of the collection grid, read off the series instead of assumed. The
@@ -416,30 +417,12 @@ export function deriveRowSignalFromMetrics(
 
 // --- Glitchy / templated event-name + value rendering helpers (UX-9, UX-21) ---
 
-export const NAME_SEGMENT_SEPARATOR = ':'
 const TEMPLATE_TOKEN_SPLIT = /(\$\{[^}{]*\})/g
 const TEMPLATE_TOKEN_MATCH = /^\$\{[^}{]*\}$/
 
-export type NameSegment = { text: string; empty: boolean }
-
-// An empty colon-segment can arrive as "" or as the serialized sentinel "0".
-// Kept in sync with ReconciliationPage's DeadEventName so the events list and
-// the reconciliation list render glitchy names identically.
-function isEmptyNameSegment(segment: string): boolean {
-  return segment === '' || segment === '0'
-}
-
-/**
- * Split a colon-namespaced event name into segments, but only when one of the
- * segments is empty (e.g. "spot::services"). A bare "::" reads as a rendering
- * bug, so the empty piece is surfaced as an intentional placeholder. Returns
- * `null` for ordinary names so they render unchanged.
- */
-export function splitEventName(name: string): NameSegment[] | null {
-  const parts = name.split(NAME_SEGMENT_SEPARATOR)
-  if (parts.length === 1 || !parts.some(isEmptyNameSegment)) return null
-  return parts.map((p) => ({ text: p, empty: isEmptyNameSegment(p) }))
-}
+// The name-segment split lives in lib/ now, so components/event-name.tsx no
+// longer imports this page module (DS-41); re-exported for the page's callers.
+export { NAME_SEGMENT_SEPARATOR, splitEventName, type NameSegment } from '@/lib/eventNameSegments'
 
 export type ValuePart = { text: string; token: boolean; known?: boolean }
 

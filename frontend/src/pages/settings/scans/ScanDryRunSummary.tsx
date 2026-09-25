@@ -114,7 +114,7 @@ function share(value: number): string {
 function Note({ children, tone = 'muted' }: { children: React.ReactNode; tone?: 'muted' | 'warning' }) {
   return (
     <p
-      className="m-0 text-[11.5px] leading-snug"
+      className="m-0 text-caption leading-snug"
       style={{ color: tone === 'warning' ? 'var(--warning)' : 'var(--fg-subtle)' }}
     >
       {children}
@@ -155,7 +155,7 @@ function NameFormatErrors({ errors }: { errors: string[] }) {
           Event name format error: {message}
         </p>
       ))}
-      <p className="m-0 mt-1 text-[11.5px]" style={{ color: 'var(--danger)' }}>
+      <p className="m-0 mt-1 text-caption" style={{ color: 'var(--danger)' }}>
         {NAME_FORMAT_FIX}
       </p>
     </div>
@@ -271,7 +271,7 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
       <NameFormatErrors errors={dryRun.errors} />
 
       <div>
-        <h4 className="m-0 text-[13px] font-semibold" style={{ color: 'var(--fg)' }}>
+        <h4 className="m-0 text-body font-semibold" style={{ color: 'var(--fg)' }}>
           What this scan would create
         </h4>
         <Note>
@@ -305,7 +305,7 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
       ) : (
         <>
           <div>
-            <div className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
+            <div className="flex flex-wrap items-baseline gap-x-2 text-body">
               <span className="font-medium" style={{ color: 'var(--fg)' }}>{eventsHeadline}</span>
               {events.length > 0 && (
                 <span className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
@@ -325,7 +325,7 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
           </div>
 
           <div>
-            <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+            <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
               {newFields.length > 0
                 ? `Would add ${countOf(newFields.length, 'field', 'fields')}`
                 : dryRun.unmapped_columns.length > 0

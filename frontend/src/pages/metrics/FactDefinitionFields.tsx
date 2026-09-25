@@ -2,13 +2,12 @@ import { useMemo } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
-import { SCard, Select, type SelectOption } from '@/components/settings/kit'
+import { SCard, NativeSelect, type SelectOption, Field } from '@/components/settings/kit'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { FactOperandPayload } from '@/lib/factOperandConfig'
 import { METRIC_AGGREGATIONS, type MetricAggregation, type MetricScanInterval } from '@/types'
 import { FactFilterEditor } from './FactFilterEditor'
 import { IntervalField } from './IntervalField'
-import { FormField } from '@/components/settings/form-field'
 import { errorAria, type FieldErrors } from '@/lib/fieldErrors'
 import {
   FACT_COMPOSITIONS,
@@ -128,13 +127,14 @@ function FactOperandEditor({
 
   return (
     <>
-      <FormField
+      <Field
         label="Fact table"
         htmlFor={`${idPrefix}-table`}
         required
         error={errors[`${idPrefix}-table`]}
+        announceError={false}
       >
-        <Select
+        <NativeSelect
           id={`${idPrefix}-table`}
           value={operand.factTableId}
           onChange={value => {
@@ -145,9 +145,9 @@ function FactOperandEditor({
           aria-required
           {...errorAria(errors, `${idPrefix}-table`)}
         />
-      </FormField>
-      <FormField label="Aggregation" htmlFor={`${idPrefix}-aggregation`} required>
-        <Select
+      </Field>
+      <Field label="Aggregation" htmlFor={`${idPrefix}-aggregation`} required>
+        <NativeSelect
           id={`${idPrefix}-aggregation`}
           value={operand.aggregation}
           onChange={value => {
@@ -156,16 +156,17 @@ function FactOperandEditor({
           }}
           options={METRIC_AGGREGATIONS.map(a => ({ value: a, label: AGGREGATION_LABEL[a] }))}
         />
-      </FormField>
+      </Field>
       {needsMeasure(operand.aggregation) && (
-        <FormField
+        <Field
           label="Measure column"
           htmlFor={`${idPrefix}-measure`}
           required
           hint={columnHint ?? 'Column to aggregate (numeric preferred).'}
           error={errors[`${idPrefix}-measure`]}
+          announceError={false}
         >
-          <Select
+          <NativeSelect
             id={`${idPrefix}-measure`}
             value={operand.measureColumn}
             onChange={value => set('measureColumn', value)}
@@ -174,17 +175,18 @@ function FactOperandEditor({
             aria-required
             {...errorAria(errors, `${idPrefix}-measure`)}
           />
-        </FormField>
+        </Field>
       )}
       {needsDistinct(operand.aggregation) && (
-        <FormField
+        <Field
           label="Distinct column"
           htmlFor={`${idPrefix}-distinct`}
           required
           hint={columnHint ?? 'Column whose distinct values are counted.'}
           error={errors[`${idPrefix}-distinct`]}
+          announceError={false}
         >
-          <Select
+          <NativeSelect
             id={`${idPrefix}-distinct`}
             value={operand.distinctColumn}
             onChange={value => set('distinctColumn', value)}
@@ -193,12 +195,12 @@ function FactOperandEditor({
             aria-required
             {...errorAria(errors, `${idPrefix}-distinct`)}
           />
-        </FormField>
+        </Field>
       )}
       {/* A filter list plus two buttons, so there is no one control the label
           names — and with no filters yet (the default) the generated id
           addressed nothing at all. `false` names the row as a group instead. */}
-      <FormField
+      <Field
         label="Filters"
         htmlFor={false}
         last
@@ -228,7 +230,7 @@ function FactOperandEditor({
           checkResult={checkMut.data ?? null}
           checkError={checkError}
         />
-      </FormField>
+      </Field>
     </>
   )
 }
@@ -258,13 +260,13 @@ export function FactDefinitionFields({
   return (
     <>
       <SCard title="Fact" description="Aggregate a reusable fact table into one value per bucket.">
-        <FormField
+        <Field
           label="Composition"
           htmlFor="metric-fact-composition"
           required
           hint="A single aggregation, or a ratio of two."
         >
-          <Select
+          <NativeSelect
             id="metric-fact-composition"
             value={draft.factComposition}
             onChange={value => onFactCompositionChange(value as FactComposition)}
@@ -273,7 +275,7 @@ export function FactDefinitionFields({
               label: c === 'single' ? 'Single' : 'Ratio',
             }))}
           />
-        </FormField>
+        </Field>
         <IntervalField
           id="metric-fact-interval"
           value={draft.interval}
@@ -287,7 +289,7 @@ export function FactDefinitionFields({
           half-width card leaves its controls ~125px wide (tripl-vv2f). */}
       {facts.noFactTables ? (
         <SCard title="Aggregation">
-          <div className="px-[18px] py-[15px] text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="px-[18px] py-[15px] text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             No fact tables yet. Define one in Fact tables before creating a fact metric.
           </div>
         </SCard>

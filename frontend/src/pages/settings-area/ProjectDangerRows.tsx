@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { RotateCcw, Trash2 } from 'lucide-react'
 import type { VariableRetirementCounts } from '@/api/projects'
 import { Button } from '@/components/ui/button'
-import { Select } from '@/components/settings/kit'
+import { NativeSelect } from '@/components/settings/kit'
 import { RESET_PERIODS } from './projectGeneralFields'
 
 /** The danger-zone rows of Project settings › General. */
@@ -33,7 +33,7 @@ export function DangerRow({
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
     >
       <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium">{title}</div>
+        <div className="text-body font-medium">{title}</div>
         <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
           {hint}
         </div>
@@ -73,14 +73,14 @@ export function DangerResetRow({
       style={{ borderBottom: '1px solid var(--border-subtle)' }}
     >
       <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium">{title}</div>
+        <div className="text-body font-medium">{title}</div>
         <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
           {hint}
         </div>
         {feedback}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Select
+        <NativeSelect
           aria-label={`${title} period`}
           value={period}
           onChange={onPeriodChange}
@@ -123,7 +123,7 @@ export function DangerRetireVariablesRow({
       style={{ borderBottom: '1px solid var(--border-subtle)' }}
     >
       <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium">Retire unused variables</div>
+        <div className="text-body font-medium">Retire unused variables</div>
         <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
           Delete variables a scan created that no event field value references and that carry no
           observed values, drift or documented values. Nothing edited by hand is touched.

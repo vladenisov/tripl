@@ -21,7 +21,7 @@
  */
 import type { ChipTone } from '@/components/primitives/chip'
 import type { AlertDeliveryStatus, MonitoringSignal, MonitorStatus } from '@/types'
-import type { RunPillStatus } from '@/pages/settings/scans/scanRunStatus'
+import type { RunPillStatus } from '@/types'
 import { EVENT_STATUS_LABELS, EVENT_STATUS_TONE, type EventStatus } from './eventStatus'
 
 /** A status rendered as a coloured word: its human label and canonical tone. */
@@ -126,11 +126,14 @@ export const REVIEW_STATUS = {
 // list and the connections grid resolve health through here so a failed source
 // is never amber on one screen and red on another.
 // ---------------------------------------------------------------------------
+//
+// Title Case like every other lexeme here: these four were the only lower-case
+// labels, so a status word changed case between screens (DS-45).
 export const DATA_SOURCE_HEALTH = {
-  healthy: { label: 'healthy', tone: 'success' },
-  stale: { label: 'stale', tone: 'warning' },
-  failing: { label: 'failing', tone: 'danger' },
-  untested: { label: 'untested', tone: 'neutral' },
+  healthy: { label: 'Healthy', tone: 'success' },
+  stale: { label: 'Stale', tone: 'warning' },
+  failing: { label: 'Failing', tone: 'danger' },
+  untested: { label: 'Untested', tone: 'neutral' },
 } as const satisfies Record<'healthy' | 'stale' | 'failing' | 'untested', StatusLexeme>
 
 /**

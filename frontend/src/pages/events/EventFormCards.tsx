@@ -53,7 +53,7 @@ export function TagsBreakdownsCard({
             {tags.map(t => (
               <span
                 key={t}
-                className="inline-flex h-[22px] items-center gap-[5px] rounded-full pl-[9px] pr-[6px] text-[11.5px]"
+                className="inline-flex h-[22px] items-center gap-[5px] rounded-full pl-[9px] pr-[6px] text-caption"
                 style={{ background: 'var(--surface-hover)' }}
               >
                 {t}
@@ -101,7 +101,7 @@ export function TagsBreakdownsCard({
                 type="button"
                 aria-pressed={on}
                 onClick={() => onToggleBreakdown(c)}
-                className="mono rounded-full px-[9px] py-1 text-[11.5px]"
+                className="mono rounded-full px-[9px] py-1 text-caption"
                 style={{
                   border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
                   background: on ? 'var(--accent-soft)' : 'var(--bg)',

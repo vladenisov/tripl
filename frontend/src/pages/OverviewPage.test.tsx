@@ -616,7 +616,7 @@ describe('OverviewPage — active signals panel (MON-15, MON-16, MON-34)', () =>
     renderOverview()
 
     const row = await screen.findByRole('link', { name: /Drop on Metric · Checkout conversion/ })
-    expect(row).toHaveTextContent('4.3 % vs 12 %')
+    expect(row).toHaveTextContent('4.3% vs 12%')
   })
 })
 

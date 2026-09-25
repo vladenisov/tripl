@@ -208,6 +208,13 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+
+// The summary strip (a <dl>) uses the same Title Case words as the per-card
+// health chip, so card assertions skip the strip.
+function healthLabels(label: string): HTMLElement[] {
+  return screen.queryAllByText(label).filter((el) => el.closest('dl') === null)
+}
+
 describe('DataSourcesPage', () => {
   it('shows skeletons, not the empty state, while the list is in flight', async () => {
     // An unsettled list query used to fall through to `dataSources.length === 0`
@@ -366,8 +373,8 @@ describe('DataSourcesPage', () => {
     renderDataSourcesPage('/settings/data-sources', 'owner')
 
     expect(await screen.findByText('Warehouse')).toBeInTheDocument()
-    expect(screen.getByText('stale')).toBeInTheDocument()
-    expect(screen.queryByText('healthy')).not.toBeInTheDocument()
+    expect(healthLabels('Stale')).toHaveLength(1)
+    expect(healthLabels('Healthy')).toHaveLength(0)
     expect(screen.getByText(/Last checked/)).toBeInTheDocument()
     expect(screen.getByText('re-test to confirm')).toBeInTheDocument()
   })
@@ -406,8 +413,8 @@ describe('DataSourcesPage', () => {
     renderDataSourcesPage('/settings/data-sources', 'owner')
 
     expect(await screen.findByText('Warehouse')).toBeInTheDocument()
-    expect(screen.getByText('healthy')).toBeInTheDocument()
-    expect(screen.queryByText('stale')).not.toBeInTheDocument()
+    expect(healthLabels('Healthy')).toHaveLength(1)
+    expect(healthLabels('Stale')).toHaveLength(0)
     expect(screen.getByText('Connection successful')).toBeInTheDocument()
     // A confidently healthy source does not need recovery affordances.
     expect(screen.queryByRole('button', { name: 'Re-test connection' })).not.toBeInTheDocument()
@@ -486,7 +493,7 @@ describe('DataSourcesPage', () => {
     renderDataSourcesPage('/settings/data-sources', 'owner')
 
     expect(await screen.findByText('Warehouse')).toBeInTheDocument()
-    expect(screen.getByText('stale')).toBeInTheDocument()
+    expect(healthLabels('Stale')).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Re-test connection' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit connection' })).toBeInTheDocument()
   })
@@ -919,7 +926,7 @@ describe('DataSourcesPage', () => {
     renderDataSourcesPage('/settings/data-sources', 'owner')
 
     expect(await screen.findByText('Demo source')).toBeInTheDocument()
-    expect(screen.getAllByText('healthy')).toHaveLength(1)
+    expect(healthLabels('Healthy')).toHaveLength(1)
     expect(screen.getByText('Synthetic')).toBeInTheDocument()
     expect(screen.queryByText('synthetic')).not.toBeInTheDocument()
   })
@@ -930,7 +937,7 @@ describe('DataSourcesPage', () => {
     renderDataSourcesPage('/settings/data-sources', 'owner')
 
     expect(await screen.findByText('Warehouse')).toBeInTheDocument()
-    expect(screen.getByText('untested')).toBeInTheDocument()
+    expect(screen.getByText('Untested')).toBeInTheDocument()
     expect(screen.getByText('clickhouse')).toBeInTheDocument()
   })
 

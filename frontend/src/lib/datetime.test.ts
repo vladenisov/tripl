@@ -219,3 +219,16 @@ describe('date-only strings west of UTC', () => {
     expect(formatIsoDate('2026-09-24T03:00:00Z')).toBe('2026-09-23')
   })
 })
+
+// DS-30: formatDateTime and formatTimestamp were near-identical copies.
+describe('formatDateTime and formatTimestamp (DS-30)', () => {
+  it('prints the same as formatTimestamp without seconds', () => {
+    const value = '2026-06-21T14:05:00Z'
+    expect(formatDateTime(value)).toBe(formatTimestamp(value))
+    expect(formatDateTime('not a date')).toBe('')
+  })
+
+  it('uses the app locale rather than the host default', () => {
+    expect(formatDateTime('2026-06-21T14:05:00Z')).toMatch(/^Jun 21, 2026, 2:05\sPM$/)
+  })
+})

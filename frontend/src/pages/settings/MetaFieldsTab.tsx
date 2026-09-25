@@ -9,6 +9,7 @@ import { SensitivityChip } from "@/components/primitives/sensitivity-chip"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { IconButton } from "@/components/ui/icon-button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -434,8 +435,8 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableCell>
                     {canWrite && (
                       <div className="flex gap-1 justify-end">
-                        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit ${mf.display_name}`} onClick={() => startEdit(mf)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${mf.display_name}`} disabled={deleteMut.isPending} onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
+                        <IconButton variant="ghost" className="h-7 w-7" label={`Edit ${mf.display_name}`} onClick={() => startEdit(mf)}><Pencil className="h-3 w-3" aria-hidden="true" /></IconButton>
+                        <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" label={`Delete ${mf.display_name}`} disabled={deleteMut.isPending} onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" aria-hidden="true" /></IconButton>
                       </div>
                     )}
                   </TableCell>

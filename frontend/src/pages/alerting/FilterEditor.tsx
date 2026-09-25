@@ -13,6 +13,7 @@ import { eventNameLabel } from "@/lib/eventName"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { IconButton } from "@/components/ui/icon-button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -90,7 +91,7 @@ export function FilterEditor({
         </p>
       ) : (
         <div className="space-y-2">
-          {filters.map(filter => (
+          {filters.map((filter, index) => (
             <FilterRow
               key={filter.uid}
               filter={filter}
@@ -99,6 +100,7 @@ export function FilterEditor({
               onChange={patch => updateFilter(filter.uid, patch)}
               onRemove={() => removeFilter(filter.uid)}
               error={rowErrors[filter.uid]}
+              position={index + 1}
             />
           ))}
         </div>
@@ -194,6 +196,7 @@ function FilterRow({
   onChange,
   onRemove,
   error,
+  position,
 }: {
   filter: RuleFilterDraft
   eventTypes: EventType[]
@@ -201,10 +204,14 @@ function FilterRow({
   onChange: (patch: Partial<RuleFilterDraft>) => void
   onRemove: () => void
   error?: string
+  /** 1-based row number, so each row's remove button has its own name. */
+  position: number
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [search, setSearch] = useState('')
   const errorIdBase = `filter-${filter.uid}`
+  const fieldLabel =
+    FILTER_FIELD_OPTIONS.find(option => option.value === filter.field)?.label ?? filter.field
 
   const isEventField = filter.field === 'event'
   const single = isSingleValueOperator(filter.operator)
@@ -310,15 +317,15 @@ function FilterRow({
           hiddenCount={isEventField ? eventOptions.hiddenCount : 0}
           errorId={error ? `${errorIdBase}-error` : undefined}
         />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
+        {/* Named by position and field: several rows share this icon, and an
+            unnamed "button" gave no hint which filter it removes (ALR-23). */}
+        <IconButton
+          label={`Remove filter ${position}: ${fieldLabel}`}
           className="h-8 w-8 text-muted-foreground hover:text-destructive ml-auto"
           onClick={onRemove}
         >
-          <Trash2 className="h-4 w-4" />
-        </Button>
+          <Trash2 className="h-4 w-4" aria-hidden="true" />
+        </IconButton>
       </div>
       {error && (
         <p id={`${errorIdBase}-error`} className="text-xs text-destructive">{error}</p>
@@ -330,11 +337,11 @@ function FilterRow({
               <span className="truncate max-w-40">{labelByValue.get(value) ?? value}</span>
               <button
                 type="button"
-                aria-label="Remove value"
-                className="hover:text-destructive"
+                aria-label={`Remove ${labelByValue.get(value) ?? value}`}
+                className="hit-target-24 rounded-sm hover:text-destructive"
                 onClick={() => toggleValue(value)}
               >
-                <X className="h-3 w-3" />
+                <X className="h-3 w-3" aria-hidden="true" />
               </button>
             </Badge>
           ))}

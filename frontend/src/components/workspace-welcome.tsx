@@ -50,7 +50,7 @@ export function WorkspaceWelcome({
               <Sparkles className="h-3.5 w-3.5" />
               {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
             </Button>
-            <p className="m-0 max-w-[280px] text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="m-0 max-w-[280px] text-caption" style={{ color: 'var(--fg-subtle)' }}>
               Builds a complete example in {DEMO_PROVISION_ESTIMATE} — local synthetic data, real
               scans and monitors. Reset or delete it any time.
             </p>
@@ -60,14 +60,14 @@ export function WorkspaceWelcome({
               <Plus className="h-3.5 w-3.5" />
               New project
             </Button>
-            <p className="m-0 max-w-[280px] text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="m-0 max-w-[280px] text-caption" style={{ color: 'var(--fg-subtle)' }}>
               Start empty and connect your own warehouse.
             </p>
           </div>
         </div>
       ) : (
         <p
-          className="mx-auto max-w-md text-center text-[12.5px]"
+          className="mx-auto max-w-md text-center text-body-sm"
           style={{ color: 'var(--fg-subtle)' }}
         >
           Ask a workspace owner or editor to create the first project — you&apos;ll see it here as

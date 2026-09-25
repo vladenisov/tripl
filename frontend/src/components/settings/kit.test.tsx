@@ -1,7 +1,8 @@
-import { createRef } from 'react'
-import { render, screen } from '@testing-library/react'
+import { createRef, useState } from 'react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { Field, Panel, SCard, Select, TextArea, TextInput } from './kit'
+import { INPUT_BASE, INPUT_EDGE } from './input-style'
+import { Field, NativeSelect, PageHead, Panel, RadioCards, SCard, SHeader, TextArea, TextInput, ToggleRow } from './kit'
 
 describe('Panel header', () => {
   /**
@@ -62,7 +63,7 @@ describe('Field label association', () => {
           <TextArea value="You are..." onChange={noop} />
         </Field>
         <Field label="Log level" last>
-          <Select value="INFO" onChange={noop} options={['INFO', 'DEBUG']} />
+          <NativeSelect value="INFO" onChange={noop} options={['INFO', 'DEBUG']} />
         </Field>
       </>,
     )
@@ -94,8 +95,8 @@ describe('Field label association', () => {
     // whichever happened to come first in the DOM.
     const { container } = render(
       <Field label="Filters" stacked last>
-        <Select value="a" onChange={() => {}} options={['a']} aria-label="Column" />
-        <Select value="=" onChange={() => {}} options={['=']} aria-label="Operator" />
+        <NativeSelect value="a" onChange={() => {}} options={['a']} aria-label="Column" />
+        <NativeSelect value="=" onChange={() => {}} options={['=']} aria-label="Operator" />
         <TextInput value="" onChange={() => {}} aria-label="Value" />
       </Field>,
     )
@@ -122,7 +123,7 @@ describe('Field label association', () => {
   it('leaves an explicitly passed id alone', () => {
     render(
       <Field label="Self-service registration" htmlFor="security-registration-mode">
-        <Select
+        <NativeSelect
           id="security-registration-mode"
           value="open"
           onChange={() => {}}
@@ -175,5 +176,198 @@ describe('TextInput — form attributes (WS-20)', () => {
     expect(input).toHaveAttribute('list', 'suggestions')
     expect(input).toHaveAttribute('autocomplete', 'off')
     expect(ref.current).toBe(input)
+  })
+})
+
+describe('Kit control contrast (DS-8)', () => {
+  // --border measures 1.20-1.31:1 against the surfaces; the form-control edge
+  // must be --input, the token theme-contrast.test.ts pins to 3:1.
+  // Pinned on the shared style objects: jsdom's CSS parser is not a reliable
+  // witness for a `border` shorthand holding var().
+  it('draws text fields, selects and textareas on the --input edge', () => {
+    expect(INPUT_EDGE).toBe('1px solid var(--input)')
+    expect(INPUT_BASE.border).toBe(INPUT_EDGE)
+  })
+
+  it('paints an off Toggle with the --input token, not --border-strong', () => {
+    render(<ToggleRow label="Enabled" value={false} />)
+    const toggle = screen.getByRole('switch', { name: 'Enabled' })
+    expect(toggle).toHaveStyle({ background: 'var(--input)' })
+  })
+})
+
+describe('Field required and error (DS-17)', () => {
+  it('marks the control required without putting the asterisk in its name', () => {
+    render(
+      <Field label="Name" required>
+        <TextInput value="" />
+      </Field>,
+    )
+    const input = screen.getByRole('textbox', { name: 'Name' })
+    expect(input).toHaveAttribute('aria-required', 'true')
+  })
+
+  it('ties the error to the control and announces it', () => {
+    render(
+      <Field label="Slug" error="Use lowercase letters only.">
+        <TextInput value="Bad Slug" />
+      </Field>,
+    )
+    const input = screen.getByRole('textbox', { name: 'Slug' })
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(input).toHaveAccessibleDescription('Use lowercase letters only.')
+    expect(screen.getByRole('alert')).toHaveTextContent('Use lowercase letters only.')
+  })
+
+  it('lets a control keep its own aria wiring', () => {
+    render(
+      <>
+        <p id="own">Own hint</p>
+        <Field label="Region" error="Pick one.">
+          <NativeSelect value="eu" options={['eu', 'us']} aria-describedby="own" />
+        </Field>
+      </>,
+    )
+    const select = screen.getByRole('combobox', { name: 'Region' })
+    expect(select).toHaveAccessibleDescription('Own hint')
+    expect(select).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('shows no error and no invalid state without one', () => {
+    render(
+      <Field label="Name">
+        <TextInput value="" />
+      </Field>,
+    )
+    expect(screen.getByRole('textbox', { name: 'Name' })).not.toHaveAttribute('aria-invalid')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('Section headings (DS-16)', () => {
+  it('names a Panel section by a real heading', () => {
+    render(
+      <Panel title="Data match">
+        <div>rows</div>
+      </Panel>,
+    )
+    expect(screen.getByRole('heading', { level: 2, name: 'Data match' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Data match' })).toBeInTheDocument()
+  })
+
+  it('renders no empty heading for an SCard with only a description', () => {
+    render(<SCard description="Only a description." />)
+    expect(screen.queryByRole('heading')).toBeNull()
+  })
+
+  it('takes a heading level for a nested SCard', () => {
+    render(<SCard title="Nested" headingLevel={3} />)
+    expect(screen.getByRole('heading', { level: 3, name: 'Nested' })).toBeInTheDocument()
+  })
+})
+
+describe('RadioCards keyboard (DS-35)', () => {
+  function Harness() {
+    const [value, setValue] = useState('a')
+    return (
+      <RadioCards
+        groupLabel="Case style"
+        value={value}
+        onChange={setValue}
+        options={[
+          { value: 'a', label: 'Alpha' },
+          { value: 'b', label: 'Beta' },
+          { value: 'c', label: 'Gamma' },
+        ]}
+      />
+    )
+  }
+
+  it('is one Tab stop and moves the choice with the arrow keys', () => {
+    render(<Harness />)
+    const [alpha, beta, gamma] = screen.getAllByRole('radio')
+    expect(alpha).toHaveAttribute('tabindex', '0')
+    expect(beta).toHaveAttribute('tabindex', '-1')
+    expect(gamma).toHaveAttribute('tabindex', '-1')
+
+    fireEvent.keyDown(alpha!, { key: 'ArrowRight' })
+    expect(screen.getByRole('radio', { name: 'Beta' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Beta' })).toHaveFocus()
+
+    fireEvent.keyDown(screen.getByRole('radio', { name: 'Beta' }), { key: 'ArrowLeft' })
+    fireEvent.keyDown(screen.getByRole('radio', { name: 'Alpha' }), { key: 'ArrowUp' })
+    // Wraps from the first to the last.
+    expect(screen.getByRole('radio', { name: 'Gamma' })).toBeChecked()
+  })
+})
+
+describe('Panel options (DS-15)', () => {
+  it('drops the header and its heading when there is neither title nor right slot', () => {
+    const { container } = render(<Panel>body</Panel>)
+
+    expect(screen.queryByRole('heading')).toBeNull()
+    expect(container.querySelector('header')).toBeNull()
+    expect(container.querySelector('section')).not.toHaveAttribute('aria-labelledby')
+    expect(screen.getByText('body').closest('[data-slot="panel-body"]')).not.toBeNull()
+  })
+
+  it('names the section by its title and keeps a right slot', () => {
+    render(
+      <Panel title="Recent runs" right={<button type="button">Refresh</button>}>
+        rows
+      </Panel>,
+    )
+
+    expect(screen.getByRole('region', { name: 'Recent runs' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument()
+  })
+})
+
+describe('Field for forms with an error summary (DS-17)', () => {
+  it('ids the message after its control, so a summary can link to it', () => {
+    render(
+      <Field label="Name" htmlFor="metric-name" error="Name is required">
+        <TextInput id="metric-name" value="" onChange={() => {}} />
+      </Field>,
+    )
+
+    expect(document.getElementById('metric-name-error')).toHaveTextContent('Name is required')
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveAttribute('aria-describedby', 'metric-name-error')
+  })
+
+  it('leaves announcing to the summary when told to', () => {
+    render(
+      <Field label="Name" htmlFor="n" error="Name is required" announceError={false}>
+        <TextInput id="n" value="" onChange={() => {}} />
+      </Field>,
+    )
+
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('takes an explicit error id', () => {
+    render(
+      <Field label="Group" htmlFor={false} error="Pick one" errorId="group-error">
+        <span>choices</span>
+      </Field>,
+    )
+
+    expect(document.getElementById('group-error')).toHaveTextContent('Pick one')
+  })
+})
+
+describe('Kit page headers share PageHeader (DS-19)', () => {
+  it('renders SHeader and PageHead with the same h1', () => {
+    const { unmount } = render(<SHeader title="Members" description="Who can sign in." />)
+    const shHeading = screen.getByRole('heading', { level: 1, name: 'Members' })
+    const shClass = shHeading.className
+    unmount()
+
+    render(<PageHead eyebrow="Govern" title="Coverage" right={<button type="button">Run</button>} />)
+    const phHeading = screen.getByRole('heading', { level: 1, name: 'Coverage' })
+    expect(phHeading.className).toBe(shClass)
+    expect(screen.getByText('Govern')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run' })).toBeInTheDocument()
   })
 })

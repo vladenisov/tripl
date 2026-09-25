@@ -69,7 +69,7 @@ function RunReportSentence({
 }) {
   const link = line.target ? TARGET_LINK[line.target] : null
   return (
-    <li className="text-[13px] leading-relaxed text-foreground">
+    <li className="text-body leading-relaxed text-foreground">
       {link ? (
         <Link
           to={link.href(slug, scanConfigId)}
@@ -82,7 +82,7 @@ function RunReportSentence({
         <span title={line.title}>{line.text}</span>
       )}
       {line.hint && (
-        <span className="mt-0.5 block text-[11.5px] leading-snug text-muted-foreground">
+        <span className="mt-0.5 block text-caption leading-snug text-muted-foreground">
           {line.hint}
         </span>
       )}

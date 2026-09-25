@@ -1,3 +1,4 @@
+import { formatNumber } from '@/lib/format'
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight } from 'lucide-react'
@@ -33,8 +34,10 @@ interface TopMoversPanelProps {
   timeRange?: { from: string; to: string }
 }
 
+// The app locale, not the browser's: the chart beside this list already
+// prints its numbers in it (DS-30).
 function formatCount(value: number): string {
-  return Math.round(value).toLocaleString()
+  return formatNumber(Math.round(value))
 }
 
 /**
@@ -378,8 +381,9 @@ function BreakdownDrilldown({
     )
   }
 
-  // The shared chart, not a bare area: it brings axes, a tooltip, UTC ticks,
-  // the anomaly dot and a size-gated container (MON-20).
+  // The shared chart, not a bare area: it brings axes, a tooltip, local
+  // sub-day ticks, the anomaly dot and a size-gated container (MON-20). The
+  // noun is a pair so a one-event bucket reads "1 event (…)" (DS-26).
   return (
     <div className="px-2 pb-3 pt-1" data-testid="breakdown-drilldown">
       <MetricsChart
@@ -387,7 +391,7 @@ function BreakdownDrilldown({
         annotations={marker}
         height={140}
         granularity={granularityForInterval(data?.interval) ?? 'hour'}
-        seriesLabel={`events (${valueLabel})`}
+        seriesLabel={{ singular: `event (${valueLabel})`, plural: `events (${valueLabel})` }}
         color="var(--chart-2)"
       />
     </div>

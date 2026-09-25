@@ -1,3 +1,4 @@
+import { formatCompactNumber } from '@/lib/format'
 import {
   Activity,
   AlertTriangle,
@@ -42,12 +43,12 @@ export type NavItem = {
 
 export type NavGroup = { label: string; items: NavItem[] }
 
+/**
+ * A sidebar badge count: the shared compact formatter (DS-30). The local copy
+ * printed "1.0k" for 1,000 and "1500k" for 1.5 million.
+ */
 export function formatCount(n: number): string {
-  if (n >= 1000) {
-    const k = n / 1000
-    return `${k >= 10 ? Math.round(k) : k.toFixed(1)}k`
-  }
-  return String(n)
+  return formatCompactNumber(n)
 }
 
 /**

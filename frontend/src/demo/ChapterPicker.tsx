@@ -57,7 +57,7 @@ export function ChapterPicker({ chapters, onPick, compact = false }: ChapterPick
             style={{ background: 'var(--surface)', borderColor: 'var(--border-subtle)' }}
           >
             <span
-              className="mono w-4 shrink-0 text-center text-[10.5px]"
+              className="mono w-4 shrink-0 text-center text-2xs"
               style={{ color: 'var(--fg-faint)' }}
               aria-hidden="true"
             >
@@ -70,7 +70,7 @@ export function ChapterPicker({ chapters, onPick, compact = false }: ChapterPick
               <span className="block truncate text-[12px] font-medium">{chapter.title}</span>
               {!compact && (
                 <span
-                  className="block truncate text-[10.5px]"
+                  className="block truncate text-2xs"
                   style={{ color: 'var(--fg-subtle)' }}
                 >
                   {chapter.blurb}

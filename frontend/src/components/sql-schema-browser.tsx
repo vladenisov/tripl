@@ -1,6 +1,19 @@
 import { useMemo, useState } from 'react'
 import { ChevronRight, Database, Search } from 'lucide-react'
 import type { TableSchema } from '@/types/dataSourceSchema'
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { formatNumber } from '@/lib/format'
+
+// While searching, every matching table is force-expanded, so one keystroke on
+// a warehouse with hundreds of tables used to mount thousands of column
+// buttons (DS-42). The filter runs on a debounced query and lists at most this
+// many tables, then says how many more matched.
+const SEARCH_TABLE_LIMIT = 50
+// A table that matches by name is expanded with ALL its columns, so the table
+// cap alone still let a one-letter query mount 50 wide tables' worth of rows.
+// While searching, the column rows across every shown table share this budget;
+// a table past it says how many of its columns were left out.
+const SEARCH_COLUMN_LIMIT = 500
 
 /**
  * Collapsible table/column picker rendered under {@link SqlEditor}. Lists the
@@ -20,7 +33,7 @@ export function SqlSchemaBrowser({
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
 
-  const q = query.trim().toLowerCase()
+  const q = useDebouncedValue(query, SEARCH_DEBOUNCE_MS).trim().toLowerCase()
 
   // When searching, every shown table is force-expanded and only its matching
   // columns are listed; otherwise expansion is manual and all columns show.
@@ -36,6 +49,16 @@ export function SqlSchemaBrowser({
       })
       .filter(entry => entry.visible)
   }, [tables, q])
+  const shownEntries = useMemo(() => {
+    if (!q) return entries.map(entry => ({ ...entry, hiddenColumns: 0 }))
+    let budget = SEARCH_COLUMN_LIMIT
+    return entries.slice(0, SEARCH_TABLE_LIMIT).map(entry => {
+      const columns = entry.columns.slice(0, budget)
+      budget -= columns.length
+      return { ...entry, columns, hiddenColumns: entry.columns.length - columns.length }
+    })
+  }, [entries, q])
+  const hiddenMatches = entries.length - shownEntries.length
 
   const toggle = (name: string) =>
     setExpanded(current => {
@@ -48,12 +71,12 @@ export function SqlSchemaBrowser({
   const isOpen = (name: string) => Boolean(q) || expanded.has(name)
 
   return (
-    <div className="rounded-[7px]" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
+    <div className="rounded-control" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
       <button
         type="button"
         onClick={() => setOpen(value => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] font-medium"
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-caption font-medium"
         style={{ color: 'var(--fg-muted)' }}
       >
         <ChevronRight
@@ -82,7 +105,7 @@ export function SqlSchemaBrowser({
               style={{
                 height: 28,
                 borderRadius: 6,
-                border: '1px solid var(--border)',
+                border: '1px solid var(--input)',
                 background: 'var(--bg-sunken)',
                 color: 'var(--fg)',
                 fontSize: 12,
@@ -97,7 +120,7 @@ export function SqlSchemaBrowser({
                 No matching tables.
               </li>
             ) : (
-              entries.map(({ table, columns }) => (
+              shownEntries.map(({ table, columns, hiddenColumns }) => (
                 <li key={table.name}>
                   <div className="flex items-center">
                     <button
@@ -136,19 +159,31 @@ export function SqlSchemaBrowser({
                             title={`Insert ${column.name}`}
                             className="flex w-full items-center justify-between gap-2 rounded px-1.5 py-[3px] text-left transition-colors hover:bg-[var(--surface-hover)]"
                           >
-                            <span className="mono truncate text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+                            <span className="mono truncate text-caption" style={{ color: 'var(--fg-muted)' }}>
                               {column.name}
                             </span>
-                            <span className="mono shrink-0 text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+                            <span className="mono shrink-0 text-2xs" style={{ color: 'var(--fg-faint)' }}>
                               {column.data_type}
                             </span>
                           </button>
                         </li>
                       ))}
+                      {hiddenColumns > 0 && (
+                        <li className="px-1.5 py-[3px] text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                          {formatNumber(hiddenColumns)} more {hiddenColumns === 1 ? 'column' : 'columns'} —
+                          refine the filter to see them.
+                        </li>
+                      )}
                     </ul>
                   )}
                 </li>
               ))
+            )}
+            {hiddenMatches > 0 && (
+              <li className="px-2 py-1.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                {formatNumber(hiddenMatches)} more matching{' '}
+                {hiddenMatches === 1 ? 'table' : 'tables'} — refine the filter to see them.
+              </li>
             )}
           </ul>
         </div>

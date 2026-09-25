@@ -1,5 +1,5 @@
 import type { ServiceSettings } from '@/types'
-import { Field, SCard, Select, TextInput, ToggleRow } from '@/components/settings/kit'
+import { Field, SCard, NativeSelect, TextInput, ToggleRow } from '@/components/settings/kit'
 import { SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
@@ -28,7 +28,7 @@ export function ObservabilitySection({
           label="Log level"
           labelRight={<SourceBadge source={sourceFor(settings, 'observability', 'log_level')} />}
         >
-          <Select
+          <NativeSelect
             value={form.observability.log_level}
             onChange={value => setField('observability', 'log_level', value)}
             options={LOG_LEVEL_OPTIONS}

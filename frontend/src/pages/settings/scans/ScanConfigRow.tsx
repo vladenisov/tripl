@@ -209,7 +209,7 @@ export function ScanListRow({
               <Link
                 to={detailHref}
                 onClick={e => e.stopPropagation()}
-                className="truncate text-[13px] font-semibold no-underline hover:underline"
+                className="truncate text-body font-semibold no-underline hover:underline"
                 style={{ color: 'inherit' }}
               >
                 {sc.name}
@@ -224,7 +224,7 @@ export function ScanListRow({
             </div>
             {/* Secondary: dropped on phones, where it pushed the name to a few letters. */}
             <div
-              className="mono hidden max-w-[280px] truncate text-[10.5px] sm:block"
+              className="mono hidden max-w-[280px] truncate text-2xs sm:block"
               style={{ color: 'var(--fg-faint)' }}
               title={sc.base_query}
             >

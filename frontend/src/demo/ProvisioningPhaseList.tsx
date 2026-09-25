@@ -59,7 +59,7 @@ export function ProvisioningPhaseList({
                 ? 'active'
                 : 'pending'
           return (
-            <li key={phase.id} className="flex items-center gap-2.5 text-[12.5px]">
+            <li key={phase.id} className="flex items-center gap-2.5 text-body-sm">
               <PhaseIcon state={state} />
               <span
                 style={{
@@ -79,7 +79,7 @@ export function ProvisioningPhaseList({
         </p>
       )}
       {slow && (
-        <p className="text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+        <p className="text-caption" style={{ color: 'var(--fg-muted)' }}>
           {slowMessage}
         </p>
       )}

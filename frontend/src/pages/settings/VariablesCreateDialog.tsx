@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ChipListInput } from '@/components/chip-list-input'
-import { Select } from '@/components/settings/kit'
+import { NativeSelect } from '@/components/settings/kit'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { variablesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
@@ -84,7 +84,7 @@ export function VariablesCreateDialog({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label htmlFor={typeId}>Type</Label>
-                <Select
+                <NativeSelect
                   id={typeId}
                   value={varType}
                   onChange={value => setVarType(value as VariableType)}

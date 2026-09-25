@@ -46,7 +46,8 @@ import { useDemoScenarioActions, useScenarioArtifacts } from '@/demo/demoScenari
 import { Panel } from '@/components/settings/kit'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
+import { LoadingState } from '@/components/primitives/loading-state'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import {
@@ -56,6 +57,7 @@ import {
 import { useNow } from '@/hooks/useNow'
 import { useEventsDndSensors } from '@/pages/events/useEventsDndSensors'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
+import { formatNumber } from '@/lib/format'
 import { METRIC_INTERVAL_LABEL, formatMetricValue } from '@/lib/metricFormat'
 import { factOperandConfigToPayload, readFactOperandConfig } from '@/lib/factOperandConfig'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
@@ -119,8 +121,10 @@ const KIND_FILTER_OPTIONS: { value: '' | MetricKind; label: string }[] = [
 
 // 16px below md: iOS zooms the page into any focused control under 16px, and
 // these are the first thing a phone user touches on the catalog (MET-21).
+// `outline-none` beats the global :focus-visible outline (it lives in
+// @layer base), so the filters draw their own ring like ui/input.
 const FILTER_SELECT_CLASS =
-  'h-8 rounded-md border bg-[var(--bg)] px-2 text-[16px] text-[var(--fg)] outline-none md:text-[12px]'
+  'h-8 rounded-md border bg-[var(--bg)] px-2 text-[16px] text-[var(--fg)] outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-[12px]'
 
 // Interval → milliseconds, for the staleness threshold (tripl-nxk2.10).
 const INTERVAL_MS: Record<MetricScanInterval, number> = {
@@ -380,7 +384,7 @@ async function restoreStatuses(
 }
 
 function pluralMetrics(count: number): string {
-  return count === 1 ? '1 metric' : `${count.toLocaleString()} metrics`
+  return count === 1 ? '1 metric' : `${formatNumber(count)} metrics`
 }
 
 /**
@@ -687,16 +691,12 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
           compact
         />
       ) : (
-        <div
-          className={`flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3 ${
-            isEmpty ? 'opacity-60' : ''
-          }`}
+        <MiniStatStrip
+          className={`rounded-lg border px-4 py-3 ${isEmpty ? 'opacity-60' : ''}`}
           style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
         >
-          <MiniStat label="Metrics" value={data ? total.toLocaleString() : '—'} />
-          <MiniStatDivider />
-          <MiniStat label="Active" value={data ? active.toLocaleString() : '—'} tone="success" />
-          <MiniStatDivider />
+          <MiniStat label="Metrics" value={data ? formatNumber(total) : '—'} />
+          <MiniStat label="Active" value={data ? formatNumber(active) : '—'} tone="success" />
           <StatFilter
             active={signalFilter === 'anomalies'}
             onToggle={() => toggleSignalFilter('anomalies')}
@@ -714,13 +714,12 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               label="Metrics with anomalies"
               value={
                 <span style={{ color: anomalyCount > 0 ? 'var(--danger)' : undefined }}>
-                  {data ? anomalyCount.toLocaleString() : '—'}
+                  {data ? formatNumber(anomalyCount) : '—'}
                 </span>
               }
               tone={anomalyCount > 0 ? 'danger' : 'neutral'}
             />
           </StatFilter>
-          <MiniStatDivider />
           <StatFilter
             active={signalFilter === 'stale'}
             onToggle={() => toggleSignalFilter('stale')}
@@ -730,13 +729,13 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               label="Stale"
               value={
                 <span style={{ color: staleCount > 0 ? 'var(--warning)' : undefined }}>
-                  {data ? staleCount.toLocaleString() : '—'}
+                  {data ? formatNumber(staleCount) : '—'}
                 </span>
               }
               tone={staleCount > 0 ? 'warning' : 'neutral'}
             />
           </StatFilter>
-        </div>
+        </MiniStatStrip>
       )}
 
       {!metricsQuery.isError &&
@@ -763,7 +762,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
             title="Catalog"
             subtitle={
               data
-                ? `${total.toLocaleString()} total${isRefreshing ? ' · Updating…' : ''}`
+                ? `${formatNumber(total)} total${isRefreshing ? ' · Updating…' : ''}`
                 : undefined
             }
             right={
@@ -824,7 +823,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                     key={status}
                     size="sm"
                     variant="outline"
-                    className="h-7 px-2 text-[11.5px]"
+                    className="h-7 px-2 text-caption"
                     disabled={bulkStatusMut.isPending}
                     onClick={() => bulkStatusMut.mutate(status)}
                   >
@@ -834,13 +833,13 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-7 px-2 text-[11.5px]"
+                  className="h-7 px-2 text-caption"
                   onClick={() => setSelectedIds(new Set())}
                 >
                   Clear
                 </Button>
                 {bulkStatusMut.isError && (
-                  <span className="text-[11.5px]" style={{ color: 'var(--danger)' }}>
+                  <span className="text-caption" style={{ color: 'var(--danger)' }}>
                     {getErrorMessage(bulkStatusMut.error)}
                   </span>
                 )}
@@ -852,15 +851,13 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 className="border-b px-4 py-2 text-[12px]"
                 style={{ borderColor: 'var(--border-subtle)', color: 'var(--warning)' }}
               >
-                Showing {metrics.length.toLocaleString()} of {total.toLocaleString()} metrics.
+                Showing {formatNumber(metrics.length)} of {formatNumber(total)} metrics.
                 Narrow the list with a search or filter to reach the rest; reordering is off
                 until the whole catalog is listed.
               </div>
             )}
             {metricsQuery.isLoading ? (
-              <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                Loading…
-              </div>
+              <LoadingState className="px-4 py-6 text-[12px]" />
             ) : visibleMetrics.length === 0 ? (
               // Names what is filtering and offers the one-click way out; the
               // stat toggle in particular is not an obvious control to undo
@@ -875,7 +872,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                     : 'No metrics match the current filters.'}
                 </span>
                 {hasFilters && (
-                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11.5px]" onClick={clearFilters}>
+                  <Button size="sm" variant="outline" className="h-7 px-2 text-caption" onClick={clearFilters}>
                     Clear filters
                   </Button>
                 )}
@@ -911,7 +908,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                     <div role="rowgroup">
                       <div
                         role="row"
-                        className={`${METRIC_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                        className={`${METRIC_GRID} border-b py-2 text-2xs font-semibold uppercase tracking-[0.05em]`}
                         style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                       >
                         <span role="columnheader" aria-label="Reorder" />
@@ -1091,14 +1088,14 @@ function MetricRow({
               // so it carries its own tooltip, as the Latest cell below already
               // does (tripl-862w).
               title={metric.display_name}
-              className="truncate text-[12.5px] font-medium no-underline hover:underline"
+              className="truncate text-body-sm font-medium no-underline hover:underline"
               style={{ color: 'var(--fg)' }}
             >
               {metric.display_name}
             </Link>
           </ScenarioCoachMark>
         ) : (
-          <span className="truncate text-[12.5px] font-medium" title={metric.display_name}>
+          <span className="truncate text-body-sm font-medium" title={metric.display_name}>
             {metric.display_name}
           </span>
         )}
@@ -1130,7 +1127,7 @@ function MetricRow({
       </span>
       <span
         role="cell"
-        className={`mono text-right text-[10.5px] ${PHONE_CELL.dropped}`}
+        className={`mono text-right text-2xs ${PHONE_CELL.dropped}`}
         style={{ color: 'var(--fg-faint)' }}
       >
         {formatRelativeTime(metric.updated_at)}
@@ -1274,20 +1271,20 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
         onClick={event => event.stopPropagation()}
       >
         <DropdownMenuItem
-          className="text-[12.5px]"
+          className="text-body-sm"
           onSelect={() => navigate(`/p/${slug}/metrics/${metric.id}/edit`)}
         >
           <Pencil className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Edit
         </DropdownMenuItem>
         <DropdownMenuItem
-          className="text-[12.5px]"
+          className="text-body-sm"
           disabled={busy}
           onSelect={() => duplicateMut.mutate()}
         >
           <Copy className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Duplicate as draft
         </DropdownMenuItem>
         <DropdownMenuItem
-          className="text-[12.5px]"
+          className="text-body-sm"
           disabled={busy}
           onSelect={() => collectMut.mutate()}
         >
@@ -1295,7 +1292,7 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          className="text-[12.5px]"
+          className="text-body-sm"
           variant={isArchived ? 'default' : 'destructive'}
           disabled={busy}
           onSelect={() => statusMut.mutate(isArchived ? 'active' : 'archived')}

@@ -268,7 +268,14 @@ export const EventRow = memo(function EventRow({
           className={`flex items-center gap-2 align-middle ${PHONE_NAME_CONTENT}`}
           style={{ maxWidth: PINNED_EVENT_CONTENT_MAX_WIDTH }}
         >
-          <Dot tone={statusTone} pulse={false} size={6} />
+          {/* Named only when the Status column is hidden: otherwise the chip
+              in that column already says it, and a second reading is noise. */}
+          <Dot
+            tone={statusTone}
+            pulse={false}
+            size={6}
+            label={hideStatus ? `Status: ${EVENT_STATUS_LABELS[(ev.status as EventStatus) ?? 'draft'] ?? ev.status}` : undefined}
+          />
           <Tooltip>
             <TooltipTrigger asChild>
               {/* A real anchor, not a button: triaging a 2641-event catalog
@@ -279,7 +286,7 @@ export const EventRow = memo(function EventRow({
               <Link
                 to={detailLink.to}
                 onClick={detailLink.onClick}
-                className="mono min-w-0 truncate text-left text-[12.5px] hover:underline underline-offset-4"
+                className="mono min-w-0 truncate text-left text-body-sm hover:underline underline-offset-4"
                 // Native title only when there's no description to show in the
                 // richer tooltip — avoids a double (native + Radix) popover.
                 title={ev.description ? undefined : nameLabel}

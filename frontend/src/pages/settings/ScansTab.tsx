@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react"
+import { Panel } from '@/components/settings/kit'
 import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Plus, RotateCw } from "lucide-react"
@@ -16,7 +17,7 @@ import { Search } from "lucide-react"
 import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
 import { runPillStatus } from "./scans/scanRunStatus"
 import { scanModeOf } from "./scans/scanMode"
-import { StatCard, SurfPanel } from "./scans/scanLayout"
+import { StatCard } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
 import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
@@ -331,7 +332,7 @@ export function ScansTab({ slug }: { slug: string }) {
       {/* A project has exactly one scan the moment it finishes the onboarding
           checklist's "Run a scan" step, so "1 scans" was the first thing a new
           user read on the page this epic exists to make comprehensible. */}
-      <SurfPanel title="Scans" subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
+      <Panel title="All scans" headingLevel={3} subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
         {failedRunScanName && (
           <p role="alert" className="border-b px-4 py-2 text-sm" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
             Could not start {failedRunScanName}: {getErrorMessage(runScan.error)}
@@ -355,9 +356,7 @@ export function ScansTab({ slug }: { slug: string }) {
             />
           </div>
         ) : scanConfigs.length === 0 ? (
-          <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            No scans yet.
-          </p>
+          <EmptyState size="sm" headingLevel={3} title="No scans yet." />
         ) : (
           <table className="w-full border-collapse">
             {/* Phones get the rows as stacked cards (ScanListRow), so the
@@ -367,7 +366,7 @@ export function ScansTab({ slug }: { slug: string }) {
                 {['Scan', 'Last run'].map(h => (
                   <th
                     key={h}
-                    className="px-3.5 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide"
+                    className="px-3.5 py-2 text-left text-2xs font-semibold uppercase tracking-wide"
                     style={{ color: 'var(--fg-subtle)' }}
                   >
                     {h}
@@ -405,10 +404,10 @@ export function ScansTab({ slug }: { slug: string }) {
             </tbody>
           </table>
         )}
-      </SurfPanel>
+      </Panel>
 
       {recentRuns.length > 0 && (
-        <SurfPanel title="Recent runs" subtitle="Latest runs across all scans">
+        <Panel title="Recent runs" subtitle="Latest runs across all scans">
           <div>
             {recentRuns.map(run => {
               const isFailed = run.status === 'failed'
@@ -437,7 +436,7 @@ export function ScansTab({ slug }: { slug: string }) {
                       {run.scanName}
                     </span>
                     <div className="order-last flex min-w-0 basis-full flex-col gap-1 sm:order-none sm:basis-auto sm:flex-1">
-                      <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                      <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
                         {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
                       </span>
                       {friendly && (
@@ -460,7 +459,7 @@ export function ScansTab({ slug }: { slug: string }) {
                       <div className="order-last flex shrink-0 flex-wrap items-center gap-2 sm:order-none">
                         {run.failingStreak > 1 && (
                           <span
-                            className="whitespace-nowrap rounded border px-1.5 py-0.5 text-[10.5px] font-semibold"
+                            className="whitespace-nowrap rounded border px-1.5 py-0.5 text-2xs font-semibold"
                             style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
                           >
                             failed last {run.failingStreak} runs
@@ -498,7 +497,7 @@ export function ScansTab({ slug }: { slug: string }) {
               )
             })}
           </div>
-        </SurfPanel>
+        </Panel>
       )}
     </div>
   )

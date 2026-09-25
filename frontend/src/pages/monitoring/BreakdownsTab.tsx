@@ -13,6 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { formatNumber } from '@/lib/format'
 import { adaptMetricBreakdowns } from '@/lib/metricAdapters'
 import type { MetricRollupMode, MetricsGranularity } from '@/lib/metrics'
 import { monitoringBreakdownsColumnKey } from '@/lib/queryKeys'
@@ -42,6 +43,8 @@ export interface BreakdownsTabProps {
   selectedValues: string[]
   seriesLabel: string
   valueFormatter?: (value: number) => string
+  /** The chart tooltip and legend spelling; see MetricsChartProps.tooltipFormatter. */
+  tooltipFormatter?: (value: number) => string
   metricEditPath: string
   onColumnChange: (column: string) => void
   onSelectedValuesChange: (values: string[]) => void
@@ -65,6 +68,7 @@ export function BreakdownsTab({
   selectedValues,
   seriesLabel,
   valueFormatter,
+  tooltipFormatter,
   metricEditPath,
   onColumnChange,
   onSelectedValuesChange,
@@ -200,6 +204,7 @@ export function BreakdownsTab({
               granularity={granularity}
               seriesLabel={seriesLabel}
               valueFormatter={valueFormatter}
+              tooltipFormatter={tooltipFormatter}
               from={timeRange.from}
               to={timeRange.to}
             />
@@ -212,7 +217,7 @@ export function BreakdownsTab({
             <BreakdownValueChips
               options={entries}
               selected={effectiveFilter}
-              valueFormatter={valueFormatter}
+              valueFormatter={tooltipFormatter ?? valueFormatter}
               valueKind={legendKind}
               onToggle={toggleValue}
               onReset={() => onSelectedValuesChange([])}
@@ -278,7 +283,7 @@ function BreakdownValueChips({
       {options.map(option => {
         const isSelected = selected.includes(option.label)
         const isVisible = !hasFilter || isSelected
-        const value = valueFormatter ? valueFormatter(option.legendValue) : option.legendValue.toLocaleString()
+        const value = valueFormatter ? valueFormatter(option.legendValue) : formatNumber(option.legendValue)
         return (
           <button
             key={option.label}

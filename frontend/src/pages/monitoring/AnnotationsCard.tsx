@@ -6,6 +6,7 @@ import { chartAnnotationsApi } from '@/api/chartAnnotations'
 import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { Card, CardContent } from '@/components/ui/card'
 import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { Input } from '@/components/ui/input'
@@ -138,7 +139,7 @@ export function AnnotationsCard({
                 value={label}
                 maxLength={ANNOTATION_LABEL_MAX}
                 onChange={event => setLabel(event.target.value)}
-                className="h-8 w-[280px] max-w-full text-[13px] md:text-[13px]"
+                className="h-8 w-[280px] max-w-full text-body md:text-body"
               />
             </div>
             <Button
@@ -185,17 +186,16 @@ export function AnnotationsCard({
                   )}
                 </div>
                 {canWrite && (
-                  <Button
-                    size="icon"
+                  <IconButton
                     variant="ghost"
                     className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
                     onClick={() => void deleteAnnotation(annotation)}
                     // Only the row being deleted waits, not every row.
                     disabled={deleteMut.isPending && deleteMut.variables === annotation.id}
-                    aria-label={`Delete annotation ${annotation.label}`}
+                    label={`Delete annotation ${annotation.label}`}
                   >
                     <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
-                  </Button>
+                  </IconButton>
                 )}
               </li>
             ))}

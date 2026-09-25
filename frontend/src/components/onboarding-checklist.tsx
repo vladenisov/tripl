@@ -250,7 +250,7 @@ export function OnboardingChecklist({
         style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
       >
         <Chip tone="info" size="sm">{`${completed} of ${total}`}</Chip>
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
+        <span className="min-w-0 flex-1 truncate text-body-sm font-medium">
           {`Almost set up — 1 step left: ${nextStep.title}`}
         </span>
         <button
@@ -358,7 +358,7 @@ function StepRow({ step, state }: { step: OnboardingStep; state: StepState }) {
           {/* Wrapped to two lines on a phone rather than cut to a few words:
               the hint is the only guidance the step gives (WS-36). */}
           <div
-            className="line-clamp-2 text-[12.5px] font-medium sm:truncate"
+            className="line-clamp-2 text-body-sm font-medium sm:truncate"
             style={{ color: state === 'done' ? 'var(--fg-subtle)' : 'var(--fg)' }}
           >
             {step.title}

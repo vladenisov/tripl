@@ -121,9 +121,11 @@ function renderSection(
  * own — every other field in the section carries a badge too.
  */
 function labelRow(label: string): HTMLElement {
-  const parent = screen.getByText(label).parentElement
-  if (!parent) throw new Error(`no label row around "${label}"`)
-  return parent
+  // The kit Field wraps the label (and its required mark) in its own span; the
+  // row that also holds `labelRight` — the source badge — is the div around it.
+  const row = screen.getByText(label).closest('div')
+  if (!row) throw new Error(`no label row around "${label}"`)
+  return row
 }
 
 /**

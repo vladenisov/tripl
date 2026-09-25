@@ -101,6 +101,36 @@ describe('SeasonalityHeatmap', () => {
     expect(screen.getByText('800')).toBeInTheDocument()
   })
 
+  // MON-36: this file's own formatter printed "1.0k" where every chart prints "1k".
+  it('prints compact counts the way the charts do', async () => {
+    vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
+      heatmap([
+        cell({ weekday: 0, hour: 0, count: 50 }),
+        cell({ weekday: 3, hour: 14, count: 1000 }),
+      ]),
+    )
+    renderHeatmap()
+
+    await screen.findByText('Hour × weekday heatmap')
+    expect(screen.getByText('1k')).toBeInTheDocument()
+    expect(screen.queryByText('1.0k')).toBeNull()
+  })
+
+  // MON-5: the grid is cut from UTC buckets and used to say nothing about it.
+  it('labels the grid and each slot as UTC', async () => {
+    vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
+      heatmap([
+        cell({ weekday: 0, hour: 0, count: 50 }),
+        cell({ weekday: 3, hour: 14, count: 800 }),
+      ]),
+    )
+    renderHeatmap()
+
+    await screen.findByText('Hour × weekday heatmap')
+    expect(screen.getByRole('columnheader', { name: 'UTC' })).toBeInTheDocument()
+    expect(screen.getByText(/Thu 14:00 UTC — 800 events/)).toBeInTheDocument()
+  })
+
   it('says the ramp is a rank scale, not a linear count scale (tripl-jfm3.127)', async () => {
     vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
       heatmap([
@@ -173,7 +203,7 @@ describe('SeasonalityHeatmap', () => {
     expect(flagged?.style.opacity).toBe('')
     expect(flagged?.querySelector('[data-count="2"]')).not.toBeNull()
     expect(screen.getAllByTestId('heatmap-anomaly-mark')).toHaveLength(1)
-    expect(screen.getByText(/Tue 03:00 — 2 events · 1 anomaly bucket/)).toBeInTheDocument()
+    expect(screen.getByText(/Tue 03:00 UTC — 2 events · 1 anomaly bucket/)).toBeInTheDocument()
   })
 
   it('paints the anomaly ring above the fill so a busy slot keeps it', async () => {

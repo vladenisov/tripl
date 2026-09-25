@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react"
+import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from "react"
 
 export type Theme = "dark" | "light" | "system"
 export type Accent = "teal" | "violet" | "lime" | "amber" | "rose"
@@ -16,6 +16,8 @@ type ThemeProviderProps = {
 
 type ThemeProviderState = {
   theme: Theme
+  /** What is painted: `theme`, with "system" answered from the OS. */
+  resolvedTheme: "dark" | "light"
   accent: Accent
   density: Density
   chartStyle: ChartStyle
@@ -27,6 +29,7 @@ type ThemeProviderState = {
 
 const initialState: ThemeProviderState = {
   theme: "system",
+  resolvedTheme: "light",
   accent: "teal",
   density: "compact",
   chartStyle: "line",
@@ -41,6 +44,23 @@ const ThemeProviderContext = createContext<ThemeProviderState>(initialState)
 const ACCENTS: Accent[] = ["teal", "violet", "lime", "amber", "rose"]
 const DENSITIES: Density[] = ["compact", "cozy", "comfy"]
 const CHART_STYLES: ChartStyle[] = ["line", "line-only", "bar"]
+
+const DARK_QUERY = "(prefers-color-scheme: dark)"
+
+/** Whether the OS asks for dark, kept current while it changes (SHELL-33). */
+function useSystemPrefersDark(): boolean {
+  const subscribe = useCallback((onChange: () => void) => {
+    const query = typeof window.matchMedia === "function" ? window.matchMedia(DARK_QUERY) : null
+    if (!query) return () => {}
+    query.addEventListener("change", onChange)
+    return () => query.removeEventListener("change", onChange)
+  }, [])
+  return useSyncExternalStore(
+    subscribe,
+    () => (typeof window.matchMedia === "function" ? window.matchMedia(DARK_QUERY).matches : false),
+    () => false,
+  )
+}
 
 function readLocal<T extends string>(key: string, valid: readonly T[], fallback: T): T {
   try {
@@ -73,28 +93,23 @@ export function ThemeProvider({
     readLocal<ChartStyle>(`${storageKey}-chart`, CHART_STYLES, defaultChartStyle),
   )
 
+  // "System" follows the OS for as long as it is chosen, not just at load:
+  // switching the OS to dark at sunset used to leave the app light until a
+  // reload, beside a Toaster that did follow (SHELL-33).
+  const systemDark = useSystemPrefersDark()
+  const resolvedTheme: "dark" | "light" =
+    theme === "system" ? (systemDark ? "dark" : "light") : theme
+
   useEffect(() => {
     const root = window.document.documentElement
-    const apply = (resolved: "dark" | "light") => {
-      root.classList.remove("light", "dark")
-      root.classList.add(resolved)
-    }
-
-    if (theme !== "system") {
-      apply(theme)
-      return
-    }
-
-    // "System" follows the OS for as long as it is chosen, not just at load:
-    // switching the OS to dark at sunset used to leave the app light until a
-    // reload, beside a Toaster that did follow (SHELL-33).
-    const query = window.matchMedia?.("(prefers-color-scheme: dark)")
-    apply(query?.matches ? "dark" : "light")
-    if (!query) return
-    const onChange = (event: MediaQueryListEvent) => apply(event.matches ? "dark" : "light")
-    query.addEventListener("change", onChange)
-    return () => query.removeEventListener("change", onChange)
-  }, [theme])
+    root.classList.remove("light", "dark")
+    root.classList.add(resolvedTheme)
+    // The UA paints scrollbars, date pickers, autofill and number spinners from
+    // `color-scheme`, which otherwise follows the OS rather than this choice:
+    // Light in-app on a dark OS got dark native controls on a light page, and
+    // the reverse (DS-14).
+    root.style.colorScheme = resolvedTheme
+  }, [resolvedTheme])
 
   useEffect(() => {
     const root = window.document.documentElement
@@ -110,6 +125,7 @@ export function ThemeProvider({
 
   const value: ThemeProviderState = {
     theme,
+    resolvedTheme,
     accent,
     density,
     chartStyle,

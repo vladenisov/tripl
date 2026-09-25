@@ -36,7 +36,7 @@ export function PlanFieldChangeList({
           style={{ borderColor: 'var(--border-subtle)' }}
         >
           <div className="mb-1 flex items-center justify-between gap-2">
-            <span className="mono text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
+            <span className="mono text-caption font-medium" style={{ color: 'var(--fg)' }}>
               {change.field}
             </span>
             {renderAction?.(change)}
@@ -71,7 +71,7 @@ const MEMBER_KIND_WORD: Record<PlanDiffKind, string> = {
 function PlanValueChangeRow({ item }: { item: PlanValueChange }) {
   const meta = KIND_META[item.kind]
   return (
-    <div className="flex flex-wrap items-baseline gap-1.5 text-[11.5px]">
+    <div className="flex flex-wrap items-baseline gap-1.5 text-caption">
       <span
         className="mono w-3 shrink-0 text-center font-bold"
         style={{ color: `var(--${meta.tone})` }}

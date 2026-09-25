@@ -1170,7 +1170,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
               ref={node => { tabRefs.current[value] = node }}
               onKeyDown={event => handleTabKeyDown(event, value)}
               onClick={() => selectSection(value)}
-              className="-mb-px border-b-2 px-3 py-1.5 text-[12.5px] transition-colors"
+              className="-mb-px border-b-2 px-3 py-1.5 text-body-sm transition-colors"
               style={{
                 borderColor: section === value ? 'var(--accent)' : 'transparent',
                 color: section === value ? 'var(--fg)' : 'var(--fg-subtle)',

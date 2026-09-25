@@ -83,7 +83,7 @@ function EventDetailBreadcrumb({
 }) {
   const branchLink = useBranchLinkProps()
   return (
-    <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2 text-[11.5px]">
+    <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2 text-caption">
       <span style={{ color: 'var(--fg-subtle)' }}>Plan</span>
       <span aria-hidden style={{ color: 'var(--fg-faint)' }}>/</span>
       <Link
@@ -131,7 +131,7 @@ function HeroAction({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+      className="inline-flex h-8 items-center gap-[6px] rounded-control border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
       style={{
         background: primary ? 'var(--accent)' : 'var(--surface)',
         color: primary ? 'var(--accent-fg)' : 'var(--fg)',
@@ -176,7 +176,7 @@ function EventDetailHeader({
         <div className="flex flex-wrap items-center gap-[10px]">
           {/* Never an empty top-level heading: a blank name gave the whole page
               no accessible title (tripl-wkwv.5). */}
-          <h1 className="mono m-0 min-w-0 break-all text-[19px] font-semibold tracking-[-0.01em]">
+          <h1 className="mono m-0 min-w-0 break-all text-title font-semibold tracking-[-0.01em]">
             {eventNameLabel(event.name)}
           </h1>
           <Chip tone={statusTone} size="sm">{EVENT_STATUS_LABELS[status] ?? event.status}</Chip>
@@ -191,7 +191,7 @@ function EventDetailHeader({
           <span>updated {formatRelativeTime(event.updated_at)}</span>
         </div>
         {event.description && (
-          <p className="mt-[7px] max-w-[62ch] text-[13px] leading-snug" style={{ color: 'var(--fg-muted)' }}>
+          <p className="mt-[7px] max-w-[62ch] text-body leading-snug" style={{ color: 'var(--fg-muted)' }}>
             {event.description}
           </p>
         )}
@@ -217,7 +217,7 @@ function EventActionOverflow() {
         <button
           type="button"
           aria-label="More actions"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-[7px] border transition-colors hover:bg-[var(--surface-hover)]"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)]"
           style={{ background: 'var(--surface)', color: 'var(--fg-muted)', borderColor: 'var(--border)' }}
         >
           <MoreHorizontal size={14} />
@@ -230,10 +230,10 @@ function EventActionOverflow() {
         >
           Coming soon
         </DropdownMenuLabel>
-        <DropdownMenuItem disabled className="text-[12.5px]">
+        <DropdownMenuItem disabled className="text-body-sm">
           <Eye className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Watch
         </DropdownMenuItem>
-        <DropdownMenuItem disabled className="text-[12.5px]">
+        <DropdownMenuItem disabled className="text-body-sm">
           <Code className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Implementation
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -250,14 +250,14 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: S
   const Arrow = signal.direction === 'drop' ? ArrowDown : ArrowUp
   return (
     <div
-      className="flex items-center gap-[10px] rounded-[10px] px-[14px] py-[10px]"
+      className="flex items-center gap-[10px] rounded-card px-[14px] py-[10px]"
       style={{
         background: `var(--${tone}-soft)`,
         border: `1px solid color-mix(in oklab, var(--${tone}) 35%, var(--border))`,
       }}
     >
       <Arrow size={15} style={{ color: `var(--${tone})` }} />
-      <span className="text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
+      <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
         {signal.direction === 'drop' ? 'Volume drop' : 'Volume spike'} detected
         {delta === null
           ? ` — ${NO_BASELINE_LABEL} to compare against`
@@ -309,7 +309,7 @@ function EventSignalMiniChart({
   return (
     <div
       data-testid="signal-volume-chart"
-      className="rounded-[10px] border px-[14px] pb-[6px] pt-[10px]"
+      className="rounded-card border px-[14px] pb-[6px] pt-[10px]"
       style={SURFACE_STYLE}
     >
       <div className="mb-[6px] flex items-baseline justify-between gap-3 text-[11px]">
@@ -362,7 +362,7 @@ function StatCard({
         ? 'var(--warning)'
         : 'var(--fg)'
   return (
-    <div className="rounded-[10px] border px-[14px] py-[11px]" style={SURFACE_STYLE} title={hint}>
+    <div className="rounded-card border px-[14px] py-[11px]" style={SURFACE_STYLE} title={hint}>
       <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>{label}</div>
       <div className="mono tnum mt-1 text-[19px] font-medium" style={{ color }}>{value}</div>
     </div>

@@ -1,5 +1,5 @@
 import type { ServiceSettings } from '@/types'
-import { Field, SCard, Select, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
+import { Field, SCard, NativeSelect, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
 import { NumberSettingInput, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
@@ -55,7 +55,7 @@ export function SecuritySection({
           }
           last
         >
-          <Select
+          <NativeSelect
             id="security-registration-mode"
             value={form.security.registration_mode}
             onChange={value => setField('security', 'registration_mode', value)}

@@ -145,7 +145,7 @@ export function NumberSettingInput({
         aria-describedby={error ? errorId : undefined}
       />
       {error && (
-        <p id={errorId} className="mt-1 text-[11.5px]" style={{ color: 'var(--danger)' }}>
+        <p id={errorId} className="mt-1 text-caption" style={{ color: 'var(--danger)' }}>
           {error}
         </p>
       )}
@@ -203,7 +203,7 @@ export function ResetSectionCard({
             Reset to defaults
           </Button>
           {!nothingToClear && (
-            <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
               Applies immediately — it does not wait for Save changes.
             </span>
           )}

@@ -60,7 +60,7 @@ function makeItem(overrides: Partial<MetricDefinitionListItem>): MetricDefinitio
     owner_id: null,
     order: 0,
     spark: [1, 2, 3, 4, 5],
-    // Percent-unit metrics store fractions; 0.42 renders as '42 %' (tripl-nxk2.1).
+    // Percent-unit metrics store fractions; 0.42 renders as '42%' (tripl-nxk2.1).
     latest_value: 0.42,
     latest_bucket: null,
     latest_signal: null,
@@ -292,7 +292,7 @@ describe('MetricsPage', () => {
     const row = cell.closest('[role="row"]') as HTMLElement
     expect(row).not.toBeNull()
     expect(within(row).getByText('SQL')).toBeInTheDocument()
-    expect(within(row).getByText('42 %')).toBeInTheDocument()
+    expect(within(row).getByText('42%')).toBeInTheDocument()
     expect(within(row).getByText('Active')).toBeInTheDocument()
   })
 
@@ -301,13 +301,17 @@ describe('MetricsPage', () => {
 
     renderMetrics()
 
-    const catalogTab = await screen.findByRole('tab', { name: 'Catalog' })
-    const factTablesTab = screen.getByRole('tab', { name: 'Fact tables' })
+    // Route links in a named nav, not a tablist that never behaved like one
+    // (DS-35 / MET-38).
+    const sections = await screen.findByRole('navigation', { name: 'Metrics sections' })
+    expect(screen.queryByRole('tablist')).toBeNull()
+    const catalogTab = within(sections).getByRole('link', { name: 'Catalog' })
+    const factTablesTab = within(sections).getByRole('link', { name: 'Fact tables' })
     expect(catalogTab).toHaveAttribute('href', '/p/demo/metrics')
     expect(factTablesTab).toHaveAttribute('href', '/p/demo/metrics/fact-tables')
-    // On the Catalog route, the Catalog tab is the selected one.
-    expect(catalogTab).toHaveAttribute('aria-selected', 'true')
-    expect(factTablesTab).toHaveAttribute('aria-selected', 'false')
+    // On the Catalog route, the Catalog link is the current page.
+    expect(catalogTab).toHaveAttribute('aria-current', 'page')
+    expect(factTablesTab).not.toHaveAttribute('aria-current')
   })
 
   it('shows the New metric action on the Catalog tab', async () => {
@@ -805,7 +809,7 @@ describe('MetricsPage', () => {
 
       renderMetrics()
 
-      const cell = await screen.findByText('42 %')
+      const cell = await screen.findByText('42%')
       expect(cell.getAttribute('title')).toMatch(/^Latest point:/)
     })
 
@@ -817,7 +821,7 @@ describe('MetricsPage', () => {
 
       renderMetrics()
 
-      const cell = await screen.findByText('42 %')
+      const cell = await screen.findByText('42%')
       expect(cell).toHaveAttribute('title', 'Collected hourly')
     })
   })
@@ -833,9 +837,9 @@ describe('MetricsPage', () => {
 
       // Same page chrome (H1 "Metrics", area "Observe"), Fact tables tab selected.
       expect(await screen.findByRole('heading', { name: 'Metrics' })).toBeInTheDocument()
-      expect(screen.getByRole('tab', { name: 'Fact tables' })).toHaveAttribute(
-        'aria-selected',
-        'true',
+      expect(screen.getByRole('link', { name: 'Fact tables' })).toHaveAttribute(
+        'aria-current',
+        'page',
       )
 
       const cell = await screen.findByText('Orders')

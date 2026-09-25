@@ -10,17 +10,10 @@ import {
   type MetricsGranularity,
 } from '@/lib/metrics'
 import type { AppVersionMetricSeries, EventMetricBreakdownSeries, EventMetricPoint } from '@/types'
+import { SERIES_COLORS } from '@/components/ui/chart-format'
 
-const SERIES_COLORS = [
-  'var(--chart-1)',
-  'var(--chart-2)',
-  'var(--chart-3)',
-  'var(--chart-4)',
-  'var(--chart-5)',
-  '#0f766e',
-  '#b45309',
-  '#be123c',
-] as const
+// The chart's own categorical palette (DS-23 / MON-36): this used to be a
+// second copy of the list, hard-coded hexes included.
 
 /** One slot of the series palette: a colour plus, past the eighth, a dash. */
 export interface SeriesSlot {

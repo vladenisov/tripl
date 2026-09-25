@@ -6,6 +6,7 @@ import { useActiveBranchId } from "@/hooks/useBranch"
 import type { Variable, VariableType } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Button } from "@/components/ui/button"
+import { IconButton } from "@/components/ui/icon-button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -765,9 +766,9 @@ export function VariablesTab({
                   >
                     <RotateCcw className="mr-1 h-3 w-3" aria-hidden="true" />Restore
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}>
+                  <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}>
                     <Trash2 className="h-3 w-3" aria-hidden="true" />
-                  </Button>
+                  </IconButton>
                 </div>}
               </li>
             ))}

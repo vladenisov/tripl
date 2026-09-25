@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { MiniStat } from './mini-stat'
+import { MiniStat, MiniStatStrip } from './mini-stat'
 
 // MON-42: `tone` with no delta used to render nothing, while the call sites
 // (Overview's Implemented / Needs review / Coverage, the Coverage page) read as
@@ -25,5 +25,63 @@ describe('MiniStat tone', () => {
   it('never tints a neutral figure', () => {
     render(<MiniStat label="Events" value="12" tone="neutral" />)
     expect(screen.getByText('12')).not.toHaveAttribute('data-tone')
+  })
+})
+
+// LIVE-8: the divider was a sibling element, so a wrapped row ended with one.
+describe('MiniStatStrip', () => {
+  it('gives every stat but the first its own divider', () => {
+    const { container } = render(
+      <MiniStatStrip>
+        <MiniStat label="A" value="1" />
+        {false}
+        <MiniStat label="B" value="2" />
+        {null}
+        <MiniStat label="C" value="3" />
+      </MiniStatStrip>,
+    )
+    // Three stats, two dividers; skipped children leave no stray divider.
+    expect(screen.getAllByRole('term')).toHaveLength(3)
+    expect(container.querySelectorAll('[data-slot="mini-stat-divider"]')).toHaveLength(2)
+    for (const divider of container.querySelectorAll('[data-slot="mini-stat-divider"]')) {
+      expect(divider).toHaveAttribute('aria-hidden', 'true')
+    }
+  })
+
+  it('applies the caller box styling to the outer element', () => {
+    const { container } = render(
+      <MiniStatStrip className="rounded-lg border" style={{ background: 'var(--bg-sunken)' }}>
+        <MiniStat label="A" value="1" />
+      </MiniStatStrip>,
+    )
+    expect(container.firstElementChild).toHaveStyle({ background: 'var(--bg-sunken)' })
+    expect(container.querySelector('[data-slot="mini-stat-divider"]')).toBeNull()
+  })
+
+  // A vertical clip cut the top and bottom of a filter toggle's focus ring.
+  it('clips the row-start dividers sideways only, never vertically', () => {
+    const { container } = render(
+      <MiniStatStrip>
+        <MiniStat label="A" value="1" />
+        <MiniStat label="B" value="2" />
+      </MiniStatStrip>,
+    )
+    const clip = container.querySelector<HTMLElement>('[data-slot="mini-stat-clip"]')
+    expect(clip).not.toBeNull()
+    expect(clip?.style.overflowX).toBe('clip')
+    expect(clip?.style.overflowY).toBe('visible')
+    expect(clip?.className).not.toMatch(/overflow-(hidden|clip|auto|scroll)|overflow-y-/)
+  })
+})
+
+// LIVE-23: an info icon placed beside the whole stat sat far from its caption.
+describe('MiniStat labelAddon', () => {
+  it('renders the addon inside the caption', () => {
+    render(
+      <MiniStat label="Chart signals" value="3" labelAddon={<button type="button" aria-label="About chart signals" />} />,
+    )
+    const caption = screen.getByRole('term')
+    expect(caption).toHaveTextContent('Chart signals')
+    expect(caption).toContainElement(screen.getByRole('button', { name: 'About chart signals' }))
   })
 })

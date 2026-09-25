@@ -1,3 +1,4 @@
+import { DEFAULT_ENTITY_COLOR } from '@/types'
 import { useMemo, useRef } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
@@ -8,6 +9,7 @@ import { metaFieldsApi } from '@/api/metaFields'
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { scansApi } from '@/api/scans'
+import { PageHeader } from '@/components/primitives/page-header'
 import { EmptyState } from '@/components/empty-state'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { ErrorState } from '@/components/error-state'
@@ -27,6 +29,7 @@ import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
 import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatTimestamp } from '@/lib/datetime'
+import { formatNumber } from '@/lib/format'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import {
   adaptMetricSeries,
@@ -34,7 +37,7 @@ import {
   granularityForInterval,
   metricRollupMode,
 } from '@/lib/metricAdapters'
-import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
+import { formatMetricValue, metricAxisFormatter } from '@/lib/metricFormat'
 import { aggregateMetricPoints, clampGranularityToRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveDetailScope } from '@/lib/monitoring'
 import { useCanWriteProject } from '@/lib/permissions'
@@ -178,15 +181,22 @@ export default function MonitoringDetailPage() {
   // watch must outlive it.
   const metricCollect = useMetricCollect(scopeId)
 
-  // Percent-unit catalog metrics store fractions (0.08 for 8 %): render them
-  // ×100 everywhere on this page (chart ticks, tooltip, stat card). Every
-  // other unit keeps the raw-number rendering it always had, so the formatter
-  // is only threaded through for '%' (tripl-nxk2.1).
+  // Every catalog metric renders through the shared metric formatters, in the
+  // chart ticks, the tooltip and the stat card alike: percent units store
+  // fractions (0.08 for 8 %, tripl-nxk2.1) and render ×100, currency units lead
+  // ('$1,234', not '1,234 $'), and a sub-1 value keeps two significant digits
+  // (a 0.004 s latency used to tick and tooltip as '0', DS-31 / MET-40). The
+  // axis leaves a trailing unit off, where every tick would repeat it; the
+  // tooltip spells it out. Event scopes keep the count rendering.
   const metricUnit = metricDefinition?.unit ?? null
-  const metricIsPercent = scope === 'metric' && isPercentUnit(metricUnit)
+  const isMetricScope = scope === 'metric'
   const metricValueFormatter = useMemo(
-    () => (metricIsPercent ? metricAxisFormatter(metricUnit) : undefined),
-    [metricIsPercent, metricUnit],
+    () => (isMetricScope ? metricAxisFormatter(metricUnit) : undefined),
+    [isMetricScope, metricUnit],
+  )
+  const metricTooltipFormatter = useMemo(
+    () => (isMetricScope ? (value: number) => formatMetricValue(value, metricUnit) : undefined),
+    [isMetricScope, metricUnit],
   )
   // One tooltip/aria label for every chart on this page: catalog metrics carry
   // their unit ('%', 'ms', …, falling back to 'value'); event scopes keep the
@@ -424,36 +434,46 @@ export default function MonitoringDetailPage() {
             )}
           </div>
 
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="min-w-0 break-words text-[22px] font-semibold tracking-[-0.01em]">{headerTitle}</h1>
-              {headerIdentity && (
-                <span className="mono text-[13px]" style={{ color: 'var(--fg-muted)' }} data-testid="header-identity">
-                  {headerIdentity}
-                </span>
-              )}
-              {eventType && (
-                <Badge style={{ backgroundColor: eventType.color, color: '#fff' }}>
-                  {eventType.display_name}
-                </Badge>
-              )}
-              {scope === 'project_total' && metrics?.scan_config_id && (
-                <Badge variant="outline" className="font-mono">
-                  {metrics.scan_config_id.slice(0, 8)}
-                </Badge>
-              )}
-              {latestSignal && latestSignalLabel && (
-                <Badge
-                  variant={latestSignal.state === 'recent' ? 'outline' : 'destructive'}
-                  className={latestSignalBadgeClassName}
-                >
-                  <AlertTriangle className="h-3 w-3" />
-                  {latestSignalLabel}
-                </Badge>
-              )}
-            </div>
-            <p className="text-muted-foreground">{headerDescription}</p>
-          </div>
+          <PageHeader
+            title={headerTitle}
+            titleAddon={
+              <>
+                {headerIdentity && (
+                  <span className="mono text-body" style={{ color: 'var(--fg-muted)' }} data-testid="header-identity">
+                    {headerIdentity}
+                  </span>
+                )}
+                {eventType && (
+                  // The type's colour as a dot beside neutral text: white text
+                  // on a user-picked fill was unreadable on yellow, lime or any
+                  // pastel (DS-33). Same idiom as the events list rows.
+                  <Badge variant="outline" className="gap-1.5" data-testid="event-type-badge">
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: eventType.color || DEFAULT_ENTITY_COLOR }}
+                    />
+                    {eventType.display_name}
+                  </Badge>
+                )}
+                {scope === 'project_total' && metrics?.scan_config_id && (
+                  <Badge variant="outline" className="font-mono">
+                    {metrics.scan_config_id.slice(0, 8)}
+                  </Badge>
+                )}
+                {latestSignal && latestSignalLabel && (
+                  <Badge
+                    variant={latestSignal.state === 'recent' ? 'outline' : 'destructive'}
+                    className={latestSignalBadgeClassName}
+                  >
+                    <AlertTriangle className="h-3 w-3" />
+                    {latestSignalLabel}
+                  </Badge>
+                )}
+              </>
+            }
+            description={headerDescription}
+          />
 
           <Separator />
         </>
@@ -552,17 +572,17 @@ export default function MonitoringDetailPage() {
                   <div>
                     <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
                     <p className="text-sm font-medium">
-                      {metricIsPercent
+                      {isMetricScope
                         ? formatMetricValue(latestSignal.actual_count, metricUnit)
-                        : latestSignal.actual_count.toLocaleString()}
+                        : formatNumber(latestSignal.actual_count)}
                     </p>
                   </div>
                   <div>
                     <p className="text-xs uppercase tracking-wide text-muted-foreground">Expected</p>
                     <p className="text-sm font-medium">
-                      {metricIsPercent
+                      {isMetricScope
                         ? formatMetricValue(latestSignal.expected_count, metricUnit)
-                        : // Value-aware: a non-percent metric can still carry a
+                        : // Value-aware: an event count can still carry a
                           // sub-unit baseline, which plain rounding wrote as "0".
                           formatIncidentCount(latestSignal.expected_count)}
                     </p>
@@ -624,6 +644,7 @@ export default function MonitoringDetailPage() {
                     granularity={granularity}
                     seriesLabel={metricSeriesLabel}
                     valueFormatter={metricValueFormatter}
+                    tooltipFormatter={metricTooltipFormatter}
                     // The sigma the detector scored THIS scope with, so the band
                     // and the "±Nσ" tooltip agree with the dots inside them. The
                     // metric scope serves it too (`adaptMetricSeries`, tripl-4cgl).
@@ -669,6 +690,7 @@ export default function MonitoringDetailPage() {
                 versionFilter={search.versionFilter}
                 seriesLabel={metricSeriesLabel}
                 valueFormatter={metricValueFormatter}
+                tooltipFormatter={metricTooltipFormatter}
                 onRangeDaysChange={searchActions.setRangeDays}
                 onGranularityChange={setGranularity}
                 onVersionFilterChange={searchActions.setVersionFilter}
@@ -735,6 +757,7 @@ export default function MonitoringDetailPage() {
                   selectedValues={search.breakdownValues}
                   seriesLabel={metricSeriesLabel}
                   valueFormatter={metricValueFormatter}
+                  tooltipFormatter={metricTooltipFormatter}
                   metricEditPath={metricEditPath}
                   onColumnChange={searchActions.setBreakdownColumn}
                   onSelectedValuesChange={searchActions.setBreakdownValues}

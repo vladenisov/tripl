@@ -1,3 +1,4 @@
+import { PageHeader } from '@/components/primitives/page-header'
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save } from 'lucide-react'
@@ -230,7 +231,7 @@ export default function ServiceSettingsSection({
       <div className="max-w-3xl">
         <Card>
           <CardContent className="p-5">
-            <h1 className="text-xl font-semibold">Service settings</h1>
+            <PageHeader title="Service settings" />
             <p className="mt-2 text-sm text-muted-foreground">
               Owner role is required to view or change instance-level settings.
             </p>
@@ -275,7 +276,7 @@ export default function ServiceSettingsSection({
         >
           {/* 12.5px, the kit's body-sm: at text-sm this note sat above the
               13px page description in weight. */}
-          <div className="min-w-0 flex-1 basis-64 text-[12.5px] leading-[1.5] text-muted-foreground">
+          <div className="min-w-0 flex-1 basis-64 text-body-sm leading-[1.5] text-muted-foreground">
             <p>{applyNote(section)}</p>
             {otherDirty.length > 0 && (
               <p className="mt-1" style={{ color: 'var(--warning)' }}>

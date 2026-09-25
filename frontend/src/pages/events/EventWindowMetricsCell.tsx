@@ -46,7 +46,7 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
         <span
           role="img"
           aria-label={ariaLabel}
-          className="tnum mono grid w-[106px] grid-cols-[60px_38px] items-center gap-2 text-[11.5px] font-medium hover:text-foreground"
+          className="tnum mono grid w-[106px] grid-cols-[60px_38px] items-center gap-2 text-caption font-medium hover:text-foreground"
           style={{
             color: signalTone
               ? sparkColor

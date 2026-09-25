@@ -1,3 +1,4 @@
+import { formatNumber } from '@/lib/format'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -9,7 +10,7 @@ import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Panel } from '@/components/settings/kit'
 import { Chip } from '@/components/primitives/chip'
-import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { formatRelativeTime } from '@/lib/datetime'
@@ -75,22 +76,19 @@ export function FactTablesList({ slug }: { slug?: string }) {
           compact
         />
       ) : (
-        <div
-          className={`flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3 ${
-            isEmpty ? 'opacity-60' : ''
-          }`}
+        <MiniStatStrip
+          className={`rounded-lg border px-4 py-3 ${isEmpty ? 'opacity-60' : ''}`}
           style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
         >
           <MiniStat
             label="Fact tables"
-            value={data ? (data.total ?? factTables.length).toLocaleString() : '—'}
+            value={data ? formatNumber(data.total ?? factTables.length) : '—'}
           />
-          <MiniStatDivider />
           <MiniStat
             label="Data sources"
-            value={data ? new Set(factTables.map(t => t.data_source_id).filter(Boolean)).size.toLocaleString() : '—'}
+            value={data ? formatNumber(new Set(factTables.map(t => t.data_source_id).filter(Boolean)).size) : '—'}
           />
-        </div>
+        </MiniStatStrip>
       )}
 
       {!factTablesQuery.isError &&
@@ -132,7 +130,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
              sibling headers stay one shape. */
           <Panel
             title="Fact tables"
-            subtitle={data ? `${(data.total ?? factTables.length).toLocaleString()} total` : undefined}
+            subtitle={data ? `${formatNumber(data.total ?? factTables.length)} total` : undefined}
           >
             {factTablesQuery.isLoading ? (
               <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
@@ -150,7 +148,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 px-2 text-[11.5px]"
+                      className="h-7 px-2 text-caption"
                       onClick={() => {
                         void dataSourcesQuery.refetch()
                       }}
@@ -163,7 +161,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
                   <div role="rowgroup">
                     <div
                       role="row"
-                      className={`${FACT_TABLE_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                      className={`${FACT_TABLE_GRID} border-b py-2 text-2xs font-semibold uppercase tracking-[0.05em]`}
                       style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                     >
                       <span role="columnheader">Fact table</span>
@@ -269,13 +267,13 @@ function FactTableRow({ table, slug, dataSourceName, dataSourceNamesState }: Fac
         {href ? (
           <Link
             to={href}
-            className="truncate text-[12.5px] font-medium no-underline hover:underline"
+            className="truncate text-body-sm font-medium no-underline hover:underline"
             style={{ color: 'var(--fg)' }}
           >
             {table.display_name}
           </Link>
         ) : (
-          <span className="truncate text-[12.5px] font-medium">{table.display_name}</span>
+          <span className="truncate text-body-sm font-medium">{table.display_name}</span>
         )}
         <span className="mono truncate text-[11px]" style={{ color: 'var(--fg-faint)' }}>
           {table.name}
@@ -291,7 +289,7 @@ function FactTableRow({ table, slug, dataSourceName, dataSourceNamesState }: Fac
       <span role="cell" className="mono truncate text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
         {table.timestamp_column || <span style={{ color: 'var(--fg-faint)' }}>—</span>}
       </span>
-      <span role="cell" className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+      <span role="cell" className="mono text-right text-2xs" style={{ color: 'var(--fg-faint)' }}>
         {formatRelativeTime(table.updated_at)}
       </span>
     </div>

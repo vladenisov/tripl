@@ -51,7 +51,7 @@ describe('ConceptsPage', () => {
     ]
     for (const term of keyTerms) {
       expect(
-        screen.getByRole('heading', { name: term, level: 3 }),
+        screen.getByRole('heading', { name: term, level: 4 }),
       ).toBeInTheDocument()
     }
   })
@@ -81,7 +81,7 @@ describe('ConceptsPage', () => {
   it('teaches the scan chain in the glossary, not only on the scan screens (tripl-3y7z.2)', () => {
     renderConcepts()
 
-    expect(screen.getByRole('heading', { name: 'Scans', level: 3 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Scans', level: 4 })).toBeInTheDocument()
 
     // Someone who gets a Telegram alert naming a scan comes here to find out
     // what a scan is. The definition has to reach the thing that messaged them,

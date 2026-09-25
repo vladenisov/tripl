@@ -11,10 +11,10 @@ import { buildExamplePayload, buildSpecMarkdown, specIdentity, type SpecRow } fr
 import { nameFormatBaseColumns } from '@/pages/events/utils'
 import type { Event, EventType, MetaFieldDefinition } from '@/types'
 
-const CARD = 'overflow-hidden rounded-[10px] border'
+const CARD = 'overflow-hidden rounded-card border'
 const CARD_STYLE = { background: 'var(--surface)', borderColor: 'var(--border)' } as const
-const TH = 'h-auto px-[14px] py-2 text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
-const TD = 'px-[14px] py-[9px] text-[12.5px] align-top'
+const TH = 'h-auto px-[14px] py-2 text-left text-2xs font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
+const TD = 'px-[14px] py-[9px] text-body-sm align-top'
 
 /**
  * What a developer needs to instrument an event, on the page they are sent to.
@@ -80,7 +80,7 @@ export function EventSpecCard({
   return (
     <section className={CARD} style={CARD_STYLE} aria-label="Spec" data-testid="event-spec-card">
       <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-        <span className="text-[12.5px] font-semibold">Spec</span>
+        <span className="text-body-sm font-semibold">Spec</span>
         <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
           what to send, and where it must land
         </span>
@@ -97,7 +97,7 @@ export function EventSpecCard({
 
       <div className="space-y-2 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
-          <code className="mono text-[13px] font-medium" data-testid="spec-identity">{identity}</code>
+          <code className="mono text-body font-medium" data-testid="spec-identity">{identity}</code>
           <Button
             variant="ghost"
             size="sm"
@@ -108,10 +108,10 @@ export function EventSpecCard({
             <Copy className="h-3.5 w-3.5" />
           </Button>
           {eventType && (
-            <span className="text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>{eventType.display_name}</span>
+            <span className="text-caption" style={{ color: 'var(--fg-muted)' }}>{eventType.display_name}</span>
           )}
         </div>
-        {event.title && <p className="text-[13px]">{event.title}</p>}
+        {event.title && <p className="text-body">{event.title}</p>}
         {rule && (
           <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
             Named by scan rule <span className="mono">{rule}</span>. The scan matches this event on the
@@ -119,10 +119,10 @@ export function EventSpecCard({
           </p>
         )}
         {event.description && (
-          <p className="whitespace-pre-wrap text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>{event.description}</p>
+          <p className="whitespace-pre-wrap text-body-sm" style={{ color: 'var(--fg-muted)' }}>{event.description}</p>
         )}
         {(event.tags.length > 0 || event.meta_values.length > 0) && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption" style={{ color: 'var(--fg-muted)' }}>
             {event.tags.map(tag => (
               <span key={tag.id} className="mono">#{tag.name}</span>
             ))}
@@ -176,7 +176,7 @@ export function EventSpecCard({
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="mono text-[12px]">{row.field.name}</span>
                       {(row.field.is_required || row.namesTheEvent) && (
-                        <span className="text-[10.5px]" style={{ color: 'var(--danger)' }}>required</span>
+                        <span className="text-2xs" style={{ color: 'var(--danger)' }}>required</span>
                       )}
                       {row.namesTheEvent && (
                         <span
@@ -191,16 +191,16 @@ export function EventSpecCard({
                       <div className="mt-[2px] text-[11px]" style={{ color: 'var(--fg-subtle)' }}>{row.field.description}</div>
                     )}
                   </TableCell>
-                  <TableCell className={`${TD} mono hidden text-[11.5px] md:table-cell`}>
+                  <TableCell className={`${TD} mono hidden text-caption md:table-cell`}>
                     {row.field.field_type}
                   </TableCell>
                   <TableCell
-                    className={`${TD} mono break-all text-[11.5px]`}
+                    className={`${TD} mono break-all text-caption`}
                     style={{ color: 'var(--fg-muted)' }}
                   >
                     {row.value || '—'}
                   </TableCell>
-                  <TableCell className={`${TD} text-[11.5px]`}>
+                  <TableCell className={`${TD} text-caption`}>
                     {row.contexts.length === 0 ? (
                       <span style={{ color: 'var(--fg-subtle)' }}>—</span>
                     ) : (
@@ -234,10 +234,10 @@ export function EventSpecCard({
       )}
 
       <div className="border-t px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-        <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="mb-1 text-2xs font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--fg-subtle)' }}>
           Example payload
         </div>
-        <pre className="mono overflow-x-auto rounded-md p-3 text-[11.5px]" style={{ background: 'var(--bg-sunken)' }} data-testid="spec-payload">
+        <pre className="mono overflow-x-auto rounded-md p-3 text-caption" style={{ background: 'var(--bg-sunken)' }} data-testid="spec-payload">
           {payloadJson}
         </pre>
       </div>

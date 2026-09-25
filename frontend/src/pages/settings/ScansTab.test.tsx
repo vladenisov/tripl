@@ -290,14 +290,17 @@ describe('ScansTab', () => {
       .map((el) => el.parentElement?.textContent)
     // The KPI tile: the label sits directly over the config count.
     expect(scansSurfaces).toContain('Scans1')
-    // The list panel: the title sits directly over its count subtitle, and the
-    // count agrees with its noun. This fixture has ONE scan on purpose — the
-    // state every project is in the moment it finishes the onboarding
-    // checklist's "Run a scan" step — so "1 scans" would fail here.
-    expect(scansSurfaces).toContain('Scans1 scan')
-    // Heading, tile, panel and nothing else — a fourth would make the two
-    // assertions above ambiguous again.
-    expect(scansSurfaces).toHaveLength(3)
+    // The list panel is "All scans", an h3 under the page's h2 — two same-named
+    // headings at one level gave the page no single title (DS-16). Its title
+    // sits directly over its count subtitle, and the count agrees with its
+    // noun. This fixture has ONE scan on purpose — the state every project is
+    // in the moment it finishes the onboarding checklist's "Run a scan" step —
+    // so "1 scans" would fail here.
+    const listPanel = screen.getByRole('heading', { level: 3, name: 'All scans' })
+    expect(listPanel.parentElement?.textContent).toContain('All scans1 scan')
+    // Heading and tile, and nothing else — a third would make the tile
+    // assertion above ambiguous again.
+    expect(scansSurfaces).toHaveLength(2)
     // "Monitoring" is both the KPI label and this row's mode badge.
     expect(screen.getAllByText('Monitoring')).toHaveLength(2)
     // "Rows scanned" said nothing about which rows; these are warehouse rows the

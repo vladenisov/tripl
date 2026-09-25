@@ -217,7 +217,7 @@ export function DemoProvisioningDialog({
         {isError ? (
           <div
             role="alert"
-            className="space-y-1 rounded-lg border px-3 py-2.5 text-[12.5px] leading-[1.45]"
+            className="space-y-1 rounded-lg border px-3 py-2.5 text-body-sm leading-[1.45]"
             style={{ background: 'var(--danger-soft)', borderColor: 'var(--danger)', color: 'var(--fg)' }}
           >
             <p>{errorMessage}</p>

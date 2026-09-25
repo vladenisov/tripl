@@ -22,7 +22,7 @@ import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { formatIsoDate } from '@/lib/datetime'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
-import { Field, SCard, SHeader, Select, TextInput } from '@/components/settings/kit'
+import { Field, SCard, SHeader, NativeSelect, TextInput } from '@/components/settings/kit'
 import { describeKeyCounts, isKeyInactive } from './apiKeyStatus'
 import type { ApiKey, ApiKeyScope, ApiKeyWithToken } from '@/types'
 import { canWrite } from '@/lib/permissions'
@@ -216,7 +216,7 @@ export default function ApiKeysSection() {
               />
             </Field>
             <Field label="Scope" htmlFor="key-scope">
-              <Select
+              <NativeSelect
                 id="key-scope"
                 value={scope}
                 onChange={(value) => setScope(value as ApiKeyScope)}
@@ -224,7 +224,7 @@ export default function ApiKeysSection() {
               />
             </Field>
             <Field label="Project (optional)" htmlFor="key-project">
-              <Select
+              <NativeSelect
                 id="key-project"
                 value={projectSlug}
                 onChange={setProjectSlug}
@@ -279,14 +279,14 @@ export default function ApiKeysSection() {
       )}
 
       <div
-        className="mb-5 flex gap-2.5 rounded-[10px] px-3.5 py-3"
+        className="mb-5 flex gap-2.5 rounded-card px-3.5 py-3"
         style={{
           background: 'var(--warning-soft)',
           border: '1px solid color-mix(in oklab, var(--warning) 35%, var(--border))',
         }}
       >
         <Lock className="mt-px h-[15px] w-[15px] shrink-0" style={{ color: 'var(--warning)' }} />
-        <div className="text-[12.5px] leading-[1.5]" style={{ color: 'var(--fg-muted)' }}>
+        <div className="text-body-sm leading-[1.5]" style={{ color: 'var(--fg-muted)' }}>
           Keys are shown in full only once at creation. Treat them like passwords — revoke
           immediately if exposed.
         </div>
@@ -324,7 +324,7 @@ export default function ApiKeysSection() {
             />
           </div>
         ) : keys.length === 0 ? (
-          <div className="px-[18px] py-3 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="px-[18px] py-3 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
             No API keys yet. Create one to give an agent access.
           </div>
         ) : (
@@ -358,10 +358,10 @@ export default function ApiKeysSection() {
                   <Lock className="h-3.5 w-3.5" />
                 </div>
                 <div className="col-start-2 row-start-1 min-w-0 sm:w-[180px] sm:shrink-0">
-                  <div className="truncate text-[13px] font-medium" title={k.name}>
+                  <div className="truncate text-body font-medium" title={k.name}>
                     {k.name}
                   </div>
-                  <div className="mono mt-px truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                  <div className="mono mt-px truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
                     {k.key_prefix}… · created {formatIsoDate(k.created_at)}
                   </div>
                 </div>
@@ -374,7 +374,7 @@ export default function ApiKeysSection() {
                     {k.scope}
                   </Chip>
                   <div
-                    className="min-w-0 truncate text-[11.5px] sm:flex-1"
+                    className="min-w-0 truncate text-caption sm:flex-1"
                     style={{ color: 'var(--fg-subtle)' }}
                   >
                     {k.project_id
@@ -382,7 +382,7 @@ export default function ApiKeysSection() {
                       : 'All projects'}
                   </div>
                   <div
-                    className="text-[11.5px] sm:w-[130px] sm:shrink-0 sm:text-right"
+                    className="text-caption sm:w-[130px] sm:shrink-0 sm:text-right"
                     style={{ color: 'var(--fg-faint)' }}
                   >
                     <div>
@@ -473,13 +473,13 @@ export default function ApiKeysSection() {
             </div>
             <div aria-live="polite" aria-atomic="true">
               {copyState === 'copied' && (
-                <p className="text-[11.5px]" style={{ color: 'var(--success)' }}>
+                <p className="text-caption" style={{ color: 'var(--success)' }}>
                   Copied to the clipboard.
                 </p>
               )}
             </div>
             {copyState === 'failed' && (
-              <p role="alert" className="text-[11.5px]" style={{ color: 'var(--danger)' }}>
+              <p role="alert" className="text-caption" style={{ color: 'var(--danger)' }}>
                 Couldn’t reach the clipboard. The key above is selected — press Ctrl/⌘+C to copy it.
               </p>
             )}

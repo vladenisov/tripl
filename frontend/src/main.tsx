@@ -18,6 +18,7 @@ import '@fontsource/jetbrains-mono/500.css'
 import './index.css'
 import App from './App.tsx'
 import { ErrorBoundary } from './components/error-boundary.tsx'
+import { TooltipProvider } from './components/ui/tooltip.tsx'
 import { surfaceMutationError, surfaceQueryError } from './lib/errorFeedback.ts'
 import { shouldRetryQuery } from './lib/queryRetry.ts'
 
@@ -68,7 +69,13 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
+        {/* One provider for the whole app, so `ui/tooltip` works on any page
+            instead of throwing outside the two Events screens that mounted
+            their own — which is why `title=` stood in for it (DS-12). Radix
+            tooltip already ships in the first-load chunk with the sidebar. */}
+        <TooltipProvider delayDuration={300}>
+          <RouterProvider router={router} />
+        </TooltipProvider>
       </QueryClientProvider>
     </ErrorBoundary>
   </StrictMode>,
