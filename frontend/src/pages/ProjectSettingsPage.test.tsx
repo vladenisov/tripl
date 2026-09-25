@@ -121,6 +121,7 @@ describe('ProjectSettingsPage', () => {
       sigma_threshold: 4.5,
       min_expected_count: 25,
       recent_signal_window_hours: 36,
+      anomaly_ingestion_settling_minutes: 120,
       created_at: '2026-01-01T00:00:00Z',
       updated_at: '2026-01-01T00:00:00Z',
     }

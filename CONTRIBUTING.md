@@ -264,7 +264,25 @@ pnpm dev            # Vite dev server on :5173
 pnpm test           # vitest run
 pnpm lint           # eslint . --max-warnings 0  (zero-warning policy)
 pnpm build          # tsc -b && vite build  (full type check + production build)
+pnpm check:bundle   # after a build: first-load JavaScript stays inside its budget
 ```
+
+How the test suite is set up (`vite.config.ts`, `src/test-setup.ts`):
+
+- `*.test.ts` files run in the `node` environment and `*.test.tsx` files in
+  `jsdom`. A `.ts` test that needs a DOM (a hook tested through `renderHook`)
+  starts with `// @vitest-environment jsdom`. Run one side with
+  `pnpm exec vitest run --project node` (or `--project jsdom`).
+- A test fails if it prints through `console.error` or `console.warn`: that is
+  how React reports invalid DOM nesting and updates outside `act()`, and how
+  react-query reports a query that resolved to `undefined` (usually a bare
+  `vi.fn()` mock). Fix the cause, or spy on `console` yourself when the message
+  is what the test is about. Known, tracked noise is listed in
+  `KNOWN_CONSOLE_NOISE` with the issue that removes it.
+- Storage, timers, stubbed globals and `vi.spyOn` spies are reset after every
+  test, and `window.matchMedia` answers "no match" unless a test installs its own.
+- `src/test/axe.ts` runs axe over a rendered tree; `src/test/storage.ts` makes
+  storage throw the way private mode does.
 
 The typed API client is generated from the backend's OpenAPI schema. If you
 change request/response contracts, regenerate it:

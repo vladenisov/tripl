@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { BranchContext } from '@/components/branch-context-internal'
+import { planBranchesKey } from '@/lib/queryKeys'
 import { EntityBranchBanner } from './EntityBranchBanner'
 
 vi.mock('@/api/planBranches', () => ({
@@ -29,7 +30,7 @@ function renderBanner(activeBranchId: string | null, rowBranchId: string) {
       </MemoryRouter>
     </QueryClientProvider>,
   )
-  return { setBranchId }
+  return { setBranchId, queryClient }
 }
 
 describe('EntityBranchBanner (tripl-kjhi.7)', () => {
@@ -48,15 +49,18 @@ describe('EntityBranchBanner (tripl-kjhi.7)', () => {
     const { setBranchId } = renderBanner(null, 'wnd-4770')
     const link = await screen.findByRole('link', { name: 'Switch to WND-4770' })
     expect(link).toHaveAttribute('href', '/p/demo/monitoring/event/e1?branch=wnd-4770')
-    link.click()
+    fireEvent.click(link)
     expect(setBranchId).toHaveBeenCalledWith('wnd-4770')
     expect(screen.getByTestId('entity-branch-banner').textContent).toContain('you are viewing main')
   })
 
   it('says nothing for a main row read with main active', async () => {
-    renderBanner(null, 'main-id')
-    // The branches query resolves before this settles; nothing should appear.
-    await new Promise(resolve => setTimeout(resolve, 20))
+    const { queryClient } = renderBanner(null, 'main-id')
+    // Wait for the branches query to settle, so "nothing" is the answer to the
+    // loaded list rather than to the loading state.
+    await waitFor(() =>
+      expect(queryClient.getQueryState(planBranchesKey('demo'))?.status).toBe('success'),
+    )
     expect(screen.queryByTestId('entity-branch-banner')).toBeNull()
   })
 
@@ -64,7 +68,7 @@ describe('EntityBranchBanner (tripl-kjhi.7)', () => {
     const { setBranchId } = renderBanner('wnd-4770', 'main-id')
     const link = await screen.findByRole('link', { name: 'Switch to main' })
     expect(link).toHaveAttribute('href', '/p/demo/monitoring/event/e1')
-    link.click()
+    fireEvent.click(link)
     expect(setBranchId).toHaveBeenCalledWith(null)
   })
 })

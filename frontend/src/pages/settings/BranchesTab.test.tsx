@@ -15,6 +15,7 @@ import type {
   UserListItem,
 } from '@/types'
 import { BranchesTab } from './BranchesTab'
+import { expectNoAxeViolations } from '@/test/axe'
 
 vi.mock('@/api/planBranches', () => ({
   planBranchesApi: {
@@ -178,6 +179,25 @@ function renderTab(branchId?: string) {
 beforeEach(() => {
   vi.mocked(usersApi.list).mockResolvedValue(USERS)
   vi.mocked(metaFieldsApi.list).mockResolvedValue([])
+  // Every query the tab can issue answers with a valid, empty payload unless a
+  // test says otherwise. A bare vi.fn() resolves to undefined, which react-query
+  // turns into an error — so the panels a test does not look at used to run in
+  // their error state, and a regression there could not show.
+  vi.mocked(branchSettingsApi.get).mockResolvedValue(makeSettings({}))
+  vi.mocked(planBranchesApi.get).mockImplementation(async (_slug, branchId) => ({
+    ...([MAIN, FEATURE, MERGED].find((branch) => branch.id === branchId) ??
+      makeBranch({ id: branchId, name: branchId, kind: 'working', status: 'draft' })),
+    reviewers: [],
+    approvals: [],
+  }))
+  vi.mocked(planBranchesApi.diff).mockResolvedValue({
+    entries: [],
+    summary: { added: 0, removed: 0, changed: 0 },
+    behind_base: false,
+  })
+  vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+  vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+  vi.mocked(planBranchesApi.listImplementationTickets).mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -1785,5 +1805,14 @@ describe('BranchesTab ticket link (tripl-kjhi.14)', () => {
     await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-wnd'))
     await waitFor(() => expect(metaFieldsApi.list).toHaveBeenCalledWith('demo'))
     expect(screen.queryByRole('link', { name: /WND-4770/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('BranchesTab accessibility', () => {
+  it('has no axe violations on the branch list and an open branch', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    renderTab('feat-1')
+    await screen.findAllByText('checkout-v2')
+    await expectNoAxeViolations(document.body)
   })
 })

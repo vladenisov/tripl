@@ -66,9 +66,34 @@ export default defineConfig({
     },
   },
   test: {
-    environment: 'jsdom',
     globals: true,
     setupFiles: './src/test-setup.ts',
+    // Spies made with vi.spyOn are put back before every test, so one that a
+    // failing test never restored cannot leak into the next.
+    restoreMocks: true,
+    // Pure-logic `*.test.ts` files run in node; paying for a jsdom environment
+    // they never touch used to cost more than the tests themselves. Component
+    // tests (`*.test.tsx`) run in jsdom. A `.ts` file that needs a DOM (a hook
+    // test through renderHook, say) opts in with `// @vitest-environment jsdom`
+    // on its first line.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          environment: 'node',
+          include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'jsdom',
+          environment: 'jsdom',
+          include: ['src/**/*.test.tsx'],
+        },
+      },
+    ],
     // Vitest's 5000ms default caps the whole test, including time Testing Library
     // spends inside `findBy*`/`waitFor` — so it has to stay comfortably above the
     // 5000ms `asyncUtilTimeout` set in test-setup.ts, or a slow wait dies as an

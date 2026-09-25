@@ -368,16 +368,22 @@ describe('DemoScenarioProvider — eligibility and controls', () => {
     expect(metricsCatalogApi.get).not.toHaveBeenCalled()
   })
 
-  it('does not poll live-loop artifacts while another chapter is active', async () => {
+  it('polls the live-loop scan only while its chapter is active', async () => {
+    vi.useFakeTimers()
     renderProvider(demoProject())
     fireEvent.click(screen.getByText('run'))
+
+    // Positive control: with its chapter active, the watch polls on every
+    // interval, so the negative half below can only pass for the right reason.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS * 3)
+    })
+    expect(scansApi.getJob).toHaveBeenCalled()
+
     fireEvent.click(screen.getByText('start edit-event'))
     vi.mocked(scansApi.getJob).mockClear()
-
-    // Let several poll intervals elapse: a scan watch that survived the
-    // chapter switch would have fired again inside this window.
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, POLL_MS * 3))
+      await vi.advanceTimersByTimeAsync(POLL_MS * 3)
     })
 
     expect(scansApi.getJob).not.toHaveBeenCalled()

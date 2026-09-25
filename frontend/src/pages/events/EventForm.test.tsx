@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -13,6 +13,7 @@ import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import { readScenarioState, writeScenarioState } from '@/demo/scenarioModel'
 import { chapterState } from '@/demo/scenarioTestState'
 import { EventForm } from './EventForm'
+import { expectNoAxeViolations } from '@/test/axe'
 
 vi.mock('@/api/events', () => ({
   eventsApi: {
@@ -1029,7 +1030,9 @@ describe('EventForm ticket prefill from the branch name (tripl-kjhi.14)', () => 
     release()
     // The branch has arrived and the prefill effect has had its turn.
     await waitFor(() => expect(planBranchesApi.list).toHaveBeenCalled())
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
     expect(jira).toHaveValue('')
   })
 
@@ -1299,6 +1302,8 @@ describe('EventForm successor', () => {
       ],
       total: 2,
     } as never)
+    // Picking a successor reads it by id; answer with the event picked.
+    vi.mocked(eventsApi.get).mockResolvedValue({ id: 'ev-2', name: 'checkout:done' } as never)
     renderForm(DEPRECATED)
 
     // Wait for the OPTION, not the field: the select renders the moment the
@@ -1372,5 +1377,15 @@ describe('EventForm successor', () => {
 
     expect(screen.getByLabelText('Sunset date')).toBeInTheDocument()
     expect(screen.queryByLabelText('Replaced by')).toBeNull()
+  })
+})
+
+describe('EventForm accessibility', () => {
+  it('has no axe violations on a new event and on an existing one', async () => {
+    const { unmount } = renderForm(null)
+    await expectNoAxeViolations(document.body)
+    unmount()
+    renderForm(EXISTING_EVENT)
+    await expectNoAxeViolations(document.body)
   })
 })

@@ -1,6 +1,6 @@
 import { act, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BranchContext } from '@/components/branch-context-internal'
 import { eventsApi } from '@/api/events'
 import { variablesApi } from '@/api/variables'
@@ -117,6 +117,15 @@ function renderInBranch(branchId: string | null) {
   const view = render(tree(branchId))
   return { ...view, switchBranch: (next: string | null) => view.rerender(tree(next)) }
 }
+
+// The detail panels query overrides, drifts and the event picker; a bare
+// vi.fn() resolves to undefined, which react-query reports as an error, so they
+// answer empty unless a test says otherwise.
+beforeEach(() => {
+  vi.mocked(variableOverridesApi.list).mockResolvedValue([])
+  vi.mocked(variableDriftsApi.list).mockResolvedValue({ items: [], total: 0 })
+  vi.mocked(eventsApi.list).mockResolvedValue({ items: [] as never, total: 0 })
+})
 
 afterEach(() => {
   vi.clearAllMocks()
