@@ -46,11 +46,16 @@ export function wordDiff(
   const b = tokenize(after)
   if (a.length * b.length > MAX_CELLS) return null
 
-  // lcs[i][j]: length of the longest common subsequence of a[i..] and b[j..].
-  const lcs = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1))
+  // lcs(i, j): length of the longest common subsequence of a[i..] and b[j..],
+  // kept in one flat row-major table. Row a.length and column b.length are the
+  // empty-suffix boundary, which reads as 0.
+  const width = b.length + 1
+  const table = new Uint32Array((a.length + 1) * width)
+  const lcs = (i: number, j: number): number => table[i * width + j] ?? 0
   for (let i = a.length - 1; i >= 0; i -= 1) {
     for (let j = b.length - 1; j >= 0; j -= 1) {
-      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1])
+      table[i * width + j] =
+        a[i] === b[j] ? lcs(i + 1, j + 1) + 1 : Math.max(lcs(i + 1, j), lcs(i, j + 1))
     }
   }
   // Whitespace always matches something; only shared WORDS make it readable.
@@ -59,11 +64,14 @@ export function wordDiff(
     let j = 0
     let words = 0
     while (i < a.length && j < b.length) {
-      if (a[i] === b[j]) {
-        if (a[i].trim() !== '') words += 1
+      const ai = a[i]
+      const bj = b[j]
+      if (ai === undefined || bj === undefined) break
+      if (ai === bj) {
+        if (ai.trim() !== '') words += 1
         i += 1
         j += 1
-      } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      } else if (lcs(i + 1, j) >= lcs(i, j + 1)) {
         i += 1
       } else {
         j += 1
@@ -78,20 +86,23 @@ export function wordDiff(
   let i = 0
   let j = 0
   while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      pushSegment(beforeSegments, a[i], false)
-      pushSegment(afterSegments, b[j], false)
+    const ai = a[i]
+    const bj = b[j]
+    if (ai === undefined || bj === undefined) break
+    if (ai === bj) {
+      pushSegment(beforeSegments, ai, false)
+      pushSegment(afterSegments, bj, false)
       i += 1
       j += 1
-    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
-      pushSegment(beforeSegments, a[i], true)
+    } else if (lcs(i + 1, j) >= lcs(i, j + 1)) {
+      pushSegment(beforeSegments, ai, true)
       i += 1
     } else {
-      pushSegment(afterSegments, b[j], true)
+      pushSegment(afterSegments, bj, true)
       j += 1
     }
   }
-  for (; i < a.length; i += 1) pushSegment(beforeSegments, a[i], true)
-  for (; j < b.length; j += 1) pushSegment(afterSegments, b[j], true)
+  for (const token of a.slice(i)) pushSegment(beforeSegments, token, true)
+  for (const token of b.slice(j)) pushSegment(afterSegments, token, true)
   return { before: beforeSegments, after: afterSegments }
 }

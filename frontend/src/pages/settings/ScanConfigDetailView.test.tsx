@@ -11,6 +11,7 @@ import {
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { Project, ScanConfig } from '@/types'
 import { ScanConfigDetail } from './ScanConfigDetailView'
+import { at } from '@/test/at'
 
 // CodeMirror (pulled in by the configuration tab) needs layout jsdom can't give.
 vi.mock('@uiw/react-codemirror', () => ({
@@ -24,7 +25,7 @@ vi.mock('@/hooks/useBranch', () => ({
 const SLUG = 'demo'
 const STEPS = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())
 const RUN_SCAN_INSTRUCTION = STEPS[0].instruction
-const WATCH_SCAN_INSTRUCTION = STEPS[1].instruction
+const WATCH_SCAN_INSTRUCTION = at(STEPS, 1).instruction
 
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -217,7 +218,7 @@ describe('ScanConfigDetail — coached demo scenario', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Run now/i }))
 
     await waitFor(() => expect(readScenarioState(SLUG).chapters['live-loop']?.step).toBe('live-loop/watch-scan'))
-    expect(runCalls[0].method).toBe('POST')
+    expect(at(runCalls, 0).method).toBe('POST')
     // The artifact is the job this POST returned — not any job in the feed.
     expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts).toMatchObject({
       scanConfigId: 'scan-1',
@@ -336,7 +337,7 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
 
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Sent name' } })
-    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[0])
+    fireEvent.click(at(screen.getAllByRole('button', { name: 'Save' }), 0))
     await waitFor(() => expect(saveSent).toBe(true))
     // Typed after the request left, before it answered.
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Typed during save' } })

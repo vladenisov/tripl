@@ -67,16 +67,16 @@ export function measurePinnedGeometry(
   scrollLeft: number,
 ): { pinLeft: number; pinnedRight: number } {
   const pinnedIndex = headerCells.findIndex(cell => cell.dataset.pinned === 'true')
-  if (pinnedIndex === -1) return { pinLeft: 0, pinnedRight: 0 }
+  const pinned = headerCells[pinnedIndex]
+  if (!pinned) return { pinLeft: 0, pinnedRight: 0 }
 
   let pinLeft = 0
-  for (let i = 0; i < pinnedIndex; i += 1) {
-    if (headerCells[i].classList.contains(PIN_CLASS)) pinLeft += headerCells[i].offsetWidth
+  for (const cell of headerCells.slice(0, pinnedIndex)) {
+    if (cell.classList.contains(PIN_CLASS)) pinLeft += cell.offsetWidth
   }
 
   // The cluster stops moving once it is stuck, so its right edge is measured
   // from whichever is further right: EVENT's scrolled x, or its stuck x.
-  const pinned = headerCells[pinnedIndex]
   return {
     pinLeft,
     pinnedRight: Math.max(pinLeft, pinned.offsetLeft - scrollLeft) + pinned.offsetWidth,

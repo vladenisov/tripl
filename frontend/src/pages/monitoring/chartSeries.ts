@@ -20,7 +20,7 @@ const SERIES_COLORS = [
   '#0f766e',
   '#b45309',
   '#be123c',
-]
+] as const
 
 /** One slot of the series palette: a colour plus, past the eighth, a dash. */
 export interface SeriesSlot {
@@ -34,7 +34,7 @@ export interface SeriesSlot {
  * identical line (MON-29).
  */
 export function seriesSlot(index: number): SeriesSlot {
-  const color = SERIES_COLORS[index % SERIES_COLORS.length]
+  const color = SERIES_COLORS[index % SERIES_COLORS.length] ?? SERIES_COLORS[0]
   const round = Math.floor(index / SERIES_COLORS.length)
   if (round === 0) return { color }
   return { color, dash: round === 1 ? '6 3' : '2 3' }

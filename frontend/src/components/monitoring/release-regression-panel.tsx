@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { getScopeNavigationTarget } from '@/lib/monitoring'
 import type { ReleaseComparabilityItem, ReleaseRegressionItem } from '@/types'
+import { releaseRegressionsKey } from '@/lib/queryKeys'
 
 interface ReleaseRegressionPanelProps {
   slug: string
@@ -115,7 +116,7 @@ export function ReleaseRegressionPanel({
   enabled = true,
 }: ReleaseRegressionPanelProps) {
   const query = useQuery({
-    queryKey: ['releaseRegressions', slug, scanConfigId],
+    queryKey: releaseRegressionsKey(slug, scanConfigId),
     queryFn: () => metricsApi.getReleaseRegressions(slug, scanConfigId),
     enabled: enabled && !!slug && !!scanConfigId,
   })

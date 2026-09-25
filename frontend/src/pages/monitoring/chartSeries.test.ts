@@ -8,6 +8,7 @@ import {
   selectBreakdownChartSeries,
   seriesSlot,
 } from './chartSeries'
+import { at } from '@/test/at'
 
 function pt(bucket: string, count: number): EventMetricPoint {
   return {
@@ -70,20 +71,20 @@ describe('buildVersionChartSeries', () => {
   it('keeps only the latest release under the Latest filter', () => {
     const built = buildVersionChartSeries(series, 'hour', 'latest', '2.0.0')
     expect(built.map(item => item.label)).toEqual(['2.0.0 · latest'])
-    expect(built[0].isHighlighted).toBe(true)
+    expect(at(built, 0).isHighlighted).toBe(true)
   })
 
   it('prints the newest value for a non-additive metric and averages its rollup', () => {
-    const [latest] = buildVersionChartSeries(series, 'day', 'all', '2.0.0', 'mean')
+    const latest = at(buildVersionChartSeries(series, 'day', 'all', '2.0.0', 'mean'), 0)
     expect(latest.legendValue).toBe(0.2)
     expect(latest.data).toHaveLength(1)
-    expect(latest.data[0].count).toBeCloseTo(0.15, 10)
+    expect(at(latest.data, 0).count).toBeCloseTo(0.15, 10)
   })
 
   it('prints the window total and sums for an additive series', () => {
-    const [latest] = buildVersionChartSeries(series, 'day', 'all', '2.0.0')
+    const latest = at(buildVersionChartSeries(series, 'day', 'all', '2.0.0'), 0)
     expect(latest.legendValue).toBe(0.3)
-    expect(latest.data[0].count).toBeCloseTo(0.3, 10)
+    expect(at(latest.data, 0).count).toBeCloseTo(0.3, 10)
   })
 })
 
@@ -95,7 +96,7 @@ describe('breakdown series', () => {
   )
 
   it('labels a chip with the newest value, not a sum of ratios', () => {
-    expect(entries[0].legendValue).toBe(0.3)
+    expect(at(entries, 0).legendValue).toBe(0.3)
   })
 
   it('caps the chart at eight series and reports how many it left out', () => {
@@ -107,8 +108,8 @@ describe('breakdown series', () => {
   it('draws a picked value from beyond the cap, keeping its own slot', () => {
     const { series, hiddenCount } = selectBreakdownChartSeries(entries, ['v9'], 'day', 'mean')
     expect(series.map(item => item.label)).toEqual(['v9'])
-    expect(series[0].dash).toBe(seriesSlot(9).dash)
-    expect(series[0].data[0].count).toBeCloseTo(0.2, 10)
+    expect(at(series, 0).dash).toBe(seriesSlot(9).dash)
+    expect(at(at(series, 0).data, 0).count).toBeCloseTo(0.2, 10)
     expect(hiddenCount).toBe(0)
   })
 })

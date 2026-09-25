@@ -9,6 +9,7 @@ import { authAs } from '@/test/auth'
 import { projectEventTypesKey } from '@/lib/queryKeys'
 import { EventTypesTab, FieldsEditor } from './EventTypesTab'
 import { EventTypeDetail } from './EventTypeDetailView'
+import { at } from '@/test/at'
 
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -270,7 +271,7 @@ describe('FieldsEditor fields table', () => {
       </QueryClientProvider>,
     )
 
-    fireEvent.click(screen.getAllByTitle('Delete field')[0])
+    fireEvent.click(at(screen.getAllByTitle('Delete field'), 0))
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
 
     // The WHOLE detail, not a fragment of it: tripl-24i0 chose to render the
@@ -586,7 +587,7 @@ describe('FieldsEditor field form (PLAN-36 / PLAN-38)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
 
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
-    const [, init] = fetchSpy.mock.calls[0]
+    const [, init] = at(fetchSpy.mock.calls, 0)
     expect(JSON.parse(String(init?.body))).toMatchObject({ contract_regex: '(?i)^checkout_' })
   })
 
@@ -633,7 +634,7 @@ describe('FieldsEditor field form (PLAN-36 / PLAN-38)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
 
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
-    const [, init] = fetchSpy.mock.calls[0]
+    const [, init] = at(fetchSpy.mock.calls, 0)
     expect(JSON.parse(String(init?.body))).toMatchObject({
       contract_required_max_null_rate: 0.5,
       contract_max_bad_rate: 0,

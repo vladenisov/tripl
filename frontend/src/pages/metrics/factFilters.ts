@@ -160,7 +160,7 @@ export function splitAndedFragments(sql: string): string[] {
   let quote: string | null = null
   let start = 0
   for (let i = 0; i < trimmed.length; i++) {
-    const char = trimmed[i]
+    const char = trimmed.charAt(i)
     if (quote !== null) {
       if (char === quote) {
         if (trimmed[i + 1] === quote) i++
@@ -283,7 +283,7 @@ export function filtersToPayload(
       sqlFragments.length === 0
         ? null
         : sqlFragments.length === 1
-          ? sqlFragments[0]
+          ? (sqlFragments[0] ?? null)
           : joinSqlFragments(sqlFragments.map(stripRedundantOuterParens)),
     conditions,
   }

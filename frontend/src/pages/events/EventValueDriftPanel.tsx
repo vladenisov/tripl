@@ -12,7 +12,7 @@ import {
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { Button } from '@/components/ui/button'
 import { getErrorMessage } from '@/lib/utils'
-import { variablesKey } from '@/lib/queryKeys'
+import { branchVariableDriftsKey, eventVariableDriftsKey, variablesKey } from '@/lib/queryKeys'
 
 /**
  * Value-drift review block for one event; renders nothing when clean.
@@ -26,7 +26,7 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
   const [showQuiet, setShowQuiet] = useState(false)
 
   const { data } = useQuery({
-    queryKey: ['variable-drifts', slug, branchId, 'event', eventId],
+    queryKey: eventVariableDriftsKey(slug, branchId, eventId),
     queryFn: () => variableDriftsApi.list(slug, { eventId }, branchId),
   })
   const items = data?.items ?? []
@@ -55,7 +55,7 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
       snoozedUntil?: string
     }) => variableDriftsApi.action(slug, driftId, { action, scope, snoozed_until: snoozedUntil }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['variable-drifts', slug, branchId] })
+      qc.invalidateQueries({ queryKey: branchVariableDriftsKey(slug, branchId) })
       qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
     },
   })

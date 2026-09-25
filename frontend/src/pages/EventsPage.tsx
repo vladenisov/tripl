@@ -55,6 +55,7 @@ import { useSavedViews } from './events/useSavedViews'
 import { unappliedChartFilters } from './events/utils'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { usersKey } from '@/lib/queryKeys'
 
 interface EventsPageProps {
   /** Lock the page to a single event type (by name), decoupling it from the
@@ -113,7 +114,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
   // an editor's, and each used to end in a 403 toast (EVT-9).
   const canWrite = useCanWriteProject()
   const { search: locationSearch } = useLocation()
-  const usersQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
+  const usersQuery = useQuery({ queryKey: usersKey(), queryFn: () => usersApi.list() })
   const usersById = useMemo(
     () =>
       new Map(

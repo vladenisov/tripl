@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { bulkUnsupportedReason, parseBulkDraft } from './bulkEventDraft'
+import { at } from '@/test/at'
 
 describe('parseBulkDraft', () => {
   it('names each line by the scan rule, in the order the format reads its columns', () => {
@@ -20,7 +21,7 @@ describe('parseBulkDraft', () => {
       columns: ['category', 'action', 'label'],
       nameFormat: '{category}:{action}:{label}',
     })
-    expect(commas[0].name).toBe('settings:unit_change:wind_speed')
+    expect(at(commas, 0).name).toBe('settings:unit_change:wind_speed')
 
     // A single-column format must NOT split: `{page}` names events after paths
     // that carry commas, and splitting would tear them apart.
@@ -28,7 +29,7 @@ describe('parseBulkDraft', () => {
       columns: ['page'],
       nameFormat: '{page}',
     })
-    expect(single[0].name).toBe('/buoy/2758a8b1,Tregde+A')
+    expect(at(single, 0).name).toBe('/buoy/2758a8b1,Tregde+A')
   })
 
   it('reports a line that leaves a naming column empty rather than naming it half', () => {
@@ -37,8 +38,8 @@ describe('parseBulkDraft', () => {
       nameFormat: '{category}:{action}:{label}',
     })
 
-    expect(rows[0].status).toBe('incomplete')
-    expect(rows[0].missing).toEqual(['label'])
+    expect(at(rows, 0).status).toBe('incomplete')
+    expect(at(rows, 0).missing).toEqual(['label'])
   })
 
   it('counts blank lines so the reported line number is the one on screen', () => {
@@ -78,10 +79,10 @@ describe('parseBulkDraft', () => {
 
     // The label never leaks into the identity, and the values stay the three
     // the name was built from (tripl-kjhi.3).
-    expect(rows[0].name).toBe('weather_alert:show:widget')
-    expect(rows[0].values).toEqual(['weather_alert', 'show', 'widget'])
-    expect(rows[0].title).toBe('Weather alert widget shown')
-    expect(rows[1].title).toBe('Opened, then closed')
+    expect(at(rows, 0).name).toBe('weather_alert:show:widget')
+    expect(at(rows, 0).values).toEqual(['weather_alert', 'show', 'widget'])
+    expect(at(rows, 0).title).toBe('Weather alert widget shown')
+    expect(at(rows, 1).title).toBe('Opened, then closed')
   })
 
   it('separates a title from a single identity column on a tab only', () => {
@@ -109,7 +110,7 @@ describe('parseBulkDraft', () => {
     })
 
     expect(rows.map(row => row.title)).toEqual(['', ''])
-    expect(rows[1].status).toBe('incomplete')
+    expect(at(rows, 1).status).toBe('incomplete')
   })
 })
 

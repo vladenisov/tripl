@@ -23,6 +23,7 @@ import {
   writeScenarioState,
   type ScenarioState,
 } from './scenarioModel'
+import { at } from '@/test/at'
 
 const SLUG = 'acme'
 const KEY = `tripl-demo-scenario:${SLUG}`
@@ -122,7 +123,7 @@ describe('scenario chapter browser contracts', () => {
       instruction:
         'Replace prod_monthly: type $ in Product ID, choose ${product_id}, then follow the guide to Save.',
     })
-    expect(exploreSteps[1].instruction).toContain('Home Screen View')
+    expect(at(exploreSteps, 1).instruction).toContain('Home Screen View')
   })
 })
 
@@ -239,14 +240,14 @@ describe('scenarioReducer — stepCompleted', () => {
     // set-value and save lead back into the editor the user actually opened,
     // not at the events list — a surface that cannot host their controls.
     const steps = buildChapterSteps(SLUG, 'edit-event', state)
-    expect(steps[1].to).toBe(editorPath)
-    expect(steps[2].to).toBe(editorPath)
+    expect(at(steps, 1).to).toBe(editorPath)
+    expect(at(steps, 2).to).toBe(editorPath)
   })
 
   it('falls back to the events list while no editor has been visited', () => {
     const steps = buildChapterSteps(SLUG, 'edit-event', initialScenarioState())
-    expect(steps[1].to).toBe(`/p/${SLUG}/events`)
-    expect(steps[2].to).toBe(`/p/${SLUG}/events`)
+    expect(at(steps, 1).to).toBe(`/p/${SLUG}/events`)
+    expect(at(steps, 2).to).toBe(`/p/${SLUG}/events`)
   })
 
   it('drops a notify for a step that is not the current one, so nothing skips ahead', () => {
@@ -414,10 +415,10 @@ describe('buildChapterSteps and the seeded deep links', () => {
     expect(fresh[0].to).toBe('/p/acme/scans')
 
     const run = buildChapterSteps(SLUG, 'live-loop', watching())
-    expect(run[1].to).toBe('/p/acme/scans/sc-1')
+    expect(at(run, 1).to).toBe('/p/acme/scans/sc-1')
 
     const ready = scenarioReducer(collecting(), { type: 'collectSettled', outcome: 'success' })
-    expect(buildChapterSteps(SLUG, 'live-loop', ready)[3].to).toBe('/p/acme/monitoring/metric/m-1')
+    expect(at(buildChapterSteps(SLUG, 'live-loop', ready), 3).to).toBe('/p/acme/monitoring/metric/m-1')
   })
 
   it('gives every chapter steps with titles, instructions and a destination', () => {
@@ -453,9 +454,9 @@ describe('buildChapterSteps and the seeded deep links', () => {
   it('buildChapterList carries status and the first-step link for the picker', () => {
     const list = buildChapterList(SLUG, watching())
     expect(list.map((entry) => entry.id)).toEqual([...CHAPTER_IDS])
-    expect(list[0].status).toBe('active')
-    expect(list[1].status).toBe('not_started')
-    expect(list[0].to).toBe('/p/acme/scans')
+    expect(at(list, 0).status).toBe('active')
+    expect(at(list, 1).status).toBe('not_started')
+    expect(at(list, 0).to).toBe('/p/acme/scans')
   })
 })
 
@@ -479,13 +480,13 @@ describe('stepCompletedByPath — consecutive steps never share an arrival path 
     `/p/${SLUG}/scans`,
     // Every link the chapters themselves hand out.
     ...CHAPTER_IDS.flatMap((chapterId) =>
-      buildChapterSteps(SLUG, chapterId, initialScenarioState()).map((step) => step.to.split('?')[0]),
+      buildChapterSteps(SLUG, chapterId, initialScenarioState()).map((step) => at(step.to.split('?'), 0)),
     ),
   ]
 
   const pairs = CHAPTER_IDS.flatMap((chapterId) =>
     CHAPTER_STEP_IDS[chapterId].slice(1).map((next, index) => {
-      const current = CHAPTER_STEP_IDS[chapterId][index]
+      const current = at(CHAPTER_STEP_IDS[chapterId], index)
       return [current, next] as const
     }),
   )

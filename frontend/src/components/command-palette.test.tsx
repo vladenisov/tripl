@@ -14,6 +14,7 @@ import {
   COMMAND_PALETTE_TRIGGER_ATTR,
   useCommandPalette,
 } from './command-palette-context'
+import { at } from '@/test/at'
 
 // Lets one test make the palette dialog fail the way a missing chunk does,
 // while every other test gets the real dialog.
@@ -1031,7 +1032,7 @@ describe('CommandPalette load failure', () => {
     fireEvent.click(screen.getByTestId('open-palette'))
 
     await waitFor(() => expect(toastError).toHaveBeenCalled())
-    expect(toastError.mock.calls[0][1]).toMatchObject({
+    expect(at(toastError.mock.calls, 0)[1]).toMatchObject({
       action: expect.objectContaining({ label: 'Reload' }),
     })
     // The failure stays inside the palette: the page around it is untouched.

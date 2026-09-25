@@ -11,6 +11,7 @@ import { formatTimestamp } from '@/lib/datetime'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { DistributionDriftBand, DistributionDriftPoint } from '@/types'
 import { formatPercent } from './chartSeries'
+import { distributionDriftsKey } from '@/lib/queryKeys'
 
 export type DistributionScope =
   | { scope_type: 'project_total'; scope_ref: string; scan_config_id: string }
@@ -39,7 +40,7 @@ export function DistributionTab({
   onSelectedFieldChange: (field: string) => void
 }) {
   const query = useQuery({
-    queryKey: ['distributionDrifts', slug, distributionScope, rangeDays],
+    queryKey: distributionDriftsKey(slug, distributionScope, rangeDays),
     queryFn: () => metricsApi.getDistributionDrifts(slug, {
       scope_type: distributionScope!.scope_type,
       scope_ref: distributionScope!.scope_ref,

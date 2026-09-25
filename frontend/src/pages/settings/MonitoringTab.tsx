@@ -14,6 +14,7 @@ import { useConfirm } from "@/hooks/useConfirm"
 import { SILENT_ERROR_META } from "@/lib/errorFeedback"
 import { useCanWriteProject } from "@/lib/permissions"
 import { getErrorMessage } from '@/lib/utils'
+import { anomalyScopeOverridesKey, projectAnomalySettingsKey } from '@/lib/queryKeys'
 
 // How long the "Saved" hint stays up after an autosave lands.
 const SAVED_HINT_MS = 2000
@@ -158,7 +159,7 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
   const { data, isPending, isError, error, refetch } = useQuery({
-    queryKey: ['anomalyScopeOverrides', slug],
+    queryKey: anomalyScopeOverridesKey(slug),
     queryFn: () => anomalySettingsApi.listScopeOverrides(slug),
     // Rendered as an ErrorState in the card.
     meta: SILENT_ERROR_META,
@@ -169,7 +170,7 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
     meta: SILENT_ERROR_META,
     mutationFn: (overrideId: string) => anomalySettingsApi.deleteScopeOverride(slug, overrideId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['anomalyScopeOverrides', slug] })
+      qc.invalidateQueries({ queryKey: anomalyScopeOverridesKey(slug) })
     },
   })
 
@@ -269,7 +270,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const canWrite = useCanWriteProject()
   const settingsQuery = useQuery({
-    queryKey: ['projectAnomalySettings', slug],
+    queryKey: projectAnomalySettingsKey(slug),
     queryFn: () => anomalySettingsApi.get(slug),
     // Rendered as an ErrorState below, with a retry.
     meta: SILENT_ERROR_META,
@@ -281,7 +282,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
     meta: SILENT_ERROR_META,
     mutationFn: (data: Partial<ProjectAnomalySettings>) => anomalySettingsApi.update(slug, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['projectAnomalySettings', slug] })
+      qc.invalidateQueries({ queryKey: projectAnomalySettingsKey(slug) })
     },
   })
 

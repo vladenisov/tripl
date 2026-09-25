@@ -239,11 +239,11 @@ export function OnboardingChecklist({
   // (more than one step left) keep the full card. Dismiss + localStorage
   // persistence are unchanged (fix #13).
   const isMostlyDone = completed >= total - 1
-  if (isMostlyDone && !expanded) {
-    // Here exactly one step is outstanding (mostly-done but not complete). Name
-    // it inline so the bar says *which* step is left, not just the count
-    // (tripl-7l83.12), while keeping the "1 step left" detail.
-    const nextStep = remainingSteps[0]
+  // Here exactly one step is outstanding (mostly-done but not complete). Name
+  // it inline so the bar says *which* step is left, not just the count
+  // (tripl-7l83.12), while keeping the "1 step left" detail.
+  const nextStep = remainingSteps[0]
+  if (isMostlyDone && !expanded && nextStep) {
     return (
       <div
         className="flex items-center gap-3 rounded-lg border px-4 py-2.5"

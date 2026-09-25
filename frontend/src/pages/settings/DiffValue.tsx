@@ -23,6 +23,7 @@ import {
   inlineRecord,
   isFlatRecord,
   uniformRecords,
+  type RecordRows,
 } from './diffValueFormat'
 import { wordDiff, type WordSegment } from './branches/wordDiff'
 
@@ -91,7 +92,7 @@ export function RecordTable({
   rows,
   labelledBy,
 }: {
-  rows: Record<string, unknown>[]
+  rows: RecordRows
   labelledBy?: string
 }) {
   // `is_authored` is not review signal — the backend filters a flip of it out of

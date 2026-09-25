@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { invalidateForEvent } from '@/realtime/invalidationMap'
 import { TabMetricsCard } from './TabMetricsCard'
 import { unappliedChartFilters } from './utils'
+import { at } from '@/test/at'
 
 vi.mock('@/components/ui/chart-lazy', () => ({
   MetricsChart: ({ sigmaThreshold }: { sigmaThreshold?: number }) => (
@@ -95,7 +96,7 @@ describe('TabMetricsCard', () => {
     renderCard('branch-1')
 
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
-    const url = new URL(String(fetchSpy.mock.calls[0][0]), 'http://localhost')
+    const url = new URL(String(at(fetchSpy.mock.calls, 0)[0]), 'http://localhost')
     expect(url.pathname).toContain('/api/v1/projects/demo/events-metrics')
     expect(url.searchParams.get('branch')).toBe('branch-1')
     expect(url.searchParams.get('tag')).toBe('checkout')
@@ -107,7 +108,7 @@ describe('TabMetricsCard', () => {
     renderCard(null)
 
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
-    const url = new URL(String(fetchSpy.mock.calls[0][0]), 'http://localhost')
+    const url = new URL(String(at(fetchSpy.mock.calls, 0)[0]), 'http://localhost')
     expect(url.searchParams.has('branch')).toBe(false)
   })
 

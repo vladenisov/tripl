@@ -5,6 +5,7 @@ import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components
 import { getErrorMessage } from '@/lib/utils'
 
 import { AlertDeliveryRow } from './AlertDeliveryRow'
+import { incidentDeliveriesKey } from '@/lib/queryKeys'
 
 /**
  * The deliveries of ONE incident, shown inside its card.
@@ -29,7 +30,7 @@ export function IncidentDeliveries({
   focusItemKey?: string
 }) {
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['alertDeliveries', slug, 'incident', correlationGroupId],
+    queryKey: incidentDeliveriesKey(slug, correlationGroupId),
     queryFn: () =>
       alertingApi.listDeliveries(slug, {
         correlation_group_id: correlationGroupId,

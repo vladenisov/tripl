@@ -40,6 +40,7 @@ import {
 import { describeDeletionImpact } from './deletionImpact'
 import { RuleEditorDialog } from './RuleEditorDialog'
 import { RuleReplayDialog } from './RuleReplayDialog'
+import { monitorsSummaryKey } from '@/lib/queryKeys'
 
 /** A rule carrying the destination it hangs off, as the page flattens it. */
 export interface RuleWithDestination extends AlertRule {
@@ -154,7 +155,7 @@ export function MonitorsSection({
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null)
 
   const summaryQuery = useQuery({
-    queryKey: ['monitors-summary', slug],
+    queryKey: monitorsSummaryKey(slug),
     queryFn: () => alertingApi.getMonitorsSummary(slug),
     enabled: !!slug,
     refetchInterval,
@@ -249,7 +250,7 @@ export function MonitorsSection({
     // Prefill only when there is no choice to make. With several destinations
     // the picker starts empty and Create stays disabled until one is named,
     // rather than silently routing to whichever sorted first.
-    setFormDestinationId(destinations.length === 1 ? destinations[0].id : '')
+    setFormDestinationId(destinations.length === 1 ? (destinations[0]?.id ?? '') : '')
     setRuleDialogOpen(true)
   }
 

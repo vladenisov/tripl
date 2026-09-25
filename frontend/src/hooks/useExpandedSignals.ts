@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { metricsApi } from '@/api/metrics'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { MonitoringSignal } from '@/types'
+import { expandedSignalsKey } from '@/lib/queryKeys'
 
 /**
  * The project's expanded signal list — one request, one cache entry.
@@ -26,7 +27,7 @@ export function useExpandedSignals(
   // only the backstop for a dropped stream.
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   return useQuery<MonitoringSignal[]>({
-    queryKey: ['activeSignals', slug, 'expanded'],
+    queryKey: expandedSignalsKey(slug),
     queryFn: () => metricsApi.getActiveSignals(slug!, undefined, { expanded: true }),
     enabled: !!slug && enabled,
     staleTime: 30_000,

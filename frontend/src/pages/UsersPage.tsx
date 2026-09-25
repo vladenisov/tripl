@@ -13,6 +13,7 @@ import { ROLE_OPTIONS, type Role, type UserListItem } from '@/types'
 import { formatIsoDate } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
+import { invitationsKey, usersKey } from '@/lib/queryKeys'
 
 function roleChip(role: Role) {
   return ROLE_OPTIONS.find((r) => r.value === role)?.chip ?? 'bg-muted text-muted-foreground'
@@ -48,7 +49,7 @@ function InviteMemberCard() {
   const { confirm, dialog } = useConfirm()
 
   const invitesQuery = useQuery({
-    queryKey: ['invitations'],
+    queryKey: invitationsKey(),
     queryFn: () => invitationsApi.list(),
   })
   const createMut = useMutation({
@@ -57,12 +58,12 @@ function InviteMemberCard() {
       setMinted(created)
       resetCopy()
       setEmail('')
-      qc.invalidateQueries({ queryKey: ['invitations'] })
+      qc.invalidateQueries({ queryKey: invitationsKey() })
     },
   })
   const revokeMut = useMutation({
     mutationFn: (id: string) => invitationsApi.revoke(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['invitations'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: invitationsKey() }),
   })
 
   const handleRevoke = async (inv: Invitation) => {
@@ -256,11 +257,11 @@ export default function UsersPage() {
   const { user: currentUser } = useAuth()
   const isOwner = isOwnerRole(currentUser?.role)
 
-  const listQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
+  const listQuery = useQuery({ queryKey: usersKey(), queryFn: () => usersApi.list() })
   const updateMut = useMutation({
     mutationFn: ({ userId, role }: { userId: string; role: Role }) =>
       usersApi.updateRole(userId, role),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: usersKey() }),
   })
   const users = listQuery.data ?? []
 

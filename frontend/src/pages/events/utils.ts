@@ -100,9 +100,13 @@ const exactCountFormatter = new Intl.NumberFormat('en-US')
  */
 function inferBucketMs(points: EventMetricPoint[]): number {
   let smallest = Number.POSITIVE_INFINITY
-  for (let i = 1; i < points.length; i += 1) {
-    const gap = Date.parse(points[i].bucket) - Date.parse(points[i - 1].bucket)
-    if (gap > 0 && gap < smallest) smallest = gap
+  let previous: EventMetricPoint | undefined
+  for (const point of points) {
+    if (previous) {
+      const gap = Date.parse(point.bucket) - Date.parse(previous.bucket)
+      if (gap > 0 && gap < smallest) smallest = gap
+    }
+    previous = point
   }
   return Number.isFinite(smallest) ? smallest : 0
 }
@@ -383,9 +387,9 @@ export function deriveRowSignalFromMetrics(
   const anomalyPoints = points.filter(
     point => point.is_anomaly && point.anomaly_direction !== null,
   )
-  if (!anomalyPoints.length) return null
-
   const latestAnomaly = anomalyPoints[anomalyPoints.length - 1]
+  if (!latestAnomaly) return null
+
   const latestBucket = points[points.length - 1]?.bucket ?? latestAnomaly.bucket
 
   return {
@@ -521,7 +525,7 @@ export function applyEventNameFormat(
     const direct = valuesByField[key]
     if (direct) return direct
     if (key.includes('.')) {
-      const [column, ...segments] = key.split('.')
+      const [column = '', ...segments] = key.split('.')
       const raw = valuesByField[column]
       if (raw) {
         try {
@@ -557,7 +561,12 @@ export function applyEventNameFormat(
  */
 export function nameFormatBaseColumns(fmt: string | null | undefined): Set<string> {
   if (!fmt) return new Set()
-  return new Set([...fmt.matchAll(NAME_FORMAT_TOKEN)].map(match => match[1].split('.')[0]))
+  return new Set(
+    [...fmt.matchAll(NAME_FORMAT_TOKEN)].flatMap(match => {
+      const column = match[1]?.split('.')[0]
+      return column === undefined ? [] : [column]
+    }),
+  )
 }
 
 /**

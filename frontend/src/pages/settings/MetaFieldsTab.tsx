@@ -23,6 +23,7 @@ import { META_FIELD_LINK_PLACEHOLDER, MULTI_VALUE_META_FIELD_TYPES } from "@/lib
 import { getErrorMessage } from '@/lib/utils'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { metaFieldsKey, projectMetaFieldsKey } from '@/lib/queryKeys'
 
 export function MetaFieldsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -83,7 +84,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const canEditAllowMultiple = MULTI_VALUE_META_FIELD_TYPES.has(editFieldType)
 
   const metaFieldsQuery = useQuery({
-    queryKey: ['metaFields', slug, branchId],
+    queryKey: metaFieldsKey(slug, branchId),
     queryFn: () => metaFieldsApi.list(slug, branchId),
     // Rendered in the panel below, with a retry.
     meta: SILENT_ERROR_META,
@@ -94,7 +95,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   // invalidation of the three-element key never matches it, so a fixed link
   // template kept rendering the old one there for up to a minute (PLAN-54).
   // React Query matches by prefix, so this one call refreshes both.
-  const invalidateMetaFields = () => qc.invalidateQueries({ queryKey: ['metaFields', slug] })
+  const invalidateMetaFields = () => qc.invalidateQueries({ queryKey: projectMetaFieldsKey(slug) })
 
   const createMut = useMutation({
     mutationFn: () => metaFieldsApi.create(slug, {

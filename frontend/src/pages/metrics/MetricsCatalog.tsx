@@ -67,6 +67,7 @@ import {
 } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
+import { metricsCatalogKey, metricsCatalogListKey } from '@/lib/queryKeys'
 
 // The metric name gets the widest flexible track on purpose. Its cell packs a
 // dot, a truncating name and a nowrap kind chip, so the widest chip ("Event
@@ -340,7 +341,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set())
   const search = useDebouncedValue(searchInput, 250)
 
-  const queryKey = ['metrics-catalog', slug, statusFilter, kindFilter, search] as const
+  const queryKey = metricsCatalogListKey(slug, statusFilter, kindFilter, search)
   const metricsQuery = useQuery({
     queryKey,
     queryFn: () =>
@@ -445,7 +446,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
       }),
     onSuccess: () => {
       setSelectedIds(new Set())
-      void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+      void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
     },
   })
 
@@ -471,7 +472,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
       if (context?.previous) qc.setQueryData(queryKey, context.previous)
     },
     onSettled: () => {
-      void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+      void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
     },
   })
 
@@ -964,7 +965,7 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
       return metricsCatalogApi.create(slug, payload)
     },
     onSuccess: created => {
-      void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+      void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
       toast.success('Metric duplicated as a draft.')
       navigate(`/p/${slug}/metrics/${created.id}/edit`)
     },
@@ -974,7 +975,7 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
   const statusMut = useMutation({
     mutationFn: (status: MetricStatus) => metricsCatalogApi.update(slug, metric.id, { status }),
     onSuccess: (_data, status) => {
-      void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+      void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
       toast.success(status === 'archived' ? 'Metric archived.' : 'Metric restored.')
     },
   })
@@ -983,7 +984,7 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
   // the user sees "collected" or the failure reason, not silence (tripl-4mju).
   const collectWatcher = useMetricCollectionWatcher((_metricId, status) => {
     if (status !== 'success') return
-    void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+    void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
   })
   const collectMut = useMutation({
     meta: SILENT_ERROR_META,

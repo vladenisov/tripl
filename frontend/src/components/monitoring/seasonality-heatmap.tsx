@@ -5,6 +5,7 @@ import { metricsApi } from '@/api/metrics'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import type { SeasonalityCell } from '@/types/metrics'
+import { seasonalityKey } from '@/lib/queryKeys'
 
 interface SeasonalityHeatmapProps {
   slug: string
@@ -98,7 +99,7 @@ export function SeasonalityHeatmap({
     // minutes, and a key that moved with them refetched the grid each time
     // (MON-3). The query function reads the current window on each fetch, as
     // the By version and Breakdowns tabs do.
-    queryKey: ['seasonality', slug, scanConfigId, scopeType, scopeRef, rangeDays],
+    queryKey: seasonalityKey(slug, scanConfigId, scopeType, scopeRef, rangeDays),
     queryFn: () =>
       metricsApi.getSeasonalityHeatmap(slug, scanConfigId, {
         scope_type: scopeType,

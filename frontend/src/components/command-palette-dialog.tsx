@@ -50,7 +50,12 @@ import { Chip } from '@/components/primitives/chip'
 import { Kbd } from '@/components/primitives/kbd'
 import type { AiAskResponse } from '@/api/ai'
 import type { SearchEntityType, SearchResult } from '@/types'
-import { eventTypesKey, projectsQueryOptions } from '@/lib/queryKeys'
+import {
+  commandPaletteLexicalSearchKey,
+  commandPaletteSearchKey,
+  eventTypesKey,
+  projectsQueryOptions,
+} from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
 
@@ -311,7 +316,7 @@ export default function CommandPalette({
   // answer is asked for alongside the full one and shown until the full one
   // — the same rows re-ranked, plus the semantic matches — replaces it.
   const lexicalQuery = useQuery({
-    queryKey: ['commandPaletteSearch', searchSlug, debouncedQuery, 'lexical'],
+    queryKey: commandPaletteLexicalSearchKey(searchSlug, debouncedQuery),
     // Every debounce boundary supersedes the previous key; the signal cancels
     // the superseded request instead of letting it queue on the backend.
     queryFn: ({ signal }) =>
@@ -321,7 +326,7 @@ export default function CommandPalette({
   })
   const searchQuery = useQuery({
     meta: SILENT_ERROR_META,
-    queryKey: ['commandPaletteSearch', searchSlug, debouncedQuery],
+    queryKey: commandPaletteSearchKey(searchSlug, debouncedQuery),
     queryFn: ({ signal }) =>
       searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12 }, null, signal),
     enabled: searchEnabled,

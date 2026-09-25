@@ -47,7 +47,14 @@ import type {
   DataSource,
   MonitoringSignal,
 } from '@/types'
-import { dataSourcesKey } from '@/lib/queryKeys'
+import {
+  activityKey,
+  dataSourcesKey,
+  overviewKpiSeriesKey,
+  overviewTopEventsKey,
+  overviewVolumeKey,
+  projectKey,
+} from '@/lib/queryKeys'
 
 const SIGNAL_LIMIT = 6
 const ACTIVITY_LIMIT = 8
@@ -75,7 +82,7 @@ export default function OverviewPage() {
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const projectQuery = useQuery({
-    queryKey: ['project', slug],
+    queryKey: projectKey(slug),
     queryFn: () => projectsApi.get(slug!),
     enabled: !!slug,
   })
@@ -90,19 +97,19 @@ export default function OverviewPage() {
     // refetch reads the live range, while keying on `to` would mint a fresh
     // cache entry — and drop the card back to its skeleton — every five
     // minutes. Same split as MonitoringDetailPage's metricsQuery.
-    queryKey: ['overview', 'volume', slug, VOLUME_WINDOW_DAYS],
+    queryKey: overviewVolumeKey(slug, VOLUME_WINDOW_DAYS),
     queryFn: () => metricsApi.getProjectTotalMetrics(slug!, volumeRange),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
   const topEventsQuery = useQuery({
-    queryKey: ['overview', 'top-events', slug],
+    queryKey: overviewTopEventsKey(slug),
     queryFn: () => metricsApi.getTopEvents(slug!, { windowHours: 48, limit: 6 }),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
   const kpiSeriesQuery = useQuery({
-    queryKey: ['overview', 'kpi-series', slug],
+    queryKey: overviewKpiSeriesKey(slug),
     queryFn: () => metricsApi.getOverviewKpiSeries(slug!, 14),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
@@ -113,7 +120,7 @@ export default function OverviewPage() {
   // the Anomalies page (tripl-jfm3.119).
   const signalsQuery = useExpandedSignals(slug, { enabled: projectQuery.isSuccess })
   const activityQuery = useQuery({
-    queryKey: ['activity', slug ?? 'workspace'],
+    queryKey: activityKey(slug),
     queryFn: () => activityApi.list({ slug, limit: ACTIVITY_LIMIT }),
     enabled: !!slug && projectQuery.isSuccess,
     staleTime: 30_000,

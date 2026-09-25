@@ -1,6 +1,7 @@
 import { InfiniteQueryObserver, QueryClient, type InfiniteData } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FIRST_PAGE_IN_VIEW_META, refreshEventsLists } from './eventsListCache'
+import { at } from '@/test/at'
 
 type Page = { items: string[]; total: number }
 
@@ -29,7 +30,7 @@ afterEach(() => {
 
 /** A mounted table: an active observer whose viewport answers `inView`. */
 function observe(inView: boolean) {
-  const queryFn = vi.fn(async ({ pageParam }: { pageParam: number }) => THREE_PAGES.pages[pageParam])
+  const queryFn = vi.fn(async ({ pageParam }: { pageParam: number }) => at(THREE_PAGES.pages, pageParam))
   queryClient.setQueryData(KEY, THREE_PAGES)
   const observer = new InfiniteQueryObserver(queryClient, {
     queryKey: KEY,

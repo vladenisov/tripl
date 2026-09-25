@@ -4,7 +4,12 @@ import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { metricDefinitionKey, metricsCatalogKey, monitoringSeriesKey } from '@/lib/queryKeys'
+import {
+  metricDefinitionKey,
+  metricsCatalogKey,
+  monitoringSeriesKey,
+  monitoringSeriesScopeKey,
+} from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 
 /**
@@ -66,7 +71,7 @@ export function useMetricCollect(scopeId: string): MetricCollect {
       // A fact collect refreshes every active dependent metric in the shared
       // source batch, so every dependent series and catalog row may change.
       void queryClient.invalidateQueries({
-        queryKey: ['monitoringMetrics', context.slug, 'metric'],
+        queryKey: monitoringSeriesScopeKey(context.slug, 'metric'),
       })
       void queryClient.invalidateQueries({ queryKey: metricsCatalogKey(context.slug) })
     }

@@ -27,7 +27,13 @@ import { jobRowsReadTitle } from './scans/runReport'
 import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanMode'
 import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanActivityKey, scanJobsHaveActiveWork } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
-import { projectEventTypesKey } from '@/lib/queryKeys'
+import {
+  platformPresenceKey,
+  projectEventsKey,
+  projectEventTypesKey,
+  scanJobsKey,
+  scansKey,
+} from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -45,7 +51,7 @@ function chipList(values: string[]) {
 /* ─── Per-event platform presence matrix (events × platform values, ✓/—) ─── */
 function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfigId: string }) {
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['platformPresence', slug, scanConfigId],
+    queryKey: platformPresenceKey(slug, scanConfigId),
     queryFn: () => scansApi.getPlatformPresence(slug, scanConfigId),
     // Rendered inline below, with a retry.
     meta: SILENT_ERROR_META,
@@ -171,7 +177,7 @@ export function ScanDetail({
     error: jobsErrorObj,
     refetch: refetchJobs,
   } = useQuery({
-    queryKey: ['scanJobs', slug, scanConfig.id],
+    queryKey: scanJobsKey(slug, scanConfig.id),
     queryFn: () => scansApi.listJobs(slug, scanConfig.id),
     refetchInterval: jobsRefetchInterval,
   })
@@ -186,7 +192,7 @@ export function ScanDetail({
     meta: SILENT_ERROR_META,
   })
   const invalidateRuns = () => {
-    void qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
+    void qc.invalidateQueries({ queryKey: scanJobsKey(slug, scanConfig.id) })
     // Not under this scan's prefix: the list's exact streak and 24h rows.
     void qc.invalidateQueries({ queryKey: scanActivityKey(slug) })
   }
@@ -197,8 +203,8 @@ export function ScanDetail({
     onSuccess: () => {
       setApplyGroupsMessage('Group apply queued.')
       invalidateRuns()
-      qc.invalidateQueries({ queryKey: ['scans', slug] })
-      qc.invalidateQueries({ queryKey: ['events', slug] })
+      qc.invalidateQueries({ queryKey: scansKey(slug) })
+      qc.invalidateQueries({ queryKey: projectEventsKey(slug) })
       qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
     },
   })

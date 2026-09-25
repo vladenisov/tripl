@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { EventFieldValue, EventListItem, EventType, FieldDefinition } from '@/types'
 
 import { resolveFieldValue, resolveFieldValueRow, useEventsFiltering } from './useEventsFiltering'
+import { at } from '@/test/at'
 
 // Two event types define a field called `page`. FieldDefinition is unique per
 // (event_type_id, name), so these are distinct rows with one shared name — the
@@ -191,7 +192,7 @@ describe('useEventsFiltering field value lookups', () => {
     // Page-view sorts first, so its `page` definition is the column EVERY row
     // renders under — including this search-event row, which carries a different
     // FieldDefinition id for the same field.
-    const [pageColumn] = result.current.fieldColumns
+    const pageColumn = at(result.current.fieldColumns, 0)
     expect(pageColumn).toBe(PAGE_FIELD_PV)
     expect(result.current.getFieldValueRow(ev, pageColumn)).toBe(OFF_TYPE_PAGE)
     expect(result.current.getFieldValue(ev, pageColumn)).toBe('/checkout')

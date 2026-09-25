@@ -10,6 +10,7 @@ import { eventsApi } from '@/api/events'
 import { refreshEventsLists } from '@/lib/eventsListCache'
 import type { EventStatus } from '@/lib/eventStatus'
 import type { EventListItem, EventListResponse } from '@/types'
+import { branchEventsKey } from '@/lib/queryKeys'
 
 // Both shapes coexist under the `['events', slug, ...]` prefix: the main
 // table uses `useInfiniteQuery` (InfiniteData), and in-review-count / alerting
@@ -64,7 +65,7 @@ export function permuteEvents(items: EventListItem[], eventIds: string[]): Event
     .filter((event) => indexById.has(event.id))
     .sort((left, right) => indexById.get(left.id)! - indexById.get(right.id)!)
   let pointer = 0
-  return items.map((event) => (indexById.has(event.id) ? moved[pointer++] : event))
+  return items.map((event) => (indexById.has(event.id) ? (moved[pointer++] ?? event) : event))
 }
 
 /**
@@ -138,7 +139,7 @@ export function useEventMutations({
   const qc = useQueryClient()
   // Mutations and cache patches scope to `['events', slug, branchId]` so editing
   // the active branch never touches another branch's cache.
-  const eventsKey = useMemo(() => ['events', slug, branchId] as const, [slug, branchId])
+  const eventsKey = useMemo(() => branchEventsKey(slug, branchId), [slug, branchId])
 
   const applyToEventsCaches = useCallback(
     (transform: (items: EventListItem[]) => EventListItem[]): Snapshot[] => {

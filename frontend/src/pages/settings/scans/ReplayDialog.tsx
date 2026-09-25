@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { getBucketStart, type MetricsGranularity } from '@/lib/metrics'
 import { getErrorMessage } from '@/lib/utils'
+import { scanJobsKey, scansKey } from '@/lib/queryKeys'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -117,8 +118,8 @@ export function ReplayDialog({
     },
     onSuccess: () => {
       onOpenChange(false)
-      qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
-      qc.invalidateQueries({ queryKey: ['scans', slug] })
+      qc.invalidateQueries({ queryKey: scanJobsKey(slug, scanConfig.id) })
+      qc.invalidateQueries({ queryKey: scansKey(slug) })
     },
   })
 

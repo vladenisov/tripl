@@ -102,8 +102,9 @@ export function SqlEditor({
     // Only the common single, default-database (bare) table is marked default
     // so its columns complete unqualified; a qualified `db.table` is nested and
     // not a valid defaultTable lookup.
+    const onlyTable = tables?.length === 1 ? tables[0] : undefined
     const defaultTable =
-      tables?.length === 1 && !tables[0].name.includes('.') ? tables[0].name : undefined
+      onlyTable && !onlyTable.name.includes('.') ? onlyTable.name : undefined
     return [
       sql({
         dialect: highlightDialect(dialect),

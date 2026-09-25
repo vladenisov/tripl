@@ -10,13 +10,14 @@ import { useDemoScenario } from './demoScenarioContext'
 import { ScenarioCoachMark } from './ScenarioCoachMark'
 import { buildChapterSteps, initialScenarioState, writeScenarioState } from './scenarioModel'
 import { liveLoopState } from './scenarioTestState'
+import { at } from '@/test/at'
 
 const SLUG = 'acme'
 const POLL_MS = 10
 
 const STEPS = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())
 const RUN_SCAN_INSTRUCTION = STEPS[0].instruction
-const COLLECT_INSTRUCTION = STEPS[2].instruction
+const COLLECT_INSTRUCTION = at(STEPS, 2).instruction
 
 function demoProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -430,7 +431,7 @@ describe('ScenarioCoachMark — hiding the hints', () => {
 
     expect(screen.getAllByText(RUN_SCAN_INSTRUCTION)).toHaveLength(2)
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Hide hints' })[0])
+    fireEvent.click(at(screen.getAllByRole('button', { name: 'Hide hints' }), 0))
 
     // Both marks go quiet — the mute is scenario state, not per-mark state.
     expect(screen.queryByText(RUN_SCAN_INSTRUCTION)).not.toBeInTheDocument()

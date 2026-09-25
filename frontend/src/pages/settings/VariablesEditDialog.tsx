@@ -22,7 +22,16 @@ import { formatDateTime } from '@/lib/datetime'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { eventNameLabel } from '@/lib/eventName'
 import { countOf } from '@/lib/plural'
-import { variablesKey } from '@/lib/queryKeys'
+import {
+  branchVariableValuesKey,
+  eventsPickerKey,
+  projectEventKey,
+  projectEventsKey,
+  variableDriftsKey,
+  variableOverridesKey,
+  variablesKey,
+  variableValuesKey,
+} from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import {
   collapsedDriftLabel,
@@ -137,8 +146,8 @@ export function VariablesEditDialog({
       // (variable_service), so the events table and event detail would keep
       // showing the old token until their cache aged out (PLAN-32).
       if (editVarName !== variable.name) {
-        qc.invalidateQueries({ queryKey: ['events', slug] })
-        qc.invalidateQueries({ queryKey: ['event', slug] })
+        qc.invalidateQueries({ queryKey: projectEventsKey(slug) })
+        qc.invalidateQueries({ queryKey: projectEventKey(slug) })
       }
       onClose()
     },
@@ -152,12 +161,12 @@ export function VariablesEditDialog({
       qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
       // The contexts query key is an inline literal and sits OUTSIDE the
       // variablesKey prefix, so the line above does not reach it.
-      qc.invalidateQueries({ queryKey: ['variable-values', slug, branchId] })
+      qc.invalidateQueries({ queryKey: branchVariableValuesKey(slug, branchId) })
     },
   })
 
   const { data: overrides = [] } = useQuery({
-    queryKey: ['variable-overrides', slug, branchId, variable.id],
+    queryKey: variableOverridesKey(slug, branchId, variable.id),
     queryFn: () => variableOverridesApi.list(slug, variable.id, branchId),
   })
   // Overrides are values too, and a type change strands them the same way
@@ -176,7 +185,7 @@ export function VariablesEditDialog({
   // search lands, so the select does not flicker empty on every keystroke.
   const debouncedOverrideEventSearch = useDebouncedValue(overrideEventSearch)
   const { data: eventsList } = useQuery({
-    queryKey: ['events', slug, branchId, 'override-picker', debouncedOverrideEventSearch],
+    queryKey: eventsPickerKey(slug, branchId, 'override-picker', debouncedOverrideEventSearch),
     queryFn: () => eventsApi.list(
       slug,
       { search: debouncedOverrideEventSearch || undefined, limit: OVERRIDE_EVENT_PAGE_SIZE, offset: 0 },
@@ -204,7 +213,7 @@ export function VariablesEditDialog({
     mutationFn: ({ eventId, values }: { eventId: string; values: string[] }) =>
       variableOverridesApi.upsert(slug, variable.id, eventId, values, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['variable-overrides', slug, branchId, variable.id] })
+      qc.invalidateQueries({ queryKey: variableOverridesKey(slug, branchId, variable.id) })
       setOverrideEvent(null); setOverrideValues([])
     },
   })
@@ -212,7 +221,7 @@ export function VariablesEditDialog({
   const overrideDeleteMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: (eventId: string) => variableOverridesApi.del(slug, variable.id, eventId, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['variable-overrides', slug, branchId, variable.id] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: variableOverridesKey(slug, branchId, variable.id) }),
   })
 
   // An override can hold many hand-curated values and has no undo, and the
@@ -228,7 +237,7 @@ export function VariablesEditDialog({
   }
 
   const { data: driftList } = useQuery({
-    queryKey: ['variable-drifts', slug, branchId, variable.id],
+    queryKey: variableDriftsKey(slug, branchId, variable.id),
     queryFn: () => variableDriftsApi.list(slug, { variableId: variable.id }, branchId),
   })
   const driftItems = driftList?.items ?? []
@@ -264,9 +273,9 @@ export function VariablesEditDialog({
       snoozedUntil?: string
     }) => variableDriftsApi.action(slug, driftId, { action, scope, snoozed_until: snoozedUntil }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['variable-drifts', slug, branchId, variable.id] })
+      qc.invalidateQueries({ queryKey: variableDriftsKey(slug, branchId, variable.id) })
       qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
-      qc.invalidateQueries({ queryKey: ['variable-overrides', slug, branchId, variable.id] })
+      qc.invalidateQueries({ queryKey: variableOverridesKey(slug, branchId, variable.id) })
       // Any drift action is reviewing the drift — inert outside the demo's
       // variables chapter (the reducer drops every other step).
       notifyStepCompleted('variables/see-drift')
@@ -303,7 +312,7 @@ export function VariablesEditDialog({
   // Per-event contexts are fetched for the ONE variable being edited, never for
   // the list — the dialog is the only place that needs the full breakdown.
   const { data: contexts = [] } = useQuery({
-    queryKey: ['variable-values', slug, branchId, variable.id],
+    queryKey: variableValuesKey(slug, branchId, variable.id),
     queryFn: () => variablesApi.values(slug, variable.id, branchId),
   })
   // The warehouse paths the scan actually ANSWERED on, distinct and in

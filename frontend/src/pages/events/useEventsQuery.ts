@@ -7,6 +7,7 @@ import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue
 import { FIRST_PAGE_IN_VIEW_META } from '@/lib/eventsListCache'
 import { EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import type { EventListItem, EventType } from '@/types'
+import { eventsListKey } from '@/lib/queryKeys'
 
 const SPECIAL_TABS = new Set(['all', 'review', 'archived'])
 const EVENTS_PAGE_SIZE = 200
@@ -354,10 +355,7 @@ export function useEventsQuery({
 
   const eventsQuery = useInfiniteQuery({
     meta: listMeta,
-    queryKey: [
-      'events',
-      slug,
-      branchId,
+    queryKey: eventsListKey(slug, branchId, {
       filterEtId,
       debouncedSearch,
       queryStatuses,
@@ -366,7 +364,7 @@ export function useEventsQuery({
       filterReviewed,
       filterOpenQuestions,
       sort,
-    ],
+    }),
     queryFn: ({ pageParam }) =>
       eventsApi.list(slug!, {
         ...serverFilters,
@@ -384,10 +382,11 @@ export function useEventsQuery({
 
   const eventsData = useMemo(() => {
     const pages = eventsQuery.data?.pages
-    if (!pages || pages.length === 0) return undefined
+    const firstPage = pages?.[0]
+    if (!pages || !firstPage) return undefined
     return {
       items: pages.flatMap((page) => page.items),
-      total: pages[0].total,
+      total: firstPage.total,
     }
   }, [eventsQuery.data])
 

@@ -231,9 +231,11 @@ export function useEventsTableVirtualization({
   const onScreen = virtualItems.filter(
     item => item.end > scrollOffset && item.start < scrollOffset + viewportHeight,
   )
+  const firstOnScreen = onScreen[0]
+  const lastOnScreen = onScreen[onScreen.length - 1]
   const visibleRange =
-    virtualize && onScreen.length > 0
-      ? { first: onScreen[0].index, last: onScreen[onScreen.length - 1].index }
+    virtualize && firstOnScreen && lastOnScreen
+      ? { first: firstOnScreen.index, last: lastOnScreen.index }
       : null
 
   return {

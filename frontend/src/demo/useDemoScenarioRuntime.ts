@@ -58,6 +58,11 @@ import {
   type ScenarioEvent,
   type ScenarioState,
 } from './scenarioModel'
+import {
+  demoScenarioCollectWatchKey,
+  demoScenarioScanWatchKey,
+  scanJobsKey,
+} from '@/lib/queryKeys'
 
 /** How often to re-check the artifact the user is waiting on. */
 const DEFAULT_POLL_INTERVAL_MS = 3000
@@ -157,7 +162,7 @@ export function useDemoScenarioRuntime(
   // Watch the job the user's own run created — by id, so the tick's own jobs
   // (and any job some other tab started) are invisible to the scenario.
   useQuery({
-    queryKey: ['demo-scenario-scan-watch', slug, scanTarget?.scanJobId],
+    queryKey: demoScenarioScanWatchKey(slug, scanTarget?.scanJobId),
     enabled: Boolean(slug && scanTarget),
     meta: SILENT_ERROR_META,
     refetchInterval: pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
@@ -174,7 +179,7 @@ export function useDemoScenarioRuntime(
         const terminal =
           job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
         if (terminal) {
-          const listKey = ['scanJobs', slug, scanTarget.scanConfigId] as const
+          const listKey = scanJobsKey(slug, scanTarget.scanConfigId)
           queryClient.setQueryData<ScanJob[]>(listKey, current => syncWatchedJob(current, job))
           // The Scans list caches a capped history under the same prefix
           // (`[...listKey, { limit }]`); its Recent runs row is the one the
@@ -209,12 +214,7 @@ export function useDemoScenarioRuntime(
   // the definition's `last_collection_status`, and the worker settles it. So the
   // definition is the run status.
   useQuery({
-    queryKey: [
-      'demo-scenario-collect-watch',
-      slug,
-      metricTarget?.metricId,
-      metricTarget?.startedAt,
-    ],
+    queryKey: demoScenarioCollectWatchKey(slug, metricTarget?.metricId, metricTarget?.startedAt),
     enabled: Boolean(slug && metricTarget),
     meta: SILENT_ERROR_META,
     refetchInterval: pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,

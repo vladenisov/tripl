@@ -25,6 +25,7 @@ import {
   makeFilterUid,
   type RuleFilterDraft,
 } from "./constants"
+import { eventKey, eventsPickerKey } from "@/lib/queryKeys"
 
 type PickerOption = { value: string; label: string }
 
@@ -122,7 +123,7 @@ function useEventOptions({
   const debouncedSearch = useDebouncedValue(search)
 
   const listQuery = useQuery({
-    queryKey: ['events', slug, branchId, 'alert-filter', debouncedSearch],
+    queryKey: eventsPickerKey(slug, branchId, 'alert-filter', debouncedSearch),
     queryFn: () =>
       eventsApi.list(
         slug,
@@ -135,7 +136,7 @@ function useEventOptions({
 
   const selectedLabels = useQueries({
     queries: selectedValues.map(eventId => ({
-      queryKey: ['event', slug, branchId, eventId],
+      queryKey: eventKey(slug, branchId, eventId),
       queryFn: () => eventsApi.get(slug, eventId, branchId),
       staleTime: 60_000,
     })),
@@ -347,11 +348,9 @@ function FilterValuePicker({
   hiddenCount: number
 }) {
   const triggerLabel = (() => {
-    if (selectedValues.length === 0) return 'Select value'
-    if (single) {
-      const value = selectedValues[0]
-      return labelByValue.get(value) ?? value
-    }
+    const [value] = selectedValues
+    if (value === undefined) return 'Select value'
+    if (single) return labelByValue.get(value) ?? value
     return `${selectedValues.length} selected`
   })()
 

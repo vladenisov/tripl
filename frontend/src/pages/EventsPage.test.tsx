@@ -20,6 +20,7 @@ vi.mock('sonner', () => ({
 }))
 
 import { toast } from 'sonner'
+import { at } from '@/test/at'
 
 /**
  * Assert an accessible control is absent — searching the whole DOM, not just the
@@ -797,7 +798,7 @@ describe('EventsPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'New Event' }))
     expect(await screen.findByRole('heading', { name: 'New event' })).toBeInTheDocument()
 
-    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'type-1' } })
+    fireEvent.change(at(screen.getAllByRole('combobox'), 0), { target: { value: 'type-1' } })
     fireEvent.change(screen.getByPlaceholderText('e.g. checkout:completed'), {
       target: { value: 'Homepage View' },
     })
@@ -1250,7 +1251,7 @@ describe('EventsPage current view', () => {
 
     // A newer selection, made before Undo, is the operator's; Undo keeps it.
     fireEvent.click(screen.getByLabelText('Select home_view'))
-    const [, options] = vi.mocked(toast.success).mock.calls[0]
+    const [, options] = at(vi.mocked(toast.success).mock.calls, 0)
     const action = (options as unknown as { action: { onClick: () => void } }).action
     action.onClick()
 

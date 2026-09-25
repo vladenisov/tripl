@@ -125,9 +125,10 @@ export function VariableInput({
       e.preventDefault()
       setHighlightIdx(i => Math.max(i - 1, 0))
     } else if (e.key === 'Enter' || e.key === 'Tab') {
-      if (filtered.length > 0) {
+      const choice = filtered[highlightIdx]
+      if (choice) {
         e.preventDefault()
-        insert(filtered[highlightIdx].name)
+        insert(choice.name)
       }
     } else if (e.key === 'Escape') {
       setShowMenu(false)

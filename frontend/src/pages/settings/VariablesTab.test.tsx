@@ -11,6 +11,7 @@ import { variableOverridesApi } from '@/api/variableOverrides'
 import { formatDateTime } from '@/lib/datetime'
 import type { Variable, VariableValueContext } from '@/types'
 import { VariablesTab } from './VariablesTab'
+import { at } from '@/test/at'
 
 vi.mock('@/api/variables', () => ({
   variablesApi: {
@@ -656,7 +657,7 @@ describe('VariablesTab', () => {
       within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Change type' }),
     )
     await waitFor(() => expect(variablesApi.bulkUpdate).toHaveBeenCalled())
-    const [, payload] = vi.mocked(variablesApi.bulkUpdate).mock.calls[0]
+    const [, payload] = at(vi.mocked(variablesApi.bulkUpdate).mock.calls, 0)
     expect(payload.variable_ids).toHaveLength(60)
     expect(payload.variable_ids).toContain('var-59')
   })

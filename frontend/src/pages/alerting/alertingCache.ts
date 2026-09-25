@@ -1,4 +1,11 @@
 import type { QueryClient } from '@tanstack/react-query'
+import {
+  alertDeliveriesAnyKey,
+  alertDeliveriesKey,
+  alertDestinationsKey,
+  alertInboxKey,
+  monitorsSummaryKey,
+} from '@/lib/queryKeys'
 
 /**
  * Refetch every alerting view a destination/rule/delivery write can change.
@@ -29,9 +36,9 @@ import type { QueryClient } from '@tanstack/react-query'
  * be missing the other four.
  */
 export function invalidateAlertingConfig(qc: QueryClient, slug: string): void {
-  qc.invalidateQueries({ queryKey: ['alertDestinations', slug] })
-  qc.invalidateQueries({ queryKey: ['alertInbox', slug] })
-  qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
-  qc.invalidateQueries({ queryKey: ['alertDeliveriesAny', slug] })
-  qc.invalidateQueries({ queryKey: ['monitors-summary', slug] })
+  qc.invalidateQueries({ queryKey: alertDestinationsKey(slug) })
+  qc.invalidateQueries({ queryKey: alertInboxKey(slug) })
+  qc.invalidateQueries({ queryKey: alertDeliveriesKey(slug) })
+  qc.invalidateQueries({ queryKey: alertDeliveriesAnyKey(slug) })
+  qc.invalidateQueries({ queryKey: monitorsSummaryKey(slug) })
 }

@@ -14,8 +14,17 @@
  * - three spellings of the expanded signals list (tripl-jfm3.119).
  *
  * Importing the key instead of retyping it makes a fourth impossible: a typo is
- * a compile error rather than a silent second cache. Add a family here when it
- * is read in more than one file.
+ * a compile error rather than a silent second cache. Every key lives here now
+ * (SHELL-50) — ESLint rejects an array literal as a `queryKey` anywhere else —
+ * grouped by domain below.
+ *
+ * Within a family the narrower keys are BUILT from the wider ones
+ * (`[...projectScanJobsKey(slug), scanConfigId]`), never retyped: React Query
+ * matches an invalidation by prefix, so a narrower key that stopped extending
+ * its prefix would silently stop being refreshed. A prefix gets its own builder
+ * rather than an optional trailing argument: `key(slug)` building
+ * `[family, slug, undefined]` is a three-element filter that matches no
+ * branch-scoped cache (see {@link projectVariablesKey}).
  */
 
 import { queryOptions } from '@tanstack/react-query'
@@ -90,8 +99,20 @@ export const projectEventTypesKey = (slug: string | undefined) => ['eventTypes',
 export const eventTypesKey = (slug: string | undefined, branchId?: string | null) =>
   [...projectEventTypesKey(slug), branchId] as const
 
+/** Every metrics-catalog cache in every project. */
+export const metricsCatalogRootKey = () => ['metrics-catalog'] as const
+
 /** Every metrics-catalog list cache for a project (filters extend the key). */
-export const metricsCatalogKey = (slug: string | undefined) => ['metrics-catalog', slug] as const
+export const metricsCatalogKey = (slug: string | undefined) =>
+  [...metricsCatalogRootKey(), slug] as const
+
+/** One filtered page of the metrics catalog. */
+export const metricsCatalogListKey = (
+  slug: string | undefined,
+  status: string,
+  kind: string,
+  search: string,
+) => [...metricsCatalogKey(slug), status, kind, search] as const
 
 /** One catalog metric's definition — or, without `metricId`, all of them. */
 export const metricDefinitionKey = (slug: string | undefined, metricId?: string) =>
@@ -103,21 +124,66 @@ export const metricDefinitionKey = (slug: string | undefined, metricId?: string)
 export const metricGeneratedSqlKey = (slug: string | undefined) =>
   ['metric-generated-sql', slug] as const
 
+/** The generated batch SQL one metric's card shows. */
+export const metricGeneratedSqlForMetricKey = (slug: string | undefined, metricId: string) =>
+  [...metricGeneratedSqlKey(slug), metricId] as const
+
 /**
  * The drilldown caches MonitoringDetailPage fills for one entity, by scope
  * (`event`, `event_type`, `project_total`, `metric`). The page extends each with
  * its range and filters; these prefixes are what a save, a collect or the
  * realtime layer invalidates.
  */
+export const monitoringSeriesRootKey = () => ['monitoringMetrics'] as const
+export const projectMonitoringSeriesKey = (slug: string | undefined) =>
+  [...monitoringSeriesRootKey(), slug] as const
+/** Every series of one scope — a fact collect refreshes every dependent metric. */
+export const monitoringSeriesScopeKey = (slug: string | undefined, scope: string) =>
+  [...projectMonitoringSeriesKey(slug), scope] as const
 export const monitoringSeriesKey = (slug: string | undefined, scope: string, scopeId: string) =>
-  ['monitoringMetrics', slug, scope, scopeId] as const
+  [...monitoringSeriesScopeKey(slug, scope), scopeId] as const
+export const monitoringSeriesRangeKey = (
+  slug: string | undefined,
+  scope: string,
+  scopeId: string,
+  rangeDays: number,
+) => [...monitoringSeriesKey(slug, scope, scopeId), rangeDays] as const
+
+export const projectMonitoringBreakdownsKey = (slug: string | undefined) =>
+  ['eventMetricBreakdowns', slug] as const
 export const monitoringBreakdownsKey = (slug: string | undefined, scope: string, scopeId: string) =>
-  ['eventMetricBreakdowns', slug, scope, scopeId] as const
+  [...projectMonitoringBreakdownsKey(slug), scope, scopeId] as const
+export const monitoringBreakdownsColumnKey = (
+  slug: string | undefined,
+  scope: string,
+  scopeId: string,
+  column: string,
+  rangeDays: number,
+) => [...monitoringBreakdownsKey(slug, scope, scopeId), column, rangeDays] as const
+
+export const projectAppVersionSeriesKey = (slug: string | undefined) =>
+  ['appVersionSeries', slug] as const
 export const appVersionSeriesKey = (slug: string | undefined, scope: string, scopeId: string) =>
-  ['appVersionSeries', slug, scope, scopeId] as const
+  [...projectAppVersionSeriesKey(slug), scope, scopeId] as const
+export const appVersionSeriesRangeKey = (
+  slug: string | undefined,
+  scope: string,
+  scopeId: string,
+  scanConfigId: string | null | undefined,
+  rangeDays: number,
+) => [...appVersionSeriesKey(slug, scope, scopeId), scanConfigId, rangeDays] as const
+
 /** Chart annotations shown on one entity's drilldown. */
+export const projectChartAnnotationsKey = (slug: string | undefined) =>
+  ['chartAnnotations', slug] as const
 export const chartAnnotationsKey = (slug: string | undefined, scope: string, scopeId: string) =>
-  ['chartAnnotations', slug, scope, scopeId] as const
+  [...projectChartAnnotationsKey(slug), scope, scopeId] as const
+export const chartAnnotationsRangeKey = (
+  slug: string | undefined,
+  scope: string,
+  scopeId: string,
+  rangeDays: number,
+) => [...chartAnnotationsKey(slug, scope, scopeId), rangeDays] as const
 
 /**
  * Prefixes of every drilldown cache one catalog metric fills: its series, its
@@ -165,8 +231,11 @@ export const projectsQueryOptions = () =>
  */
 export const eventsMetricsKey = (slug: string | undefined) => ['eventsMetrics', slug] as const
 
+/** Every single-project cache, whichever project it holds. */
+export const projectRootKey = () => ['project'] as const
+
 /** One project — `GET /projects/{slug}`. */
-export const projectKey = (slug: string | undefined) => ['project', slug] as const
+export const projectKey = (slug: string | undefined) => [...projectRootKey(), slug] as const
 
 /** The one definition of the single-project query; spread it to add `enabled`. */
 export const projectQueryOptions = (slug: string | undefined) =>
@@ -174,6 +243,10 @@ export const projectQueryOptions = (slug: string | undefined) =>
     queryKey: projectKey(slug),
     queryFn: ({ signal }) => projectsApi.get(slug as string, signal),
   })
+
+// ---------------------------------------------------------------------------
+// Alerting
+// ---------------------------------------------------------------------------
 
 /**
  * The alert inbox caches for a project: the grouped inbox list, one group's
@@ -184,3 +257,439 @@ export const alertInboxKey = (slug: string | undefined) => ['alertInbox', slug] 
 export const alertInboxGroupKey = (slug: string | undefined) => ['alertInboxGroup', slug] as const
 export const alertDeliveriesAnyKey = (slug: string | undefined) =>
   ['alertDeliveriesAny', slug] as const
+
+/** One incident group, as the deep-linked (pinned) copy caches it. */
+export const alertInboxGroupItemKey = (
+  slug: string | undefined,
+  correlationGroupId: string | undefined,
+) =>
+  [...alertInboxGroupKey(slug), correlationGroupId] as const
+
+/** One page of the grouped inbox. `request` is what the server is asked, so two
+ * filter states that ask the same question share one cache entry. */
+export const alertInboxListKey = (slug: string | undefined, status: string, request: unknown) =>
+  [...alertInboxKey(slug), status, request] as const
+
+/** Every delivery-log cache for a project. */
+export const alertDeliveriesKey = (slug: string | undefined) => ['alertDeliveries', slug] as const
+
+/** One filtered page of the delivery log. */
+export const alertDeliveriesPageKey = (slug: string | undefined, filters: unknown, offset: number) =>
+  [...alertDeliveriesKey(slug), filters, offset] as const
+
+/** The deliveries one incident sent. */
+export const incidentDeliveriesKey = (slug: string | undefined, correlationGroupId: string) =>
+  [...alertDeliveriesKey(slug), 'incident', correlationGroupId] as const
+
+/** One delivery, frozen payload included. */
+export const alertDeliveryKey = (slug: string | undefined, deliveryId: string | null | undefined) =>
+  ['alertDelivery', slug, deliveryId] as const
+
+export const alertDestinationsKey = (slug: string | undefined) =>
+  ['alertDestinations', slug] as const
+
+export const monitorsSummaryKey = (slug: string | undefined) => ['monitors-summary', slug] as const
+
+/** One monitor, and its history. */
+export const projectMonitorKey = (slug: string | undefined) => ['monitor', slug] as const
+export const monitorDetailKey = (slug: string | undefined, monitorId: string | undefined) =>
+  [...projectMonitorKey(slug), monitorId] as const
+export const projectMonitorHistoryKey = (slug: string | undefined) =>
+  ['monitor-history', slug] as const
+export const monitorHistoryKey = (slug: string | undefined, monitorId: string | undefined) =>
+  [...projectMonitorHistoryKey(slug), monitorId] as const
+
+/** The top bar's bell. */
+export const topbarNotificationsKey = (slug: string | null | undefined) =>
+  ['topbarNotifications', slug] as const
+export const topbarDeliveriesKey = (slug: string | null | undefined) =>
+  [...topbarNotificationsKey(slug), 'deliveries'] as const
+
+// ---------------------------------------------------------------------------
+// Session, workspace and instance
+// ---------------------------------------------------------------------------
+
+/** Whether the instance still needs its first owner — `GET /auth/status`. */
+export const authStatusKey = () => ['auth', 'status'] as const
+
+export const usersKey = () => ['users'] as const
+export const invitationsKey = () => ['invitations'] as const
+export const invitationPreviewKey = (token: string | undefined) =>
+  ['invitationPreview', token] as const
+export const apiKeysKey = () => ['api-keys'] as const
+export const serviceSettingsKey = () => ['serviceSettings'] as const
+
+/** AI availability. The root is what a settings write invalidates, so every
+ * project's copy refreshes. */
+export const aiStatusRootKey = () => ['aiStatus'] as const
+export const aiStatusKey = (slug: string | null | undefined) => [...aiStatusRootKey(), slug] as const
+
+/** The activity rail: one project's feed, or the workspace feed without one. */
+export const activityKey = (slug: string | undefined) =>
+  ['activity', slug ?? 'workspace'] as const
+
+/** Command palette search; the root is what a reindex invalidates. */
+export const commandPaletteSearchRootKey = () => ['commandPaletteSearch'] as const
+export const commandPaletteSearchKey = (slug: string | null | undefined, query: string) =>
+  [...commandPaletteSearchRootKey(), slug, query] as const
+/** The keyword-only answer shown until the full one arrives. */
+export const commandPaletteLexicalSearchKey = (slug: string | null | undefined, query: string) =>
+  [...commandPaletteSearchKey(slug, query), 'lexical'] as const
+
+export const dataSourceSchemaKey = (dataSourceId: string | null | undefined) =>
+  ['data-source-schema', dataSourceId] as const
+
+export const auditKey = (params: unknown) => ['audit', params] as const
+export const auditActionsKey = () => ['auditActions'] as const
+export const auditEntryKey = (entryId: string | null) => ['auditEntry', entryId] as const
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+/** Every events-list cache in every project. */
+export const eventsRootKey = () => ['events'] as const
+export const projectEventsKey = (slug: string | undefined) => [...eventsRootKey(), slug] as const
+export const branchEventsKey = (slug: string | undefined, branchId: string | null | undefined) =>
+  [...projectEventsKey(slug), branchId] as const
+
+/** The events table: one branch's list under the table's filters and sort. */
+export const eventsListKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  filters: {
+    filterEtId: string | undefined
+    debouncedSearch: string
+    queryStatuses: readonly string[] | undefined
+    filterTag: string
+    filterSilentDays: number | undefined
+    filterReviewed: boolean | undefined
+    filterOpenQuestions: boolean | undefined
+    sort: string
+  },
+) =>
+  [
+    ...branchEventsKey(slug, branchId),
+    filters.filterEtId,
+    filters.debouncedSearch,
+    filters.queryStatuses,
+    filters.filterTag,
+    filters.filterSilentDays,
+    filters.filterReviewed,
+    filters.filterOpenQuestions,
+    filters.sort,
+  ] as const
+
+/** A search-as-you-type event picker; `picker` names which one. */
+export const eventsPickerKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  picker: 'alert-filter' | 'override-picker' | 'successor-picker' | 'metric-picker',
+  search: string,
+) => [...branchEventsKey(slug, branchId), picker, search] as const
+
+/** How many events on a branch wait for review. */
+export const eventsInReviewCountKey = (slug: string | undefined, branchId: string | null | undefined) =>
+  [...branchEventsKey(slug, branchId), 'inReviewCount'] as const
+
+/** One event. */
+export const projectEventKey = (slug: string | undefined) => ['event', slug] as const
+export const branchEventKey = (slug: string | undefined, branchId: string | null | undefined) =>
+  [...projectEventKey(slug), branchId] as const
+export const eventKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  eventId: string | null | undefined,
+) => [...branchEventKey(slug, branchId), eventId] as const
+
+export const projectEventTagsKey = (slug: string | undefined) => ['eventTags', slug] as const
+export const eventTagsKey = (slug: string | undefined, branchId: string | null | undefined) =>
+  [...projectEventTagsKey(slug), branchId] as const
+
+export const projectEventHistoryKey = (slug: string | undefined) => ['eventHistory', slug] as const
+export const branchEventHistoryKey = (slug: string | undefined, branchId: string | null | undefined) =>
+  [...projectEventHistoryKey(slug), branchId] as const
+export const eventHistoryKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  eventId: string,
+) => [...branchEventHistoryKey(slug, branchId), eventId] as const
+
+/** Whether a typed name already identifies an event of that type. */
+export const eventIdentityProbeKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  eventTypeId: string,
+  name: string | null,
+) => ['eventIdentityProbe', slug, branchId, eventTypeId, name] as const
+
+export const eventImplementationTicketsKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  eventId: string,
+) => ['eventImplementationTickets', slug, branchId, eventId] as const
+
+/** The identities a bulk create would collide with. */
+export const bulkIdentitiesKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  eventTypeId: string,
+) => ['bulkIdentities', slug, branchId, eventTypeId] as const
+
+export const eventCommentsKey = (slug: string, eventId: string) =>
+  ['eventComments', slug, eventId] as const
+export const eventPhotosKey = (slug: string, eventId: string) =>
+  ['eventPhotos', slug, eventId] as const
+export const eventPhotoCommentsKey = (slug: string, eventId: string, photoId: string) =>
+  ['eventPhotoComments', slug, eventId, photoId] as const
+
+/** Window metrics of the visible event rows, one cache per row bucket. */
+export const projectEventWindowMetricsKey = (slug: string | undefined) =>
+  ['eventWindowMetrics', slug] as const
+export const eventWindowMetricsKey = (slug: string | undefined, bucketIds: readonly string[]) =>
+  [...projectEventWindowMetricsKey(slug), bucketIds.join(',')] as const
+
+/**
+ * Active signals. One family for every surface — the Events tabs and rows, and
+ * the expanded list the bell, Overview and Anomalies share (tripl-jfm3.119) —
+ * so a single prefix refreshes them all.
+ */
+export const activeSignalsRootKey = () => ['activeSignals'] as const
+export const activeSignalsKey = (slug: string | undefined) =>
+  [...activeSignalsRootKey(), slug] as const
+export const expandedSignalsKey = (slug: string | undefined) =>
+  [...activeSignalsKey(slug), 'expanded'] as const
+export const eventsTabSignalsKey = (slug: string | undefined) =>
+  [...activeSignalsKey(slug), 'tabs'] as const
+export const eventRowSignalsKey = (slug: string | undefined, bucketIds: readonly string[]) =>
+  [...activeSignalsKey(slug), 'rows', bucketIds.join(',')] as const
+
+export const eventTypeDriftsRootKey = () => ['eventTypeDrifts'] as const
+export const eventTypeDriftsKey = (slug: string | undefined, eventTypeId: string) =>
+  [...eventTypeDriftsRootKey(), slug, eventTypeId] as const
+
+/** Every event-type cache in every project. */
+export const eventTypesRootKey = () => ['eventTypes'] as const
+
+export const projectEventTypeOwnersKey = (slug: string | undefined) =>
+  ['eventTypeOwners', slug] as const
+export const eventTypeOwnersKey = (slug: string | undefined, eventTypeId: string) =>
+  [...projectEventTypeOwnersKey(slug), eventTypeId] as const
+
+export const eventTypeDeletionImpactKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  eventTypeId: string,
+) => ['eventTypeDeletionImpact', slug, branchId, eventTypeId] as const
+
+export const projectMetaFieldsKey = (slug: string | undefined) => ['metaFields', slug] as const
+export const metaFieldsKey = (slug: string | undefined, branchId: string | null | undefined) =>
+  [...projectMetaFieldsKey(slug), branchId] as const
+
+export const projectRelationsKey = (slug: string | undefined) => ['relations', slug] as const
+export const relationsKey = (slug: string | undefined, branchId: string | null | undefined) =>
+  [...projectRelationsKey(slug), branchId] as const
+
+export const projectPlanRevisionsKey = (slug: string | undefined) =>
+  ['planRevisions', slug] as const
+export const planRevisionsKey = (slug: string | undefined, offset: number) =>
+  [...projectPlanRevisionsKey(slug), offset] as const
+export const planRevisionDiffKey = (
+  slug: string | undefined,
+  revisionId: string | null | undefined,
+  compareTo: string | null | undefined,
+) => ['planRevisionDiff', slug, revisionId, compareTo] as const
+
+/** Variables settings table, filtered by usage. */
+export const variablesUsagePageKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  usageFilter: string,
+) => [...variablesPageKey(slug, branchId), usageFilter] as const
+
+export const branchVariableDriftsKey = (slug: string | undefined, branchId: string | null | undefined) =>
+  ['variable-drifts', slug, branchId] as const
+export const variableDriftsKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  variableId: string,
+) => [...branchVariableDriftsKey(slug, branchId), variableId] as const
+/** The drifts one event's values show. */
+export const eventVariableDriftsKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  eventId: string,
+) => [...branchVariableDriftsKey(slug, branchId), 'event', eventId] as const
+
+export const variableOverridesKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  variableId: string,
+) => ['variable-overrides', slug, branchId, variableId] as const
+
+export const branchVariableValuesKey = (slug: string | undefined, branchId: string | null | undefined) =>
+  ['variable-values', slug, branchId] as const
+export const variableValuesKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  variableId: string,
+) => [...branchVariableValuesKey(slug, branchId), variableId] as const
+
+/** The events-tab dynamics chart under the table's filters and a live range. */
+export const eventsMetricsChartKey = (
+  slug: string | undefined,
+  branchId: string | null,
+  filters: {
+    filterEtId: string | undefined
+    debouncedSearch: string
+    queryStatuses: readonly string[] | undefined
+    filterTag: string
+  },
+  range: { from: string; to: string },
+) =>
+  [
+    ...eventsMetricsKey(slug),
+    branchId,
+    filters.filterEtId,
+    filters.debouncedSearch,
+    filters.queryStatuses,
+    filters.filterTag,
+    range.from,
+    range.to,
+  ] as const
+
+// ---------------------------------------------------------------------------
+// Scans
+// ---------------------------------------------------------------------------
+
+export const scansKey = (slug: string | undefined) => ['scans', slug] as const
+export const scanConfigKey = (slug: string | undefined, scanConfigId: string | null | undefined) =>
+  ['scanConfig', slug, scanConfigId] as const
+
+/** Scan jobs: every scan's, one scan's, and one scan's capped list. */
+export const projectScanJobsKey = (slug: string | undefined) => ['scanJobs', slug] as const
+export const scanJobsKey = (slug: string | undefined, scanConfigId: string) =>
+  [...projectScanJobsKey(slug), scanConfigId] as const
+export const scanJobsLimitedKey = (slug: string | undefined, scanConfigId: string, limit: number) =>
+  [...scanJobsKey(slug, scanConfigId), { limit }] as const
+
+export const platformPresenceKey = (slug: string | undefined, scanConfigId: string) =>
+  ['platformPresence', slug, scanConfigId] as const
+
+/** The demo scenario's watchers on a scan run and a metric collection. */
+export const demoScenarioScanWatchKey = (slug: string | undefined, scanJobId: string | undefined) =>
+  ['demo-scenario-scan-watch', slug, scanJobId] as const
+export const demoScenarioCollectWatchKey = (
+  slug: string | undefined,
+  metricId: string | undefined,
+  startedAt: number | undefined,
+) => ['demo-scenario-collect-watch', slug, metricId, startedAt] as const
+
+/** The watcher that follows a metric collection to its end. */
+export const metricCollectWatchKey = (
+  slug: string | undefined,
+  metricId: string | undefined,
+  startedAt: number | undefined,
+) => ['metric-collect-watch', slug, metricId, startedAt] as const
+
+// ---------------------------------------------------------------------------
+// Metrics, fact tables and monitoring
+// ---------------------------------------------------------------------------
+
+export const factTablesKey = (slug: string | undefined) => ['fact-tables', slug] as const
+export const projectFactTableKey = (slug: string | undefined) => ['fact-table', slug] as const
+export const factTableKey = (slug: string | undefined, factTableId: string | null | undefined) =>
+  [...projectFactTableKey(slug), factTableId] as const
+
+export const projectAppVersionAdoptionKey = (slug: string | undefined) =>
+  ['appVersionAdoption', slug] as const
+export const appVersionAdoptionKey = (
+  slug: string | undefined,
+  scanConfigId: string | null | undefined,
+  rangeDays: number,
+) => [...projectAppVersionAdoptionKey(slug), scanConfigId, rangeDays] as const
+
+export const projectTopMoversKey = (slug: string | undefined) => ['topMovers', slug] as const
+export const topMoversKey = (
+  slug: string | undefined,
+  scanConfigId: string | null | undefined,
+  scopeType: string,
+  scopeRef: string,
+  bucket: string | null | undefined,
+  limit: number,
+) => [...projectTopMoversKey(slug), scanConfigId, scopeType, scopeRef, bucket, limit] as const
+
+export const projectBreakdownTimelineKey = (slug: string | undefined) =>
+  ['breakdownTimeline', slug] as const
+/** Keyed on the range LENGTH, not the live bounds: those step every five
+ * minutes, and a key that moved with them refetched the timeline each time (MON-3). */
+export const breakdownTimelineKey = (
+  slug: string | undefined,
+  scanConfigId: string | null | undefined,
+  scopeType: string,
+  scopeRef: string,
+  breakdownColumn: string,
+  breakdownValue: string,
+  isOther: boolean,
+  rangeDays: number | undefined,
+) =>
+  [
+    ...projectBreakdownTimelineKey(slug),
+    scanConfigId,
+    scopeType,
+    scopeRef,
+    breakdownColumn,
+    breakdownValue,
+    isOther,
+    rangeDays,
+  ] as const
+
+export const projectSeasonalityKey = (slug: string | undefined) => ['seasonality', slug] as const
+export const seasonalityKey = (
+  slug: string | undefined,
+  scanConfigId: string | null | undefined,
+  scopeType: string,
+  scopeRef: string,
+  rangeDays: number,
+) => [...projectSeasonalityKey(slug), scanConfigId, scopeType, scopeRef, rangeDays] as const
+
+export const projectReleaseRegressionsKey = (slug: string | undefined) =>
+  ['releaseRegressions', slug] as const
+export const releaseRegressionsKey = (slug: string | undefined, scanConfigId: string | null | undefined) =>
+  [...projectReleaseRegressionsKey(slug), scanConfigId] as const
+
+export const distributionDriftsRootKey = () => ['distributionDrifts'] as const
+export const projectDistributionDriftsKey = (slug: string | undefined) =>
+  [...distributionDriftsRootKey(), slug] as const
+export const distributionDriftsKey = (slug: string | undefined, scope: unknown, rangeDays: number) =>
+  [...projectDistributionDriftsKey(slug), scope, rangeDays] as const
+
+export const anomalyScopeOverridesKey = (slug: string | undefined) =>
+  ['anomalyScopeOverrides', slug] as const
+export const projectAnomalySettingsKey = (slug: string | undefined) =>
+  ['projectAnomalySettings', slug] as const
+
+/** The Overview page. Keyed kind-first, so the root covers every project's. */
+export const overviewRootKey = () => ['overview'] as const
+export const overviewVolumeKey = (slug: string | undefined, windowDays: number) =>
+  [...overviewRootKey(), 'volume', slug, windowDays] as const
+export const overviewTopEventsKey = (slug: string | undefined) =>
+  [...overviewRootKey(), 'top-events', slug] as const
+export const overviewKpiSeriesKey = (slug: string | undefined) =>
+  [...overviewRootKey(), 'kpi-series', slug] as const
+
+/** Reconciliation. Keyed kind-first like the Overview. */
+export const reconciliationRootKey = () => ['reconciliation'] as const
+export const reconciliationCoverageKey = (slug: string | undefined, days: number) =>
+  [...reconciliationRootKey(), 'coverage', slug, days] as const
+export const projectDeadEventsKey = (slug: string | undefined) =>
+  [...reconciliationRootKey(), 'dead', slug] as const
+export const deadEventsKey = (slug: string | undefined, days: number) =>
+  [...projectDeadEventsKey(slug), days] as const
+export const projectShadowEventsKey = (slug: string | undefined) =>
+  [...reconciliationRootKey(), 'shadow', slug] as const
+export const shadowEventsKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  status: string,
+) => [...projectShadowEventsKey(slug), branchId, status] as const

@@ -16,7 +16,7 @@ import { ErrorState } from "@/components/error-state"
 import { Panel } from "@/components/settings/kit"
 import { getErrorMessage } from '@/lib/utils'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { eventTypesKey } from '@/lib/queryKeys'
+import { eventTypesKey, relationsKey } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 
@@ -41,7 +41,7 @@ export function RelationsTab({ slug }: { slug: string }) {
     queryFn: () => eventTypesApi.list(slug, branchId),
   })
   const relationsQuery = useQuery({
-    queryKey: ['relations', slug, branchId],
+    queryKey: relationsKey(slug, branchId),
     queryFn: () => relationsApi.list(slug, branchId),
     // Rendered in the panel below, with a retry.
     meta: SILENT_ERROR_META,
@@ -58,7 +58,7 @@ export function RelationsTab({ slug }: { slug: string }) {
       source_field_id: srcFieldId, target_field_id: tgtFieldId,
     }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['relations', slug, branchId] })
+      qc.invalidateQueries({ queryKey: relationsKey(slug, branchId) })
       setShowForm(false); setSrcEtId(''); setTgtEtId(''); setSrcFieldId(''); setTgtFieldId('')
     },
   })
@@ -67,7 +67,7 @@ export function RelationsTab({ slug }: { slug: string }) {
     // Its error is rendered under the table.
     meta: SILENT_ERROR_META,
     mutationFn: (id: string) => relationsApi.del(slug, id, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['relations', slug, branchId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: relationsKey(slug, branchId) }),
   })
 
   const etMap: Record<string, EventType | undefined> = Object.fromEntries(

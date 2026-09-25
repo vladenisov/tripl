@@ -298,6 +298,10 @@ export function EventsTable({
     )
   }
 
+  // Spacer rows stand in for the virtualized rows above and below the window.
+  const firstVirtual = virtualItems[0]
+  const lastVirtual = virtualItems[virtualItems.length - 1]
+
   return (
     // A short delay: at 0 every 48h cell the pointer crossed mounted its lazy
     // chart on the way past (EVT-46).
@@ -527,8 +531,8 @@ export function EventsTable({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {virtualize && virtualItems.length > 0 && virtualItems[0].start > 0 && (
-                  <tr aria-hidden style={{ height: virtualItems[0].start }}>
+                {virtualize && firstVirtual && firstVirtual.start > 0 && (
+                  <tr aria-hidden style={{ height: firstVirtual.start }}>
                     <td colSpan={colCount} />
                   </tr>
                 )}
@@ -551,12 +555,12 @@ export function EventsTable({
                     })
                   : events.map((ev) => renderEventRow(ev))}
                 {virtualize &&
-                  virtualItems.length > 0 &&
-                  totalVirtualSize > virtualItems[virtualItems.length - 1].end && (
+                  lastVirtual &&
+                  totalVirtualSize > lastVirtual.end && (
                     <tr
                       aria-hidden
                       style={{
-                        height: totalVirtualSize - virtualItems[virtualItems.length - 1].end,
+                        height: totalVirtualSize - lastVirtual.end,
                       }}
                     >
                       <td colSpan={colCount} />

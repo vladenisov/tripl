@@ -26,7 +26,13 @@ import type {
   FactTableRowFilter,
   FactTableUpdate,
 } from '@/types'
-import { dataSourcesKey } from '@/lib/queryKeys'
+import {
+  dataSourcesKey,
+  factTableKey,
+  factTablesKey,
+  metricGeneratedSqlKey,
+  projectFactTableKey,
+} from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
 import { toIdentifier } from '@/lib/identifier'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -291,9 +297,9 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
         : factTablesApi.create(slug, buildCreatePayload()),
     onSuccess: () => {
       unsaved.release()
-      void qc.invalidateQueries({ queryKey: ['fact-tables', slug] })
-      if (factTable) void qc.invalidateQueries({ queryKey: ['fact-table', slug] })
-      void qc.invalidateQueries({ queryKey: ['metric-generated-sql', slug] })
+      void qc.invalidateQueries({ queryKey: factTablesKey(slug) })
+      if (factTable) void qc.invalidateQueries({ queryKey: projectFactTableKey(slug) })
+      void qc.invalidateQueries({ queryKey: metricGeneratedSqlKey(slug) })
       onClose()
     },
   })
@@ -654,7 +660,7 @@ export default function FactTableEditPage() {
     queryFn: () => dataSourcesApi.list(),
   })
   const factTableQuery = useQuery({
-    queryKey: ['fact-table', slug, factTableId],
+    queryKey: factTableKey(slug, factTableId),
     queryFn: () => factTablesApi.get(slug!, factTableId!),
     enabled: !!slug && !!factTableId,
   })

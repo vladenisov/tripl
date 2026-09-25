@@ -29,6 +29,7 @@ import { ApiError } from '@/api/client'
 import { projectsApi } from '@/api/projects'
 import type { Project } from '@/types'
 import { PHASE_TICK_MS, nextPhaseIndex } from './provisioningPhases'
+import { projectsKey } from '@/lib/queryKeys'
 
 export type ProvisioningStatus =
   | 'idle'
@@ -157,7 +158,7 @@ export function useDemoProvisioning(options?: {
       // Created after the user closed the dialog: the list still has to learn
       // about it, but nothing may navigate or reopen the dialog.
       if (outcome.run !== runRef.current) {
-        if (outcome.kind === 'created') void queryClient.invalidateQueries({ queryKey: ['projects'] })
+        if (outcome.kind === 'created') void queryClient.invalidateQueries({ queryKey: projectsKey() })
         return
       }
       if (outcome.kind === 'failed') {
@@ -167,11 +168,11 @@ export function useDemoProvisioning(options?: {
       if (outcome.kind === 'cancelled') return
       if (outcome.kind === 'cancelled-elsewhere') {
         setCancelOutcome('stopped')
-        void queryClient.invalidateQueries({ queryKey: ['projects'] })
+        void queryClient.invalidateQueries({ queryKey: projectsKey() })
         return
       }
       setProject(outcome.project)
-      void queryClient.invalidateQueries({ queryKey: ['projects'] })
+      void queryClient.invalidateQueries({ queryKey: projectsKey() })
       if (onSuccess) {
         onSuccess(outcome.project)
       } else {
@@ -244,7 +245,7 @@ export function useDemoProvisioning(options?: {
       .catch((): CancelOutcome => 'already-finished')
       .then((outcome: CancelOutcome) => {
         // Whatever the answer, the list may have changed under it.
-        void queryClient.invalidateQueries({ queryKey: ['projects'] })
+        void queryClient.invalidateQueries({ queryKey: projectsKey() })
         if (!mountedRef.current || run !== runRef.current) return
         setCancelling(false)
         setCancelOutcome(outcome)

@@ -233,7 +233,8 @@ export function aggregateMetricPoints(
       const total = bucketPoints.reduce((sum, point) => sum + point.count, 0)
 
       if (mode === 'mean') {
-        if (bucketPoints.length === 1) return { ...bucketPoints[0], bucket }
+        const [only] = bucketPoints
+        if (bucketPoints.length === 1 && only) return { ...only, bucket }
         return {
           bucket,
           count: total / bucketPoints.length,

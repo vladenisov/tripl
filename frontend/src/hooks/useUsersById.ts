@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { usersApi } from '@/api/users'
+import { usersKey } from '@/lib/queryKeys'
 
 /**
  * The workspace roster as `id -> display name`, for turning a stored `user_id`
@@ -15,7 +16,7 @@ import { usersApi } from '@/api/users'
  * as many words), so no caller needs a permission branch around it.
  */
 export function useUsersById(): Map<string, string> {
-  const { data: users } = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
+  const { data: users } = useQuery({ queryKey: usersKey(), queryFn: () => usersApi.list() })
   return useMemo(() => new Map((users ?? []).map((u) => [u.id, u.name ?? u.email])), [users])
 }
 

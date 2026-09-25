@@ -30,6 +30,7 @@ import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { usePageTitle } from '@/components/shell-chrome-context'
+import { monitorDetailKey, monitorHistoryKey } from '@/lib/queryKeys'
 
 export default function MonitorDetailPage() {
   const { slug, monitorId } = useParams<{ slug: string; monitorId: string }>()
@@ -37,8 +38,8 @@ export default function MonitorDetailPage() {
   // Mute and retry are editor actions (MON-6); a viewer reads the history.
   const canWrite = useCanWriteProject()
 
-  const monitorKey = useMemo(() => ['monitor', slug, monitorId], [slug, monitorId])
-  const historyKey = useMemo(() => ['monitor-history', slug, monitorId], [slug, monitorId])
+  const monitorKey = useMemo(() => monitorDetailKey(slug, monitorId), [slug, monitorId])
+  const historyKey = useMemo(() => monitorHistoryKey(slug, monitorId), [slug, monitorId])
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const monitorQuery = useQuery({

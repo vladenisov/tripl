@@ -200,7 +200,7 @@ export function operandErrors(
   operand.filters.forEach((filter, index) => {
     const message = rowErrors[filter.id]
     if (!message) return
-    const side = label ? `${label[0].toUpperCase()}${label.slice(1)} filter` : 'Filter'
+    const side = label ? `${label.charAt(0).toUpperCase()}${label.slice(1)} filter` : 'Filter'
     errs[filterFieldId(idPrefix, filter.id)] = `${side} ${index + 1}: ${message}`
   })
   return errs

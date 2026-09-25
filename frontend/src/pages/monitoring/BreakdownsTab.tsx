@@ -15,7 +15,7 @@ import {
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { adaptMetricBreakdowns } from '@/lib/metricAdapters'
 import type { MetricRollupMode, MetricsGranularity } from '@/lib/metrics'
-import { monitoringBreakdownsKey } from '@/lib/queryKeys'
+import { monitoringBreakdownsColumnKey } from '@/lib/queryKeys'
 import {
   BREAKDOWN_SERIES_CAP,
   breakdownLabel,
@@ -71,7 +71,7 @@ export function BreakdownsTab({
 }: BreakdownsTabProps) {
   const navigate = useNavigate()
   const query = useQuery({
-    queryKey: [...monitoringBreakdownsKey(slug, scope, scopeId), column, rangeDays],
+    queryKey: monitoringBreakdownsColumnKey(slug, scope, scopeId, column, rangeDays),
     queryFn: () => {
       if (scope === 'metric') {
         return metricsCatalogApi

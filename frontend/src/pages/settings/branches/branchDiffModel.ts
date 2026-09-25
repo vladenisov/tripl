@@ -174,8 +174,9 @@ export function revertOutcome(entries: PlanDiffEntry[], entry: PlanDiffEntry): R
       row.parent === entry.parent &&
       sourceNameOf(row.after) === sourceName,
   )
-  if (carriers.length === 0) return { kind: 'restore' }
-  if (carriers.length === 1) return { kind: 'rename', to: carriers[0].name }
+  const [onlyCarrier] = carriers
+  if (!onlyCarrier) return { kind: 'restore' }
+  if (carriers.length === 1) return { kind: 'rename', to: onlyCarrier.name }
   return {
     kind: 'ambiguous',
     among: [...carriers].sort((a, b) => a.name.localeCompare(b.name)),

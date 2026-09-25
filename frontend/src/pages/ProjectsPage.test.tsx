@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectsPage from './ProjectsPage'
+import { at } from '@/test/at'
 
 function authValue(role: 'owner' | 'editor' | 'viewer'): AuthContextValue {
   return {
@@ -990,7 +991,7 @@ describe('ProjectsPage', () => {
 
     // Wait for the empty workspace welcome to settle, then open the create dialog.
     expect(await screen.findByText('Keep your product analytics honest')).toBeInTheDocument()
-    fireEvent.click(screen.getAllByRole('button', { name: /New project/i })[0])
+    fireEvent.click(at(screen.getAllByRole('button', { name: /New project/i }), 0))
 
     // Filling the name auto-derives the slug; submit the form.
     fireEvent.change(screen.getByLabelText(/project name/i), {

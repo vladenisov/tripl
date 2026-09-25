@@ -7,6 +7,7 @@ import type { DbType } from '@/types/dataSources'
 import type { TableSchema } from '@/types/dataSourceSchema'
 import type { FactTable, FactTableColumn } from '@/types/factTables'
 import type { MetricDraft } from './metricDraft'
+import { factTableKey, factTablesKey } from '@/lib/queryKeys'
 
 /**
  * The slice of a loaded fact table one operand editor needs: its columns, the
@@ -71,17 +72,17 @@ export function useFactTableDetails(
   const denominatorId = draft.denominatorOp.factTableId
 
   const listQuery = useQuery({
-    queryKey: ['fact-tables', slug],
+    queryKey: factTablesKey(slug),
     queryFn: () => factTablesApi.list(slug),
     enabled,
   })
   const numeratorQuery = useQuery({
-    queryKey: ['fact-table', slug, numeratorId],
+    queryKey: factTableKey(slug, numeratorId),
     queryFn: () => factTablesApi.get(slug, numeratorId),
     enabled: enabled && !!numeratorId,
   })
   const denominatorQuery = useQuery({
-    queryKey: ['fact-table', slug, denominatorId],
+    queryKey: factTableKey(slug, denominatorId),
     queryFn: () => factTablesApi.get(slug, denominatorId),
     enabled: enabled && isRatio && !!denominatorId,
   })

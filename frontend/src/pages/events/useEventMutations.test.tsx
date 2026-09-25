@@ -19,6 +19,7 @@ vi.mock('@/api/events', () => ({
 }))
 
 import { eventsApi } from '@/api/events'
+import { at } from '@/test/at'
 
 const SLUG = 'demo'
 const BRANCH = null
@@ -46,7 +47,7 @@ function seedCaches(items: EventListItem[]) {
 }
 
 function infiniteItems(): EventListItem[] {
-  return queryClient.getQueryData<InfiniteData<EventListResponse>>(INFINITE_KEY)!.pages[0].items
+  return at(queryClient.getQueryData<InfiniteData<EventListResponse>>(INFINITE_KEY)!.pages, 0).items
 }
 
 function flatItems(): EventListItem[] {

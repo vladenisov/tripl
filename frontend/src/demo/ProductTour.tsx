@@ -72,7 +72,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
   const { available: scenarioAvailable, chapters } = useDemoScenario()
   const { startChapter } = useDemoScenarioActions()
   const [index, setIndexState] = useState(() => readStoredStep(slug, steps.length))
-  const step = steps[Math.min(index, steps.length - 1)]
+  const step = steps[Math.min(index, steps.length - 1)] ?? steps[0]
   const isFirst = index === 0
   const isLast = index === steps.length - 1
 

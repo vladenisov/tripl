@@ -22,6 +22,7 @@ import { resolveActivityTargetPath } from '@/lib/navigation'
 import { countOf } from '@/lib/plural'
 import type { ActivityItem, ActivityItemSeverity, ActivityItemType } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { activityKey } from '@/lib/queryKeys'
 
 const ACTIVITY_LIMIT = 20
 
@@ -99,33 +100,42 @@ function withinWindow(a: string, b: string): boolean {
   return Math.abs(ta - tb) <= BURST_WINDOW_MS
 }
 
+// A burst always holds at least one item, so its head is always present.
+type Burst = [ActivityItem, ...ActivityItem[]]
+
 type FeedEntry =
   | { kind: 'single'; item: ActivityItem }
-  | { kind: 'group'; id: string; items: ActivityItem[] }
+  | { kind: 'group'; id: string; items: Burst }
 
 // Collapse consecutive same-type items that arrived in one burst (same scan /
 // tight time window) into a single expandable group; everything else stays a
 // standalone row. The feed is already newest-first, so a burst is contiguous.
 function buildFeed(items: readonly ActivityItem[]): FeedEntry[] {
   const entries: FeedEntry[] = []
-  let start = 0
-  while (start < items.length) {
-    let end = start + 1
-    while (
-      end < items.length &&
-      burstKey(items[end]) === burstKey(items[start]) &&
-      withinWindow(items[end - 1].occurred_at, items[end].occurred_at)
-    ) {
-      end += 1
-    }
-    const run = items.slice(start, end)
+  const flush = (run: Burst) => {
     if (run.length >= MIN_BURST) {
       entries.push({ kind: 'group', id: `group:${run[0].id}`, items: run })
     } else {
       for (const item of run) entries.push({ kind: 'single', item })
     }
-    start = end
   }
+  let run: Burst | null = null
+  let prev: ActivityItem | null = null
+  for (const item of items) {
+    if (
+      run &&
+      prev &&
+      burstKey(item) === burstKey(run[0]) &&
+      withinWindow(prev.occurred_at, item.occurred_at)
+    ) {
+      run.push(item)
+    } else {
+      if (run) flush(run)
+      run = [item]
+    }
+    prev = item
+  }
+  if (run) flush(run)
   return entries
 }
 
@@ -136,7 +146,7 @@ function burstAction(stem: string): string {
   return sep === -1 ? '' : stem.slice(sep + 1).toLowerCase()
 }
 
-function groupSummary(items: readonly ActivityItem[]): string {
+function groupSummary(items: Readonly<Burst>): string {
   const action = burstAction(titleStem(items[0].title))
   const noun = TYPE_PLURAL[items[0].type]
   return action ? `${items.length} ${noun} ${action}` : `${items.length} ${noun}`
@@ -163,7 +173,7 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   const activityQuery = useQuery({
     meta: SILENT_ERROR_META,
-    queryKey: ['activity', slug ?? 'workspace'],
+    queryKey: activityKey(slug),
     queryFn: () => activityApi.list({ slug, limit: ACTIVITY_LIMIT }),
     enabled: open,
     staleTime: 30_000,
@@ -387,7 +397,7 @@ function ActivityGroupRow({
   showProject,
   now,
 }: {
-  items: ActivityItem[]
+  items: Burst
   showProject: boolean
   now: number
 }) {

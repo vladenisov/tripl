@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectSettingsPage from './ProjectSettingsPage'
 import ProjectScansPage from './ProjectScansPage'
+import { at } from '@/test/at'
 
 // CodeMirror needs real layout measurement that jsdom can't provide and
 // tokenizes SQL across many spans. Stub it with a plain textarea that exposes
@@ -325,7 +326,7 @@ describe('ProjectSettingsPage', () => {
     // Job result details (signals / alerts) live in the expandable job row.
     const startedCell = await screen.findByText('Started')
     const jobsTable = startedCell.closest('table')!
-    const expandButton = within(jobsTable).getAllByRole('button').slice(-1)[0]
+    const expandButton = at(within(jobsTable).getAllByRole('button'), -1)
     fireEvent.click(expandButton)
 
     // The run leads with what it did; the raw counters sit behind a disclosure
@@ -606,8 +607,8 @@ describe('ProjectSettingsPage', () => {
 
     const inputs = document.querySelectorAll('input[type="datetime-local"]')
     expect(inputs).toHaveLength(2)
-    fireEvent.change(inputs[0], { target: { value: '2026-04-01T00:00' } })
-    fireEvent.change(inputs[1], { target: { value: '2026-04-02T00:00' } })
+    fireEvent.change(at(inputs, 0), { target: { value: '2026-04-01T00:00' } })
+    fireEvent.change(at(inputs, 1), { target: { value: '2026-04-02T00:00' } })
 
     // Replay is now an inline page-style panel (no modal dialog).
     fireEvent.click(screen.getByRole('button', { name: /Replay period/i }))
@@ -1143,12 +1144,12 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Add meta field' }))[0])
+    fireEvent.click(at((await screen.findAllByRole('button', { name: 'Add meta field' })), 0))
 
     const dialog = await screen.findByRole('dialog')
     const inputs = within(dialog).getAllByRole('textbox')
-    fireEvent.change(inputs[0], { target: { value: 'jira_key' } })
-    fireEvent.change(inputs[1], { target: { value: 'Jira Key' } })
+    fireEvent.change(at(inputs, 0), { target: { value: 'jira_key' } })
+    fireEvent.change(at(inputs, 1), { target: { value: 'Jira Key' } })
     fireEvent.click(within(dialog).getByLabelText('Display as link'))
     fireEvent.change(within(dialog).getByPlaceholderText('https://tracker.example.com/issues/${value}'), {
       target: { value: 'https://tracker.example.com/issues/${value}' },
@@ -1361,11 +1362,11 @@ describe('ProjectSettingsPage', () => {
     // opens. Same reasoning as ScansTab.test.tsx.
     await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
-    fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
-    fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
+    fireEvent.change(at(textboxes, 0), { target: { value: 'Main scan' } })
+    fireEvent.change(at(textboxes, 1), { target: { value: 'SELECT * FROM analytics.events' } })
 
     const selects = screen.getAllByRole('combobox')
-    fireEvent.change(selects[0], { target: { value: 'ds-1' } })
+    fireEvent.change(at(selects, 0), { target: { value: 'ds-1' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
     expect(await screen.findByRole('button', { name: 'Reload preview' })).toBeInTheDocument()
@@ -1564,9 +1565,9 @@ describe('ProjectSettingsPage', () => {
 
     await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
-    fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
-    fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
-    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'ds-1' } })
+    fireEvent.change(at(textboxes, 0), { target: { value: 'Versioned scan' } })
+    fireEvent.change(at(textboxes, 1), { target: { value: 'SELECT * FROM analytics.events' } })
+    fireEvent.change(at(screen.getAllByRole('combobox'), 0), { target: { value: 'ds-1' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
     await screen.findByTestId('scan-preview-panel')
@@ -1818,17 +1819,17 @@ describe('ProjectSettingsPage', () => {
 
     await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
-    fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
-    fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
+    fireEvent.change(at(textboxes, 0), { target: { value: 'Main scan' } })
+    fireEvent.change(at(textboxes, 1), { target: { value: 'SELECT * FROM analytics.events' } })
 
     const selects = screen.getAllByRole('combobox')
-    fireEvent.change(selects[0], { target: { value: 'ds-1' } })
+    fireEvent.change(at(selects, 0), { target: { value: 'ds-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
 
     await screen.findByTestId('scan-preview-panel')
 
     const updatedSelects = screen.getAllByRole('combobox')
-    fireEvent.change(updatedSelects[1], { target: { value: 'type-1' } })
+    fireEvent.change(at(updatedSelects, 1), { target: { value: 'type-1' } })
 
     // Nothing is asked of the warehouse until the draft can name its events, so
     // the answer is one click away once the event type is picked.
@@ -2069,17 +2070,17 @@ describe('ProjectSettingsPage', () => {
 
     await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
-    fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
-    fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
+    fireEvent.change(at(textboxes, 0), { target: { value: 'Versioned scan' } })
+    fireEvent.change(at(textboxes, 1), { target: { value: 'SELECT * FROM analytics.events' } })
 
     const selects = screen.getAllByRole('combobox')
-    fireEvent.change(selects[0], { target: { value: 'ds-1' } })
+    fireEvent.change(at(selects, 0), { target: { value: 'ds-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
 
     await screen.findByTestId('scan-preview-panel')
 
     const updatedSelects = screen.getAllByRole('combobox')
-    fireEvent.change(updatedSelects[1], { target: { value: 'type-1' } })
+    fireEvent.change(at(updatedSelects, 1), { target: { value: 'type-1' } })
 
     // Named before the check runs, so the answer the panel renders is the answer
     // for a draft that reserves them — not a stale one the button would hide for.

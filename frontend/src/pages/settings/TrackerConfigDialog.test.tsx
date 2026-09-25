@@ -7,6 +7,7 @@ import { trackerConfigApi } from '@/api/trackerConfig'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { ProjectTrackerConfig, Role } from '@/types'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
+import { at } from '@/test/at'
 
 vi.mock('@/api/trackerConfig', () => ({
   trackerConfigApi: {
@@ -105,7 +106,7 @@ describe('TrackerConfigDialog', () => {
       expect(trackerConfigApi.update).toHaveBeenCalledWith('demo', { project_key: 'PAY' }),
     )
     // The blank token field must not be part of the payload.
-    const [, payload] = vi.mocked(trackerConfigApi.update).mock.calls[0]
+    const [, payload] = at(vi.mocked(trackerConfigApi.update).mock.calls, 0)
     expect(payload).not.toHaveProperty('api_token')
     expect(await screen.findByText('Tracker configuration saved.')).toBeInTheDocument()
   })

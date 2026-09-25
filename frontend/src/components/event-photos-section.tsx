@@ -12,6 +12,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
+import { eventPhotoCommentsKey, eventPhotosKey } from '@/lib/queryKeys'
 
 interface Props {
   slug: string
@@ -45,7 +46,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
   const [figmaTitle, setFigmaTitle] = useState('')
   const { confirm, dialog } = useConfirm()
 
-  const photosKey = ['eventPhotos', slug, eventId]
+  const photosKey = eventPhotosKey(slug, eventId)
   const photosQuery = useQuery({
     queryKey: photosKey,
     queryFn: () => eventPhotosApi.list(slug, eventId),
@@ -391,7 +392,7 @@ function PhotoViewer({
         </div>
       </div>
       <CommentThread
-        queryKey={['eventPhotoComments', slug, eventId, photo.id]}
+        queryKey={eventPhotoCommentsKey(slug, eventId, photo.id)}
         list={() => eventPhotosApi.listComments(slug, eventId, photo.id)}
         create={(body, parentId) =>
           eventPhotosApi.createComment(slug, eventId, photo.id, body, parentId)

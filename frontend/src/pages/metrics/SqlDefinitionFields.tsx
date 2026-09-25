@@ -53,6 +53,7 @@ function SqlPreviewPanel({ result, color, unit }: SqlPreviewPanelProps) {
   const points = result.points ?? []
   const columns = result.columns ?? []
   const values = points.map(p => p.value)
+  const lastValue = values[values.length - 1]
   const summary = `${result.point_count} buckets · columns: ${columns.join(', ')}${
     result.truncated ? ' · truncated' : ''
   }`
@@ -74,10 +75,10 @@ function SqlPreviewPanel({ result, color, unit }: SqlPreviewPanelProps) {
           <Sparkline data={values} color={color} width={560} height={64} responsive />
         </div>
       )}
-      {values.length > 0 && (
+      {lastValue !== undefined && (
         <p className="mono mb-[4px] text-[12px]" style={{ color: 'var(--fg)' }}>
           min {format(Math.min(...values))} · max {format(Math.max(...values))} · last{' '}
-          {format(values[values.length - 1])}
+          {format(lastValue)}
         </p>
       )}
       {guidance && (

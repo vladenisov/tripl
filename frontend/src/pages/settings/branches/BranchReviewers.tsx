@@ -10,6 +10,7 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
 import type { PlanBranchApproval, PlanBranchDetail, PlanBranchSummary } from '@/types'
 import { planBranchDetailKey } from './branchQueryKeys'
+import { usersKey } from '@/lib/queryKeys'
 
 interface BranchReviewSummaryProps {
   slug: string
@@ -50,7 +51,7 @@ export function BranchReviewSummary({
 
   // The same `['users']` cache useUsersById fills, so this costs no request.
   const { data: users } = useQuery({
-    queryKey: ['users'],
+    queryKey: usersKey(),
     queryFn: () => usersApi.list(),
     enabled: canWrite && open,
   })

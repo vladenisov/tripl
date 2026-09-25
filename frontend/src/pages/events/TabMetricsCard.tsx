@@ -27,7 +27,7 @@ import { cn } from '@/lib/utils'
 import type { EventType, MonitoringSignal } from '@/types'
 
 import { getMonitoringPath } from '@/lib/monitoring'
-import { eventsMetricsKey } from '@/lib/queryKeys'
+import { eventsMetricsChartKey } from '@/lib/queryKeys'
 import {
   TAB_METRICS_GRANULARITY_OPTIONS,
   TAB_METRICS_RANGE_DAYS_DEFAULT,
@@ -80,16 +80,7 @@ export function TabMetricsCard({
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const { data: tabMetrics, isLoading } = useQuery({
-    queryKey: [
-      ...eventsMetricsKey(slug),
-      branchId ?? null,
-      filters.filterEtId,
-      filters.debouncedSearch,
-      filters.queryStatuses,
-      filters.filterTag,
-      range.from,
-      range.to,
-    ],
+    queryKey: eventsMetricsChartKey(slug, branchId ?? null, filters, range),
     queryFn: () =>
       metricsApi.getEventsMetrics(slug, {
         event_type_id: filters.filterEtId,

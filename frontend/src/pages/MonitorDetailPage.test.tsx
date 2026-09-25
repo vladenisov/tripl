@@ -6,6 +6,7 @@ import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import MonitorDetailPage from './MonitorDetailPage'
 import { INDEFINITE_MUTE, MUTE_PRESETS, muteChoiceName } from '@/lib/mutePresets'
 import { formatCooldown } from './alerting/constants'
+import { at } from '@/test/at'
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -443,7 +444,7 @@ describe('MonitorDetailPage', () => {
       return
     }
     expect(
-      screen.getByRole('button', { name: expectedMutePresetName(ruleName, MUTE_PRESETS[0].label) }),
+      screen.getByRole('button', { name: expectedMutePresetName(ruleName, at(MUTE_PRESETS, 0).label) }),
     ).toBeInTheDocument()
     // …and never the previous monitor's name, or the fixture's.
     expect(screen.queryByRole('button', { name: expectedMutePresetName(RULE, '1h') })).toBeNull()

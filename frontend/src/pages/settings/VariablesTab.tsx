@@ -27,7 +27,7 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { countOf, pluralize } from '@/lib/plural'
-import { variablesKey, variablesPageKey } from '@/lib/queryKeys'
+import { variablesKey, variablesUsagePageKey } from '@/lib/queryKeys'
 
 // Rows rendered at once. The whole set arrives in one request, but a governance
 // project can hold >1k variables and painting them all froze the tab for
@@ -125,7 +125,7 @@ export function VariablesTab({
     // The usage filter is part of the key because it is answered server-side —
     // the page cannot narrow to "unused" itself without every event's stored
     // field values.
-    queryKey: [...variablesPageKey(slug, branchId), usageFilter],
+    queryKey: variablesUsagePageKey(slug, branchId, usageFilter),
     queryFn: () => variablesApi.listPage(slug, branchId, { usage: usageFilter }),
     placeholderData: keepPreviousData,
     // Rendered in the panel, with a retry.

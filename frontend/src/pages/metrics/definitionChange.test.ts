@@ -8,6 +8,7 @@ import type { FactTableColumn } from '@/types/factTables'
 import { definitionDiffersFromStored } from './definitionChange'
 import { draftFromMetric, type MetricDraft } from './metricDraft'
 import { buildDefinitionPayload, toOperandPayload, withAggregation, withFactTable } from './metricPayload'
+import { at } from '@/test/at'
 
 const SQL_METRIC = {
   id: 'm-1',
@@ -122,7 +123,7 @@ describe('fact definition load→save round trip (MET-1)', () => {
       expect(definition).toMatchObject({ filter_sql: config.filter_sql })
     }
     if ('conditions' in config) {
-      const [condition] = config.conditions as Record<string, unknown>[]
+      const condition = at(config.conditions as Record<string, unknown>[], 0)
       const { value, ...rest } = condition
       expect(definition).toMatchObject({
         conditions: [value === null ? rest : condition],
@@ -168,7 +169,7 @@ describe('fact definition load→save round trip (MET-1)', () => {
     const metric = factMetric({ conditions: [{ column: 'amount', operator: 'gt', value: '3' }] })
     const draft = draftFromMetric(metric)
     const [row] = draft.numeratorOp.filters
-    if (row.kind !== 'condition') throw new Error('expected a condition row')
+    if (row?.kind !== 'condition') throw new Error('expected a condition row')
     const { definition, changed } = loadAndSave(metric, {
       numeratorOp: { ...draft.numeratorOp, filters: [{ ...row, value: '4' }] },
     })

@@ -24,7 +24,7 @@ import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
 import { countOf, pluralize } from "@/lib/plural"
 import { getErrorMessage } from '@/lib/utils'
-import { projectEventTypesKey } from '@/lib/queryKeys'
+import { projectEventTypesKey, scanJobsKey, scanJobsLimitedKey, scansKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useProjectDataSources } from '@/hooks/useProjectDataSources'
 import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
@@ -83,7 +83,7 @@ export function ScansTab({ slug }: { slug: string }) {
     error: scanConfigsErrorObj,
     refetch: refetchScanConfigs,
   } = useQuery({
-    queryKey: ['scans', slug],
+    queryKey: scansKey(slug),
     queryFn: () => scansApi.list(slug),
   })
 
@@ -120,7 +120,7 @@ export function ScansTab({ slug }: { slug: string }) {
   // it. Every invalidation of the prefix still reaches both.
   const jobsByScan = useQueries({
     queries: scanConfigs.map((sc: ScanConfig) => ({
-      queryKey: ['scanJobs', slug, sc.id, { limit: SCAN_LIST_JOBS_LIMIT }],
+      queryKey: scanJobsLimitedKey(slug, sc.id, SCAN_LIST_JOBS_LIMIT),
       queryFn: () => scansApi.listJobs(slug, sc.id, { limit: SCAN_LIST_JOBS_LIMIT }),
       refetchInterval: jobsRefetchInterval,
     })),
@@ -235,7 +235,7 @@ export function ScansTab({ slug }: { slug: string }) {
       // Only the job this POST returned can advance the coached demo scenario:
       // the demo's tick creates scan jobs on its own (tripl-2su6.21.5).
       notifyScanRunStarted(job)
-      void queryClient.invalidateQueries({ queryKey: ['scanJobs', slug, scanId] })
+      void queryClient.invalidateQueries({ queryKey: scanJobsKey(slug, scanId) })
       void queryClient.invalidateQueries({ queryKey: scanActivityKey(slug) })
     },
   })

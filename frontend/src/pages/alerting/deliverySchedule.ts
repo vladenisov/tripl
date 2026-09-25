@@ -119,9 +119,17 @@ export function cronToCadence(cron: string | null | undefined): CadenceDraft {
   const cleaned = cron.trim().replace(/\s+/g, ' ')
   const fields = cleaned.split(' ')
   const base: CadenceDraft = { ...DEFAULT_CADENCE, mode: 'custom', cron: cleaned }
-  if (fields.length !== 5) return base
-
   const [minute, hour, dom, month, dow] = fields
+  if (
+    fields.length !== 5 ||
+    minute === undefined ||
+    hour === undefined ||
+    dom === undefined ||
+    month === undefined ||
+    dow === undefined
+  ) {
+    return base
+  }
   const everyDay = dom === '*' && month === '*'
   const isNumber = (value: string) => /^\d+$/.test(value)
   const isNumberList = (value: string) => /^\d+(,\d+)*$/.test(value)

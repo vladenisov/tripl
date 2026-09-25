@@ -14,6 +14,7 @@ import {
   chunkEventIds,
   deriveRowSignalFromMetrics,
 } from './utils'
+import { eventWindowMetricsKey, projectEventWindowMetricsKey } from '@/lib/queryKeys'
 
 // Bucketing (chunkEventIds) lives in ./utils — the signals hook next door needs
 // the identical scheme, and having two copies is how one of them drifts.
@@ -104,11 +105,7 @@ export function useEventRowMetrics({
   // the id→metric Map is built in a downstream useMemo keyed on that array.
   const eventWindowMetrics = useQueries({
     queries: visibleBuckets.map(bucketIds => ({
-      queryKey: [
-        'eventWindowMetrics',
-        slug,
-        bucketIds.join(','),
-      ],
+      queryKey: eventWindowMetricsKey(slug, bucketIds),
       queryFn: () => metricsApi.getEventsWindowMetrics(slug!, {
         event_ids: bucketIds,
         ...rowMetricsRange,
@@ -128,7 +125,7 @@ export function useEventRowMetrics({
   useEffect(() => {
     if (previousRangeRef.current === rowMetricsRange) return
     previousRangeRef.current = rowMetricsRange
-    void qc.invalidateQueries({ queryKey: ['eventWindowMetrics', slug] })
+    void qc.invalidateQueries({ queryKey: projectEventWindowMetricsKey(slug) })
   }, [qc, rowMetricsRange, slug])
 
   const eventWindowMetricsByEvent = useMemo(

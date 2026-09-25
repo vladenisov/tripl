@@ -12,7 +12,7 @@ import { MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { adaptMetricVersions } from '@/lib/metricAdapters'
 import type { MetricRollupMode, MetricsGranularity } from '@/lib/metrics'
-import { appVersionSeriesKey } from '@/lib/queryKeys'
+import { appVersionAdoptionKey, appVersionSeriesRangeKey } from '@/lib/queryKeys'
 import type { MonitoringScope } from '@/lib/monitoring'
 import {
   buildVersionChartSeries,
@@ -78,7 +78,7 @@ export function VersionsTab({
     : { scope_type: scope, scope_ref: scope === 'project_total' ? scanConfigId : scopeId }
 
   const seriesQuery = useQuery({
-    queryKey: [...appVersionSeriesKey(slug, scope, scopeId), scanConfigId, rangeDays],
+    queryKey: appVersionSeriesRangeKey(slug, scope, scopeId, scanConfigId, rangeDays),
     queryFn: () => {
       if (scope === 'metric') {
         return metricsCatalogApi.getVersions(slug, scopeId, timeRange).then(adaptMetricVersions)
@@ -96,7 +96,7 @@ export function VersionsTab({
   })
 
   const adoptionQuery = useQuery({
-    queryKey: ['appVersionAdoption', slug, scanConfigId, rangeDays],
+    queryKey: appVersionAdoptionKey(slug, scanConfigId, rangeDays),
     queryFn: () => metricsApi.getAppVersionAdoption(slug, scanConfigId!, timeRange),
     // No catalog adoption endpoint — the metric scope leaves this card empty.
     enabled: scope !== 'metric' && !!scanConfigId,

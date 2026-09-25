@@ -18,6 +18,7 @@ import { formatTimestamp } from '@/lib/datetime'
 import { useIsOwner } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
+import { auditActionsKey, auditEntryKey, auditKey } from '@/lib/queryKeys'
 
 // How long the email box waits after the last keystroke before it filters.
 const EMAIL_DEBOUNCE_MS = 400
@@ -97,7 +98,7 @@ function toIsoOrUndef(localDateTime: string, endOfDay = false): string | undefin
  */
 function AuditPayload({ entryId }: { entryId: string }) {
   const detailQuery = useQuery({
-    queryKey: ['auditEntry', entryId],
+    queryKey: auditEntryKey(entryId),
     queryFn: () => auditApi.get(entryId),
     // An audit entry is frozen history: `audit_service` only ever inserts one,
     // so re-expanding a row has nothing to re-read.
@@ -182,7 +183,7 @@ function AuditLog({ slug }: { slug?: string }) {
   // select offers "All actions" alone.
   const isOwner = useIsOwner()
   const actionsQuery = useQuery({
-    queryKey: ['auditActions'],
+    queryKey: auditActionsKey(),
     queryFn: auditApi.actions,
     staleTime: Infinity,
     enabled: isOwner,
@@ -239,7 +240,7 @@ function AuditLog({ slug }: { slug?: string }) {
   )
 
   const listQuery = useQuery({
-    queryKey: ['audit', queryParams],
+    queryKey: auditKey(queryParams),
     queryFn: () => auditApi.list(queryParams),
     // A project view with no slug has nothing to ask about; the workspace view
     // has no slug BY DESIGN, so the guard has to distinguish the two. Nor is

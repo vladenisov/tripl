@@ -21,7 +21,7 @@ import { formatRelativeTime } from '@/lib/datetime'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
-import { planBranchesKey } from '@/lib/queryKeys'
+import { planBranchesKey, projectMetaFieldsKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import type {
   PlanBranchApproval,
@@ -161,7 +161,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
   // links event values to the tracker (tripl-kjhi.14). Main's fields: the
   // template is project-wide and a branch copy carries the same one.
   const metaFieldsQuery = useQuery({
-    queryKey: ['metaFields', slug],
+    queryKey: projectMetaFieldsKey(slug),
     queryFn: () => metaFieldsApi.list(slug),
   })
   const ticket = branchTicket(branch.name, metaFieldsQuery.data ?? [])

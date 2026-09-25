@@ -12,6 +12,7 @@ import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { DEAD_EVENT_DAYS, formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { formatRelativeTime } from '@/lib/datetime'
 import type { DeadEvent } from '@/api/reconciliation'
+import { deadEventsKey, projectKey } from '@/lib/queryKeys'
 
 // Window for "is this event still emitting data". Shared with Reconciliation's
 // Dead events panel — the "Triage in Reconciliation" link below hands off to
@@ -44,12 +45,12 @@ export default function CoveragePage() {
   const { slug } = useParams<{ slug: string }>()
 
   const projectQuery = useQuery({
-    queryKey: ['project', slug],
+    queryKey: projectKey(slug),
     queryFn: () => projectsApi.get(slug!),
     enabled: !!slug,
   })
   const deadQuery = useQuery({
-    queryKey: ['reconciliation', 'dead', slug, DEAD_DAYS],
+    queryKey: deadEventsKey(slug, DEAD_DAYS),
     queryFn: () => reconciliationApi.deadEvents(slug!, DEAD_DAYS),
     enabled: !!slug,
     staleTime: 60_000,

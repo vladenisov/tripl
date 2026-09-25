@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { aiApi } from '@/api/ai'
+import { aiStatusKey } from '@/lib/queryKeys'
 
 /**
  * Returns true when AI features are available for the project, false while
@@ -12,7 +13,7 @@ import { aiApi } from '@/api/ai'
  */
 export function useAiStatus(slug: string | null | undefined): boolean {
   const { data } = useQuery({
-    queryKey: ['aiStatus', slug],
+    queryKey: aiStatusKey(slug),
     queryFn: () => aiApi.status(slug!),
     enabled: !!slug,
     staleTime: 5 * 60 * 1000,

@@ -10,6 +10,7 @@ import {
   muteUntilIso,
   unmuteName,
 } from './mutePresets'
+import { at } from '@/test/at'
 
 /**
  * The two lists are one module because the WORDING and the wire values must not
@@ -53,7 +54,7 @@ describe('a choice resolves to what goes on the wire', () => {
     // different instant for the same preset.
     const now = Date.parse('2026-08-14T10:00:00Z')
     expect(muteChoiceUntilIso({ label: '1h', ms: 3_600_000 }, now)).toBe('2026-08-14T11:00:00.000Z')
-    expect(muteChoiceUntilIso(MUTE_PRESETS[0], now)).toBe(muteUntilIso(MUTE_PRESETS[0].ms, now))
+    expect(muteChoiceUntilIso(at(MUTE_PRESETS, 0), now)).toBe(muteUntilIso(at(MUTE_PRESETS, 0).ms, now))
   })
 
   it('resolves the open-ended choice to null, strictly — never undefined', () => {
@@ -104,7 +105,7 @@ describe('a choice resolves to the sentence a screen reader announces (tripl-yap
     // data, so a builder blind to it would still look right on one screen.
     expect(muteName('a')).not.toBe(muteName('b'))
     expect(unmuteName('a')).not.toBe(unmuteName('b'))
-    expect(muteChoiceName('a', MUTE_PRESETS[0])).not.toBe(muteChoiceName('b', MUTE_PRESETS[0]))
+    expect(muteChoiceName('a', at(MUTE_PRESETS, 0))).not.toBe(muteChoiceName('b', at(MUTE_PRESETS, 0)))
   })
 
   it('phrases the open-ended choice from `ms`, never from the label', () => {

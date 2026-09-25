@@ -18,6 +18,7 @@ import {
   type ScenarioState,
 } from './scenarioModel'
 import { chapterState, liveLoopState } from './scenarioTestState'
+import { at } from '@/test/at'
 
 const SLUG = 'acme'
 const POLL_MS = 10_000
@@ -59,7 +60,7 @@ function everyChapterCompleted(): ScenarioState {
   for (const id of CHAPTER_IDS) {
     chapters[id] = { status: 'completed', step: CHAPTER_STEP_IDS[id][0] }
   }
-  return { v: 3, activeChapter: CHAPTER_IDS[CHAPTER_IDS.length - 1], chapters }
+  return { v: 3, activeChapter: at(CHAPTER_IDS, -1), chapters }
 }
 
 const scanArtifact = () => ({ scanConfigId: 'sc-1', scanJobId: 'job-1', startedAt: Date.now() })

@@ -15,6 +15,7 @@ import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { getMonitoringPath } from '@/lib/monitoring'
 import type { Event as TEvent, EventType, MetaFieldDefinition } from '@/types'
 import { SURFACE_CARD, SURFACE_STYLE } from './surface'
+import { eventImplementationTicketsKey, eventKey, usersKey } from '@/lib/queryKeys'
 
 type EventHistoryItem = { id: string; field: string; created_at: string; new_value: string | null }
 
@@ -68,7 +69,7 @@ function EventMetaCard({
 function EventTicketsCard({ slug, event }: { slug: string; event: TEvent }) {
   const branchId = useActiveBranchId()
   const { data: tickets } = useQuery({
-    queryKey: ['eventImplementationTickets', slug, branchId, event.id],
+    queryKey: eventImplementationTicketsKey(slug, branchId, event.id),
     queryFn: () => eventsApi.implementationTickets(slug, event.id, branchId),
   })
   // Hidden, not empty. Rows exist only where the Jira integration is on and a
@@ -117,7 +118,7 @@ export function EventSideColumn({
   const activeBranchId = useActiveBranchId()
   const branchLink = useBranchLinkProps()
   const usersQuery = useQuery({
-    queryKey: ['users'],
+    queryKey: usersKey(),
     queryFn: () => usersApi.list(),
     enabled: Boolean(event.owner_id),
   })
@@ -130,7 +131,7 @@ export function EventSideColumn({
   const successorQuery = useQuery({
     // Same key shape as the page's own event query, so a successor already
     // visited is read from cache instead of refetched.
-    queryKey: ['event', slug, successorBranchId, successorId],
+    queryKey: eventKey(slug, successorBranchId, successorId),
     queryFn: () => eventsApi.get(slug, successorId!, successorBranchId),
     enabled: Boolean(successorId),
   })

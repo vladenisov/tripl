@@ -114,10 +114,12 @@ export function summarizeForecastRange(
   buckets: string[],
   granularity: MetricsGranularity,
 ): string {
-  if (buckets.length === 0) return ''
-  const start = formatTooltipLabel(buckets[0], granularity)
+  const first = buckets[0]
+  const last = buckets[buckets.length - 1]
+  if (first === undefined || last === undefined) return ''
+  const start = formatTooltipLabel(first, granularity)
   if (buckets.length === 1) return `Forecast for ${start}`
-  const end = formatTooltipLabel(buckets[buckets.length - 1], granularity)
+  const end = formatTooltipLabel(last, granularity)
   return `Forecast from ${start} to ${end}`
 }
 
@@ -169,9 +171,10 @@ export function axisWidthForValues(
   values: number[],
   formatter: (value: number) => string,
 ): number {
-  if (!values.length) return Y_AXIS_MIN_WIDTH
-  let min = values[0]
-  let max = values[0]
+  const [head] = values
+  if (head === undefined) return Y_AXIS_MIN_WIDTH
+  let min = head
+  let max = head
   for (const value of values) {
     if (value < min) min = value
     if (value > max) max = value
