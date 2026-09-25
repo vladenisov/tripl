@@ -53,6 +53,8 @@ interface RecentRun {
   // Current failing streak (leading consecutive failed runs for this scan).
   // Only meaningful on the collapsed streak row; 0 on every other row.
   failingStreak: number
+  // The streak runs past the capped history this list loads, so it is a floor.
+  failingStreakAtLeast: boolean
   // What the completed job actually changed (+N events / metrics / signals …).
   changes: ScanChange[]
 }
@@ -175,6 +177,9 @@ export function ScansTab({ slug }: { slug: string }) {
           status: job.status,
           errorMessage: job.error_message,
           failingStreak: job === streakHead ? streak : 0,
+          // Only a full page can hide older failures; a shorter one is the whole history.
+          failingStreakAtLeast:
+            job === streakHead && firstSettled + streak === jobs.length && jobs.length >= SCAN_LIST_JOBS_LIMIT,
           changes: summarizeScanChanges(job),
         })
       })
@@ -458,7 +463,8 @@ export function ScansTab({ slug }: { slug: string }) {
                             className="whitespace-nowrap rounded border px-1.5 py-0.5 text-[10.5px] font-semibold"
                             style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
                           >
-                            failed last {run.failingStreak} runs
+                            failed last {run.failingStreak}
+                            {run.failingStreakAtLeast ? '+' : ''} runs
                           </span>
                         )}
                         {canRun && (

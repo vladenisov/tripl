@@ -232,12 +232,15 @@ export function scanFieldErrors(state: ScanFormState): Partial<Record<ScanNumeri
     if (error) errors[field] = error
   }
   check('cardinalityThreshold', positiveIntError(state.cardinalityThreshold, { required: true }))
-  check('metricBreakdownValuesLimit', positiveIntError(state.metricBreakdownValuesLimit))
+  // The metrics fields are only on screen in Catalog + monitoring; refusing a
+  // save over an input the reader cannot see would leave no way to fix it.
+  const monitoring = state.mode === 'monitoring'
+  if (monitoring) check('metricBreakdownValuesLimit', positiveIntError(state.metricBreakdownValuesLimit))
   // Not sent without a version column, so not a reason to refuse the save.
   if (state.appVersionColumn) check('appVersionActiveShareMin', shareError(state.appVersionActiveShareMin))
   check('scanLookbackHours', positiveIntError(state.scanLookbackHours))
   check('scanRowLimit', positiveIntError(state.scanRowLimit))
-  check('metricsRowLimit', positiveIntError(state.metricsRowLimit))
+  if (monitoring) check('metricsRowLimit', positiveIntError(state.metricsRowLimit))
   return errors
 }
 

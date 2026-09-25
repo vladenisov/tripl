@@ -398,6 +398,17 @@ describe('ScansTab', () => {
     expect(screen.getAllByRole('button', { name: /Run again/i })).toHaveLength(1)
   })
 
+  it('marks the streak as a floor when every run in the loaded page failed', async () => {
+    setupFetchWithJobs(
+      Array.from({ length: 10 }, (_, i) =>
+        failedJob(`job-f${i}`, `2026-01-${String(20 - i).padStart(2, '0')}T00:00:00Z`),
+      ),
+    )
+    renderTab()
+
+    expect(await screen.findByText(/failed last 10\+ runs/)).toBeInTheDocument()
+  })
+
   it('re-runs a failed scan from the run row via the manual trigger endpoint', async () => {
     const runCalls: { method: string; url: string }[] = []
     setupFetchWithJobs([failedJob('job-f1', '2026-01-01T00:00:00Z')], runCalls)

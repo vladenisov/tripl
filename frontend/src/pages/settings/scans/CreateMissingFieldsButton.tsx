@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { fieldsApi } from '@/api/fields'
 import type { EventType, ScanConfigPreview } from '@/types'
@@ -47,12 +48,17 @@ export function CreateMissingFieldsButton({
   onCreated?: () => void
 }) {
   const qc = useQueryClient()
+  // Every name created while this dry run's answer is on screen, not only the
+  // latest batch: a second create while the re-check is still running must not
+  // bring the first batch back onto the offer.
+  const [created, setCreated] = useState<ReadonlySet<string>>(() => new Set())
   const mutation = useMutation({
     // Rendered inline below.
     meta: SILENT_ERROR_META,
     mutationFn: (fields: { name: string; display_name: string; field_type: string }[]) =>
       fieldsApi.bulkCreate(slug, eventType!.id, fields, branchId),
-    onSuccess: () => {
+    onSuccess: (_result, fields) => {
+      setCreated(previous => new Set([...previous, ...fields.map(field => field.name)]))
       onCreated?.()
       return qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
     },
@@ -64,10 +70,9 @@ export function CreateMissingFieldsButton({
   // stays on screen until the re-check lands. Offering the same columns again
   // is how one click became duplicate fields or a conflict (DATA-27), so what
   // was just created is taken off the offer straight away.
-  const created = mutation.isSuccess ? new Set(mutation.variables.map(field => field.name)) : null
-  const remaining = created ? unmappedColumns.filter(column => !created.has(column)) : unmappedColumns
+  const remaining = unmappedColumns.filter(column => !created.has(column))
 
-  const createdNote = created && (
+  const createdNote = created.size > 0 && (
     <p role="status" className="text-xs" style={{ color: 'var(--success)' }}>
       Created {countOf(created.size, 'field', 'fields')} on "{eventType.display_name}".
     </p>

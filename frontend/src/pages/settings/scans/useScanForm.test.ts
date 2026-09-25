@@ -450,6 +450,12 @@ describe('scanFieldErrors — numeric limits the backend would refuse (DATA-25)'
     expect(scanFormBlocker(state)).toBe('Fix Traffic share that counts as released.')
   })
 
+  it('does not refuse a save over metrics limits that are not on screen outside monitoring', () => {
+    const state = formState({ mode: 'catalog', metricsRowLimit: '0', metricBreakdownValuesLimit: '0' })
+    expect(scanFieldErrors(state)).toEqual({})
+    expect(scanFieldErrors({ ...state, mode: 'monitoring' })).toHaveProperty('metricsRowLimit')
+  })
+
   it('leaves blank optional limits alone — blank is the backend default', () => {
     expect(scanFieldErrors(formState({ scanRowLimit: '', metricsRowLimit: '', scanLookbackHours: '' }))).toEqual({})
     expect(scanFormBlocker(formState())).toBeNull()

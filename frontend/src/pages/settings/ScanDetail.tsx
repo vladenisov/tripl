@@ -196,7 +196,8 @@ export function ScanDetail({
   const requestCancel = async (jobId: string) => {
     const ok = await confirm({
       title: 'Stop this run?',
-      message: 'The run is stopped and marked cancelled. You can start the scan again at any time.',
+      message:
+        'The run is marked cancelled now and stops at its next checkpoint; whatever it already wrote is kept. You can start the scan again at any time.',
       confirmLabel: 'Stop run',
       variant: 'danger',
     })
