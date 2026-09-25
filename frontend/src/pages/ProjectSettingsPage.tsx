@@ -105,7 +105,7 @@ export default function ProjectSettingsPage() {
   // Bare /p/:slug/settings and the old general config tab both belong to the
   // full-takeover Settings area now.
   if (!urlTab || urlTab === 'general') {
-    return <Navigate to="/settings/project/general" replace />
+    return <Navigate to={`/settings/project/general?project=${encodeURIComponent(slug)}`} replace />
   }
 
   if (!FUNCTIONAL_TABS.includes(urlTab as FunctionalTab)) {

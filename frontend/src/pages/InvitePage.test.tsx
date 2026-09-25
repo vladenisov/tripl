@@ -4,13 +4,6 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import InvitePage from './InvitePage'
 
-// The page only needs `refresh` from auth context — pulling the whole provider
-// in would drag its own /auth/me probe into every case and test the provider
-// rather than this screen.
-const { refreshMock } = vi.hoisted(() => ({ refreshMock: vi.fn() }))
-vi.mock('@/components/auth-context', () => ({
-  useAuth: () => ({ refresh: refreshMock, user: null, status: 'anonymous' }),
-}))
 
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -25,8 +18,7 @@ function urlOf(input: RequestInfo | URL) {
 
 const TOKEN = 'invite-token-abc'
 
-function renderInvitePage() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderInvitePage(qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[`/invite/${TOKEN}`]}>
@@ -108,18 +100,20 @@ describe('InvitePage', () => {
             }),
           )
         }
-        if (url.includes('/auth/me')) {
-          return Promise.resolve(
-            jsonResponse({ id: 'u1', email: 'invitee@example.com', role: 'editor' }),
-          )
-        }
+        // No /auth/me: the accept response IS the session (SHELL-17).
         return Promise.reject(new Error(`Unexpected request: ${url}`))
       },
     )
 
-    renderInvitePage()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    renderInvitePage(qc)
 
-    fireEvent.change(await screen.findByLabelText('Password'), {
+    // The password policy is stated up front, not learned from a 422.
+    const password = await screen.findByLabelText('Password')
+    expect(password).toHaveAccessibleDescription('At least 12 characters, with a number and symbol.')
+    expect(password).toHaveAttribute('autocomplete', 'new-password')
+
+    fireEvent.change(password, {
       target: { value: 'Password123!' },
     })
     fireEvent.change(screen.getByLabelText(/Your name/i), { target: { value: 'New Person' } })
@@ -130,5 +124,10 @@ describe('InvitePage', () => {
     // or a role, which the server takes from the invitation.
     expect(accepted.mock.calls[0][0]).toEqual({ password: 'Password123!', name: 'New Person' })
     expect(await screen.findByText('Signed in home')).toBeInTheDocument()
+    expect(qc.getQueryData(['auth', 'me'])).toEqual({
+      id: 'u1',
+      email: 'invitee@example.com',
+      role: 'editor',
+    })
   })
 })

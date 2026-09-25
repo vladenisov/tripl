@@ -9,14 +9,15 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { BranchSwitcher } from './branch-switcher'
 
 const setBranchId = vi.fn()
+const branchState: { id: string | null } = { id: null }
 
 vi.mock('@/api/planBranches', () => ({
   planBranchesApi: { list: vi.fn() },
 }))
 
 vi.mock('@/hooks/useBranch', () => ({
-  useBranchContext: () => ({ branchId: null, setBranchId, slug: 'demo' }),
-  useActiveBranchId: () => null,
+  useBranchContext: () => ({ branchId: branchState.id, setBranchId, slug: 'demo' }),
+  useActiveBranchId: () => branchState.id,
 }))
 
 function makeBranch(overrides: Partial<PlanBranchSummary>): PlanBranchSummary {
@@ -74,6 +75,7 @@ function renderSwitcher({ withForm = false } = {}) {
 
 afterEach(() => {
   vi.clearAllMocks()
+  branchState.id = null
 })
 
 describe('BranchSwitcher', () => {
@@ -84,6 +86,21 @@ describe('BranchSwitcher', () => {
 
     const trigger = await screen.findByTitle('Switch branch')
     expect(within(trigger).getByText('main')).toBeInTheDocument()
+  })
+
+  it('reads "loading" rather than "main" while a selected branch is resolving', async () => {
+    branchState.id = FEATURE.id
+    let resolve: (value: { items: PlanBranchSummary[]; total: number }) => void = () => {}
+    vi.mocked(planBranchesApi.list).mockReturnValue(new Promise((r) => { resolve = r }))
+
+    renderSwitcher()
+
+    const trigger = await screen.findByTitle('Switch branch')
+    expect(within(trigger).getByText('loading…')).toBeInTheDocument()
+    expect(within(trigger).queryByText('main')).not.toBeInTheDocument()
+
+    resolve({ items: [MAIN, FEATURE], total: 2 })
+    await waitFor(() => expect(within(trigger).getByText('checkout-v2')).toBeInTheDocument())
   })
 
   it('opens a Plan branches dropdown listing main and feature branches with a New branch action', async () => {

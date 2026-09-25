@@ -22,10 +22,11 @@ export interface BranchLinkProps {
 
 /** Props for a link that opens a page in a given branch (null = main).
  *
- * Both halves are needed and neither is enough alone: the `?branch=` in the URL
- * is what makes the link shareable, but the provider only reads it when it
- * mounts, so a link followed inside the app must also set the branch. Bundling
- * them here keeps the two from drifting apart at future call sites.
+ * The `?branch=` in the URL is what makes the link shareable, and the provider
+ * follows it on navigation. A link to MAIN carries no param, and an address
+ * without one keeps the current selection, so the click also sets the branch.
+ * It leaves the current address alone (`updateUrl: false`): the destination
+ * names its own branch, and Back should return to the entry as it was.
  */
 export function useBranchLinkProps(): (path: string, branchId: string | null) => BranchLinkProps {
   const { setBranchId } = useBranchContext()
@@ -34,7 +35,7 @@ export function useBranchLinkProps(): (path: string, branchId: string | null) =>
       to: branchId
         ? `${path}${path.includes('?') ? '&' : '?'}branch=${encodeURIComponent(branchId)}`
         : path,
-      onClick: () => setBranchId(branchId),
+      onClick: () => setBranchId(branchId, { updateUrl: false }),
     }),
     [setBranchId],
   )

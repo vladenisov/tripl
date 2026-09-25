@@ -16,6 +16,7 @@ import { useQuery } from '@tanstack/react-query'
 import { activityApi } from '@/api/activity'
 import { Dot } from '@/components/primitives/dot'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
+import { useNow } from '@/hooks/useNow'
 import { formatRelativeTime } from '@/lib/datetime'
 import { resolveActivityTargetPath } from '@/lib/navigation'
 import { countOf } from '@/lib/plural'
@@ -169,10 +170,15 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
     refetchInterval,
   })
 
+  const now = useNow(60_000)
+
   if (!open) return null
 
   const items = activityQuery.data ?? []
   const isInitialLoading = activityQuery.isLoading && items.length === 0
+  // A failed refresh keeps what was already loaded: one missed poll used to
+  // replace a good feed with "Activity unavailable" (SHELL-40).
+  const hasItems = items.length > 0
   // Quiet = loaded, healthy, and genuinely empty. Only then do we shrink the
   // rail and drop its footer so it stops dominating an empty project.
   const isQuiet = !isInitialLoading && !activityQuery.isError && items.length === 0
@@ -213,7 +219,31 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
       </div>
       <div className="flex-1 overflow-y-auto py-2">
         {isInitialLoading && <ActivitySkeleton />}
-        {activityQuery.isError && !isInitialLoading && (
+        {activityQuery.isError && hasItems && (
+          <div
+            role="status"
+            className="mx-3.5 mb-2 flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11px]"
+            style={{
+              background: 'var(--surface)',
+              borderColor: 'var(--border-subtle)',
+              color: 'var(--fg-subtle)',
+            }}
+          >
+            <span className="flex-1">Could not refresh; showing the last loaded items.</span>
+            <button
+              type="button"
+              onClick={() => {
+                void activityQuery.refetch()
+              }}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ color: 'var(--fg)' }}
+            >
+              <RefreshCw className="h-3 w-3" aria-hidden="true" />
+              Retry
+            </button>
+          </div>
+        )}
+        {activityQuery.isError && !isInitialLoading && !hasItems && (
           <div className="px-3.5 py-3">
             <div
               className="rounded-md border p-3 text-[11.5px]"
@@ -249,12 +279,11 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
           </div>
         )}
         {!isInitialLoading &&
-          !activityQuery.isError &&
           feed.map((entry) =>
             entry.kind === 'group' ? (
-              <ActivityGroupRow key={entry.id} items={entry.items} showProject={!slug} />
+              <ActivityGroupRow key={entry.id} items={entry.items} showProject={!slug} now={now} />
             ) : (
-              <ActivityRow key={entry.item.id} item={entry.item} showProject={!slug} />
+              <ActivityRow key={entry.item.id} item={entry.item} showProject={!slug} now={now} />
             ),
           )}
       </div>
@@ -279,9 +308,11 @@ const ROW_CLASS =
 function ActivityRow({
   item,
   showProject,
+  now,
 }: {
   item: ActivityItem
   showProject: boolean
+  now: number
 }) {
   const KindIcon = KIND_ICON[item.type]
   const sevColor = severityColor(item.severity)
@@ -308,7 +339,7 @@ function ActivityRow({
           className="mono mt-[3px] text-[11px] font-medium"
           style={{ color: 'var(--fg-muted)' }}
         >
-          {formatRelativeTime(item.occurred_at)}
+          {formatRelativeTime(item.occurred_at, now)}
           {showProject ? (
             <span style={{ color: 'var(--fg-faint)' }}>{` · ${item.project_slug}`}</span>
           ) : (
@@ -354,9 +385,11 @@ function ActivityRow({
 function ActivityGroupRow({
   items,
   showProject,
+  now,
 }: {
   items: ActivityItem[]
   showProject: boolean
+  now: number
 }) {
   const [expanded, setExpanded] = useState(false)
   const first = items[0]
@@ -405,7 +438,7 @@ function ActivityGroupRow({
             className="mono mt-[3px] text-[11px] font-medium"
             style={{ color: 'var(--fg-muted)' }}
           >
-            {formatRelativeTime(first.occurred_at)}
+            {formatRelativeTime(first.occurred_at, now)}
             {showProject ? (
               <span style={{ color: 'var(--fg-faint)' }}>{` · ${first.project_slug}`}</span>
             ) : (
@@ -417,7 +450,7 @@ function ActivityGroupRow({
       {expanded && (
         <div style={{ background: 'var(--surface)' }}>
           {items.map((item) => (
-            <ActivityRow key={item.id} item={item} showProject={showProject} />
+            <ActivityRow key={item.id} item={item} showProject={showProject} now={now} />
           ))}
         </div>
       )}

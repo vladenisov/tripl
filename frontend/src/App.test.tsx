@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
@@ -289,7 +289,7 @@ describe('App', () => {
     renderApp('/')
 
     // The dashboard's always-present header renders, and the URL never bounces.
-    expect(await screen.findByText('Analytics workspace')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'All projects' })).toBeInTheDocument()
     expect(window.location.pathname).toBe('/')
   })
 
@@ -308,7 +308,7 @@ describe('App', () => {
 
     renderApp('/projects')
 
-    expect(await screen.findByText('Analytics workspace')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'All projects' })).toBeInTheDocument()
     await waitFor(() => {
       expect(window.location.pathname).toBe('/workspace')
     })
@@ -378,5 +378,89 @@ describe('App', () => {
     await waitFor(() => {
       expect(document.title).toBe('Page not found · tripl')
     })
+  })
+})
+
+describe('App auth links', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    window.history.pushState({}, '', '/')
+  })
+
+  const owner = {
+    id: 'user-1',
+    email: 'owner@example.com',
+    name: 'Owner',
+    role: 'owner',
+    created_at: '2026-04-18T10:00:00Z',
+    updated_at: '2026-04-18T10:00:00Z',
+  }
+
+  it('returns to the full deep link, query and fragment included, after signing in (SHELL-14)', async () => {
+    let signedIn = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) {
+        return Promise.resolve(
+          signedIn ? jsonResponse(owner) : jsonResponse({ detail: 'Authentication required' }, 401),
+        )
+      }
+      if (url.endsWith('/api/v1/auth/status')) {
+        return Promise.resolve(jsonResponse({ has_users: true, registration_enabled: true }))
+      }
+      if (url.endsWith('/api/v1/auth/login')) {
+        signedIn = true
+        return Promise.resolve(jsonResponse(owner))
+      }
+      if (url.endsWith('/api/v1/projects')) return Promise.resolve(jsonResponse([]))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderApp('/workspace?incident=inc-2#card')
+
+    fireEvent.change(await screen.findByLabelText('Email'), {
+      target: { value: 'owner@example.com' },
+    })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    await waitFor(() =>
+      expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
+        '/workspace?incident=inc-2#card',
+      ),
+    )
+  })
+
+  it('tells a signed-in visitor on an invitation link who they are, and keeps the link (SHELL-16)', async () => {
+    let signedIn = true
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) {
+        return Promise.resolve(
+          signedIn ? jsonResponse(owner) : jsonResponse({ detail: 'Authentication required' }, 401),
+        )
+      }
+      if (url.endsWith('/api/v1/auth/logout')) {
+        signedIn = false
+        return Promise.resolve(new Response(null, { status: 204 }))
+      }
+      if (url.endsWith('/api/v1/auth/invitations/tok-1')) {
+        return Promise.resolve(
+          jsonResponse({ email: 'new@example.com', role: 'editor', expires_at: '2026-12-01T00:00:00Z' }),
+        )
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderApp('/invite/tok-1')
+
+    expect(await screen.findByRole('heading', { name: 'You are already signed in' })).toBeInTheDocument()
+    expect(screen.getByText('owner@example.com')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/invite/tok-1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out and continue' }))
+
+    expect(await screen.findByRole('heading', { name: 'Join this tripl workspace' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/invite/tok-1')
   })
 })

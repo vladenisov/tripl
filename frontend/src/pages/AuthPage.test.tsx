@@ -106,11 +106,11 @@ describe('AuthPage', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('restores the sign-in copy when switching back to Existing Account', () => {
+  it('restores the sign-in copy when switching back to Existing account', () => {
     renderAuth()
 
     fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Existing Account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Existing account' }))
 
     expect(
       screen.getByRole('heading', { name: 'Sign in to tripl' }),
@@ -218,7 +218,7 @@ describe('AuthPage', () => {
     ).toBeInTheDocument()
 
     // The note is register-only: it disappears back in login mode.
-    fireEvent.click(screen.getByRole('button', { name: 'Existing Account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Existing account' }))
     expect(
       screen.queryByText(/The first account on a new instance becomes the owner/),
     ).not.toBeInTheDocument()
@@ -250,7 +250,7 @@ describe('AuthPage', () => {
       screen.queryByRole('button', { name: 'Create your account' }),
     ).not.toBeInTheDocument()
     // Signing in still works — only the sign-up half is withdrawn.
-    expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
   })
 
   it('keeps the sign-up tab on an instance with registration open', async () => {

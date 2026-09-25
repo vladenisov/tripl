@@ -196,6 +196,7 @@ export default function OverviewPage() {
       {slug && (
         <OnboardingChecklist
           slug={slug}
+          projectId={projectQuery.data?.id}
           summary={summary}
           sourceCount={countRealSources(sources)}
           isDemo={projectQuery.data?.is_demo}

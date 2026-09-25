@@ -44,6 +44,10 @@ type TopBarProps = {
   activityOpen?: boolean
   onToggleActivity?: () => void
   onOpenMobileNav?: () => void
+  /** Whether the navigation drawer is open, for the hamburger's aria-expanded. */
+  mobileNavOpen?: boolean
+  /** Id of the navigation drawer, for the hamburger's aria-controls. */
+  mobileNavId?: string
   right?: ReactNode
 }
 
@@ -54,11 +58,14 @@ export function TopBar({
   activityOpen,
   onToggleActivity,
   onOpenMobileNav,
+  mobileNavOpen = false,
+  mobileNavId,
   right,
 }: TopBarProps) {
   const palette = useCommandPalette()
   return (
-    <div
+    // The page's banner landmark, outside <main> (SHELL-47).
+    <header
       className="flex h-11 flex-shrink-0 items-center gap-3 border-b px-3 sm:px-4"
       style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
     >
@@ -66,11 +73,13 @@ export function TopBar({
         <button
           type="button"
           aria-label="Open navigation"
+          aria-expanded={mobileNavOpen}
+          aria-controls={mobileNavId}
           onClick={onOpenMobileNav}
-          className="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] md:hidden"
+          className="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] lg:hidden"
           style={{ color: 'var(--fg-muted)' }}
         >
-          <Menu className="h-4 w-4" />
+          <Menu className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
       <div className="flex min-w-0 items-center gap-1.5 text-[12.5px]">
@@ -124,7 +133,7 @@ export function TopBar({
           </>
         )}
       </div>
-    </div>
+    </header>
   )
 }
 
@@ -160,7 +169,12 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
   // history (see Recent Alert Deliveries below) and must never be folded in.
   const activeSignalCount = signals.length
   const failedDeliveryCount = deliveries.filter(delivery => delivery.status === 'failed').length
-  const isLoading = signalsQuery.isFetching || deliveriesQuery.isFetching
+  // First load only. `isFetching` swapped the bell for a spinner on every
+  // stream invalidation and poll, so with a live stream the most visible
+  // corner of the app flickered constantly (SHELL-39). A background refresh
+  // shows as a small dot instead.
+  const isLoading = signalsQuery.isPending || deliveriesQuery.isPending
+  const isRefreshing = !isLoading && (signalsQuery.isFetching || deliveriesQuery.isFetching)
   const isError = signalsQuery.isError || deliveriesQuery.isError
 
   return (
@@ -173,9 +187,21 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
           style={{ color: activeSignalCount > 0 ? 'var(--fg)' : 'var(--fg-muted)' }}
         >
           {isLoading && projectSlug ? (
-            <Loader2 className="h-[13px] w-[13px] animate-spin" aria-hidden="true" />
+            <Loader2
+              className="h-[13px] w-[13px] animate-spin"
+              aria-hidden="true"
+              data-testid="notifications-loading"
+            />
           ) : (
             <Bell className="h-[13px] w-[13px]" aria-hidden="true" />
+          )}
+          {isRefreshing && projectSlug && activeSignalCount === 0 && (
+            <span
+              aria-hidden="true"
+              data-testid="notifications-refreshing"
+              className="absolute right-1 top-1 h-1 w-1 rounded-full"
+              style={{ background: 'var(--fg-subtle)' }}
+            />
           )}
           {activeSignalCount > 0 && (
             <span
@@ -188,7 +214,11 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
           )}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[360px] p-0">
+      <PopoverContent
+        align="end"
+        collisionPadding={8}
+        className="w-[min(360px,calc(100vw-16px))] p-0"
+      >
         <div
           className="flex items-center gap-2 border-b px-3.5 py-2.5"
           style={{ borderColor: 'var(--border-subtle)' }}

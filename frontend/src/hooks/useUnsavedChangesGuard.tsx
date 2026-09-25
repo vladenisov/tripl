@@ -18,15 +18,16 @@ type GuardOptions = {
  * so no router blocker sees it. One slot, for the same reason a router consults
  * one blocker: only one page guard is mounted at a time.
  */
-let activePageLeave: ((action: () => void) => void) | null = null
+let activePageLeave: ((action: () => void, onCancel?: () => void) => void) | null = null
 
 /**
  * Run `action` once the mounted page guard (if any) lets the page go: at once
  * when there is no guard or its form is clean, after a confirm when dirty.
+ * `onCancel` runs instead when the user keeps the draft.
  * For controls outside the page that replace what it shows (BranchSwitcher).
  */
-export function requestPageLeave(action: () => void): void {
-  if (activePageLeave) activePageLeave(action)
+export function requestPageLeave(action: () => void, onCancel?: () => void): void {
+  if (activePageLeave) activePageLeave(action, onCancel)
   else action()
 }
 
@@ -76,13 +77,14 @@ function useConfirmDiscard(isDirty: boolean, message: string) {
   // Synchronous when there is nothing to lose, so a clean close or tab switch
   // lands in the same event as the click, exactly as it did before the guard.
   const runIfDiscarded = useCallback(
-    (action: () => void) => {
+    (action: () => void, onCancel?: () => void) => {
       if (!dirtyRef.current) {
         action()
         return
       }
       void confirmDiscard().then(discard => {
         if (discard) action()
+        else onCancel?.()
       })
     },
     [confirmDiscard],

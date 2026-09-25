@@ -1,12 +1,15 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { invitationsApi } from '@/api/invitations'
-import { useAuth } from '@/components/auth-context'
-import { ROLE_OPTIONS } from '@/types'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ROLE_OPTIONS, type AuthUser } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { PASSWORD_MIN_LENGTH, PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
 
 /**
  * Redeem an invitation into an account.
@@ -23,7 +26,7 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 export default function InvitePage() {
   const { token = '' } = useParams<{ token: string }>()
   const navigate = useNavigate()
-  const { refresh } = useAuth()
+  const queryClient = useQueryClient()
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
 
@@ -37,10 +40,12 @@ export default function InvitePage() {
   const acceptMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () => invitationsApi.accept(token, password, name.trim() || undefined),
-    onSuccess: () => {
-      // The API already set the session cookie, so pull the new identity into
-      // the app rather than bouncing through the sign-in screen.
-      refresh()
+    onSuccess: (user: AuthUser) => {
+      // The API already set the session cookie and answered with the account.
+      // Writing it straight into the session query is what lands the user in
+      // the app: a refetch left the session "anonymous" until /auth/me came
+      // back, long enough for the sign-in screen to flash (SHELL-17).
+      queryClient.setQueryData<AuthUser | null>(['auth', 'me'], user)
       void navigate('/', { replace: true })
     },
   })
@@ -69,13 +74,9 @@ export default function InvitePage() {
             <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
               Ask whoever invited you to send a new link.
             </p>
-            <button
-              type="button"
-              onClick={() => void navigate('/auth')}
-              className="text-xs underline underline-offset-4"
-            >
+            <Button type="button" variant="link" size="xs" className="px-0" onClick={() => void navigate('/auth')}>
               Go to sign in
-            </button>
+            </Button>
           </div>
         )}
 
@@ -96,31 +97,32 @@ export default function InvitePage() {
                 if (password) acceptMut.mutate()
               }}
             >
-              <div>
-                <label className="mb-1 block text-xs" htmlFor="invite-name">
-                  Your name (optional)
-                </label>
-                <input
+              <div className="space-y-1.5">
+                <Label htmlFor="invite-name">Your name (optional)</Label>
+                <Input
                   id="invite-name"
+                  autoComplete="name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="h-9 w-full rounded-md border px-2 text-sm"
-                  style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}
                 />
               </div>
-              <div>
-                <label className="mb-1 block text-xs" htmlFor="invite-password">
-                  Password
-                </label>
-                <input
+              <div className="space-y-1.5">
+                <Label htmlFor="invite-password">Password</Label>
+                {/* The policy up front, as on sign-up, rather than learned from
+                    a 422 after submitting. */}
+                <Input
                   id="invite-password"
                   type="password"
+                  autoComplete="new-password"
                   required
+                  minLength={PASSWORD_MIN_LENGTH}
+                  aria-describedby="invite-password-hint"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="h-9 w-full rounded-md border px-2 text-sm"
-                  style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}
                 />
+                <p id="invite-password-hint" className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+                  {PASSWORD_POLICY_HINT}
+                </p>
               </div>
 
               {acceptMut.isError && (
@@ -129,14 +131,9 @@ export default function InvitePage() {
                 </p>
               )}
 
-              <button
-                type="submit"
-                disabled={acceptMut.isPending || !password}
-                className="h-9 w-full rounded-md border text-sm font-medium disabled:opacity-50"
-                style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)' }}
-              >
+              <Button type="submit" className="w-full" disabled={acceptMut.isPending || !password}>
                 {acceptMut.isPending ? 'Creating your account…' : 'Accept invitation'}
-              </button>
+              </Button>
             </form>
           </>
         )}

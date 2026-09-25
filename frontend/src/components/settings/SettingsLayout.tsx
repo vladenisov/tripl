@@ -27,6 +27,7 @@ export function SettingsLayout({
   activePath,
   backHref,
   projectName,
+  projectSlug,
   projects = [],
   children,
 }: {
@@ -36,6 +37,10 @@ export function SettingsLayout({
   backHref: string
   /** Active project name, used to personalize the Project group sub-label. */
   projectName?: string
+  /** The project the Project sections are bound to. Their links carry it as
+   *  `?project=`, so moving between them never falls back to whichever
+   *  project another tab visited last (SHELL-20). */
+  projectSlug?: string
   /** Workspace projects, offered as palette destinations. Already fetched by
    *  SettingsArea, so the palette never issues a query of its own. */
   projects?: readonly Project[]
@@ -296,7 +301,10 @@ export function SettingsLayout({
                 {group.items.map((item) => {
                   const active = item.path === activePath
                   const Icon = item.icon
-                  const href = `/settings/${item.path}`
+                  const href =
+                    projectSlug && item.path.startsWith('project/')
+                      ? `/settings/${item.path}?project=${encodeURIComponent(projectSlug)}`
+                      : `/settings/${item.path}`
                   return (
                     // A real anchor, not a button: as buttons none of these 14
                     // destinations could be cmd-clicked into a new tab,

@@ -1,6 +1,7 @@
 import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { NotFoundState } from '@/components/not-found-state'
+import { useSuppressActivityRail } from '@/components/shell-chrome-context'
 import { projectsQueryOptions } from '@/lib/queryKeys'
 
 /**
@@ -12,6 +13,7 @@ import { projectsQueryOptions } from '@/lib/queryKeys'
  */
 export default function NotFoundPage() {
   const { slug } = useParams()
+  useSuppressActivityRail()
   // `enabled: false` on the key the shell already owns: read whatever Layout
   // fetched, never ask again. Layout holds every child until `['projects']`
   // settles, so under a project route the answer is already here — and where it

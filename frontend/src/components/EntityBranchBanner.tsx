@@ -55,7 +55,7 @@ export function EntityBranchBanner({ slug, rowBranchId, path, noun = 'event' }: 
         </span>
         <Link
           to={path}
-          onClick={() => setBranchId(null)}
+          onClick={() => setBranchId(null, { updateUrl: false })}
           className="underline-offset-2 hover:underline"
         >
           View main plan
@@ -80,7 +80,7 @@ export function EntityBranchBanner({ slug, rowBranchId, path, noun = 'event' }: 
       </span>
       <Link
         to={target}
-        onClick={() => setBranchId(rowIsMain ? null : rowBranchId)}
+        onClick={() => setBranchId(rowIsMain ? null : rowBranchId, { updateUrl: false })}
         className="font-medium underline-offset-2 hover:underline"
       >
         {rowIsMain ? 'Switch to main' : `Switch to ${rowBranch.name}`}

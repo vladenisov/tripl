@@ -309,7 +309,7 @@ describe('EventRow name and type cells', () => {
     expect(link).toHaveAttribute('href', '/p/proj-1/monitoring/event/evt-1?branch=br-1')
 
     fireEvent.click(link)
-    expect(setBranchId).toHaveBeenCalledWith('br-1')
+    expect(setBranchId).toHaveBeenCalledWith('br-1', { updateUrl: false })
   })
 
   it('links to the plain path on main, with no branch param to copy', () => {

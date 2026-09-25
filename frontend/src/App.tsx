@@ -1,5 +1,5 @@
-import { Suspense, type ReactNode } from 'react'
-import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
+import { Suspense, useState, type ReactNode } from 'react'
+import { Link, Navigate, Route, Routes, useLocation, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { AuthProvider } from './components/auth-provider'
 import { useAuth } from './components/auth-context'
@@ -8,13 +8,16 @@ import { RouteErrorBoundary } from './components/error-boundary'
 import { KeyedRoute } from './components/keyed-route'
 import Layout from './components/Layout'
 import { ThemeProvider } from './components/theme-provider'
+import { Button } from './components/ui/button'
 import { Toaster } from './components/ui/sonner'
 import {
   NOT_FOUND_TITLE_LABEL,
   resolveTitleFromPath,
   useDocumentTitle,
 } from './hooks/useDocumentTitle'
+import { postLoginDestination } from './lib/authRedirect'
 import { lazyWithReload } from './lib/lazyWithReload'
+import { projectHomePath } from './lib/navigation'
 import { projectsQueryOptions } from './lib/queryKeys'
 // Static on purpose: the page is a few hundred bytes and the shell already
 // renders its NotFoundState, so a lazy split bought nothing but a warning.
@@ -133,9 +136,58 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-function AnonymousOnly({ children }: { children: ReactNode }) {
+/**
+ * A signed-in visitor on a link meant for someone without a session — an
+ * invitation, a password reset. Bouncing them to `/` dropped the token and read
+ * as a broken link (SHELL-16); this says who they are signed in as and lets
+ * them sign out without leaving the URL.
+ */
+function SignedInInterstitial({ purpose }: { purpose: string }) {
+  const auth = useAuth()
+  const who = auth.user?.email ?? auth.user?.name ?? 'another account'
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-6">
+      <div
+        className="w-full max-w-md space-y-4 rounded-xl border p-6"
+        style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+      >
+        <h1 className="text-lg font-semibold">You are already signed in</h1>
+        <p className="text-sm" style={{ color: 'var(--fg-muted)' }}>
+          You are signed in as <strong>{who}</strong>. Sign out to {purpose}.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            onClick={() => void auth.logout()}
+            disabled={auth.isLoggingOut}
+          >
+            {auth.isLoggingOut ? 'Signing out…' : 'Sign out and continue'}
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/">Back to the app</Link>
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AnonymousOnly({
+  children,
+  signedInPurpose,
+}: {
+  children: ReactNode
+  /** Set for links that must not silently redirect a signed-in visitor. */
+  signedInPurpose?: string
+}) {
   const auth = useAuth()
   const location = useLocation()
+  // Only someone who ARRIVED signed in gets the interstitial. Signing in on the
+  // page itself — accepting the invitation, or logging in after a reset — is
+  // the page doing its job, and goes on to the destination as before.
+  const [arrivedSignedIn, setArrivedSignedIn] = useState<boolean | null>(null)
+  if (auth.status === 'anonymous' && arrivedSignedIn !== false) setArrivedSignedIn(false)
+  if (auth.status === 'authenticated' && arrivedSignedIn === null) setArrivedSignedIn(true)
 
   if (auth.status === 'loading') {
     return <SessionFallback />
@@ -144,12 +196,23 @@ function AnonymousOnly({ children }: { children: ReactNode }) {
     return <SessionError />
   }
   if (auth.status === 'authenticated') {
-    const destination = (
-      location.state as { from?: { pathname?: string } } | null
-    )?.from?.pathname ?? '/'
-    return <Navigate to={destination} replace />
+    if (signedInPurpose && arrivedSignedIn !== false) {
+      return <SignedInInterstitial purpose={signedInPurpose} />
+    }
+    return <Navigate to={postLoginDestination(location.state)} replace />
   }
   return <>{children}</>
+}
+
+/** /auth — a password-reset link keeps its token when someone is signed in. */
+function AuthRoute() {
+  const [searchParams] = useSearchParams()
+  const resetting = searchParams.has('reset_token')
+  return (
+    <AnonymousOnly signedInPurpose={resetting ? 'reset the password' : undefined}>
+      {withSuspense('auth', <AuthPage />)}
+    </AnonymousOnly>
+  )
 }
 
 function ProjectSettingsRedirect({ tab }: { tab: string }) {
@@ -287,7 +350,7 @@ function HomeRoute() {
   const projects = projectsQuery.data ?? []
   const [only] = projects
   if (projects.length === 1 && only) {
-    return <Navigate to={`/p/${only.slug}/overview`} replace />
+    return <Navigate to={projectHomePath(only.slug)} replace />
   }
 
   return withSuspense('workspace', <MainPage />)
@@ -326,16 +389,17 @@ export default function App() {
       <AuthProvider>
         <DocumentTitle />
         <Routes>
-          <Route
-            path="/auth"
-            element={<AnonymousOnly>{withSuspense('auth', <AuthPage />)}</AnonymousOnly>}
-          />
-          {/* Redeeming an invitation. AnonymousOnly like /auth: someone already
-              signed in has no use for it, and following a link while logged in
-              as a different user would be confusing rather than helpful. */}
+          <Route path="/auth" element={<AuthRoute />} />
+          {/* Redeeming an invitation needs a signed-out browser. Someone signed
+              in is told so and offered a sign-out that keeps the link, rather
+              than being bounced to / with the token dropped. */}
           <Route
             path="/invite/:token"
-            element={<AnonymousOnly>{withSuspense('invite', <InvitePage />)}</AnonymousOnly>}
+            element={
+              <AnonymousOnly signedInPurpose="accept this invitation">
+                {withSuspense('invite', <InvitePage />)}
+              </AnonymousOnly>
+            }
           />
           {/* Full-takeover Settings area — its own viewport shell, so each route
               mounts OUTSIDE the app Layout (no app sidebar) but requires auth. */}

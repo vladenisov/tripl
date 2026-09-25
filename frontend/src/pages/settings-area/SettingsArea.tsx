@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState } from 'react'
 import { lazyWithReload } from '@/lib/lazyWithReload'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { projectsQueryOptions } from '@/lib/queryKeys'
 import { useAuth } from '@/components/auth-context'
@@ -24,7 +24,10 @@ const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
 
 /**
  * Resolve the project the Project-scoped settings target. Prefer the slug in the
- * URL (when a section route carries one), otherwise the last project visited.
+ * URL — a route param, or the `?project=` every in-app link to these sections
+ * carries — otherwise the last project visited. The last-visited key is shared
+ * by every tab, so it is only the fallback for a bare address: reading it first
+ * opened the OTHER tab's project, danger zone included (SHELL-20).
  * The sidebar's usePersistLastSlug writes the last-visited slug to this same
  * localStorage key on every project route; we only read it here.
  *
@@ -36,9 +39,12 @@ const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
  */
 function useSettingsSlug(pickedSlug: string | null): string | undefined {
   const { slug: urlSlug } = useParams<{ slug?: string }>()
+  const [searchParams] = useSearchParams()
+  const queryProject = searchParams.get('project')
   const projectsQuery = useQuery(projectsQueryOptions())
   const projects = projectsQuery.data ?? []
   if (urlSlug) return urlSlug
+  if (queryProject) return queryProject
   if (pickedSlug) return pickedSlug
   let last: string | null = null
   try {
@@ -98,6 +104,7 @@ export default function SettingsArea({ section }: { section: string }) {
       activePath={section}
       backHref={backHref}
       projectName={projectName}
+      projectSlug={slug}
       projects={projects}
     >
       <Suspense fallback={<SectionFallback />}>

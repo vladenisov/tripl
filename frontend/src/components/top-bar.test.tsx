@@ -57,6 +57,27 @@ describe('TopBar mobile nav', () => {
     fireEvent.click(screen.getByLabelText('Open navigation'))
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
+
+  it('says whether the drawer is open and which element it controls (SHELL-21)', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <TopBar
+            title="Events"
+            onOpenMobileNav={() => {}}
+            mobileNavOpen
+            mobileNavId="app-sidebar"
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const trigger = screen.getByRole('button', { name: 'Open navigation' })
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    expect(trigger).toHaveAttribute('aria-controls', 'app-sidebar')
+    // The bar is the page's banner landmark (SHELL-47).
+    expect(screen.getByRole('banner')).toContainElement(trigger)
+  })
 })
 
 type DeliveryOverrides = {
@@ -132,6 +153,30 @@ function mockNotificationsFetch(signals: unknown[], deliveries: unknown[]) {
 }
 
 describe('TopBar notifications', () => {
+  it('keeps the bell during a background refresh instead of spinning (SHELL-39)', async () => {
+    mockNotificationsFetch([], [])
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <TopBar title="Events" projectSlug="demo" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const bell = screen.getByRole('button', { name: 'Notifications' })
+    const spinner = () => bell.querySelector('[data-testid="notifications-loading"]')
+    const refreshDot = () => container.querySelector('[data-testid="notifications-refreshing"]')
+    // First load: the spinner stands in for the bell.
+    expect(spinner()).not.toBeNull()
+    await waitFor(() => expect(spinner()).toBeNull())
+
+    // A background refetch that has not answered yet.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}))
+    void queryClient.invalidateQueries()
+    await waitFor(() => expect(refreshDot()).not.toBeNull())
+    expect(spinner()).toBeNull()
+  })
+
   it('opens real project notifications from signals and alert deliveries', async () => {
     mockNotificationsFetch([mockSignal()], [mockDelivery()])
 

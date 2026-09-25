@@ -37,7 +37,11 @@ The project sidebar groups every surface into three job-based areas:
 Above the groups sit the **project switcher**, the **branch switcher** (shown
 only inside a project), and the **Search or jump** button (⌘K). Below the groups
 is a **Project settings** link; the footer adds **Concepts** (the in-app domain
-primer), a **Workspace settings** gear, and **Sign out**. Badge counts come from
+primer), an **Appearance** button (theme, accent, density, chart style), a
+**Workspace settings** gear, and **Sign out**. Collapsed to an icon rail, the
+sidebar keeps the project and branch switchers, Project settings, Concepts and an
+account menu, with each icon named in a tooltip. Below 1024px the sidebar is a
+drawer opened from the top bar, and below 1600px the activity rail is too. Badge counts come from
 the cheap project summary: Events (active events), Event types, Variables,
 Monitors (only when one or more is firing, rendered in red), Anomalies (the count
 of significant open monitoring signals — the same number the Anomalies page shows —
@@ -585,7 +589,14 @@ creating a branch reports it by id and asks you to delete it.
 **Where:** the branch switcher (top of the project sidebar) and Plan › Plan
 branches. `main` is the live plan; feature branches let you stage changes before
 merging. Working surfaces are scoped to the active branch via a `?branch=`
-context. Merging an owned event type re-checks ownership (see
+context. Switching branch writes `?branch=` into the address (or removes it for
+`main`), so a reload and a copied link keep the branch you picked. Going Back
+into an earlier page that named a different branch switches to that branch; if
+the page you are on has unsaved changes, you are asked first. When the branch
+you are working in is merged, closed or deleted, the app switches back to `main`
+and says so. A link that opens a merged or closed branch on purpose (a merged
+branch's diff, **Switch to** on an event from that branch) shows it read-only
+instead. Merging an owned event type re-checks ownership (see
 [Event types](#event-types)).
 
 The list is split into **Active** and **Merged** tabs, each showing its count, so
@@ -815,7 +826,8 @@ checklist (Plan → Observe → Govern) that ticks steps off automatically from 
 project state and hides itself once you are set up. It is role-aware: connecting a
 data source is owner-only, so for an editor that step is shown as **Owner only**
 with an ask-an-owner hint and is excluded from progress — a non-owner's checklist
-can still reach done without it.
+can still reach done without it. Dismissing it offers **Undo**, and the command
+palette's **Show getting started** row brings a dismissed checklist back.
 
 ### Monitors
 
@@ -1777,8 +1789,14 @@ Each entry keeps the request payload, which is why it is owner-gated: see
 
 ### Sign-in and password reset
 
-The sign-in screen toggles between **Existing Account** and **Create account**,
-and exposes a **Forgot your password?** flow. Entering your account email
+The sign-in screen toggles between **Existing account** and **Create account**,
+and exposes a **Forgot your password?** flow. After signing in you return to the
+page you were sent from, query string included, so an alert link's incident
+card or a branch link's branch survives the detour. If your session expires
+while the app is open, a sign-in dialog opens over the page instead of
+redirecting, so unsaved input is still there once you sign back in. Opening an
+invitation or a password-reset link while signed in says which account is signed
+in and offers **Sign out and continue**, keeping the link. Entering your account email
 requests a reset; the screen then always shows the same neutral confirmation
 regardless of whether that address is registered, so it can't be used to probe
 for accounts. When the instance has email configured it sends a **single-use

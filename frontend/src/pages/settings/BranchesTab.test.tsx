@@ -16,6 +16,8 @@ import type {
   Role,
   UserListItem,
 } from '@/types'
+import { BranchProvider } from '@/components/branch-context'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { BranchesTab } from './BranchesTab'
 import { expectNoAxeViolations } from '@/test/axe'
 
@@ -1006,6 +1008,44 @@ describe('BranchesTab', () => {
     const mergeBtn = await screen.findByRole('button', { name: /Merge to main/i })
     fireEvent.click(mergeBtn)
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
+  })
+
+  it('switches the shell back to main when the active branch is merged (SHELL-18)', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+    vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
+    localStorage.setItem('tripl-branch:demo', FEATURE.id)
+
+    function ActiveBranch() {
+      return <output aria-label="active branch">{useActiveBranchId() ?? 'main'}</output>
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authAs('owner')}>
+          <MemoryRouter initialEntries={[`/p/demo/settings/branches/${FEATURE.id}`]}>
+            <BranchProvider slug="demo">
+              <ActiveBranch />
+              <Routes>
+                <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+              </Routes>
+            </BranchProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+    const active = screen.getByRole('status', { name: 'active branch' })
+    expect(active).toHaveTextContent(FEATURE.id)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+    await waitFor(() => expect(active).toHaveTextContent('main'))
+    expect(localStorage.getItem('tripl-branch:demo')).toBeNull()
   })
 
   it('preserves the transition workflow for non-approved statuses', async () => {
