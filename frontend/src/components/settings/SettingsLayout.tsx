@@ -6,18 +6,11 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { SETTINGS_CONTENT_ID } from './landmarks'
 import { sectionPathForUrl, visibleGroupsAll } from './nav'
 import { SettingsCommandPalette } from './settings-palette'
-import { UnsavedChangesProvider, type UnsavedWork } from './unsaved-changes'
+import { LEAVE_CONFIRMED, UnsavedChangesProvider, type UnsavedWork } from './unsaved-changes'
 import type { Project } from '@/types'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
 
 const RAIL_TITLE_ID = 'settings-rail-title'
-
-/**
- * Carried in the navigation's own `state` by the one exit that has already
- * asked. Scoped to that single navigation, so unlike a ref or a piece of
- * component state it cannot survive to wave a later one through.
- */
-const LEAVE_CONFIRMED = { leaveConfirmed: true } as const
 
 /**
  * Full-viewport takeover shell for the Settings area (Linear/Vercel pattern).

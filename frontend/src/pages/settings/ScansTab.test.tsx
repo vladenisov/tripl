@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import {
@@ -13,6 +13,7 @@ import { liveLoopState } from '@/demo/scenarioTestState'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import type { Project, Role } from '@/types'
 import { ScansTab } from './ScansTab'
+import ProjectScansPage from '../ProjectScansPage'
 
 const navigateMock = vi.fn()
 
@@ -198,6 +199,23 @@ function renderTab(role: Role = 'owner') {
       <AuthContext.Provider value={authAs(role)}>
         <MemoryRouter initialEntries={['/p/demo/scans']}>
           <ScansTab slug="demo" />
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+}
+
+/** The routed page, for the paths ScansTab alone cannot answer (`/scans/new`). */
+function renderRoute(path: string, role: Role = 'owner') {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <AuthContext.Provider value={authAs(role)}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/p/:slug/scans/:scanId" element={<ProjectScansPage />} />
+            <Route path="/p/:slug/scans" element={<ProjectScansPage />} />
+          </Routes>
         </MemoryRouter>
       </AuthContext.Provider>
     </QueryClientProvider>,
@@ -488,7 +506,7 @@ describe('ScansTab', () => {
     expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/scan-1')
   })
 
-  it('opens the create page in place and gates column mapping behind preview', async () => {
+  it('opens the create page on its own route, so Back and reload keep it (DATA-13)', async () => {
     setupFetch()
     renderTab()
 
@@ -499,10 +517,15 @@ describe('ScansTab', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /New scan/i }))
 
-    // In-place page view — no router navigation occurred.
-    expect(navigateMock).not.toHaveBeenCalled()
-    // Scoped to the heading: the list's own "New scan" BUTTON now carries the
-    // same words, so a bare text query would match it and pass either way.
+    expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/new')
+  })
+
+  it('renders the create page at /scans/new and gates column mapping behind preview', async () => {
+    setupFetch()
+    renderRoute('/p/demo/scans/new')
+
+    // Scoped to the heading: the list's own "New scan" BUTTON carries the same
+    // words, so a bare text query would match it and pass either way.
     expect(await screen.findByRole('heading', { name: 'New scan' })).toBeInTheDocument()
     // The essentials block is always visible; everything else is a collapsed
     // section whose fields are not mounted until it is opened.
@@ -511,11 +534,17 @@ describe('ScansTab', () => {
     expect(screen.getByRole('button', { name: /Limits/ })).toBeInTheDocument()
     expect(screen.queryByLabelText('Row cap per run')).toBeNull()
 
-    // Cancel returns to the list without navigation.
+    // Cancel on an untouched form goes back to the list without asking.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.getByText('Main events scan')).toBeInTheDocument())
+    expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans')
+  })
+
+  it('sends a non-owner who opens /scans/new to the list', async () => {
+    setupFetch()
+    renderRoute('/p/demo/scans/new', 'editor')
+
+    expect(await screen.findByText('Main events scan')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'New scan' })).not.toBeInTheDocument()
-    expect(navigateMock).not.toHaveBeenCalled()
   })
 })
 

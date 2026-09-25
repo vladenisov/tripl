@@ -1198,3 +1198,22 @@ describe('MetricForm field labels', () => {
     expect(screen.getByRole('group', { name: 'Breakdown columns' })).toBeInTheDocument()
   })
 })
+
+/** Whether a reload/tab-close right now would get the browser's prompt. */
+function reloadIsGuarded(): boolean {
+  const event = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(event)
+  return event.defaultPrevented
+}
+
+describe('MetricForm unsaved-changes guard (MET-5)', () => {
+  it('arms the reload prompt only once something was typed', () => {
+    renderForm()
+    expect(reloadIsGuarded()).toBe(false)
+
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Orders' },
+    })
+    expect(reloadIsGuarded()).toBe(true)
+  })
+})

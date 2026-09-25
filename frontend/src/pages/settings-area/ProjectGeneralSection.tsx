@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, RotateCcw, Save, Trash2, TriangleAlert } from 'lucide-react'
@@ -13,6 +13,7 @@ import { searchApi } from '@/api/search'
 import { useAuth } from '@/components/auth-context'
 import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/hooks/useConfirm'
+import { LEAVE_CONFIRMED, useUnsavedChanges } from '@/components/settings/unsaved-changes'
 import { projectVariablesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import {
@@ -247,6 +248,9 @@ function DangerRetireVariablesRow({
  * surfaces) so the two project-config halves stay reachable, and the danger zone
  * keeps the wired Delete plus not-yet-wired Archive / Transfer actions.
  */
+const UNSAVED_PROJECT_MESSAGE =
+  'Project details you edited here have not been saved. Leaving this page drops them.'
+
 export default function ProjectGeneralSection({ slug }: { slug: string | undefined }) {
   if (!slug) {
     return (
@@ -317,7 +321,9 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     mutationFn: () => projectsApi.del(slug),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['projects'] })
-      navigate('/', { replace: true })
+      // The project is gone, and any draft of its details with it: nothing for
+      // the unsaved-changes guard to ask about.
+      navigate('/', { replace: true, state: LEAVE_CONFIRMED })
     },
   })
 
@@ -422,6 +428,17 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     appVersionKeepReleasesNumber > MAX_APP_VERSION_KEEP_RELEASES
   const versionPolicyPristine =
     appVersionKeepReleasesNumber === projectQuery.data?.app_version_keep_releases
+
+  // Either card's unsaved edits arm the settings shell's leave guard: the rail,
+  // "View project", Back and reload all used to drop them silently (WS-13).
+  // A read-only form is never dirty. No settings path keeps this draft: the
+  // section is the only one that renders it.
+  const { registerUnsaved } = useUnsavedChanges()
+  const dirty = canEdit && !!projectQuery.data && (!isPristine || !versionPolicyPristine)
+  useEffect(() => {
+    registerUnsaved(dirty ? { keptBy: () => false, message: UNSAVED_PROJECT_MESSAGE } : null)
+    return () => registerUnsaved(null)
+  }, [dirty, registerUnsaved])
 
   return (
     <div>

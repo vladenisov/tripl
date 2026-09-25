@@ -251,6 +251,64 @@ describe('FieldsEditor fields table', () => {
   })
 })
 
+describe('FieldsEditor field edit subpage (PLAN-46)', () => {
+  function openNewField() {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      mockJsonResponse({}),
+    )
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FieldsEditor slug="demo" eventType={CHECKOUT} branchId={null} />
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
+    return { fetchSpy }
+  }
+
+  it('is a form whose Save is its submit button, so Enter saves', () => {
+    openNewField()
+    expect(screen.getByRole('heading', { name: 'New field' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add field' })).toHaveAttribute('type', 'submit')
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveAttribute('type', 'button')
+  })
+
+  it('says why a new field without a name is not saved', () => {
+    const { fetchSpy } = openNewField()
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent('A new field needs a name.')
+    expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('asks before Cancel throws away a half-filled field, and keeps it on Cancel', async () => {
+    openNewField()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Name')).toHaveValue('order_id')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'New field' })).not.toBeInTheDocument(),
+    )
+  })
+
+  it('leaves an untouched field page at once', () => {
+    openNewField()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('heading', { name: 'New field' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+})
+
 describe('EventTypeDetail tabbed page', () => {
   function detailFetch(input: RequestInfo | URL) {
     const url = String(input)

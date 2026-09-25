@@ -12,6 +12,7 @@ import { ErrorState } from '@/components/error-state'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { SqlEditor } from '@/components/sql-editor'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
 import {
   Field,
@@ -979,12 +980,27 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     }
   }
 
+  // Every input the author can change, as one comparable string; the first
+  // render's value is the baseline (MET-5). Transient view state (the preview,
+  // the template gallery, validation messages) is left out on purpose.
+  const draftSnapshot = JSON.stringify({
+    kind, displayName, name, description, status, unit, color, anomalyDetection,
+    breakdownColumns, appVersionColumn, platformColumn, dataSourceId, interval,
+    metricSql, sqlTimeColumn, sqlValueColumn, composition, userIdColumn,
+    numeratorEventId, denominatorEventId, numeratorEventTypeId, denominatorEventTypeId,
+    factComposition, numeratorOp, denominatorOp,
+  })
+  const [initialSnapshot] = useState(draftSnapshot)
+  // A viewer's form is disabled and so never dirty.
+  const unsaved = useUnsavedChangesGuard(canWrite && draftSnapshot !== initialSnapshot)
+
   const saveMut = useMutation({
     mutationFn: () =>
       metric
         ? metricsCatalogApi.update(slug, metric.id, buildUpdatePayload())
         : metricsCatalogApi.create(slug, buildCreatePayload()),
     onSuccess: () => {
+      unsaved.release()
       void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
       if (metric) void qc.invalidateQueries({ queryKey: ['metricDefinition', slug] })
       void qc.invalidateQueries({ queryKey: ['metric-generated-sql', slug] })
@@ -1618,6 +1634,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         </div>
       </form>
       {kindDialog}
+      {unsaved.dialog}
     </div>
   )
 }

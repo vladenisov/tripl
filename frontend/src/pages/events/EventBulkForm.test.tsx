@@ -228,3 +228,23 @@ describe('EventBulkForm', () => {
     await waitFor(() => expect(screen.getByLabelText(/Event type/)).toHaveValue(''))
   })
 })
+
+/** Whether a reload/tab-close right now would get the browser's prompt. */
+function reloadIsGuarded(): boolean {
+  const event = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(event)
+  return event.defaultPrevented
+}
+
+describe('EventBulkForm unsaved-changes guard (EVT-8)', () => {
+  it('arms the reload prompt while a pasted list is on the page', async () => {
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    expect(reloadIsGuarded()).toBe(false)
+
+    fireEvent.change(await screen.findByLabelText('Events to create'), {
+      target: { value: 'settings\tunit_change\twind_speed' },
+    })
+    expect(reloadIsGuarded()).toBe(true)
+  })
+})

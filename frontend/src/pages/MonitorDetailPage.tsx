@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowLeft, Bell, BellOff, RefreshCw, Settings2 } from 'l
 import { alertingApi } from '@/api/alerting'
 import { InfoRow, PageHead, Panel } from '@/components/settings/kit'
 import { ErrorState } from '@/components/error-state'
+import { FormRow } from '@/components/ui/form-row'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
@@ -446,14 +447,19 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
         mono={false}
         last
       />
-      <div
-        className="flex items-start gap-4 px-[18px] py-[11px]"
+      {/* Stacks below `sm`, like the InfoRows above it (MON-32). */}
+      <FormRow
+        labelWidth={200}
+        captionClassName="sm:pt-1"
+        className="gap-1 px-[18px] py-[11px] sm:gap-4"
         style={{ borderTop: '1px solid var(--border-subtle)' }}
+        caption={
+          <span className="text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            Watching
+          </span>
+        }
       >
-        <span className="shrink-0 pt-1 text-[12.5px]" style={{ width: 200, color: 'var(--fg-subtle)' }}>
-          Watching
-        </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <div className="flex min-w-0 flex-wrap gap-1.5">
             {scopes.length > 0 ? (
               scopes.map((scope) => (
@@ -488,7 +494,7 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
             />
           ))}
         </div>
-      </div>
+      </FormRow>
     </Panel>
   )
 }
@@ -496,11 +502,17 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
 function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail }) {
   return (
     <Panel title="Routes to" subtitle="Where firing alerts are delivered">
-      <div className="flex items-center gap-4 px-[18px] py-[11px]" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-        <span className="shrink-0 text-[12.5px]" style={{ width: 200, color: 'var(--fg-subtle)' }}>
-          Destination
-        </span>
-        <span className="flex min-w-0 flex-1 items-center gap-2">
+      <FormRow
+        labelWidth={200}
+        className="gap-1 px-[18px] py-[11px] sm:items-center sm:gap-4"
+        style={{ borderBottom: '1px solid var(--border-subtle)' }}
+        caption={
+          <span className="text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            Destination
+          </span>
+        }
+      >
+        <span className="flex min-w-0 items-center gap-2">
           <Chip tone="neutral" size="xs">
             {monitor.destination_type}
           </Chip>
@@ -509,16 +521,17 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
               to={`/p/${slug}/settings/alerting`}
               className="min-w-0 truncate text-[12.5px] no-underline hover:underline"
               style={{ color: 'var(--fg)' }}
+              title={monitor.destination_name}
             >
               {monitor.destination_name}
             </Link>
           ) : (
-            <span className="min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }}>
+            <span className="min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }} title={monitor.destination_name}>
               {monitor.destination_name}
             </span>
           )}
         </span>
-      </div>
+      </FormRow>
       <InfoRow
         label="Status"
         value={

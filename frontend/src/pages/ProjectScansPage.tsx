@@ -1,6 +1,29 @@
-import { useParams } from 'react-router-dom'
+import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { ScansTab } from './settings/ScansTab'
 import { ScanConfigDetail } from './settings/ScanConfigDetailView'
+import { ScanCreatePage } from './settings/scans/ScanConfigForm'
+import { useIsOwner } from '@/lib/permissions'
+
+/** A scan id is a UUID, so `new` under `/p/:slug/scans/:scanId` is never one. */
+const NEW_SCAN_SEGMENT = 'new'
+
+/**
+ * The create page has a route (DATA-13): it used to be view state inside the
+ * list, so Back left Scans altogether and a reload dropped the whole draft.
+ * Authoring a scan is owner-only; anyone else is sent to the list.
+ */
+function NewScanRoute({ slug }: { slug: string }) {
+  const navigate = useNavigate()
+  const isOwner = useIsOwner()
+  if (!isOwner) return <Navigate to={`/p/${slug}/scans`} replace />
+  return (
+    <ScanCreatePage
+      slug={slug}
+      onBack={() => navigate(`/p/${slug}/scans`)}
+      onCreated={created => navigate(`/p/${slug}/scans/${created.id}`)}
+    />
+  )
+}
 
 /**
  * Govern › Scans, as a top-level project surface at `/p/:slug/scans`.
@@ -19,6 +42,7 @@ import { ScanConfigDetail } from './settings/ScanConfigDetailView'
 export default function ProjectScansPage() {
   const { slug, scanId } = useParams<{ slug: string; scanId?: string }>()
   if (!slug) return null
+  if (scanId === NEW_SCAN_SEGMENT) return <NewScanRoute slug={slug} />
   return scanId
     ? <ScanConfigDetail slug={slug} scanConfigId={scanId} />
     : <ScansTab slug={slug} />

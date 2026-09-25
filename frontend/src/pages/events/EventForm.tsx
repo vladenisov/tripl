@@ -19,6 +19,7 @@ import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { variablesApi } from '@/api/variables'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { ChipListInput } from '@/components/chip-list-input'
 import { CommentThread } from '@/components/comment-thread'
@@ -419,6 +420,7 @@ export function EventForm({
   defaultEventTypeId,
   onClose,
   onCreated,
+  hasOtherUnsavedInput = false,
 }: {
   slug: string
   eventTypes: EventType[]
@@ -432,6 +434,9 @@ export function EventForm({
    *  over the navigation. Never called on an update: the event already existed,
    *  so there is nothing here that a save makes possible. */
   onCreated?: (created: EventMutationResponse) => Promise<boolean | void> | boolean | void
+  /** Input the page holds outside the form (the draft discussion note) that
+   *  leaving would also lose. */
+  hasOtherUnsavedInput?: boolean
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
@@ -518,12 +523,16 @@ export function EventForm({
     return branchTicket(branch?.name, metaFields)
   }, [branchesQuery.data, branchId, metaFields])
   const ticketPrefilled = useRef(false)
+  // What the prefill wrote, so the unsaved-changes check below does not count
+  // the form's own suggestion as the author's input.
+  const [prefilledTicket, setPrefilledTicket] = useState<{ fieldId: string; key: string } | null>(null)
   useEffect(() => {
     if (!isNew || !ticket || ticketPrefilled.current) return
     ticketPrefilled.current = true
     setMetaValues(prev =>
       ticket.field.id in prev ? prev : { ...prev, [ticket.field.id]: [ticket.key] },
     )
+    setPrefilledTicket({ fieldId: ticket.field.id, key: ticket.key })
   }, [isNew, ticket])
 
   const selectedEt = eventTypes.find(e => e.id === etId)
@@ -751,6 +760,36 @@ export function EventForm({
   const composedName = generatedName ? generatedName.name : name
   if (justCreated !== null && composedName !== justCreated) setJustCreated(null)
 
+  // Everything a save would send, as one comparable string. Empty values are
+  // dropped the way the payload drops them, so clearing a box you typed into
+  // is not a change, and the branch-ticket prefill counts as the starting point.
+  const draftSnapshot = JSON.stringify({
+    etId,
+    name,
+    title,
+    description,
+    status,
+    ownerId,
+    sunsetAt,
+    supersededBy,
+    metricBreakdownColumns,
+    tags,
+    fieldValues: Object.entries(fieldValues).filter(([, v]) => v !== '').sort(),
+    metaValues: Object.entries(metaValues)
+      .map(([k, values]) => [k, values.filter(v => v !== '')] as const)
+      .filter(([k, values]) =>
+        values.length > 0
+        && !(prefilledTicket?.fieldId === k && values.length === 1 && values[0] === prefilledTicket.key))
+      .sort(),
+  })
+  // The draft as it was when the form opened, or as the last "Save and add
+  // another" wrote it.
+  const [savedSnapshot, setSavedSnapshot] = useState(draftSnapshot)
+  // A viewer's form is disabled and so never dirty.
+  const unsaved = useUnsavedChangesGuard(
+    canWrite && (draftSnapshot !== savedSnapshot || hasOtherUnsavedInput),
+  )
+
   const toggleBreakdown = (column: string) => {
     setMetricBreakdownColumns(current =>
       current.includes(column)
@@ -815,6 +854,10 @@ export function EventForm({
         : eventsApi.create(slug, payload, branchId)
     },
     onSuccess: async (_data, closeAfterSave: boolean) => {
+      // The draft is saved: nothing below may be stopped by the leave guard,
+      // including a caller that navigates to the created event.
+      unsaved.release()
+      setSavedSnapshot(draftSnapshot)
       qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
       qc.invalidateQueries({ queryKey: ['eventTags', slug, branchId] })
       if (event) qc.invalidateQueries({ queryKey: ['event', slug] })
@@ -881,10 +924,11 @@ export function EventForm({
 
   return (
     <div className="h-full overflow-y-auto">
+      {unsaved.dialog}
       <form
         ref={formRef}
         onSubmit={e => { e.preventDefault(); if (cannotSave) return; saveMut.mutate(true) }}
-        className="mx-auto max-w-[880px] px-6 pb-12 pt-4"
+        className="mx-auto max-w-[880px] px-4 sm:px-6 pb-12 pt-4"
       >
         <button
           type="button"
@@ -1535,7 +1579,7 @@ export default function EventEditPage() {
         // authoring surface that never said which plan it was writing to. The
         // read is lenient and the write is strict, so a mismatch rendered a
         // perfectly normal form and failed as a bare 404 at Save.
-        <div className="mx-auto max-w-[880px] px-6 pt-4">
+        <div className="mx-auto max-w-[880px] px-4 sm:px-6 pt-4">
           <EntityBranchBanner
             slug={slug}
             rowBranchId={eventQuery.data?.branch_id}
@@ -1552,6 +1596,7 @@ export default function EventEditPage() {
         defaultEventTypeId={defaultEventTypeId}
         onClose={goBack}
         onCreated={postDraftNote}
+        hasOtherUnsavedInput={draftNote.trim() !== ''}
       />
       {/* The one home for the discussion, and outside the form on purpose: it
           is not plan content. Every other box on this page ships to whoever
@@ -1560,7 +1605,7 @@ export default function EventEditPage() {
           there reads as part of the specification. Edit only: there is no
           event to hang a thread on until one exists. */}
       {eventId ? (
-        <div className="mx-auto max-w-[880px] px-6 pb-10">
+        <div className="mx-auto max-w-[880px] px-4 sm:px-6 pb-10">
           {handoff?.commentError && (
             <p role="alert" className="mb-2 text-xs text-destructive">
               {handoff.commentError}
@@ -1583,7 +1628,7 @@ export default function EventEditPage() {
           />
         </div>
       ) : (
-        <div className="mx-auto max-w-[880px] px-6 pb-10">
+        <div className="mx-auto max-w-[880px] px-4 sm:px-6 pb-10">
           <DraftDiscussionNote value={draftNote} onChange={setDraftNote} />
         </div>
       )}

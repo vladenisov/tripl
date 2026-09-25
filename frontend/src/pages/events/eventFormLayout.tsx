@@ -8,6 +8,7 @@
  */
 import type { ReactNode } from 'react'
 import { ChevronDown } from 'lucide-react'
+import { FormRow } from '@/components/ui/form-row'
 
 export const EV_INPUT_CLASS =
   'w-full rounded-[7px] border bg-[var(--bg)] px-[11px] text-[13px] text-[var(--fg)] outline-none focus:border-[var(--accent)]'
@@ -57,23 +58,29 @@ export function EvField({
   children: ReactNode
 }) {
   return (
-    <div
-      className="flex items-start gap-6 px-[18px] py-[15px]"
+    // Stacks below `sm`: a fixed 200px caption left a 375px phone ~40px per
+    // control, so Name showed two letters and a select only its chevron (EVT-6).
+    <FormRow
+      labelWidth={200}
+      captionClassName="sm:pt-[6px]"
+      className="px-[18px] py-[15px]"
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
+      caption={
+        <>
+          <label htmlFor={htmlFor} className="text-[13px] font-medium">
+            {label}
+            {required && <span className="ml-[3px]" style={{ color: 'var(--danger)' }}>*</span>}
+          </label>
+          {hint && (
+            <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+              {hint}
+            </div>
+          )}
+        </>
+      }
     >
-      <div className="w-[200px] flex-shrink-0 pt-[6px]">
-        <label htmlFor={htmlFor} className="text-[13px] font-medium">
-          {label}
-          {required && <span className="ml-[3px]" style={{ color: 'var(--danger)' }}>*</span>}
-        </label>
-        {hint && (
-          <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-            {hint}
-          </div>
-        )}
-      </div>
-      <div className="min-w-0 flex-1">{children}</div>
-    </div>
+      {children}
+    </FormRow>
   )
 }
 

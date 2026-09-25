@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { searchApi } from '@/api/search'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectGeneralSection from './ProjectGeneralSection'
+import { UnsavedChangesProvider, type UnsavedWork } from '@/components/settings/unsaved-changes'
 
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -318,5 +319,52 @@ describe('ProjectGeneralSection', () => {
     // The cutoff must be ~7 days ago (the chosen window), not the 30-day default.
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
     expect(Math.abs(Date.now() - Date.parse(body.before) - sevenDaysMs)).toBeLessThan(60_000)
+  })
+})
+
+describe('ProjectGeneralSection unsaved-changes guard (WS-13)', () => {
+  function renderWithShell(auth: AuthContextValue) {
+    const registered: (UnsavedWork | null)[] = []
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={auth}>
+          <MemoryRouter initialEntries={['/settings/project/general']}>
+            <UnsavedChangesProvider value={{ registerUnsaved: work => registered.push(work) }}>
+              <ProjectGeneralSection slug="demo" />
+            </UnsavedChangesProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+    return { lastRegistered: () => registered.at(-1) ?? null }
+  }
+
+  function mockProject() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  it('registers the draft with the settings shell while either card is edited', async () => {
+    mockProject()
+    const { lastRegistered } = renderWithShell(ownerAuthValue())
+
+    const nameInput = await screen.findByLabelText('Name')
+    await waitFor(() => expect(nameInput).toHaveValue('Demo'))
+    expect(lastRegistered()).toBeNull()
+
+    fireEvent.change(nameInput, { target: { value: 'Demo 2' } })
+    await waitFor(() => expect(lastRegistered()).not.toBeNull())
+    // No other settings page renders this draft, so every destination loses it.
+    expect(lastRegistered()!.keptBy('project/general')).toBe(false)
+
+    fireEvent.change(nameInput, { target: { value: 'Demo' } })
+    await waitFor(() => expect(lastRegistered()).toBeNull())
+
+    fireEvent.change(screen.getByLabelText('Releases to keep'), { target: { value: '5' } })
+    await waitFor(() => expect(lastRegistered()).not.toBeNull())
   })
 })

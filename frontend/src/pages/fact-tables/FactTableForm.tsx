@@ -7,6 +7,7 @@ import { factTablesApi } from '@/api/factTablesApi'
 import { ErrorState } from '@/components/error-state'
 import { SqlEditor } from '@/components/sql-editor'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import {
   Field,
@@ -238,12 +239,25 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     }
   }
 
+  // Every input a save would send, as one comparable string; the first render's
+  // value is the baseline (MET-5). Row filters drop their client-side ids,
+  // which are fresh on every mount.
+  const draftSnapshot = JSON.stringify({
+    displayName, name, description, color, dataSourceId, sql, timestampColumn,
+    columns, identifierColumns,
+    rowFilters: rowFilters.map(filter => [filter.name, filter.sql]),
+  })
+  const [initialSnapshot] = useState(draftSnapshot)
+  // A viewer's form is disabled and so never dirty.
+  const unsaved = useUnsavedChangesGuard(canWrite && draftSnapshot !== initialSnapshot)
+
   const saveMut = useMutation({
     mutationFn: () =>
       factTable
         ? factTablesApi.update(slug, factTable.id, buildUpdatePayload())
         : factTablesApi.create(slug, buildCreatePayload()),
     onSuccess: () => {
+      unsaved.release()
       void qc.invalidateQueries({ queryKey: ['fact-tables', slug] })
       if (factTable) void qc.invalidateQueries({ queryKey: ['fact-table', slug] })
       void qc.invalidateQueries({ queryKey: ['metric-generated-sql', slug] })
@@ -282,6 +296,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
 
   return (
     <div className="h-full overflow-y-auto">
+      {unsaved.dialog}
       <form
         onSubmit={e => {
           e.preventDefault()

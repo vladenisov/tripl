@@ -5,6 +5,7 @@ import type { EventType } from '@/types'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
 import { ErrorState } from '@/components/error-state'
@@ -70,6 +71,9 @@ export default function EventBulkForm() {
   const [chosenEtId, setEtId] = useState<string | null>(null)
   const [status, setStatus] = useState<EventStatus>('draft')
   const [draft, setDraft] = useState('')
+  // The pasted list is the work at risk; a type or status choice alone is one
+  // click to redo. A viewer's textarea is disabled, so theirs is never dirty.
+  const unsaved = useUnsavedChangesGuard(canWrite && draft.trim() !== '')
 
   const goBack = () => {
     navigate(!tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`)
@@ -160,6 +164,7 @@ export default function EventBulkForm() {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
+      unsaved.release()
       goBack()
     },
   })
@@ -189,7 +194,8 @@ export default function EventBulkForm() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-[880px] px-6 pb-12 pt-4">
+      {unsaved.dialog}
+      <div className="mx-auto max-w-[880px] px-4 sm:px-6 pb-12 pt-4">
         <button
           type="button"
           onClick={goBack}

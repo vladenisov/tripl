@@ -1936,6 +1936,26 @@ describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt
     ).toHaveTextContent('Ops Slack')
   })
 
+  it('asks before Escape drops an edited rule draft, and keeps it on Cancel (ALR-17)', async () => {
+    mockCreatableDestinations()
+    renderTab()
+
+    await finishStepTwo()
+    await screen.findByText('New Alert Rule')
+    const ruleDialog = screen.getByRole('dialog')
+    fireEvent.change(within(ruleDialog).getByLabelText('Name'), {
+      target: { value: 'Checkout drops' },
+    })
+
+    fireEvent.keyDown(ruleDialog, { key: 'Escape' })
+    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByText('New Alert Rule')).toBeInTheDocument()
+    expect(within(screen.getByRole('dialog')).getByLabelText('Name')).toHaveValue('Checkout drops')
+  })
+
   it('does not re-open the form the reader closed, on this render or the next visit', async () => {
     mockCreatableDestinations()
     renderTab()

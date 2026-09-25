@@ -16,7 +16,6 @@ import { Chip } from "@/components/primitives/chip"
 import { Search } from "lucide-react"
 import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
 import { runPillStatus } from "./scans/scanRunStatus"
-import { ScanCreatePage } from "./scans/ScanConfigForm"
 import { scanModeOf } from "./scans/scanMode"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
@@ -54,7 +53,6 @@ export function ScansTab({ slug }: { slug: string }) {
   // job (DATA-6). Each control below is offered only to a role that can use it.
   const isOwner = useIsOwner()
   const canRun = useCanWrite()
-  const [view, setView] = useState<'list' | 'new'>('list')
   // Captured once at mount so the 24h window stays stable across re-renders
   // (keeps the rows-scanned KPI pure rather than reading the wall clock in render).
   const [mountedAtMs] = useState(() => Date.now())
@@ -194,10 +192,6 @@ export function ScansTab({ slug }: { slug: string }) {
   // "Run again" derive their busy state from this id.
   const pendingScanId = runScan.isPending ? runScan.variables : undefined
 
-  if (view === 'new' && isOwner) {
-    return <ScanCreatePage slug={slug} onBack={() => setView('list')} />
-  }
-
   // Counting `interval` alone counted the broken quadrant — a schedule with no
   // time column is never dispatched, so it monitors nothing (tripl-3y7z.1).
   const monitoringCount = scanConfigs.filter(
@@ -223,7 +217,7 @@ export function ScansTab({ slug }: { slug: string }) {
             size="sm"
             disabled={dataSources.length === 0}
             title={dataSources.length === 0 ? 'Add a data source first' : ''}
-            onClick={() => setView('new')}
+            onClick={() => navigate(`/p/${slug}/scans/new`)}
           >
             <Plus className="size-3.5" />
             New scan
@@ -305,7 +299,9 @@ export function ScansTab({ slug }: { slug: string }) {
           </p>
         ) : (
           <table className="w-full border-collapse">
-            <thead>
+            {/* Phones get the rows as stacked cards (ScanListRow), so the
+                column headings have nothing to head there. */}
+            <thead className="hidden sm:table-header-group">
               <tr style={{ background: 'var(--bg-sunken)' }}>
                 {['Scan', 'Last run'].map(h => (
                   <th

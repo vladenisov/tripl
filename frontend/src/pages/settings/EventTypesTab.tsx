@@ -21,7 +21,9 @@ import { useActiveBranchId } from '@/hooks/useBranch'
 import type { EventType, EventTypeOwner, FieldDefinition, Sensitivity, UserListItem } from '@/types'
 import { SENSITIVITY_OPTIONS } from '@/types'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { Button } from '@/components/ui/button'
+import { FormRow } from '@/components/ui/form-row'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
@@ -663,8 +665,19 @@ interface FieldEditPageProps {
 
 function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditPageProps) {
   const isEdit = !!field
-  const [draft, setDraft] = useState<FieldDraft>(field ? draftFromField(field) : emptyDraft())
+  const [initialDraft] = useState<FieldDraft>(() => (field ? draftFromField(field) : emptyDraft()))
+  const [draft, setDraft] = useState<FieldDraft>(initialDraft)
   const [enumInput, setEnumInput] = useState('')
+  // Shown once a create was attempted with no name: Save used to do nothing at
+  // all, with no word as to why (PLAN-46).
+  const [nameMissing, setNameMissing] = useState(false)
+  // Cancel and "← Fields" threw a half-filled contract away without asking.
+  // The page guard also covers leaving through the app (the sidebar, Back) and
+  // reload; a successful save unmounts this page, so it needs no release.
+  const unsaved = useUnsavedChangesGuard(
+    JSON.stringify(draft) !== JSON.stringify(initialDraft) || enumInput.trim() !== '',
+  )
+  const cancel = () => unsaved.requestLeave(onCancel)
   const set = <K extends keyof FieldDraft>(key: K, value: FieldDraft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }))
 
@@ -675,13 +688,25 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
   }
 
   const submit = () => {
-    if (!isEdit && !draft.name.trim()) return
+    if (!isEdit && !draft.name.trim()) {
+      setNameMissing(true)
+      return
+    }
     onSubmit(draft)
   }
 
   return (
-    <div className="max-w-[880px]">
-      <BackLink label="Fields" onClick={onCancel} />
+    // A real form, so Enter in any input saves, as it does everywhere else.
+    <form
+      className="max-w-[880px]"
+      noValidate
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!pending) submit()
+      }}
+    >
+      {unsaved.dialog}
+      <BackLink label="Fields" onClick={cancel} />
       <h2 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">
         {isEdit ? `Edit field · ${field.name}` : 'New field'}
       </h2>
@@ -689,7 +714,23 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
       <SCard title="Field">
         {!isEdit && (
           <SField label="Name" hint="Matches the query column the scan populates.">
-            <SInput value={draft.name} onChange={(v) => set('name', v)} mono placeholder="e.g. order_id" />
+            <SInput
+              value={draft.name}
+              onChange={(v) => {
+                set('name', v)
+                if (v.trim()) setNameMissing(false)
+              }}
+              mono
+              placeholder="e.g. order_id"
+              ariaLabel="Name"
+              invalid={nameMissing}
+              describedBy={nameMissing ? 'field-name-error' : undefined}
+            />
+            {nameMissing && (
+              <p id="field-name-error" role="alert" className="mt-1 text-[12px]" style={{ color: 'var(--danger)' }}>
+                A new field needs a name.
+              </p>
+            )}
           </SField>
         )}
         <SField label="Display name">
@@ -816,15 +857,15 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
         </p>
       )}
       <div className="mt-1 flex justify-end gap-2.5">
-        <Button variant="ghost" size="sm" onClick={onCancel}>
+        <Button type="button" variant="ghost" size="sm" onClick={cancel}>
           Cancel
         </Button>
-        <Button size="sm" disabled={pending} onClick={submit}>
+        <Button type="submit" size="sm" disabled={pending}>
           {isEdit ? <Save className="size-3" /> : <Plus className="size-3" />}
           {isEdit ? 'Save field' : 'Add field'}
         </Button>
       </div>
-    </div>
+    </form>
   )
 }
 
@@ -966,7 +1007,9 @@ export function SurfPanel({
         </div>
         {right}
       </header>
-      {children}
+      {/* Scrolls sideways so a wide table is never clipped by the rounded card
+          (see .tripl-panel-body in index.css). */}
+      <div data-slot="panel-body" className="tripl-scroll-x tripl-panel-body">{children}</div>
     </section>
   )
 }
@@ -1009,7 +1052,9 @@ export function SCard({
         </div>
         {right}
       </header>
-      {children}
+      {/* Scrolls sideways so a wide table is never clipped by the rounded card
+          (see .tripl-panel-body in index.css). */}
+      <div data-slot="panel-body" className="tripl-scroll-x tripl-panel-body">{children}</div>
       {footer}
     </section>
   )
@@ -1053,22 +1098,28 @@ export function SField({
   children: ReactNode
 }) {
   return (
-    <div
-      className="grid grid-cols-[180px_1fr] items-start gap-4 px-[18px] py-3.5"
+    // Stacks below `sm`: the fixed 180px caption left a phone ~125px for every
+    // input on the type and field forms (PLAN-35).
+    <FormRow
+      labelWidth={180}
+      captionClassName="sm:pt-1.5"
+      className="px-[18px] py-3.5 sm:gap-4"
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
-    >
-      <div className="pt-1.5">
-        <div className="text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
-          {label}
-        </div>
-        {hint && (
-          <div className="mt-1 text-[11px] leading-snug" style={{ color: 'var(--fg-subtle)' }}>
-            {hint}
+      caption={
+        <>
+          <div className="text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
+            {label}
           </div>
-        )}
-      </div>
-      <div className="min-w-0">{children}</div>
-    </div>
+          {hint && (
+            <div className="mt-1 text-[11px] leading-snug" style={{ color: 'var(--fg-subtle)' }}>
+              {hint}
+            </div>
+          )}
+        </>
+      }
+    >
+      {children}
+    </FormRow>
   )
 }
 
@@ -1078,12 +1129,18 @@ export function SInput({
   mono,
   placeholder,
   disabled,
+  ariaLabel,
+  invalid,
+  describedBy,
 }: {
   value: string
   onChange: (v: string) => void
   mono?: boolean
   placeholder?: string
   disabled?: boolean
+  ariaLabel?: string
+  invalid?: boolean
+  describedBy?: string
 }) {
   return (
     <Input
@@ -1091,6 +1148,9 @@ export function SInput({
       value={value}
       placeholder={placeholder}
       disabled={disabled}
+      aria-label={ariaLabel}
+      aria-invalid={invalid || undefined}
+      aria-describedby={describedBy}
       onChange={(e) => onChange(e.target.value)}
     />
   )

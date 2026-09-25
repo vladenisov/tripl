@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useDirtySinceOpen, useUnsavedDialogGuard } from '@/hooks/useUnsavedChangesGuard'
 import {
   ALERT_INBOX_STATUSES,
   bulkInboxActionSuccessMessage,
@@ -566,6 +567,13 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     setEditingDestination(null)
     setDestinationForm(defaultDestinationForm('slack'))
   }
+
+  // Same as the rule dialog (ALR-17): a close that would drop typed-in
+  // credentials or templates asks first.
+  const destinationDialogOpen = canWrite && (!!createType || !!editingDestination)
+  const destinationGuard = useUnsavedDialogGuard(
+    useDirtySinceOpen(destinationDialogOpen, destinationForm),
+  )
 
   const handleDeleteDestination = async (destination: AlertDestination) => {
     const ok = await confirm({
@@ -1226,7 +1234,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       {/* Gated on the role as well as on the two state flags: `refresh()` can
           rewrite the session mid-visit, and a create form left open across a
           demotion would still POST its Create. */}
-      <Dialog open={canWrite && (!!createType || !!editingDestination)} onOpenChange={open => { if (!open) closeDestinationDialog() }}>
+      {destinationGuard.dialog}
+      <Dialog open={destinationDialogOpen} onOpenChange={open => { if (!open) destinationGuard.requestClose(closeDestinationDialog) }}>
         <DialogContent className="max-w-lg">
           <form onSubmit={event => { event.preventDefault(); destinationMutation.mutate() }}>
             <DialogHeader>
@@ -1500,7 +1509,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
               )}
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={closeDestinationDialog}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => destinationGuard.requestClose(closeDestinationDialog)}>Cancel</Button>
               <Button type="submit" disabled={destinationMutation.isPending}>
                 {editingDestination ? 'Save' : 'Create'}
               </Button>

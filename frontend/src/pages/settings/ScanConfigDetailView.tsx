@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Play, Sliders } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
@@ -15,6 +15,7 @@ import { Dot } from '@/components/primitives/dot'
 import { ErrorState } from '@/components/error-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getErrorMessage } from '@/lib/utils'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { ScanDetail } from './ScanDetail'
 import { ScanCausalNote } from './scans/ScanCausalNote'
 import { ScanConfigurationTab } from './scans/ScanConfigForm'
@@ -32,9 +33,30 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   const navigate = useNavigate()
   const qc = useQueryClient()
   const { notifyScanRunStarted } = useDemoScenarioActions()
-  const [tab, setTab] = useState<DetailTab>('overview')
   const canRun = useCanWrite()
   const isOwner = useIsOwner()
+  // The tab lives in `?tab=` so a reload lands where the reader was, instead of
+  // always on Overview (DATA-12). `replace`: flipping tabs is not history.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab: DetailTab = searchParams.get('tab') === 'configuration' ? 'configuration' : 'overview'
+  const showTab = (next: DetailTab) =>
+    setSearchParams(
+      prev => {
+        const params = new URLSearchParams(prev)
+        if (next === 'overview') params.delete('tab')
+        else params.set('tab', next)
+        return params
+      },
+      { replace: true },
+    )
+  // The Configuration panel is unmounted by the tab switch, so its unsaved
+  // edits are guarded here: on leaving the page, and on leaving the tab.
+  const [configDirty, setConfigDirty] = useState(false)
+  const unsaved = useUnsavedChangesGuard(configDirty)
+  const setTab = (next: DetailTab) => {
+    if (next === tab) return
+    unsaved.requestLeave(() => showTab(next))
+  }
 
   const {
     data: scanConfigs = [],
@@ -124,6 +146,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
 
   return (
     <div className="flex flex-col gap-4">
+      {unsaved.dialog}
       <BackLink onClick={goBack} />
 
       <div className="flex items-start gap-3">
@@ -225,7 +248,16 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
         </div>
       ) : (
         <div id="scan-tabpanel-configuration" role="tabpanel" aria-labelledby="scan-tab-configuration">
-          <ScanConfigurationTab slug={slug} scanConfig={sc as ScanConfig} onDeleted={goBack} />
+          <ScanConfigurationTab
+            slug={slug}
+            scanConfig={sc as ScanConfig}
+            onDeleted={() => {
+              // Deleted: nothing left to lose.
+              unsaved.release()
+              goBack()
+            }}
+            onDirtyChange={setConfigDirty}
+          />
         </div>
       )}
     </div>

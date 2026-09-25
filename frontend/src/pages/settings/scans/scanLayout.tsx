@@ -2,6 +2,7 @@ import { useId, type ReactNode } from 'react'
 import { Database } from 'lucide-react'
 import type { DbType } from '@/types'
 import { cn } from '@/lib/utils'
+import { FormRow } from '@/components/ui/form-row'
 
 // The mockup keys SrcIcon off a platform kind (web/ios/...) the real model lacks.
 // We key off the data source's db_type instead, using one warehouse glyph with a
@@ -64,7 +65,9 @@ export function SurfPanel({
           {right}
         </header>
       )}
-      {children}
+      {/* Scrolls sideways so a wide table is never clipped by the rounded card
+          (see .tripl-panel-body in index.css). */}
+      <div data-slot="panel-body" className="tripl-scroll-x tripl-panel-body">{children}</div>
     </section>
   )
 }
@@ -219,30 +222,35 @@ export function Field({
   const captionId = id === false ? generatedId : undefined
   const controlId = id === false ? undefined : id
   return (
-    <div
+    // Stacks below `sm`: the fixed 232px caption left a phone ~50px for the
+    // SQL editor and every select (DATA-8).
+    <FormRow
       role={captionId ? 'group' : undefined}
       aria-labelledby={captionId}
-      className={cn('flex items-start gap-6 px-[18px] py-4', !last && 'border-b')}
+      captionClassName="sm:pt-1.5"
+      className={cn('px-[18px] py-4', !last && 'border-b')}
       style={{ borderColor: 'var(--border-subtle)' }}
+      caption={
+        <>
+          {captionId ? (
+            <span id={captionId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+              {label}
+            </span>
+          ) : (
+            <label htmlFor={controlId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+              {label}
+            </label>
+          )}
+          {hint && (
+            <div className="mt-1 text-xs leading-snug" style={{ color: 'var(--fg-subtle)' }}>
+              {hint}
+            </div>
+          )}
+        </>
+      }
     >
-      <div className="w-[232px] shrink-0 pt-1.5">
-        {captionId ? (
-          <span id={captionId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-            {label}
-          </span>
-        ) : (
-          <label htmlFor={controlId} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-            {label}
-          </label>
-        )}
-        {hint && (
-          <div className="mt-1 text-xs leading-snug" style={{ color: 'var(--fg-subtle)' }}>
-            {hint}
-          </div>
-        )}
-      </div>
-      <div className="min-w-0 flex-1">{children}</div>
-    </div>
+      {children}
+    </FormRow>
   )
 }
 

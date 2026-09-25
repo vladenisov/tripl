@@ -247,3 +247,76 @@ describe('ScanConfigDetail — coached demo scenario', () => {
     expect(window.localStorage.getItem(`tripl-demo-scenario:${SLUG}`)).toBeNull()
   })
 })
+
+describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
+  const owner: AuthContextValue = {
+    user: {
+      id: 'owner-1',
+      email: 'owner@example.com',
+      name: 'Owner',
+      role: 'owner',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+
+  function renderAt(path: string) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={owner}>
+          <MemoryRouter initialEntries={[path]}>
+            <DemoScenarioProvider project={demoProject({ is_demo: false })} pollIntervalMs={10}>
+              <ScanConfigDetail slug={SLUG} scanConfigId="scan-1" />
+            </DemoScenarioProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('opens on the tab the URL names, so a reload keeps the reader on Configuration', async () => {
+    setupFetch()
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    expect(await screen.findByRole('tab', { name: 'Configuration' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByLabelText('Name')).toHaveValue('Main scan')
+  })
+
+  it('asks before a tab switch unmounts edited configuration, and keeps it on Cancel', async () => {
+    setupFetch()
+    renderAt(`/p/${SLUG}/scans/scan-1`)
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Renamed scan' } })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview', hidden: true }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByLabelText('Name')).toHaveValue('Renamed scan')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true'),
+    )
+  })
+
+  it('switches tabs at once while nothing is edited', async () => {
+    setupFetch()
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    await screen.findByLabelText('Name')
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+})

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dataSourcesApi } from '@/api/dataSources'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useDirtySinceOpen, useUnsavedDialogGuard } from '@/hooks/useUnsavedChangesGuard'
 import type { DataSource, DbType } from '@/types'
 import { DB_TYPE_OPTIONS } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -256,6 +257,14 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setSettings(EMPTY_CONNECTION_SETTINGS_FORM)
   }
 
+  // One stray overlay click or Escape used to throw away a pasted service-account
+  // key or PEM certificate (DATA-31). Both dialogs now ask first while they hold
+  // anything the user typed; Cancel asks too, since it is the same loss.
+  const createDirty = useDirtySinceOpen(showForm, { name, dbType, core, settings })
+  const createGuard = useUnsavedDialogGuard(createDirty)
+  const editDirty = useDirtySinceOpen(!!editingDs, { editName, editCore, editSettings })
+  const editGuard = useUnsavedDialogGuard(editDirty)
+
   const healthyCount = dataSources.filter(
     (ds) => ds.last_test_status === 'success' && !isHealthCheckStale(ds),
   ).length
@@ -269,6 +278,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   return (
     <div className="space-y-5">
       {dialog}
+      {createGuard.dialog}
+      {editGuard.dialog}
 
       {/* Compact stats header (page title comes from the Settings tab bar) */}
       <div className="flex items-end justify-end gap-6">
@@ -298,7 +309,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       </div>
 
       {/* Create dialog */}
-      <Dialog open={showForm} onOpenChange={(v) => { if (!v) resetForm() }}>
+      <Dialog open={showForm} onOpenChange={(v) => { if (!v) createGuard.requestClose(resetForm) }}>
         <DialogContent className="sm:max-w-lg">
           <form onSubmit={(e) => { e.preventDefault(); createMut.mutate() }}>
             <DialogHeader>
@@ -344,7 +355,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
               )}
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={resetForm}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => createGuard.requestClose(resetForm)}>Cancel</Button>
               <Button type="submit" disabled={createMut.isPending}>Create</Button>
             </DialogFooter>
           </form>
@@ -352,7 +363,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       </Dialog>
 
       {/* Edit dialog */}
-      <Dialog open={!!editingDs} onOpenChange={(v) => { if (!v) closeEdit() }}>
+      <Dialog open={!!editingDs} onOpenChange={(v) => { if (!v) editGuard.requestClose(closeEdit) }}>
         <DialogContent className="sm:max-w-lg">
           <form onSubmit={(e) => { e.preventDefault(); if (editingDs) updateMut.mutate(editingDs.id) }}>
             <DialogHeader>
@@ -406,7 +417,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
               )}
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => closeEdit()}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => editGuard.requestClose(closeEdit)}>Cancel</Button>
               <Button type="submit" disabled={updateMut.isPending}>Save</Button>
             </DialogFooter>
           </form>

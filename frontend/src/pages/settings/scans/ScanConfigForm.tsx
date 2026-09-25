@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
@@ -6,6 +6,7 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import type { DataSource, EventType, ScanConfig } from '@/types'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
@@ -29,10 +30,17 @@ export function ScanConfigurationTab({
   slug,
   scanConfig,
   onDeleted,
+  onDirtyChange,
 }: {
   slug: string
   scanConfig: ScanConfig
   onDeleted: () => void
+  /**
+   * Told whether the form holds unsaved edits, and `false` once it unmounts.
+   * The page owns the leave guard: it also has to ask before its own tab strip
+   * unmounts this form (DATA-12), which no guard in here can see.
+   */
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
@@ -52,10 +60,23 @@ export function ScanConfigurationTab({
     queryFn: () => eventTypesApi.list(slug, null),
   })
 
+  // What a Save would send, against what the last save (or the page load) sent.
+  const payloadSnapshot = JSON.stringify(form.toBackendPayload())
+  const [savedSnapshot, setSavedSnapshot] = useState(payloadSnapshot)
+  // A non-owner's form is disabled and so never dirty.
+  const dirty = canEdit && payloadSnapshot !== savedSnapshot
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
+
   const updateMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () => scansApi.update(slug, scanConfig.id, form.toBackendPayload()),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['scans', slug] }),
+    onSuccess: () => {
+      setSavedSnapshot(payloadSnapshot)
+      return qc.invalidateQueries({ queryKey: ['scans', slug] })
+    },
   })
 
   const deleteMut = useMutation({
@@ -186,11 +207,24 @@ export function ScanConfigurationTab({
   )
 }
 
-// ─── New scan — full page (in-place view state, no route, no dialog) ───
-export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => void }) {
+// ─── New scan — full page at /p/:slug/scans/new (no dialog) ───
+export function ScanCreatePage({
+  slug,
+  onBack,
+  onCreated,
+}: {
+  slug: string
+  onBack: () => void
+  /** Where to go once the scan exists: its own page, where Run now lives. */
+  onCreated: (created: ScanConfig) => void
+}) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const form = useScanForm(slug, null)
+  // A typed SQL query and its group rules used to vanish on Back or a reload,
+  // with no route to come back to and nothing asking first (DATA-13).
+  const [initialSnapshot] = useState(() => JSON.stringify(form.state))
+  const unsaved = useUnsavedChangesGuard(JSON.stringify(form.state) !== initialSnapshot)
 
   const { data: dataSources = [] } = useQuery({
     queryKey: dataSourcesKey(),
@@ -207,9 +241,10 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
         data_source_id: form.state.dataSourceId,
         ...form.toBackendPayload(),
       }),
-    onSuccess: () => {
+    onSuccess: created => {
       qc.invalidateQueries({ queryKey: ['scans', slug] })
-      onBack()
+      unsaved.release()
+      onCreated(created)
     },
   })
 
@@ -228,6 +263,7 @@ export function ScanCreatePage({ slug, onBack }: { slug: string; onBack: () => v
 
   return (
     <div className="max-w-[880px] pb-12">
+      {unsaved.dialog}
       <div className="mb-3.5">
         <button
           type="button"

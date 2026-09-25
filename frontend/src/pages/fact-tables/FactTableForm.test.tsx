@@ -318,3 +318,42 @@ describe('FactTableForm', () => {
     expect(payload).toMatchObject({ display_name: 'Orders renamed' })
   })
 })
+
+/** Whether a reload/tab-close right now would get the browser's prompt. */
+function reloadIsGuarded(): boolean {
+  const event = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(event)
+  return event.defaultPrevented
+}
+
+describe('FactTableForm unsaved-changes guard (MET-5)', () => {
+  it('arms the reload prompt once the draft differs from what the form opened with', () => {
+    renderForm()
+    expect(reloadIsGuarded()).toBe(false)
+
+    fillRequired()
+    expect(reloadIsGuarded()).toBe(true)
+  })
+
+  it('leaves an untouched edit form unguarded, row filters included', () => {
+    renderForm({
+      id: 'ft-1',
+      project_id: 'p-1',
+      name: 'orders',
+      display_name: 'Orders',
+      description: '',
+      color: '#6366f1',
+      order: 0,
+      data_source_id: 'ds-1',
+      timestamp_column: 'created_at',
+      columns: [],
+      identifier_columns: [],
+      // Each row gets a fresh client-side id on mount; those are not edits.
+      row_filters: [{ name: 'ios_only', sql: "platform = 'ios'" }],
+      sql: 'SELECT id, created_at FROM orders',
+      created_at: '2026-06-01T00:00:00Z',
+      updated_at: '2026-06-20T00:00:00Z',
+    } as unknown as FactTable)
+    expect(reloadIsGuarded()).toBe(false)
+  })
+})

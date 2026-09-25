@@ -1,0 +1,168 @@
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { UNSAFE_DataRouterContext, type BlockerFunction } from 'react-router-dom'
+import { NavigationBlocker } from '@/components/navigation-blocker'
+import { useConfirm } from './useConfirm'
+
+export const UNSAVED_CHANGES_MESSAGE =
+  'Your changes have not been saved. Leave anyway and discard them?'
+
+type GuardOptions = {
+  /** What is at stake, phrased for the confirm dialog. */
+  message?: string
+}
+
+/**
+ * Reload and tab-close are not React navigations, so only the browser's own
+ * prompt can stop them, and only from a listener that exists while the draft
+ * does. Registered off the dirty flag alone so a form nobody has typed into
+ * never interrupts a reload.
+ */
+function useBeforeUnloadWhile(active: boolean) {
+  useEffect(() => {
+    if (!active) return
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      // Browsers show their own wording. returnValue is what makes the older
+      // ones (Chrome/Edge < 119) prompt at all.
+      event.returnValue = true
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [active])
+}
+
+/**
+ * The confirm half, shared by both guards: resolves true when there is
+ * nothing to lose, or once the user has accepted the loss.
+ */
+function useConfirmDiscard(isDirty: boolean, message: string) {
+  const { confirm, dialog } = useConfirm()
+  // Read at call time, not render time: an exit handler can run in the same
+  // tick as the state change that made the form dirty or clean.
+  const dirtyRef = useRef(isDirty)
+  useLayoutEffect(() => {
+    dirtyRef.current = isDirty
+  }, [isDirty])
+
+  const confirmDiscard = useCallback(async (): Promise<boolean> => {
+    if (!dirtyRef.current) return true
+    return confirm({
+      title: 'Discard unsaved changes?',
+      message,
+      confirmLabel: 'Discard',
+      variant: 'danger',
+    })
+  }, [confirm, message])
+
+  // Synchronous when there is nothing to lose, so a clean close or tab switch
+  // lands in the same event as the click, exactly as it did before the guard.
+  const runIfDiscarded = useCallback(
+    (action: () => void) => {
+      if (!dirtyRef.current) {
+        action()
+        return
+      }
+      void confirmDiscard().then(discard => {
+        if (discard) action()
+      })
+    },
+    [confirmDiscard],
+  )
+
+  return { confirmDiscard, runIfDiscarded, dialog, dirtyRef }
+}
+
+/**
+ * Guard a full-page authoring form against losing its draft.
+ *
+ * While `isDirty`, every in-app navigation that leaves the current path (links,
+ * the sidebar, `navigate(-1)` from a Cancel button, browser Back and Forward)
+ * stops and asks first, and reload/tab-close get the browser's own prompt.
+ * Navigations within the same path (a search-param change) are not blocked.
+ *
+ * Render `dialog`. Call `release()` right before a navigation that follows a
+ * successful save: the state that made the form dirty has not re-rendered yet,
+ * and the draft is no longer at risk. `requestLeave(action)` is for exits that
+ * are not navigations (a tab switch inside the page): it runs `action` at once
+ * when clean, and after a confirm when dirty.
+ *
+ * A router consults only ONE blocker, the most recently registered. Do not use
+ * this inside the settings takeover (SettingsLayout owns that blocker; register
+ * with `useUnsavedChanges` instead), and do not mount two of these at once.
+ */
+export function useUnsavedChangesGuard(
+  isDirty: boolean,
+  { message = UNSAVED_CHANGES_MESSAGE }: GuardOptions = {},
+): { dialog: ReactNode; requestLeave: (action: () => void) => void; release: () => void } {
+  const { confirmDiscard, runIfDiscarded, dialog: confirmDialog, dirtyRef } = useConfirmDiscard(isDirty, message)
+  const releasedRef = useRef(false)
+  // A draft that becomes dirty again after a save that did not navigate away
+  // (Save and add another) is at risk again.
+  useLayoutEffect(() => {
+    releasedRef.current = false
+  }, [isDirty])
+  const release = useCallback(() => {
+    releasedRef.current = true
+  }, [])
+
+  useBeforeUnloadWhile(isDirty)
+
+  const shouldBlock = useCallback<BlockerFunction>(
+    ({ currentLocation, nextLocation }) =>
+      dirtyRef.current
+      && !releasedRef.current
+      && currentLocation.pathname !== nextLocation.pathname,
+    [dirtyRef],
+  )
+  const ask = useCallback(async () => {
+    // The blocker already knows the form is dirty; ask unconditionally.
+    const leave = await confirmDiscard()
+    if (leave) releasedRef.current = true
+    return leave
+  }, [confirmDiscard])
+
+  const hasDataRouter = useContext(UNSAFE_DataRouterContext) !== null
+  const dialog = (
+    <>
+      {confirmDialog}
+      {hasDataRouter && <NavigationBlocker shouldBlock={shouldBlock} ask={ask} />}
+    </>
+  )
+  return { dialog, requestLeave: runIfDiscarded, release }
+}
+
+/**
+ * Guard a dialog form: route its close requests (Escape, an outside click, the
+ * X, Cancel) through `requestClose`, which asks first while `isDirty`. Also
+ * arms the browser prompt on reload/tab-close. No router blocker: a modal
+ * dialog covers every in-app link, and a dialog must not steal the one blocker
+ * a page may hold.
+ *
+ *   <Dialog open={open} onOpenChange={o => { if (!o) guard.requestClose(close) }}>
+ */
+export function useUnsavedDialogGuard(
+  isDirty: boolean,
+  { message = UNSAVED_CHANGES_MESSAGE }: GuardOptions = {},
+): { dialog: ReactNode; requestClose: (close: () => void) => void } {
+  const { runIfDiscarded, dialog } = useConfirmDiscard(isDirty, message)
+  useBeforeUnloadWhile(isDirty)
+  return { dialog, requestClose: runIfDiscarded }
+}
+
+/**
+ * Whether a dialog's draft has changed since the dialog opened.
+ *
+ * For a dialog whose form state lives outside it (the parent resets it on
+ * every open): the baseline is the draft as it stood on the first render with
+ * `open` true, and it is dropped again on close. `draft` must be
+ * JSON-serialisable.
+ */
+export function useDirtySinceOpen(open: boolean, draft: unknown): boolean {
+  const snapshot = JSON.stringify(draft)
+  const [baseline, setBaseline] = useState<string | null>(open ? snapshot : null)
+  // Adjust-during-render with an equality guard, this repo's idiom for state
+  // that follows a prop: the baseline is in place on the render that opens.
+  if (open && baseline === null) setBaseline(snapshot)
+  if (!open && baseline !== null) setBaseline(null)
+  return open && baseline !== null && snapshot !== baseline
+}
