@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight } from 'lucide-react'
 import { Area, ComposedChart, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 
@@ -237,6 +237,9 @@ function BreakdownDrilldown({
         from,
         to,
       }),
+    // `from`/`to` follow the live window, which steps every five minutes; keep
+    // the timeline on screen while the next window loads (MON-3).
+    placeholderData: keepPreviousData,
   })
 
   if (isLoading) {

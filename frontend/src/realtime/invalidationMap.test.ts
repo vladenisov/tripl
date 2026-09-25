@@ -63,6 +63,15 @@ describe('invalidationKeysFor', () => {
     expect(hasKey(keys, ['overview'])).toBe(true)
   })
 
+  it('refreshes the By version series with the adoption chart beside it (MON-4)', () => {
+    const collection = invalidationKeysFor('metric_collection.updated', SLUG)
+    expect(hasKey(collection, ['appVersionSeries', SLUG])).toBe(true)
+    expect(hasKey(collection, ['appVersionAdoption', SLUG])).toBe(true)
+    expect(hasKey(collection, ['chartAnnotations', SLUG])).toBe(true)
+    expect(hasKey(collection, ['breakdownTimeline', SLUG])).toBe(true)
+    expect(hasKey(invalidationKeysFor('signals.updated', SLUG), ['appVersionSeries', SLUG])).toBe(true)
+  })
+
   it('signals.updated refreshes anomalies, monitors and notifications', () => {
     const keys = invalidationKeysFor('signals.updated', SLUG)
     // One key for every signal surface — the bell, Overview and the Anomalies

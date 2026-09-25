@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
 import { metricsApi } from '@/api/metrics'
 import { Card, CardContent } from '@/components/ui/card'
@@ -101,6 +101,9 @@ export function SeasonalityHeatmap({
         to,
       }),
     enabled: Boolean(slug && scanConfigId && scopeRef),
+    // The live window's bounds step every five minutes; keep the grid on
+    // screen while the new window loads instead of flashing "Loading…" (MON-3).
+    placeholderData: keepPreviousData,
   })
 
   const cellsByKey = useMemo(() => {

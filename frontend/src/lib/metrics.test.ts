@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EventMetricPoint } from '@/types'
-import { aggregateMetricPoints, defaultGranularityForRange, getBucketStart } from './metrics'
+import {
+  aggregateMetricPoints,
+  clampGranularityToRange,
+  coarserGranularity,
+  defaultGranularityForRange,
+  getBucketStart,
+  granularityFitsRange,
+} from './metrics'
 
 function point(overrides: Partial<EventMetricPoint> & { bucket: string }): EventMetricPoint {
   return {
@@ -450,5 +457,76 @@ describe('aggregateMetricPoints', () => {
     expect(result[0].is_anomaly).toBe(false)
     expect(result[0].z_score).toBeNull()
     expect(result[0].anomaly_direction).toBeNull()
+  })
+})
+
+describe('aggregateMetricPoints rollup mode (MON-2 / MET-12)', () => {
+  // 24 hourly readings of an 8 % conversion rate, stored as the fraction 0.08.
+  const hourlyRatio = Array.from({ length: 24 }, (_, hour) =>
+    point({
+      bucket: `2026-06-10T${String(hour).padStart(2, '0')}:00:00Z`,
+      count: 0.08,
+      expected_count: 0.07,
+      stddev: 0.01,
+    }))
+
+  it('averages a non-additive metric instead of summing it', () => {
+    const [day] = aggregateMetricPoints(hourlyRatio, 'day', 'mean')
+    // Summing would plot 1.92 — "192 %" for an 8 % rate.
+    expect(day.count).toBeCloseTo(0.08, 10)
+  })
+
+  it('drops the baseline and does not re-test a merged mean bucket', () => {
+    const [day] = aggregateMetricPoints(
+      hourlyRatio.map((p, index) => (index === 3
+        ? { ...p, is_anomaly: true, anomaly_direction: 'spike' as const, z_score: 5 }
+        : p)),
+      'day',
+      'mean',
+    )
+    expect(day.expected_count).toBeNull()
+    expect(day.stddev).toBeNull()
+    // The flagged hour still shows: there is no rolled-up baseline to clear it.
+    expect(day.is_anomaly).toBe(true)
+    expect(day.z_score).toBe(5)
+  })
+
+  it('passes a single-point bucket through untouched in mean mode', () => {
+    const [only] = aggregateMetricPoints([hourlyRatio[0]], 'day', 'mean')
+    expect(only).toEqual({ ...hourlyRatio[0], bucket: '2026-06-10T00:00:00.000Z' })
+  })
+
+  it('still sums additive series by default', () => {
+    const [day] = aggregateMetricPoints(
+      [
+        point({ bucket: '2026-06-10T01:00:00Z', count: 5 }),
+        point({ bucket: '2026-06-10T02:00:00Z', count: 7 }),
+      ],
+      'day',
+    )
+    expect(day.count).toBe(12)
+  })
+})
+
+describe('granularity point cap (MON-23)', () => {
+  it('orders granularities by bucket width', () => {
+    expect(coarserGranularity('hour', 'day')).toBe('day')
+    expect(coarserGranularity('week', '6h')).toBe('week')
+    expect(coarserGranularity('15min', '15min')).toBe('15min')
+  })
+
+  it('refuses a granularity that would draw more than 500 points', () => {
+    expect(granularityFitsRange('hour', 7)).toBe(true)
+    expect(granularityFitsRange('15min', 7)).toBe(false)
+    expect(granularityFitsRange('hour', 30)).toBe(false)
+    expect(granularityFitsRange('6h', 90)).toBe(true)
+  })
+
+  it('bumps a too-fine pick up to the finest one that fits the range', () => {
+    expect(clampGranularityToRange('15min', 7)).toBe('hour')
+    expect(clampGranularityToRange('15min', 90)).toBe('6h')
+    expect(clampGranularityToRange('hour', 30)).toBe('6h')
+    // A pick that already fits is left alone.
+    expect(clampGranularityToRange('week', 7)).toBe('week')
   })
 })

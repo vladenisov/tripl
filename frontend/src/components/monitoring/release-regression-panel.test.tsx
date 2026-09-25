@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
 import { metricsApi } from '@/api/metrics'
@@ -50,7 +51,9 @@ function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <ReleaseRegressionPanel slug="demo" scanConfigId="scan-1" />
+      <MemoryRouter>
+        <ReleaseRegressionPanel slug="demo" scanConfigId="scan-1" />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -169,5 +172,52 @@ describe('ReleaseRegressionPanel', () => {
 
     expect(await screen.findByText(/No release comparison has run/i)).toBeInTheDocument()
     expect(screen.queryByText(/No events regressed/i)).not.toBeInTheDocument()
+  })
+
+  it('says the list is scan-wide, links each row and labels the count (MON-41)', async () => {
+    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+      scan_config_id: 'scan-1',
+      app_version_column: 'app_version',
+      latest_version: '2.1.0',
+      comparability: [verdict()],
+      items: [
+        regression({ scope_ref: 'e1', event_id: 'e1', scope_name: 'Login' }),
+        regression({
+          scope_type: 'event_type',
+          scope_ref: 't1',
+          event_id: null,
+          event_type_id: 't1',
+          scope_name: 'Checkout',
+        }),
+      ],
+    })
+
+    renderPanel()
+
+    expect(await screen.findByRole('heading', { name: /Release regressions · whole scan/ }))
+      .toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Login' }))
+      .toHaveAttribute('href', '/p/demo/monitoring/event/e1')
+    expect(screen.getByRole('link', { name: 'Checkout' }))
+      .toHaveAttribute('href', '/p/demo/monitoring/event-type/t1')
+    expect(screen.getByLabelText('2 regressions')).toBeInTheDocument()
+  })
+
+  it('lists every distinct withheld reason, not only the first', async () => {
+    vi.mocked(metricsApi.getReleaseRegressions).mockResolvedValue({
+      scan_config_id: 'scan-1',
+      app_version_column: 'app_version',
+      latest_version: '2.1.0',
+      comparability: [
+        verdict({ comparable: false, reason: 'no_baseline' }),
+        verdict({ scope_type: 'event_type', comparable: false, reason: 'baseline_no_volume' }),
+      ],
+      items: [],
+    })
+
+    renderPanel()
+
+    expect(await screen.findByText(/Fewer than two released versions/i)).toBeInTheDocument()
+    expect(screen.getByText(/baseline release has no volume/i)).toBeInTheDocument()
   })
 })

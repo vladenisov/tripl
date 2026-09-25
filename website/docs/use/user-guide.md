@@ -477,27 +477,38 @@ shape. That detection is automatic and needs no setup.
 Open an event's **monitoring detail** (from the event or one of its signals) to
 see, across tabs:
 
-- **Volume** — event, event-type, and project-total charts open on the last 7
-  days at hourly granularity. The chart includes a short **forecast** of where
+- **Volume** (**Value** for a catalog metric) — every drilldown opens on the
+  last 7 days, at hourly granularity or the metric's collection interval if
+  that is coarser. Granularities that would draw more than 500 points over the
+  selected range are not offered. When you pick a coarser granularity, event
+  volumes and additive metrics (counts and sums) add up, while ratios,
+  averages, percentages and distinct counts are averaged, so a conversion rate
+  stays on its own scale. The range, granularity, tab and filters are kept in
+  the page address, so a link or a refresh reopens the same view. The chart
+  includes a short **forecast** of where
   the next native-interval point should land only when the selected granularity
   matches that collection interval, plus a panel summarising the latest signal
   (its bucket, actual vs expected count, and z-score) and **top movers** showing
   which slice of the data moved. Other rollups omit the forecast because one
   native bucket is not a forecast for the whole aggregate bucket. You can also
   add **annotations** to mark deploys, releases, or incidents directly on the
-  chart.
+  chart. The time you enter is your local time; annotations draw in a neutral
+  colour so they cannot be mistaken for anomalies, and deleting one asks first
+  (a project-wide annotation is removed from every chart in the project).
 - **Heatmap** — activity by hour of day and day of week. It needs a scan that collects hourly or finer; on a 6-hour, daily or weekly scan the tab explains that there is no hour-of-day detail instead of drawing a mostly empty grid.
 - **Distribution** — whether a field's mix of values is drifting (reported as a
   PSI score and a band of *normal / minor / significant*).
 - **Breakdowns** *(event-level)* — splits an event's volume into one series per
   value of a chosen column. For the scan's designated platform column, share
   anomalies are called out separately when one platform's ratio changes even
-  though total volume remains stable.
+  though total volume remains stable. The chart draws up to eight values at
+  once and says how many it left out; pick values below it to compare others.
 - **By version** — appears only when the event's scan names an app-version
   column. It splits volume across recent releases, tracks adoption, and lists
   **release regressions** (what disappeared or dropped in the newest release
-  versus the previous one). Scans without a version column simply don't show
-  this tab.
+  versus the previous one). The regressions list covers the whole scan, not
+  only the event you are looking at; each row links to its event. Scans without
+  a version column simply don't show this tab.
 
 Choose how many releases remain visible under **Settings → Project → General →
 Version monitoring**. The same value applies immediately, without recollecting
